@@ -1,0 +1,74 @@
+# reading-lite — Cloudflare Worker
+#
+# Two environments:
+#   * default (staging) — used by `wrangler dev` and `wrangler deploy` (no --env)
+#   * production        — used by `wrangler deploy --env production`
+#
+# Local dev:
+#   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
+#   2. `npx wrangler r2 bucket create reading-lite-staging` (one-time).
+#   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine` (one-time).
+#   4. `npm run dev`.
+
+# Top-level (= staging) deploys to a worker named `reading-lite-staging`,
+# so an accidental `wrangler deploy` without `--env production` cannot clobber
+# the production worker. `wrangler dev` ignores `name`.
+name = "reading-lite-staging"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# Production secrets (set via `wrangler secret put` per-env, e.g.
+# `wrangler secret put READER_API_TOKEN --env production`):
+#   READER_API_TOKEN     — bearer token required on every protected route
+#   ANTHROPIC_API_KEY    — Anthropic API key
+#   OPENAI_API_KEY       — OpenAI API key (text-embedding-3-small)
+
+[vars]
+# Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
+CORS_ALLOWED_ORIGINS = ""
+# How long a "pending" manifest is considered fresh before being surfaced as stale.
+PENDING_TTL_SECONDS = "300"
+# Hard fetch timeout for source URLs (ms).
+FETCH_TIMEOUT_MS = "20000"
+# Hard cap on response body bytes for source URLs.
+FETCH_MAX_BYTES = "10485760"
+# Anthropic model id.
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+# R2 bucket holding readings/{id}/manifest.json + raw + extracted, and index/by-url/{hash}.
+# `remote = true` makes `wrangler dev` bind to the real staging bucket instead
+# of the local Miniflare emulator, so migrated rows are visible from the dev server.
+[[r2_buckets]]
+binding = "READINGS_BUCKET"
+bucket_name = "reading-lite-staging"
+remote = true
+
+# Vectorize index (1536 dim, cosine) for similarity search.
+# Vectorize has no local emulator; `remote = true` is required for `wrangler dev`.
+[[vectorize]]
+binding = "READINGS_INDEX"
+index_name = "reading-lite-staging"
+remote = true
+
+# ---- production ----
+# Deploy with: `wrangler deploy --env production`.
+# Environments do NOT inherit top-level [vars] / bindings — repeat them here.
+
+[env.production]
+name = "reading-lite"
+
+[env.production.vars]
+CORS_ALLOWED_ORIGINS = ""
+PENDING_TTL_SECONDS = "300"
+FETCH_TIMEOUT_MS = "20000"
+FETCH_MAX_BYTES = "10485760"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[[env.production.r2_buckets]]
+binding = "READINGS_BUCKET"
+bucket_name = "reading-lite"
+
+[[env.production.vectorize]]
+binding = "READINGS_INDEX"
+index_name = "reading-lite"

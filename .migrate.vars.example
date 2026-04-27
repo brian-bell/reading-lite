@@ -1,0 +1,13 @@
+# Copy to .migrate.vars and fill in. .migrate.vars is gitignored.
+# Read by `npm run migrate` (scripts/migrate.ts) when a flag/env var is missing.
+# Resolution order: --flag > env var (same name) > this file > error.
+
+MIGRATE_SQLITE=./backlite.db
+MIGRATE_CONTENT_DIR=./backlite-data
+MIGRATE_R2_ACCOUNT_ID=
+MIGRATE_R2_ACCESS_KEY=
+MIGRATE_R2_SECRET_KEY=
+MIGRATE_R2_BUCKET=reading-lite-staging
+MIGRATE_CF_API_TOKEN=
+MIGRATE_VECTORIZE_ACCOUNT_ID=
+MIGRATE_VECTORIZE_INDEX=reading-lite-staging
