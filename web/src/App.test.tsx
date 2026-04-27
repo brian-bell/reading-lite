@@ -286,6 +286,19 @@ describe("App", () => {
     expect(await screen.findByRole("link", { name: "New One" })).toBeInTheDocument();
   });
 
+  it("snaps a non-pageSize-aligned ?offset to the page boundary in the request and label", async () => {
+    // Without snapping, ?offset=15 with pageSize=20 would label "Page 1" while
+    // serving items 15–34. Snap to the nearest page boundary: offset=0, page 1.
+    const fetchMock = vi.fn(async (_req: Request) => jsonResponse(onePage));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App initialPath="/?offset=15" />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const requestUrl = new URL((fetchMock.mock.calls[0] as [Request])[0].url);
+    expect(requestUrl.searchParams.get("offset")).toBe("0");
+    expect(await screen.findByText("Page 1")).toBeInTheDocument();
+  });
+
   it("shows an inline error when SubmitForm fails", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       if (req.method === "POST") {

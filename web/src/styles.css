@@ -66,10 +66,6 @@ input {
   color: #ffffff;
 }
 
-.nav-link.muted {
-  color: #94a1b2;
-}
-
 .workspace {
   min-width: 0;
 }
@@ -271,95 +267,9 @@ h2 {
   background: #fde8a3;
 }
 
-.related-readings .related-list {
-  display: grid;
-  gap: 12px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.related-item {
-  border-left: 3px solid #b9dacf;
-  padding-left: 10px;
-}
-
-.related-item a {
-  font-weight: 700;
-}
-
-.related-tldr {
-  margin-top: 4px;
-}
-
-.related-url {
-  color: #6f7c8d;
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
-
-.related-reason {
-  color: #4d5a69;
-  font-style: italic;
-  margin-top: 4px;
-}
-
 .empty-state {
   color: #6f7c8d;
   font-style: italic;
-}
-
-.task-meta {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
-
-.task-meta > div {
-  display: grid;
-  grid-template-columns: 90px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.task-meta dt {
-  color: #6f7c8d;
-  font-size: 0.85rem;
-}
-
-.task-meta dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.task-status {
-  border-radius: 999px;
-  display: inline-block;
-  font-size: 0.85rem;
-  padding: 2px 8px;
-}
-
-.task-status.status-completed {
-  background: #e8f3ef;
-  color: #14574e;
-}
-
-.task-status.status-failed,
-.task-status.status-cancelled {
-  background: #fde8e8;
-  color: #952424;
-}
-
-.task-status.status-running,
-.task-status.status-provisioning,
-.task-status.status-pending,
-.task-status.status-recovering,
-.task-status.status-interrupted {
-  background: #e6efff;
-  color: #1f4593;
-}
-
-.task-error {
-  color: #952424;
 }
 
 .task-links {

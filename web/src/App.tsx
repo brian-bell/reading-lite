@@ -287,7 +287,11 @@ function SubmitForm({ token }: { token: string }) {
 function parseOffset(raw: string | null): number {
   if (raw === null) return 0;
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  // Snap to a pageSize boundary so the "Page N" label always matches the
+  // served slice (a hand-typed ?offset=15 would otherwise show "Page 1" while
+  // serving items 15–34).
+  return Math.floor(n / pageSize) * pageSize;
 }
 
 function nextOffsetParam(value: number): string | undefined {
