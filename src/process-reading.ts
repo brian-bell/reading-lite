@@ -1,5 +1,6 @@
 import {
   buildKeyPrefix,
+  manifestToIndexItem,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -118,6 +119,9 @@ export async function processReading(
       args.urlHash,
       { id: args.id, key_prefix: args.keyPrefix },
     );
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(finalManifest, args.keyPrefix),
+    );
   } catch (e) {
     await markFailed(reader, args, env, services, e);
   }
@@ -148,6 +152,9 @@ async function markFailed(
     updated_at: services.now(),
   };
   await reader.writeManifest(args.keyPrefix, manifest);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(manifest, args.keyPrefix),
+  );
   // Intentionally do NOT write the by-url pointer: failed readings should not
   // dedup future submissions of the same URL.
 }

@@ -3,6 +3,9 @@ import {
   PostReadingsBodySchema,
   PostReadingsSimilarBodySchema,
   ListReadingsQuerySchema,
+  ListReadingsResponseSchema,
+  ListIndexItemSchema,
+  ListIndexSchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -53,16 +56,25 @@ describe("PostReadingsSimilarBodySchema", () => {
 });
 
 describe("ListReadingsQuerySchema", () => {
-  it("defaults limit and accepts no cursor", () => {
+  it("defaults offset=0 and limit=20 with no filters", () => {
     const parsed = ListReadingsQuerySchema.parse({});
     expect(parsed.limit).toBe(20);
-    expect(parsed.cursor).toBeUndefined();
+    expect(parsed.offset).toBe(0);
+    expect(parsed.q).toBeUndefined();
+    expect(parsed.tag).toBeUndefined();
   });
 
-  it("accepts a cursor and a custom limit", () => {
-    const parsed = ListReadingsQuerySchema.parse({ cursor: "abc", limit: "50" });
-    expect(parsed.cursor).toBe("abc");
-    expect(parsed.limit).toBe(50);
+  it("accepts q, tag, offset, limit", () => {
+    const parsed = ListReadingsQuerySchema.parse({
+      q: "rust",
+      tag: "ai",
+      offset: "40",
+      limit: "10",
+    });
+    expect(parsed.q).toBe("rust");
+    expect(parsed.tag).toBe("ai");
+    expect(parsed.offset).toBe(40);
+    expect(parsed.limit).toBe(10);
   });
 
   it("rejects limit outside 1..100", () => {
@@ -72,5 +84,89 @@ describe("ListReadingsQuerySchema", () => {
 
   it("rejects non-numeric limit", () => {
     expect(() => ListReadingsQuerySchema.parse({ limit: "many" })).toThrow();
+  });
+
+  it("rejects negative offset", () => {
+    expect(() => ListReadingsQuerySchema.parse({ offset: "-1" })).toThrow();
+  });
+
+  it("rejects non-numeric offset", () => {
+    expect(() => ListReadingsQuerySchema.parse({ offset: "abc" })).toThrow();
+  });
+});
+
+describe("ListReadingsResponseSchema", () => {
+  it("requires readings, limit, offset, has_more", () => {
+    const valid = {
+      readings: [],
+      limit: 20,
+      offset: 0,
+      has_more: false,
+    };
+    expect(() => ListReadingsResponseSchema.parse(valid)).not.toThrow();
+  });
+
+  it("rejects when has_more is missing", () => {
+    expect(() =>
+      ListReadingsResponseSchema.parse({ readings: [], limit: 20, offset: 0 }),
+    ).toThrow();
+  });
+});
+
+describe("ListIndexItemSchema", () => {
+  const baseItem = {
+    id: "rd_X",
+    key_prefix: "readings/2026/04/26T200000Z-rd_X",
+    url: "https://example.com/a",
+    status: "ready",
+    created_at: "2026-04-26T20:00:00.000Z",
+  };
+
+  it("accepts a minimal ready item", () => {
+    expect(() => ListIndexItemSchema.parse(baseItem)).not.toThrow();
+  });
+
+  it("accepts optional fields", () => {
+    const parsed = ListIndexItemSchema.parse({
+      ...baseItem,
+      title: "Title",
+      tldr: "Short",
+      tags: ["ai", "infra"],
+      novelty_verdict: "novel",
+    });
+    expect(parsed.tags).toEqual(["ai", "infra"]);
+    expect(parsed.novelty_verdict).toBe("novel");
+  });
+
+  it("accepts a failed item with error", () => {
+    const parsed = ListIndexItemSchema.parse({
+      ...baseItem,
+      status: "failed",
+      error: { code: "BadStatusError", message: "404" },
+    });
+    expect(parsed.status).toBe("failed");
+    expect(parsed.error?.code).toBe("BadStatusError");
+  });
+
+  it("accepts a pending item", () => {
+    const parsed = ListIndexItemSchema.parse({ ...baseItem, status: "pending" });
+    expect(parsed.status).toBe("pending");
+  });
+
+  it("rejects an invalid status", () => {
+    expect(() =>
+      ListIndexItemSchema.parse({ ...baseItem, status: "weird" }),
+    ).toThrow();
+  });
+});
+
+describe("ListIndexSchema", () => {
+  it("requires version=1 and items array", () => {
+    const valid = { version: 1, items: [] };
+    expect(() => ListIndexSchema.parse(valid)).not.toThrow();
+  });
+
+  it("rejects an unknown version", () => {
+    expect(() => ListIndexSchema.parse({ version: 2, items: [] })).toThrow();
   });
 });

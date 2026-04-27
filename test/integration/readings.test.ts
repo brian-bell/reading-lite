@@ -346,6 +346,250 @@ describe("POST /readings/similar", () => {
   });
 });
 
+describe("GET /readings — list with q, tag, offset, limit", () => {
+  async function postOne(
+    app: ReturnType<typeof createApp>,
+    url: string,
+  ): Promise<string> {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(202);
+    const json = (await res.json()) as { id: string };
+    await waitOnExecutionContext(ctx);
+    return json.id;
+  }
+
+  it("returns the new response shape {readings, limit, offset, has_more}", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ readings: [], limit: 20, offset: 0, has_more: false });
+  });
+
+  it("POST /readings writes a pending index entry; processReading replaces it with ready", async () => {
+    const fetchFn = makeStubFetch();
+    const app = createApp({ services: makeServices(fetchFn) });
+    const id = await postOne(app, "https://example.com/article-1");
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { readings: Array<{ id: string; status: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.id).toBe(id);
+    expect(body.readings[0]!.status).toBe("ready");
+  });
+
+  it("failure path: index entry ends up failed", async () => {
+    const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
+    const app = createApp({ services: makeServices(fetchFn) });
+    await postOne(app, "https://example.com/missing");
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("failed");
+    expect(body.readings[0]!.error?.code).toBe("BadStatusError");
+  });
+
+  it("?q= filters across title, tldr, url (case-insensitive substring)", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Rust async story",
+          tldr: "How async works in Rust",
+          tags: ["rust", "async"],
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        },
+      }),
+      idCounter,
+    );
+    const app = createApp({ services });
+    await postOne(app, "https://example.com/rust");
+
+    // Submit a second reading with different content via a fresh stub.
+    const services2 = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Go concurrency",
+          tldr: "Goroutines",
+          tags: ["go"],
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        },
+      }),
+      idCounter,
+    );
+    const app2 = createApp({ services: services2 });
+    await postOne(app2, "https://example.com/go");
+
+    const res = await app.request(
+      "/readings?q=rust",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.url).toBe("https://example.com/rust");
+  });
+
+  it("?tag= filters by exact tag match (case-insensitive)", async () => {
+    const idCounter = { n: 0 };
+    const mkServices = (toolInput: Record<string, unknown>) =>
+      makeServices(makeStubFetch({ toolInput }), idCounter);
+
+    const app1 = createApp({
+      services: mkServices({
+        title: "AI piece",
+        tldr: "About AI",
+        tags: ["AI", "infra"],
+        keywords: [],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "summary body",
+      }),
+    });
+    await postOne(app1, "https://example.com/ai");
+
+    const app2 = createApp({
+      services: mkServices({
+        title: "ML piece",
+        tldr: "About ML",
+        tags: ["ml"],
+        keywords: [],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "summary body",
+      }),
+    });
+    await postOne(app2, "https://example.com/ml");
+
+    const res = await app1.request(
+      "/readings?tag=ai",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.url).toBe("https://example.com/ai");
+  });
+
+  it("?q= and ?tag= AND together", async () => {
+    const idCounter = { n: 0 };
+    const mkServices = (toolInput: Record<string, unknown>) =>
+      makeServices(makeStubFetch({ toolInput }), idCounter);
+
+    const apps = [
+      { url: "https://example.com/rust-ai", title: "Rust AI", tags: ["rust", "ai"] },
+      { url: "https://example.com/rust-web", title: "Rust web", tags: ["rust"] },
+      { url: "https://example.com/go-ai", title: "Go AI", tags: ["ai"] },
+    ];
+    for (const a of apps) {
+      const app = createApp({
+        services: mkServices({
+          title: a.title,
+          tldr: "x",
+          tags: a.tags,
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        }),
+      });
+      await postOne(app, a.url);
+    }
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings?q=rust&tag=ai",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings.map((r) => r.url)).toEqual(["https://example.com/rust-ai"]);
+  });
+
+  it("offset+limit slices results and toggles has_more correctly", async () => {
+    const idCounter = { n: 0 };
+    for (let i = 0; i < 3; i++) {
+      const app = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+      await postOne(app, `https://example.com/p${i}`);
+    }
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const page1 = await app.request(
+      "/readings?offset=0&limit=2",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body1 = (await page1.json()) as {
+      readings: unknown[];
+      offset: number;
+      limit: number;
+      has_more: boolean;
+    };
+    expect(body1.readings).toHaveLength(2);
+    expect(body1.offset).toBe(0);
+    expect(body1.limit).toBe(2);
+    expect(body1.has_more).toBe(true);
+
+    const page2 = await app.request(
+      "/readings?offset=2&limit=2",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body2 = (await page2.json()) as { readings: unknown[]; has_more: boolean };
+    expect(body2.readings).toHaveLength(1);
+    expect(body2.has_more).toBe(false);
+  });
+
+  it("rejects negative offset with 400", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings?offset=-1",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("CORS", () => {
   it("allows preflight from an allowed origin", async () => {
     const allowedEnv = { ...env, CORS_ALLOWED_ORIGINS: "https://allowed.example" } as unknown as typeof env;

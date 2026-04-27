@@ -139,4 +139,46 @@ describe("runMigration", () => {
     expect(report[0]!.status).toBe("error");
     expect(report[0]!.error).toContain("schema");
   });
+
+  it("writes index/list.json at end-of-run with one entry per ok row", async () => {
+    const r2 = makeR2();
+    const vectorize = makeVectorize();
+    const rowB: BacklitRow = {
+      ...baseRow,
+      id: "rd_def",
+      url: "https://example.com/b",
+      url_hash: "c".repeat(64),
+      created_at: "2026-04-25T20:00:01.000Z",
+    };
+    await runMigration([baseRow, rowB], { r2, vectorize, contentDir: tmpDir });
+
+    const calls = (r2 as unknown as { calls: Array<{ key: string; size: number }> }).calls;
+    const indexCalls = calls.filter((c) => c.key === "index/list.json");
+    expect(indexCalls).toHaveLength(1);
+
+    const putMock = (r2 as unknown as { put: { mock: { calls: Array<[string, string | Uint8Array]> } } }).put.mock;
+    const indexCall = putMock.calls.find((c) => c[0] === "index/list.json");
+    expect(indexCall).toBeDefined();
+    const body = indexCall![1] as string;
+    const parsed = JSON.parse(body) as {
+      version: number;
+      items: Array<{ id: string; url: string; status: string }>;
+    };
+    expect(parsed.version).toBe(1);
+    expect(parsed.items.map((i) => i.id).sort()).toEqual(["rd_abc", "rd_def"]);
+    expect(parsed.items.every((i) => i.status === "ready")).toBe(true);
+  });
+
+  it("does not include errored rows in index/list.json", async () => {
+    const r2 = makeR2();
+    const vectorize = makeVectorize();
+    const bad = { ...baseRow, id: "rd_bad", url_hash: "not-hex" };
+    await runMigration([baseRow, bad], { r2, vectorize, contentDir: tmpDir });
+
+    const putMock = (r2 as unknown as { put: { mock: { calls: Array<[string, string | Uint8Array]> } } }).put.mock;
+    const indexCall = putMock.calls.find((c) => c[0] === "index/list.json");
+    expect(indexCall).toBeDefined();
+    const parsed = JSON.parse(indexCall![1] as string) as { items: Array<{ id: string }> };
+    expect(parsed.items.map((i) => i.id)).toEqual(["rd_abc"]);
+  });
 });

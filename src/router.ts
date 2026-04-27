@@ -12,6 +12,7 @@ import {
 } from "./schemas/api";
 import type { Manifest } from "./schemas/manifest";
 import {
+  manifestToIndexItem,
   PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
@@ -65,6 +66,9 @@ export function createApp(opts: AppOptions = {}) {
     };
     await reader.writeManifest(args.keyPrefix, pendingManifest);
     await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(pendingManifest, args.keyPrefix),
+    );
 
     c.executionCtx.waitUntil(processReading(args, c.env, services));
 
@@ -79,13 +83,16 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
     }
+    const { q, tag, offset, limit } = parsed.data;
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const out = await reader.listManifests({
-      cursor: parsed.data.cursor,
-      limit: parsed.data.limit,
+    const out = await reader.listManifests({ q, tag, offset, limit });
+    const annotated = out.readings.map((item) => annotateStaleIndexItem(item, c.env, services));
+    return c.json({
+      readings: annotated,
+      limit,
+      offset,
+      has_more: offset + annotated.length < out.total_filtered,
     });
-    const annotated = out.items.map((m) => annotateStale(m, c.env, services));
-    return c.json({ items: annotated, next_cursor: out.next_cursor });
   });
 
   app.get("/readings/lookup", async (c) => {
@@ -177,6 +184,26 @@ function annotateStale(manifest: Manifest, env: Env, services: Services): Manife
     return { ...manifest, status: "failed", error: { code: "stale_pending", message: `pending > ${ttl}s` } };
   }
   return manifest;
+}
+
+function annotateStaleIndexItem(
+  item: import("./schemas/api").ListIndexItem,
+  env: Env,
+  services: Services,
+): import("./schemas/api").ListIndexItem {
+  if (item.status !== "pending") return item;
+  const ttl = (() => {
+    const n = Number(env.PENDING_TTL_SECONDS);
+    return Number.isFinite(n) ? n : 300;
+  })();
+  // The index item carries created_at; pending entries are written at submit
+  // time, so created_at is a good proxy for "how long has this been pending".
+  const updatedAt = Date.parse(item.created_at);
+  const now = Date.parse(services.now());
+  if (Number.isFinite(updatedAt) && now - updatedAt > ttl * 1000) {
+    return { ...item, status: "failed", error: { code: "stale_pending", message: `pending > ${ttl}s` } };
+  }
+  return item;
 }
 
 // Suppress unused export warning for PointerExistsError import side-effect (kept

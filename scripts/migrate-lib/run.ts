@@ -6,6 +6,8 @@ import {
   type BacklitRow,
 } from "./plan";
 import type { R2Client, VectorizeClient } from "./clients";
+import { manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import type { ListIndexItem } from "../../src/schemas/api";
 
 export interface MigrationDeps {
   r2: R2Client;
@@ -20,10 +22,23 @@ export interface MigrationReportRow {
   error?: string;
 }
 
+export interface MigrateOneResult {
+  report: MigrationReportRow;
+  indexItem?: ListIndexItem;
+}
+
 export async function migrateOne(
   row: BacklitRow,
   deps: MigrationDeps,
 ): Promise<MigrationReportRow> {
+  const r = await migrateOneWithIndexItem(row, deps);
+  return r.report;
+}
+
+async function migrateOneWithIndexItem(
+  row: BacklitRow,
+  deps: MigrationDeps,
+): Promise<MigrateOneResult> {
   const planned = planReading(row);
   try {
     // 1. Manifest
@@ -69,12 +84,17 @@ export async function migrateOne(
       },
     ]);
 
-    return { id: row.id, status: "ok" };
+    return {
+      report: { id: row.id, status: "ok" },
+      indexItem: manifestToIndexItem(planned.manifest, planned.keyPrefix),
+    };
   } catch (e) {
     return {
-      id: row.id,
-      status: "error",
-      error: e instanceof Error ? e.message : String(e),
+      report: {
+        id: row.id,
+        status: "error",
+        error: e instanceof Error ? e.message : String(e),
+      },
     };
   }
 }
@@ -86,6 +106,7 @@ export async function runMigration(
   const log = deps.log ?? ((line: string) => process.stdout.write(line + "\n"));
   log("id,status,error");
   const report: MigrationReportRow[] = [];
+  const indexItems: ListIndexItem[] = [];
   for (const raw of rows) {
     const parsed = BacklitRowSchema.safeParse(raw);
     if (!parsed.success) {
@@ -99,10 +120,18 @@ export async function runMigration(
       log(csvRow(r));
       continue;
     }
-    const r = await migrateOne(parsed.data, deps);
-    report.push(r);
-    log(csvRow(r));
+    const result = await migrateOneWithIndexItem(parsed.data, deps);
+    report.push(result.report);
+    log(csvRow(result.report));
+    if (result.indexItem) indexItems.push(result.indexItem);
   }
+
+  await deps.r2.put(
+    "index/list.json",
+    JSON.stringify({ version: 1, items: indexItems }),
+    { contentType: "application/json" },
+  );
+
   return report;
 }
 
