@@ -1,17 +1,25 @@
 # reading-lite — Cloudflare Worker
 #
+# Two environments:
+#   * default (staging) — used by `wrangler dev` and `wrangler deploy` (no --env)
+#   * production        — used by `wrangler deploy --env production`
+#
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
-#   2. `npx wrangler r2 bucket create reading-lite-dev` (one-time, against staging).
-#   3. `npx wrangler vectorize create reading-lite-dev --dimensions=1536 --metric=cosine` (one-time).
+#   2. `npx wrangler r2 bucket create reading-lite-staging` (one-time).
+#   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine` (one-time).
 #   4. `npm run dev`.
 
-name = "reading-lite"
+# Top-level (= staging) deploys to a worker named `reading-lite-staging`,
+# so an accidental `wrangler deploy` without `--env production` cannot clobber
+# the production worker. `wrangler dev` ignores `name`.
+name = "reading-lite-staging"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
 
-# Production secrets (set via `wrangler secret put`):
+# Production secrets (set via `wrangler secret put` per-env, e.g.
+# `wrangler secret put READER_API_TOKEN --env production`):
 #   READER_API_TOKEN     — bearer token required on every protected route
 #   ANTHROPIC_API_KEY    — Anthropic API key
 #   OPENAI_API_KEY       — OpenAI API key (text-embedding-3-small)
@@ -31,10 +39,35 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 # R2 bucket holding readings/{id}/manifest.json + raw + extracted, and index/by-url/{hash}.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
-bucket_name = "reading-lite"
-preview_bucket_name = "reading-lite-dev"
+bucket_name = "reading-lite-staging"
 
 # Vectorize index (1536 dim, cosine) for similarity search.
+# Vectorize has no local emulator. In wrangler 3.x, `wrangler dev` is launched
+# with `--experimental-vectorize-bind-to-prod` (see package.json `dev` script)
+# so this binding talks to the real staging index. Wrangler 4.x replaces that
+# CLI flag with `remote = true` on the binding itself.
 [[vectorize]]
+binding = "READINGS_INDEX"
+index_name = "reading-lite-staging"
+
+# ---- production ----
+# Deploy with: `wrangler deploy --env production`.
+# Environments do NOT inherit top-level [vars] / bindings — repeat them here.
+
+[env.production]
+name = "reading-lite"
+
+[env.production.vars]
+CORS_ALLOWED_ORIGINS = ""
+PENDING_TTL_SECONDS = "300"
+FETCH_TIMEOUT_MS = "20000"
+FETCH_MAX_BYTES = "10485760"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[[env.production.r2_buckets]]
+binding = "READINGS_BUCKET"
+bucket_name = "reading-lite"
+
+[[env.production.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite"

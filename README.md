@@ -52,11 +52,11 @@ You'll need staging R2 + Vectorize resources before `wrangler dev` works:
 
 ```sh
 npx wrangler login
-npx wrangler r2 bucket create reading-lite-dev
-npx wrangler vectorize create reading-lite-dev --dimensions=1536 --metric=cosine
+npx wrangler r2 bucket create reading-lite-staging
+npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
 ```
 
-Then update `wrangler.toml` so `preview_bucket_name` and the Vectorize `index_name` reference your staging resources.
+The default `wrangler.toml` config (no `--env` flag) targets `reading-lite-staging` for both R2 and Vectorize. Vectorize has no local emulator, so the binding is marked `remote = true` and goes against the real staging index even under `wrangler dev`. Production resources live under `[env.production]` and are reached via `wrangler deploy --env production`.
 
 ### Required secrets (production)
 
@@ -106,10 +106,10 @@ npm run migrate -- \
   --r2-account-id $CF_ACCOUNT_ID \
   --r2-access-key $R2_ACCESS_KEY_ID \
   --r2-secret-key $R2_SECRET_ACCESS_KEY \
-  --r2-bucket reading-lite-dev \
+  --r2-bucket reading-lite-staging \
   --cf-api-token $CF_API_TOKEN \
   --vectorize-account-id $CF_ACCOUNT_ID \
-  --vectorize-index reading-lite-dev
+  --vectorize-index reading-lite-staging
 ```
 
 Add `--dry-run` to print the planned R2 + Vectorize operations without hitting any remote API. Every flag also accepts an env var (`MIGRATE_<UPPER_SNAKE_CASE>`).
