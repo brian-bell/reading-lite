@@ -13,7 +13,6 @@ import {
 import type { Manifest } from "./schemas/manifest";
 import {
   manifestToIndexItem,
-  PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -28,6 +27,11 @@ export function createApp(opts: AppOptions = {}) {
   const app = new Hono<{ Bindings: Env }>();
 
   app.use("*", corsMiddleware());
+
+  app.onError((err, c) => {
+    console.error(err);
+    return c.json({ error: "internal" }, 500);
+  });
 
   app.get("/health", (c) => c.text("ok", 200));
 
@@ -206,6 +210,3 @@ function annotateStaleIndexItem(
   return item;
 }
 
-// Suppress unused export warning for PointerExistsError import side-effect (kept
-// in case future routes need to surface conflict explicitly).
-void PointerExistsError;

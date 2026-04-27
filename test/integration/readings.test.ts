@@ -590,6 +590,41 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   });
 });
 
+describe("error handling", () => {
+  it("returns a generic 500 (no internals leaked) when a route handler throws", async () => {
+    const faultyBucket = {
+      get: vi.fn(async () => {
+        throw new Error("simulated R2 outage with internal stack info");
+      }),
+      put: vi.fn(),
+      head: vi.fn(),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+    const customEnv = { ...env, READINGS_BUCKET: faultyBucket } as unknown as typeof env;
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    // Route reaches into the bucket to look up the id pointer; the throw
+    // should be caught by the router's onError and surfaced as a generic 500.
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await app.request(
+      "/readings/rd_DOES_NOT_EXIST",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: "internal" });
+    // The underlying error message must NOT appear in the response body.
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("simulated R2 outage");
+    expect(text).not.toContain("stack");
+    // But it should be logged for the operator to see.
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+});
+
 describe("CORS", () => {
   it("allows preflight from an allowed origin", async () => {
     const allowedEnv = { ...env, CORS_ALLOWED_ORIGINS: "https://allowed.example" } as unknown as typeof env;
