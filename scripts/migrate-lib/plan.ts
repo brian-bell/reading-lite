@@ -5,7 +5,10 @@ import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
 // Schema for a single row from Backlite's `readings` SQLite table. JSON-encoded
 // columns are decoded before the row is passed to mapRowToManifest.
 export const BacklitRowSchema = z.object({
-  id: z.string().min(1),
+  // Restrict id to a safe character class — it's used to build R2 keys and
+  // disk paths in migrateOne, so anything path-shaped (`..`, `/`, spaces) is
+  // a foot-gun even when the source DB is trusted.
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/),
   url: z.string().url(),
   url_hash: z.string().regex(/^[0-9a-f]{64}$/),
   title: z.string().nullable().optional(),
