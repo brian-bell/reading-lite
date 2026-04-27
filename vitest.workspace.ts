@@ -18,6 +18,14 @@ export default [
           wrangler: { configPath: "./wrangler.test.toml" },
           miniflare: {
             compatibilityFlags: ["nodejs_compat"],
+            // Pin the secret-shaped bindings to known test values so that any
+            // .dev.vars present on the developer's machine cannot leak real
+            // credentials into the test process or override the test token.
+            bindings: {
+              READER_API_TOKEN: "test-token",
+              ANTHROPIC_API_KEY: "test-anthropic-key",
+              OPENAI_API_KEY: "test-openai-key",
+            },
           },
         },
       },
