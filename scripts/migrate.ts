@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
 import { AwsClient } from "aws4fetch";
 import { loadDotVars } from "./lib/dotvars";
+import { normalizeBacklitRow } from "./migrate-lib/normalize";
 import { runMigration } from "./migrate-lib/run";
 import type {
   R2Client,
@@ -187,31 +188,30 @@ function encodePath(key: string): string {
 interface RawRow {
   id: string;
   url: string;
-  url_hash: string;
-  title: string | null;
-  tldr: string | null;
-  tags: string | null;
-  keywords: string | null;
-  people: string | null;
-  orgs: string | null;
-  novelty_verdict: string | null;
-  connections: string | null;
-  summary_markdown: string | null;
+  title: string;
+  tldr: string;
+  tags: string;
+  keywords: string;
+  people: string;
+  orgs: string;
+  novelty_verdict: string;
+  connections: string;
+  summary: string;
   embedding: string;
   content_type: string;
   content_status: string;
   content_bytes: number;
-  extracted_bytes: number | null;
+  extracted_bytes: number;
   content_sha256: string;
   fetched_at: string | null;
   created_at: string;
-  updated_at: string;
 }
 
 function* readRows(db: Database.Database): Generator<unknown> {
   const stmt = db.prepare("SELECT * FROM readings ORDER BY created_at ASC");
+  let skipped = 0;
   for (const raw of stmt.iterate() as Iterable<RawRow>) {
-    yield {
+    const decoded: Record<string, unknown> = {
       ...raw,
       tags: parseJsonArray(raw.tags),
       keywords: parseJsonArray(raw.keywords),
@@ -220,7 +220,17 @@ function* readRows(db: Database.Database): Generator<unknown> {
       connections: parseJsonObject(raw.connections),
       embedding: JSON.parse(raw.embedding),
     };
+    const normalized = normalizeBacklitRow(decoded);
+    if (!normalized) {
+      skipped += 1;
+      process.stderr.write(
+        `[skip] ${raw.id} content_status=${JSON.stringify(raw.content_status)} (no captured content)\n`,
+      );
+      continue;
+    }
+    yield normalized;
   }
+  if (skipped > 0) process.stderr.write(`[skip] ${skipped} row(s) skipped.\n`);
 }
 
 function parseJsonArray(raw: string | null): string[] | null {
