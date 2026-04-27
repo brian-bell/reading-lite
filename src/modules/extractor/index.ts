@@ -220,24 +220,57 @@ function isBlockedHostname(host: string): boolean {
   if (host === "localhost" || host === "localhost.") return true;
   if (host.endsWith(".local") || host.endsWith(".local.")) return true;
 
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    return false;
-  }
+  if (isBlockedV4(host)) return true;
 
   if (host.includes(":")) {
     if (host === "::" || host === "::1") return true;
+    // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) decode to
+    // the embedded IPv4; re-run the v4 rules against that address.
+    const embedded = embeddedIPv4(host);
+    if (embedded && isBlockedV4(embedded)) return true;
     const head = host.split(":")[0] ?? "";
     if (head.startsWith("fc") || head.startsWith("fd")) return true;
     if (/^fe[89ab][0-9a-f]{0,2}$/.test(head)) return true;
   }
   return false;
+}
+
+function isBlockedV4(host: string): boolean {
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return false;
+  const a = Number(v4[1]);
+  const b = Number(v4[2]);
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function embeddedIPv4(host: string): string | null {
+  // host is bracket-stripped, lowercased. WHATWG URL canonicalizes
+  // "[::ffff:127.0.0.1]" to "[::ffff:7f00:1]" so we need to expand "::" and
+  // decode the trailing 32 bits.
+  let segments: string[];
+  if (host.includes("::")) {
+    const [left, right] = host.split("::", 2) as [string, string];
+    const leftParts = left === "" ? [] : left.split(":");
+    const rightParts = right === "" ? [] : right.split(":");
+    const fill = 8 - leftParts.length - rightParts.length;
+    if (fill < 0) return null;
+    segments = [...leftParts, ...Array<string>(fill).fill("0"), ...rightParts];
+  } else {
+    segments = host.split(":");
+  }
+  if (segments.length !== 8) return null;
+  for (let i = 0; i < 5; i++) {
+    if (segments[i] !== "0") return null;
+  }
+  if (segments[5] !== "0" && segments[5] !== "ffff") return null;
+  const hi = parseInt(segments[6]!, 16);
+  const lo = parseInt(segments[7]!, 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

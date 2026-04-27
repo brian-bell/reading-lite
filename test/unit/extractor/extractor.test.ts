@@ -235,6 +235,19 @@ describe("extractFromUrl", () => {
       "http://[fc00::1]/",
       "http://[fd12:3456::1]/",
       "http://[fe80::1]/",
+      // IPv4-mapped IPv6 (::ffff:a.b.c.d) decodes to the embedded IPv4; treat
+      // the embedded address with the same private/loopback/link-local rules.
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:10.0.0.1]/",
+      "http://[::ffff:172.16.0.1]/",
+      "http://[::ffff:192.168.1.1]/",
+      "http://[::ffff:169.254.169.254]/",
+      "http://[::ffff:0.0.0.0]/",
+      // IPv4-compatible IPv6 (::a.b.c.d) — same treatment.
+      "http://[::127.0.0.1]/",
+      "http://[::10.0.0.1]/",
+      // Long-form loopback (uncompressed ::1).
+      "http://[0:0:0:0:0:0:0:1]/",
     ];
 
     for (const url of blocked) {
