@@ -1,0 +1,125 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  SimilarityStore,
+  WrongEmbeddingDimensionError,
+} from "../../../src/modules/stores/similarity-store";
+
+function makeBinding(opts: {
+  upsertResult?: VectorizeAsyncMutation;
+  queryResult?: VectorizeMatches;
+} = {}) {
+  return {
+    upsert: vi.fn(async (_v: VectorizeVector[]): Promise<VectorizeAsyncMutation> =>
+      opts.upsertResult ?? ({ mutationId: "m_1" } as VectorizeAsyncMutation),
+    ),
+    query: vi.fn(async (_v: number[], _o: VectorizeQueryOptions): Promise<VectorizeMatches> =>
+      opts.queryResult ?? { count: 0, matches: [] },
+    ),
+  } as unknown as VectorizeIndex & {
+    upsert: ReturnType<typeof vi.fn>;
+    query: ReturnType<typeof vi.fn>;
+  };
+}
+
+const fullEmbedding = (fill = 0.1) => new Array(1536).fill(fill);
+
+describe("SimilarityStore.upsert", () => {
+  it("upserts an id + embedding + metadata to Vectorize", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    await store.upsert("rd_X", fullEmbedding(), {
+      url: "https://example.com/a",
+      title: "X",
+      tags: ["t1"],
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+    expect(binding.upsert).toHaveBeenCalledOnce();
+    const arg = binding.upsert.mock.calls[0]![0] as VectorizeVector[];
+    expect(arg).toHaveLength(1);
+    expect(arg[0]!.id).toBe("rd_X");
+    expect(arg[0]!.values).toEqual(fullEmbedding());
+    expect(arg[0]!.metadata).toEqual({
+      url: "https://example.com/a",
+      title: "X",
+      tags: ["t1"],
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+  });
+
+  it("rejects an embedding with wrong dimension", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    await expect(
+      store.upsert("rd_X", new Array(768).fill(0), { url: "https://example.com/a" }),
+    ).rejects.toBeInstanceOf(WrongEmbeddingDimensionError);
+    expect(binding.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("SimilarityStore.query", () => {
+  it("calls Vectorize with topK and returnMetadata, returns mapped items", async () => {
+    const binding = makeBinding({
+      queryResult: {
+        count: 2,
+        matches: [
+          {
+            id: "rd_a",
+            score: 0.95,
+            metadata: { url: "https://example.com/a", title: "A", tags: ["t"], created_at: "2026-04-25T00:00:00.000Z" },
+          },
+          {
+            id: "rd_b",
+            score: 0.81,
+            metadata: { url: "https://example.com/b" },
+          },
+        ],
+      },
+    });
+    const store = new SimilarityStore(binding);
+    const out = await store.query(fullEmbedding(0.2), 5);
+    expect(binding.query).toHaveBeenCalledOnce();
+    const queryArgs = binding.query.mock.calls[0]!;
+    expect(queryArgs[0]).toEqual(fullEmbedding(0.2));
+    expect(queryArgs[1]).toMatchObject({ topK: 5, returnMetadata: true });
+    expect(out).toEqual([
+      {
+        id: "rd_a",
+        score: 0.95,
+        url: "https://example.com/a",
+        title: "A",
+        tags: ["t"],
+        created_at: "2026-04-25T00:00:00.000Z",
+      },
+      {
+        id: "rd_b",
+        score: 0.81,
+        url: "https://example.com/b",
+      },
+    ]);
+  });
+
+  it("returns an empty array when there are no matches", async () => {
+    const binding = makeBinding({ queryResult: { count: 0, matches: [] } });
+    const store = new SimilarityStore(binding);
+    const out = await store.query(fullEmbedding(), 10);
+    expect(out).toEqual([]);
+  });
+
+  it("rejects a query embedding with wrong dimension", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    await expect(store.query(new Array(768).fill(0), 5)).rejects.toBeInstanceOf(
+      WrongEmbeddingDimensionError,
+    );
+    expect(binding.query).not.toHaveBeenCalled();
+  });
+
+  it("clamps topK to the 1..50 range", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    await store.query(fullEmbedding(), 0);
+    expect(binding.query.mock.calls[0]![1]).toMatchObject({ topK: 1 });
+    await store.query(fullEmbedding(), 999);
+    expect(binding.query.mock.calls[1]![1]).toMatchObject({ topK: 50 });
+  });
+});
