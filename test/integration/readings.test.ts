@@ -234,10 +234,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
-  it("failure path: source returns 404 → manifest ends failed, no by-url pointer", async () => {
+  it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const app = createApp({ services: makeServices(fetchFn) });
     const ctx = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
       new Request("http://t/readings", {
@@ -268,6 +269,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(lookup.status).toBe(404);
+
+    // The background failure should be logged for the operator (wrangler tail),
+    // not silently swallowed.
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 
   it("rejects an invalid url body", async () => {
@@ -343,6 +349,352 @@ describe("POST /readings/similar", () => {
     const json = (await res.json()) as { items: Array<{ id: string; url: string }> };
     expect(json.items).toHaveLength(1);
     expect(json.items[0]!.id).toBe("rd_seed");
+  });
+});
+
+describe("GET /readings — list with q, tag, offset, limit", () => {
+  async function postOne(
+    app: ReturnType<typeof createApp>,
+    url: string,
+  ): Promise<string> {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(202);
+    const json = (await res.json()) as { id: string };
+    await waitOnExecutionContext(ctx);
+    return json.id;
+  }
+
+  it("returns the new response shape {readings, limit, offset, has_more}", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ readings: [], limit: 20, offset: 0, has_more: false });
+  });
+
+  it("POST /readings writes a pending index entry; processReading replaces it with ready", async () => {
+    const fetchFn = makeStubFetch();
+    const app = createApp({ services: makeServices(fetchFn) });
+    const id = await postOne(app, "https://example.com/article-1");
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { readings: Array<{ id: string; status: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.id).toBe(id);
+    expect(body.readings[0]!.status).toBe("ready");
+  });
+
+  it("failure path: index entry ends up failed", async () => {
+    const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
+    const app = createApp({ services: makeServices(fetchFn) });
+    await postOne(app, "https://example.com/missing");
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("failed");
+    expect(body.readings[0]!.error?.code).toBe("BadStatusError");
+  });
+
+  it("?q= filters across title, tldr, url (case-insensitive substring)", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Rust async story",
+          tldr: "How async works in Rust",
+          tags: ["rust", "async"],
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        },
+      }),
+      idCounter,
+    );
+    const app = createApp({ services });
+    await postOne(app, "https://example.com/rust");
+
+    // Submit a second reading with different content via a fresh stub.
+    const services2 = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Go concurrency",
+          tldr: "Goroutines",
+          tags: ["go"],
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        },
+      }),
+      idCounter,
+    );
+    const app2 = createApp({ services: services2 });
+    await postOne(app2, "https://example.com/go");
+
+    const res = await app.request(
+      "/readings?q=rust",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.url).toBe("https://example.com/rust");
+  });
+
+  it("?tag= filters by exact tag match (case-insensitive)", async () => {
+    const idCounter = { n: 0 };
+    const mkServices = (toolInput: Record<string, unknown>) =>
+      makeServices(makeStubFetch({ toolInput }), idCounter);
+
+    const app1 = createApp({
+      services: mkServices({
+        title: "AI piece",
+        tldr: "About AI",
+        tags: ["AI", "infra"],
+        keywords: [],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "summary body",
+      }),
+    });
+    await postOne(app1, "https://example.com/ai");
+
+    const app2 = createApp({
+      services: mkServices({
+        title: "ML piece",
+        tldr: "About ML",
+        tags: ["ml"],
+        keywords: [],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "summary body",
+      }),
+    });
+    await postOne(app2, "https://example.com/ml");
+
+    const res = await app1.request(
+      "/readings?tag=ai",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.url).toBe("https://example.com/ai");
+  });
+
+  it("?q= and ?tag= AND together", async () => {
+    const idCounter = { n: 0 };
+    const mkServices = (toolInput: Record<string, unknown>) =>
+      makeServices(makeStubFetch({ toolInput }), idCounter);
+
+    const apps = [
+      { url: "https://example.com/rust-ai", title: "Rust AI", tags: ["rust", "ai"] },
+      { url: "https://example.com/rust-web", title: "Rust web", tags: ["rust"] },
+      { url: "https://example.com/go-ai", title: "Go AI", tags: ["ai"] },
+    ];
+    for (const a of apps) {
+      const app = createApp({
+        services: mkServices({
+          title: a.title,
+          tldr: "x",
+          tags: a.tags,
+          keywords: [],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        }),
+      });
+      await postOne(app, a.url);
+    }
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings?q=rust&tag=ai",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await res.json()) as { readings: Array<{ url: string }> };
+    expect(body.readings.map((r) => r.url)).toEqual(["https://example.com/rust-ai"]);
+  });
+
+  it("offset+limit slices results and toggles has_more correctly", async () => {
+    const idCounter = { n: 0 };
+    for (let i = 0; i < 3; i++) {
+      const app = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+      await postOne(app, `https://example.com/p${i}`);
+    }
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const page1 = await app.request(
+      "/readings?offset=0&limit=2",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body1 = (await page1.json()) as {
+      readings: unknown[];
+      offset: number;
+      limit: number;
+      has_more: boolean;
+    };
+    expect(body1.readings).toHaveLength(2);
+    expect(body1.offset).toBe(0);
+    expect(body1.limit).toBe(2);
+    expect(body1.has_more).toBe(true);
+
+    const page2 = await app.request(
+      "/readings?offset=2&limit=2",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body2 = (await page2.json()) as { readings: unknown[]; has_more: boolean };
+    expect(body2.readings).toHaveLength(1);
+    expect(body2.has_more).toBe(false);
+  });
+
+  it("rejects negative offset with 400", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings?offset=-1",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("staleness uses updated_at, not created_at", async () => {
+    // Seed an index entry whose created_at is ancient but updated_at is fresh.
+    // The staleness annotator must trust updated_at and leave it as pending
+    // (matches the manifest-level annotateStale semantics).
+    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
+      env.READINGS_BUCKET,
+    );
+    await reader.writeListIndex({
+      version: 1,
+      items: [
+        {
+          id: "rd_fresh",
+          key_prefix: "readings/2020/01/01T000000Z-rd_fresh",
+          url: "https://example.com/fresh",
+          status: "pending",
+          created_at: "2020-01-01T00:00:00.000Z",
+          updated_at: "2026-04-26T20:00:00.000Z",
+        },
+      ],
+    });
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    const body = (await res.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("pending");
+  });
+
+  it("staleness flips a long-stale pending to failed via updated_at", async () => {
+    // updated_at older than TTL → annotator must mark it failed in the
+    // response (the underlying manifest stays pending; this is presentation
+    // only, same contract as the manifest-level annotateStale).
+    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
+      env.READINGS_BUCKET,
+    );
+    await reader.writeListIndex({
+      version: 1,
+      items: [
+        {
+          id: "rd_stale",
+          key_prefix: "readings/2020/01/01T000000Z-rd_stale",
+          url: "https://example.com/stale",
+          status: "pending",
+          created_at: "2026-04-26T20:00:00.000Z",
+          updated_at: "2020-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    const body = (await res.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("failed");
+    expect(body.readings[0]!.error?.code).toBe("stale_pending");
+  });
+});
+
+describe("error handling", () => {
+  it("returns a generic 500 (no internals leaked) when a route handler throws", async () => {
+    const faultyBucket = {
+      get: vi.fn(async () => {
+        throw new Error("simulated R2 outage with internal stack info");
+      }),
+      put: vi.fn(),
+      head: vi.fn(),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+    const customEnv = { ...env, READINGS_BUCKET: faultyBucket } as unknown as typeof env;
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    // Route reaches into the bucket to look up the id pointer; the throw
+    // should be caught by the router's onError and surfaced as a generic 500.
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await app.request(
+      "/readings/rd_DOES_NOT_EXIST",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: "internal" });
+    // The underlying error message must NOT appear in the response body.
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("simulated R2 outage");
+    expect(text).not.toContain("stack");
+    // But it should be logged for the operator to see.
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 });
 

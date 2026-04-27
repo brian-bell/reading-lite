@@ -12,6 +12,7 @@ export default [
         "test/unit/embeddings/**/*.test.ts",
         "test/unit/anthropic/**/*.test.ts",
         "test/unit/stores/**/*.test.ts",
+        "test/unit/process-reading/**/*.test.ts",
       ],
       poolOptions: {
         workers: {

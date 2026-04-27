@@ -1,14 +1,18 @@
 import { z } from "zod";
-import { ManifestSchema } from "./manifest";
+import {
+  ManifestErrorSchema,
+  ManifestStatusSchema,
+  NoveltyVerdictSchema,
+} from "./manifest";
 
-const httpsUrl = () =>
+const webUrl = () =>
   z
     .string()
     .url()
     .refine((u) => /^https?:/i.test(u), { message: "url must be http(s)" });
 
 export const PostReadingsBodySchema = z.object({
-  url: httpsUrl(),
+  url: webUrl(),
 });
 export type PostReadingsBody = z.infer<typeof PostReadingsBodySchema>;
 
@@ -20,26 +24,52 @@ export const PostReadingsSimilarBodySchema = z.object({
 });
 export type PostReadingsSimilarBody = z.infer<typeof PostReadingsSimilarBodySchema>;
 
-export const ListReadingsQuerySchema = z.object({
-  cursor: z.string().min(1).optional(),
-  limit: z
+const intParam = (label: string) =>
+  z
     .union([z.string(), z.number()])
     .transform((v, ctx) => {
       const n = typeof v === "number" ? v : Number(v);
       if (!Number.isFinite(n) || !Number.isInteger(n)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "limit must be an integer" });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${label} must be an integer` });
         return z.NEVER;
       }
       return n;
-    })
-    .pipe(z.number().int().min(1).max(100))
-    .default(20),
+    });
+
+export const ListReadingsQuerySchema = z.object({
+  q: z.string().optional(),
+  tag: z.string().optional(),
+  offset: intParam("offset").pipe(z.number().int().min(0)).default(0),
+  limit: intParam("limit").pipe(z.number().int().min(1).max(100)).default(20),
 });
 export type ListReadingsQuery = z.infer<typeof ListReadingsQuerySchema>;
 
+export const ListIndexItemSchema = z.object({
+  id: z.string().min(1),
+  key_prefix: z.string().min(1),
+  url: z.string().url(),
+  title: z.string().min(1).optional(),
+  tldr: z.string().min(1).optional(),
+  tags: z.array(z.string()).optional(),
+  status: ManifestStatusSchema,
+  novelty_verdict: NoveltyVerdictSchema.optional(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().optional(),
+  error: ManifestErrorSchema.optional(),
+});
+export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
+
+export const ListIndexSchema = z.object({
+  version: z.literal(1),
+  items: z.array(ListIndexItemSchema),
+});
+export type ListIndex = z.infer<typeof ListIndexSchema>;
+
 export const ListReadingsResponseSchema = z.object({
-  items: z.array(ManifestSchema),
-  next_cursor: z.string().optional(),
+  readings: z.array(ListIndexItemSchema),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  has_more: z.boolean(),
 });
 export type ListReadingsResponse = z.infer<typeof ListReadingsResponseSchema>;
 

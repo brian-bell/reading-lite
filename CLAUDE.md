@@ -1,8 +1,8 @@
 # CLAUDE.md — `reading-lite`
 
-Personal reading service on Cloudflare Workers. POST a URL → Claude summarizes it once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the TL;DR embedding → poll `GET /readings/:id` until ready.
+Personal reading service on Cloudflare Workers + a small React SPA at `web/`. POST a URL → Claude summarizes it once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the TL;DR embedding → poll `GET /readings/:id` until ready. The SPA consumes the same routes for list/search/submit/detail.
 
-For the user-facing pitch, see `README.md`. For the original design intent, see `plans/000-re-design.md` and the PRD at `plans/001-prd-reading-lite.md` (filed as issue #1).
+For the user-facing pitch, see `README.md`. Original design intent: `plans/000-re-design.md` and PRD at `plans/001-prd-reading-lite.md` (issue #1). SPA + list-filter follow-up: PRD on issue #3.
 
 ## Architecture in one paragraph
 
@@ -37,6 +37,9 @@ test/
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/               # node pool (fs/os/path)
   env.d.ts                    # augments cloudflare:test ProvidedEnv with Env
+web/                          # React SPA (separate npm project; cd web && npm install)
+  src/{App.tsx, App.test.tsx, api.ts, types.ts, main.tsx, styles.css, test/setup.ts}
+  index.html, package.json, tsconfig.json, vite.config.ts
 plans/
   000-re-design.md            # original design memo
   001-prd-reading-lite.md     # PRD (filed as #1)
@@ -53,7 +56,7 @@ vitest.workspace.ts           # two projects: "workers" + "node"
 
 **`anthropic.summarizeReading(input, deps)`** — one-shot call to `messages.create` with one tool (`emit_reading`) and `tool_choice` forcing it. The tool definition + system prompt are the cacheable prefix; `cache_control: {type: "ephemeral"}` sits on the last system block (caches tools+system together since render order is `tools → system → messages`). Volatile content (extracted markdown + similar-readings context + URL) is in the user message, after the cache breakpoint. Returns `{ reading, usage }`. Errors: `AnthropicError`, `NoToolUseError`, `BadToolInputError`.
 
-**`stores.ReadingStore`** — wraps an `R2Bucket` binding. Keys live under `readings/YYYY/MM/DDTHHMMSSZ-{id}/` so ascending lex order matches chronological order; newest-first listing is `list + reverse + offset cursor`. Methods: `writeManifest` / `readManifest` (zod-validated on read), `writeRaw` / `readRaw`, `writeExtracted` / `readExtracted`, `writeByUrlPointer` (with `ifNotExists` → `PointerExistsError`) / `readByUrlPointer`, `writeByIdPointer` / `readByIdPointer`, `listManifests({cursor, limit})`. `buildKeyPrefix(id, createdAtIso)` is the key generator.
+**`stores.ReadingStore`** — wraps an `R2Bucket` binding. Keys live under `readings/YYYY/MM/DDTHHMMSSZ-{id}/` so ascending lex order matches chronological order. Methods: `writeManifest` / `readManifest` (zod-validated on read), `writeRaw` / `readRaw`, `writeExtracted` / `readExtracted`, `writeByUrlPointer` (with `ifNotExists` → `PointerExistsError`) / `readByUrlPointer`, `writeByIdPointer` / `readByIdPointer`, `readListIndex` / `writeListIndex` / `appendOrReplaceListIndexItem`, `listManifests({q?, tag?, offset, limit})` (filters in-memory against `index/list.json`; falls back to scan-and-rebuild on cold cache). `buildKeyPrefix(id, createdAtIso)` is the key generator. `manifestToIndexItem(manifest, keyPrefix)` projects the index summary used by the list path.
 
 **`stores.SimilarityStore`** — wraps a `VectorizeIndex` binding. `upsert(id, embedding, metadata)` and `query(embedding, topK)`. Validates 1536-dim before calling the binding; clamps `topK` to `[1, 50]`.
 
@@ -66,7 +69,8 @@ vitest.workspace.ts           # two projects: "workers" + "node"
 - **Failures land on the manifest, not in the response.** `processReading` writes `status: "failed"` with a structured `error` block instead of throwing into the void. The by-url pointer is only written on success, so failed URLs stay re-submittable.
 - **No comments explaining what.** The code says what. Comments explain *why* — usually a hidden constraint (e.g. "turndown's internal DOMParser needs `document`, which doesn't exist in Workers; pass linkedom's parsed body directly").
 - **Prefer adding a test next to a fix.** TDD is the default — write the failing test first, then implement. Existing tests live alongside their module under `test/unit/<module>/` and integration tests under `test/integration/`.
-- **Don't drift from the manifest schema.** `Manifest` and `EmitReadingToolInput` are the cross-module contracts. If you change them, run all tests — the breakage tells you who depends on what.
+- **Don't drift from the manifest schema.** `Manifest` and `EmitReadingToolInput` are the cross-module contracts. If you change them, run all tests — the breakage tells you who depends on what. The SPA carries its own hand-typed mirror at `web/src/types.ts`; update it in lockstep with `src/schemas/manifest.ts`.
+- **Maintain `index/list.json` on every terminal write.** `POST /readings` writes a pending entry; `processReading` (success and `markFailed`) replaces it. The `appendOrReplaceListIndexItem(item)` helper is idempotent on `id`. Don't write the per-id manifest without also updating the index, or list/search results will go stale.
 
 ## Test strategy
 
@@ -91,17 +95,24 @@ Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. The integratio
 ## Common commands
 
 ```sh
-npm install              # one-time
+npm install              # one-time (root)
 npm run dev              # wrangler dev (needs .dev.vars + staging R2/Vectorize)
-npm test                 # vitest workspace, all 105 tests
+npm test                 # vitest workspace, all worker + migration tests
 npm test -- <pattern>    # run a subset, e.g. "test/unit/extractor"
 npm run typecheck        # tsc --noEmit
 npm run deploy           # wrangler deploy (don't run from CI without explicit ask)
 npm run migrate -- ...   # one-shot migration; --dry-run to preview ops
+
+# SPA (separate project)
+cd web && npm install    # one-time
+cd web && npm run dev    # vite on :5173, proxies /readings + /health to :8787
+cd web && npm test       # vitest with jsdom
+cd web && npm run build  # tsc -b && vite build → dist/
 ```
 
 ## What's not yet done
 
 - Manual smoke against a real Cloudflare account (R2 + Vectorize). Per the PRD's verification plan, this is the next step.
 - The migration script has not been run end-to-end against a real Backlite snapshot. The unit tests cover the row-mapping + per-row migration logic; the SigV4 path is exercised only in production-shaped configurations.
-- No SPA — the API contract is the only artifact this repo owns; CORS is configured so a future SPA can be added elsewhere.
+- SPA polling for `pending` manifests (manual refresh works for v1).
+- Concurrent-write etag retry loop on `index/list.json` — last-writer-wins for personal scale; mitigation deferred.

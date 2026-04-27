@@ -24,6 +24,13 @@ export class BadStatusError extends Error {
   }
 }
 
+export class BlockedHostError extends Error {
+  constructor(public readonly url: string, public readonly reason: string) {
+    super(`blocked host (${reason}): ${url}`);
+    this.name = "BlockedHostError";
+  }
+}
+
 export interface ExtractorDeps {
   fetch: typeof fetch;
   timeoutMs: number;
@@ -43,6 +50,7 @@ export interface ExtractedContent {
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
+  assertSafeUrl(url);
   const { raw, contentType } = await fetchBounded(url, deps);
   const content_sha256 = await sha256Hex(raw);
   const base = {
@@ -154,9 +162,11 @@ interface Article {
 }
 
 function readabilityFromHtml(html: string, url: string): Article | null {
-  // Inject a <base> into <head> so Readability resolves relative links against the
-  // source URL. If <head> is missing, fall back to parsing the html as-is.
-  const htmlWithBase = html.includes("<head")
+  // Inject a <base> into <head> so Readability resolves relative links against
+  // the source URL. Skip the injection when the page already has its own
+  // <base> (so we don't override the page's intent) or has no <head> at all.
+  const needsBase = !/<base[\s>]/i.test(html) && /<head[\s>]/i.test(html);
+  const htmlWithBase = needsBase
     ? html.replace(/<head([^>]*)>/i, `<head$1><base href="${escapeAttr(url)}">`)
     : html;
   const { document } = parseHTML(htmlWithBase);
@@ -185,6 +195,82 @@ function readabilityFromHtml(html: string, url: string): Article | null {
 
 function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function assertSafeUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new BlockedHostError(rawUrl, "invalid url");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new BlockedHostError(rawUrl, `non-http(s) scheme: ${parsed.protocol}`);
+  }
+  let host = parsed.hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  if (isBlockedHostname(host)) {
+    throw new BlockedHostError(rawUrl, `private/loopback/link-local: ${host}`);
+  }
+}
+
+function isBlockedHostname(host: string): boolean {
+  if (host === "localhost" || host === "localhost.") return true;
+  if (host.endsWith(".local") || host.endsWith(".local.")) return true;
+
+  if (isBlockedV4(host)) return true;
+
+  if (host.includes(":")) {
+    if (host === "::" || host === "::1") return true;
+    // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) decode to
+    // the embedded IPv4; re-run the v4 rules against that address.
+    const embedded = embeddedIPv4(host);
+    if (embedded && isBlockedV4(embedded)) return true;
+    const head = host.split(":")[0] ?? "";
+    if (head.startsWith("fc") || head.startsWith("fd")) return true;
+    if (/^fe[89ab][0-9a-f]{0,2}$/.test(head)) return true;
+  }
+  return false;
+}
+
+function isBlockedV4(host: string): boolean {
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return false;
+  const a = Number(v4[1]);
+  const b = Number(v4[2]);
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function embeddedIPv4(host: string): string | null {
+  // host is bracket-stripped, lowercased. WHATWG URL canonicalizes
+  // "[::ffff:127.0.0.1]" to "[::ffff:7f00:1]" so we need to expand "::" and
+  // decode the trailing 32 bits.
+  let segments: string[];
+  if (host.includes("::")) {
+    const [left, right] = host.split("::", 2) as [string, string];
+    const leftParts = left === "" ? [] : left.split(":");
+    const rightParts = right === "" ? [] : right.split(":");
+    const fill = 8 - leftParts.length - rightParts.length;
+    if (fill < 0) return null;
+    segments = [...leftParts, ...Array<string>(fill).fill("0"), ...rightParts];
+  } else {
+    segments = host.split(":");
+  }
+  if (segments.length !== 8) return null;
+  for (let i = 0; i < 5; i++) {
+    if (segments[i] !== "0") return null;
+  }
+  if (segments[5] !== "0" && segments[5] !== "ffff") return null;
+  const hi = parseInt(segments[6]!, 16);
+  const lo = parseInt(segments[7]!, 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

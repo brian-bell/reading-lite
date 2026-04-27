@@ -1,6 +1,5 @@
 export interface R2PutOptions {
   contentType?: string;
-  ifNoneMatch?: boolean;
 }
 
 export interface R2Client {

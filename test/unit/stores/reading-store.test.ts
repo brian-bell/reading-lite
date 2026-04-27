@@ -1,11 +1,13 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ReadingStore,
   buildKeyPrefix,
+  manifestToIndexItem,
   PointerExistsError,
 } from "../../../src/modules/stores/reading-store";
 import type { Manifest } from "../../../src/schemas/manifest";
+import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -19,6 +21,17 @@ function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
     content_sha256: "0".repeat(64),
     created_at: "2026-04-26T20:00:00.000Z",
     updated_at: "2026-04-26T20:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function indexItem(overrides: Partial<ListIndexItem> = {}): ListIndexItem {
+  return {
+    id: "rd_TEST",
+    key_prefix: "readings/2026/04/26T200000Z-rd_TEST",
+    url: "https://example.com/a",
+    status: "ready",
+    created_at: "2026-04-26T20:00:00.000Z",
     ...overrides,
   };
 }
@@ -140,8 +153,161 @@ describe("ReadingStore — by-id pointer", () => {
   });
 });
 
+describe("manifestToIndexItem", () => {
+  it("carries updated_at when set on the manifest", () => {
+    const m = emptyManifest({
+      status: "ready",
+      updated_at: "2026-04-26T20:00:05.000Z",
+    });
+    const item = manifestToIndexItem(m, "readings/2026/04/26T200000Z-rd_TEST");
+    expect(item.updated_at).toBe("2026-04-26T20:00:05.000Z");
+  });
+});
+
+describe("ReadingStore — list index round-trip", () => {
+  it("readListIndex returns null when missing", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    expect(await store.readListIndex()).toBeNull();
+  });
+
+  it("round-trips an empty index", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const empty: ListIndex = { version: 1, items: [] };
+    await store.writeListIndex(empty);
+    expect(await store.readListIndex()).toEqual(empty);
+  });
+
+  it("round-trips a populated index", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const idx: ListIndex = {
+      version: 1,
+      items: [indexItem({ id: "rd_a" }), indexItem({ id: "rd_b" })],
+    };
+    await store.writeListIndex(idx);
+    expect(await store.readListIndex()).toEqual(idx);
+  });
+});
+
+describe("ReadingStore — appendOrReplaceListIndexItem", () => {
+  it("creates an index when none exists and appends the item", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
+    const idx = await store.readListIndex();
+    expect(idx).not.toBeNull();
+    expect(idx!.items.map((i) => i.id)).toEqual(["rd_a"]);
+  });
+
+  it("replaces an existing item with the same id", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await store.appendOrReplaceListIndexItem(
+      indexItem({ id: "rd_a", status: "pending", title: undefined }),
+    );
+    await store.appendOrReplaceListIndexItem(
+      indexItem({ id: "rd_a", status: "ready", title: "After" }),
+    );
+    const idx = await store.readListIndex();
+    expect(idx!.items).toHaveLength(1);
+    expect(idx!.items[0]!.status).toBe("ready");
+    expect(idx!.items[0]!.title).toBe("After");
+  });
+
+  it("appends multiple distinct items", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_b" }));
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_c" }));
+    const idx = await store.readListIndex();
+    expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
+  });
+});
+
 describe("ReadingStore — listManifests", () => {
-  it("returns manifests newest-first", async () => {
+  async function seedIndex(store: ReadingStore, items: ListIndexItem[]) {
+    await store.writeListIndex({ version: 1, items });
+  }
+
+  it("returns items newest-first by created_at", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({ id: "rd_a", created_at: "2026-04-26T20:00:00.000Z" }),
+      indexItem({ id: "rd_b", created_at: "2026-04-26T20:00:01.000Z" }),
+      indexItem({ id: "rd_c", created_at: "2026-04-26T20:00:02.000Z" }),
+    ]);
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_c", "rd_b", "rd_a"]);
+    expect(page.total_filtered).toBe(3);
+  });
+
+  it("paginates with offset+limit; total_filtered is the unpaged count", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const items: ListIndexItem[] = [];
+    for (let i = 0; i < 5; i++) {
+      items.push(indexItem({ id: `rd_${i}`, created_at: `2026-04-26T20:00:0${i}.000Z` }));
+    }
+    await seedIndex(store, items);
+    const page1 = await store.listManifests({ offset: 0, limit: 2 });
+    expect(page1.readings.map((r) => r.id)).toEqual(["rd_4", "rd_3"]);
+    expect(page1.total_filtered).toBe(5);
+    const page2 = await store.listManifests({ offset: 2, limit: 2 });
+    expect(page2.readings.map((r) => r.id)).toEqual(["rd_2", "rd_1"]);
+    const page3 = await store.listManifests({ offset: 4, limit: 2 });
+    expect(page3.readings.map((r) => r.id)).toEqual(["rd_0"]);
+  });
+
+  it("filters by q across title, tldr, and url (case-insensitive)", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({ id: "rd_a", title: "Rust async", url: "https://example.com/rust" }),
+      indexItem({ id: "rd_b", title: "Go concurrency", tldr: "Goroutines and channels" }),
+      indexItem({ id: "rd_c", title: "Python async", tldr: "asyncio overview", url: "https://example.com/py" }),
+    ]);
+
+    const byTitle = await store.listManifests({ offset: 0, limit: 10, q: "RUST" });
+    expect(byTitle.readings.map((r) => r.id)).toEqual(["rd_a"]);
+
+    const byTldr = await store.listManifests({ offset: 0, limit: 10, q: "goroutines" });
+    expect(byTldr.readings.map((r) => r.id)).toEqual(["rd_b"]);
+
+    const byUrl = await store.listManifests({ offset: 0, limit: 10, q: "/py" });
+    expect(byUrl.readings.map((r) => r.id)).toEqual(["rd_c"]);
+
+    const noMatch = await store.listManifests({ offset: 0, limit: 10, q: "elixir" });
+    expect(noMatch.readings).toEqual([]);
+    expect(noMatch.total_filtered).toBe(0);
+  });
+
+  it("filters by tag (exact, case-insensitive)", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({ id: "rd_a", tags: ["AI", "infra"] }),
+      indexItem({ id: "rd_b", tags: ["ai"] }),
+      indexItem({ id: "rd_c", tags: ["ml"] }),
+      indexItem({ id: "rd_d", tags: undefined }),
+    ]);
+    const page = await store.listManifests({ offset: 0, limit: 10, tag: "ai" });
+    expect(page.readings.map((r) => r.id).sort()).toEqual(["rd_a", "rd_b"]);
+    expect(page.total_filtered).toBe(2);
+  });
+
+  it("ANDs q and tag together", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({ id: "rd_a", title: "Rust async", tags: ["rust"] }),
+      indexItem({ id: "rd_b", title: "Rust web", tags: ["web"] }),
+      indexItem({ id: "rd_c", title: "Go async", tags: ["rust"] }),
+    ]);
+    const page = await store.listManifests({ offset: 0, limit: 10, q: "rust", tag: "rust" });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_a"]);
+  });
+
+  it("returns an empty page when index is missing AND no manifests exist", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+    expect(page.readings).toEqual([]);
+    expect(page.total_filtered).toBe(0);
+  });
+
+  it("falls back to scan-and-rebuild when index missing but manifests exist; persists the rebuilt index", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     const ids = ["rd_a", "rd_b", "rd_c"];
     const times = [
@@ -150,28 +316,69 @@ describe("ReadingStore — listManifests", () => {
       "2026-04-26T20:00:02.000Z",
     ];
     for (let i = 0; i < ids.length; i++) {
-      const m = emptyManifest({ id: ids[i]!, created_at: times[i]!, updated_at: times[i]! });
+      const m = emptyManifest({
+        id: ids[i]!,
+        status: "ready",
+        title: `T-${ids[i]!}`,
+        tldr: "x",
+        tags: ["t"],
+        created_at: times[i]!,
+        updated_at: times[i]!,
+      });
       await store.writeManifest(buildKeyPrefix(m.id, m.created_at), m);
     }
-    const page = await store.listManifests({ limit: 10 });
-    expect(page.items.map((m) => m.id)).toEqual(["rd_c", "rd_b", "rd_a"]);
-    expect(page.next_cursor).toBeUndefined();
+    expect(await store.readListIndex()).toBeNull();
+
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_c", "rd_b", "rd_a"]);
+
+    const idx = await store.readListIndex();
+    expect(idx).not.toBeNull();
+    expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
   });
 
-  it("paginates with limit + cursor", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    for (let i = 0; i < 5; i++) {
-      const time = `2026-04-26T20:00:0${i}.000Z`;
-      const m = emptyManifest({ id: `rd_${i}`, created_at: time, updated_at: time });
-      await store.writeManifest(buildKeyPrefix(m.id, m.created_at), m);
-    }
-    const page1 = await store.listManifests({ limit: 2 });
-    expect(page1.items.map((m) => m.id)).toEqual(["rd_4", "rd_3"]);
-    expect(page1.next_cursor).toBeDefined();
-    const page2 = await store.listManifests({ limit: 2, cursor: page1.next_cursor });
-    expect(page2.items.map((m) => m.id)).toEqual(["rd_2", "rd_1"]);
-    const page3 = await store.listManifests({ limit: 2, cursor: page2.next_cursor });
-    expect(page3.items.map((m) => m.id)).toEqual(["rd_0"]);
-    expect(page3.next_cursor).toBeUndefined();
+  it("does not persist a rebuilt index when R2 list is truncated", async () => {
+    // Stub the bucket so list() reports truncated:true. The rebuild path should
+    // still serve the partial result for this request, but must NOT write the
+    // partial back to index/list.json (otherwise a single truncated rebuild
+    // would permanently shadow a >1000-manifest bucket with an incomplete
+    // index).
+    const m = emptyManifest({
+      id: "rd_a",
+      status: "ready",
+      title: "T",
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+    const keyPrefix = buildKeyPrefix(m.id, m.created_at);
+    const manifestKey = `${keyPrefix}/manifest.json`;
+    const manifestBody = JSON.stringify(m);
+
+    const puts: Array<{ key: string }> = [];
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") return null;
+        if (key === manifestKey) {
+          return {
+            text: async () => manifestBody,
+          } as unknown as R2ObjectBody;
+        }
+        return null;
+      },
+      put: async (key: string) => {
+        puts.push({ key });
+      },
+      list: async () => ({
+        objects: [{ key: manifestKey }],
+        truncated: true,
+      }),
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_a"]);
+    expect(puts.find((p) => p.key === "index/list.json")).toBeUndefined();
+    expect(consoleWarn).toHaveBeenCalled();
+    consoleWarn.mockRestore();
   });
 });
