@@ -594,6 +594,73 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("staleness uses updated_at, not created_at", async () => {
+    // Seed an index entry whose created_at is ancient but updated_at is fresh.
+    // The staleness annotator must trust updated_at and leave it as pending
+    // (matches the manifest-level annotateStale semantics).
+    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
+      env.READINGS_BUCKET,
+    );
+    await reader.writeListIndex({
+      version: 1,
+      items: [
+        {
+          id: "rd_fresh",
+          key_prefix: "readings/2020/01/01T000000Z-rd_fresh",
+          url: "https://example.com/fresh",
+          status: "pending",
+          created_at: "2020-01-01T00:00:00.000Z",
+          updated_at: "2026-04-26T20:00:00.000Z",
+        },
+      ],
+    });
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    const body = (await res.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("pending");
+  });
+
+  it("staleness flips a long-stale pending to failed via updated_at", async () => {
+    // updated_at older than TTL → annotator must mark it failed in the
+    // response (the underlying manifest stays pending; this is presentation
+    // only, same contract as the manifest-level annotateStale).
+    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
+      env.READINGS_BUCKET,
+    );
+    await reader.writeListIndex({
+      version: 1,
+      items: [
+        {
+          id: "rd_stale",
+          key_prefix: "readings/2020/01/01T000000Z-rd_stale",
+          url: "https://example.com/stale",
+          status: "pending",
+          created_at: "2026-04-26T20:00:00.000Z",
+          updated_at: "2020-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const res = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      customEnv,
+    );
+    const body = (await res.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("failed");
+    expect(body.readings[0]!.error?.code).toBe("stale_pending");
+  });
 });
 
 describe("error handling", () => {

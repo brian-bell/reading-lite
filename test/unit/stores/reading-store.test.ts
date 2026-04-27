@@ -1,8 +1,9 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ReadingStore,
   buildKeyPrefix,
+  manifestToIndexItem,
   PointerExistsError,
 } from "../../../src/modules/stores/reading-store";
 import type { Manifest } from "../../../src/schemas/manifest";
@@ -149,6 +150,17 @@ describe("ReadingStore — by-id pointer", () => {
   it("returns null when by-id pointer is missing", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     expect(await store.readByIdPointer("rd_missing")).toBeNull();
+  });
+});
+
+describe("manifestToIndexItem", () => {
+  it("carries updated_at when set on the manifest", () => {
+    const m = emptyManifest({
+      status: "ready",
+      updated_at: "2026-04-26T20:00:05.000Z",
+    });
+    const item = manifestToIndexItem(m, "readings/2026/04/26T200000Z-rd_TEST");
+    expect(item.updated_at).toBe("2026-04-26T20:00:05.000Z");
   });
 });
 
@@ -323,5 +335,50 @@ describe("ReadingStore — listManifests", () => {
     const idx = await store.readListIndex();
     expect(idx).not.toBeNull();
     expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
+  });
+
+  it("does not persist a rebuilt index when R2 list is truncated", async () => {
+    // Stub the bucket so list() reports truncated:true. The rebuild path should
+    // still serve the partial result for this request, but must NOT write the
+    // partial back to index/list.json (otherwise a single truncated rebuild
+    // would permanently shadow a >1000-manifest bucket with an incomplete
+    // index).
+    const m = emptyManifest({
+      id: "rd_a",
+      status: "ready",
+      title: "T",
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+    const keyPrefix = buildKeyPrefix(m.id, m.created_at);
+    const manifestKey = `${keyPrefix}/manifest.json`;
+    const manifestBody = JSON.stringify(m);
+
+    const puts: Array<{ key: string }> = [];
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") return null;
+        if (key === manifestKey) {
+          return {
+            text: async () => manifestBody,
+          } as unknown as R2ObjectBody;
+        }
+        return null;
+      },
+      put: async (key: string) => {
+        puts.push({ key });
+      },
+      list: async () => ({
+        objects: [{ key: manifestKey }],
+        truncated: true,
+      }),
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_a"]);
+    expect(puts.find((p) => p.key === "index/list.json")).toBeUndefined();
+    expect(consoleWarn).toHaveBeenCalled();
+    consoleWarn.mockRestore();
   });
 });

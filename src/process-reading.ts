@@ -151,10 +151,21 @@ async function markFailed(
     created_at: args.createdAt,
     updated_at: services.now(),
   };
-  await reader.writeManifest(args.keyPrefix, manifest);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(manifest, args.keyPrefix),
-  );
+  // We're already on the failure path inside waitUntil — a transient R2 hiccup
+  // here has nowhere to bubble to. Log and move on; the index TTL annotator
+  // will eventually flip stale pending entries even if both writes drop.
+  try {
+    await reader.writeManifest(args.keyPrefix, manifest);
+  } catch (writeErr) {
+    console.error(writeErr);
+  }
+  try {
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(manifest, args.keyPrefix),
+    );
+  } catch (indexErr) {
+    console.error(indexErr);
+  }
   // Intentionally do NOT write the by-url pointer: failed readings should not
   // dedup future submissions of the same URL.
 }

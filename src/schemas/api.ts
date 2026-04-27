@@ -55,6 +55,7 @@ export const ListIndexItemSchema = z.object({
   status: ManifestStatusSchema,
   novelty_verdict: NoveltyVerdictSchema.optional(),
   created_at: z.string().datetime(),
+  updated_at: z.string().datetime().optional(),
   error: ManifestErrorSchema.optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;

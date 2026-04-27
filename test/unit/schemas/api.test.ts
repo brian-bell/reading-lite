@@ -133,9 +133,11 @@ describe("ListIndexItemSchema", () => {
       tldr: "Short",
       tags: ["ai", "infra"],
       novelty_verdict: "novel",
+      updated_at: "2026-04-26T20:00:05.000Z",
     });
     expect(parsed.tags).toEqual(["ai", "infra"]);
     expect(parsed.novelty_verdict).toBe("novel");
+    expect(parsed.updated_at).toBe("2026-04-26T20:00:05.000Z");
   });
 
   it("accepts a failed item with error", () => {

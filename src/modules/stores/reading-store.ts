@@ -65,6 +65,7 @@ export function manifestToIndexItem(
     url: m.url,
     status: m.status,
     created_at: m.created_at,
+    updated_at: m.updated_at,
   };
   if (m.title !== undefined) item.title = m.title;
   if (m.tldr !== undefined) item.tldr = m.tldr;
@@ -189,10 +190,19 @@ export class ReadingStore {
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
     let index = await this.readListIndex();
     if (!index) {
-      index = await this.rebuildListIndex();
-      // Only persist when there was something to rebuild — avoids creating an
-      // empty index file on a totally cold bucket.
-      if (index.items.length > 0) await this.writeListIndex(index);
+      const rebuilt = await this.rebuildListIndex();
+      index = { version: 1, items: rebuilt.items };
+      // Persist only when the rebuild was complete and non-empty. Skipping the
+      // write on `truncated` avoids permanently shadowing a >1000-manifest
+      // bucket with an incomplete index; skipping on `empty` avoids creating a
+      // stub on a totally cold bucket.
+      if (rebuilt.complete && rebuilt.items.length > 0) {
+        await this.writeListIndex(index);
+      } else if (!rebuilt.complete) {
+        console.warn(
+          `rebuildListIndex: R2 list returned truncated:true (>${rebuilt.items.length} manifests); not persisting partial index`,
+        );
+      }
     }
 
     const q = params.q?.trim().toLowerCase() ?? "";
@@ -216,11 +226,11 @@ export class ReadingStore {
     return { readings: slice, total_filtered: filtered.length };
   }
 
-  private async rebuildListIndex(): Promise<ListIndex> {
+  private async rebuildListIndex(): Promise<{ items: ListIndexItem[]; complete: boolean }> {
     // Personal-scale fallback: scan readings/ for manifests, parse each, and
     // synthesise an index. Used when index/list.json is missing (cold cache or
-    // pre-migration data); the result is persisted by the caller so subsequent
-    // reads are O(index-size).
+    // pre-migration data); the result is persisted by the caller (only when
+    // complete) so subsequent reads are O(index-size).
     const list = await this.bucket.list({ prefix: READINGS_PREFIX, limit: 1000 });
     const manifestKeys = list.objects
       .map((o) => o.key)
@@ -235,6 +245,6 @@ export class ReadingStore {
       const keyPrefix = key.slice(0, -("/" + MANIFEST_FILE).length);
       items.push(manifestToIndexItem(parsed.data, keyPrefix));
     }
-    return { version: 1, items };
+    return { items, complete: !list.truncated };
   }
 }

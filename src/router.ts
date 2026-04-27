@@ -200,9 +200,10 @@ function annotateStaleIndexItem(
     const n = Number(env.PENDING_TTL_SECONDS);
     return Number.isFinite(n) ? n : 300;
   })();
-  // The index item carries created_at; pending entries are written at submit
-  // time, so created_at is a good proxy for "how long has this been pending".
-  const updatedAt = Date.parse(item.created_at);
+  // Prefer updated_at — same semantics as the manifest-level annotateStale.
+  // Older index entries (pre-updated_at) fall back to created_at.
+  const ref = item.updated_at ?? item.created_at;
+  const updatedAt = Date.parse(ref);
   const now = Date.parse(services.now());
   if (Number.isFinite(updatedAt) && now - updatedAt > ttl * 1000) {
     return { ...item, status: "failed", error: { code: "stale_pending", message: `pending > ${ttl}s` } };

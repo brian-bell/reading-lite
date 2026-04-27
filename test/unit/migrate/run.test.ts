@@ -181,4 +181,17 @@ describe("runMigration", () => {
     const parsed = JSON.parse(indexCall![1] as string) as { items: Array<{ id: string }> };
     expect(parsed.items.map((i) => i.id)).toEqual(["rd_abc"]);
   });
+
+  it("does not write index/list.json when no rows succeed", async () => {
+    // Mirrors the live listManifests behavior: don't create an empty index
+    // file. Otherwise a future cold list call won't take the rebuild path.
+    const r2 = makeR2();
+    const vectorize = makeVectorize();
+    const bad = { ...baseRow, url_hash: "not-hex" };
+    await runMigration([bad], { r2, vectorize, contentDir: tmpDir });
+
+    const putMock = (r2 as unknown as { put: { mock: { calls: Array<[string, string | Uint8Array]> } } }).put.mock;
+    const indexCall = putMock.calls.find((c) => c[0] === "index/list.json");
+    expect(indexCall).toBeUndefined();
+  });
 });

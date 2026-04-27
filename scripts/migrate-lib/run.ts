@@ -126,11 +126,16 @@ export async function runMigration(
     if (result.indexItem) indexItems.push(result.indexItem);
   }
 
-  await deps.r2.put(
-    "index/list.json",
-    JSON.stringify({ version: 1, items: indexItems }),
-    { contentType: "application/json" },
-  );
+  // Match live listManifests behavior: don't create an empty index file on a
+  // run where no rows succeeded — otherwise the cold-list rebuild path won't
+  // fire later.
+  if (indexItems.length > 0) {
+    await deps.r2.put(
+      "index/list.json",
+      JSON.stringify({ version: 1, items: indexItems }),
+      { contentType: "application/json" },
+    );
+  }
 
   return report;
 }
