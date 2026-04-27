@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError } from "../../../src/modules/extractor";
+import { describe, expect, it, vi } from "vitest";
+import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError } from "../../../src/modules/extractor";
 
 function fakeFetch(responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>) {
   return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
@@ -180,6 +180,118 @@ describe("extractFromUrl", () => {
         maxBytes: 1_000_000,
       }),
     ).rejects.toBeInstanceOf(FetchTimeoutError);
+  });
+
+  it("respects an existing <base href> on the page (does not override with the source URL)", async () => {
+    // Page declares its own canonical base. Our previous implementation injected
+    // a second <base href> with the source URL, which would silently win against
+    // the page's intent. After the fix we must skip injection when a <base>
+    // already exists, so Readability resolves relative links against the page's.
+    const html = `<!doctype html>
+<html><head><base href="https://canonical.example/path/"><title>T</title></head>
+<body><main><article>
+<h1>Article</h1>
+<p>This is the first paragraph with sufficient length to be picked up by readability without trouble.</p>
+<p>Second paragraph for length. <a href="other">relative link</a> appears here, please resolve me.</p>
+</article></main></body></html>`;
+    const fetchFn = fakeFetch({
+      "https://passed.example/article": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: html,
+      },
+    });
+    const out = await extractFromUrl("https://passed.example/article", {
+      fetch: fetchFn,
+      timeoutMs: 5_000,
+      maxBytes: 1_000_000,
+    });
+    expect(out.content_status).toBe("captured");
+    expect(out.markdown).toContain("canonical.example");
+    expect(out.markdown).not.toContain("passed.example");
+  });
+
+  describe("SSRF guards", () => {
+    const failingFetch = () =>
+      vi.fn(async () => {
+        throw new Error("fetch should not be called for blocked hosts");
+      }) as unknown as typeof fetch;
+
+    const blocked = [
+      "http://localhost/",
+      "http://localhost./",
+      "http://printer.local/",
+      "http://printer.local./",
+      "http://127.0.0.1/",
+      "http://127.255.0.1/",
+      "http://10.0.0.1/",
+      "http://10.255.255.255/",
+      "http://172.16.0.1/",
+      "http://172.31.255.255/",
+      "http://192.168.1.1/",
+      "http://169.254.169.254/",
+      "http://169.254.0.1/",
+      "http://0.0.0.0/",
+      "http://[::1]/",
+      "http://[fc00::1]/",
+      "http://[fd12:3456::1]/",
+      "http://[fe80::1]/",
+    ];
+
+    for (const url of blocked) {
+      it(`rejects ${url} with BlockedHostError without calling fetch`, async () => {
+        const fetchFn = failingFetch();
+        await expect(
+          extractFromUrl(url, { fetch: fetchFn, timeoutMs: 5_000, maxBytes: 1_000_000 }),
+        ).rejects.toBeInstanceOf(BlockedHostError);
+        expect(fetchFn).not.toHaveBeenCalled();
+      });
+    }
+
+    for (const url of ["file:///etc/passwd", "gopher://example.com/", "ftp://example.com/"]) {
+      it(`rejects ${url} (non-http(s) scheme)`, async () => {
+        const fetchFn = failingFetch();
+        await expect(
+          extractFromUrl(url, { fetch: fetchFn, timeoutMs: 5_000, maxBytes: 1_000_000 }),
+        ).rejects.toBeInstanceOf(BlockedHostError);
+        expect(fetchFn).not.toHaveBeenCalled();
+      });
+    }
+
+    it("does NOT block a public IPv4 host (1.1.1.1)", async () => {
+      const fetchFn = fakeFetch({
+        "http://1.1.1.1/": { headers: { "content-type": "text/plain" }, body: "ok" },
+      });
+      const out = await extractFromUrl("http://1.1.1.1/", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      });
+      expect(out.content_status).toBe("captured");
+    });
+
+    it("does NOT block 172.32.0.1 (just outside the 172.16.0.0/12 private range)", async () => {
+      const fetchFn = fakeFetch({
+        "http://172.32.0.1/": { headers: { "content-type": "text/plain" }, body: "ok" },
+      });
+      const out = await extractFromUrl("http://172.32.0.1/", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      });
+      expect(out.content_status).toBe("captured");
+    });
+
+    it("does NOT block normal https hosts", async () => {
+      const fetchFn = fakeFetch({
+        "https://example.com/": { headers: { "content-type": "text/plain" }, body: "ok" },
+      });
+      const out = await extractFromUrl("https://example.com/", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      });
+      expect(out.content_status).toBe("captured");
+    });
   });
 
   it("falls back to application/octet-stream when no content-type header is set", async () => {
