@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (105 tests across 11 files), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Greenfield. Production-shaped TypeScript, fully unit-tested (137 worker tests across 11 files plus 16 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
 
 ## Architecture at a glance
 
@@ -86,14 +86,32 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
-| `GET /readings` | Newest-first list. Query: `cursor`, `limit` (1–100, default 20). |
+| `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
 | `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
 | `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
+List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. cold cache after migration), the list endpoint falls back to scan-and-rebuild.
+
 The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `error?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
+
+## Web SPA
+
+A small React SPA lives in `web/` and points at the Worker via Vite's dev proxy. It renders the list (with search + tag chips), submission form, detail page (TL;DR, summary markdown, entities, connections, content links), and persists the bearer token in `localStorage`.
+
+```sh
+# In one terminal — Worker:
+npm run dev                            # wrangler dev on http://127.0.0.1:8787
+
+# In another terminal — SPA:
+cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
+```
+
+The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. For production, deploy `web/dist/` (from `cd web && npm run build`) to Pages/Vercel/etc. and add the host to `CORS_ALLOWED_ORIGINS`.
+
+The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
 
 ## Migration from Backlite
 
@@ -153,6 +171,9 @@ test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize)
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/                 # node pool (fs / os / path)
+web/                            # React SPA (separate npm project)
+  src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
+  index.html, package.json, tsconfig.json, vite.config.ts
 wrangler.toml                   # production config (R2 + Vectorize bindings)
 wrangler.test.toml              # test config (R2 only; Vectorize is stub-injected)
 vitest.workspace.ts             # two projects: "workers" + "node"
@@ -160,9 +181,11 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 
 ## Tests
 
-`npm test` runs all 105 tests across two Vitest projects:
+`npm test` (from the repo root) runs all 137 worker tests across two Vitest projects:
 
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — migration script tests use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
 Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual verification against a staging deployment is part of the PRD's verification plan.
+
+`cd web && npm test` runs the SPA tests (jsdom + window.fetch stubs).
