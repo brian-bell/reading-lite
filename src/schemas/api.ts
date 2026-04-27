@@ -6,14 +6,14 @@ import {
   NoveltyVerdictSchema,
 } from "./manifest";
 
-const httpsUrl = () =>
+const webUrl = () =>
   z
     .string()
     .url()
     .refine((u) => /^https?:/i.test(u), { message: "url must be http(s)" });
 
 export const PostReadingsBodySchema = z.object({
-  url: httpsUrl(),
+  url: webUrl(),
 });
 export type PostReadingsBody = z.infer<typeof PostReadingsBodySchema>;
 
