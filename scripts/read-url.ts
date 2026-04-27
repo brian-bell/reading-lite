@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { loadDotVars } from "./lib/dotvars";
 
 interface Args {
   url: string;
@@ -34,7 +34,7 @@ function parseCliArgs(): Args {
     process.exit(2);
   }
 
-  const devVars = readDevVars();
+  const devVars = loadDotVars(".dev.vars");
   const base =
     values.base ?? process.env.READER_BASE_URL ?? "http://127.0.0.1:8787";
   const token =
@@ -56,31 +56,6 @@ function parseCliArgs(): Args {
     pollMs,
     timeoutMs,
   };
-}
-
-function readDevVars(): Record<string, string> {
-  try {
-    const raw = readFileSync(".dev.vars", "utf8");
-    const out: Record<string, string> = {};
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq <= 0) continue;
-      const key = trimmed.slice(0, eq).trim();
-      let val = trimmed.slice(eq + 1).trim();
-      if (
-        (val.startsWith('"') && val.endsWith('"')) ||
-        (val.startsWith("'") && val.endsWith("'"))
-      ) {
-        val = val.slice(1, -1);
-      }
-      out[key] = val;
-    }
-    return out;
-  } catch {
-    return {};
-  }
 }
 
 function printUsage(): void {

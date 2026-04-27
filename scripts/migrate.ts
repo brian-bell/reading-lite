@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
 import { AwsClient } from "aws4fetch";
+import { loadDotVars } from "./lib/dotvars";
 import { runMigration } from "./migrate-lib/run";
 import type {
   R2Client,
@@ -45,6 +46,8 @@ function parseCliArgs(): Args {
     process.exit(0);
   }
 
+  const dotVars = loadDotVars(".migrate.vars");
+
   const required = (name: keyof typeof values): string => {
     const v = values[name];
     if (typeof v !== "string" || v.length === 0) {
@@ -53,9 +56,11 @@ function parseCliArgs(): Args {
         .toUpperCase()
         .replace(/-/g, "_")
         .replace(/^/, "MIGRATE_");
-      const fromEnv = process.env[envName];
+      const fromEnv = process.env[envName] ?? dotVars[envName];
       if (fromEnv) return fromEnv;
-      console.error(`missing required --${name} (or env ${envName})`);
+      console.error(
+        `missing required --${name} (or env ${envName}, or ${envName} in .migrate.vars)`,
+      );
       printUsage();
       process.exit(2);
     }
@@ -89,7 +94,9 @@ function printUsage() {
   --vectorize-index reading-lite \\
   [--dry-run]
 
-All flags also accept env vars MIGRATE_<UPPER_SNAKE_CASE>.
+All flags also accept env vars MIGRATE_<UPPER_SNAKE_CASE>, or values
+under the same names in a gitignored .migrate.vars file at the repo root
+(see .migrate.vars.example). Resolution order: --flag > env > .migrate.vars.
 
 Reads from BACKLITE_DATABASE_PATH (sqlite) + content dir (raw + extracted),
 writes to R2 (S3 API, SigV4) + Vectorize (Cloudflare REST). Idempotent: re-runs

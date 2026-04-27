@@ -112,7 +112,12 @@ npm run migrate -- \
   --vectorize-index reading-lite-staging
 ```
 
-Add `--dry-run` to print the planned R2 + Vectorize operations without hitting any remote API. Every flag also accepts an env var (`MIGRATE_<UPPER_SNAKE_CASE>`).
+Add `--dry-run` to print the planned R2 + Vectorize operations without hitting any remote API. Every flag also accepts an env var (`MIGRATE_<UPPER_SNAKE_CASE>`) or a value under the same name in a gitignored `.migrate.vars` file at the repo root. Resolution order: `--flag` > env var > `.migrate.vars`.
+
+```sh
+cp .migrate.vars.example .migrate.vars   # fill in keys + bucket/index
+npm run migrate -- --dry-run             # no flags, no exports needed
+```
 
 The `--cf-api-token` needs Vectorize Edit permission. R2 keys come from the R2 dashboard's "Manage R2 API Tokens".
 
