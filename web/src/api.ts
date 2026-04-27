@@ -68,6 +68,21 @@ export async function getReading(token: string, id: string): Promise<Manifest> {
   return (await response.json()) as Manifest;
 }
 
+export type ContentKind = "content" | "content/raw";
+
+export async function fetchContentBlob(
+  token: string,
+  id: string,
+  kind: ContentKind
+): Promise<Blob> {
+  const url = new URL(`/readings/${encodeURIComponent(id)}/${kind}`, window.location.origin);
+  const response = await fetch(new Request(url, { headers: authHeaders(token) }));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to fetch content"));
+  }
+  return await response.blob();
+}
+
 export async function submitReading(
   token: string,
   url: string

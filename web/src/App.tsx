@@ -14,12 +14,14 @@ import {
 
 import {
   ApiError,
+  fetchContentBlob,
   getReading,
   listReadings,
   submitReading,
-  tokenStorageKey
+  tokenStorageKey,
+  type ContentKind
 } from "./api";
-import type { Connection, Manifest, ManifestStatus, Reading } from "./types";
+import type { Connection, ListReading, ManifestStatus } from "./types";
 import "./styles.css";
 
 type AppProps = {
@@ -309,7 +311,7 @@ function ReadingListItem({
   reading,
   onSelectTag
 }: {
-  reading: Reading;
+  reading: ListReading;
   onSelectTag: (tag: string) => void;
 }) {
   return (
@@ -394,7 +396,7 @@ function ReadingDetail({ token }: { token: string }) {
         <EntityGroup label="Organizations" values={reading.orgs ?? []} />
       </section>
       <ConnectionsPanel connections={reading.connections ?? []} />
-      <ContentLinks id={reading.id} />
+      <ContentLinks id={reading.id} token={token} />
     </section>
   );
 }
@@ -419,22 +421,41 @@ function ConnectionsPanel({ connections }: { connections: Connection[] }) {
   );
 }
 
-function ContentLinks({ id }: { id: string }) {
+function ContentLinks({ id, token }: { id: string; token: string }) {
+  const [error, setError] = useState<string | null>(null);
+  const open = async (kind: ContentKind) => {
+    setError(null);
+    try {
+      const blob = await fetchContentBlob(token, id, kind);
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, "_blank", "noopener");
+      // Browser-routes need the URL alive long enough for the new tab to load
+      // and start streaming; revoke on a coarse delay rather than immediately.
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to fetch content");
+    }
+  };
   return (
     <section className="detail-section content-links">
       <h2>Content</h2>
       <ul className="task-links">
         <li>
-          <a href={`/readings/${id}/content`} rel="noreferrer" target="_blank">
+          <button type="button" className="link-button" onClick={() => open("content")}>
             Extracted markdown
-          </a>
+          </button>
         </li>
         <li>
-          <a href={`/readings/${id}/content/raw`} rel="noreferrer" target="_blank">
+          <button type="button" className="link-button" onClick={() => open("content/raw")}>
             Raw bytes
-          </a>
+          </button>
         </li>
       </ul>
+      {error !== null ? (
+        <p className="content-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </section>
   );
 }

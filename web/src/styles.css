@@ -281,6 +281,21 @@ h2 {
   padding: 0;
 }
 
+.link-button {
+  background: none;
+  border: none;
+  color: #1f6feb;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.content-error {
+  color: #9a2424;
+  margin: 8px 0 0;
+}
+
 .pager {
   align-items: center;
   display: flex;

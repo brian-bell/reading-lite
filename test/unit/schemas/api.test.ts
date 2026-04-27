@@ -111,6 +111,46 @@ describe("ListReadingsResponseSchema", () => {
       ListReadingsResponseSchema.parse({ readings: [], limit: 20, offset: 0 }),
     ).toThrow();
   });
+
+  it("readings are ListIndexItem-shaped (matches the actual wire response)", () => {
+    const valid = {
+      readings: [
+        {
+          id: "rd_X",
+          key_prefix: "readings/2026/04/26T200000Z-rd_X",
+          url: "https://example.com/a",
+          status: "ready",
+          title: "T",
+          tldr: "L",
+          tags: ["t"],
+          created_at: "2026-04-26T20:00:00.000Z",
+          updated_at: "2026-04-26T20:00:00.000Z",
+        },
+      ],
+      limit: 20,
+      offset: 0,
+      has_more: false,
+    };
+    const parsed = ListReadingsResponseSchema.parse(valid);
+    expect(parsed.readings[0]!.key_prefix).toBe("readings/2026/04/26T200000Z-rd_X");
+  });
+
+  it("rejects readings missing the index-item required key_prefix", () => {
+    const invalid = {
+      readings: [
+        {
+          id: "rd_X",
+          url: "https://example.com/a",
+          status: "ready",
+          created_at: "2026-04-26T20:00:00.000Z",
+        },
+      ],
+      limit: 20,
+      offset: 0,
+      has_more: false,
+    };
+    expect(() => ListReadingsResponseSchema.parse(invalid)).toThrow();
+  });
 });
 
 describe("ListIndexItemSchema", () => {

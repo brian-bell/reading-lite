@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   ManifestErrorSchema,
-  ManifestSchema,
   ManifestStatusSchema,
   NoveltyVerdictSchema,
 } from "./manifest";
@@ -67,7 +66,7 @@ export const ListIndexSchema = z.object({
 export type ListIndex = z.infer<typeof ListIndexSchema>;
 
 export const ListReadingsResponseSchema = z.object({
-  readings: z.array(ManifestSchema),
+  readings: z.array(ListIndexItemSchema),
   limit: z.number().int().nonnegative(),
   offset: z.number().int().nonnegative(),
   has_more: z.boolean(),

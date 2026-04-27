@@ -21,6 +21,7 @@ import { ManifestSchema } from "../../../src/schemas/manifest";
 // the wire and the SPA simply ignores them.
 import type {
   Manifest as SpaManifest,
+  ListReading as SpaListReading,
   ListReadingsResponse as SpaListReadingsResponse,
 } from "../../../web/src/types";
 
@@ -74,13 +75,13 @@ describe("SPA type mirror — ListReadingsResponse", () => {
       readings: [
         {
           id: "rd_X",
+          key_prefix: "readings/2026/04/26T200000Z-rd_X",
           url: "https://example.com/a",
-          url_hash: "a".repeat(64),
           status: "ready",
-          content_type: "text/html",
-          content_status: "captured",
-          content_bytes: 1,
-          content_sha256: "0".repeat(64),
+          title: "T",
+          tldr: "L",
+          tags: ["t"],
+          novelty_verdict: "novel",
           created_at: "2026-04-26T20:00:00.000Z",
           updated_at: "2026-04-26T20:00:00.000Z",
         },
@@ -92,19 +93,16 @@ describe("SPA type mirror — ListReadingsResponse", () => {
     expect(() => ListReadingsResponseSchema.parse(r)).not.toThrow();
   });
 
-  it("each reading entry is also valid as a ListIndexItem (the actual wire shape)", () => {
-    // The SPA models /readings as Manifest[], but the worker actually returns
-    // ListIndexItem[]. This pins that the subset of Manifest fields the SPA
-    // reads on the list page matches the index-item contract.
-    const item = {
+  it("a ListReading instance parses as a ListIndexItem (wire-shape contract)", () => {
+    const item: SpaListReading = {
       id: "rd_X",
       key_prefix: "readings/2026/04/26T200000Z-rd_X",
       url: "https://example.com/a",
       title: "T",
       tldr: "L",
       tags: ["t"],
-      status: "ready" as const,
-      novelty_verdict: "novel" as const,
+      status: "ready",
+      novelty_verdict: "novel",
       created_at: "2026-04-26T20:00:00.000Z",
       updated_at: "2026-04-26T20:00:00.000Z",
     };

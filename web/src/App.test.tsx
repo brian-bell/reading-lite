@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tokenStorageKey } from "./api";
 import { App } from "./App";
-import type { Manifest, ListReadingsResponse } from "./types";
+import type { ListReading, Manifest, ListReadingsResponse } from "./types";
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -38,8 +38,24 @@ function manifest(overrides: Partial<Manifest> = {}): Manifest {
   };
 }
 
+function listReading(overrides: Partial<ListReading> = {}): ListReading {
+  return {
+    id: "rd_ONE",
+    key_prefix: "readings/2026/04/25T160000Z-rd_ONE",
+    url: "https://example.com/one",
+    status: "ready",
+    title: "Operator Notes",
+    tldr: "A concise result from the reader agent.",
+    tags: ["agents", "ops"],
+    novelty_verdict: "novel",
+    created_at: "2026-04-25T16:00:00.000Z",
+    updated_at: "2026-04-25T16:00:00.000Z",
+    ...overrides
+  };
+}
+
 const onePage: ListReadingsResponse = {
-  readings: [manifest()],
+  readings: [listReading()],
   limit: 20,
   offset: 0,
   has_more: false
@@ -74,6 +90,7 @@ describe("App", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("renders the reading library shell and list results", async () => {
@@ -174,7 +191,7 @@ describe("App", () => {
   it("renders a status badge for pending readings on the list", async () => {
     stubJSON({
       ...onePage,
-      readings: [manifest({ status: "pending", title: "Pending One", tldr: undefined })]
+      readings: [listReading({ status: "pending", title: "Pending One", tldr: undefined })]
     });
     render(<App initialPath="/" />);
     await waitForElementToBeRemoved(() => screen.queryByText("Loading readings"));
@@ -185,7 +202,7 @@ describe("App", () => {
     stubJSON({
       ...onePage,
       readings: [
-        manifest({
+        listReading({
           status: "failed",
           title: "Bad One",
           tldr: undefined,
@@ -253,7 +270,7 @@ describe("App", () => {
       if (req.method === "POST" && url.pathname === "/readings") {
         pageBody = {
           ...emptyPage,
-          readings: [manifest({ status: "pending", title: "New One", tldr: undefined })]
+          readings: [listReading({ status: "pending", title: "New One", tldr: undefined })]
         };
         return jsonResponse({ id: "rd_NEW", status: "pending", poll: "/readings/rd_NEW" }, 202);
       }
@@ -297,6 +314,90 @@ describe("App", () => {
     const requestUrl = new URL((fetchMock.mock.calls[0] as [Request])[0].url);
     expect(requestUrl.searchParams.get("offset")).toBe("0");
     expect(await screen.findByText("Page 1")).toBeInTheDocument();
+  });
+
+  it("opens extracted markdown via an authed fetch + blob URL (not a raw <a> with no Authorization)", async () => {
+    const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/readings/rd_ONE/content") {
+        return new Response("# md body", {
+          status: 200,
+          headers: { "Content-Type": "text/markdown; charset=utf-8" }
+        });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:fake-url");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    window.localStorage.setItem(tokenStorageKey, "secret");
+
+    const user = userEvent.setup();
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    const btn = await screen.findByRole("button", { name: /extracted markdown/i });
+    await user.click(btn);
+
+    await waitFor(() => {
+      const contentCall = fetchMock.mock.calls.find(
+        (c) => new URL((c[0] as Request).url).pathname === "/readings/rd_ONE/content"
+      );
+      expect(contentCall).toBeDefined();
+      expect((contentCall![0] as Request).headers.get("Authorization")).toBe("Bearer secret");
+    });
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(openSpy).toHaveBeenCalledWith("blob:fake-url", "_blank", "noopener");
+  });
+
+  it("opens raw bytes via an authed fetch + blob URL", async () => {
+    const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/readings/rd_ONE/content/raw") {
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" }
+        });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:raw-url");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    window.localStorage.setItem(tokenStorageKey, "secret");
+
+    const user = userEvent.setup();
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    const btn = await screen.findByRole("button", { name: /raw bytes/i });
+    await user.click(btn);
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith("blob:raw-url", "_blank", "noopener"));
+  });
+
+  it("surfaces an inline error when ContentLinks fetch fails (no broken new tab)", async () => {
+    const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      return jsonResponse({ error: "extracted markdown not available" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const openSpy = vi.fn(() => null);
+    vi.stubGlobal("open", openSpy);
+
+    const user = userEvent.setup();
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    const btn = await screen.findByRole("button", { name: /extracted markdown/i });
+    await user.click(btn);
+
+    expect(await screen.findByText(/extracted markdown not available/i)).toBeInTheDocument();
+    expect(openSpy).not.toHaveBeenCalled();
   });
 
   it("shows an inline error when SubmitForm fails", async () => {
