@@ -126,6 +126,20 @@ describe("ReadingStore — by-url pointer", () => {
   });
 });
 
+describe("ReadingStore — by-id pointer", () => {
+  it("round-trips a by-id pointer", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = buildKeyPrefix("rd_X", "2026-04-26T20:00:00.000Z");
+    await store.writeByIdPointer("rd_X", { id: "rd_X", key_prefix: prefix });
+    expect(await store.readByIdPointer("rd_X")).toEqual({ id: "rd_X", key_prefix: prefix });
+  });
+
+  it("returns null when by-id pointer is missing", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    expect(await store.readByIdPointer("rd_missing")).toBeNull();
+  });
+});
+
 describe("ReadingStore — listManifests", () => {
   it("returns manifests newest-first", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);

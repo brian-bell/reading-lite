@@ -16,6 +16,7 @@ const MANIFEST_FILE = "manifest.json";
 const EXTRACTED_FILE = "extracted.md";
 const RAW_PREFIX = "raw.";
 const BY_URL_PREFIX = "index/by-url/";
+const BY_ID_PREFIX = "index/by-id/";
 const READINGS_PREFIX = "readings/";
 
 export function buildKeyPrefix(id: string, createdAtIso: string): string {
@@ -115,6 +116,19 @@ export class ReadingStore {
 
   async readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null> {
     const obj = await this.bucket.get(`${BY_URL_PREFIX}${urlHash}`);
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    return ByUrlPointerSchema.parse(json);
+  }
+
+  async writeByIdPointer(id: string, pointer: ByUrlPointer): Promise<void> {
+    await this.bucket.put(`${BY_ID_PREFIX}${id}`, JSON.stringify(pointer), {
+      httpMetadata: { contentType: "application/json" },
+    });
+  }
+
+  async readByIdPointer(id: string): Promise<ByUrlPointer | null> {
+    const obj = await this.bucket.get(`${BY_ID_PREFIX}${id}`);
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ByUrlPointerSchema.parse(json);

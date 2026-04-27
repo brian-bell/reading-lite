@@ -1,3 +1,5 @@
+import { createApp } from "./router";
+
 export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
@@ -11,12 +13,12 @@ export interface Env {
   ANTHROPIC_MODEL: string;
 }
 
+const app = createApp();
+
 export default {
-  async fetch(request: Request, _env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/health") {
-      return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
-    }
-    return new Response("not found", { status: 404 });
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    return app.fetch(request, env, ctx);
   },
 };
+
+export { createApp } from "./router";
