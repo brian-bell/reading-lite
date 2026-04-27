@@ -123,17 +123,17 @@ export async function processReading(
       manifestToIndexItem(finalManifest, args.keyPrefix),
     );
   } catch (e) {
-    await markFailed(reader, args, env, services, e);
+    await markFailed(reader, args, services, e);
   }
 }
 
 async function markFailed(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-  _env: Env,
   services: Services,
   e: unknown,
 ): Promise<void> {
+  console.error(e);
   const error: ManifestError = {
     code: e instanceof Error ? e.name : "unknown_error",
     message: e instanceof Error ? e.message : String(e),
@@ -185,8 +185,10 @@ function extToken(contentType: string): string {
   return "bin";
 }
 
-const EMBED_MAX_CHARS = 8000;
-function truncateForEmbed(text: string): string {
+export const EMBED_MAX_CHARS = 8000;
+export function truncateForEmbed(text: string): string {
   if (text.length <= EMBED_MAX_CHARS) return text;
-  return text.slice(0, EMBED_MAX_CHARS);
+  // Trim a trailing high surrogate so we don't leave a malformed UTF-16 pair
+  // when the cut lands between two halves of a surrogate-encoded codepoint.
+  return text.slice(0, EMBED_MAX_CHARS).replace(/[\uD800-\uDBFF]$/, "");
 }

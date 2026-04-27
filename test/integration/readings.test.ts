@@ -234,10 +234,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
-  it("failure path: source returns 404 → manifest ends failed, no by-url pointer", async () => {
+  it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const app = createApp({ services: makeServices(fetchFn) });
     const ctx = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
       new Request("http://t/readings", {
@@ -268,6 +269,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(lookup.status).toBe(404);
+
+    // The background failure should be logged for the operator (wrangler tail),
+    // not silently swallowed.
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 
   it("rejects an invalid url body", async () => {
