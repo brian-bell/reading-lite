@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Cloudflare Worker reading service: fetch URL, summarize via Claude, persist to R2 + Vectorize.",
   "scripts": {
-    "dev": "wrangler dev --experimental-vectorize-bind-to-prod",
+    "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -21,7 +21,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.5.40",
+    "@cloudflare/vitest-pool-workers": "^0.12.21",
     "@cloudflare/workers-types": "^4.20241230.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.5",
@@ -31,6 +31,6 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "~2.1.8",
-    "wrangler": "^3.99.0"
+    "wrangler": "^4.85.0"
   }
 }

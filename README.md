@@ -56,7 +56,7 @@ npx wrangler r2 bucket create reading-lite-staging
 npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
 ```
 
-The default `wrangler.toml` config (no `--env` flag) targets `reading-lite-staging` for both R2 and Vectorize. Vectorize has no local emulator, so the binding is marked `remote = true` and goes against the real staging index even under `wrangler dev`. Production resources live under `[env.production]` and are reached via `wrangler deploy --env production`.
+The default `wrangler.toml` config (no `--env` flag) targets `reading-lite-staging` for both R2 and Vectorize. Both bindings are marked `remote = true`, so `wrangler dev` runs your code locally against the real staging bucket and Vectorize index — handy for verifying that migrated rows are actually visible from the dev server. Production resources live under `[env.production]` and are reached via `wrangler deploy --env production`.
 
 ### Required secrets (production)
 

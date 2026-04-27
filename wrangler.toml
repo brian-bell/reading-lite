@@ -37,18 +37,19 @@ FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 # R2 bucket holding readings/{id}/manifest.json + raw + extracted, and index/by-url/{hash}.
+# `remote = true` makes `wrangler dev` bind to the real staging bucket instead
+# of the local Miniflare emulator, so migrated rows are visible from the dev server.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-staging"
+remote = true
 
 # Vectorize index (1536 dim, cosine) for similarity search.
-# Vectorize has no local emulator. In wrangler 3.x, `wrangler dev` is launched
-# with `--experimental-vectorize-bind-to-prod` (see package.json `dev` script)
-# so this binding talks to the real staging index. Wrangler 4.x replaces that
-# CLI flag with `remote = true` on the binding itself.
+# Vectorize has no local emulator; `remote = true` is required for `wrangler dev`.
 [[vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite-staging"
+remote = true
 
 # ---- production ----
 # Deploy with: `wrangler deploy --env production`.
