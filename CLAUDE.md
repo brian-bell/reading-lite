@@ -96,11 +96,12 @@ Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. The integratio
 
 ```sh
 npm install              # one-time (root)
-npm run dev              # wrangler dev (needs .dev.vars + staging R2/Vectorize)
+npm run dev              # wrangler dev (needs .dev.vars + staging R2/Vectorize via remote=true; local-only)
 npm test                 # vitest workspace, all worker + migration tests
 npm test -- <pattern>    # run a subset, e.g. "test/unit/extractor"
 npm run typecheck        # tsc --noEmit
-npm run deploy           # wrangler deploy (don't run from CI without explicit ask)
+npm run deploy           # worker deploy; dry-run by default. --execute to upload
+npm run deploy:web       # SPA → Cloudflare Pages; dry-run by default. --execute to upload
 npm run migrate -- ...   # one-shot migration; --dry-run to preview ops
 
 # SPA (separate project)

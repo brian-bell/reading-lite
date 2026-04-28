@@ -1,18 +1,25 @@
 # reading-lite — Cloudflare Worker
 #
 # Two environments:
-#   * default (staging) — used by `wrangler dev` and `wrangler deploy` (no --env)
-#   * production        — used by `wrangler deploy --env production`
+#   * default (staging) — used by `wrangler dev` for local testing only
+#                         (never deployed; the staging worker name guards against
+#                         an accidental bare `wrangler deploy` clobbering prod).
+#   * production        — used by `npm run deploy` (always passes --env production),
+#                         served at reading-lite.bbell.dev.
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
 #   2. `npx wrangler r2 bucket create reading-lite-staging` (one-time).
-#   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine` (one-time).
+#   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine`.
 #   4. `npm run dev`.
+#
+# Production setup (one-time):
+#   `npx wrangler r2 bucket create reading-lite`
+#   `npx wrangler vectorize create reading-lite --dimensions=1536 --metric=cosine`
+#   `wrangler secret put READER_API_TOKEN --env production`
+#   `wrangler secret put ANTHROPIC_API_KEY --env production`
+#   `wrangler secret put OPENAI_API_KEY --env production`
 
-# Top-level (= staging) deploys to a worker named `reading-lite-staging`,
-# so an accidental `wrangler deploy` without `--env production` cannot clobber
-# the production worker. `wrangler dev` ignores `name`.
 name = "reading-lite-staging"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
@@ -27,32 +34,26 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
 CORS_ALLOWED_ORIGINS = ""
-# How long a "pending" manifest is considered fresh before being surfaced as stale.
 PENDING_TTL_SECONDS = "300"
-# Hard fetch timeout for source URLs (ms).
 FETCH_TIMEOUT_MS = "20000"
-# Hard cap on response body bytes for source URLs.
 FETCH_MAX_BYTES = "10485760"
-# Anthropic model id.
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
-# R2 bucket holding readings/{id}/manifest.json + raw + extracted, and index/by-url/{hash}.
-# `remote = true` makes `wrangler dev` bind to the real staging bucket instead
-# of the local Miniflare emulator, so migrated rows are visible from the dev server.
+# `remote = true` makes `wrangler dev` bind to the real staging bucket
+# instead of Miniflare's local emulator, so migrated rows are visible from
+# the dev server. Vectorize has no local emulator; remote is required.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-staging"
 remote = true
 
-# Vectorize index (1536 dim, cosine) for similarity search.
-# Vectorize has no local emulator; `remote = true` is required for `wrangler dev`.
 [[vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite-staging"
 remote = true
 
 # ---- production ----
-# Deploy with: `wrangler deploy --env production`.
+# Deploy with `npm run deploy -- --execute` (which passes --env production).
 # Environments do NOT inherit top-level [vars] / bindings — repeat them here.
 
 [env.production]
@@ -72,3 +73,13 @@ bucket_name = "reading-lite"
 [[env.production.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite"
+
+# Worker routes scoped to API paths only; Pages (attached to the same custom
+# domain) serves the SPA at every other path. Worker routes win over Pages.
+[[env.production.routes]]
+pattern = "reading-lite.bbell.dev/readings*"
+zone_name = "bbell.dev"
+
+[[env.production.routes]]
+pattern = "reading-lite.bbell.dev/health"
+zone_name = "bbell.dev"

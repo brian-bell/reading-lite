@@ -56,7 +56,7 @@ npx wrangler r2 bucket create reading-lite-staging
 npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
 ```
 
-The default `wrangler.toml` config (no `--env` flag) targets `reading-lite-staging` for both R2 and Vectorize. Both bindings are marked `remote = true`, so `wrangler dev` runs your code locally against the real staging bucket and Vectorize index — handy for verifying that migrated rows are actually visible from the dev server. Production resources live under `[env.production]` and are reached via `wrangler deploy --env production`.
+`wrangler dev` (top-level `wrangler.toml`) targets the `reading-lite-staging` bucket + index for local testing only — never deployed. Both bindings are marked `remote = true`, so dev runs your code locally against the real staging bucket and Vectorize index. Production resources (`reading-lite` bucket + index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
 
 ### Required secrets (production)
 
@@ -109,7 +109,7 @@ npm run dev                            # wrangler dev on http://127.0.0.1:8787
 cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 ```
 
-The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. For production, deploy `web/dist/` (from `cd web && npm run build`) to Pages/Vercel/etc. and add the host to `CORS_ALLOWED_ORIGINS`.
+The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy with `npm run deploy:web -- --execute` (dry-run by default).
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
 
@@ -124,10 +124,10 @@ npm run migrate -- \
   --r2-account-id $CF_ACCOUNT_ID \
   --r2-access-key $R2_ACCESS_KEY_ID \
   --r2-secret-key $R2_SECRET_ACCESS_KEY \
-  --r2-bucket reading-lite-staging \
+  --r2-bucket reading-lite \
   --cf-api-token $CF_API_TOKEN \
   --vectorize-account-id $CF_ACCOUNT_ID \
-  --vectorize-index reading-lite-staging
+  --vectorize-index reading-lite
 ```
 
 Add `--dry-run` to print the planned R2 + Vectorize operations without hitting any remote API. Every flag also accepts an env var (`MIGRATE_<UPPER_SNAKE_CASE>`) or a value under the same name in a gitignored `.migrate.vars` file at the repo root. Resolution order: `--flag` > env var > `.migrate.vars`.
@@ -186,6 +186,6 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — migration script tests use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
-Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual verification against a staging deployment is part of the PRD's verification plan.
+Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke against staging bindings (`wrangler dev`) and the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
 
 `cd web && npm test` runs the SPA tests (jsdom + window.fetch stubs).

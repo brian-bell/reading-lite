@@ -6,7 +6,8 @@
   "description": "Cloudflare Worker reading service: fetch URL, summarize via Claude, persist to R2 + Vectorize.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "tsx scripts/deploy.ts",
+    "deploy:web": "tsx scripts/deploy-web.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
