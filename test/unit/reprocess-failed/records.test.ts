@@ -9,6 +9,7 @@ import {
   recordFileName,
   retryDecisionForAttempt,
   retryDecisionForRecord,
+  selectSingleRecord,
   type FailedAttemptRecord,
   type ReadingDiagnosticsLike,
 } from "../../../scripts/reprocess-failed-lib/records";
@@ -175,6 +176,36 @@ describe("record helpers", () => {
       attempt: { ...record().attempt, id: "at_new", started_at: "2026-05-02T18:05:00.000Z" },
     });
     expect(newestRecordPerReading([oldRecord, newRecord]).map((r) => r.attempt.id)).toEqual(["at_new"]);
+  });
+
+  it("selects a single requested reading from multiple records", () => {
+    const one = record();
+    const two = record({
+      reading: { ...record().reading, id: "rd_TWO", url: "https://example.com/two" },
+      attempt: {
+        ...record().attempt,
+        id: "at_TWO",
+        reading_id: "rd_TWO",
+        url: "https://example.com/two",
+      },
+    });
+
+    expect(selectSingleRecord([one, two], "rd_TWO").reading.id).toBe("rd_TWO");
+  });
+
+  it("rejects ambiguous multi-reading input without a requested reading id", () => {
+    const one = record();
+    const two = record({
+      reading: { ...record().reading, id: "rd_TWO", url: "https://example.com/two" },
+      attempt: {
+        ...record().attempt,
+        id: "at_TWO",
+        reading_id: "rd_TWO",
+        url: "https://example.com/two",
+      },
+    });
+
+    expect(() => selectSingleRecord([one, two])).toThrow(/pass --reading <id>/);
   });
 
   it("loads all JSON records in a directory while ignoring index.json", async () => {

@@ -243,6 +243,27 @@ export async function readRecordInput(inputPath: string): Promise<FailedAttemptR
   return [await readRecordFile(inputPath)];
 }
 
+export function selectSingleRecord(
+  records: FailedAttemptRecord[],
+  readingId?: string,
+): FailedAttemptRecord {
+  const candidates = readingId
+    ? records.filter((record) => record.reading.id === readingId)
+    : records;
+  const newest = newestRecordPerReading(candidates);
+
+  if (newest.length === 1) return newest[0]!;
+  if (newest.length === 0) {
+    const suffix = readingId ? ` for reading ${readingId}` : "";
+    throw new Error(`no failed-attempt records found${suffix}`);
+  }
+
+  const ids = newest.map((record) => record.reading.id).sort();
+  throw new Error(
+    `input contains ${ids.length} failed readings; pass --reading <id>. Candidates: ${ids.join(", ")}`,
+  );
+}
+
 export async function readRecordFile(filePath: string): Promise<FailedAttemptRecord> {
   const raw = await fs.readFile(filePath, "utf8");
   const parsed: unknown = JSON.parse(raw);

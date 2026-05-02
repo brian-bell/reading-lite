@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (280 root tests across 22 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Greenfield. Production-shaped TypeScript, fully unit-tested (282 root tests across 22 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
 
 ## Architecture at a glance
 
@@ -128,15 +128,15 @@ npm run gather:failed -- --base https://reading-lite.bbell.dev
 This writes one JSON record per failed attempt plus `index.json` under
 `.failed-attempts/<timestamp>/`. Failed manifests that predate attempt history
 are captured as legacy records. Each record includes the reading, failed
-attempt, and a retry decision. Then reprocess only retryable records from a file
-or directory:
+attempt, and a retry decision. Then reprocess a single retryable failed reading
+from a record file or directory:
 
 ```sh
-# dry run: prints which readings would be retried/skipped
-npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z
+# dry run: prints whether the selected reading would be retried/skipped
+npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z --reading rd_abc
 
-# enqueue retryable records
-npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z --execute
+# enqueue the selected retryable reading
+npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z --reading rd_abc --execute
 ```
 
 Retryability is conservative: explicit `retryable` from the Worker wins; legacy

@@ -4,17 +4,18 @@ import { loadDotVars } from "./lib/dotvars";
 import {
   readRecordInput,
   retryDecisionForRecord,
+  selectSingleRecord,
   type FailedAttemptRecord,
 } from "./reprocess-failed-lib/records";
 
 interface Args {
   input: string;
+  readingId: string | undefined;
   base: string;
   token: string;
   execute: boolean;
   force: boolean;
   includeNonRetryable: boolean;
-  limit: number;
 }
 
 interface Result {
@@ -31,12 +32,12 @@ function parseCliArgs(): Args {
     allowPositionals: true,
     options: {
       input: { type: "string" },
+      reading: { type: "string" },
       base: { type: "string" },
       token: { type: "string" },
       execute: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
       "include-non-retryable": { type: "boolean", default: false },
-      limit: { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -65,30 +66,26 @@ function parseCliArgs(): Args {
     process.exit(2);
   }
 
-  const limit = values.limit === undefined ? Number.POSITIVE_INFINITY : Number(values.limit);
-  if (!Number.isFinite(limit) && values.limit !== undefined) {
-    console.error("--limit must be a number");
-    process.exit(2);
-  }
-
   return {
     input,
+    readingId: values.reading,
     base: base.replace(/\/+$/, ""),
     token,
     execute: values.execute === true,
     force: values.force === true,
     includeNonRetryable: values["include-non-retryable"] === true,
-    limit,
   };
 }
 
 function printUsage(): void {
-  console.log(`Usage: npm run reprocess:failed -- --input <file-or-dir> [options]
+  console.log(`Usage: npm run reprocess:failed -- --input <file-or-dir> [--reading <id>] [options]
 
-Reads failed-attempt JSON records produced by gather:failed and reprocesses the
-retryable readings. Dry-run by default; pass --execute to POST reprocess jobs.
+Reads failed-attempt JSON records produced by gather:failed and reprocesses one
+retryable failed reading. Dry-run by default; pass --execute to POST the job.
 
   --input <path>              Record file or directory containing record JSON.
+  --reading <id>              Required when --input is a directory with more
+                              than one failed reading.
   --base <url>                Worker base URL. Default: READER_BASE_URL env,
                               then http://127.0.0.1:8787.
   --token <token>             Bearer token. Default: READER_API_TOKEN env,
@@ -96,75 +93,67 @@ retryable readings. Dry-run by default; pass --execute to POST reprocess jobs.
   --execute                   Actually call POST /readings/:id/reprocess.
   --force                     Send { "force": true } to bypass active attempts.
   --include-non-retryable     Reprocess records even when retry rules say skip.
-  --limit <n>                 Stop after n queued records.
   --help                      Show this message.`);
 }
 
 async function main(): Promise<void> {
   const args = parseCliArgs();
-  const records = await readRecordInput(args.input);
+  const record = selectSingleRecord(await readRecordInput(args.input), args.readingId);
   const headers = {
     authorization: `Bearer ${args.token}`,
     "content-type": "application/json",
   };
-  const results: Result[] = [];
-  let queued = 0;
-
-  for (const record of records) {
-    const decision = retryDecisionForRecord(record);
-    if (!decision.retry && !args.includeNonRetryable) {
-      results.push({
-        id: record.reading.id,
-        url: record.reading.url,
-        classification: "skipped",
-        reason: decision.reason,
-      });
-      process.stderr.write(`SKIP  ${record.reading.id} ${record.reading.url} (${decision.reason})\n`);
-      continue;
-    }
-    if (queued >= args.limit) {
-      results.push({
-        id: record.reading.id,
-        url: record.reading.url,
-        classification: "skipped",
-        reason: "limit reached",
-      });
-      continue;
-    }
-
-    if (!args.execute) {
-      queued += 1;
-      results.push({
-        id: record.reading.id,
-        url: record.reading.url,
-        classification: "queued",
-        reason: `dry run: ${decision.reason}`,
-      });
-      process.stderr.write(`WOULD ${record.reading.id} ${record.reading.url} (${decision.reason})\n`);
-      continue;
-    }
-
-    const result = await reprocessOne(args.base, headers, record, args.force);
-    results.push(result);
-    if (result.classification === "queued") {
-      queued += 1;
-      process.stderr.write(`QUEUE ${record.reading.id} attempt=${result.attempt_id ?? "(unknown)"}\n`);
-    } else {
-      process.stderr.write(`ERROR ${record.reading.id} ${result.error ?? "unknown"}\n`);
-    }
-  }
+  const decision = retryDecisionForRecord(record);
+  const result = await processOneRecord(args, headers, record, decision.reason, decision.retry);
 
   const summary = {
     input: args.input,
+    reading: record.reading.id,
     execute: args.execute,
-    total_records: records.length,
-    queued: results.filter((r) => r.classification === "queued").length,
-    skipped: results.filter((r) => r.classification === "skipped").length,
-    errors: results.filter((r) => r.classification === "error").length,
-    results,
+    classification: result.classification,
+    reason: result.reason,
+    error: result.error,
+    attempt_id: result.attempt_id,
+    result,
   };
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-  if (summary.errors > 0) process.exit(1);
+  if (result.classification === "error") process.exit(1);
+}
+
+async function processOneRecord(
+  args: Args,
+  headers: Record<string, string>,
+  record: FailedAttemptRecord,
+  reason: string,
+  retryable: boolean,
+): Promise<Result> {
+  if (!retryable && !args.includeNonRetryable) {
+    process.stderr.write(`SKIP  ${record.reading.id} ${record.reading.url} (${reason})\n`);
+    return {
+      id: record.reading.id,
+      url: record.reading.url,
+      classification: "skipped",
+      reason,
+    };
+  }
+
+  if (!args.execute) {
+    process.stderr.write(`WOULD ${record.reading.id} ${record.reading.url} (${reason})\n`);
+    return {
+      id: record.reading.id,
+      url: record.reading.url,
+      classification: "queued",
+      reason: `dry run: ${reason}`,
+    };
+  }
+
+  const result = await reprocessOne(args.base, headers, record, args.force);
+  if (result.classification === "queued") {
+    process.stderr.write(`QUEUE ${record.reading.id} attempt=${result.attempt_id ?? "(unknown)"}\n`);
+  } else {
+    process.stderr.write(`ERROR ${record.reading.id} ${result.error ?? "unknown"}\n`);
+  }
+  return result;
 }
 
 async function reprocessOne(
