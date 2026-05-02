@@ -38,6 +38,7 @@ export default [
       include: [
         "test/unit/migrate/**/*.test.ts",
         "test/unit/import-bookmarks/**/*.test.ts",
+        "test/unit/reprocess-failed/**/*.test.ts",
       ],
       environment: "node",
     },
