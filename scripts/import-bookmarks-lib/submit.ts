@@ -139,9 +139,28 @@ async function processOne(
       total,
       url,
       classification: "error",
-      error: err instanceof Error ? err.message : String(err),
+      error: formatFetchError(err),
     };
   }
+}
+
+// Unwraps the cause chain so undici's opaque "fetch failed" surfaces the real
+// reason (UND_ERR_SOCKET, ECONNRESET, TLS error code, etc.).
+function formatFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts: string[] = [err.message];
+  let cause: unknown = (err as { cause?: unknown }).cause;
+  while (cause) {
+    if (cause instanceof Error) {
+      const code = (cause as { code?: string }).code;
+      parts.push(code ? `${code}: ${cause.message}` : cause.message);
+      cause = (cause as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cause));
+      break;
+    }
+  }
+  return parts.join(" / ");
 }
 
 function isHttpUrl(s: string): boolean {

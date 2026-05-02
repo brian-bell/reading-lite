@@ -70,6 +70,24 @@ describe("submitAll", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
 
+  it("surfaces the cause chain in the error message", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      const inner = Object.assign(new Error("Other side closed"), { code: "UND_ERR_SOCKET" });
+      throw Object.assign(new TypeError("fetch failed"), { cause: inner });
+    });
+    const results: SubmitResult[] = [];
+    await submitAll(["https://x.test/"], {
+      fetch: fetchMock,
+      base: "http://localhost:8787",
+      token: "tok",
+      concurrency: 1,
+      onResult: async (r) => {
+        results.push(r);
+      },
+    });
+    expect(results[0]!.error).toBe("fetch failed / UND_ERR_SOCKET: Other side closed");
+  });
+
   it("retries on transport error and recovers if a subsequent attempt succeeds", async () => {
     let calls = 0;
     const fetchMock = vi.fn<typeof fetch>(async () => {
