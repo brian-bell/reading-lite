@@ -14,10 +14,9 @@ import { collectLinks, selectFolder } from "./import-bookmarks-lib/select";
 import { submitAll, type SubmitResult } from "./import-bookmarks-lib/submit";
 
 interface Args {
-  file?: string;
-  url?: string;
+  file: string;
   folder: string;
-  base: string;
+  destinationUrl: string;
   token: string;
   concurrency: number;
   indexPath: string;
@@ -25,13 +24,14 @@ interface Args {
   quick: boolean;
 }
 
+const DEFAULT_DESTINATION_URL = "http://127.0.0.1:8787/readings";
+
 function parseCliArgs(): Args {
   const { values } = parseArgs({
     options: {
       file: { type: "string" },
-      url: { type: "string" },
       folder: { type: "string" },
-      base: { type: "string" },
+      url: { type: "string" },
       token: { type: "string" },
       concurrency: { type: "string" },
       index: { type: "string" },
@@ -46,23 +46,20 @@ function parseCliArgs(): Args {
     process.exit(0);
   }
 
-  if (!values.file && !values.url) {
-    console.error("missing required input: pass --file <path> or --url <url>");
+  if (!values.file) {
+    console.error("missing required --file <path>");
     printUsage();
-    process.exit(2);
-  }
-  if (values.file && values.url) {
-    console.error("--file and --url are mutually exclusive");
-    process.exit(2);
-  }
-  if (values.url && !/^https?:\/\//i.test(values.url)) {
-    console.error(`--url must start with http:// or https:// (got ${values.url})`);
     process.exit(2);
   }
 
   const devVars = loadDotVars(".dev.vars");
-  const base =
-    values.base ?? process.env.READER_BASE_URL ?? "http://127.0.0.1:8787";
+  const destinationUrl =
+    values.url ?? process.env.READER_URL ?? DEFAULT_DESTINATION_URL;
+  if (!/^https?:\/\//i.test(destinationUrl)) {
+    console.error(`--url must start with http:// or https:// (got ${destinationUrl})`);
+    process.exit(2);
+  }
+
   const token =
     values.token ?? process.env.READER_API_TOKEN ?? devVars.READER_API_TOKEN ?? "";
   if (!token && !values["dry-run"]) {
@@ -80,9 +77,8 @@ function parseCliArgs(): Args {
 
   return {
     file: values.file,
-    url: values.url,
     folder: values.folder ?? "Computing",
-    base: base.replace(/\/+$/, ""),
+    destinationUrl,
     token,
     concurrency,
     indexPath: values.index ?? "./.import-bookmarks-index.json",
@@ -92,14 +88,14 @@ function parseCliArgs(): Args {
 }
 
 function printUsage(): void {
-  console.log(`Usage: npm run import-bookmarks -- (--file <path> | --url <url>) [options]
+  console.log(`Usage: npm run import-bookmarks -- --file <path> [options]
 
-  --file <path>         Chrome bookmark HTML export. Mutually exclusive with --url.
-  --url <url>           Submit a single URL. Mutually exclusive with --file.
-  --folder <path>       Folder path (only with --file). Default: "Computing".
+  --file <path>         Chrome bookmark HTML export (required).
+  --folder <path>       Folder path. Default: "Computing".
                         Use "/" for nested (e.g. "Computing/AI/MCP").
-  --base <url>          Reader base URL. Default: READER_BASE_URL env, then
-                        http://127.0.0.1:8787.
+  --url <url>           Destination — full URL of the readings endpoint to
+                        POST to. Default: READER_URL env, then
+                        ${DEFAULT_DESTINATION_URL}.
   --token <token>       Bearer token. Default: READER_API_TOKEN env, then
                         .dev.vars READER_API_TOKEN.
   --concurrency <n>     Parallel POSTs in --quick mode. Default: 4.
@@ -111,9 +107,9 @@ function printUsage(): void {
                         the configured concurrency).
   --help                Show this message.
 
-Submits each URL to POST /readings. Skips URLs that are already recorded in
-the local index (per base URL). On success, records the URL in the index
-immediately so re-runs and resumes are no-ops.
+Submits each URL in the chosen folder to the destination. Skips URLs that
+are already recorded in the local index (per destination). On success,
+records the URL in the index immediately so re-runs and resumes are no-ops.
 
 Default flow asks Y/n/q before each URL: Enter or 'y' to submit, 'n' to skip,
 'q' to abort. Use --quick to fire everything without prompting.`);
@@ -122,16 +118,25 @@ Default flow asks Y/n/q before each URL: Enter or 'y' to submit, 'n' to skip,
 async function main(): Promise<void> {
   const args = parseCliArgs();
 
-  const { allUrls, source } = await collectInputUrls(args);
+  const raw = await fs.readFile(args.file, "utf8");
+  const tree = parseBookmarksHtml(raw);
+  const folder = selectFolder(tree, args.folder);
+  if (!folder) {
+    console.error(`folder not found: ${args.folder}`);
+    console.error(`top-level folders: ${tree.folders.map((f) => f.name).join(", ")}`);
+    process.exit(1);
+  }
+
+  const allUrls = collectLinks(folder).map((l) => l.url);
   const index = await loadIndex(args.indexPath);
-  const { unseen, seen } = filterUnseen(allUrls, index, args.base);
+  const { unseen, seen } = filterUnseen(allUrls, index, args.destinationUrl);
 
   const mode = args.quick ? `quick, concurrency ${args.concurrency}` : "interactive";
   process.stderr.write(
-    `Source:       ${source}\n` +
+    `Folder:       ${args.folder}\n` +
       `URLs found:   ${allUrls.length}\n` +
       `Already sent: ${seen.length}  (from ${args.indexPath})\n` +
-      `Will submit:  ${unseen.length} to ${args.base} (${mode})\n\n`,
+      `Will submit:  ${unseen.length} to ${args.destinationUrl} (${mode})\n\n`,
   );
 
   if (args.dryRun) {
@@ -139,13 +144,13 @@ async function main(): Promise<void> {
       process.stderr.write(`[dry-run] would submit:\n`);
       for (const url of unseen) process.stderr.write(`  ${url}\n`);
     }
-    printSummary({ source, total: allUrls.length, indexed: seen.length, submitted: 0,
+    printSummary({ folder: args.folder, total: allUrls.length, indexed: seen.length, submitted: 0,
       new: 0, existing: 0, skipped: 0, errors: 0, indexPath: args.indexPath });
     return;
   }
 
   if (unseen.length === 0) {
-    printSummary({ source, total: allUrls.length, indexed: seen.length, submitted: 0,
+    printSummary({ folder: args.folder, total: allUrls.length, indexed: seen.length, submitted: 0,
       new: 0, existing: 0, skipped: 0, errors: 0, indexPath: args.indexPath });
     return;
   }
@@ -155,7 +160,7 @@ async function main(): Promise<void> {
   try {
     summary = await submitAll(unseen, {
       fetch: globalThis.fetch,
-      base: args.base,
+      destinationUrl: args.destinationUrl,
       token: args.token,
       concurrency: args.concurrency,
       beforeSubmit: prompter
@@ -171,7 +176,7 @@ async function main(): Promise<void> {
       onResult: async (r) => {
         logResult(r);
         if (r.classification === "new" || r.classification === "existing") {
-          recordResult(index, args.base, r.url, {
+          recordResult(index, args.destinationUrl, r.url, {
             id: r.id ?? "",
             submitted_at: new Date().toISOString(),
             classification: r.classification,
@@ -185,7 +190,7 @@ async function main(): Promise<void> {
   }
 
   printSummary({
-    source,
+    folder: args.folder,
     total: allUrls.length,
     indexed: seen.length,
     submitted: summary.new + summary.existing + summary.skipped + summary.errors,
@@ -198,25 +203,6 @@ async function main(): Promise<void> {
   if (summary.errors > 0) process.exit(1);
 }
 
-async function collectInputUrls(args: Args): Promise<{ allUrls: string[]; source: string }> {
-  if (args.url) {
-    return { allUrls: [args.url], source: args.url };
-  }
-  if (!args.file) {
-    // unreachable: parseCliArgs enforces one of file/url
-    throw new Error("no input source");
-  }
-  const raw = await fs.readFile(args.file, "utf8");
-  const tree = parseBookmarksHtml(raw);
-  const folder = selectFolder(tree, args.folder);
-  if (!folder) {
-    console.error(`folder not found: ${args.folder}`);
-    console.error(`top-level folders: ${tree.folders.map((f) => f.name).join(", ")}`);
-    process.exit(1);
-  }
-  return { allUrls: collectLinks(folder).map((l) => l.url), source: args.folder };
-}
-
 function logResult(r: SubmitResult): void {
   const tag = r.classification.padEnd(8);
   const id = r.id ? `id=${r.id} ` : "";
@@ -225,7 +211,7 @@ function logResult(r: SubmitResult): void {
 }
 
 interface FinalSummary {
-  source: string;
+  folder: string;
   total: number;
   indexed: number;
   submitted: number;
@@ -238,7 +224,7 @@ interface FinalSummary {
 
 function printSummary(s: FinalSummary): void {
   process.stdout.write(JSON.stringify({
-    source: s.source,
+    folder: s.folder,
     total: s.total,
     indexed: s.indexed,
     submitted: s.submitted,

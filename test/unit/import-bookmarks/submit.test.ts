@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { submitAll, type SubmitResult } from "../../../scripts/import-bookmarks-lib/submit";
 
+const DEST = "http://localhost:8787/readings";
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -27,7 +29,7 @@ describe("submitAll", () => {
       ],
       {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 2,
         onResult: async (r) => {
@@ -57,7 +59,7 @@ describe("submitAll", () => {
     const results: SubmitResult[] = [];
     const summary = await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: DEST,
       token: "tok",
       concurrency: 1,
       onResult: async (r) => {
@@ -78,7 +80,7 @@ describe("submitAll", () => {
     const results: SubmitResult[] = [];
     await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: DEST,
       token: "tok",
       concurrency: 1,
       onResult: async (r) => {
@@ -97,7 +99,7 @@ describe("submitAll", () => {
     });
     const summary = await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: DEST,
       token: "tok",
       concurrency: 1,
       onResult: async () => {},
@@ -110,7 +112,7 @@ describe("submitAll", () => {
     const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(503, { error: "down" }));
     const summary = await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: DEST,
       token: "tok",
       concurrency: 1,
       onResult: async () => {},
@@ -119,38 +121,24 @@ describe("submitAll", () => {
     expect(summary).toMatchObject({ errors: 1 });
   });
 
-  it("sends bearer auth and a JSON body to /readings", async () => {
+  it("POSTs to the destination URL with bearer auth and a JSON body", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse(202, { id: "rd_x", status: "pending" }),
     );
     await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: "https://reading-lite.bbell.dev/readings",
       token: "tok-abc",
       concurrency: 1,
       onResult: async () => {},
     });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("http://localhost:8787/readings");
+    expect(url).toBe("https://reading-lite.bbell.dev/readings");
     expect(init?.method).toBe("POST");
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe("Bearer tok-abc");
     expect(headers.get("content-type")).toBe("application/json");
     expect(JSON.parse(String(init?.body))).toEqual({ url: "https://x.test/" });
-  });
-
-  it("strips a trailing slash from base before joining /readings", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse(202, { id: "rd_x", status: "pending" }),
-    );
-    await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      base: "http://localhost:8787/",
-      token: "tok",
-      concurrency: 1,
-      onResult: async () => {},
-    });
-    expect(fetchMock.mock.calls[0]![0]).toBe("http://localhost:8787/readings");
   });
 
   it("respects the concurrency cap", async () => {
@@ -167,7 +155,7 @@ describe("submitAll", () => {
       Array.from({ length: 10 }, (_, i) => `https://${i}.test/`),
       {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 3,
         onResult: async () => {},
@@ -185,7 +173,7 @@ describe("submitAll", () => {
     const totals: number[] = [];
     await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
       fetch: fetchMock,
-      base: "http://localhost:8787",
+      destinationUrl: DEST,
       token: "tok",
       concurrency: 1,
       onResult: async (r) => {
@@ -204,7 +192,7 @@ describe("submitAll", () => {
       );
       const summary = await submitAll(["https://a.test/", "https://b.test/"], {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 4,
         beforeSubmit: async () => "submit",
@@ -222,7 +210,7 @@ describe("submitAll", () => {
       let i = 0;
       const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 4,
         beforeSubmit: async () => decisions[i++]!,
@@ -241,7 +229,7 @@ describe("submitAll", () => {
       const calls: string[] = [];
       const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 4,
         beforeSubmit: async (ctx) => {
@@ -269,7 +257,7 @@ describe("submitAll", () => {
         Array.from({ length: 5 }, (_, i) => `https://${i}.test/`),
         {
           fetch: fetchMock,
-          base: "http://localhost:8787",
+          destinationUrl: DEST,
           token: "tok",
           concurrency: 10,
           beforeSubmit: async () => "submit",
@@ -286,7 +274,7 @@ describe("submitAll", () => {
       const seen: string[] = [];
       const summary = await submitAll(["chrome://settings", "https://x.test/"], {
         fetch: fetchMock,
-        base: "http://localhost:8787",
+        destinationUrl: DEST,
         token: "tok",
         concurrency: 1,
         beforeSubmit: async (ctx) => {

@@ -27,7 +27,9 @@ export interface BeforeSubmitContext {
 
 export interface SubmitOpts {
   fetch: typeof fetch;
-  base: string;
+  // Full destination URL of the readings endpoint, e.g.
+  // https://reading-lite.bbell.dev/readings.
+  destinationUrl: string;
   token: string;
   concurrency: number;
   onResult: (result: SubmitResult) => Promise<void> | void;
@@ -39,10 +41,9 @@ export interface SubmitOpts {
 
 export async function submitAll(urls: string[], opts: SubmitOpts): Promise<SubmitSummary> {
   const summary: SubmitSummary = { total: urls.length, new: 0, existing: 0, errors: 0, skipped: 0 };
-  const base = opts.base.replace(/\/+$/, "");
 
   if (opts.beforeSubmit) {
-    return runSerial(urls, summary, base, opts);
+    return runSerial(urls, summary, opts);
   }
 
   const concurrency = Math.max(1, Math.floor(opts.concurrency));
@@ -52,7 +53,7 @@ export async function submitAll(urls: string[], opts: SubmitOpts): Promise<Submi
       const i = next++;
       if (i >= urls.length) return;
       const url = urls[i]!;
-      const result = await processOne(url, i + 1, urls.length, base, opts);
+      const result = await processOne(url, i + 1, urls.length, opts);
       summary[counterFor(result.classification)] += 1;
       await opts.onResult(result);
     }
@@ -64,7 +65,6 @@ export async function submitAll(urls: string[], opts: SubmitOpts): Promise<Submi
 async function runSerial(
   urls: string[],
   summary: SubmitSummary,
-  base: string,
   opts: SubmitOpts,
 ): Promise<SubmitSummary> {
   for (let i = 0; i < urls.length; i++) {
@@ -88,7 +88,7 @@ async function runSerial(
       continue;
     }
 
-    const result = await processOne(url, index, total, base, opts);
+    const result = await processOne(url, index, total, opts);
     summary[counterFor(result.classification)] += 1;
     await opts.onResult(result);
   }
@@ -99,14 +99,13 @@ async function processOne(
   url: string,
   index: number,
   total: number,
-  base: string,
   opts: SubmitOpts,
 ): Promise<SubmitResult> {
   if (!isHttpUrl(url)) {
     return { index, total, url, classification: "skipped" };
   }
   try {
-    const res = await postWithRetry(`${base}/readings`, {
+    const res = await postWithRetry(opts.destinationUrl, {
       method: "POST",
       headers: {
         authorization: `Bearer ${opts.token}`,
