@@ -3,6 +3,7 @@ import {
   ManifestSchema,
   EmitReadingToolInputSchema,
   ByUrlPointerSchema,
+  ProcessingAttemptSchema,
   type Manifest,
 } from "../../../src/schemas/manifest";
 
@@ -73,6 +74,28 @@ describe("ManifestSchema", () => {
     expect(ManifestSchema.parse(failed)).toEqual(failed);
   });
 
+  it("accepts processing attempt summaries on a manifest", () => {
+    const withAttempts: Manifest = {
+      ...baseReady,
+      active_attempt: {
+        id: "at_1",
+        trigger: "reprocess",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T20:00:05.000Z",
+      },
+      last_attempt: {
+        id: "at_0",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T20:00:00.000Z",
+        finished_at: "2026-04-26T20:00:04.000Z",
+      },
+    };
+    expect(ManifestSchema.parse(withAttempts)).toEqual(withAttempts);
+  });
+
   it("rejects unknown status", () => {
     expect(() => ManifestSchema.parse({ ...baseReady, status: "in_progress" })).toThrow();
   });
@@ -101,6 +124,48 @@ describe("ManifestSchema", () => {
   it("strips unknown top-level keys", () => {
     const parsed = ManifestSchema.parse({ ...baseReady, surprise: "no" } as unknown);
     expect((parsed as Record<string, unknown>).surprise).toBeUndefined();
+  });
+});
+
+describe("ProcessingAttemptSchema", () => {
+  it("accepts a failed attempt with staged events", () => {
+    const attempt = {
+      id: "at_1",
+      trigger: "submit",
+      status: "failed",
+      stage: "summarize",
+      started_at: "2026-04-26T20:00:00.000Z",
+      finished_at: "2026-04-26T20:00:05.000Z",
+      reading_id: "rd_1",
+      url: "https://example.com/a",
+      url_hash: "a".repeat(64),
+      key_prefix: "readings/2026/04/26T200000Z-rd_1",
+      error: {
+        code: "AnthropicError",
+        message: "rate limited",
+        stage: "summarize",
+        failed_at: "2026-04-26T20:00:05.000Z",
+        retryable: true,
+      },
+      events: [
+        { stage: "queued", status: "started", at: "2026-04-26T20:00:00.000Z" },
+        { stage: "summarize", status: "started", at: "2026-04-26T20:00:01.000Z" },
+        {
+          stage: "summarize",
+          status: "failed",
+          at: "2026-04-26T20:00:05.000Z",
+          duration_ms: 4000,
+          error: {
+            code: "AnthropicError",
+            message: "rate limited",
+            stage: "summarize",
+            failed_at: "2026-04-26T20:00:05.000Z",
+            retryable: true,
+          },
+        },
+      ],
+    };
+    expect(ProcessingAttemptSchema.parse(attempt)).toEqual(attempt);
   });
 });
 

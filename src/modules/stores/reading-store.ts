@@ -1,7 +1,9 @@
 import {
   ManifestSchema,
+  ProcessingAttemptSchema,
   ByUrlPointerSchema,
   type Manifest,
+  type ProcessingAttempt,
   type ByUrlPointer,
 } from "../../schemas/manifest";
 import {
@@ -20,6 +22,7 @@ export class PointerExistsError extends Error {
 const MANIFEST_FILE = "manifest.json";
 const EXTRACTED_FILE = "extracted.md";
 const RAW_PREFIX = "raw.";
+const ATTEMPTS_PREFIX = "attempts/";
 const BY_URL_PREFIX = "index/by-url/";
 const BY_ID_PREFIX = "index/by-id/";
 const READINGS_PREFIX = "readings/";
@@ -72,7 +75,15 @@ export function manifestToIndexItem(
   if (m.tags !== undefined) item.tags = m.tags;
   if (m.novelty_verdict !== undefined) item.novelty_verdict = m.novelty_verdict;
   if (m.error !== undefined) item.error = m.error;
+  if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
+  if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;
   return item;
+}
+
+export interface ReadingObjectInfo {
+  key: string;
+  size: number;
+  uploaded?: string;
 }
 
 export class ReadingStore {
@@ -132,6 +143,52 @@ export class ReadingStore {
     };
   }
 
+  async writeAttempt(keyPrefix: string, attempt: ProcessingAttempt): Promise<void> {
+    await this.bucket.put(
+      `${keyPrefix}/${ATTEMPTS_PREFIX}${attempt.id}.json`,
+      JSON.stringify(attempt),
+      {
+        httpMetadata: { contentType: "application/json" },
+      },
+    );
+  }
+
+  async listAttempts(keyPrefix: string, limit = 20): Promise<ProcessingAttempt[]> {
+    const prefix = `${keyPrefix}/${ATTEMPTS_PREFIX}`;
+    const attempts: ProcessingAttempt[] = [];
+    let cursor: string | undefined;
+    do {
+      const list = await this.bucket.list({
+        prefix,
+        limit: 1000,
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const obj of list.objects) {
+        if (!obj.key.endsWith(".json")) continue;
+        const body = await this.bucket.get(obj.key);
+        if (!body) continue;
+        const json: unknown = JSON.parse(await body.text());
+        const parsed = ProcessingAttemptSchema.safeParse(json);
+        if (parsed.success) attempts.push(parsed.data);
+      }
+      cursor = list.truncated ? list.cursor : undefined;
+    } while (cursor);
+
+    attempts.sort((a, b) =>
+      a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0,
+    );
+    return attempts.slice(0, limit);
+  }
+
+  async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {
+    const list = await this.bucket.list({ prefix: `${keyPrefix}/`, limit: 1000 });
+    return list.objects.map((obj) => ({
+      key: obj.key,
+      size: obj.size,
+      uploaded: obj.uploaded?.toISOString(),
+    }));
+  }
+
   async writeByUrlPointer(
     urlHash: string,
     pointer: ByUrlPointer,
@@ -185,6 +242,11 @@ export class ReadingStore {
     const items = existing.items.filter((i) => i.id !== item.id);
     items.push(item);
     await this.writeListIndex({ version: 1, items });
+  }
+
+  async findListIndexItem(id: string): Promise<ListIndexItem | null> {
+    const index = await this.readListIndex();
+    return index?.items.find((i) => i.id === id) ?? null;
   }
 
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tokenStorageKey } from "./api";
 import { App } from "./App";
-import type { ListReading, Manifest, ListReadingsResponse } from "./types";
+import type { ListReading, Manifest, ListReadingsResponse, ReadingDiagnostics } from "./types";
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -50,6 +50,50 @@ function listReading(overrides: Partial<ListReading> = {}): ListReading {
     novelty_verdict: "novel",
     created_at: "2026-04-25T16:00:00.000Z",
     updated_at: "2026-04-25T16:00:00.000Z",
+    ...overrides
+  };
+}
+
+function diagnostics(overrides: Partial<ReadingDiagnostics> = {}): ReadingDiagnostics {
+  return {
+    id: "rd_ONE",
+    key_prefix: "readings/2026/04/25T160000Z-rd_ONE",
+    manifest: manifest(),
+    index_item: listReading(),
+    pointers: {
+      by_id: {
+        exists: true,
+        pointer: { id: "rd_ONE", key_prefix: "readings/2026/04/25T160000Z-rd_ONE" },
+        matches_manifest: true
+      },
+      by_url: {
+        exists: true,
+        pointer: { id: "rd_ONE", key_prefix: "readings/2026/04/25T160000Z-rd_ONE" },
+        matches_manifest: true
+      }
+    },
+    objects: [
+      { key: "readings/2026/04/25T160000Z-rd_ONE/manifest.json", size: 500 },
+      { key: "readings/2026/04/25T160000Z-rd_ONE/raw.html", size: 100 }
+    ],
+    attempts: [
+      {
+        id: "at_ONE",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-25T16:00:00.000Z",
+        finished_at: "2026-04-25T16:00:05.000Z",
+        reading_id: "rd_ONE",
+        url: "https://example.com/one",
+        url_hash: "a".repeat(64),
+        key_prefix: "readings/2026/04/25T160000Z-rd_ONE",
+        events: [
+          { stage: "queued", status: "started", at: "2026-04-25T16:00:00.000Z" },
+          { stage: "fetch_source", status: "succeeded", at: "2026-04-25T16:00:01.000Z" }
+        ]
+      }
+    ],
     ...overrides
   };
 }
@@ -188,14 +232,76 @@ describe("App", () => {
     expect(within(panel).getByText(/no connections/i)).toBeInTheDocument();
   });
 
+  it("renders diagnostics from the diagnostics endpoint", async () => {
+    const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    const heading = await screen.findByRole("heading", { name: "Diagnostics" });
+    const panel = heading.closest("section") as HTMLElement;
+    expect(await within(panel).findByText("write indexes")).toBeInTheDocument();
+    expect(within(panel).getByText("Objects")).toBeInTheDocument();
+    expect(within(panel).getByText("2")).toBeInTheDocument();
+  });
+
+  it("posts reprocess from the detail page and refreshes reading data", async () => {
+    const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
+      const url = new URL(req.url);
+      if (req.method === "POST" && url.pathname === "/readings/rd_ONE/reprocess") {
+        return jsonResponse(
+          { id: "rd_ONE", status: "ready", poll: "/readings/rd_ONE", attempt_id: "at_TWO" },
+          202
+        );
+      }
+      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
+      if (url.pathname === "/readings") return jsonResponse(onePage);
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    await user.click(await screen.findByRole("button", { name: "Reprocess" }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find((c) => {
+        const req = c[0] as Request;
+        return req.method === "POST" && new URL(req.url).pathname === "/readings/rd_ONE/reprocess";
+      });
+      expect(post).toBeDefined();
+    });
+  });
+
   it("renders a status badge for pending readings on the list", async () => {
     stubJSON({
       ...onePage,
-      readings: [listReading({ status: "pending", title: "Pending One", tldr: undefined })]
+      readings: [
+        listReading({
+          status: "pending",
+          title: "Pending One",
+          tldr: undefined,
+          active_attempt: {
+            id: "at_submit",
+            trigger: "submit",
+            status: "running",
+            stage: "fetch_source",
+            started_at: "2026-04-25T16:00:00.000Z"
+          }
+        })
+      ]
     });
     render(<App initialPath="/" />);
     await waitForElementToBeRemoved(() => screen.queryByText("Loading readings"));
     expect(screen.getByText(/processing/i)).toBeInTheDocument();
+    expect(screen.queryByText(/reprocessing/i)).not.toBeInTheDocument();
   });
 
   it("renders a failed badge with the error message on the list", async () => {

@@ -10,7 +10,14 @@ import {
   summarizeReading,
   type SimilarContext,
 } from "./modules/anthropic";
-import type { Manifest, ManifestError } from "./schemas/manifest";
+import type {
+  Manifest,
+  ManifestError,
+  ProcessingAttempt,
+  ProcessingAttemptSummary,
+  ProcessingAttemptTrigger,
+  ProcessingStage,
+} from "./schemas/manifest";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -21,6 +28,10 @@ export interface ProcessReadingArgs {
   urlHash: string;
   createdAt: string;
   keyPrefix: string;
+  attemptId?: string;
+  attemptStartedAt?: string;
+  trigger?: ProcessingAttemptTrigger;
+  preserveReadyManifest?: Manifest;
 }
 
 export async function processReading(
@@ -30,59 +41,89 @@ export async function processReading(
 ): Promise<void> {
   const reader = new ReadingStore(env.READINGS_BUCKET);
   const similarity = new SimilarityStore(env.READINGS_INDEX);
+  const attempt = newProcessingAttempt(args, services);
 
   try {
-    const extracted = await extractFromUrl(args.url, {
-      fetch: services.fetch,
-      timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
-      maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
-    });
+    await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
-    await reader.writeRaw(args.keyPrefix, extToken(extracted.content_type), extracted.raw, extracted.content_type);
+    const extracted = await runStage(attempt, reader, args.keyPrefix, services, "fetch_source", () =>
+      extractFromUrl(args.url, {
+        fetch: services.fetch,
+        timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
+        maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
+      }),
+    );
+
+    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", () =>
+      reader.writeRaw(
+        args.keyPrefix,
+        extToken(extracted.content_type),
+        extracted.raw,
+        extracted.content_type,
+      ),
+    );
     if (extracted.markdown) {
-      await reader.writeExtracted(args.keyPrefix, extracted.markdown);
+      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", () =>
+        reader.writeExtracted(args.keyPrefix, extracted.markdown!),
+      );
     }
 
     const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
 
     // Embed the extracted text to get top-K similar.
-    const queryEmbed = await embed(truncateForEmbed(promptText), {
-      fetch: services.fetch,
-      apiKey: env.OPENAI_API_KEY,
-    });
-    const similar = await similarity.query(queryEmbed.embedding, 5);
+    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", () =>
+      embed(truncateForEmbed(promptText), {
+        fetch: services.fetch,
+        apiKey: env.OPENAI_API_KEY,
+      }),
+    );
+    const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
+      similarity.query(queryEmbed.embedding, 5),
+    );
     const similarContext: SimilarContext[] = similar
       .filter((s) => s.id !== args.id)
       .map((s) => ({ id: s.id, url: s.url, title: s.title }));
 
-    const llm = await summarizeReading(
-      {
-        url: args.url,
-        extractedText: promptText,
-        title: extracted.title,
-        similarReadings: similarContext,
-      },
-      {
-        fetch: services.fetch,
-        apiKey: env.ANTHROPIC_API_KEY,
-        model: env.ANTHROPIC_MODEL,
-      },
+    const llm = await runStage(
+      attempt,
+      reader,
+      args.keyPrefix,
+      services,
+      "summarize",
+      () =>
+        summarizeReading(
+          {
+            url: args.url,
+            extractedText: promptText,
+            title: extracted.title,
+            similarReadings: similarContext,
+          },
+          {
+            fetch: services.fetch,
+            apiKey: env.ANTHROPIC_API_KEY,
+            model: env.ANTHROPIC_MODEL,
+          },
+        ),
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
-    const tldrEmbed = await embed(llm.reading.tldr, {
-      fetch: services.fetch,
-      apiKey: env.OPENAI_API_KEY,
-    });
+    const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
+      embed(llm.reading.tldr, {
+        fetch: services.fetch,
+        apiKey: env.OPENAI_API_KEY,
+      }),
+    );
 
-    await similarity.upsert(args.id, tldrEmbed.embedding, {
-      url: args.url,
-      title: llm.reading.title,
-      tags: llm.reading.tags,
-      created_at: args.createdAt,
-    });
+    await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
+      similarity.upsert(args.id, tldrEmbed.embedding, {
+        url: args.url,
+        title: llm.reading.title,
+        tags: llm.reading.tags,
+        created_at: args.createdAt,
+      }),
+    );
 
-    const finalManifest: Manifest = {
+    let finalManifest: Manifest = {
       id: args.id,
       url: args.url,
       url_hash: args.urlHash,
@@ -106,6 +147,7 @@ export async function processReading(
       fetched_at: services.now(),
       created_at: args.createdAt,
       updated_at: services.now(),
+      last_attempt: summarizeAttempt(attempt),
       usage: {
         anthropic_input_tokens: llm.usage.input_tokens,
         anthropic_output_tokens: llm.usage.output_tokens,
@@ -114,16 +156,40 @@ export async function processReading(
       },
     };
 
-    await reader.writeManifest(args.keyPrefix, finalManifest);
-    await reader.writeByUrlPointer(
-      args.urlHash,
-      { id: args.id, key_prefix: args.keyPrefix },
+    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", () =>
+      reader.writeManifest(args.keyPrefix, finalManifest),
     );
+    await runStage(
+      attempt,
+      reader,
+      args.keyPrefix,
+      services,
+      "write_indexes",
+      async () => {
+        await reader.writeByUrlPointer(
+          args.urlHash,
+          { id: args.id, key_prefix: args.keyPrefix },
+        );
+        await reader.appendOrReplaceListIndexItem(
+          manifestToIndexItem(finalManifest, args.keyPrefix),
+        );
+      },
+    );
+    attempt.status = "succeeded";
+    attempt.finished_at = services.now();
+    attempt.error = undefined;
+    finalManifest = {
+      ...finalManifest,
+      updated_at: services.now(),
+      last_attempt: summarizeAttempt(attempt),
+    };
+    await writeAttemptSafe(reader, args.keyPrefix, attempt);
+    await reader.writeManifest(args.keyPrefix, finalManifest);
     await reader.appendOrReplaceListIndexItem(
       manifestToIndexItem(finalManifest, args.keyPrefix),
     );
   } catch (e) {
-    await markFailed(reader, args, services, e);
+    await markFailed(reader, args, services, attempt, e);
   }
 }
 
@@ -131,13 +197,39 @@ async function markFailed(
   reader: ReadingStore,
   args: ProcessReadingArgs,
   services: Services,
+  attempt: ProcessingAttempt,
   e: unknown,
 ): Promise<void> {
   console.error(e);
-  const error: ManifestError = {
-    code: e instanceof Error ? e.name : "unknown_error",
-    message: e instanceof Error ? e.message : String(e),
-  };
+  const failedAt = services.now();
+  const error = errorFromUnknown(e, attempt.stage, failedAt);
+  attempt.status = "failed";
+  attempt.finished_at = failedAt;
+  attempt.error = error;
+  await writeAttemptSafe(reader, args.keyPrefix, attempt);
+
+  if (args.preserveReadyManifest?.status === "ready") {
+    const manifest: Manifest = {
+      ...args.preserveReadyManifest,
+      active_attempt: undefined,
+      last_attempt: summarizeAttempt(attempt),
+      updated_at: services.now(),
+    };
+    try {
+      await reader.writeManifest(args.keyPrefix, manifest);
+    } catch (writeErr) {
+      console.error(writeErr);
+    }
+    try {
+      await reader.appendOrReplaceListIndexItem(
+        manifestToIndexItem(manifest, args.keyPrefix),
+      );
+    } catch (indexErr) {
+      console.error(indexErr);
+    }
+    return;
+  }
+
   const manifest: Manifest = {
     id: args.id,
     url: args.url,
@@ -150,6 +242,7 @@ async function markFailed(
     content_sha256: "0".repeat(64),
     created_at: args.createdAt,
     updated_at: services.now(),
+    last_attempt: summarizeAttempt(attempt),
   };
   // We're already on the failure path inside waitUntil — a transient R2 hiccup
   // here has nowhere to bubble to. Log and move on; the index TTL annotator
@@ -179,6 +272,138 @@ export async function newReadingArgs(
   const keyPrefix = buildKeyPrefix(id, createdAt);
   const urlHash = await sha256Hex(url);
   return { id, url, urlHash, createdAt, keyPrefix };
+}
+
+export function newAttemptId(services: Services): string {
+  return `at_${services.newId()}`;
+}
+
+export function newAttemptSummary(
+  id: string,
+  trigger: ProcessingAttemptTrigger,
+  startedAt: string,
+): ProcessingAttemptSummary {
+  return {
+    id,
+    trigger,
+    status: "running",
+    stage: "queued",
+    started_at: startedAt,
+  };
+}
+
+function newProcessingAttempt(args: ProcessReadingArgs, services: Services): ProcessingAttempt {
+  const id = args.attemptId ?? `at_${args.id}`;
+  const startedAt = args.attemptStartedAt ?? services.now();
+  return {
+    ...newAttemptSummary(id, args.trigger ?? "submit", startedAt),
+    reading_id: args.id,
+    url: args.url,
+    url_hash: args.urlHash,
+    key_prefix: args.keyPrefix,
+    events: [
+      {
+        stage: "queued",
+        status: "started",
+        at: startedAt,
+      },
+    ],
+  };
+}
+
+function summarizeAttempt(attempt: ProcessingAttempt): ProcessingAttemptSummary {
+  const summary: ProcessingAttemptSummary = {
+    id: attempt.id,
+    trigger: attempt.trigger,
+    status: attempt.status,
+    started_at: attempt.started_at,
+  };
+  if (attempt.stage) summary.stage = attempt.stage;
+  if (attempt.finished_at) summary.finished_at = attempt.finished_at;
+  if (attempt.error) summary.error = attempt.error;
+  return summary;
+}
+
+async function runStage<T>(
+  attempt: ProcessingAttempt,
+  reader: ReadingStore,
+  keyPrefix: string,
+  services: Services,
+  stage: ProcessingStage,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const startedAt = services.now();
+  attempt.stage = stage;
+  attempt.events.push({ stage, status: "started", at: startedAt });
+  await writeAttemptSafe(reader, keyPrefix, attempt);
+  try {
+    const out = await fn();
+    const finishedAt = services.now();
+    const durationMs = durationMsBetween(startedAt, finishedAt);
+    attempt.events.push({
+      stage,
+      status: "succeeded",
+      at: finishedAt,
+      ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+    });
+    await writeAttemptSafe(reader, keyPrefix, attempt);
+    return out;
+  } catch (e) {
+    const failedAt = services.now();
+    const durationMs = durationMsBetween(startedAt, failedAt);
+    attempt.events.push({
+      stage,
+      status: "failed",
+      at: failedAt,
+      ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+      error: errorFromUnknown(e, stage, failedAt),
+    });
+    await writeAttemptSafe(reader, keyPrefix, attempt);
+    throw e;
+  }
+}
+
+async function writeAttemptSafe(
+  reader: ReadingStore,
+  keyPrefix: string,
+  attempt: ProcessingAttempt,
+): Promise<void> {
+  try {
+    await reader.writeAttempt(keyPrefix, attempt);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function durationMsBetween(startedAt: string, finishedAt: string): number | undefined {
+  const start = Date.parse(startedAt);
+  const finish = Date.parse(finishedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(finish)) return undefined;
+  return Math.max(0, finish - start);
+}
+
+function errorFromUnknown(
+  e: unknown,
+  stage: ProcessingStage | undefined,
+  failedAt: string,
+): ManifestError {
+  return {
+    code: e instanceof Error ? e.name : "unknown_error",
+    message: e instanceof Error ? e.message : String(e),
+    ...(stage === undefined ? {} : { stage }),
+    failed_at: failedAt,
+    retryable: retryableError(e),
+  };
+}
+
+function retryableError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const status = (e as { status?: unknown }).status;
+  if (e.name === "BadStatusError" && typeof status === "number") {
+    return status >= 500;
+  }
+  if (e.name === "BlockedHostError" || e.name === "OversizedResponseError") return false;
+  return true;
 }
 
 function parseIntEnv(value: string | undefined, fallback: number): number {

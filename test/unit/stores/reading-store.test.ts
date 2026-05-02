@@ -6,7 +6,7 @@ import {
   manifestToIndexItem,
   PointerExistsError,
 } from "../../../src/modules/stores/reading-store";
-import type { Manifest } from "../../../src/schemas/manifest";
+import type { Manifest, ProcessingAttempt } from "../../../src/schemas/manifest";
 import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
@@ -32,6 +32,22 @@ function indexItem(overrides: Partial<ListIndexItem> = {}): ListIndexItem {
     url: "https://example.com/a",
     status: "ready",
     created_at: "2026-04-26T20:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function attempt(overrides: Partial<ProcessingAttempt> = {}): ProcessingAttempt {
+  return {
+    id: "at_TEST",
+    trigger: "submit",
+    status: "running",
+    stage: "queued",
+    started_at: "2026-04-26T20:00:00.000Z",
+    reading_id: "rd_TEST",
+    url: "https://example.com/a",
+    url_hash: "a".repeat(64),
+    key_prefix: "readings/2026/04/26T200000Z-rd_TEST",
+    events: [{ stage: "queued", status: "started", at: "2026-04-26T20:00:00.000Z" }],
     ...overrides,
   };
 }
@@ -161,6 +177,91 @@ describe("manifestToIndexItem", () => {
     });
     const item = manifestToIndexItem(m, "readings/2026/04/26T200000Z-rd_TEST");
     expect(item.updated_at).toBe("2026-04-26T20:00:05.000Z");
+  });
+
+  it("carries attempt summaries", () => {
+    const active = {
+      id: "at_1",
+      trigger: "reprocess" as const,
+      status: "running" as const,
+      stage: "fetch_source" as const,
+      started_at: "2026-04-26T20:00:05.000Z",
+    };
+    const last = {
+      id: "at_0",
+      trigger: "submit" as const,
+      status: "succeeded" as const,
+      stage: "write_indexes" as const,
+      started_at: "2026-04-26T20:00:00.000Z",
+      finished_at: "2026-04-26T20:00:04.000Z",
+    };
+    const m = emptyManifest({
+      status: "ready",
+      active_attempt: active,
+      last_attempt: last,
+    });
+    const item = manifestToIndexItem(m, "readings/2026/04/26T200000Z-rd_TEST");
+    expect(item.active_attempt).toEqual(active);
+    expect(item.last_attempt).toEqual(last);
+  });
+});
+
+describe("ReadingStore — attempts and object diagnostics", () => {
+  it("round-trips attempts newest-first", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = "readings/2026/04/26T200000Z-rd_TEST";
+    await store.writeAttempt(prefix, attempt({ id: "at_old" }));
+    await store.writeAttempt(
+      prefix,
+      attempt({
+        id: "at_new",
+        started_at: "2026-04-26T20:00:10.000Z",
+        events: [{ stage: "queued", status: "started", at: "2026-04-26T20:00:10.000Z" }],
+      }),
+    );
+
+    const attempts = await store.listAttempts(prefix);
+    expect(attempts.map((a) => a.id)).toEqual(["at_new", "at_old"]);
+  });
+
+  it("reads every attempt object before applying the newest limit", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = "readings/2026/04/26T200000Z-rd_TEST";
+    for (let i = 0; i < 21; i++) {
+      const second = String(i).padStart(2, "0");
+      await store.writeAttempt(
+        prefix,
+        attempt({
+          id: `at_${second}`,
+          started_at: `2026-04-26T20:00:${second}.000Z`,
+          events: [{ stage: "queued", status: "started", at: `2026-04-26T20:00:${second}.000Z` }],
+        }),
+      );
+    }
+    await store.writeAttempt(
+      prefix,
+      attempt({
+        id: "at_zz",
+        started_at: "2026-04-26T20:01:00.000Z",
+        events: [{ stage: "queued", status: "started", at: "2026-04-26T20:01:00.000Z" }],
+      }),
+    );
+
+    const attempts = await store.listAttempts(prefix, 1);
+    expect(attempts.map((a) => a.id)).toEqual(["at_zz"]);
+  });
+
+  it("lists reading objects for diagnostics", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = "readings/2026/04/26T200000Z-rd_TEST";
+    await store.writeRaw(prefix, "html", new Uint8Array([1, 2]), "text/html");
+    await store.writeExtracted(prefix, "# x");
+
+    const objects = await store.listReadingObjects(prefix);
+    expect(objects.map((o) => o.key).sort()).toEqual([
+      `${prefix}/extracted.md`,
+      `${prefix}/raw.html`,
+    ]);
   });
 });
 

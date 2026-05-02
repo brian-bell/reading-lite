@@ -1,8 +1,12 @@
 import { z } from "zod";
 import {
+  ByUrlPointerSchema,
   ManifestErrorSchema,
+  ManifestSchema,
   ManifestStatusSchema,
   NoveltyVerdictSchema,
+  ProcessingAttemptSchema,
+  ProcessingAttemptSummarySchema,
 } from "./manifest";
 
 const webUrl = () =>
@@ -15,6 +19,13 @@ export const PostReadingsBodySchema = z.object({
   url: webUrl(),
 });
 export type PostReadingsBody = z.infer<typeof PostReadingsBodySchema>;
+
+export const PostReadingReprocessBodySchema = z
+  .object({
+    force: z.boolean().default(false),
+  })
+  .default({ force: false });
+export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;
 
 export const EMBEDDING_DIM = 1536;
 
@@ -56,6 +67,8 @@ export const ListIndexItemSchema = z.object({
   created_at: z.string().datetime(),
   updated_at: z.string().datetime().optional(),
   error: ManifestErrorSchema.optional(),
+  active_attempt: ProcessingAttemptSummarySchema.optional(),
+  last_attempt: ProcessingAttemptSummarySchema.optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
 
@@ -92,3 +105,30 @@ export const LookupResponseSchema = z.object({
   id: z.string(),
 });
 export type LookupResponse = z.infer<typeof LookupResponseSchema>;
+
+export const ReadingObjectInfoSchema = z.object({
+  key: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  uploaded: z.string().optional(),
+});
+export type ReadingObjectInfo = z.infer<typeof ReadingObjectInfoSchema>;
+
+const PointerDiagnosticSchema = z.object({
+  exists: z.boolean(),
+  pointer: ByUrlPointerSchema.optional(),
+  matches_manifest: z.boolean(),
+});
+
+export const GetReadingDiagnosticsResponseSchema = z.object({
+  id: z.string().min(1),
+  key_prefix: z.string().min(1),
+  manifest: ManifestSchema,
+  index_item: ListIndexItemSchema.nullable(),
+  pointers: z.object({
+    by_id: PointerDiagnosticSchema,
+    by_url: PointerDiagnosticSchema,
+  }),
+  objects: z.array(ReadingObjectInfoSchema),
+  attempts: z.array(ProcessingAttemptSchema),
+});
+export type GetReadingDiagnosticsResponse = z.infer<typeof GetReadingDiagnosticsResponseSchema>;

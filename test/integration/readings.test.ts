@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
+import {
+  buildKeyPrefix,
+  manifestToIndexItem,
+  ReadingStore,
+} from "../../src/modules/stores/reading-store";
+import type { Manifest } from "../../src/schemas/manifest";
 
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
 // has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per test.
@@ -192,6 +198,21 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       anthropic_output_tokens: 50,
       openai_embedding_tokens: 20,
     });
+
+    const diagnostics = await app.request(
+      `/readings/${submitJson.id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(diagnostics.status).toBe(200);
+    const diagnosticBody = (await diagnostics.json()) as {
+      attempts: Array<{ status: string; finished_at?: string; events: Array<{ at: string }> }>;
+    };
+    const attempt = diagnosticBody.attempts[0]!;
+    expect(attempt.status).toBe("succeeded");
+    expect(attempt.finished_at).toBeDefined();
+    const finishedAt = Date.parse(attempt.finished_at!);
+    expect(attempt.events.every((event) => Date.parse(event.at) <= finishedAt)).toBe(true);
   });
 
   it("dedups: second POST with same URL returns the existing manifest, no second Vectorize upsert", async () => {
@@ -288,6 +309,253 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(res.status).toBe(400);
+  });
+
+  it("diagnostics returns attempt history and object inventory for a failure", async () => {
+    const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
+    const app = createApp({ services: makeServices(fetchFn) });
+    const ctx = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/missing" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await waitOnExecutionContext(ctx);
+
+    const res = await app.request(
+      `/readings/${id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const diagnostics = (await res.json()) as {
+      attempts: Array<{ status: string; error?: { stage?: string } }>;
+      pointers: { by_url: { exists: boolean } };
+      objects: Array<{ key: string }>;
+    };
+    expect(diagnostics.attempts[0]!.status).toBe("failed");
+    expect(diagnostics.attempts[0]!.error?.stage).toBe("fetch_source");
+    expect(diagnostics.pointers.by_url.exists).toBe(false);
+    expect(diagnostics.objects.some((o) => o.key.endsWith("/attempts/at_rd_TEST02.json"))).toBe(true);
+    consoleErr.mockRestore();
+  });
+
+  it("reprocesses a failed reading in-place and updates it to ready", async () => {
+    const idCounter = { n: 0 };
+    const failingApp = createApp({
+      services: makeServices(
+        makeStubFetch({ source: { status: 404, body: "not found" } }),
+        idCounter,
+      ),
+    });
+    const ctx1 = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await failingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/retry-me" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await waitOnExecutionContext(ctx1);
+
+    const succeedingApp = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+    const ctx2 = createExecutionContext();
+    const retry = await succeedingApp.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    const retryJson = (await retry.json()) as { id: string; attempt_id: string };
+    expect(retryJson.id).toBe(id);
+    expect(retryJson.attempt_id).toMatch(/^at_/);
+    await waitOnExecutionContext(ctx2);
+
+    const get = await succeedingApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await get.json()) as { id: string; status: string; title?: string; last_attempt?: { trigger: string; status: string } };
+    expect(manifest.id).toBe(id);
+    expect(manifest.status).toBe("ready");
+    expect(manifest.title).toBe("Test Article");
+    expect(manifest.last_attempt).toMatchObject({ trigger: "reprocess", status: "succeeded" });
+    consoleErr.mockRestore();
+  });
+
+  it("preserves a ready manifest when reprocess fails", async () => {
+    const idCounter = { n: 0 };
+    const app = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/stays-ready" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await waitOnExecutionContext(ctx1);
+
+    const failingApp = createApp({
+      services: makeServices(
+        makeStubFetch({ source: { status: 404, body: "not found" } }),
+        idCounter,
+      ),
+    });
+    const ctx2 = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const retry = await failingApp.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    await waitOnExecutionContext(ctx2);
+
+    const get = await failingApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await get.json()) as { status: string; title?: string; last_attempt?: { status: string; error?: { stage?: string } } };
+    expect(manifest.status).toBe("ready");
+    expect(manifest.title).toBe("Test Article");
+    expect(manifest.last_attempt?.status).toBe("failed");
+    expect(manifest.last_attempt?.error?.stage).toBe("fetch_source");
+    consoleErr.mockRestore();
+  });
+
+  it("rejects reprocess when another attempt is active", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/active" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(409);
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("rejects malformed and null reprocess bodies before enqueueing work", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const malformed = await app.request(
+      "/readings/rd_missing/reprocess",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: "{",
+      },
+      env,
+    );
+    expect(malformed.status).toBe(400);
+
+    const nullBody = await app.request(
+      "/readings/rd_missing/reprocess",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: "null",
+      },
+      env,
+    );
+    expect(nullBody.status).toBe(400);
+  });
+
+  it("allows reprocess when a running active attempt is stale", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const createdAt = "2026-04-26T18:00:00.000Z";
+    const prefix = buildKeyPrefix("rd_STALE_ACTIVE", createdAt);
+    const staleReady: Manifest = {
+      id: "rd_STALE_ACTIVE",
+      url: "https://example.com/stale-active",
+      url_hash: "c".repeat(64),
+      status: "ready",
+      title: "Existing Ready",
+      tldr: "Existing summary.",
+      tags: ["ops"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Existing summary.",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "d".repeat(64),
+      fetched_at: "2026-04-26T18:00:01.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T18:00:02.000Z",
+      active_attempt: {
+        id: "at_stale",
+        trigger: "reprocess",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-04-26T19:00:00.000Z",
+      },
+    };
+    await reader.writeManifest(prefix, staleReady);
+    await reader.writeByIdPointer(staleReady.id, { id: staleReady.id, key_prefix: prefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(staleReady, prefix));
+
+    const idCounter = { n: 0 };
+    const app = createApp({
+      services: makeServices(makeStubFetch(), idCounter, "2026-04-26T20:00:00.000Z"),
+    });
+    const ctx = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${staleReady.id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(retry.status).toBe(202);
+    await waitOnExecutionContext(ctx);
   });
 });
 

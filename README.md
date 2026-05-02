@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (137 worker tests across 11 files plus 16 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Greenfield. Production-shaped TypeScript, fully unit-tested (271 root tests across 21 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
 
 ## Architecture at a glance
 
@@ -28,6 +28,12 @@ POST /readings { url }
       → R2 write final manifest + by-url pointer
       (on any error → write status="failed" manifest; skip by-url pointer)
 ```
+
+Each background run also writes a staged attempt record under
+`readings/.../attempts/{attempt_id}.json`. Attempts capture the trigger
+(`submit` or `reprocess`), current/final stage, timings, and sanitized error
+details so failed readings can be inspected without relying only on `wrangler
+tail`.
 
 The Worker is composed of four deeply-isolated modules (each unit-tested with stubbed `fetch` / bindings):
 
@@ -88,6 +94,8 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
+| `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
+| `POST /readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
 | `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
 | `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
@@ -95,7 +103,20 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 
 List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. cold cache after migration), the list endpoint falls back to scan-and-rebuild.
 
-The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `error?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
+The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
+
+### Troubleshooting and reprocessing
+
+Use `GET /readings/:id/diagnostics` when a reading is failed or stuck. The
+response shows whether by-id/by-url pointers line up, whether expected R2
+objects exist, and which processing stage failed (`fetch_source`,
+`embed_source`, `summarize`, `upsert_vector`, `write_indexes`, etc.).
+
+Use `POST /readings/:id/reprocess` to retry the exact reading id. For a failed
+reading, the manifest becomes `pending` while the new attempt runs. For a ready
+reading, the current ready manifest remains the fallback; if the reprocess
+attempt succeeds it replaces the manifest and vector, and if it fails the ready
+manifest is preserved with `last_attempt.status = "failed"`.
 
 ## Web SPA
 
@@ -205,7 +226,7 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 
 ## Tests
 
-`npm test` (from the repo root) runs all 137 worker tests across two Vitest projects:
+`npm test` (from the repo root) runs all root tests across two Vitest projects:
 
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — migration script tests use `node:fs`/`os`/`path` and a real temp dir for fixture files.

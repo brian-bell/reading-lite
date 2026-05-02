@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsSimilarBodySchema,
   ListReadingsQuerySchema,
@@ -26,6 +27,17 @@ describe("PostReadingsBodySchema", () => {
 
   it("rejects a missing url", () => {
     expect(() => PostReadingsBodySchema.parse({})).toThrow();
+  });
+});
+
+describe("PostReadingReprocessBodySchema", () => {
+  it("defaults force=false for an empty body", () => {
+    expect(PostReadingReprocessBodySchema.parse({})).toEqual({ force: false });
+    expect(PostReadingReprocessBodySchema.parse(undefined)).toEqual({ force: false });
+  });
+
+  it("accepts force=true", () => {
+    expect(PostReadingReprocessBodySchema.parse({ force: true })).toEqual({ force: true });
   });
 });
 
@@ -178,6 +190,29 @@ describe("ListIndexItemSchema", () => {
     expect(parsed.tags).toEqual(["ai", "infra"]);
     expect(parsed.novelty_verdict).toBe("novel");
     expect(parsed.updated_at).toBe("2026-04-26T20:00:05.000Z");
+  });
+
+  it("accepts attempt summaries", () => {
+    const parsed = ListIndexItemSchema.parse({
+      ...baseItem,
+      active_attempt: {
+        id: "at_1",
+        trigger: "reprocess",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T20:00:05.000Z",
+      },
+      last_attempt: {
+        id: "at_0",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T20:00:00.000Z",
+        finished_at: "2026-04-26T20:00:04.000Z",
+      },
+    });
+    expect(parsed.active_attempt?.id).toBe("at_1");
+    expect(parsed.last_attempt?.status).toBe("succeeded");
   });
 
   it("accepts a failed item with error", () => {

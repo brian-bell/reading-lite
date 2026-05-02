@@ -192,6 +192,26 @@ h2 {
   padding: 4px 8px;
 }
 
+.status-pill {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.82rem;
+  margin: 4px 8px 4px 0;
+  padding: 4px 8px;
+}
+
+.status-pending {
+  background: #fff5d6;
+  border: 1px solid #e6cc6f;
+  color: #6a5212;
+}
+
+.status-failed {
+  background: #fff1f1;
+  border: 1px solid #efb4b4;
+  color: #9a2424;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;
@@ -329,6 +349,27 @@ h2 {
   align-items: flex-start;
 }
 
+.detail-actions {
+  align-items: flex-end;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.detail-actions button {
+  background: #146c60;
+  border: 0;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.detail-actions button:disabled {
+  background: #bcc6d0;
+  cursor: not-allowed;
+}
+
 .detail-heading a {
   display: inline-block;
   margin-top: 8px;
@@ -364,6 +405,69 @@ h2 {
   display: block;
   font-weight: 700;
   margin-bottom: 4px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.diagnostic-fact {
+  background: #f7f9fc;
+  border: 1px solid #dce2ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.diagnostic-fact span {
+  color: #617083;
+  font-size: 0.78rem;
+}
+
+.diagnostic-fact strong {
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.attempt-block {
+  border-top: 1px solid #dce2ea;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.attempt-heading,
+.attempt-events li {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attempt-heading span,
+.attempt-events li span {
+  background: #eef2f6;
+  border: 1px solid #d5dde7;
+  border-radius: 999px;
+  color: #435164;
+  font-size: 0.82rem;
+  padding: 3px 7px;
+}
+
+.attempt-error {
+  color: #9a2424;
+  margin: 0;
+}
+
+.attempt-events {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
 }
 
 @media (max-width: 760px) {
@@ -402,11 +506,16 @@ h2 {
   }
 
   .reading-row,
-  .detail-grid {
+  .detail-grid,
+  .diagnostics-grid {
     grid-template-columns: 1fr;
   }
 
   .reading-row-meta {
+    justify-items: start;
+  }
+
+  .detail-actions {
     justify-items: start;
   }
 }
