@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "migrate": "tsx scripts/migrate.ts",
-    "read": "tsx scripts/read-url.ts"
+    "read": "tsx scripts/read-url.ts",
+    "import-bookmarks": "tsx scripts/import-bookmarks.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",

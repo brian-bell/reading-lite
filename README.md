@@ -147,6 +147,27 @@ npm run migrate -- ... > migration-report.csv 2> migration.log
 
 > **Embedding dimension is locked to 1536.** Migrating reuses the existing OpenAI `text-embedding-3-small` vectors; switching to a 768-dim model later requires a re-embed and a fresh index.
 
+## Importing Chrome bookmarks
+
+A node-side script ingests URLs from a Chrome bookmark export. By default it asks `Y/n/q` before each URL (Enter or `y` to submit, `n` to skip, `q` to abort). Re-runs are no-ops thanks to a local `.import-bookmarks-index.json` (per destination URL).
+
+```sh
+# default: "Computing" (top-level, i.e. under "Other Bookmarks") — interactive,
+# posts to http://127.0.0.1:8787/readings
+npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
+
+# fire everything without prompts (still serial — one POST at a time)
+npm run import-bookmarks -- --file ~/Downloads/bookmarks.html --quick
+
+# nested folder against prod
+npm run import-bookmarks -- \
+  --file ~/Downloads/bookmarks.html \
+  --folder "Computing/AI/MCP" \
+  --url https://reading-lite.bbell.dev/readings
+```
+
+`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
+
 ## Repo layout
 
 ```
@@ -167,10 +188,13 @@ src/
 scripts/
   migrate.ts                    # CLI entry (better-sqlite3 + aws4fetch)
   migrate-lib/{plan,run,clients}.ts
+  import-bookmarks.ts           # CLI entry: parse Chrome export, POST /readings
+  import-bookmarks-lib/{parse,select,submit,index-store,confirm}.ts
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize)
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/                 # node pool (fs / os / path)
+  unit/import-bookmarks/        # node pool
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts
