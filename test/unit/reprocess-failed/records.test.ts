@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  failedAttemptRecordsFromDiagnostics,
   newestRecordPerReading,
   readRecordInput,
   recordFileName,
   retryDecisionForAttempt,
   retryDecisionForRecord,
   type FailedAttemptRecord,
+  type ReadingDiagnosticsLike,
 } from "../../../scripts/reprocess-failed-lib/records";
 
 let tmpDir: string;
@@ -98,6 +100,63 @@ describe("retryDecisionForAttempt", () => {
 });
 
 describe("record helpers", () => {
+  it("synthesizes legacy failed manifests when persisted attempts are absent", () => {
+    const diagnostics: ReadingDiagnosticsLike = {
+      id: "rd_LEGACY",
+      key_prefix: "readings/2026/05/02T180000Z-rd_LEGACY",
+      manifest: {
+        id: "rd_LEGACY",
+        url: "https://example.com/missing",
+        url_hash: "b".repeat(64),
+        status: "failed",
+        updated_at: "2026-05-02T18:00:02.000Z",
+        error: {
+          code: "BadStatusError",
+          message: "bad response status 404: https://example.com/missing",
+          stage: "fetch_source",
+        },
+      },
+      attempts: [],
+    };
+
+    const records = failedAttemptRecordsFromDiagnostics(
+      "http://127.0.0.1:8787",
+      "2026-05-02T18:10:00.000Z",
+      diagnostics,
+    );
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attempt).toMatchObject({
+      id: "legacy_rd_LEGACY",
+      status: "failed",
+      stage: "fetch_source",
+      url_hash: "b".repeat(64),
+    });
+    expect(records[0]?.retry).toEqual({ retry: false, reason: "http 404", source: "legacy" });
+  });
+
+  it("does not add a legacy duplicate when a failed attempt exists", () => {
+    const existing = record();
+    const diagnostics: ReadingDiagnosticsLike = {
+      id: existing.reading.id,
+      key_prefix: existing.key_prefix,
+      manifest: {
+        ...existing.reading,
+        url_hash: existing.attempt.url_hash,
+        updated_at: "2026-05-02T18:00:02.000Z",
+      },
+      attempts: [existing.attempt],
+    };
+
+    const records = failedAttemptRecordsFromDiagnostics(
+      "http://127.0.0.1:8787",
+      "2026-05-02T18:10:00.000Z",
+      diagnostics,
+    );
+
+    expect(records.map((r) => r.attempt.id)).toEqual(["at_ONE"]);
+  });
+
   it("recomputes retryability from the record attempt", () => {
     const r = record({
       attempt: {

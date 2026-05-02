@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (278 root tests across 22 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Greenfield. Production-shaped TypeScript, fully unit-tested (280 root tests across 22 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
 
 ## Architecture at a glance
 
@@ -126,7 +126,8 @@ npm run gather:failed -- --base https://reading-lite.bbell.dev
 ```
 
 This writes one JSON record per failed attempt plus `index.json` under
-`.failed-attempts/<timestamp>/`. Each record includes the reading, failed
+`.failed-attempts/<timestamp>/`. Failed manifests that predate attempt history
+are captured as legacy records. Each record includes the reading, failed
 attempt, and a retry decision. Then reprocess only retryable records from a file
 or directory:
 

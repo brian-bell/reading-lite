@@ -64,7 +64,8 @@ function printUsage(): void {
   console.log(`Usage: npm run gather:failed -- [--base <url>] [--token <t>] [--out <dir>] [--dry-run]
 
 Fetches every reading's diagnostics, extracts failed processing attempts, and
-writes one local JSON record per failed attempt plus index.json.
+also captures legacy failed manifests that predate attempt history. Writes one
+local JSON record per failed attempt plus index.json.
 
 Token resolution: --token > READER_API_TOKEN env > .dev.vars READER_API_TOKEN.
 Base URL resolution: --base > READER_BASE_URL env > http://127.0.0.1:8787.

@@ -24,6 +24,9 @@ export interface ReadingListItemLike {
   url: string;
   status: string;
   title?: string;
+  url_hash?: string;
+  created_at?: string;
+  updated_at?: string;
   error?: ManifestErrorLike;
   active_attempt?: AttemptSummaryLike;
   last_attempt?: AttemptSummaryLike;
@@ -137,25 +140,82 @@ export function failedAttemptRecordsFromDiagnostics(
   gatheredAt: string,
   diagnostics: ReadingDiagnosticsLike,
 ): FailedAttemptRecord[] {
-  return diagnostics.attempts
-    .filter((attempt) => attempt.status === "failed")
-    .map((attempt) => ({
-      version: 1 as const,
-      gathered_at: gatheredAt,
-      base_url: baseUrl,
-      reading: {
-        id: diagnostics.manifest.id,
-        url: diagnostics.manifest.url,
-        status: diagnostics.manifest.status,
-        title: diagnostics.manifest.title,
-        error: diagnostics.manifest.error,
-        active_attempt: diagnostics.manifest.active_attempt,
-        last_attempt: diagnostics.manifest.last_attempt,
-      },
-      key_prefix: diagnostics.key_prefix,
-      attempt,
-      retry: retryDecisionForAttempt(attempt, diagnostics.manifest.error),
-    }));
+  const failedAttempts = diagnostics.attempts.filter((attempt) => attempt.status === "failed");
+  if (failedAttempts.length === 0 && hasLegacyFailedAttempt(diagnostics.manifest)) {
+    failedAttempts.push(legacyFailedAttemptFromManifest(diagnostics, gatheredAt));
+  }
+
+  return failedAttempts.map((attempt) =>
+    failedAttemptRecordFromAttempt(baseUrl, gatheredAt, diagnostics, attempt),
+  );
+}
+
+function failedAttemptRecordFromAttempt(
+  baseUrl: string,
+  gatheredAt: string,
+  diagnostics: ReadingDiagnosticsLike,
+  attempt: ProcessingAttemptLike,
+): FailedAttemptRecord {
+  return {
+    version: 1,
+    gathered_at: gatheredAt,
+    base_url: baseUrl,
+    reading: {
+      id: diagnostics.manifest.id,
+      url: diagnostics.manifest.url,
+      status: diagnostics.manifest.status,
+      title: diagnostics.manifest.title,
+      error: diagnostics.manifest.error,
+      active_attempt: diagnostics.manifest.active_attempt,
+      last_attempt: diagnostics.manifest.last_attempt,
+    },
+    key_prefix: diagnostics.key_prefix,
+    attempt,
+    retry: retryDecisionForAttempt(attempt, diagnostics.manifest.error),
+  };
+}
+
+function hasLegacyFailedAttempt(manifest: ReadingDiagnosticsLike["manifest"]): boolean {
+  return manifest.status === "failed" || manifest.last_attempt?.status === "failed";
+}
+
+function legacyFailedAttemptFromManifest(
+  diagnostics: ReadingDiagnosticsLike,
+  gatheredAt: string,
+): ProcessingAttemptLike {
+  const manifest = diagnostics.manifest;
+  const lastFailed = manifest.last_attempt?.status === "failed" ? manifest.last_attempt : undefined;
+  const errorAt = lastFailed?.error?.failed_at ?? manifest.error?.failed_at;
+  const finishedAt =
+    lastFailed?.finished_at ??
+    errorAt ??
+    manifest.updated_at ??
+    manifest.created_at ??
+    gatheredAt;
+  const startedAt = lastFailed?.started_at ?? finishedAt;
+  const error =
+    lastFailed?.error ??
+    manifest.error ?? {
+      code: "legacy_failed",
+      message: "failed manifest has no persisted attempt or manifest error",
+      failed_at: finishedAt,
+    };
+  const normalizedError = error.failed_at ? error : { ...error, failed_at: finishedAt };
+
+  return {
+    id: lastFailed?.id ?? `legacy_${safeFileToken(diagnostics.id)}`,
+    trigger: lastFailed?.trigger ?? "submit",
+    status: "failed",
+    stage: lastFailed?.stage ?? normalizedError.stage,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    error: normalizedError,
+    reading_id: diagnostics.id,
+    url: manifest.url,
+    url_hash: manifest.url_hash ?? "0".repeat(64),
+    key_prefix: diagnostics.key_prefix,
+    events: [],
+  };
 }
 
 export function recordFileName(record: FailedAttemptRecord): string {
