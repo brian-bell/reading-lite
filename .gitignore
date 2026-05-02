@@ -3,6 +3,7 @@ dist/
 .wrangler/
 .dev.vars
 .migrate.vars
+.import-bookmarks-index.json
 *.log
 .DS_Store
 coverage/

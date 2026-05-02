@@ -35,7 +35,10 @@ export default [
   defineProject({
     test: {
       name: "node",
-      include: ["test/unit/migrate/**/*.test.ts"],
+      include: [
+        "test/unit/migrate/**/*.test.ts",
+        "test/unit/import-bookmarks/**/*.test.ts",
+      ],
       environment: "node",
     },
   }),

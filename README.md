@@ -147,6 +147,24 @@ npm run migrate -- ... > migration-report.csv 2> migration.log
 
 > **Embedding dimension is locked to 1536.** Migrating reuses the existing OpenAI `text-embedding-3-small` vectors; switching to a 768-dim model later requires a re-embed and a fresh index.
 
+## Importing Chrome bookmarks
+
+A node-side script ingests every URL under a chosen folder of a Chrome bookmark export. It dedupes against a local `.import-bookmarks-index.json` (per base URL) so re-runs and resumes are no-ops.
+
+```sh
+# default: "Computing" (top-level, i.e. under "Other Bookmarks")
+npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
+
+# nested folder, prod base, no prompt
+npm run import-bookmarks -- \
+  --file ~/Downloads/bookmarks.html \
+  --folder "Computing/AI/MCP" \
+  --base https://reading-lite.bbell.dev \
+  --yes
+```
+
+`--dry-run` prints the would-submit list without prompting or POSTing. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
+
 ## Repo layout
 
 ```
@@ -167,10 +185,13 @@ src/
 scripts/
   migrate.ts                    # CLI entry (better-sqlite3 + aws4fetch)
   migrate-lib/{plan,run,clients}.ts
+  import-bookmarks.ts           # CLI entry: parse Chrome export, POST /readings
+  import-bookmarks-lib/{parse,select,submit,index-store,confirm}.ts
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize)
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/                 # node pool (fs / os / path)
+  unit/import-bookmarks/        # node pool
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts

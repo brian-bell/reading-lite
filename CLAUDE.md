@@ -32,10 +32,13 @@ src/
 scripts/
   migrate.ts                  # CLI entry — node-side, better-sqlite3 + aws4fetch
   migrate-lib/{plan,run,clients}.ts
+  import-bookmarks.ts         # CLI entry — Chrome bookmark HTML → POST /readings
+  import-bookmarks-lib/{parse,select,submit,index-store,confirm}.ts
 test/
   integration/                # workers pool — Hono router via Miniflare
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/               # node pool (fs/os/path)
+  unit/import-bookmarks/      # node pool
   env.d.ts                    # augments cloudflare:test ProvidedEnv with Env
 web/                          # React SPA (separate npm project; cd web && npm install)
   src/{App.tsx, App.test.tsx, api.ts, types.ts, main.tsx, styles.css, test/setup.ts}
@@ -103,6 +106,8 @@ npm run typecheck        # tsc --noEmit
 npm run deploy           # worker deploy; dry-run by default. --execute to upload
 npm run deploy:web       # SPA → Cloudflare Pages; dry-run by default. --execute to upload
 npm run migrate -- ...   # one-shot migration; --dry-run to preview ops
+npm run import-bookmarks -- --file <chrome-export.html> [--folder <path>] [--dry-run]
+                         # ingest a Chrome bookmark export folder; default folder is "Computing"
 
 # SPA (separate project)
 cd web && npm install    # one-time
