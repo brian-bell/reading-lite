@@ -2,7 +2,7 @@
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadDotVars } from "./lib/dotvars";
-import { confirm } from "./import-bookmarks-lib/confirm";
+import { createPrompter } from "./import-bookmarks-lib/confirm";
 import {
   filterUnseen,
   loadIndex,
@@ -21,7 +21,7 @@ interface Args {
   concurrency: number;
   indexPath: string;
   dryRun: boolean;
-  yes: boolean;
+  quick: boolean;
 }
 
 function parseCliArgs(): Args {
@@ -34,7 +34,7 @@ function parseCliArgs(): Args {
       concurrency: { type: "string" },
       index: { type: "string" },
       "dry-run": { type: "boolean", default: false },
-      yes: { type: "boolean", default: false },
+      quick: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
@@ -76,7 +76,7 @@ function parseCliArgs(): Args {
     concurrency,
     indexPath: values.index ?? "./.import-bookmarks-index.json",
     dryRun: values["dry-run"] === true,
-    yes: values.yes === true,
+    quick: values.quick === true,
   };
 }
 
@@ -90,16 +90,21 @@ function printUsage(): void {
                         http://127.0.0.1:8787.
   --token <token>       Bearer token. Default: READER_API_TOKEN env, then
                         .dev.vars READER_API_TOKEN.
-  --concurrency <n>     Parallel POSTs. Default: 4.
+  --concurrency <n>     Parallel POSTs in --quick mode. Default: 4.
+                        (Ignored otherwise — interactive prompts force serial.)
   --index <path>        Path to local index file.
                         Default: ./.import-bookmarks-index.json.
   --dry-run             Print plan, don't prompt, don't POST.
-  --yes                 Skip the y/N confirmation prompt (for CI / scripts).
+  --quick               Skip the per-URL prompt and submit everything (uses
+                        the configured concurrency).
   --help                Show this message.
 
 Submits each URL in the chosen folder to POST /readings. Skips URLs that are
 already recorded in the local index (per base URL). On success, records the
-URL in the index immediately so re-runs and resumes are no-ops.`);
+URL in the index immediately so re-runs and resumes are no-ops.
+
+Default flow asks Y/n/q before each URL: Enter or 'y' to submit, 'n' to skip,
+'q' to abort. Use --quick to fire everything without prompting.`);
 }
 
 async function main(): Promise<void> {
@@ -118,11 +123,12 @@ async function main(): Promise<void> {
   const index = await loadIndex(args.indexPath);
   const { unseen, seen } = filterUnseen(allUrls, index, args.base);
 
+  const mode = args.quick ? `quick, concurrency ${args.concurrency}` : "interactive";
   process.stderr.write(
     `Folder:       ${args.folder}\n` +
       `URLs found:   ${allUrls.length}\n` +
       `Already sent: ${seen.length}  (from ${args.indexPath})\n` +
-      `Will submit:  ${unseen.length} to ${args.base} (concurrency ${args.concurrency})\n\n`,
+      `Will submit:  ${unseen.length} to ${args.base} (${mode})\n\n`,
   );
 
   if (args.dryRun) {
@@ -141,35 +147,45 @@ async function main(): Promise<void> {
     return;
   }
 
-  const ok = await confirm("Continue? [y/N]", { yes: args.yes });
-  if (!ok) {
-    process.stderr.write("aborted.\n");
-    process.exit(1);
+  const prompter = args.quick ? null : createPrompter();
+  let summary;
+  try {
+    summary = await submitAll(unseen, {
+      fetch: globalThis.fetch,
+      base: args.base,
+      token: args.token,
+      concurrency: args.concurrency,
+      beforeSubmit: prompter
+        ? async (ctx) => {
+            const decision = await prompter.ask(
+              `[${ctx.index}/${ctx.total}] ${ctx.url}\n  submit? [Y/n/q]`,
+            );
+            if (decision === "yes") return "submit";
+            if (decision === "no") return "skip";
+            return "quit";
+          }
+        : undefined,
+      onResult: async (r) => {
+        logResult(r);
+        if (r.classification === "new" || r.classification === "existing") {
+          recordResult(index, args.base, r.url, {
+            id: r.id ?? "",
+            submitted_at: new Date().toISOString(),
+            classification: r.classification,
+          });
+          await saveIndex(args.indexPath, index);
+        }
+      },
+    });
+  } finally {
+    prompter?.close();
   }
-
-  const summary = await submitAll(unseen, {
-    fetch: globalThis.fetch,
-    base: args.base,
-    token: args.token,
-    concurrency: args.concurrency,
-    onResult: async (r) => {
-      logResult(r);
-      if (r.classification === "new" || r.classification === "existing") {
-        recordResult(index, args.base, r.url, {
-          id: r.id ?? "",
-          submitted_at: new Date().toISOString(),
-          classification: r.classification,
-        });
-        await saveIndex(args.indexPath, index);
-      }
-    },
-  });
 
   printSummary({
     folder: args.folder,
     total: allUrls.length,
     indexed: seen.length,
-    submitted: unseen.length,
+    submitted: summary.new + summary.existing + summary.skipped + summary.errors,
     new: summary.new,
     existing: summary.existing,
     skipped: summary.skipped,

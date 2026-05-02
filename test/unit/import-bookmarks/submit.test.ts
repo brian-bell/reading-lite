@@ -146,4 +146,107 @@ describe("submitAll", () => {
     expect(indices.sort()).toEqual([1, 2, 3]);
     expect(totals).toEqual([3, 3, 3]);
   });
+
+  describe("beforeSubmit hook", () => {
+    it("submits when the hook returns 'submit'", async () => {
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse(202, { id: "rd_x", status: "pending" }),
+      );
+      const summary = await submitAll(["https://a.test/", "https://b.test/"], {
+        fetch: fetchMock,
+        base: "http://localhost:8787",
+        token: "tok",
+        concurrency: 4,
+        beforeSubmit: async () => "submit",
+        onResult: async () => {},
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(summary).toMatchObject({ new: 2, skipped: 0, errors: 0 });
+    });
+
+    it("counts a 'skip' decision as skipped without calling fetch", async () => {
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse(202, { id: "rd_x", status: "pending" }),
+      );
+      const decisions = ["submit", "skip", "submit"] as const;
+      let i = 0;
+      const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
+        fetch: fetchMock,
+        base: "http://localhost:8787",
+        token: "tok",
+        concurrency: 4,
+        beforeSubmit: async () => decisions[i++]!,
+        onResult: async () => {},
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(summary).toMatchObject({ new: 2, skipped: 1, errors: 0 });
+    });
+
+    it("stops processing when the hook returns 'quit'", async () => {
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse(202, { id: "rd_x", status: "pending" }),
+      );
+      const decisions = ["submit", "quit", "submit"] as const;
+      let i = 0;
+      const calls: string[] = [];
+      const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
+        fetch: fetchMock,
+        base: "http://localhost:8787",
+        token: "tok",
+        concurrency: 4,
+        beforeSubmit: async (ctx) => {
+          calls.push(ctx.url);
+          return decisions[i++]!;
+        },
+        onResult: async () => {},
+      });
+      expect(calls).toEqual(["https://a.test/", "https://b.test/"]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(summary).toMatchObject({ new: 1, skipped: 0, errors: 0 });
+    });
+
+    it("forces serial processing (no concurrent fetches)", async () => {
+      let inFlight = 0;
+      let peak = 0;
+      const fetchMock = vi.fn<typeof fetch>(async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        return jsonResponse(202, { id: "rd_x", status: "pending" });
+      });
+      await submitAll(
+        Array.from({ length: 5 }, (_, i) => `https://${i}.test/`),
+        {
+          fetch: fetchMock,
+          base: "http://localhost:8787",
+          token: "tok",
+          concurrency: 10,
+          beforeSubmit: async () => "submit",
+          onResult: async () => {},
+        },
+      );
+      expect(peak).toBe(1);
+    });
+
+    it("skips non-http URLs without calling the hook", async () => {
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse(202, { id: "rd_x", status: "pending" }),
+      );
+      const seen: string[] = [];
+      const summary = await submitAll(["chrome://settings", "https://x.test/"], {
+        fetch: fetchMock,
+        base: "http://localhost:8787",
+        token: "tok",
+        concurrency: 1,
+        beforeSubmit: async (ctx) => {
+          seen.push(ctx.url);
+          return "submit";
+        },
+        onResult: async () => {},
+      });
+      expect(seen).toEqual(["https://x.test/"]);
+      expect(summary).toMatchObject({ skipped: 1, new: 1 });
+    });
+  });
 });
