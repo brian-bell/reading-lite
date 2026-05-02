@@ -106,8 +106,8 @@ npm run typecheck        # tsc --noEmit
 npm run deploy           # worker deploy; dry-run by default. --execute to upload
 npm run deploy:web       # SPA → Cloudflare Pages; dry-run by default. --execute to upload
 npm run migrate -- ...   # one-shot migration; --dry-run to preview ops
-npm run import-bookmarks -- --file <chrome-export.html> [--folder <path>] [--dry-run] [--quick]
-                         # ingest a Chrome bookmark export folder; default folder is "Computing".
+npm run import-bookmarks -- (--file <chrome-export.html> [--folder <path>] | --url <url>) [--dry-run] [--quick]
+                         # ingest a Chrome bookmark export folder (default "Computing") OR a single URL.
                          # interactive (Y/n/q per URL) by default; --quick fires everything in parallel.
 
 # SPA (separate project)
