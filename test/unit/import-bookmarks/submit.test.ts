@@ -50,7 +50,7 @@ describe("submitAll", () => {
     expect(byUrl["javascript:void(0)"]!.classification).toBe("skipped");
   });
 
-  it("classifies network errors as 'error'", async () => {
+  it("classifies network errors as 'error' after exhausting retries", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       throw new TypeError("network down");
     });
@@ -67,6 +67,38 @@ describe("submitAll", () => {
     expect(summary.errors).toBe(1);
     expect(results[0]!.classification).toBe("error");
     expect(results[0]!.error).toMatch(/network down/);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it("retries on transport error and recovers if a subsequent attempt succeeds", async () => {
+    let calls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      if (calls < 3) throw new TypeError("fetch failed");
+      return jsonResponse(202, { id: "rd_x", status: "pending" });
+    });
+    const summary = await submitAll(["https://x.test/"], {
+      fetch: fetchMock,
+      base: "http://localhost:8787",
+      token: "tok",
+      concurrency: 1,
+      onResult: async () => {},
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(summary).toMatchObject({ new: 1, errors: 0 });
+  });
+
+  it("does not retry on HTTP error status (4xx/5xx is the worker, not a transport blip)", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(503, { error: "down" }));
+    const summary = await submitAll(["https://x.test/"], {
+      fetch: fetchMock,
+      base: "http://localhost:8787",
+      token: "tok",
+      concurrency: 1,
+      onResult: async () => {},
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ errors: 1 });
   });
 
   it("sends bearer auth and a JSON body to /readings", async () => {

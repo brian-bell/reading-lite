@@ -106,14 +106,14 @@ async function processOne(
     return { index, total, url, classification: "skipped" };
   }
   try {
-    const res = await opts.fetch(`${base}/readings`, {
+    const res = await postWithRetry(`${base}/readings`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${opts.token}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ url }),
-    });
+    }, opts.fetch);
     if (res.status === 202 || res.status === 200) {
       const body = (await res.json().catch(() => ({}))) as { id?: unknown };
       const id = typeof body.id === "string" ? body.id : undefined;
@@ -146,6 +146,30 @@ async function processOne(
 
 function isHttpUrl(s: string): boolean {
   return /^https?:\/\//i.test(s);
+}
+
+// Retries the POST on a transport-level throw (undici "fetch failed" from a
+// closed keep-alive socket, edge connection cycling, etc). HTTP error statuses
+// are not retried — those are the worker speaking, not a transport blip.
+// Re-POSTing is safe because the worker dedupes by url_hash.
+async function postWithRetry(
+  url: string,
+  init: RequestInit,
+  fetchFn: typeof fetch,
+  retries = 2,
+  baseDelayMs = 250,
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetchFn(url, init);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === retries) break;
+      await new Promise((r) => setTimeout(r, baseDelayMs * (1 << attempt)));
+    }
+  }
+  throw lastErr;
 }
 
 function counterFor(c: Classification): keyof Omit<SubmitSummary, "total"> {
