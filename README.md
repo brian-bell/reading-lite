@@ -156,7 +156,7 @@ A node-side script ingests URLs from a Chrome bookmark export. By default it ask
 # posts to http://127.0.0.1:8787/readings
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
 
-# fire everything without prompts (uses concurrency from --concurrency, default 4)
+# fire everything without prompts (still serial — one POST at a time)
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html --quick
 
 # nested folder against prod
@@ -166,7 +166,7 @@ npm run import-bookmarks -- \
   --url https://reading-lite.bbell.dev/readings
 ```
 
-`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt and uses the worker pool at `--concurrency` (default 4). Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
+`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
 
 ## Repo layout
 

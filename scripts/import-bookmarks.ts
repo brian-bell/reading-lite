@@ -18,7 +18,6 @@ interface Args {
   folder: string;
   destinationUrl: string;
   token: string;
-  concurrency: number;
   indexPath: string;
   dryRun: boolean;
   quick: boolean;
@@ -33,7 +32,6 @@ function parseCliArgs(): Args {
       folder: { type: "string" },
       url: { type: "string" },
       token: { type: "string" },
-      concurrency: { type: "string" },
       index: { type: "string" },
       "dry-run": { type: "boolean", default: false },
       quick: { type: "boolean", default: false },
@@ -69,18 +67,11 @@ function parseCliArgs(): Args {
     process.exit(2);
   }
 
-  const concurrency = Number(values.concurrency ?? 4);
-  if (!Number.isFinite(concurrency) || concurrency < 1) {
-    console.error(`invalid --concurrency ${values.concurrency}`);
-    process.exit(2);
-  }
-
   return {
     file: values.file,
     folder: values.folder ?? "Computing",
     destinationUrl,
     token,
-    concurrency,
     indexPath: values.index ?? "./.import-bookmarks-index.json",
     dryRun: values["dry-run"] === true,
     quick: values.quick === true,
@@ -98,17 +89,14 @@ function printUsage(): void {
                         ${DEFAULT_DESTINATION_URL}.
   --token <token>       Bearer token. Default: READER_API_TOKEN env, then
                         .dev.vars READER_API_TOKEN.
-  --concurrency <n>     Parallel POSTs in --quick mode. Default: 4.
-                        (Ignored otherwise — interactive prompts force serial.)
   --index <path>        Path to local index file.
                         Default: ./.import-bookmarks-index.json.
   --dry-run             Print plan, don't prompt, don't POST.
-  --quick               Skip the per-URL prompt and submit everything (uses
-                        the configured concurrency).
+  --quick               Skip the per-URL prompt and submit everything.
   --help                Show this message.
 
-Submits each URL in the chosen folder to the destination. Skips URLs that
-are already recorded in the local index (per destination). On success,
+Submits each URL in the chosen folder to the destination, one at a time.
+Skips URLs already recorded in the local index (per destination). On success,
 records the URL in the index immediately so re-runs and resumes are no-ops.
 
 Default flow asks Y/n/q before each URL: Enter or 'y' to submit, 'n' to skip,
@@ -131,7 +119,7 @@ async function main(): Promise<void> {
   const index = await loadIndex(args.indexPath);
   const { unseen, seen } = filterUnseen(allUrls, index, args.destinationUrl);
 
-  const mode = args.quick ? `quick, concurrency ${args.concurrency}` : "interactive";
+  const mode = args.quick ? "quick" : "interactive";
   process.stderr.write(
     `Folder:       ${args.folder}\n` +
       `URLs found:   ${allUrls.length}\n` +
@@ -162,7 +150,6 @@ async function main(): Promise<void> {
       fetch: globalThis.fetch,
       destinationUrl: args.destinationUrl,
       token: args.token,
-      concurrency: args.concurrency,
       beforeSubmit: prompter
         ? async (ctx) => {
             const decision = await prompter.ask(

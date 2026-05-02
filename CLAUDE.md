@@ -110,7 +110,7 @@ npm run import-bookmarks -- --file <chrome-export.html> [--folder <path>] [--url
                          # ingest a Chrome bookmark export folder (default "Computing").
                          # --url is the destination (full readings endpoint URL); default
                          # http://127.0.0.1:8787/readings.
-                         # interactive (Y/n/q per URL) by default; --quick fires everything in parallel.
+                         # always serial (one POST at a time); --quick skips the Y/n/q prompt.
 
 # SPA (separate project)
 cd web && npm install    # one-time

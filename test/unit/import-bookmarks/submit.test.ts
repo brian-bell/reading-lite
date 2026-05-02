@@ -31,7 +31,6 @@ describe("submitAll", () => {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 2,
         onResult: async (r) => {
           results.push(r);
         },
@@ -61,7 +60,6 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: DEST,
       token: "tok",
-      concurrency: 1,
       onResult: async (r) => {
         results.push(r);
       },
@@ -82,7 +80,6 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: DEST,
       token: "tok",
-      concurrency: 1,
       onResult: async (r) => {
         results.push(r);
       },
@@ -101,7 +98,6 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: DEST,
       token: "tok",
-      concurrency: 1,
       onResult: async () => {},
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -114,7 +110,6 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: DEST,
       token: "tok",
-      concurrency: 1,
       onResult: async () => {},
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -129,7 +124,6 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: "https://reading-lite.bbell.dev/readings",
       token: "tok-abc",
-      concurrency: 1,
       onResult: async () => {},
     });
     const [url, init] = fetchMock.mock.calls[0]!;
@@ -141,7 +135,7 @@ describe("submitAll", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ url: "https://x.test/" });
   });
 
-  it("respects the concurrency cap", async () => {
+  it("processes URLs serially (one fetch in flight at a time)", async () => {
     let inFlight = 0;
     let peak = 0;
     const fetchMock = vi.fn<typeof fetch>(async () => {
@@ -152,17 +146,16 @@ describe("submitAll", () => {
       return jsonResponse(202, { id: "rd_x", status: "pending" });
     });
     await submitAll(
-      Array.from({ length: 10 }, (_, i) => `https://${i}.test/`),
+      Array.from({ length: 5 }, (_, i) => `https://${i}.test/`),
       {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 3,
         onResult: async () => {},
       },
     );
-    expect(peak).toBeLessThanOrEqual(3);
-    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(peak).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("calls onResult once per URL with index/total set", async () => {
@@ -175,13 +168,12 @@ describe("submitAll", () => {
       fetch: fetchMock,
       destinationUrl: DEST,
       token: "tok",
-      concurrency: 1,
       onResult: async (r) => {
         indices.push(r.index);
         totals.push(r.total);
       },
     });
-    expect(indices.sort()).toEqual([1, 2, 3]);
+    expect(indices).toEqual([1, 2, 3]);
     expect(totals).toEqual([3, 3, 3]);
   });
 
@@ -194,7 +186,6 @@ describe("submitAll", () => {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 4,
         beforeSubmit: async () => "submit",
         onResult: async () => {},
       });
@@ -212,7 +203,6 @@ describe("submitAll", () => {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 4,
         beforeSubmit: async () => decisions[i++]!,
         onResult: async () => {},
       });
@@ -231,7 +221,6 @@ describe("submitAll", () => {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 4,
         beforeSubmit: async (ctx) => {
           calls.push(ctx.url);
           return decisions[i++]!;
@@ -243,30 +232,6 @@ describe("submitAll", () => {
       expect(summary).toMatchObject({ new: 1, skipped: 0, errors: 0 });
     });
 
-    it("forces serial processing (no concurrent fetches)", async () => {
-      let inFlight = 0;
-      let peak = 0;
-      const fetchMock = vi.fn<typeof fetch>(async () => {
-        inFlight += 1;
-        peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 5));
-        inFlight -= 1;
-        return jsonResponse(202, { id: "rd_x", status: "pending" });
-      });
-      await submitAll(
-        Array.from({ length: 5 }, (_, i) => `https://${i}.test/`),
-        {
-          fetch: fetchMock,
-          destinationUrl: DEST,
-          token: "tok",
-          concurrency: 10,
-          beforeSubmit: async () => "submit",
-          onResult: async () => {},
-        },
-      );
-      expect(peak).toBe(1);
-    });
-
     it("skips non-http URLs without calling the hook", async () => {
       const fetchMock = vi.fn<typeof fetch>(async () =>
         jsonResponse(202, { id: "rd_x", status: "pending" }),
@@ -276,7 +241,6 @@ describe("submitAll", () => {
         fetch: fetchMock,
         destinationUrl: DEST,
         token: "tok",
-        concurrency: 1,
         beforeSubmit: async (ctx) => {
           seen.push(ctx.url);
           return "submit";

@@ -31,42 +31,19 @@ export interface SubmitOpts {
   // https://reading-lite.bbell.dev/readings.
   destinationUrl: string;
   token: string;
-  concurrency: number;
   onResult: (result: SubmitResult) => Promise<void> | void;
-  // When provided, submission runs serially and consults this hook before each
-  // POST. Returning "skip" counts the URL as skipped; "quit" stops the run.
-  // Without it, URLs run through the worker pool at full concurrency.
+  // When provided, called before each POST. Returning "skip" counts the URL
+  // as skipped; "quit" stops the run. Without it, every URL is submitted.
   beforeSubmit?: (ctx: BeforeSubmitContext) => Promise<BeforeSubmitDecision>;
 }
 
+// Always serial — concurrent POSTs raced on the shared index tmp file and
+// added little throughput in practice (the worker spawns per-URL background
+// work via ctx.waitUntil() either way). One in flight at a time keeps the
+// index writes simple and the run easy to follow.
 export async function submitAll(urls: string[], opts: SubmitOpts): Promise<SubmitSummary> {
   const summary: SubmitSummary = { total: urls.length, new: 0, existing: 0, errors: 0, skipped: 0 };
 
-  if (opts.beforeSubmit) {
-    return runSerial(urls, summary, opts);
-  }
-
-  const concurrency = Math.max(1, Math.floor(opts.concurrency));
-  let next = 0;
-  async function worker() {
-    while (true) {
-      const i = next++;
-      if (i >= urls.length) return;
-      const url = urls[i]!;
-      const result = await processOne(url, i + 1, urls.length, opts);
-      summary[counterFor(result.classification)] += 1;
-      await opts.onResult(result);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, () => worker()));
-  return summary;
-}
-
-async function runSerial(
-  urls: string[],
-  summary: SubmitSummary,
-  opts: SubmitOpts,
-): Promise<SubmitSummary> {
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i]!;
     const index = i + 1;
@@ -79,13 +56,15 @@ async function runSerial(
       continue;
     }
 
-    const decision = await opts.beforeSubmit!({ index, total, url });
-    if (decision === "quit") return summary;
-    if (decision === "skip") {
-      const result: SubmitResult = { index, total, url, classification: "skipped" };
-      summary.skipped += 1;
-      await opts.onResult(result);
-      continue;
+    if (opts.beforeSubmit) {
+      const decision = await opts.beforeSubmit({ index, total, url });
+      if (decision === "quit") return summary;
+      if (decision === "skip") {
+        const result: SubmitResult = { index, total, url, classification: "skipped" };
+        summary.skipped += 1;
+        await opts.onResult(result);
+        continue;
+      }
     }
 
     const result = await processOne(url, index, total, opts);
@@ -101,9 +80,6 @@ async function processOne(
   total: number,
   opts: SubmitOpts,
 ): Promise<SubmitResult> {
-  if (!isHttpUrl(url)) {
-    return { index, total, url, classification: "skipped" };
-  }
   try {
     const res = await postWithRetry(opts.destinationUrl, {
       method: "POST",
