@@ -38,6 +38,12 @@ PENDING_TTL_SECONDS = "300"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+# In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
+# to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
+# full jitter starting from RETRY_BASE_DELAY_MS.
+RETRY_MAX_ATTEMPTS = "3"
+RETRY_BASE_DELAY_MS = "500"
+RETRY_MAX_DELAY_MS = "8000"
 
 # `remote = true` makes `wrangler dev` bind to the real staging bucket
 # instead of Miniflare's local emulator, so migrated rows are visible from
@@ -65,6 +71,9 @@ PENDING_TTL_SECONDS = "300"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+RETRY_MAX_ATTEMPTS = "3"
+RETRY_BASE_DELAY_MS = "500"
+RETRY_MAX_DELAY_MS = "8000"
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

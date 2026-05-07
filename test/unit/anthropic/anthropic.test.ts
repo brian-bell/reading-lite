@@ -185,6 +185,34 @@ describe("summarizeReading", () => {
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
 
+  it("retries through retry deps and succeeds after 429 then 200", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(err(429, { error: { message: "slow down" } }))
+      .mockResolvedValueOnce(ok(toolUseResponse(validToolInput)));
+    const sleeps: number[] = [];
+    const out = await summarizeReading(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      {
+        fetch: fetchFn as unknown as typeof fetch,
+        apiKey: "sk",
+        model: "claude-sonnet-4-6",
+        retry: {
+          maxAttempts: 3,
+          baseDelayMs: 10,
+          maxDelayMs: 100,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+          random: () => 1,
+        },
+      },
+    );
+    expect(out.reading).toEqual(validToolInput);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleeps.length).toBe(1);
+  });
+
   it("rejects empty extractedText before calling fetch", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => ok(toolUseResponse(validToolInput)));
     await expect(

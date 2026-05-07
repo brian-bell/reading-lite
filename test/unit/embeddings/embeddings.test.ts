@@ -81,4 +81,31 @@ describe("embed", () => {
       BadEmbeddingResponseError,
     );
   });
+
+  it("retries through retry deps and succeeds after 429 then 200", async () => {
+    const embedding = new Array(1536).fill(0).map((_, i) => i / 1536);
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(err(429, { error: { message: "slow down" } }))
+      .mockResolvedValueOnce(
+        ok({ data: [{ embedding }], usage: { prompt_tokens: 1, total_tokens: 1 } }),
+      );
+    const sleeps: number[] = [];
+    const out = await embed("hello", {
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk",
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 10,
+        maxDelayMs: 100,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        random: () => 1,
+      },
+    });
+    expect(out.embedding).toHaveLength(1536);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleeps.length).toBe(1);
+  });
 });

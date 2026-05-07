@@ -10,6 +10,7 @@ import {
   summarizeReading,
   type SimilarContext,
 } from "./modules/anthropic";
+import type { RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
   ManifestError,
@@ -42,6 +43,7 @@ export async function processReading(
   const reader = new ReadingStore(env.READINGS_BUCKET);
   const similarity = new SimilarityStore(env.READINGS_INDEX);
   const attempt = newProcessingAttempt(args, services);
+  const retry = retryDepsFromEnv(env);
 
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
@@ -75,6 +77,7 @@ export async function processReading(
       embed(truncateForEmbed(promptText), {
         fetch: services.fetch,
         apiKey: env.OPENAI_API_KEY,
+        retry,
       }),
     );
     const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
@@ -102,6 +105,7 @@ export async function processReading(
             fetch: services.fetch,
             apiKey: env.ANTHROPIC_API_KEY,
             model: env.ANTHROPIC_MODEL,
+            retry,
           },
         ),
     );
@@ -111,6 +115,7 @@ export async function processReading(
       embed(llm.reading.tldr, {
         fetch: services.fetch,
         apiKey: env.OPENAI_API_KEY,
+        retry,
       }),
     );
 
@@ -396,14 +401,26 @@ function errorFromUnknown(
   };
 }
 
-function retryableError(e: unknown): boolean {
+export function retryableError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
   const status = (e as { status?: unknown }).status;
-  if (e.name === "BadStatusError" && typeof status === "number") {
-    return status >= 500;
+  if (e.name === "BadStatusError") {
+    return typeof status === "number" && status >= 500;
   }
-  if (e.name === "BlockedHostError" || e.name === "OversizedResponseError") return false;
-  return true;
+  if (e.name === "AnthropicError" || e.name === "OpenAIError") {
+    return typeof status === "number" && (status === 429 || status >= 500);
+  }
+  if (e.name === "FetchTimeoutError") return true;
+  return false;
+}
+
+function retryDepsFromEnv(env: Env): RetryDeps {
+  return {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    maxAttempts: parseIntEnv(env.RETRY_MAX_ATTEMPTS, 3),
+    baseDelayMs: parseIntEnv(env.RETRY_BASE_DELAY_MS, 500),
+    maxDelayMs: parseIntEnv(env.RETRY_MAX_DELAY_MS, 8_000),
+  };
 }
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
