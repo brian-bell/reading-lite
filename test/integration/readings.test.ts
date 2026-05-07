@@ -1,6 +1,8 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
+import type { Env } from "../../src/index";
+import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import type { Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
@@ -39,6 +41,29 @@ async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
   for (const obj of list.objects) {
     await env.READINGS_BUCKET.delete(obj.key);
+  }
+}
+
+// Production sends ProcessReadingArgs through Cloudflare Queues. Miniflare has
+// no native queue emulator (and per CLAUDE.md adding the binding to
+// wrangler.test.toml hangs the runtime), so we install a stub that captures
+// `send()` calls and a `drainQueue(services)` helper runs the worker's queue
+// handler logic for each captured message.
+let queuedJobs: ProcessReadingArgs[] = [];
+function installQueueStub(): ProcessReadingArgs[] {
+  queuedJobs = [];
+  (env as unknown as { READING_JOBS: Queue<ProcessReadingArgs> }).READING_JOBS = {
+    send: vi.fn(async (msg: ProcessReadingArgs) => {
+      queuedJobs.push(msg);
+    }),
+  } as unknown as Queue<ProcessReadingArgs>;
+  return queuedJobs;
+}
+
+async function drainQueue(services: Services): Promise<void> {
+  while (queuedJobs.length > 0) {
+    const msg = queuedJobs.shift()!;
+    await processReading(msg, env as unknown as Env, services);
   }
 }
 
@@ -121,6 +146,7 @@ const TOKEN = "test-token";
 
 beforeEach(() => {
   installVectorizeStub();
+  installQueueStub();
 });
 afterEach(clearBucket);
 
@@ -162,9 +188,10 @@ describe("auth", () => {
 });
 
 describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
-  it("returns 202 immediately and the manifest reaches ready after waitUntil settles", async () => {
+  it("returns 202 immediately and the manifest reaches ready after the queue drains", async () => {
     const fetchFn = makeStubFetch();
-    const app = createApp({ services: makeServices(fetchFn) });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
     const ctx = createExecutionContext();
 
     const submit = await app.fetch(
@@ -181,6 +208,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(submitJson.id).toMatch(/^rd_/);
     expect(submitJson.status).toBe("pending");
 
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
     const get = await app.request(
@@ -235,6 +263,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx1,
     );
     expect(r1.status).toBe(202);
+    await drainQueue(services);
     await waitOnExecutionContext(ctx1);
 
     const upsertsAfterFirst = stub.upsert.mock.calls.length;
@@ -250,6 +279,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx2,
     );
     expect(r2.status).toBe(200);
+    await drainQueue(services);
     await waitOnExecutionContext(ctx2);
 
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
@@ -257,7 +287,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
   it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
-    const app = createApp({ services: makeServices(fetchFn) });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
     const ctx = createExecutionContext();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -272,6 +303,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     expect(submit.status).toBe(202);
     const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
     const get = await app.request(
@@ -313,7 +345,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
   it("diagnostics returns attempt history and object inventory for a failure", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
-    const app = createApp({ services: makeServices(fetchFn) });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
     const ctx = createExecutionContext();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -327,6 +360,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx,
     );
     const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
     const res = await app.request(
@@ -349,12 +383,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
   it("reprocesses a failed reading in-place and updates it to ready", async () => {
     const idCounter = { n: 0 };
-    const failingApp = createApp({
-      services: makeServices(
-        makeStubFetch({ source: { status: 404, body: "not found" } }),
-        idCounter,
-      ),
-    });
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
     const ctx1 = createExecutionContext();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -368,9 +401,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx1,
     );
     const { id } = (await submit.json()) as { id: string };
+    await drainQueue(failingServices);
     await waitOnExecutionContext(ctx1);
 
-    const succeedingApp = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+    const succeedingServices = makeServices(makeStubFetch(), idCounter);
+    const succeedingApp = createApp({ services: succeedingServices });
     const ctx2 = createExecutionContext();
     const retry = await succeedingApp.fetch(
       new Request(`http://t/readings/${id}/reprocess`, {
@@ -385,6 +420,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const retryJson = (await retry.json()) as { id: string; attempt_id: string };
     expect(retryJson.id).toBe(id);
     expect(retryJson.attempt_id).toMatch(/^at_/);
+    await drainQueue(succeedingServices);
     await waitOnExecutionContext(ctx2);
 
     const get = await succeedingApp.request(
@@ -402,7 +438,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
   it("preserves a ready manifest when reprocess fails", async () => {
     const idCounter = { n: 0 };
-    const app = createApp({ services: makeServices(makeStubFetch(), idCounter) });
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
     const ctx1 = createExecutionContext();
     const submit = await app.fetch(
       new Request("http://t/readings", {
@@ -414,14 +451,14 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx1,
     );
     const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
     await waitOnExecutionContext(ctx1);
 
-    const failingApp = createApp({
-      services: makeServices(
-        makeStubFetch({ source: { status: 404, body: "not found" } }),
-        idCounter,
-      ),
-    });
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
     const ctx2 = createExecutionContext();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const retry = await failingApp.fetch(
@@ -434,6 +471,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx2,
     );
     expect(retry.status).toBe(202);
+    await drainQueue(failingServices);
     await waitOnExecutionContext(ctx2);
 
     const get = await failingApp.request(
@@ -450,7 +488,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
   });
 
   it("rejects reprocess when another attempt is active", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
     const ctx = createExecutionContext();
     const submit = await app.fetch(
       new Request("http://t/readings", {
@@ -463,6 +502,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     const { id } = (await submit.json()) as { id: string };
 
+    // Deliberately do not drain — the reading must still look pending+running
+    // when the reprocess request lands so that the 409 guard fires.
     const retry = await app.fetch(
       new Request(`http://t/readings/${id}/reprocess`, {
         method: "POST",
@@ -473,6 +514,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       createExecutionContext(),
     );
     expect(retry.status).toBe(409);
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
   });
 
@@ -540,9 +582,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(staleReady, prefix));
 
     const idCounter = { n: 0 };
-    const app = createApp({
-      services: makeServices(makeStubFetch(), idCounter, "2026-04-26T20:00:00.000Z"),
-    });
+    const services = makeServices(makeStubFetch(), idCounter, "2026-04-26T20:00:00.000Z");
+    const app = createApp({ services });
     const ctx = createExecutionContext();
     const retry = await app.fetch(
       new Request(`http://t/readings/${staleReady.id}/reprocess`, {
@@ -555,14 +596,51 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
 
     expect(retry.status).toBe(202);
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
+  });
+
+  it("a burst of 5 simultaneous submits all enqueue and drain to ready", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        app.fetch(
+          new Request("http://t/readings", {
+            method: "POST",
+            headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+            body: JSON.stringify({ url: `https://example.com/burst-${i}` }),
+          }),
+          env,
+          ctx,
+        ),
+      ),
+    );
+    expect(responses.every((r) => r.status === 202)).toBe(true);
+    expect(queuedJobs.length).toBe(5);
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ status: string; url: string }> };
+    expect(body.readings).toHaveLength(5);
+    expect(body.readings.every((r) => r.status === "ready")).toBe(true);
   });
 });
 
 describe("GET /readings/lookup", () => {
   it("returns the id for a known URL", async () => {
     const fetchFn = makeStubFetch();
-    const app = createApp({ services: makeServices(fetchFn) });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
     const ctx = createExecutionContext();
     await app.fetch(
       new Request("http://t/readings", {
@@ -573,6 +651,7 @@ describe("GET /readings/lookup", () => {
       env,
       ctx,
     );
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
     const res = await app.request(
@@ -624,6 +703,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   async function postOne(
     app: ReturnType<typeof createApp>,
     url: string,
+    services: Services,
   ): Promise<string> {
     const ctx = createExecutionContext();
     const res = await app.fetch(
@@ -637,6 +717,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     );
     expect(res.status).toBe(202);
     const json = (await res.json()) as { id: string };
+    await drainQueue(services);
     await waitOnExecutionContext(ctx);
     return json.id;
   }
@@ -655,8 +736,9 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
 
   it("POST /readings writes a pending index entry; processReading replaces it with ready", async () => {
     const fetchFn = makeStubFetch();
-    const app = createApp({ services: makeServices(fetchFn) });
-    const id = await postOne(app, "https://example.com/article-1");
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const id = await postOne(app, "https://example.com/article-1", services);
 
     const list = await app.request(
       "/readings",
@@ -672,8 +754,9 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
 
   it("failure path: index entry ends up failed", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
-    const app = createApp({ services: makeServices(fetchFn) });
-    await postOne(app, "https://example.com/missing");
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    await postOne(app, "https://example.com/missing", services);
 
     const list = await app.request(
       "/readings",
@@ -705,7 +788,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
       idCounter,
     );
     const app = createApp({ services });
-    await postOne(app, "https://example.com/rust");
+    await postOne(app, "https://example.com/rust", services);
 
     // Submit a second reading with different content via a fresh stub.
     const services2 = makeServices(
@@ -725,7 +808,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
       idCounter,
     );
     const app2 = createApp({ services: services2 });
-    await postOne(app2, "https://example.com/go");
+    await postOne(app2, "https://example.com/go", services2);
 
     const res = await app.request(
       "/readings?q=rust",
@@ -742,35 +825,33 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     const mkServices = (toolInput: Record<string, unknown>) =>
       makeServices(makeStubFetch({ toolInput }), idCounter);
 
-    const app1 = createApp({
-      services: mkServices({
-        title: "AI piece",
-        tldr: "About AI",
-        tags: ["AI", "infra"],
-        keywords: [],
-        people: [],
-        orgs: [],
-        novelty_verdict: "novel",
-        connections: [],
-        summary_markdown: "summary body",
-      }),
+    const services1 = mkServices({
+      title: "AI piece",
+      tldr: "About AI",
+      tags: ["AI", "infra"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "summary body",
     });
-    await postOne(app1, "https://example.com/ai");
+    const app1 = createApp({ services: services1 });
+    await postOne(app1, "https://example.com/ai", services1);
 
-    const app2 = createApp({
-      services: mkServices({
-        title: "ML piece",
-        tldr: "About ML",
-        tags: ["ml"],
-        keywords: [],
-        people: [],
-        orgs: [],
-        novelty_verdict: "novel",
-        connections: [],
-        summary_markdown: "summary body",
-      }),
+    const services2 = mkServices({
+      title: "ML piece",
+      tldr: "About ML",
+      tags: ["ml"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "summary body",
     });
-    await postOne(app2, "https://example.com/ml");
+    const app2 = createApp({ services: services2 });
+    await postOne(app2, "https://example.com/ml", services2);
 
     const res = await app1.request(
       "/readings?tag=ai",
@@ -793,20 +874,19 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
       { url: "https://example.com/go-ai", title: "Go AI", tags: ["ai"] },
     ];
     for (const a of apps) {
-      const app = createApp({
-        services: mkServices({
-          title: a.title,
-          tldr: "x",
-          tags: a.tags,
-          keywords: [],
-          people: [],
-          orgs: [],
-          novelty_verdict: "novel",
-          connections: [],
-          summary_markdown: "summary body",
-        }),
+      const services = mkServices({
+        title: a.title,
+        tldr: "x",
+        tags: a.tags,
+        keywords: [],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "summary body",
       });
-      await postOne(app, a.url);
+      const app = createApp({ services });
+      await postOne(app, a.url, services);
     }
 
     const app = createApp({ services: makeServices(makeStubFetch()) });
@@ -822,8 +902,9 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   it("offset+limit slices results and toggles has_more correctly", async () => {
     const idCounter = { n: 0 };
     for (let i = 0; i < 3; i++) {
-      const app = createApp({ services: makeServices(makeStubFetch(), idCounter) });
-      await postOne(app, `https://example.com/p${i}`);
+      const services = makeServices(makeStubFetch(), idCounter);
+      const app = createApp({ services });
+      await postOne(app, `https://example.com/p${i}`, services);
     }
     const app = createApp({ services: makeServices(makeStubFetch()) });
 

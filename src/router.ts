@@ -5,7 +5,6 @@ import {
   newAttemptId,
   newAttemptSummary,
   newReadingArgs,
-  processReading,
   type ProcessReadingArgs,
 } from "./process-reading";
 import {
@@ -82,11 +81,12 @@ export function createApp(opts: AppOptions = {}) {
       manifestToIndexItem(pendingManifest, args.keyPrefix),
     );
 
-    c.executionCtx.waitUntil(processReading(
-      { ...args, attemptId, attemptStartedAt, trigger: "submit" },
-      c.env,
-      services,
-    ));
+    await c.env.READING_JOBS.send({
+      ...args,
+      attemptId,
+      attemptStartedAt,
+      trigger: "submit",
+    });
 
     return c.json(
       { id: args.id, status: "pending", poll: `/readings/${args.id}`, attempt_id: attemptId },
@@ -210,7 +210,7 @@ export function createApp(opts: AppOptions = {}) {
       manifestToIndexItem(nextManifest, ptr.key_prefix),
     );
 
-    c.executionCtx.waitUntil(processReading(args, c.env, services));
+    await c.env.READING_JOBS.send(args);
 
     return c.json(
       { id: effectiveManifest.id, status: nextManifest.status, poll: `/readings/${effectiveManifest.id}`, attempt_id: attemptId },
