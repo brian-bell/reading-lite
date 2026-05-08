@@ -83,9 +83,9 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 # Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
 # `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.
-EMAIL_FROM = ""
-EMAIL_TO = ""
-WEB_BASE_URL = ""
+EMAIL_FROM = "reading-lite@bbell.dev"
+EMAIL_TO = "bellbm@gmail.com"
+WEB_BASE_URL = "https://reading-lite.bbell.dev/"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
