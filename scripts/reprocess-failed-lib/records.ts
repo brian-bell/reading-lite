@@ -219,11 +219,7 @@ function legacyFailedAttemptFromManifest(
 }
 
 export function recordFileName(record: FailedAttemptRecord): string {
-  return `${safeFileToken(record.reading.id)}--${safeFileToken(record.attempt.id)}.json`;
-}
-
-export function runStamp(date = new Date()): string {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  return `${safeFileToken(record.reading.id)}.json`;
 }
 
 export async function readRecordInput(inputPath: string): Promise<FailedAttemptRecord[]> {

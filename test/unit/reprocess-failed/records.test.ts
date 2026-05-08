@@ -208,6 +208,11 @@ describe("record helpers", () => {
     expect(() => selectSingleRecord([one, two])).toThrow(/pass --reading <id>/);
   });
 
+  it("names record files by reading id only", () => {
+    const r = record();
+    expect(recordFileName(r)).toBe("rd_ONE.json");
+  });
+
   it("loads all JSON records in a directory while ignoring index.json", async () => {
     const a = record();
     const b = record({
