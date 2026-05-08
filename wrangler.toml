@@ -81,9 +81,10 @@ RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
 
 # Reading processing is enqueued via this binding; the consumer below pulls
-# messages and runs processReading at bounded concurrency so a bursty client
-# (bookmarks importer, mass-reprocess) cannot fan out enough simultaneous
-# Anthropic / OpenAI calls to trip rate limits.
+# messages and runs processReading at max_concurrency=1, so the worker never
+# has more than one Anthropic + two OpenAI calls in flight at a time. 429s
+# from upstream are surfaced as RateLimitedError → msg.retry({ delaySeconds })
+# so the wait happens on the queue side rather than burning a worker slot.
 [[env.production.queues.producers]]
 binding = "READING_JOBS"
 queue = "reading-lite"
@@ -92,7 +93,7 @@ queue = "reading-lite"
 queue = "reading-lite"
 max_batch_size = 1
 max_batch_timeout = 5
-max_concurrency = 2
+max_concurrency = 1
 max_retries = 3
 
 [[env.production.r2_buckets]]

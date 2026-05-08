@@ -1,6 +1,6 @@
 # CLAUDE.md — `reading-lite`
 
-Personal reading service on Cloudflare Workers + a small React SPA at `web/`. POST a URL → message goes onto a Cloudflare Queue (`READING_JOBS`) → consumer runs `processReading` at bounded concurrency (`max_concurrency = 2`) → Claude summarizes once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the TL;DR embedding → poll `GET /readings/:id` until ready. The SPA consumes the same routes for list/search/submit/detail.
+Personal reading service on Cloudflare Workers + a small React SPA at `web/`. POST a URL → message goes onto a Cloudflare Queue (`READING_JOBS`) → consumer runs `processReading` serially (`max_concurrency = 1`) → Claude summarizes once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the TL;DR embedding → poll `GET /readings/:id` until ready. The SPA consumes the same routes for list/search/submit/detail.
 
 For the user-facing pitch, see `README.md`. Original design intent: `plans/000-re-design.md` and PRD at `plans/001-prd-reading-lite.md` (issue #1). SPA + list-filter follow-up: PRD on issue #3.
 
@@ -14,7 +14,7 @@ For the user-facing pitch, see `README.md`. Original design intent: `plans/000-r
 
 **`anthropic.summarizeReading(input, deps)`** — `deps = { fetch, apiKey, model, retry? }`. One-shot call to `messages.create` with one tool (`emit_reading`) and `tool_choice` forcing it. The tool definition + system prompt are the cacheable prefix; `cache_control: {type: "ephemeral"}` sits on the last system block (caches tools+system together since render order is `tools → system → messages`). Volatile content (extracted markdown + similar-readings context + URL) is in the user message, after the cache breakpoint.
 
-**`http-retry.fetchWithRetry(fetch, input, init, deps)`** — `deps = { sleep, maxAttempts, baseDelayMs, maxDelayMs, random?, now? }`. Retries 429s honoring `Retry-After` (clamped to `maxDelayMs`) and 5xx + network rejections with exponential backoff + full jitter. Other 4xx returns immediately. After `maxAttempts` returns the last response so the caller's typed `!ok` branch still surfaces the final status. `process-reading.ts` builds a single `RetryDeps` from `RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY_MS`, `RETRY_MAX_DELAY_MS` env vars and threads it into `embed` + `summarizeReading`.
+**`http-retry.fetchWithRetry(fetch, input, init, deps)`** — `deps = { sleep, maxAttempts, baseDelayMs, maxDelayMs, random?, now? }`. Retries 5xx + network rejections with exponential backoff + full jitter. **429s do not retry in-process** — they throw `RateLimitedError` (carrying `retryAfterMs` from the upstream's `Retry-After` header) so the queue handler can `msg.retry({ delaySeconds })` and free its concurrency slot rather than sleeping. Other 4xx returns immediately. After `maxAttempts` returns the last 5xx response so the caller's typed `!ok` branch still throws with the final status. `process-reading.ts` builds a single `RetryDeps` from `RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY_MS`, `RETRY_MAX_DELAY_MS` env vars and threads it into `embed` + `summarizeReading`.
 
 **`stores.ReadingStore`** — wraps an `R2Bucket` binding. Keys live under `readings/YYYY/MM/DDTHHMMSSZ-{id}/`
 
@@ -22,7 +22,7 @@ For the user-facing pitch, see `README.md`. Original design intent: `plans/000-r
 
 **`router.createApp({services})`** — Hono app exposing all eight routes.
 
-**`src/index.ts:queue(batch, env)`** — Cloudflare Queue consumer for the `reading-lite` queue. Iterates `batch.messages`, runs `processReading(msg.body, env, defaultServices())`, always `msg.ack()`s (success or thrown). `processReading` writes a failed manifest before throwing, so re-delivery would just repeat the same upstream error; the reprocess script is the recovery path.
+**`src/index.ts:queue(batch, env)`** — Cloudflare Queue consumer for the `reading-lite` queue. Delegates each message to `dispatchQueueMessage(msg, processFn)`. On success or non-rate-limit failure, the dispatcher acks: `processReading` writes a failed manifest before throwing, so re-delivery would just repeat the same upstream error; the reprocess script is the recovery path. On `RateLimitedError`, the dispatcher calls `msg.retry({ delaySeconds })` using `e.retryAfterMs` (clamped 1-43200) or an attempts-based exponential default (30s → 60s → 120s, capped at 300s) and the manifest stays `pending+running` until a future delivery completes or `PENDING_TTL_SECONDS` flips it stale.
 
 ## Conventions worth following
 

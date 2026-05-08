@@ -185,13 +185,16 @@ describe("summarizeReading", () => {
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
 
-  it("retries through retry deps and succeeds after 429 then 200", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(err(429, { error: { message: "slow down" } }))
-      .mockResolvedValueOnce(ok(toolUseResponse(validToolInput)));
+  it("propagates RateLimitedError on 429 (no in-process retry)", async () => {
+    const { RateLimitedError } = await import("../../../src/modules/http-retry");
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      }),
+    );
     const sleeps: number[] = [];
-    const out = await summarizeReading(
+    const e = await summarizeReading(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       {
         fetch: fetchFn as unknown as typeof fetch,
@@ -207,10 +210,11 @@ describe("summarizeReading", () => {
           random: () => 1,
         },
       },
-    );
-    expect(out.reading).toEqual(validToolInput);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
-    expect(sleeps.length).toBe(1);
+    ).catch((err) => err);
+    expect(e).toBeInstanceOf(RateLimitedError);
+    expect((e as InstanceType<typeof RateLimitedError>).retryAfterMs).toBe(30_000);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
   });
 
   it("rejects empty extractedText before calling fetch", async () => {

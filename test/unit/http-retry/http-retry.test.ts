@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchWithRetry, parseRetryAfterMs } from "../../../src/modules/http-retry";
+import {
+  fetchWithRetry,
+  parseRetryAfterMs,
+  RateLimitedError,
+} from "../../../src/modules/http-retry";
 
 function res(status: number, body = "", headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers });
@@ -46,53 +50,46 @@ describe("fetchWithRetry", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
-  it("honors Retry-After in seconds on 429 then succeeds", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(res(429, "slow", { "retry-after": "2" }))
-      .mockResolvedValueOnce(res(200, "ok"));
-    const { sleep, sleeps } = recordingSleep();
-    const out = await fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
-      ...baseDeps,
-      maxDelayMs: 10_000,
-      sleep,
-      random: () => 1,
-    });
-    expect(out.status).toBe(200);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
-    expect(sleeps).toEqual([2_000]);
+  it("throws RateLimitedError immediately on 429 with Retry-After", async () => {
+    const fetchFn = vi.fn(async () => res(429, "slow", { "retry-after": "30" }));
+    const { sleep } = recordingSleep();
+    const err = await fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://x",
+      {},
+      { ...baseDeps, sleep, random: () => 1 },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect((err as RateLimitedError).status).toBe(429);
+    expect((err as RateLimitedError).retryAfterMs).toBe(30_000);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
-  it("clamps Retry-After to maxDelayMs", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(res(429, "slow", { "retry-after": "600" }))
-      .mockResolvedValueOnce(res(200, "ok"));
-    const { sleep, sleeps } = recordingSleep();
-    await fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
-      ...baseDeps,
-      maxDelayMs: 8_000,
-      sleep,
-      random: () => 1,
-    });
-    expect(sleeps).toEqual([8_000]);
+  it("throws RateLimitedError with retryAfterMs=null when header is missing", async () => {
+    const fetchFn = vi.fn(async () => res(429, "no header"));
+    const { sleep } = recordingSleep();
+    const err = await fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://x",
+      {},
+      { ...baseDeps, sleep, random: () => 1 },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect((err as RateLimitedError).retryAfterMs).toBeNull();
+    expect(sleep).not.toHaveBeenCalled();
   });
 
-  it("uses exponential backoff with full jitter on 429 without Retry-After", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(res(429, "no header"))
-      .mockResolvedValueOnce(res(429, "no header"))
-      .mockResolvedValueOnce(res(200, "ok"));
-    const { sleep, sleeps } = recordingSleep();
-    await fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
-      maxAttempts: 3,
-      baseDelayMs: 100,
-      maxDelayMs: 1_000,
-      sleep,
-      random: () => 1, // full jitter at the cap
-    });
-    expect(sleeps).toEqual([100, 200]);
+  it("does not clamp Retry-After when surfacing it via RateLimitedError", async () => {
+    const fetchFn = vi.fn(async () => res(429, "slow", { "retry-after": "600" }));
+    const { sleep } = recordingSleep();
+    const err = await fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://x",
+      {},
+      { ...baseDeps, maxDelayMs: 8_000, sleep, random: () => 1 },
+    ).catch((e) => e);
+    expect((err as RateLimitedError).retryAfterMs).toBe(600_000);
   });
 
   it("retries on 500 then 503 then 200", async () => {
@@ -113,8 +110,8 @@ describe("fetchWithRetry", () => {
     expect(sleeps).toEqual([50, 100]);
   });
 
-  it("returns the last response after maxAttempts of 429", async () => {
-    const fetchFn = vi.fn(async () => res(429, "still"));
+  it("returns the last 5xx response after maxAttempts", async () => {
+    const fetchFn = vi.fn(async () => res(503, "still down"));
     const { sleep, sleeps } = recordingSleep();
     const out = await fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
       maxAttempts: 3,
@@ -123,7 +120,7 @@ describe("fetchWithRetry", () => {
       sleep,
       random: () => 1,
     });
-    expect(out.status).toBe(429);
+    expect(out.status).toBe(503);
     expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(sleeps).toEqual([50, 100]);
   });

@@ -10,7 +10,7 @@ import {
   summarizeReading,
   type SimilarContext,
 } from "./modules/anthropic";
-import type { RetryDeps } from "./modules/http-retry";
+import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
   ManifestError,
@@ -194,6 +194,13 @@ export async function processReading(
       manifestToIndexItem(finalManifest, args.keyPrefix),
     );
   } catch (e) {
+    if (e instanceof RateLimitedError) {
+      // Don't mark the manifest failed — the queue handler will requeue this
+      // message after the upstream's Retry-After window. The active_attempt
+      // stays "running" until either a future attempt succeeds or
+      // PENDING_TTL_SECONDS flips it stale.
+      throw e;
+    }
     await markFailed(reader, args, services, attempt, e);
   }
 }
