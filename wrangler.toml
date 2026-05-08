@@ -35,6 +35,7 @@ compatibility_flags = ["nodejs_compat"]
 #   READER_API_TOKEN     — bearer token required on every protected route
 #   ANTHROPIC_API_KEY    — Anthropic API key
 #   OPENAI_API_KEY       — OpenAI API key (text-embedding-3-small)
+#   RESEND_API_KEY       — Resend API key (per-reading email notifications)
 
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
@@ -43,6 +44,9 @@ PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+EMAIL_FROM = ""
+EMAIL_TO = ""
+WEB_BASE_URL = ""
 # In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
 # to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
 # full jitter starting from RETRY_BASE_DELAY_MS.
@@ -76,6 +80,12 @@ PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+# Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
+# `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
+# or by uncommenting and editing here before deploying.
+EMAIL_FROM = ""
+EMAIL_TO = ""
+WEB_BASE_URL = ""
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"

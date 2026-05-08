@@ -10,6 +10,7 @@ import {
   summarizeReading,
   type SimilarContext,
 } from "./modules/anthropic";
+import { sendReadingEmail } from "./modules/email";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
@@ -33,6 +34,9 @@ export interface ProcessReadingArgs {
   attemptStartedAt?: string;
   trigger?: ProcessingAttemptTrigger;
   preserveReadyManifest?: Manifest;
+  // Optional in TS for backwards compat with in-flight queue messages enqueued
+  // before this field existed; current entry points always set it explicitly.
+  email?: boolean;
 }
 
 export async function processReading(
@@ -193,6 +197,18 @@ export async function processReading(
     await reader.appendOrReplaceListIndexItem(
       manifestToIndexItem(finalManifest, args.keyPrefix),
     );
+
+    if (shouldSendEmail(args)) {
+      await sendReadingEmailAndLog(
+        reader,
+        args,
+        env,
+        services,
+        attempt,
+        finalManifest,
+        retry,
+      );
+    }
   } catch (e) {
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this
@@ -203,6 +219,60 @@ export async function processReading(
     }
     await markFailed(reader, args, services, attempt, e);
   }
+}
+
+function shouldSendEmail(args: ProcessReadingArgs): boolean {
+  // In-flight queue messages from before this field existed lack `email`. Per
+  // contract: undefined → true on submit, false otherwise.
+  if (args.email !== undefined) return args.email;
+  return args.trigger === "submit";
+}
+
+async function sendReadingEmailAndLog(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+  attempt: ProcessingAttempt,
+  manifest: Manifest,
+  retry: RetryDeps,
+): Promise<void> {
+  const startedAt = services.now();
+  try {
+    const listIndex = await reader.readListIndex();
+    await sendReadingEmail(
+      { manifest, webBaseUrl: env.WEB_BASE_URL, listIndex },
+      {
+        fetch: services.fetch,
+        apiKey: env.RESEND_API_KEY,
+        from: env.EMAIL_FROM,
+        to: env.EMAIL_TO,
+        retry,
+      },
+    );
+    const finishedAt = services.now();
+    const durationMs = durationMsBetween(startedAt, finishedAt);
+    attempt.events.push({
+      stage: "send_email",
+      status: "succeeded",
+      at: finishedAt,
+      ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+    });
+  } catch (e) {
+    // Email failure must NOT poison the manifest — the reading stays `ready`.
+    // Recovery is a manual reprocess with email=true (see PRD non-goals).
+    console.error(e);
+    const failedAt = services.now();
+    const durationMs = durationMsBetween(startedAt, failedAt);
+    attempt.events.push({
+      stage: "send_email",
+      status: "failed",
+      at: failedAt,
+      ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+      error: errorFromUnknown(e, "send_email", failedAt),
+    });
+  }
+  await writeAttemptSafe(reader, args.keyPrefix, attempt);
 }
 
 async function markFailed(

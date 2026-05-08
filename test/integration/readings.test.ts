@@ -79,6 +79,8 @@ function makeStubFetch(opts: {
   toolInput?: Record<string, unknown>;
   anthropicStatus?: number;
   anthropicBody?: unknown;
+  resendStatus?: number;
+  resendBody?: unknown;
 } = {}) {
   const source = opts.source ?? {
     status: 200,
@@ -124,6 +126,14 @@ function makeStubFetch(opts: {
         headers: { "content-type": "application/json" },
       });
     }
+    if (url.startsWith("https://api.resend.com/emails")) {
+      const status = opts.resendStatus ?? 200;
+      const body = opts.resendBody ?? { id: "resend_01" };
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    }
     // Source URL (or anything else) falls through to the source stub.
     return new Response(source.body, {
       status: source.status,
@@ -131,6 +141,13 @@ function makeStubFetch(opts: {
     });
   });
   return fetchFn;
+}
+
+function resendCalls(fetchFn: ReturnType<typeof makeStubFetch>) {
+  return fetchFn.mock.calls.filter(([input]) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    return url.startsWith("https://api.resend.com/emails");
+  });
 }
 
 function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2026-04-26T20:00:00.000Z"): Services {
@@ -633,6 +650,308 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const body = (await list.json()) as { readings: Array<{ status: string; url: string }> };
     expect(body.readings).toHaveLength(5);
     expect(body.readings.every((r) => r.status === "ready")).toBe(true);
+  });
+});
+
+describe("POST /readings — email notifications", () => {
+  it("fires one Resend email by default after a successful submit", async () => {
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/email-me" }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const calls = resendCalls(fetchFn);
+    expect(calls).toHaveLength(1);
+    const init = calls[0]![1]!;
+    const headers = new Headers(init.headers);
+    expect(headers.get("authorization")).toBe("Bearer test-resend-key");
+    expect(headers.get("content-type")).toBe("application/json");
+    const body = JSON.parse(init.body as string) as {
+      from: string;
+      to: string;
+      subject: string;
+      html: string;
+      text: string;
+    };
+    expect(body.from).toBe("reading-lite@test.example");
+    expect(body.to).toBe("reader@test.example");
+    expect(body.subject).toBe("Test Article");
+    expect(body.html).toContain(`https://reading.test.example/readings/${id}`);
+    expect(body.text).toContain("https://example.com/email-me");
+    expect(body.text).toContain("A short summary.");
+
+    const diagnostics = await app.request(
+      `/readings/${id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const diag = (await diagnostics.json()) as {
+      manifest: { status: string };
+      attempts: Array<{ events: Array<{ stage: string; status: string }> }>;
+    };
+    expect(diag.manifest.status).toBe("ready");
+    const events = diag.attempts[0]!.events;
+    const sendEmail = events.find((e) => e.stage === "send_email");
+    expect(sendEmail).toBeDefined();
+    expect(sendEmail!.status).toBe("succeeded");
+  });
+
+  it("does not fire an email when the submit body sets email:false", async () => {
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/silent", email: false }),
+      }),
+      env,
+      ctx,
+    );
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    expect(resendCalls(fetchFn)).toHaveLength(0);
+  });
+
+  it("keeps the manifest ready when Resend returns 500 and logs a failed send_email event", async () => {
+    const fetchFn = makeStubFetch({ resendStatus: 500, resendBody: { message: "boom" } });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/resend-down" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    // processReading must NOT throw on email failure; the manifest must remain ready.
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await get.json()) as { status: string };
+    expect(manifest.status).toBe("ready");
+
+    const diagnostics = await app.request(
+      `/readings/${id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const diag = (await diagnostics.json()) as {
+      attempts: Array<{ status: string; events: Array<{ stage: string; status: string; error?: { code: string } }> }>;
+    };
+    const attempt = diag.attempts[0]!;
+    expect(attempt.status).toBe("succeeded");
+    const sendEmail = attempt.events.find((e) => e.stage === "send_email");
+    expect(sendEmail).toBeDefined();
+    expect(sendEmail!.status).toBe("failed");
+    expect(sendEmail!.error?.code).toBe("ResendError");
+    consoleErr.mockRestore();
+  });
+});
+
+describe("POST /readings/:id/reprocess — email opt-in", () => {
+  async function seedReady(
+    services: Services,
+    url: string,
+    fetchFn: ReturnType<typeof makeStubFetch>,
+  ): Promise<string> {
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url, email: false }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+    expect(resendCalls(fetchFn)).toHaveLength(0);
+    return id;
+  }
+
+  it("does not email by default on reprocess (force present, force absent)", async () => {
+    const idCounter = { n: 0 };
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn, idCounter);
+    const id = await seedReady(services, "https://example.com/silent-reprocess", fetchFn);
+
+    const app = createApp({ services });
+    for (const body of [{}, { force: true }]) {
+      const ctx = createExecutionContext();
+      const retry = await app.fetch(
+        new Request(`http://t/readings/${id}/reprocess`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        env,
+        ctx,
+      );
+      expect(retry.status).toBe(202);
+      await drainQueue(services);
+      await waitOnExecutionContext(ctx);
+    }
+    expect(resendCalls(fetchFn)).toHaveLength(0);
+  });
+
+  it("emails on reprocess when body sets email:true", async () => {
+    const idCounter = { n: 0 };
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn, idCounter);
+    const id = await seedReady(services, "https://example.com/loud-reprocess", fetchFn);
+
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ email: true }),
+      }),
+      env,
+      ctx,
+    );
+    expect(retry.status).toBe(202);
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const calls = resendCalls(fetchFn);
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0]![1]!.body as string) as { subject: string };
+    expect(body.subject).toBe("Test Article");
+  });
+
+  it("emails on reprocess with both force:true and email:true", async () => {
+    const idCounter = { n: 0 };
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn, idCounter);
+    const id = await seedReady(services, "https://example.com/force-and-email", fetchFn);
+
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ force: true, email: true }),
+      }),
+      env,
+      ctx,
+    );
+    expect(retry.status).toBe(202);
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+    expect(resendCalls(fetchFn)).toHaveLength(1);
+  });
+});
+
+describe("processReading — backwards-compat for in-flight queue messages without `email`", () => {
+  it("undefined email + trigger='submit' → fires email", async () => {
+    const idCounter = { n: 0 };
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn, idCounter);
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const id = "rd_PRE01";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const prefix = buildKeyPrefix(id, createdAt);
+    // Synthesize a pre-deploy queue message: email field absent.
+    const args: ProcessReadingArgs = {
+      id,
+      url: "https://example.com/pre-deploy-submit",
+      urlHash: "e".repeat(64),
+      createdAt,
+      keyPrefix: prefix,
+      attemptId: "at_pre01",
+      attemptStartedAt: createdAt,
+      trigger: "submit",
+    };
+    await reader.writeManifest(prefix, {
+      id,
+      url: args.url,
+      url_hash: args.urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
+
+    await processReading(args, env as unknown as Env, services);
+
+    expect(resendCalls(fetchFn)).toHaveLength(1);
+  });
+
+  it("undefined email + trigger='reprocess' → no email", async () => {
+    const idCounter = { n: 0 };
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn, idCounter);
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const id = "rd_PRE02";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const prefix = buildKeyPrefix(id, createdAt);
+    const args: ProcessReadingArgs = {
+      id,
+      url: "https://example.com/pre-deploy-reprocess",
+      urlHash: "f".repeat(64),
+      createdAt,
+      keyPrefix: prefix,
+      attemptId: "at_pre02",
+      attemptStartedAt: createdAt,
+      trigger: "reprocess",
+    };
+    await reader.writeManifest(prefix, {
+      id,
+      url: args.url,
+      url_hash: args.urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
+
+    await processReading(args, env as unknown as Env, services);
+
+    expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 });
 

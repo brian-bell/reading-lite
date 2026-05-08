@@ -2,6 +2,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { loadDotVars } from "./lib/dotvars";
+import { buildReprocessBody } from "./reprocess-failed-lib/body";
 import { pollReadingTerminal } from "./reprocess-failed-lib/poll";
 import {
   readRecordInput,
@@ -22,6 +23,7 @@ interface Args {
   token: string;
   execute: boolean;
   force: boolean;
+  email: boolean | undefined;
   includeNonRetryable: boolean;
   poll: boolean;
   pollIntervalMs: number;
@@ -49,6 +51,8 @@ function parseCliArgs(): Args {
       token: { type: "string" },
       execute: { type: "boolean", default: false },
       force: { type: "boolean", default: false },
+      email: { type: "boolean", default: false },
+      "no-email": { type: "boolean", default: false },
       "include-non-retryable": { type: "boolean", default: false },
       poll: { type: "boolean", default: false },
       "poll-interval-ms": { type: "string" },
@@ -69,6 +73,18 @@ function parseCliArgs(): Args {
     printUsage();
     process.exit(2);
   }
+  if (values.email === true && values["no-email"] === true) {
+    console.error("pass either --email or --no-email, not both");
+    printUsage();
+    process.exit(2);
+  }
+  // email defaults to false (silent). undefined means "do not include in body"
+  // — which the worker also treats as false for trigger=reprocess. We pass it
+  // through explicitly when set so the worker honors the operator's intent.
+  let email: boolean | undefined;
+  if (values.email === true) email = true;
+  else if (values["no-email"] === true) email = false;
+  else email = undefined;
   const pollIntervalMs = parsePositiveIntFlag(
     "--poll-interval-ms",
     values["poll-interval-ms"],
@@ -100,6 +116,7 @@ function parseCliArgs(): Args {
     token,
     execute: values.execute === true,
     force: values.force === true,
+    email,
     includeNonRetryable: values["include-non-retryable"] === true,
     poll: values.poll === true,
     pollIntervalMs,
@@ -135,6 +152,8 @@ or all retryable failed readings. Dry-run by default; pass --execute to POST.
                               then .dev.vars READER_API_TOKEN.
   --execute                   Actually call POST /readings/:id/reprocess.
   --force                     Send { "force": true } to bypass active attempts.
+  --email                     Email me when each reading completes. Default: silent.
+  --no-email                  Explicitly silence emails (same as default).
   --include-non-retryable     Reprocess records even when retry rules say skip.
   --poll                      With --execute, poll GET /readings/:id after
                               queueing and wait for ready/failed before moving
@@ -250,7 +269,7 @@ async function processOneRecord(
     };
   }
 
-  const result = await reprocessOne(args.base, headers, record, args.force);
+  const result = await reprocessOne(args.base, headers, record, args.force, args.email);
   if (result.classification === "queued") {
     process.stderr.write(`QUEUE ${record.reading.id} attempt=${result.attempt_id ?? "(unknown)"}\n`);
   } else {
@@ -306,12 +325,13 @@ async function reprocessOne(
   headers: Record<string, string>,
   record: FailedAttemptRecord,
   force: boolean,
+  email: boolean | undefined,
 ): Promise<Result> {
   const url = new URL(`/readings/${encodeURIComponent(record.reading.id)}/reprocess`, base);
   const res = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(force ? { force: true } : {}),
+    body: buildReprocessBody({ force, email }),
   });
   if (!res.ok) {
     return {

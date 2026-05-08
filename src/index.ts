@@ -10,6 +10,10 @@ export interface Env {
   READER_API_TOKEN: string;
   ANTHROPIC_API_KEY: string;
   OPENAI_API_KEY: string;
+  RESEND_API_KEY: string;
+  EMAIL_FROM: string;
+  EMAIL_TO: string;
+  WEB_BASE_URL: string;
   CORS_ALLOWED_ORIGINS: string;
   PENDING_TTL_SECONDS: string;
   FETCH_TIMEOUT_MS: string;

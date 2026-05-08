@@ -49,6 +49,9 @@ export const ProcessingStageSchema = z.enum([
   "upsert_vector",
   "write_manifest",
   "write_indexes",
+  // send_email is appended to the attempt log post-write_indexes; it does not
+  // run via runStage and never flips the manifest to failed.
+  "send_email",
 ]);
 export type ProcessingStage = z.infer<typeof ProcessingStageSchema>;
 
