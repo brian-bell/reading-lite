@@ -6,7 +6,9 @@ import { defaultServices } from "./services";
 export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
-  READING_JOBS: Queue<ProcessReadingArgs>;
+  // Optional so the router can return a clear 503 when the binding is missing
+  // (e.g. wrangler dev / staging without a queue) instead of a runtime crash.
+  READING_JOBS?: Queue<ProcessReadingArgs>;
   READER_API_TOKEN: string;
   ANTHROPIC_API_KEY: string;
   OPENAI_API_KEY: string;

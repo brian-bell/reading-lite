@@ -155,7 +155,12 @@ export class ReadingStore {
 
   async listAttempts(keyPrefix: string, limit = 20): Promise<ProcessingAttempt[]> {
     const prefix = `${keyPrefix}/${ATTEMPTS_PREFIX}`;
-    const attempts: ProcessingAttempt[] = [];
+    // Two-phase listing: first collect all keys + their R2 upload times, then
+    // GET only the top `limit` by upload time. Upload time correlates with
+    // started_at strongly enough for diagnostic ordering, and bounding the
+    // number of GETs by `limit` avoids an unbounded N+1 read on readings with
+    // many retries.
+    const candidates: Array<{ key: string; uploadedMs: number }> = [];
     let cursor: string | undefined;
     do {
       const list = await this.bucket.list({
@@ -165,19 +170,33 @@ export class ReadingStore {
       });
       for (const obj of list.objects) {
         if (!obj.key.endsWith(".json")) continue;
-        const body = await this.bucket.get(obj.key);
-        if (!body) continue;
-        const json: unknown = JSON.parse(await body.text());
-        const parsed = ProcessingAttemptSchema.safeParse(json);
-        if (parsed.success) attempts.push(parsed.data);
+        candidates.push({
+          key: obj.key,
+          uploadedMs: obj.uploaded?.getTime() ?? 0,
+        });
       }
       cursor = list.truncated ? list.cursor : undefined;
     } while (cursor);
 
+    candidates.sort((a, b) => b.uploadedMs - a.uploadedMs);
+    const top = candidates.slice(0, limit);
+
+    const attempts: ProcessingAttempt[] = [];
+    for (const { key } of top) {
+      const body = await this.bucket.get(key);
+      if (!body) continue;
+      const json: unknown = JSON.parse(await body.text());
+      const parsed = ProcessingAttemptSchema.safeParse(json);
+      if (parsed.success) attempts.push(parsed.data);
+    }
+
+    // Final ordering on started_at — upload time is "close enough" for the
+    // shortlist but the response should sort by the wall-clock semantics the
+    // caller relies on.
     attempts.sort((a, b) =>
       a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0,
     );
-    return attempts.slice(0, limit);
+    return attempts;
   }
 
   async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {

@@ -202,6 +202,9 @@ async function listClearableEntries(dir: string): Promise<string[]> {
   );
 }
 
+// Paginates by offset; if list/index.json is mutated mid-scan a reading can be
+// duplicated (handled by newestRecordPerReading downstream) or skipped. Run
+// against an idle deployment when full coverage matters.
 async function listAllReadings(
   base: string,
   headers: Record<string, string>,

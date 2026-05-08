@@ -54,6 +54,9 @@ export async function fetchWithRetry(
       await deps.sleep(wait);
     } catch (e) {
       if (e instanceof RateLimitedError) throw e;
+      // AbortError signals caller-driven cancellation (e.g. an AbortSignal
+      // tripping). Retrying would mask the cancellation intent, so surface it.
+      if (isAbortError(e)) throw e;
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
@@ -67,6 +70,15 @@ export async function fetchWithRetry(
 
 function urlToString(input: URL | string): string {
   return input instanceof URL ? input.toString() : input;
+}
+
+function isAbortError(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "name" in e &&
+    (e as { name: unknown }).name === "AbortError"
+  );
 }
 
 function jitteredBackoff(
