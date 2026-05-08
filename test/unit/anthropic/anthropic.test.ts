@@ -185,6 +185,38 @@ describe("summarizeReading", () => {
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
 
+  it("propagates RateLimitedError on 429 (no in-process retry)", async () => {
+    const { RateLimitedError } = await import("../../../src/modules/http-retry");
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      }),
+    );
+    const sleeps: number[] = [];
+    const e = await summarizeReading(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      {
+        fetch: fetchFn as unknown as typeof fetch,
+        apiKey: "sk",
+        model: "claude-sonnet-4-6",
+        retry: {
+          maxAttempts: 3,
+          baseDelayMs: 10,
+          maxDelayMs: 100,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+          random: () => 1,
+        },
+      },
+    ).catch((err) => err);
+    expect(e).toBeInstanceOf(RateLimitedError);
+    expect((e as InstanceType<typeof RateLimitedError>).retryAfterMs).toBe(30_000);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
   it("rejects empty extractedText before calling fetch", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => ok(toolUseResponse(validToolInput)));
     await expect(

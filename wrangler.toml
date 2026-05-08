@@ -12,10 +12,15 @@
 #   2. `npx wrangler r2 bucket create reading-lite-staging` (one-time).
 #   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine`.
 #   4. `npm run dev`.
+# Note: the staging environment does not configure a queue. POST /readings and
+# /readings/:id/reprocess will fail under `wrangler dev` until you create
+# `reading-lite-staging` (or another queue) and add a [[queues.producers]] +
+# [[queues.consumers]] block here. Read-only routes work without it.
 #
 # Production setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite`
 #   `npx wrangler vectorize create reading-lite --dimensions=1536 --metric=cosine`
+#   `npx wrangler queues create reading-lite`
 #   `wrangler secret put READER_API_TOKEN --env production`
 #   `wrangler secret put ANTHROPIC_API_KEY --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
@@ -34,10 +39,16 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
 CORS_ALLOWED_ORIGINS = ""
-PENDING_TTL_SECONDS = "300"
+PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+# In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
+# to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
+# full jitter starting from RETRY_BASE_DELAY_MS.
+RETRY_MAX_ATTEMPTS = "3"
+RETRY_BASE_DELAY_MS = "500"
+RETRY_MAX_DELAY_MS = "8000"
 
 # `remote = true` makes `wrangler dev` bind to the real staging bucket
 # instead of Miniflare's local emulator, so migrated rows are visible from
@@ -61,10 +72,29 @@ name = "reading-lite"
 
 [env.production.vars]
 CORS_ALLOWED_ORIGINS = ""
-PENDING_TTL_SECONDS = "300"
+PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+RETRY_MAX_ATTEMPTS = "3"
+RETRY_BASE_DELAY_MS = "500"
+RETRY_MAX_DELAY_MS = "8000"
+
+# Reading processing is enqueued via this binding; the consumer below pulls
+# messages and runs processReading at max_concurrency=1, so the worker never
+# has more than one Anthropic + two OpenAI calls in flight at a time. 429s
+# from upstream are surfaced as RateLimitedError → msg.retry({ delaySeconds })
+# so the wait happens on the queue side rather than burning a worker slot.
+[[env.production.queues.producers]]
+binding = "READING_JOBS"
+queue = "reading-lite"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

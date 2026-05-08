@@ -4,9 +4,11 @@ dist/
 .dev.vars
 .migrate.vars
 .import-bookmarks-index.json
+.failed-attempts/
 *.log
 .DS_Store
 coverage/
 .vscode/
 .idea/
 *.tsbuildinfo
+.prd.vars

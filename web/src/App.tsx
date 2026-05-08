@@ -15,13 +15,21 @@ import {
 import {
   ApiError,
   fetchContentBlob,
+  getReadingDiagnostics,
   getReading,
   listReadings,
+  reprocessReading,
   submitReading,
   tokenStorageKey,
   type ContentKind
 } from "./api";
-import type { Connection, ListReading, ManifestStatus } from "./types";
+import type {
+  Connection,
+  ListReading,
+  ManifestStatus,
+  ProcessingAttempt,
+  ProcessingAttemptSummary
+} from "./types";
 import "./styles.css";
 
 type AppProps = {
@@ -319,7 +327,12 @@ function ReadingListItem({
       <div className="reading-row-main">
         <Link to={`/readings/${reading.id}`}>{reading.title || reading.url}</Link>
         {reading.tldr ? <p>{reading.tldr}</p> : null}
-        <StatusBadge status={reading.status} error={reading.error?.message} />
+        <StatusBadge
+          status={reading.status}
+          error={reading.error?.message}
+          activeAttempt={reading.active_attempt}
+          lastAttempt={reading.last_attempt}
+        />
         <TagList tags={reading.tags ?? []} onSelect={onSelectTag} />
       </div>
       <div className="reading-row-meta">
@@ -330,10 +343,35 @@ function ReadingListItem({
   );
 }
 
-function StatusBadge({ status, error }: { status: ManifestStatus; error?: string }) {
-  if (status === "ready") return null;
+function StatusBadge({
+  status,
+  error,
+  activeAttempt,
+  lastAttempt
+}: {
+  status: ManifestStatus;
+  error?: string;
+  activeAttempt?: ProcessingAttemptSummary;
+  lastAttempt?: ProcessingAttemptSummary;
+}) {
+  if (activeAttempt?.status === "running" && activeAttempt.trigger === "reprocess") {
+    return <span className="status-pill status-pending">Reprocessing...</span>;
+  }
+  if (status === "ready") {
+    if (lastAttempt?.trigger === "reprocess" && lastAttempt.status === "failed") {
+      return (
+        <span className="status-pill status-failed">
+          Reprocess failed: {lastAttempt.error?.message ?? "unknown"}
+        </span>
+      );
+    }
+    return null;
+  }
   if (status === "pending") {
-    return <span className="status-pill status-pending">Processing…</span>;
+    return <span className="status-pill status-pending">Processing...</span>;
+  }
+  if (activeAttempt?.status === "running") {
+    return <span className="status-pill status-pending">Processing...</span>;
   }
   return (
     <span className="status-pill status-failed">
@@ -345,6 +383,9 @@ function StatusBadge({ status, error }: { status: ManifestStatus; error?: string
 function ReadingDetail({ token }: { token: string }) {
   const { id } = useParams();
   const readingID = id ?? "";
+  const queryClient = useQueryClient();
+  const [reprocessError, setReprocessError] = useState<string | null>(null);
+  const [reprocessing, setReprocessing] = useState(false);
   const query = useQuery({
     queryKey: ["reading", token, readingID],
     queryFn: () => getReading(token, readingID),
@@ -362,6 +403,7 @@ function ReadingDetail({ token }: { token: string }) {
   }
 
   const reading = query.data;
+  const active = reading.active_attempt?.status === "running";
   return (
     <section className="page detail-page">
       <Link className="back-link" to="/">
@@ -373,10 +415,42 @@ function ReadingDetail({ token }: { token: string }) {
           <a href={reading.url} rel="noreferrer" target="_blank">
             {reading.url}
           </a>
-          <StatusBadge status={reading.status} error={reading.error?.message} />
+          <StatusBadge
+            status={reading.status}
+            error={reading.error?.message}
+            activeAttempt={reading.active_attempt}
+            lastAttempt={reading.last_attempt}
+          />
         </div>
-        <span className="verdict">{reading.novelty_verdict || "unclassified"}</span>
+        <div className="detail-actions">
+          <span className="verdict">{reading.novelty_verdict || "unclassified"}</span>
+          <button
+            type="button"
+            disabled={active || reprocessing}
+            onClick={async () => {
+              setReprocessing(true);
+              setReprocessError(null);
+              try {
+                await reprocessReading(token, reading.id);
+                await queryClient.invalidateQueries({ queryKey: ["reading", token, reading.id] });
+                await queryClient.invalidateQueries({ queryKey: ["reading-diagnostics", token, reading.id] });
+                await queryClient.invalidateQueries({ queryKey: ["readings"] });
+              } catch (e) {
+                setReprocessError(e instanceof Error ? e.message : "reprocess failed");
+              } finally {
+                setReprocessing(false);
+              }
+            }}
+          >
+            {active || reprocessing ? "Reprocessing" : "Reprocess"}
+          </button>
+        </div>
       </div>
+      {reprocessError !== null ? (
+        <p className="content-error" role="alert">
+          {reprocessError}
+        </p>
+      ) : null}
       {reading.tldr ? (
         <section className="detail-section">
           <h2>TL;DR</h2>
@@ -397,6 +471,7 @@ function ReadingDetail({ token }: { token: string }) {
       </section>
       <ConnectionsPanel connections={reading.connections ?? []} />
       <ContentLinks id={reading.id} token={token} />
+      <DiagnosticsPanel id={reading.id} token={token} />
     </section>
   );
 }
@@ -460,6 +535,102 @@ function ContentLinks({ id, token }: { id: string; token: string }) {
   );
 }
 
+function DiagnosticsPanel({ id, token }: { id: string; token: string }) {
+  const query = useQuery({
+    queryKey: ["reading-diagnostics", token, id],
+    queryFn: () => getReadingDiagnostics(token, id)
+  });
+
+  if (query.isLoading) {
+    return (
+      <section className="detail-section diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p>Loading diagnostics</p>
+      </section>
+    );
+  }
+  if (query.isError) {
+    return (
+      <section className="detail-section diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p className="content-error">Diagnostics unavailable</p>
+      </section>
+    );
+  }
+  if (!query.data) {
+    return null;
+  }
+
+  const diagnostics = query.data;
+  const attempts = diagnostics.attempts ?? [];
+  const objects = diagnostics.objects ?? [];
+  const byId = diagnostics.pointers?.by_id;
+  const byUrl = diagnostics.pointers?.by_url;
+  const latest = attempts[0];
+  return (
+    <section className="detail-section diagnostics-panel">
+      <h2>Diagnostics</h2>
+      <div className="diagnostics-grid">
+        <DiagnosticFact label="Status" value={diagnostics.manifest?.status ?? "unknown"} />
+        <DiagnosticFact label="Key" value={diagnostics.key_prefix ?? ""} />
+        <DiagnosticFact
+          label="By ID"
+          value={byId?.matches_manifest ? "ok" : "mismatch"}
+        />
+        <DiagnosticFact
+          label="By URL"
+          value={
+            byUrl?.exists
+              ? byUrl.matches_manifest
+                ? "ok"
+                : "mismatch"
+              : "missing"
+          }
+        />
+        <DiagnosticFact label="Objects" value={String(objects.length)} />
+        <DiagnosticFact label="Attempts" value={String(attempts.length)} />
+      </div>
+      {latest ? <AttemptBlock attempt={latest} /> : <p className="empty-state">No attempts</p>}
+    </section>
+  );
+}
+
+function DiagnosticFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="diagnostic-fact">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function AttemptBlock({ attempt }: { attempt: ProcessingAttempt }) {
+  return (
+    <div className="attempt-block">
+      <div className="attempt-heading">
+        <strong>{attempt.trigger}</strong>
+        <span>{attempt.status}</span>
+        {attempt.stage ? <span>{stageLabel(attempt.stage)}</span> : null}
+        <time dateTime={attempt.started_at}>{formatDateTime(attempt.started_at)}</time>
+      </div>
+      {attempt.error ? (
+        <p className="attempt-error">
+          {stageLabel(attempt.error.stage ?? attempt.stage ?? "queued")}: {attempt.error.message}
+        </p>
+      ) : null}
+      <ol className="attempt-events">
+        {attempt.events.map((event, index) => (
+          <li key={`${event.stage}-${event.status}-${index}`}>
+            <span>{stageLabel(event.stage)}</span>
+            <span>{event.status}</span>
+            {event.duration_ms !== undefined ? <span>{event.duration_ms}ms</span> : null}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function EntityGroup({ label, values }: { label: string; values: string[] }) {
   return (
     <section className="entity-group">
@@ -516,6 +687,23 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric"
   }).format(date);
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function stageLabel(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 export default App;

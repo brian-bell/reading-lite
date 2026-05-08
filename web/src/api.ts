@@ -1,6 +1,8 @@
 import type {
   ListReadingsResponse,
   Manifest,
+  ReadingDiagnostics,
+  ReprocessReadingResponse,
   SubmitReadingResponse
 } from "./types";
 
@@ -68,6 +70,18 @@ export async function getReading(token: string, id: string): Promise<Manifest> {
   return (await response.json()) as Manifest;
 }
 
+export async function getReadingDiagnostics(
+  token: string,
+  id: string
+): Promise<ReadingDiagnostics> {
+  const url = new URL(`/readings/${encodeURIComponent(id)}/diagnostics`, window.location.origin);
+  const response = await fetch(new Request(url, { headers: authHeaders(token) }));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to get diagnostics"));
+  }
+  return (await response.json()) as ReadingDiagnostics;
+}
+
 export type ContentKind = "content" | "content/raw";
 
 export async function fetchContentBlob(
@@ -99,4 +113,22 @@ export async function submitReading(
     throw new ApiError(response.status, await errorMessageOf(response, "failed to submit reading"));
   }
   return (await response.json()) as SubmitReadingResponse | Manifest;
+}
+
+export async function reprocessReading(
+  token: string,
+  id: string
+): Promise<ReprocessReadingResponse> {
+  const target = new URL(`/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
+  const response = await fetch(
+    new Request(target, {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify({})
+    })
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to reprocess reading"));
+  }
+  return (await response.json()) as ReprocessReadingResponse;
 }

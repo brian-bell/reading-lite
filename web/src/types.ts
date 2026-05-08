@@ -4,6 +4,20 @@
 export type ManifestStatus = "pending" | "ready" | "failed";
 export type NoveltyVerdict = "novel" | "familiar" | "duplicate";
 export type ContentStatus = "captured" | "raw_only" | "failed";
+export type ProcessingAttemptTrigger = "submit" | "reprocess";
+export type ProcessingAttemptStatus = "running" | "succeeded" | "failed";
+export type ProcessingStage =
+  | "queued"
+  | "fetch_source"
+  | "write_raw"
+  | "write_extracted"
+  | "embed_source"
+  | "query_similar"
+  | "summarize"
+  | "embed_summary"
+  | "upsert_vector"
+  | "write_manifest"
+  | "write_indexes";
 
 export interface Connection {
   id: string;
@@ -13,6 +27,35 @@ export interface Connection {
 export interface ManifestError {
   code: string;
   message: string;
+  stage?: ProcessingStage;
+  failed_at?: string;
+  retryable?: boolean;
+}
+
+export interface ProcessingAttemptSummary {
+  id: string;
+  trigger: ProcessingAttemptTrigger;
+  status: ProcessingAttemptStatus;
+  stage?: ProcessingStage;
+  started_at: string;
+  finished_at?: string;
+  error?: ManifestError;
+}
+
+export interface ProcessingAttemptEvent {
+  stage: ProcessingStage;
+  status: "started" | "succeeded" | "failed";
+  at: string;
+  duration_ms?: number;
+  error?: ManifestError;
+}
+
+export interface ProcessingAttempt extends ProcessingAttemptSummary {
+  reading_id: string;
+  url: string;
+  url_hash: string;
+  key_prefix: string;
+  events: ProcessingAttemptEvent[];
 }
 
 export interface Usage {
@@ -27,6 +70,8 @@ export interface Manifest {
   url_hash: string;
   status: ManifestStatus;
   error?: ManifestError;
+  active_attempt?: ProcessingAttemptSummary;
+  last_attempt?: ProcessingAttemptSummary;
 
   title?: string;
   tldr?: string;
@@ -68,6 +113,8 @@ export interface ListReading {
   created_at: string;
   updated_at?: string;
   error?: ManifestError;
+  active_attempt?: ProcessingAttemptSummary;
+  last_attempt?: ProcessingAttemptSummary;
 }
 
 export interface ListReadingsResponse {
@@ -81,4 +128,39 @@ export interface SubmitReadingResponse {
   id: string;
   status: ManifestStatus;
   poll: string;
+  attempt_id?: string;
+}
+
+export interface ReprocessReadingResponse {
+  id: string;
+  status: ManifestStatus;
+  poll: string;
+  attempt_id: string;
+}
+
+export interface ReadingObjectInfo {
+  key: string;
+  size: number;
+  uploaded?: string;
+}
+
+export interface ReadingDiagnostics {
+  id: string;
+  key_prefix: string;
+  manifest: Manifest;
+  index_item: ListReading | null;
+  pointers: {
+    by_id: {
+      exists: boolean;
+      pointer?: { id: string; key_prefix: string };
+      matches_manifest: boolean;
+    };
+    by_url: {
+      exists: boolean;
+      pointer?: { id: string; key_prefix: string };
+      matches_manifest: boolean;
+    };
+  };
+  objects: ReadingObjectInfo[];
+  attempts: ProcessingAttempt[];
 }

@@ -2,6 +2,7 @@ import {
   EmitReadingToolInputSchema,
   type EmitReadingToolInput,
 } from "../../schemas/manifest";
+import { fetchWithRetry, type RetryDeps } from "../http-retry";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -33,6 +34,7 @@ export interface AnthropicDeps {
   fetch: typeof fetch;
   apiKey: string;
   model: string;
+  retry?: RetryDeps;
 }
 
 export interface SimilarContext {
@@ -181,7 +183,7 @@ export async function summarizeReading(
     ],
   };
 
-  const response = await deps.fetch(ANTHROPIC_MESSAGES_URL, {
+  const init: RequestInit = {
     method: "POST",
     headers: {
       "x-api-key": deps.apiKey,
@@ -189,7 +191,10 @@ export async function summarizeReading(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  };
+  const response = deps.retry
+    ? await fetchWithRetry(deps.fetch, ANTHROPIC_MESSAGES_URL, init, deps.retry)
+    : await deps.fetch(ANTHROPIC_MESSAGES_URL, init);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");

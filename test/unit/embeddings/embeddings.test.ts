@@ -81,4 +81,32 @@ describe("embed", () => {
       BadEmbeddingResponseError,
     );
   });
+
+  it("propagates RateLimitedError on 429 (no in-process retry)", async () => {
+    const { RateLimitedError } = await import("../../../src/modules/http-retry");
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      }),
+    );
+    const sleeps: number[] = [];
+    const e = await embed("hello", {
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk",
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 10,
+        maxDelayMs: 100,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        random: () => 1,
+      },
+    }).catch((err) => err);
+    expect(e).toBeInstanceOf(RateLimitedError);
+    expect((e as InstanceType<typeof RateLimitedError>).retryAfterMs).toBe(60_000);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
 });
