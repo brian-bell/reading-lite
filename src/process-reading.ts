@@ -221,6 +221,10 @@ async function markFailed(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
   if (args.preserveReadyManifest?.status === "ready") {
+    // preserveReadyManifest is the snapshot the router captured BEFORE writing
+    // a pending+running manifest for the reprocess attempt. On failure we roll
+    // forward to that snapshot, clear active_attempt, and stamp last_attempt
+    // with the failed reprocess so the user keeps the previously-ready data.
     const manifest: Manifest = {
       ...args.preserveReadyManifest,
       active_attempt: undefined,
@@ -256,9 +260,10 @@ async function markFailed(
     updated_at: services.now(),
     last_attempt: summarizeAttempt(attempt),
   };
-  // We're already on the failure path inside waitUntil — a transient R2 hiccup
-  // here has nowhere to bubble to. Log and move on; the index TTL annotator
-  // will eventually flip stale pending entries even if both writes drop.
+  // We're already on the failure path inside the queue consumer — a transient
+  // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
+  // either way). Log and move on; the index TTL annotator will eventually flip
+  // stale pending entries even if both writes drop.
   try {
     await reader.writeManifest(args.keyPrefix, manifest);
   } catch (writeErr) {
@@ -347,7 +352,11 @@ async function runStage<T>(
   const startedAt = services.now();
   attempt.stage = stage;
   attempt.events.push({ stage, status: "started", at: startedAt });
-  await writeAttemptSafe(reader, keyPrefix, attempt);
+  // We deliberately don't write the attempt here — it doubles R2 PUTs per
+  // stage. Both the started and the succeeded/failed event are flushed at the
+  // end of the stage in a single put, so diagnostic readers still see both
+  // entries per stage. The trade-off is reduced visibility while a stage is
+  // in-flight; for that, fall back to the manifest's active_attempt.stage.
   try {
     const out = await fn();
     const finishedAt = services.now();

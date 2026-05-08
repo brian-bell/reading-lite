@@ -75,6 +75,13 @@ export function createApp(opts: AppOptions = {}) {
       created_at: args.createdAt,
       updated_at: args.createdAt,
     };
+    if (!c.env.READING_JOBS) {
+      return c.json(
+        { error: "queue binding READING_JOBS is not configured" },
+        503,
+      );
+    }
+
     await reader.writeManifest(args.keyPrefix, pendingManifest);
     await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
     await reader.appendOrReplaceListIndexItem(
@@ -187,6 +194,12 @@ export function createApp(opts: AppOptions = {}) {
     const effectiveManifest = annotateStale(manifest, c.env, services);
     if (effectiveManifest.active_attempt?.status === "running" && !parsed.data.force) {
       return c.json({ error: "reading already has an active attempt" }, 409);
+    }
+    if (!c.env.READING_JOBS) {
+      return c.json(
+        { error: "queue binding READING_JOBS is not configured" },
+        503,
+      );
     }
 
     const attemptStartedAt = services.now();

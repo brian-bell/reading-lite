@@ -343,6 +343,123 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(res.status).toBe(400);
   });
 
+  it("writes one attempt object per stage (not one per started/succeeded event) on a successful run", async () => {
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/attempt-writes" }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const attemptPuts = putSpy.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.includes("/attempts/"),
+    ).length;
+    // Initial queued + 10 stages (write_extracted included for HTML) + final
+    // post-success write = 12. Pre-fix this was ~22 (started + finished per
+    // stage). The exact upper bound below guards against regressing back to
+    // started+finished writes for every stage.
+    expect(attemptPuts).toBeLessThanOrEqual(13);
+
+    // Diagnostic visibility must survive the de-amplification: the persisted
+    // attempt's events list still has both started and succeeded entries per
+    // stage so we can reason about timings during failure post-mortems.
+    const diag = await app.request(
+      `/readings/${((await submit.json()) as { id: string }).id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(diag.status).toBe(200);
+    const body = (await diag.json()) as {
+      attempts: Array<{ events: Array<{ stage: string; status: string }> }>;
+    };
+    const events = body.attempts[0]!.events;
+    expect(events.some((e) => e.stage === "summarize" && e.status === "started")).toBe(true);
+    expect(events.some((e) => e.stage === "summarize" && e.status === "succeeded")).toBe(true);
+
+    putSpy.mockRestore();
+  });
+
+  it("returns 503 from POST /readings when the queue binding is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    (env as unknown as { READING_JOBS?: Queue<ProcessReadingArgs> }).READING_JOBS =
+      undefined;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/no-queue" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(submit.status).toBe(503);
+    const body = (await submit.json()) as { error: string };
+    expect(body.error).toMatch(/queue/i);
+    consoleErr.mockRestore();
+  });
+
+  it("returns 503 from reprocess when the queue binding is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/will-reprocess" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+
+    (env as unknown as { READING_JOBS?: Queue<ProcessReadingArgs> }).READING_JOBS =
+      undefined;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(503);
+    const body = (await retry.json()) as { error: string };
+    expect(body.error).toMatch(/queue/i);
+    consoleErr.mockRestore();
+  });
+
   it("diagnostics returns attempt history and object inventory for a failure", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const services = makeServices(fetchFn);

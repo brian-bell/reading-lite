@@ -119,13 +119,14 @@ function parsePositiveIntFlag(name: string, raw: string | undefined, fallback: n
 }
 
 function printUsage(): void {
-  console.log(`Usage: npm run reprocess:failed -- [--input <file-or-dir>] [--reading <id> | --all] [options]
+  console.log(`Usage: npm run reprocess:failed -- [--input <path> | <path>] [--reading <id> | --all] [options]
 
 Reads failed-attempt JSON records produced by gather:failed and reprocesses one
 or all retryable failed readings. Dry-run by default; pass --execute to POST.
 
   --input <path>              Record file or directory containing record JSON.
-                              Default: ${DEFAULT_INPUT}.
+                              May also be passed as the first positional
+                              argument. Default: ${DEFAULT_INPUT}.
   --reading <id>              Required when --input is a directory with more
                               than one failed reading.
   --all                       Reprocess every failed reading in the input once.

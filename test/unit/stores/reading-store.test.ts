@@ -251,6 +251,28 @@ describe("ReadingStore — attempts and object diagnostics", () => {
     expect(attempts.map((a) => a.id)).toEqual(["at_zz"]);
   });
 
+  it("bounds bucket.get calls by the limit (does not read every attempt object)", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = "readings/2026/04/26T200000Z-rd_TEST";
+    for (let i = 0; i < 5; i++) {
+      const second = String(i).padStart(2, "0");
+      await store.writeAttempt(
+        prefix,
+        attempt({
+          id: `at_${second}`,
+          started_at: `2026-04-26T20:00:${second}.000Z`,
+          events: [{ stage: "queued", status: "started", at: `2026-04-26T20:00:${second}.000Z` }],
+        }),
+      );
+    }
+
+    const getSpy = vi.spyOn(env.READINGS_BUCKET, "get");
+    const attempts = await store.listAttempts(prefix, 2);
+    expect(attempts).toHaveLength(2);
+    expect(getSpy).toHaveBeenCalledTimes(2);
+    getSpy.mockRestore();
+  });
+
   it("lists reading objects for diagnostics", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     const prefix = "readings/2026/04/26T200000Z-rd_TEST";
