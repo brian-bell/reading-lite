@@ -16,6 +16,10 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 READER_API_TOKEN = "test-token"
 ANTHROPIC_API_KEY = "test-anthropic-key"
 OPENAI_API_KEY = "test-openai-key"
+RESEND_API_KEY = "test-resend-key"
+EMAIL_FROM = "reading-lite@test.example"
+EMAIL_TO = "reader@test.example"
+WEB_BASE_URL = "https://reading.test.example"
 
 [[r2_buckets]]
 binding = "READINGS_BUCKET"

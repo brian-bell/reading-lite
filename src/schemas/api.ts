@@ -17,12 +17,14 @@ const webUrl = () =>
 
 export const PostReadingsBodySchema = z.object({
   url: webUrl(),
+  email: z.boolean().optional(),
 });
 export type PostReadingsBody = z.infer<typeof PostReadingsBodySchema>;
 
 export const PostReadingReprocessBodySchema = z
   .object({
     force: z.boolean().default(false),
+    email: z.boolean().optional(),
   })
   .default({ force: false });
 export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;

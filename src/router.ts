@@ -93,6 +93,7 @@ export function createApp(opts: AppOptions = {}) {
       attemptId,
       attemptStartedAt,
       trigger: "submit",
+      email: parsed.data.email ?? true,
     });
 
     return c.json(
@@ -215,6 +216,7 @@ export function createApp(opts: AppOptions = {}) {
       attemptStartedAt,
       trigger: "reprocess",
       preserveReadyManifest: effectiveManifest.status === "ready" ? effectiveManifest : undefined,
+      email: parsed.data.email ?? false,
     };
     const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
 
