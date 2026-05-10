@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (282 root tests across 22 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Greenfield. Production-shaped TypeScript, fully unit-tested (358 root tests across 30 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
 
 ## Architecture at a glance
 
@@ -92,6 +92,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
+| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. Defaults `email` to false. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
@@ -103,7 +104,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 
 List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. cold cache after migration), the list endpoint falls back to scan-and-rebuild.
 
-The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
+The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
 
 ### Troubleshooting and reprocessing
 
@@ -216,6 +217,44 @@ npm run import-bookmarks -- \
 
 `--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
 
+## Importing local Markdown
+
+Local `.md` files can be imported without re-fetching their source URLs. Each
+file must include a source line:
+
+```md
+**Source:** https://example.com/article
+```
+
+The importer uses that URL as the canonical reading URL and sends the Markdown
+body to `POST /readings/import-markdown`. Duplicate files with the same source
+URL are collapsed before submit; the largest Markdown file wins. Imported
+readings store the Markdown as both raw content and `extracted.md`, then reuse
+the normal embedding, similarity, Claude summary, Vectorize, manifest, and list
+index pipeline.
+
+```sh
+# preview the plan; no token required
+npm run import-markdown -- --dir ~/Documents/articles --dry-run
+
+# submit to local dev
+npm run import-markdown -- --dir ~/Documents/articles
+
+# submit to production
+npm run import-markdown -- \
+  --dir ~/Documents/articles \
+  --url https://reading-lite.bbell.dev/readings/import-markdown
+```
+
+`--url` is the full import endpoint. Token resolution mirrors the other
+scripts: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Successful
+new/existing responses are recorded in `.import-markdown-index.json`, scoped by
+destination URL, so interrupted runs resume cleanly. Files larger than the
+Cloudflare Queues 128 KB message limit are blocked before any POST; successful
+new/existing responses move every file for that source URL into a `processed/`
+subdirectory under the import directory. Emails are off by default; pass
+`--email` to request email notifications for imported readings.
+
 ## Repo layout
 
 ```
@@ -238,11 +277,14 @@ scripts/
   migrate-lib/{plan,run,clients}.ts
   import-bookmarks.ts           # CLI entry: parse Chrome export, POST /readings
   import-bookmarks-lib/{parse,select,submit,index-store,confirm}.ts
+  import-markdown.ts            # CLI entry: parse local Markdown, POST /readings/import-markdown
+  import-markdown-lib/{parse,processed,submit}.ts
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize)
   unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
   unit/migrate/                 # node pool (fs / os / path)
   unit/import-bookmarks/        # node pool
+  unit/import-markdown/         # node pool
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts

@@ -6,11 +6,13 @@ import {
   newAttemptSummary,
   newReadingArgs,
   type ProcessReadingArgs,
+  type ProcessReadingSource,
 } from "./process-reading";
 import {
   ListReadingsQuerySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
+  PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
 } from "./schemas/api";
 import type { Manifest, ProcessingAttemptSummary } from "./schemas/manifest";
@@ -66,6 +68,7 @@ export function createApp(opts: AppOptions = {}) {
       id: args.id,
       url,
       url_hash: args.urlHash,
+      source_type: "url",
       status: "pending",
       active_attempt: activeAttempt,
       content_type: "application/octet-stream",
@@ -94,6 +97,73 @@ export function createApp(opts: AppOptions = {}) {
       attemptStartedAt,
       trigger: "submit",
       email: parsed.data.email ?? true,
+    });
+
+    return c.json(
+      { id: args.id, status: "pending", poll: `/readings/${args.id}`, attempt_id: attemptId },
+      202,
+    );
+  });
+
+  app.post("/readings/import-markdown", async (c) => {
+    const json = await c.req.json().catch(() => null);
+    const parsed = PostReadingsImportMarkdownBodySchema.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: "invalid body", details: parsed.error.message }, 400);
+    }
+
+    const url = parsed.data.source_url;
+    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(url);
+    const existing = await reader.readByUrlPointer(urlHash);
+    if (existing) {
+      const m = await reader.readManifest(existing.key_prefix);
+      if (m) return c.json(m, 200);
+    }
+
+    const source: ProcessReadingSource = {
+      kind: "markdown",
+      markdown: parsed.data.markdown,
+      ...(parsed.data.title === undefined ? {} : { title: parsed.data.title }),
+    };
+    const args = await newReadingArgs(url, services, source);
+    const attemptStartedAt = services.now();
+    const attemptId = newAttemptId(services);
+    const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
+    const pendingManifest: Manifest = {
+      id: args.id,
+      url,
+      url_hash: args.urlHash,
+      source_type: "markdown",
+      status: "pending",
+      active_attempt: activeAttempt,
+      ...(parsed.data.title === undefined ? {} : { title: parsed.data.title }),
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: new TextEncoder().encode(parsed.data.markdown).byteLength,
+      content_sha256: await sha256Hex(parsed.data.markdown),
+      created_at: args.createdAt,
+      updated_at: args.createdAt,
+    };
+    if (!c.env.READING_JOBS) {
+      return c.json(
+        { error: "queue binding READING_JOBS is not configured" },
+        503,
+      );
+    }
+
+    await reader.writeManifest(args.keyPrefix, pendingManifest);
+    await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(pendingManifest, args.keyPrefix),
+    );
+
+    await c.env.READING_JOBS.send({
+      ...args,
+      attemptId,
+      attemptStartedAt,
+      trigger: "import",
+      email: parsed.data.email ?? false,
     });
 
     return c.json(
@@ -206,12 +276,25 @@ export function createApp(opts: AppOptions = {}) {
     const attemptStartedAt = services.now();
     const attemptId = newAttemptId(services);
     const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
+    let source: ProcessReadingSource | undefined;
+    if (effectiveManifest.source_type === "markdown") {
+      const extracted = await reader.readExtracted(ptr.key_prefix);
+      if (!extracted) {
+        return c.json({ error: "markdown content not available" }, 409);
+      }
+      source = {
+        kind: "markdown",
+        markdown: await extracted.text(),
+        ...(effectiveManifest.title === undefined ? {} : { title: effectiveManifest.title }),
+      };
+    }
     const args: ProcessReadingArgs = {
       id: effectiveManifest.id,
       url: effectiveManifest.url,
       urlHash: effectiveManifest.url_hash,
       createdAt: effectiveManifest.created_at,
       keyPrefix: ptr.key_prefix,
+      source,
       attemptId,
       attemptStartedAt,
       trigger: "reprocess",
@@ -297,9 +380,11 @@ function manifestForActiveAttempt(
     id: manifest.id,
     url: manifest.url,
     url_hash: manifest.url_hash,
+    source_type: manifest.source_type,
     status: "pending",
     active_attempt: activeAttempt,
     last_attempt: manifest.last_attempt,
+    title: manifest.title,
     content_type: "application/octet-stream",
     content_status: "captured",
     content_bytes: 0,
@@ -312,6 +397,7 @@ function manifestForActiveAttempt(
 function extFromContentType(contentType: string): string {
   const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
   if (major === "text/html" || major === "application/xhtml+xml") return "html";
+  if (major === "text/markdown") return "md";
   if (major === "application/pdf") return "pdf";
   if (major === "application/json") return "json";
   if (major.startsWith("text/")) return "txt";

@@ -21,6 +21,16 @@ export const PostReadingsBodySchema = z.object({
 });
 export type PostReadingsBody = z.infer<typeof PostReadingsBodySchema>;
 
+export const PostReadingsImportMarkdownBodySchema = z.object({
+  source_url: webUrl(),
+  title: z.string().trim().min(1).optional(),
+  markdown: z.string().min(1),
+  email: z.boolean().optional(),
+});
+export type PostReadingsImportMarkdownBody = z.infer<
+  typeof PostReadingsImportMarkdownBodySchema
+>;
+
 export const PostReadingReprocessBodySchema = z
   .object({
     force: z.boolean().default(false),

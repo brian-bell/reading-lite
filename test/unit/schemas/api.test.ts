@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
+  PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
   ListReadingsQuerySchema,
   ListReadingsResponseSchema,
@@ -27,6 +28,39 @@ describe("PostReadingsBodySchema", () => {
 
   it("rejects a missing url", () => {
     expect(() => PostReadingsBodySchema.parse({})).toThrow();
+  });
+});
+
+describe("PostReadingsImportMarkdownBodySchema", () => {
+  it("accepts source_url, markdown, optional title, and optional email", () => {
+    expect(
+      PostReadingsImportMarkdownBodySchema.parse({
+        source_url: "https://example.com/a",
+        title: "A",
+        markdown: "# A",
+        email: false,
+      }),
+    ).toEqual({
+      source_url: "https://example.com/a",
+      title: "A",
+      markdown: "# A",
+      email: false,
+    });
+  });
+
+  it("rejects non-http source_url and empty markdown", () => {
+    expect(() =>
+      PostReadingsImportMarkdownBodySchema.parse({
+        source_url: "file:///tmp/a.md",
+        markdown: "# A",
+      }),
+    ).toThrow();
+    expect(() =>
+      PostReadingsImportMarkdownBodySchema.parse({
+        source_url: "https://example.com/a",
+        markdown: "",
+      }),
+    ).toThrow();
   });
 });
 

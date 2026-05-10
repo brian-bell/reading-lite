@@ -4,7 +4,7 @@ import {
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
-import { extractFromUrl } from "./modules/extractor";
+import { extractFromUrl, type ExtractedContent } from "./modules/extractor";
 import { embed } from "./modules/embeddings";
 import {
   summarizeReading,
@@ -24,12 +24,17 @@ import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
 
+export type ProcessReadingSource =
+  | { kind: "url" }
+  | { kind: "markdown"; markdown: string; title?: string };
+
 export interface ProcessReadingArgs {
   id: string;
   url: string;
   urlHash: string;
   createdAt: string;
   keyPrefix: string;
+  source?: ProcessReadingSource;
   attemptId?: string;
   attemptStartedAt?: string;
   trigger?: ProcessingAttemptTrigger;
@@ -52,13 +57,7 @@ export async function processReading(
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
-    const extracted = await runStage(attempt, reader, args.keyPrefix, services, "fetch_source", () =>
-      extractFromUrl(args.url, {
-        fetch: services.fetch,
-        timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
-        maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
-      }),
-    );
+    const extracted = await extractSource(args, env, services, reader, attempt);
 
     await runStage(attempt, reader, args.keyPrefix, services, "write_raw", () =>
       reader.writeRaw(
@@ -136,6 +135,7 @@ export async function processReading(
       id: args.id,
       url: args.url,
       url_hash: args.urlHash,
+      source_type: sourceTypeForArgs(args),
       status: "ready",
       title: llm.reading.title,
       tldr: llm.reading.tldr,
@@ -320,6 +320,7 @@ async function markFailed(
     id: args.id,
     url: args.url,
     url_hash: args.urlHash,
+    source_type: sourceTypeForArgs(args),
     status: "failed",
     error,
     content_type: "application/octet-stream",
@@ -353,12 +354,60 @@ async function markFailed(
 export async function newReadingArgs(
   url: string,
   services: Services,
+  source?: ProcessReadingSource,
 ): Promise<ProcessReadingArgs> {
   const id = services.newId();
   const createdAt = services.now();
   const keyPrefix = buildKeyPrefix(id, createdAt);
   const urlHash = await sha256Hex(url);
-  return { id, url, urlHash, createdAt, keyPrefix };
+  return { id, url, urlHash, createdAt, keyPrefix, source };
+}
+
+async function extractSource(
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+  reader: ReadingStore,
+  attempt: ProcessingAttempt,
+): Promise<ExtractedContent> {
+  const source = args.source;
+  if (source?.kind === "markdown") {
+    return runStage(
+      attempt,
+      reader,
+      args.keyPrefix,
+      services,
+      "prepare_markdown",
+      () => extractedFromMarkdown(source),
+    );
+  }
+
+  return runStage(attempt, reader, args.keyPrefix, services, "fetch_source", () =>
+    extractFromUrl(args.url, {
+      fetch: services.fetch,
+      timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
+      maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
+    }),
+  );
+}
+
+async function extractedFromMarkdown(
+  source: Extract<ProcessReadingSource, { kind: "markdown" }>,
+): Promise<ExtractedContent> {
+  const raw = new TextEncoder().encode(source.markdown);
+  return {
+    raw,
+    content_type: "text/markdown; charset=utf-8",
+    content_status: "captured",
+    content_bytes: raw.byteLength,
+    content_sha256: await sha256Hex(source.markdown),
+    markdown: source.markdown,
+    title: source.title,
+  };
+}
+
+function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
+  return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
 export function newAttemptId(services: Services): string {
@@ -518,6 +567,7 @@ function parseIntEnv(value: string | undefined, fallback: number): number {
 function extToken(contentType: string): string {
   const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
   if (major === "text/html" || major === "application/xhtml+xml") return "html";
+  if (major === "text/markdown") return "md";
   if (major === "application/pdf") return "pdf";
   if (major === "application/json") return "json";
   if (major.startsWith("text/")) return "txt";

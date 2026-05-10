@@ -28,10 +28,13 @@ export type EmitReadingToolInput = z.infer<typeof EmitReadingToolInputSchema>;
 export const ManifestStatusSchema = z.enum(["pending", "ready", "failed"]);
 export type ManifestStatus = z.infer<typeof ManifestStatusSchema>;
 
+export const SourceTypeSchema = z.enum(["url", "markdown"]);
+export type SourceType = z.infer<typeof SourceTypeSchema>;
+
 export const ContentStatusSchema = z.enum(["captured", "raw_only", "failed"]);
 export type ContentStatus = z.infer<typeof ContentStatusSchema>;
 
-export const ProcessingAttemptTriggerSchema = z.enum(["submit", "reprocess"]);
+export const ProcessingAttemptTriggerSchema = z.enum(["submit", "reprocess", "import"]);
 export type ProcessingAttemptTrigger = z.infer<typeof ProcessingAttemptTriggerSchema>;
 
 export const ProcessingAttemptStatusSchema = z.enum(["running", "succeeded", "failed"]);
@@ -40,6 +43,7 @@ export type ProcessingAttemptStatus = z.infer<typeof ProcessingAttemptStatusSche
 export const ProcessingStageSchema = z.enum([
   "queued",
   "fetch_source",
+  "prepare_markdown",
   "write_raw",
   "write_extracted",
   "embed_source",
@@ -109,6 +113,7 @@ export const ManifestSchema = z
     id: z.string().min(1),
     url: z.string().url(),
     url_hash: sha256Hex(),
+    source_type: SourceTypeSchema.optional(),
     status: ManifestStatusSchema,
     error: ManifestErrorSchema.optional(),
     active_attempt: ProcessingAttemptSummarySchema.optional(),

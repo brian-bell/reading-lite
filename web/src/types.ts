@@ -4,11 +4,13 @@
 export type ManifestStatus = "pending" | "ready" | "failed";
 export type NoveltyVerdict = "novel" | "familiar" | "duplicate";
 export type ContentStatus = "captured" | "raw_only" | "failed";
-export type ProcessingAttemptTrigger = "submit" | "reprocess";
+export type SourceType = "url" | "markdown";
+export type ProcessingAttemptTrigger = "submit" | "reprocess" | "import";
 export type ProcessingAttemptStatus = "running" | "succeeded" | "failed";
 export type ProcessingStage =
   | "queued"
   | "fetch_source"
+  | "prepare_markdown"
   | "write_raw"
   | "write_extracted"
   | "embed_source"
@@ -17,7 +19,8 @@ export type ProcessingStage =
   | "embed_summary"
   | "upsert_vector"
   | "write_manifest"
-  | "write_indexes";
+  | "write_indexes"
+  | "send_email";
 
 export interface Connection {
   id: string;
@@ -68,6 +71,7 @@ export interface Manifest {
   id: string;
   url: string;
   url_hash: string;
+  source_type?: SourceType;
   status: ManifestStatus;
   error?: ManifestError;
   active_attempt?: ProcessingAttemptSummary;
