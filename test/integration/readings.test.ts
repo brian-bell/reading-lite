@@ -302,6 +302,97 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
+  it("imports Markdown without fetching the source URL", async () => {
+    const sourceUrl = "https://x.com/example/status/2047312986696454584";
+    const markdown = "# Imported Markdown\n\nThis is already captured local content.";
+    const fetchFn = makeStubFetch({
+      toolInput: {
+        title: "Imported Markdown",
+        tldr: "A local Markdown article was imported.",
+        tags: ["markdown"],
+        keywords: ["local markdown"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Imported summary",
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Imported Markdown",
+          markdown,
+        }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    expect(queuedJobs[0]).toMatchObject({
+      url: sourceUrl,
+      trigger: "import",
+      email: false,
+      source: { kind: "markdown", title: "Imported Markdown", markdown },
+    });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const { id } = (await submit.clone().json()) as { id: string };
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await get.json()) as {
+      status: string;
+      source_type?: string;
+      content_type: string;
+      title?: string;
+      last_attempt?: { trigger: string };
+    };
+    expect(manifest).toMatchObject({
+      status: "ready",
+      source_type: "markdown",
+      content_type: "text/markdown; charset=utf-8",
+      title: "Imported Markdown",
+      last_attempt: { trigger: "import" },
+    });
+
+    const content = await app.request(
+      `/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(markdown);
+
+    const diagnostics = await app.request(
+      `/readings/${id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const diagnosticBody = (await diagnostics.json()) as {
+      attempts: Array<{ events: Array<{ stage: string }> }>;
+    };
+    const stages = diagnosticBody.attempts[0]!.events.map((event) => event.stage);
+    expect(stages).toContain("prepare_markdown");
+    expect(stages).not.toContain("fetch_source");
+
+    const calledUrls = fetchFn.mock.calls.map(([input]) =>
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    expect(calledUrls).not.toContain(sourceUrl);
+    expect(resendCalls(fetchFn)).toHaveLength(0);
+  });
+
   it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const services = makeServices(fetchFn);

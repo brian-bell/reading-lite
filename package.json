@@ -15,7 +15,8 @@
     "reprocess:failed": "tsx scripts/reprocess-failed-attempts.ts",
     "migrate": "tsx scripts/migrate.ts",
     "read": "tsx scripts/read-url.ts",
-    "import-bookmarks": "tsx scripts/import-bookmarks.ts"
+    "import-bookmarks": "tsx scripts/import-bookmarks.ts",
+    "import-markdown": "tsx scripts/import-markdown.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",

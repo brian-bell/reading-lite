@@ -4,6 +4,7 @@ dist/
 .dev.vars
 .migrate.vars
 .import-bookmarks-index.json
+.import-markdown-index.json
 .failed-attempts/
 *.log
 .DS_Store

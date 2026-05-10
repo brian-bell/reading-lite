@@ -11,6 +11,7 @@ const baseReady: Manifest = {
   id: "rd_01ABCXYZ",
   url: "https://example.com/a",
   url_hash: "a".repeat(64),
+  source_type: "url",
   status: "ready",
   title: "Title",
   tldr: "Short summary.",
@@ -163,6 +164,27 @@ describe("ProcessingAttemptSchema", () => {
             retryable: true,
           },
         },
+      ],
+    };
+    expect(ProcessingAttemptSchema.parse(attempt)).toEqual(attempt);
+  });
+
+  it("accepts an import attempt with prepare_markdown events", () => {
+    const attempt = {
+      id: "at_import",
+      trigger: "import",
+      status: "succeeded",
+      stage: "write_indexes",
+      started_at: "2026-04-26T20:00:00.000Z",
+      finished_at: "2026-04-26T20:00:05.000Z",
+      reading_id: "rd_1",
+      url: "https://example.com/a",
+      url_hash: "a".repeat(64),
+      key_prefix: "readings/2026/04/26T200000Z-rd_1",
+      events: [
+        { stage: "queued", status: "started", at: "2026-04-26T20:00:00.000Z" },
+        { stage: "prepare_markdown", status: "started", at: "2026-04-26T20:00:01.000Z" },
+        { stage: "prepare_markdown", status: "succeeded", at: "2026-04-26T20:00:01.000Z" },
       ],
     };
     expect(ProcessingAttemptSchema.parse(attempt)).toEqual(attempt);
