@@ -5,6 +5,7 @@ import { extractFromUrl } from "../src/modules/extractor/index";
 import { resolveApiTarget, resolveBucket } from "./corpus-lib/config";
 import { importMarkdown, reprocessReading, type ApiDeps } from "./corpus-lib/api";
 import { planByAction, recoveryAction } from "./corpus-lib/policy";
+import { shouldPauseAfter } from "./corpus-lib/throttle";
 import { tallyByIds } from "./corpus-lib/audit";
 import { readListIndex } from "./corpus-lib/wrangler-r2";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
@@ -28,6 +29,8 @@ interface Args {
   url?: string;
   token?: string;
   monitor: boolean;
+  wave: number;
+  wavePauseMs: number;
 }
 
 function parseCliArgs(): Args {
@@ -41,6 +44,8 @@ function parseCliArgs(): Args {
       url: { type: "string" },
       token: { type: "string" },
       monitor: { type: "boolean", default: false },
+      wave: { type: "string" },
+      "wave-pause": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -57,6 +62,8 @@ function parseCliArgs(): Args {
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
+    wave: values.wave ? Number(values.wave) : Infinity,
+    wavePauseMs: values["wave-pause"] ? Number(values["wave-pause"]) * 1000 : 60_000,
   };
 }
 
@@ -74,6 +81,9 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.
+  --wave <n>        Pause between every n submissions so the queue can drain
+                    (prevents swamping upstream rate limits). Default: unbounded.
+  --wave-pause <s>  Seconds to pause at each wave boundary. Default: 60.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
@@ -121,6 +131,15 @@ async function main(): Promise<void> {
   let errors = 0;
   // One cap across the whole batch — --limit bounds total writes, not per-action.
   let remaining = args.limit;
+  // Submissions across the whole batch, for wave pacing (see throttle.ts).
+  let submitted = 0;
+  const paceAfterSubmit = async () => {
+    submitted++;
+    if (remaining > 0 && shouldPauseAfter(submitted, args.wave)) {
+      process.stderr.write(`  ...submitted ${submitted}; pausing ${Math.round(args.wavePauseMs / 1000)}s to let the queue drain\n`);
+      await sleep(args.wavePauseMs);
+    }
+  };
 
   if (actions.includes("reprocess")) {
     for (const r of plan.reprocess) {
@@ -130,6 +149,7 @@ async function main(): Promise<void> {
       if (res.outcome === "error") { errors++; (r as any).result = `reprocess error: ${res.error}`; }
       else { reprocessed++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.outcome}`; }
       process.stderr.write(`  reprocess ${r.short} -> ${res.outcome}${res.error ? " " + res.error : ""}\n`);
+      await paceAfterSubmit();
     }
   }
 
@@ -148,6 +168,7 @@ async function main(): Promise<void> {
         if (res.outcome === "error") { errors++; (r as any).result = `import error: ${res.error}`; }
         else { extracted++; if (res.id) touched.push(res.id); (r as any).result = `local-extract+import: ${res.outcome} ${res.id ?? ""}`; }
         process.stderr.write(`  local-extract ${r.short} -> import ${res.outcome}${res.id ? " " + res.id : ""}\n`);
+        await paceAfterSubmit();
       } catch (e) {
         errors++; (r as any).result = `local-extract threw: ${e instanceof Error ? e.message : String(e)}`;
         process.stderr.write(`  local-extract ${r.short} -> ERROR ${(e as Error).message}\n`);
