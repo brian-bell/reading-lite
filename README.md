@@ -2,7 +2,7 @@
 
 Personal reading service on Cloudflare Workers. Submit a URL → Claude summarizes it once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the embedding → poll for the result.
 
-Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single Worker plus two managed services.
+Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single Worker plus managed Cloudflare services (R2, Vectorize, Queues) and a Pages-hosted SPA.
 
 - Full PRD: [`plans/001-prd-reading-lite.md`](plans/001-prd-reading-lite.md)
 - Original design memo: [`plans/000-re-design.md`](plans/000-re-design.md)
@@ -10,14 +10,17 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Greenfield. Production-shaped TypeScript, fully unit-tested (358 root tests across 30 files plus 22 SPA tests), but not yet deployed to a real Cloudflare account. The verification steps in the PRD are still pending.
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (409 root tests across 40 files plus 22 SPA tests).
 
 ## Architecture at a glance
 
 ```
 POST /readings { url }
   ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
-  └─ else: write a "pending" manifest, return 202, enter ctx.waitUntil():
+  └─ else: write a "pending" manifest, enqueue a job on the READING_JOBS
+           queue, return 202. Poll GET /readings/:id until ready/failed.
+
+READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
         fetch URL (timeout + size cap)
       → linkedom + readability + turndown → markdown
       → OpenAI text-embedding-3-small over the extracted text
@@ -27,6 +30,8 @@ POST /readings { url }
       → Vectorize.upsert(id, tldr_embedding, metadata)
       → R2 write final manifest + by-url pointer
       (on any error → write status="failed" manifest; skip by-url pointer)
+      (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
+       manifest stays pending until a later delivery completes)
 ```
 
 Each background run also writes a staged attempt record under
@@ -35,7 +40,7 @@ Each background run also writes a staged attempt record under
 details so failed readings can be inspected without relying only on `wrangler
 tail`.
 
-The Worker is composed of four deeply-isolated modules (each unit-tested with stubbed `fetch` / bindings):
+The Worker is composed of six deeply-isolated modules (each unit-tested with stubbed `fetch` / bindings):
 
 | Module | Responsibility |
 |---|---|
@@ -43,6 +48,8 @@ The Worker is composed of four deeply-isolated modules (each unit-tested with st
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
 | `anthropic` | one-shot `messages.create` with `tool_choice: {type: "tool", name: "emit_reading"}`; system + tool def cached via `cache_control` |
 | `stores` | `ReadingStore` over R2 (manifest, raw, extracted, by-url + by-id pointers) and `SimilarityStore` over Vectorize |
+| `http-retry` | `fetchWithRetry`: 5xx + network retry with exponential backoff + jitter; 429 → `RateLimitedError` so the queue reschedules instead of burning a slot |
+| `email` | per-reading notification via Resend |
 
 ## Local development
 
@@ -64,6 +71,14 @@ npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=co
 
 `wrangler dev` (top-level `wrangler.toml`) targets the `reading-lite-staging` bucket + index for local testing only — never deployed. Both bindings are marked `remote = true`, so dev runs your code locally against the real staging bucket and Vectorize index. Production resources (`reading-lite` bucket + index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
 
+> **`POST /readings` needs a Queue binding, which the staging config omits by default.** Without `READING_JOBS`, the route returns 503 — read-only routes (list/search/detail) work fine in `wrangler dev`. To exercise submission locally, create a staging queue and add producer + consumer bindings to the top-level `wrangler.toml` (see the note next to the production queue config there):
+>
+> ```sh
+> npx wrangler queues create reading-lite-staging
+> ```
+>
+> Most submission behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need a real queue.
+
 ### Required secrets (production)
 
 Set via `wrangler secret put` against the deployed Worker:
@@ -73,16 +88,20 @@ Set via `wrangler secret put` against the deployed Worker:
 | `READER_API_TOKEN` | Bearer token required on every protected route |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
+| `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 
 | Var | Default | Purpose |
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | `""` | Comma-separated origin allowlist for browser callers. Empty disables CORS preflight. |
-| `PENDING_TTL_SECONDS` | `300` | A `pending` manifest older than this is surfaced as `failed` with `error.code = "stale_pending"` on read. |
+| `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create`. |
+| `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
+| `EMAIL_TO` | `""` | Recipient for notification emails. |
+| `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
 
 ## API
 
@@ -259,32 +278,40 @@ subdirectory under the import directory. Emails are off by default; pass
 
 ```
 src/
-  index.ts                      # worker entry (fetch handler) + Env types
-  router.ts                     # Hono app: routes, dispatches to processReading
+  index.ts                      # worker entry: fetch handler + queue consumer + Env types
+  router.ts                     # Hono app: routes; POST enqueues a READING_JOBS message
   middleware.ts                 # bearer auth + CORS allowlist
-  process-reading.ts            # ctx.waitUntil() orchestration
+  process-reading.ts            # processReading pipeline (runs in the queue consumer)
   services.ts                   # Services interface (DI for fetch / now / id)
   schemas/                      # zod: manifest, tool input, API request/response
   modules/
     extractor/                  # HTML→Markdown pipeline + bounded fetch
     embeddings/                 # OpenAI client
     anthropic/                  # forced tool use + prompt caching
+    http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
+    email.ts                    # Resend per-reading notification
     stores/
       reading-store.ts          # R2: manifest, raw, extracted, by-url + by-id
       similarity-store.ts       # Vectorize: upsert + query
 scripts/
-  migrate.ts                    # CLI entry (better-sqlite3 + aws4fetch)
-  migrate-lib/{plan,run,clients}.ts
-  import-bookmarks.ts           # CLI entry: parse Chrome export, POST /readings
-  import-bookmarks-lib/{parse,select,submit,index-store,confirm}.ts
-  import-markdown.ts            # CLI entry: parse local Markdown, POST /readings/import-markdown
-  import-markdown-lib/{parse,processed,submit}.ts
+  deploy.ts, deploy-web.ts      # wrangler deploy wrappers (dry-run by default)
+  read-url.ts                   # CLI: POST a single URL
+  gather-failed-attempts.ts     # CLI: collect failed attempts into local files
+  reprocess-failed-attempts.ts  # CLI: retry a failed reading by id
+  corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
+  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings
+  corpus-lib/{...}              # shared corpus audit/recover logic + R2 reads
+  check-corpus.ts               # CLI: mark a reading-list export against the corpus
+  process-reading-list.ts       # CLI: submit unprocessed reading-list entries
+  migrate.ts + migrate-lib/{plan,run,clients}.ts          # Backlite backfill
+  import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
+  import-markdown.ts + import-markdown-lib/{...}          # local .md → import-markdown
 test/
-  integration/                  # Hono router via Miniflare (R2 + stub Vectorize)
-  unit/{schemas,extractor,embeddings,anthropic,stores}/  # workers pool
-  unit/migrate/                 # node pool (fs / os / path)
-  unit/import-bookmarks/        # node pool
-  unit/import-markdown/         # node pool
+  integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
+  unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
+                                #   http-retry, email, stores, process-reading, queue, corpus
+                                # node pool: migrate, import-bookmarks, import-markdown,
+                                #   check-corpus, process-reading-list, reprocess-failed
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts
