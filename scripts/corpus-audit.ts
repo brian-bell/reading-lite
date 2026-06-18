@@ -117,6 +117,7 @@ async function main(): Promise<void> {
     failed: failed.length,
     pending_stranded: pending.filter((p) => p.class === "stranded").length,
     pending_orphan_dups: pending.filter((p) => p.class === "orphan-dup").length,
+    pending_fresh: pending.filter((p) => p.class === "fresh").length,
     teasers: teasers.length,
     out: path.resolve(args.out),
   }, null, 2) + "\n");

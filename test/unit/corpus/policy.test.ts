@@ -13,9 +13,10 @@ const row = (o: Partial<AuditRow>): AuditRow => ({
 });
 
 describe("recoveryAction", () => {
-  it("reprocesses stranded pending; leaves orphan dups alone", () => {
+  it("reprocesses stranded pending; leaves orphan dups and fresh in-flight alone", () => {
     expect(recoveryAction(row({ category: "pending", class: "stranded" })).action).toBe("reprocess");
     expect(recoveryAction(row({ category: "pending", class: "orphan-dup" })).action).toBe("none");
+    expect(recoveryAction(row({ category: "pending", class: "fresh" })).action).toBe("none");
   });
 
   it("skips teasers", () => {

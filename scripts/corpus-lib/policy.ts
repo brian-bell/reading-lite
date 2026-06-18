@@ -19,6 +19,7 @@ export function recoveryAction(row: AuditRow): ActionDecision {
 
   if (row.category === "pending") {
     if (row.class === "orphan-dup") return { action: "none", why: "url already has a ready reading (cosmetic dup)" };
+    if (row.class === "fresh") return { action: "none", why: "pending within TTL — likely still in-flight" };
     return { action: "reprocess", why: "stranded — never completed; re-run pipeline" };
   }
 

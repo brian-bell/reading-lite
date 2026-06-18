@@ -12,12 +12,14 @@ export function renderIndexMarkdown(
 ): string {
   const stranded = pending.filter((p) => p.class === "stranded");
   const orphan = pending.filter((p) => p.class === "orphan-dup");
+  const fresh = pending.filter((p) => p.class === "fresh");
   let md = `# Corpus non-ready inventory\n\n`;
   md += `Every reading in the reading-lite corpus that is **not** \`ready\` (\`failed\` + \`pending\`), plus \`ready\` readings that are only a paywall teaser.\n\n`;
   md += `Corpus totals: **${tally.ready} ready · ${tally.failed} failed · ${tally.pending} pending**.\n\n`;
   md += `- **Failed:** ${failed.length} unique URLs\n`;
   md += `- **Pending — stranded** (never completed): ${stranded.length}\n`;
   md += `- **Pending — orphan dup** (url already ready; cosmetic): ${orphan.length}\n`;
+  md += `- **Pending — in-flight** (within TTL; no action): ${fresh.length}\n`;
   md += `- **Ready-but-teaser:** ${teasers.length}\n\n`;
 
   md += `## Failed (${failed.length})\n\n| URL | Reason | Code @ stage | × | Reading ID |\n|---|---|---|---|---|\n`;

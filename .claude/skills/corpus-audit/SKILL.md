@@ -15,9 +15,10 @@ is **not** `ready`, with a categorized reason for each. Read-only: it reads
 Writes two files to `--out` (default: cwd):
 - **`index.json`** — structured rows (the input `corpus-recover` consumes).
 - **`INDEX.md`** — human-readable tables, grouped:
-  - **Failed** — deduped by URL, with a derived reason (HTTP 403/404/429/5xx, paywalls, dead links, oversized, summarize failures, etc.).
-  - **Pending — stranded** — never completed, no `ready` copy (reprocess candidates).
+  - **Failed** — deduped by URL, with a derived reason (HTTP 403/404/429/5xx, paywalls, dead links, oversized, summarize failures, etc.). A failed URL that *also* has a `ready` copy (e.g. drained by a prior local-extract) is excluded.
+  - **Pending — stranded** — never completed and older than the pending TTL, no `ready` copy (reprocess candidates).
   - **Pending — orphan dup** — the URL already has a `ready` reading (cosmetic index cruft).
+  - **Pending — in-flight** — within the pending TTL; likely still processing, no action.
   - **Ready-but-teaser** — only with `--teasers`.
 
 It also prints a JSON summary (totals + counts) to stdout.
@@ -51,7 +52,7 @@ Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--o
 
 ## How categories are decided
 - **Failed reason** comes from the manifest error code + the HTTP status embedded in `BadStatusError` messages, with a few hand-verified per-URL overrides (PDF, YouTube, confirmed dead links). Reddit URLs are flagged as needing the `.json` endpoint.
-- **Stranded vs orphan-dup**: a pending URL that *also* has a `ready` reading is an orphan duplicate; otherwise it's genuinely stranded.
+- **Stranded vs orphan-dup vs in-flight**: a pending URL that *also* has a `ready` reading is an orphan duplicate; one within the pending TTL (900s, mirroring `PENDING_TTL_SECONDS`; measured from `updated_at` when present) is in-flight (`fresh`); only an older pending with no `ready` copy is genuinely stranded.
 - **Teaser** (`--teasers` only): a `ready` pragmaticengineer/substack reading whose extracted content is short (< ~2.5 KB) or short-ish with a paywall-cutoff marker. Subscribe *footers* on full articles are deliberately not enough.
 
 ## Implementation

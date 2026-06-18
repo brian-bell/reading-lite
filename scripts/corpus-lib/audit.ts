@@ -2,9 +2,15 @@ import { classifyPending, dedupeByUrl, shortUrl, siblingStatuses } from "./class
 import { reasonForFailure } from "./reason";
 import type { AuditRow, ListItem } from "./types";
 
+// Mirrors PENDING_TTL_SECONDS (900s, see wrangler.toml): below this a pending
+// may still be in-flight or backing off, so we don't treat it as stranded.
+export const STRANDED_AFTER_MS = 900_000;
+
 export function buildFailedRows(items: ListItem[]): AuditRow[] {
+  const siblings = siblingStatuses(items);
   const failed = items.filter((i) => i.status === "failed");
   return dedupeByUrl(failed)
+    .filter(({ rep }) => !siblings.get(rep.url)?.has("ready"))
     .map(({ rep, count }) => ({
       category: "failed" as const,
       url: rep.url,
@@ -20,22 +26,31 @@ export function buildFailedRows(items: ListItem[]): AuditRow[] {
     .sort((a, b) => (a.reason ?? "").localeCompare(b.reason ?? "") || a.short.localeCompare(b.short));
 }
 
-export function buildPendingRows(items: ListItem[], nowMs: number): AuditRow[] {
+export function buildPendingRows(
+  items: ListItem[],
+  nowMs: number,
+  strandedAfterMs: number = STRANDED_AFTER_MS,
+): AuditRow[] {
   const siblings = siblingStatuses(items);
   const pending = items.filter((i) => i.status === "pending");
   return dedupeByUrl(pending)
-    .map(({ rep, count }) => ({
-      category: "pending" as const,
-      url: rep.url,
-      short: shortUrl(rep.url),
-      reading_id: rep.id,
-      key_prefix: rep.key_prefix,
-      attempts: count,
-      class: classifyPending(rep.url, siblings),
-      stuck_stage: rep.active_attempt?.stage ?? "?",
-      trigger: rep.active_attempt?.trigger ?? rep.last_attempt?.trigger ?? "?",
-      age_days: Math.round((nowMs - Date.parse(rep.created_at)) / 86_400_000),
-    }))
+    .map(({ rep, count }) => {
+      // Prefer updated_at — same staleness reference the API uses (router.ts
+      // annotateStale) so a row mid-retry isn't mistaken for stranded.
+      const ageMs = nowMs - Date.parse(rep.updated_at ?? rep.created_at);
+      return {
+        category: "pending" as const,
+        url: rep.url,
+        short: shortUrl(rep.url),
+        reading_id: rep.id,
+        key_prefix: rep.key_prefix,
+        attempts: count,
+        class: classifyPending(rep.url, siblings, ageMs > strandedAfterMs),
+        stuck_stage: rep.active_attempt?.stage ?? "?",
+        trigger: rep.active_attempt?.trigger ?? rep.last_attempt?.trigger ?? "?",
+        age_days: Math.round((nowMs - Date.parse(rep.created_at)) / 86_400_000),
+      };
+    })
     .sort((a, b) => (a.class ?? "").localeCompare(b.class ?? "") || (b.age_days ?? 0) - (a.age_days ?? 0));
 }
 

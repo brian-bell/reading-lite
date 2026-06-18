@@ -50,8 +50,17 @@ export function dedupeByUrl<T extends { url: string; created_at: string }>(
   return [...m.values()];
 }
 
-export function classifyPending(url: string, siblings: Map<string, Set<string>>): PendingClass {
-  return siblings.get(url)?.has("ready") ? "orphan-dup" : "stranded";
+// A url already carrying a ready reading is a cosmetic orphan-dup. Otherwise a
+// pending is only "stranded" (a reprocess candidate) once it has outlived the
+// pending TTL — within that window it may still be in-flight or backing off, so
+// it's "fresh" and must not be force-reprocessed.
+export function classifyPending(
+  url: string,
+  siblings: Map<string, Set<string>>,
+  isStale: boolean,
+): PendingClass {
+  if (siblings.get(url)?.has("ready")) return "orphan-dup";
+  return isStale ? "stranded" : "fresh";
 }
 
 export function isNewsletterHost(url: string): boolean {

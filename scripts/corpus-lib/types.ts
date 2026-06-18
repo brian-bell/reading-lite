@@ -6,6 +6,7 @@ export interface ListItem {
   url: string;
   status: "ready" | "pending" | "failed" | string;
   created_at: string;
+  updated_at?: string;
   key_prefix: string;
   title?: string;
   error?: { code?: string; stage?: string; message?: string };
@@ -14,7 +15,7 @@ export interface ListItem {
 }
 
 export type AuditCategory = "failed" | "pending" | "teaser";
-export type PendingClass = "stranded" | "orphan-dup";
+export type PendingClass = "stranded" | "orphan-dup" | "fresh";
 
 // One row of the audit inventory — also the unit corpus-recover consumes.
 export interface AuditRow {

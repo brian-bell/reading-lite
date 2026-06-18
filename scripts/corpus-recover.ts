@@ -97,8 +97,11 @@ async function main(): Promise<void> {
 
   const actions: RecoveryAction[] = args.only ? [args.only] : ["reprocess", "local-extract"];
   if (!args.execute) {
+    let remaining = args.limit;
     for (const a of actions) {
-      for (const r of plan[a].slice(0, args.limit)) {
+      for (const r of plan[a]) {
+        if (remaining <= 0) break;
+        remaining--;
         process.stderr.write(`  [dry-run ${a}] ${r.short} — ${recoveryAction(r).why}\n`);
       }
     }
@@ -116,9 +119,13 @@ async function main(): Promise<void> {
   let reprocessed = 0;
   let extracted = 0;
   let errors = 0;
+  // One cap across the whole batch — --limit bounds total writes, not per-action.
+  let remaining = args.limit;
 
   if (actions.includes("reprocess")) {
-    for (const r of plan.reprocess.slice(0, args.limit)) {
+    for (const r of plan.reprocess) {
+      if (remaining <= 0) break;
+      remaining--;
       const res = await reprocessReading(r.reading_id, api);
       if (res.outcome === "error") { errors++; (r as any).result = `reprocess error: ${res.error}`; }
       else { reprocessed++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.outcome}`; }
@@ -127,7 +134,9 @@ async function main(): Promise<void> {
   }
 
   if (actions.includes("local-extract")) {
-    for (const r of plan["local-extract"].slice(0, args.limit)) {
+    for (const r of plan["local-extract"]) {
+      if (remaining <= 0) break;
+      remaining--;
       try {
         const ex = await extractFromUrl(r.url, { fetch: browserFetch, timeoutMs: 30_000, maxBytes: 30_000_000 });
         if (ex.content_status !== "captured" || !ex.markdown?.trim()) {

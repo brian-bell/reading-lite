@@ -32,8 +32,9 @@ describe("siblingStatuses + classifyPending", () => {
       item({ id: "rd_3", url: "https://a.com/solo", status: "pending" }),
     ];
     const sib = siblingStatuses(items);
-    expect(classifyPending("https://a.com/dup", sib)).toBe("orphan-dup");
-    expect(classifyPending("https://a.com/solo", sib)).toBe("stranded");
+    expect(classifyPending("https://a.com/dup", sib, true)).toBe("orphan-dup");
+    expect(classifyPending("https://a.com/solo", sib, true)).toBe("stranded");
+    expect(classifyPending("https://a.com/solo", sib, false)).toBe("fresh");
   });
 });
 
