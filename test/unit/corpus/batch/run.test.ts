@@ -137,8 +137,8 @@ describe("runBatch — fresh run", () => {
     expect(h.deps.saveSidecar).toHaveBeenCalled();
   });
 
-  it("reuses saved markdown rather than re-extracting", async () => {
-    const h = harness({ rd_a: manifest("rd_a") });
+  it("reuses saved markdown rather than re-extracting (ready+captured reading)", async () => {
+    const h = harness({ rd_a: manifest("rd_a", { status: "ready" }) });
     await runBatch([row("rd_a")], h.deps);
     expect(h.extract).not.toHaveBeenCalled();
   });

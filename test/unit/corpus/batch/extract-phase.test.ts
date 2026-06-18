@@ -40,16 +40,26 @@ const freshContent: ExtractedContent = {
 };
 
 describe("extractTargets", () => {
-  it("reuses R2 extracted.md when present, without re-fetching", async () => {
+  it("reuses R2 extracted.md for a ready+captured reading, without re-fetching", async () => {
     const loadExtracted = vi.fn(async () => "# Saved\n\nmarkdown body");
     const extract = vi.fn(async () => freshContent);
-    const { extracted, dropped } = await extractTargets([target()], { loadExtracted, extract });
+    const { extracted, dropped } = await extractTargets([target({ status: "ready" })], { loadExtracted, extract });
     expect(dropped).toHaveLength(0);
     expect(extracted).toHaveLength(1);
     expect(extracted[0]!.markdown).toBe("# Saved\n\nmarkdown body");
     expect(extracted[0]!.title).toBe("Existing Title");
     expect(extracted[0]!.fresh).toBeUndefined();
     expect(extract).not.toHaveBeenCalled();
+  });
+
+  it("fresh-extracts a non-ready reading even when extracted.md exists (failed manifests have zeroed descriptors)", async () => {
+    const loadExtracted = vi.fn(async () => "# Stale saved\n\nbody");
+    const extract = vi.fn(async () => freshContent);
+    // default target() is status:"failed"
+    const { extracted } = await extractTargets([target()], { loadExtracted, extract });
+    expect(extract).toHaveBeenCalledWith("https://example.com/a");
+    expect(loadExtracted).not.toHaveBeenCalled();
+    expect(extracted[0]!.fresh).toBe(freshContent);
   });
 
   it("falls back to a fresh extract when no R2 markdown exists", async () => {
@@ -79,10 +89,10 @@ describe("extractTargets", () => {
     expect(dropped[0]).toMatchObject({ readingId: "rd_a", reason: expect.stringMatching(/network down/) });
   });
 
-  it("treats blank R2 markdown as absent and re-extracts", async () => {
+  it("treats blank R2 markdown as absent and re-extracts (ready reading)", async () => {
     const loadExtracted = vi.fn(async () => "   \n  ");
     const extract = vi.fn(async () => freshContent);
-    const { extracted } = await extractTargets([target()], { loadExtracted, extract });
+    const { extracted } = await extractTargets([target({ status: "ready" })], { loadExtracted, extract });
     expect(extract).toHaveBeenCalled();
     expect(extracted[0]!.fresh).toBe(freshContent);
   });

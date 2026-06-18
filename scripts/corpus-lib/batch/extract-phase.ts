@@ -25,7 +25,14 @@ export async function extractTargets(
 
   for (const target of targets) {
     try {
-      const saved = await deps.loadExtracted(target.keyPrefix);
+      // Only reuse R2 extracted.md when the manifest's content descriptors are
+      // trustworthy — i.e. the reading is currently ready+captured. A failed
+      // manifest has zeroed content_bytes/sha (markFailed), so reusing it would
+      // stamp a ready manifest with bogus descriptors; fresh-extract instead
+      // (which also matches the realtime reprocess path: url readings re-fetch).
+      const m = target.manifest;
+      const canReuse = m.status === "ready" && m.content_status === "captured";
+      const saved = canReuse ? await deps.loadExtracted(target.keyPrefix) : null;
       if (saved && saved.trim().length > 0) {
         extracted.push({
           target,

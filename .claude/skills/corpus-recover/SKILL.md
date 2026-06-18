@@ -45,8 +45,11 @@ right tool for interactive single-URL submits.
 What it does, end to end (`scripts/corpus-lib/batch/`):
 1. **prepare** — resolve each `reprocess` + `local-extract` row from its existing
    manifest (created_at, url_hash, content fields, ready-snapshot).
-2. **extract** — reuse R2 `extracted.md` if present, else re-extract locally
-   (browser UA). The batch can't fetch URLs, so text must be in hand first.
+2. **extract** — reuse R2 `extracted.md` only for a currently **ready+captured**
+   reading (its content descriptors are trustworthy); otherwise re-extract
+   locally (browser UA). A failed manifest has zeroed content fields, so reusing
+   it would corrupt the rebuilt manifest — re-extracting also matches realtime
+   reprocess (url readings re-fetch). The batch can't fetch URLs itself.
 3. **similar** — embed the source (OpenAI array endpoint, realtime) + query
    Vectorize for top-K, exactly like the realtime path, to ground
    `novelty_verdict`/`connections`.
