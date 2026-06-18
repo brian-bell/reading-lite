@@ -17,6 +17,8 @@
     "read": "tsx scripts/read-url.ts",
     "import-bookmarks": "tsx scripts/import-bookmarks.ts",
     "import-markdown": "tsx scripts/import-markdown.ts",
+    "corpus-audit": "tsx scripts/corpus-audit.ts",
+    "corpus-recover": "tsx scripts/corpus-recover.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",
     "process-reading-list": "tsx scripts/process-reading-list.ts"
   },
