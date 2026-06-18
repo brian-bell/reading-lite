@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (409 root tests across 40 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (418 root tests across 43 files plus 22 SPA tests).
 
 ## Architecture at a glance
 
@@ -31,7 +31,9 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → R2 write final manifest + by-url pointer
       (on any error → write status="failed" manifest; skip by-url pointer)
       (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
-       manifest stays pending until a later delivery completes)
+       manifest stays pending until a later delivery completes. A message
+       that exhausts max_retries routes to the reading-lite-dlq queue,
+       where markDeadLettered flips the strand to a retryable "failed")
 ```
 
 Each background run also writes a staged attempt record under
@@ -299,8 +301,9 @@ scripts/
   gather-failed-attempts.ts     # CLI: collect failed attempts into local files
   reprocess-failed-attempts.ts  # CLI: retry a failed reading by id
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
-  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings
-  corpus-lib/{...}              # shared corpus audit/recover logic + R2 reads
+  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces bulk submits)
+  corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
+  corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   migrate.ts + migrate-lib/{plan,run,clients}.ts          # Backlite backfill
