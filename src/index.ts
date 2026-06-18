@@ -1,5 +1,5 @@
 import { createApp } from "./router";
-import { processReading, type ProcessReadingArgs } from "./process-reading";
+import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
 import { defaultServices } from "./services";
 
@@ -35,6 +35,10 @@ const RATE_LIMIT_MAX_DELAY_MS = 300_000;
 // Cloudflare Queues caps msg.retry({delaySeconds}) at 12 hours.
 const QUEUE_MAX_DELAY_SECONDS = 43_200;
 
+// Messages that exhaust their retries on the main queue land here (see
+// dead_letter_queue in wrangler.toml). The same worker consumes it.
+const DEAD_LETTER_QUEUE = "reading-lite-dlq";
+
 export async function dispatchQueueMessage(
   msg: Message<ProcessReadingArgs>,
   process: (body: ProcessReadingArgs) => Promise<void>,
@@ -54,6 +58,24 @@ export async function dispatchQueueMessage(
   }
 }
 
+// A message reaches the dead-letter queue only after exhausting its retries on
+// the main queue — almost always because the upstream stayed rate-limited past
+// the retry budget. Without this, the message would silently vanish and its
+// manifest would stay stranded `pending+running` forever. We convert it into a
+// visible, retryable `failed` manifest and ack (the DLQ is terminal; never
+// retry, or the message could loop).
+export async function handleDeadLetter(
+  msg: Message<ProcessReadingArgs>,
+  mark: (body: ProcessReadingArgs) => Promise<void>,
+): Promise<void> {
+  try {
+    await mark(msg.body);
+  } catch (e) {
+    console.error(e);
+  }
+  msg.ack();
+}
+
 function rateLimitedDelaySeconds(e: RateLimitedError, attempts: number): number {
   const ms =
     e.retryAfterMs !== null
@@ -69,6 +91,12 @@ export default {
   },
   async queue(batch: MessageBatch<ProcessReadingArgs>, env: Env): Promise<void> {
     const services = defaultServices();
+    if (batch.queue === DEAD_LETTER_QUEUE) {
+      for (const msg of batch.messages) {
+        await handleDeadLetter(msg, (body) => markDeadLettered(body, env, services));
+      }
+      return;
+    }
     for (const msg of batch.messages) {
       await dispatchQueueMessage(msg, (body) => processReading(body, env, services));
     }

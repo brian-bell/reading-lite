@@ -275,6 +275,44 @@ async function sendReadingEmailAndLog(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 }
 
+// Thrown only on the dead-letter path: the message exhausted its main-queue
+// retries (the upstream stayed rate-limited past the retry budget). Retryable —
+// re-submitting later, once the rate-limit window has reset, is the recovery.
+export class QueueRetriesExhaustedError extends Error {
+  constructor() {
+    super("queue delivery retries exhausted (upstream stayed rate-limited)");
+    this.name = "QueueRetriesExhaustedError";
+  }
+}
+
+// Convert a dead-lettered message into a visible, retryable `failed` manifest.
+// Reuses markFailed so a reprocess of a previously-`ready` reading rolls back to
+// its preserved snapshot rather than nuking good data, and the list index stays
+// in sync. Best-effort: any read here is tolerated as absent.
+export async function markDeadLettered(
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+): Promise<void> {
+  const reader = new ReadingStore(env.READINGS_BUCKET);
+  const existing = await reader.readManifest(args.keyPrefix).catch(() => null);
+
+  // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
+  // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
+  // that window and a *newer* attempt took over the reading (or already brought
+  // it back to `ready`), this dead-lettered message is stale: marking it failed
+  // — and especially rolling back to its preserveReadyManifest snapshot — would
+  // clobber the newer attempt's data. Only act if we still own the active
+  // attempt. (A missing manifest still gets a failed marker so the strand stays
+  // visible.)
+  const attemptId = args.attemptId ?? `at_${args.id}`;
+  if (existing && existing.active_attempt?.id !== attemptId) return;
+
+  const attempt = newProcessingAttempt(args, services);
+  if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
+  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError());
+}
+
 async function markFailed(
   reader: ReadingStore,
   args: ProcessReadingArgs,
@@ -546,6 +584,7 @@ export function retryableError(e: unknown): boolean {
     return typeof status === "number" && (status === 429 || status >= 500);
   }
   if (e.name === "FetchTimeoutError") return true;
+  if (e.name === "QueueRetriesExhaustedError") return true;
   return false;
 }
 
