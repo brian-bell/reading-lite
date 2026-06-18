@@ -5,7 +5,12 @@ dist/
 .migrate.vars
 .import-bookmarks-index.json
 .import-markdown-index.json
+.import-reading-list-index.json
 .failed-attempts/
+# Generated corpus-audit / reading-list outputs (written to cwd)
+INDEX.md
+index.json
+chrome-reading-list.csv
 *.log
 .DS_Store
 coverage/
