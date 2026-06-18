@@ -305,6 +305,12 @@ export async function markDeadLettered(
   // clobber the newer attempt's data. Only act if we still own the active
   // attempt. (A missing manifest still gets a failed marker so the strand stays
   // visible.)
+  //
+  // This narrows, but doesn't fully close, the window: a brand-new reprocess
+  // landing between this read and markFailed's write would still be clobbered.
+  // That residual race is last-writer-wins (the repo's documented stance) and
+  // benign — the loser is a reading that is being reprocessed anyway and, since
+  // we never write a by-url pointer on failure, stays re-submittable.
   const attemptId = args.attemptId ?? `at_${args.id}`;
   if (existing && existing.active_attempt?.id !== attemptId) return;
 

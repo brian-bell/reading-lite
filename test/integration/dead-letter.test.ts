@@ -83,14 +83,32 @@ describe("markDeadLettered", () => {
 
   it("rolls back to the preserved ready snapshot when a reprocess of a ready reading is dead-lettered", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
-    const ready: Manifest = { ...pendingManifest(), status: "ready", content_status: "captured" };
+    const ready: Manifest = {
+      ...pendingManifest(),
+      status: "ready",
+      content_status: "captured",
+      title: "Preserved Title",
+      tldr: "preserved tldr",
+      tags: ["alpha", "beta"],
+      summary_markdown: "# Preserved\n\nbody",
+      active_attempt: undefined,
+    };
     await reader.writeManifest(KEY_PREFIX, pendingManifest());
 
-    await markDeadLettered(args({ preserveReadyManifest: ready }), env as unknown as Env, services());
+    // The DLQ delivers args as JSON, so preserveReadyManifest reaches
+    // markDeadLettered as a parsed plain object, not the live one. Round-trip
+    // it the same way to prove the deep fields survive the rollback.
+    const queued = JSON.parse(
+      JSON.stringify(args({ preserveReadyManifest: ready })),
+    ) as ProcessReadingArgs;
+    await markDeadLettered(queued, env as unknown as Env, services());
 
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("ready");
     expect(after?.active_attempt).toBeUndefined();
+    expect(after?.title).toBe("Preserved Title");
+    expect(after?.tags).toEqual(["alpha", "beta"]);
+    expect(after?.summary_markdown).toBe("# Preserved\n\nbody");
     expect(after?.last_attempt?.status).toBe("failed");
     expect(after?.last_attempt?.error?.code).toBe("QueueRetriesExhaustedError");
   });

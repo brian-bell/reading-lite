@@ -120,9 +120,11 @@ dead_letter_queue = "reading-lite-dlq"
 # strand becomes a visible, re-submittable failure. handleDeadLetter always
 # acks — even when the mark write fails (logged, then dropped) — so a message
 # can never loop in the DLQ. A failed mark falls back to the TTL annotator,
-# which eventually flips the stale pending entry. max_retries is therefore a
-# backstop only for the rare case where ack() itself throws; there is no
-# dead_letter_queue here, so an exhausted message simply drops.
+# which eventually flips the stale pending entry. max_retries therefore almost
+# never fires (the handler acks every message it sees); it only matters if the
+# handler itself never completes — e.g. the worker is evicted mid-batch before
+# acking — in which case the message redelivers. There is no dead_letter_queue
+# here, so an exhausted message simply drops rather than looping.
 [[env.production.queues.consumers]]
 queue = "reading-lite-dlq"
 max_batch_size = 10
