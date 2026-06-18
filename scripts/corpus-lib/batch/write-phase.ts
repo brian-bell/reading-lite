@@ -7,13 +7,13 @@ import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
-import type { BatchResult } from "./clients";
+import type { BatchResult, EmbedResult } from "./clients";
 import type { Sidecar, SidecarTarget } from "./types";
 
 export interface WriteDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
-  embedMany(inputs: string[]): Promise<number[][]>;
+  embedMany(inputs: string[]): Promise<EmbedResult>;
   now(): string;
   log?: (line: string) => void;
 }
@@ -81,12 +81,15 @@ export async function writeResults(
 
   // Embed TL;DRs for the persistent vectors (one coalesced call).
   const tldrs = resolvedSuccess.map((s) => s.reading.reading.tldr);
-  const embeddings = tldrs.length > 0 ? await deps.embedMany(tldrs) : [];
+  const { embeddings, tokensByInput: tldrTokens } =
+    tldrs.length > 0 ? await deps.embedMany(tldrs) : { embeddings: [], tokensByInput: [] };
   const vectors = [];
   for (let i = 0; i < resolvedSuccess.length; i++) {
     const { target, reading } = resolvedSuccess[i]!;
     const embedding = embeddings[i]!;
-    const manifest = buildReadyManifest(target, reading.reading, reading.usage, deps.now());
+    // Mirror process-reading.ts: openai_embedding_tokens = query + tldr embed.
+    const embeddingTokens = target.queryEmbedTokens + (tldrTokens[i] ?? 0);
+    const manifest = buildReadyManifest(target, reading.reading, reading.usage, embeddingTokens, deps.now());
     successes.push({ target, manifest });
     vectors.push({
       id: target.id,
@@ -128,6 +131,7 @@ function buildReadyManifest(
   target: SidecarTarget,
   reading: ReturnType<typeof parseEmitReadingResult>["reading"],
   usage: ReturnType<typeof parseEmitReadingResult>["usage"],
+  embeddingTokens: number,
   now: string,
 ): Manifest {
   const m: Manifest = {
@@ -156,9 +160,9 @@ function buildReadyManifest(
     usage: {
       anthropic_input_tokens: usage.input_tokens ?? 0,
       anthropic_output_tokens: usage.output_tokens ?? 0,
-      // Embeddings go through the realtime array endpoint; per-reading token
-      // counts aren't threaded back here, so this stays 0 for the bulk path.
-      openai_embedding_tokens: 0,
+      // Query (similar-phase) + tldr (here) embedding tokens, attributed
+      // per-reading from the coalesced OpenAI calls. Mirrors process-reading.ts.
+      openai_embedding_tokens: embeddingTokens,
     },
   };
   return ManifestSchema.parse(m);

@@ -75,11 +75,11 @@ describe("makeOpenAIEmbedClient", () => {
       }),
     );
     const client = makeOpenAIEmbedClient({ fetch: fetchFn as unknown as typeof fetch, apiKey: "sk-oa" });
-    const out = await client.embedMany(["a", "b"]);
-    expect(out).toHaveLength(2);
+    const { embeddings } = await client.embedMany(["a", "b"]);
+    expect(embeddings).toHaveLength(2);
     // Sorted by `index`, not response order.
-    expect(out[0]![0]).toBe(1);
-    expect(out[1]![0]).toBe(2);
+    expect(embeddings[0]![0]).toBe(1);
+    expect(embeddings[1]![0]).toBe(2);
     const [url, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
     expect(url).toBe("https://api.openai.com/v1/embeddings");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-oa");
@@ -89,8 +89,25 @@ describe("makeOpenAIEmbedClient", () => {
   it("returns [] for no inputs without calling fetch", async () => {
     const fetchFn: FetchMock = vi.fn(async () => json({}));
     const client = makeOpenAIEmbedClient({ fetch: fetchFn as unknown as typeof fetch, apiKey: "sk" });
-    expect(await client.embedMany([])).toEqual([]);
+    expect(await client.embedMany([])).toEqual({ embeddings: [], tokensByInput: [] });
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("attributes per-input tokens proportionally, summing to the request total", async () => {
+    const fetchFn: FetchMock = vi.fn(async () =>
+      json({
+        data: [
+          { index: 0, embedding: vec(1) },
+          { index: 1, embedding: vec(2) },
+        ],
+        usage: { prompt_tokens: 9, total_tokens: 9 },
+      }),
+    );
+    const client = makeOpenAIEmbedClient({ fetch: fetchFn as unknown as typeof fetch, apiKey: "sk" });
+    // lengths 2 and 4 → shares floor(3) and floor(6); remainder 0 → [3, 6].
+    const { tokensByInput } = await client.embedMany(["ab", "cdef"]);
+    expect(tokensByInput).toEqual([3, 6]);
+    expect(tokensByInput.reduce((a, b) => a + b, 0)).toBe(9);
   });
 
   it("chunks large input lists across multiple requests, preserving global order", async () => {
@@ -108,12 +125,12 @@ describe("makeOpenAIEmbedClient", () => {
       { fetch: fetchFn as unknown as typeof fetch, apiKey: "sk" },
       { chunkSize: 2 },
     );
-    const out = await client.embedMany(["a", "b", "c"]);
-    expect(out).toHaveLength(3);
+    const { embeddings } = await client.embedMany(["a", "b", "c"]);
+    expect(embeddings).toHaveLength(3);
     expect(fetchFn).toHaveBeenCalledTimes(2);
-    expect(out[0]![0]).toBe(0); // chunk0 idx0
-    expect(out[1]![0]).toBe(1); // chunk0 idx1
-    expect(out[2]![0]).toBe(1000); // chunk1 idx0
+    expect(embeddings[0]![0]).toBe(0); // chunk0 idx0
+    expect(embeddings[1]![0]).toBe(1); // chunk0 idx1
+    expect(embeddings[2]![0]).toBe(1000); // chunk1 idx0
   });
 
   it("rejects empty-string inputs (OpenAI 400s on them)", async () => {

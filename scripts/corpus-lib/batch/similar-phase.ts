@@ -1,6 +1,7 @@
 import { truncateForEmbed } from "../../../src/process-reading";
 import type { SimilarContext } from "../../../src/modules/anthropic";
 import type { VectorizeMatch } from "../../lib/cf-clients";
+import type { EmbedResult } from "./clients";
 import type { ExtractedTarget, SummarizeTarget } from "./types";
 
 // Mirror the realtime pipeline: embed the source text, query the index for the
@@ -9,7 +10,7 @@ import type { ExtractedTarget, SummarizeTarget } from "./types";
 const TOP_K = 5;
 
 export interface SimilarDeps {
-  embedMany(inputs: string[]): Promise<number[][]>;
+  embedMany(inputs: string[]): Promise<EmbedResult>;
   query(
     vector: number[],
     opts: { topK: number; returnMetadata?: boolean },
@@ -24,7 +25,7 @@ export async function resolveSimilar(
   if (extracted.length === 0) return [];
   const topK = deps.topK ?? TOP_K;
 
-  const embeddings = await deps.embedMany(
+  const { embeddings, tokensByInput } = await deps.embedMany(
     extracted.map((e) => truncateForEmbed(e.markdown)),
   );
 
@@ -43,7 +44,7 @@ export async function resolveSimilar(
         if (typeof md.title === "string") ctx.title = md.title;
         return ctx;
       });
-    out.push({ extracted: e, similar });
+    out.push({ extracted: e, similar, queryEmbedTokens: tokensByInput[i] ?? 0 });
   }
   return out;
 }

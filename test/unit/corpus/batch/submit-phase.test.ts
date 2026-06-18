@@ -38,6 +38,7 @@ function summarizeTarget(over: { manifest?: Partial<Manifest>; fresh?: Extracted
       ...(over.fresh ? { fresh: over.fresh } : {}),
     },
     similar: over.similar ?? [],
+    queryEmbedTokens: 12,
   };
 }
 
@@ -137,6 +138,8 @@ describe("submitBatch", () => {
     });
     // extracted_bytes computed from the markdown actually summarized.
     expect(t.extractedBytes).toBe(new TextEncoder().encode("# Article\n\nbody").byteLength);
+    // query-embedding cost carried through so a resumed write still records it.
+    expect(t.queryEmbedTokens).toBe(12);
     expect(t.preserveReadyManifest?.status).toBe("ready");
     expect(t.preserveReadyManifest?.tldr).toBe("old tldr");
   });

@@ -28,6 +28,10 @@ export interface ExtractedTarget {
 export interface SummarizeTarget {
   extracted: ExtractedTarget;
   similar: SimilarContext[];
+  // Tokens billed embedding this reading's source to query for similar readings
+  // (the realtime "query" embedding). Summed with the tldr embedding at write
+  // time to mirror process-reading.ts's openai_embedding_tokens.
+  queryEmbedTokens: number;
 }
 
 export interface DroppedTarget {
@@ -54,6 +58,9 @@ export interface SidecarTarget {
   contentBytes: number;
   contentSha256: string;
   extractedBytes?: number;
+  // Persisted so the write phase records the full embedding cost even on a
+  // resumed run (the similar phase, which computes it, doesn't re-run on resume).
+  queryEmbedTokens: number;
   preserveReadyManifest?: Manifest;
 }
 

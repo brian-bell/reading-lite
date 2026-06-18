@@ -128,6 +128,9 @@ function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     // from the text in hand (not trusted from a prior manifest) — matches the
     // realtime path.
     extractedBytes: new TextEncoder().encode(markdown).byteLength,
+    // Carry the query-embedding cost so the write phase records it even on a
+    // resumed run (the similar phase won't recompute it).
+    queryEmbedTokens: st.queryEmbedTokens,
   };
   // Roll-forward snapshot: only a currently-ready reading has good data to keep.
   if (m.status === "ready") out.preserveReadyManifest = m;

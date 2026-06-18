@@ -31,7 +31,10 @@ function extractedTarget(id: string, markdown: string): ExtractedTarget {
 
 describe("resolveSimilar", () => {
   it("embeds each target's text and attaches top-K similar context", async () => {
-    const embedMany = vi.fn(async (inputs: string[]) => inputs.map((_, i) => [i]));
+    const embedMany = vi.fn(async (inputs: string[]) => ({
+      embeddings: inputs.map((_, i) => [i]),
+      tokensByInput: inputs.map(() => 7),
+    }));
     const query = vi.fn(async () => [
       { id: "rd_other", score: 0.9, metadata: { url: "https://example.com/other", title: "Other" } },
     ]);
@@ -41,10 +44,15 @@ describe("resolveSimilar", () => {
     expect(out[0]!.similar).toEqual([
       { id: "rd_other", url: "https://example.com/other", title: "Other" },
     ]);
+    // The query-embedding token count rides along for the write phase.
+    expect(out[0]!.queryEmbedTokens).toBe(7);
   });
 
   it("filters the target itself out of its own similar set", async () => {
-    const embedMany = vi.fn(async (inputs: string[]) => inputs.map(() => [0]));
+    const embedMany = vi.fn(async (inputs: string[]) => ({
+      embeddings: inputs.map(() => [0]),
+      tokensByInput: inputs.map(() => 1),
+    }));
     const query = vi.fn(async () => [
       { id: "rd_a", score: 1, metadata: { url: "https://example.com/rd_a" } },
       { id: "rd_b", score: 0.8, metadata: { url: "https://example.com/rd_b", title: "B" } },
@@ -54,7 +62,10 @@ describe("resolveSimilar", () => {
   });
 
   it("truncates long markdown before embedding", async () => {
-    const embedMany = vi.fn(async (inputs: string[]) => inputs.map(() => [0]));
+    const embedMany = vi.fn(async (inputs: string[]) => ({
+      embeddings: inputs.map(() => [0]),
+      tokensByInput: inputs.map(() => 1),
+    }));
     const query = vi.fn(async () => []);
     const long = "z".repeat(20000);
     await resolveSimilar([extractedTarget("rd_a", long)], { embedMany, query });
@@ -63,7 +74,10 @@ describe("resolveSimilar", () => {
   });
 
   it("returns empty similar when the index has no matches", async () => {
-    const embedMany = vi.fn(async (inputs: string[]) => inputs.map(() => [0]));
+    const embedMany = vi.fn(async (inputs: string[]) => ({
+      embeddings: inputs.map(() => [0]),
+      tokensByInput: inputs.map(() => 1),
+    }));
     const query = vi.fn(async () => []);
     const out = await resolveSimilar([extractedTarget("rd_a", "x")], { embedMany, query });
     expect(out[0]!.similar).toEqual([]);

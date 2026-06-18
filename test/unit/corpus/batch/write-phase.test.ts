@@ -21,6 +21,7 @@ function sidecarTarget(over: Partial<SidecarTarget> = {}): SidecarTarget {
     contentBytes: 42,
     contentSha256: "b".repeat(64),
     extractedBytes: 30,
+    queryEmbedTokens: 50,
     ...over,
   };
 }
@@ -83,7 +84,10 @@ function fakeVectorize() {
 }
 
 const embedMany = (vecCount = 1536) =>
-  vi.fn(async (inputs: string[]) => inputs.map(() => Array.from({ length: vecCount }, () => 0.01)));
+  vi.fn(async (inputs: string[]) => ({
+    embeddings: inputs.map(() => Array.from({ length: vecCount }, () => 0.01)),
+    tokensByInput: inputs.map(() => 8),
+  }));
 
 function deps(r2: ReturnType<typeof fakeR2>, vectorize: ReturnType<typeof fakeVectorize>, embed = embedMany()) {
   return { r2: r2 as any, vectorize: vectorize as any, embedMany: embed, now: () => NOW };
@@ -104,6 +108,9 @@ describe("writeResults — success path", () => {
     expect(m.content_bytes).toBe(42);
     expect(m.created_at).toBe("2026-01-01T00:00:00.000Z");
     expect(m.updated_at).toBe(NOW);
+    // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).
+    expect(m.usage?.openai_embedding_tokens).toBe(58);
+    expect(m.usage?.anthropic_input_tokens).toBe(1000);
   });
 
   it("writes the by-url and by-id pointers on success", async () => {

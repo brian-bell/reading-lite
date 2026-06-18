@@ -102,7 +102,12 @@ function harness(seedManifests: Record<string, Manifest>) {
     r2: r2 as any,
     vectorize: vectorize as any,
     batch: batch as any,
-    embed: { embedMany: vi.fn(async (inputs: string[]) => inputs.map(() => Array.from({ length: 1536 }, () => 0.1))) },
+    embed: {
+      embedMany: vi.fn(async (inputs: string[]) => ({
+        embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0.1)),
+        tokensByInput: inputs.map(() => 4),
+      })),
+    },
     extract,
     model: "claude-opus-4-8",
     now: () => NOW,
@@ -183,6 +188,7 @@ describe("runBatch — resume", () => {
           contentStatus: "captured",
           contentBytes: 10,
           contentSha256: "b".repeat(64),
+          queryEmbedTokens: 9,
         },
       ],
     };

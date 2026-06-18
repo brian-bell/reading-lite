@@ -115,8 +115,33 @@ export interface OpenAIEmbedDeps {
   model?: string;
 }
 
+export interface EmbedResult {
+  embeddings: number[][];
+  // Per-input token attribution. OpenAI reports usage per *request*, not per
+  // input, so within each chunk we split the request total proportionally by
+  // input length. The sum equals the true total OpenAI billed (exact at the
+  // corpus level); the per-input figure is a length-proportional approximation.
+  tokensByInput: number[];
+}
+
 export interface OpenAIEmbedClient {
-  embedMany(inputs: string[]): Promise<number[][]>;
+  embedMany(inputs: string[]): Promise<EmbedResult>;
+}
+
+// Split a chunk's request-level token total across its inputs in proportion to
+// input length, giving the rounding remainder to the longest input so the
+// per-chunk sum stays exactly equal to `total`.
+function attributeTokens(inputs: string[], total: number): number[] {
+  const lengths = inputs.map((s) => s.length);
+  const sum = lengths.reduce((a, b) => a + b, 0) || 1;
+  const out = lengths.map((len) => Math.floor((len / sum) * total));
+  const remainder = total - out.reduce((a, b) => a + b, 0);
+  if (remainder > 0) {
+    let maxI = 0;
+    for (let i = 1; i < lengths.length; i++) if (lengths[i]! > lengths[maxI]!) maxI = i;
+    out[maxI]! += remainder;
+  }
+  return out;
 }
 
 const EmbedResponseSchema = z.object({
@@ -135,11 +160,12 @@ export function makeOpenAIEmbedClient(
 
   return {
     async embedMany(inputs) {
-      if (inputs.length === 0) return [];
+      if (inputs.length === 0) return { embeddings: [], tokensByInput: [] };
       if (inputs.some((s) => s.length === 0)) {
         throw new Error("embedMany: inputs must be non-empty strings");
       }
-      const out: number[][] = [];
+      const embeddings: number[][] = [];
+      const tokensByInput: number[] = [];
       for (let i = 0; i < inputs.length; i += chunkSize) {
         const chunk = inputs.slice(i, i + chunkSize);
         const res = await deps.fetch(OPENAI_EMBEDDINGS_URL, {
@@ -155,9 +181,10 @@ export function makeOpenAIEmbedClient(
         // The API may return data out of order; sort by `index` so each vector
         // lines up with its input position within the chunk.
         const ordered = [...parsed.data].sort((a, b) => a.index - b.index);
-        for (const d of ordered) out.push(d.embedding);
+        for (const d of ordered) embeddings.push(d.embedding);
+        tokensByInput.push(...attributeTokens(chunk, parsed.usage.total_tokens));
       }
-      return out;
+      return { embeddings, tokensByInput };
     },
   };
 }
