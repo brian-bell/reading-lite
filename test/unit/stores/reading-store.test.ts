@@ -247,6 +247,11 @@ describe("ReadingStore — attempts and object diagnostics", () => {
       }),
     );
 
+    // `at_zz` is deliberately both the newest by started_at AND the
+    // lexically-largest key. Under the test pool's tied upload timestamps the
+    // shortlist is sliced by key DESC, so this asserts deterministic selection
+    // — NOT that recency-by-started_at is preserved when keys tie (it isn't;
+    // attempt ids are random — see the listAttempts sort comment).
     const attempts = await store.listAttempts(prefix, 1);
     expect(attempts.map((a) => a.id)).toEqual(["at_zz"]);
   });

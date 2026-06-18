@@ -208,8 +208,15 @@ export class ReadingStore {
 
     // Upload time DESC, then key DESC as a deterministic tiebreak: rapid writes
     // (and the test pool's frozen clock) can share an upload timestamp, and an
-    // unstable sort there would non-deterministically drop the newest attempt
-    // from the shortlist.
+    // unstable sort there would non-deterministically drop attempts from the
+    // shortlist between calls. Note the key is NOT a recency proxy — attempt ids
+    // are random (newAttemptId → mintReadingId) — so when more attempts than
+    // `limit` share an upload timestamp, the slice keeps an arbitrary subset and
+    // may drop the newest-by-started_at. That requires >limit (default 20)
+    // attempts in the same R2 upload millisecond on one reading, which doesn't
+    // happen in production; the tiebreak only buys deterministic ordering. If
+    // exact recency under ties ever matters, embed a sortable timestamp in the
+    // attempt id so the key becomes a true recency proxy.
     candidates.sort(
       (a, b) =>
         b.uploadedMs - a.uploadedMs || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0),
