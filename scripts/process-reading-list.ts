@@ -6,7 +6,7 @@ import { loadDotVars } from "./lib/dotvars";
 import type { ReadingListEntry } from "./check-corpus-lib/corpus";
 import { createPrompter } from "./import-bookmarks-lib/confirm";
 import { submitAll, type SubmitResult } from "./import-bookmarks-lib/submit";
-import { applyResults } from "./process-reading-list-lib/annotate";
+import { createResultSink } from "./process-reading-list-lib/persist";
 import { selectUnprocessed } from "./process-reading-list-lib/select";
 
 interface Args {
@@ -148,9 +148,13 @@ async function main(): Promise<void> {
   }
 
   const urls = sel.selected.map((s) => s.url);
-  const resultsByUrl = new Map<string, SubmitResult>();
   const prompter = args.quick ? null : createPrompter();
-  let skipped = 0;
+  const sink = createResultSink({
+    entries,
+    now: new Date().toISOString(),
+    flush: (annotated) => writeEntries(args.out, annotated),
+    onResultLog: logResult,
+  });
   try {
     await submitAll(urls, {
       fetch: globalThis.fetch,
@@ -162,22 +166,16 @@ async function main(): Promise<void> {
             return decision === "yes" ? "submit" : decision === "no" ? "skip" : "quit";
           }
         : undefined,
-      onResult: (r) => {
-        logResult(r);
-        if (r.classification === "skipped") skipped += 1;
-        else resultsByUrl.set(r.url, r);
-      },
+      onResult: sink.onResult,
     });
   } finally {
     prompter?.close();
   }
 
-  const { entries: annotated, summary } = applyResults(entries, resultsByUrl, new Date().toISOString());
-  await writeEntries(args.out, annotated);
-
+  const summary = sink.summary();
   printSummary({ file: args.file, out: args.out, destination: args.destinationUrl,
     selected: sel.selected.length, confirmed: summary.confirmed, queued: summary.queued,
-    errors: summary.errors, skipped, dryRun: false });
+    errors: summary.errors, skipped: sink.skipped, dryRun: false });
   if (summary.errors > 0) process.exit(1);
 }
 
