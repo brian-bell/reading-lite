@@ -71,6 +71,14 @@ npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=co
 
 `wrangler dev` (top-level `wrangler.toml`) targets the `reading-lite-staging` bucket + index for local testing only — never deployed. Both bindings are marked `remote = true`, so dev runs your code locally against the real staging bucket and Vectorize index. Production resources (`reading-lite` bucket + index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
 
+> **`POST /readings` needs a Queue binding, which the staging config omits by default.** Without `READING_JOBS`, the route returns 503 — read-only routes (list/search/detail) work fine in `wrangler dev`. To exercise submission locally, create a staging queue and add producer + consumer bindings to the top-level `wrangler.toml` (see the note next to the production queue config there):
+>
+> ```sh
+> npx wrangler queues create reading-lite-staging
+> ```
+>
+> Most submission behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need a real queue.
+
 ### Required secrets (production)
 
 Set via `wrangler secret put` against the deployed Worker:
@@ -80,6 +88,7 @@ Set via `wrangler secret put` against the deployed Worker:
 | `READER_API_TOKEN` | Bearer token required on every protected route |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
+| `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 
@@ -90,6 +99,9 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create`. |
+| `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
+| `EMAIL_TO` | `""` | Recipient for notification emails. |
+| `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
 
 ## API
 
