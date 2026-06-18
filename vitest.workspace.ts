@@ -43,6 +43,7 @@ export default [
         "test/unit/migrate/**/*.test.ts",
         "test/unit/import-bookmarks/**/*.test.ts",
         "test/unit/import-markdown/**/*.test.ts",
+        "test/unit/corpus/**/*.test.ts",
         "test/unit/reprocess-failed/**/*.test.ts",
       ],
       environment: "node",
