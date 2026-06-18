@@ -18,7 +18,9 @@
     "import-bookmarks": "tsx scripts/import-bookmarks.ts",
     "import-markdown": "tsx scripts/import-markdown.ts",
     "corpus-audit": "tsx scripts/corpus-audit.ts",
-    "corpus-recover": "tsx scripts/corpus-recover.ts"
+    "corpus-recover": "tsx scripts/corpus-recover.ts",
+    "check-corpus": "tsx scripts/check-corpus.ts",
+    "process-reading-list": "tsx scripts/process-reading-list.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",
@@ -34,6 +36,8 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.5",
     "@types/turndown": "^5.0.5",
+    "@vitest/runner": "~2.1.8",
+    "@vitest/snapshot": "~2.1.8",
     "aws4fetch": "^1.0.20",
     "better-sqlite3": "^11.7.0",
     "tsx": "^4.19.2",

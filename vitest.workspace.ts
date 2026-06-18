@@ -44,6 +44,8 @@ export default [
         "test/unit/import-bookmarks/**/*.test.ts",
         "test/unit/import-markdown/**/*.test.ts",
         "test/unit/corpus/**/*.test.ts",
+        "test/unit/check-corpus/**/*.test.ts",
+        "test/unit/process-reading-list/**/*.test.ts",
         "test/unit/reprocess-failed/**/*.test.ts",
       ],
       environment: "node",

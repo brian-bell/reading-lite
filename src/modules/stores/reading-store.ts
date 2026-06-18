@@ -86,8 +86,36 @@ export interface ReadingObjectInfo {
   uploaded?: string;
 }
 
+// Deps for the optimistic-concurrency loop on index/list.json. Injectable so
+// tests can drive contention deterministically and skip real backoff sleeps.
+export interface ListIndexCasDeps {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
+}
+
+interface ResolvedCasDeps {
+  maxAttempts: number;
+  baseDelayMs: number;
+  sleep: (ms: number) => Promise<void>;
+  random: () => number;
+}
+
 export class ReadingStore {
-  constructor(private readonly bucket: R2Bucket) {}
+  private readonly cas: ResolvedCasDeps;
+
+  constructor(
+    private readonly bucket: R2Bucket,
+    casDeps: ListIndexCasDeps = {},
+  ) {
+    this.cas = {
+      maxAttempts: casDeps.maxAttempts ?? 8,
+      baseDelayMs: casDeps.baseDelayMs ?? 20,
+      sleep: casDeps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      random: casDeps.random ?? Math.random,
+    };
+  }
 
   async writeManifest(keyPrefix: string, manifest: Manifest): Promise<void> {
     await this.bucket.put(`${keyPrefix}/${MANIFEST_FILE}`, JSON.stringify(manifest), {
@@ -178,7 +206,21 @@ export class ReadingStore {
       cursor = list.truncated ? list.cursor : undefined;
     } while (cursor);
 
-    candidates.sort((a, b) => b.uploadedMs - a.uploadedMs);
+    // Upload time DESC, then key DESC as a deterministic tiebreak: rapid writes
+    // (and the test pool's frozen clock) can share an upload timestamp, and an
+    // unstable sort there would non-deterministically drop attempts from the
+    // shortlist between calls. Note the key is NOT a recency proxy — attempt ids
+    // are random (newAttemptId → mintReadingId) — so when more attempts than
+    // `limit` share an upload timestamp, the slice keeps an arbitrary subset and
+    // may drop the newest-by-started_at. That requires >limit (default 20)
+    // attempts in the same R2 upload millisecond on one reading, which doesn't
+    // happen in production; the tiebreak only buys deterministic ordering. If
+    // exact recency under ties ever matters, embed a sortable timestamp in the
+    // attempt id so the key becomes a true recency proxy.
+    candidates.sort(
+      (a, b) =>
+        b.uploadedMs - a.uploadedMs || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0),
+    );
     const top = candidates.slice(0, limit);
 
     const attempts: ProcessingAttempt[] = [];
@@ -257,10 +299,50 @@ export class ReadingStore {
   }
 
   async appendOrReplaceListIndexItem(item: ListIndexItem): Promise<void> {
-    const existing = (await this.readListIndex()) ?? { version: 1 as const, items: [] };
-    const items = existing.items.filter((i) => i.id !== item.id);
-    items.push(item);
-    await this.writeListIndex({ version: 1, items });
+    await this.mutateListIndex((items) => [
+      ...items.filter((i) => i.id !== item.id),
+      item,
+    ]);
+  }
+
+  // Read-modify-write of index/list.json guarded by an R2 compare-and-set:
+  // the put is conditional on the etag we read (If-None-Match:* when the object
+  // is absent). A concurrent writer changes the etag, R2 returns null for our
+  // put, and we re-read + re-apply rather than clobbering their item. This is
+  // what lets the queue consumer run with max_concurrency > 1 without losing
+  // index entries to last-writer-wins.
+  private async mutateListIndex(
+    mutate: (items: ListIndexItem[]) => ListIndexItem[],
+  ): Promise<void> {
+    for (let attempt = 0; attempt < this.cas.maxAttempts; attempt++) {
+      const obj = await this.bucket.get(LIST_INDEX_KEY);
+      const current = obj
+        ? ListIndexSchema.parse(JSON.parse(await obj.text()))
+        : { version: 1 as const, items: [] };
+      const next: ListIndex = { version: 1, items: mutate(current.items) };
+
+      const onlyIf: R2PutOptions["onlyIf"] = obj
+        ? { etagMatches: obj.etag }
+        : new Headers({ "If-None-Match": "*" });
+      const res = await this.bucket.put(LIST_INDEX_KEY, JSON.stringify(next), {
+        httpMetadata: { contentType: "application/json" },
+        onlyIf,
+      });
+      if (res !== null) return;
+
+      if (attempt < this.cas.maxAttempts - 1) {
+        await this.cas.sleep(this.casBackoffMs(attempt));
+      }
+    }
+    throw new Error(
+      `list index write failed: exhausted ${this.cas.maxAttempts} CAS attempts under contention`,
+    );
+  }
+
+  // Exponential backoff with full jitter, mirroring http-retry.
+  private casBackoffMs(attempt: number): number {
+    const ceiling = this.cas.baseDelayMs * 2 ** attempt;
+    return Math.floor(this.cas.random() * ceiling);
   }
 
   async findListIndexItem(id: string): Promise<ListIndexItem | null> {

@@ -91,10 +91,13 @@ RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
 
 # Reading processing is enqueued via this binding; the consumer below pulls
-# messages and runs processReading at max_concurrency=1, so the worker never
-# has more than one Anthropic + two OpenAI calls in flight at a time. 429s
-# from upstream are surfaced as RateLimitedError → msg.retry({ delaySeconds })
-# so the wait happens on the queue side rather than burning a worker slot.
+# messages and runs processReading. max_concurrency caps how many readings (and
+# thus Anthropic/OpenAI calls) run at once. Two things make >1 safe: 429s from
+# upstream are surfaced as RateLimitedError → msg.retry({ delaySeconds }) so the
+# wait happens on the queue side rather than burning a worker slot; and the
+# index/list.json read-modify-write is guarded by an R2 compare-and-set retry
+# loop (ReadingStore.mutateListIndex), so concurrent terminal writes merge
+# instead of clobbering each other (last-writer-wins).
 [[env.production.queues.producers]]
 binding = "READING_JOBS"
 queue = "reading-lite"
@@ -103,7 +106,7 @@ queue = "reading-lite"
 queue = "reading-lite"
 max_batch_size = 1
 max_batch_timeout = 5
-max_concurrency = 1
+max_concurrency = 3
 max_retries = 3
 
 [[env.production.r2_buckets]]
