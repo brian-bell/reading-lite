@@ -5,6 +5,7 @@ import { extractFromUrl } from "../src/modules/extractor/index";
 import { resolveApiTarget, resolveBucket } from "./corpus-lib/config";
 import { importMarkdown, reprocessReading, type ApiDeps } from "./corpus-lib/api";
 import { planByAction, recoveryAction } from "./corpus-lib/policy";
+import { shouldPauseAfter } from "./corpus-lib/throttle";
 import { tallyByIds } from "./corpus-lib/audit";
 import { readListIndex } from "./corpus-lib/wrangler-r2";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
@@ -28,6 +29,8 @@ interface Args {
   url?: string;
   token?: string;
   monitor: boolean;
+  wave: number;
+  wavePauseMs: number;
 }
 
 function parseCliArgs(): Args {
@@ -41,6 +44,8 @@ function parseCliArgs(): Args {
       url: { type: "string" },
       token: { type: "string" },
       monitor: { type: "boolean", default: false },
+      wave: { type: "string" },
+      "wave-pause": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -57,7 +62,21 @@ function parseCliArgs(): Args {
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
+    wave: parsePositive(values.wave, "wave", Infinity),
+    wavePauseMs: parsePositive(values["wave-pause"], "wave-pause", 60) * 1000,
   };
+}
+
+// Operator-supplied numbers: a malformed value must not silently disable
+// pacing mid-recovery. Warn and fall back to the default instead.
+function parsePositive(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    process.stderr.write(`  ! --${name} "${raw}" is not a positive number; using default ${fallback}\n`);
+    return fallback;
+  }
+  return n;
 }
 
 function printUsage(): void {
@@ -74,6 +93,9 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.
+  --wave <n>        Pause between every n submissions so the queue can drain
+                    (prevents swamping upstream rate limits). Default: unbounded.
+  --wave-pause <s>  Seconds to pause at each wave boundary. Default: 60.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
@@ -121,14 +143,27 @@ async function main(): Promise<void> {
   let errors = 0;
   // One cap across the whole batch — --limit bounds total writes, not per-action.
   let remaining = args.limit;
+  // Successful submissions across the whole batch, for wave pacing (see
+  // throttle.ts). We pace *before* each submission once a wave boundary has been
+  // crossed: pausing before (not after) means the final submission never
+  // triggers a needless trailing pause, and only enqueued work counts toward a
+  // wave (a failed call added no draining pressure).
+  let submitted = 0;
+  const paceBeforeSubmit = async () => {
+    if (shouldPauseAfter(submitted, args.wave)) {
+      process.stderr.write(`  ...${submitted} submitted; pausing ${Math.round(args.wavePauseMs / 1000)}s to let the queue drain\n`);
+      await sleep(args.wavePauseMs);
+    }
+  };
 
   if (actions.includes("reprocess")) {
     for (const r of plan.reprocess) {
       if (remaining <= 0) break;
       remaining--;
+      await paceBeforeSubmit();
       const res = await reprocessReading(r.reading_id, api);
       if (res.outcome === "error") { errors++; (r as any).result = `reprocess error: ${res.error}`; }
-      else { reprocessed++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.outcome}`; }
+      else { reprocessed++; submitted++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.outcome}`; }
       process.stderr.write(`  reprocess ${r.short} -> ${res.outcome}${res.error ? " " + res.error : ""}\n`);
     }
   }
@@ -144,9 +179,10 @@ async function main(): Promise<void> {
           process.stderr.write(`  local-extract ${r.short} -> no markdown (${ex.content_status})\n`);
           continue;
         }
+        await paceBeforeSubmit();
         const res = await importMarkdown({ source_url: r.url, markdown: ex.markdown, ...(ex.title ? { title: ex.title } : {}) }, api);
         if (res.outcome === "error") { errors++; (r as any).result = `import error: ${res.error}`; }
-        else { extracted++; if (res.id) touched.push(res.id); (r as any).result = `local-extract+import: ${res.outcome} ${res.id ?? ""}`; }
+        else { extracted++; submitted++; if (res.id) touched.push(res.id); (r as any).result = `local-extract+import: ${res.outcome} ${res.id ?? ""}`; }
         process.stderr.write(`  local-extract ${r.short} -> import ${res.outcome}${res.id ? " " + res.id : ""}\n`);
       } catch (e) {
         errors++; (r as any).result = `local-extract threw: ${e instanceof Error ? e.message : String(e)}`;

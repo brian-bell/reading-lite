@@ -21,6 +21,7 @@
 #   `npx wrangler r2 bucket create reading-lite`
 #   `npx wrangler vectorize create reading-lite --dimensions=1536 --metric=cosine`
 #   `npx wrangler queues create reading-lite`
+#   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
 #   `wrangler secret put READER_API_TOKEN --env production`
 #   `wrangler secret put ANTHROPIC_API_KEY --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
@@ -107,6 +108,28 @@ queue = "reading-lite"
 max_batch_size = 1
 max_batch_timeout = 5
 max_concurrency = 3
+max_retries = 3
+# Messages that exhaust max_retries (almost always an upstream that stayed
+# rate-limited past the retry budget) route here instead of being dropped.
+# Without this, the manifest would stay stranded pending+running forever.
+dead_letter_queue = "reading-lite-dlq"
+
+# Consumer for the dead-letter queue, served by this same worker. The queue()
+# handler branches on batch.queue and marks each dead-lettered reading as a
+# retryable `failed` manifest (handleDeadLetter / markDeadLettered) so the
+# strand becomes a visible, re-submittable failure. handleDeadLetter always
+# acks — even when the mark write fails (logged, then dropped) — so a message
+# can never loop in the DLQ. A failed mark falls back to the TTL annotator,
+# which eventually flips the stale pending entry. max_retries therefore almost
+# never fires (the handler acks every message it sees); it only matters if the
+# handler itself never completes — e.g. the worker is evicted mid-batch before
+# acking — in which case the message redelivers. There is no dead_letter_queue
+# here, so an exhausted message simply drops rather than looping.
+[[env.production.queues.consumers]]
+queue = "reading-lite-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
 max_retries = 3
 
 [[env.production.r2_buckets]]
