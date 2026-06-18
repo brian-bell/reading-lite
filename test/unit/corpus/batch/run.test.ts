@@ -149,6 +149,17 @@ describe("runBatch — fresh run", () => {
     expect(result.dropped.map((d) => d.readingId)).toContain("rd_missing");
     expect(result.report.filter((r) => r.status === "ready")).toHaveLength(1);
   });
+
+  it("logs each dropped reading with its reason (not just a count)", async () => {
+    const lines: string[] = [];
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.log = (l) => lines.push(l);
+    await runBatch([row("rd_a"), row("rd_missing")], h.deps);
+    const dropLine = lines.find((l) => l.includes("rd_missing"));
+    expect(dropLine).toBeDefined();
+    expect(dropLine).toMatch(/drop/i);
+    expect(dropLine).toMatch(/manifest/i); // the reason from prepare
+  });
 });
 
 describe("runBatch — resume", () => {

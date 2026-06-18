@@ -72,6 +72,11 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
     extract: deps.extract,
   });
   const dropped = [...prepared.dropped, ...extracted.dropped];
+  // Surface *why* each reading dropped — a bare "dropped: N" count hides dead
+  // origins, missing manifests, etc., leaving the operator no thread to pull.
+  for (const d of dropped) {
+    log(`  dropped ${d.readingId}: ${d.reason}`);
+  }
 
   const summarizeTargets = await resolveSimilar(extracted.extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
