@@ -342,6 +342,53 @@ describe("ReadingStore — appendOrReplaceListIndexItem", () => {
     const idx = await store.readListIndex();
     expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
   });
+
+  it("retries and merges a concurrent write instead of clobbering it", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET, { sleep: async () => {} });
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
+
+    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let injected = false;
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockImplementation((async (key: string, value: unknown, options?: unknown) => {
+        // On our first conditional write, simulate a different writer landing
+        // rd_b between our read and our put, then fail our precondition.
+        if (key === "index/list.json" && !injected) {
+          injected = true;
+          const cur = await env.READINGS_BUCKET.get("index/list.json");
+          const parsed = JSON.parse(await cur!.text()) as ListIndex;
+          parsed.items.push(indexItem({ id: "rd_b" }));
+          await realPut("index/list.json", JSON.stringify(parsed), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          return null;
+        }
+        return realPut(key, value as ArrayBuffer, options as R2PutOptions);
+      }) as typeof env.READINGS_BUCKET.put);
+
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_c" }));
+    spy.mockRestore();
+
+    const idx = await store.readListIndex();
+    expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
+  });
+
+  it("throws after exhausting CAS attempts under persistent contention", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET, {
+      maxAttempts: 3,
+      sleep: async () => {},
+    });
+    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
+
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockResolvedValue(null as unknown as R2Object);
+    await expect(
+      store.appendOrReplaceListIndexItem(indexItem({ id: "rd_b" })),
+    ).rejects.toThrow(/list index/i);
+    spy.mockRestore();
+  });
 });
 
 describe("ReadingStore — listManifests", () => {
