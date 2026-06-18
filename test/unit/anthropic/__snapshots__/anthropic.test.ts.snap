@@ -1,0 +1,122 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildSummarizeRequestBody > keeps the cacheable prefix (tools + system) stable 1`] = `
+{
+  "system": [
+    {
+      "cache_control": {
+        "type": "ephemeral",
+      },
+      "text": "You are a personal librarian. The user has saved a URL to read. Your job is to produce a structured summary so the user can decide whether to re-read it later, find it again by topic, and see how it relates to the rest of their library.
+
+Your output goes through a single tool call to "emit_reading". Use it exactly once. Do not write free-form prose.
+
+Required fields:
+- title: the article's title, or a faithful 5-12 word title if none
+- tldr: 1-3 sentences capturing the core thesis or finding
+- tags: 1-6 broad topical buckets (e.g. "ai", "infrastructure", "memoir")
+- keywords: 3-15 specific noun phrases that name the things the article is about
+- people: every named person actually discussed (not just cited)
+- orgs: every named organization, company, or institution actually discussed
+- novelty_verdict: one of
+    - "novel": no item in the user's prior library covers this material
+    - "familiar": the topic appears in the prior library but this piece adds something
+    - "duplicate": the user has effectively already read this
+- connections: ids from the prior library that are genuinely related, with a one-clause reason each. Empty array if none.
+- summary_markdown: 2-6 short paragraphs in markdown. Capture the argument structure, not just the topic.
+
+Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "duplicate" only when the prior reading is essentially the same piece.",
+      "type": "text",
+    },
+  ],
+  "tools": [
+    {
+      "description": "Emit the structured reading record. Call exactly once.",
+      "input_schema": {
+        "properties": {
+          "connections": {
+            "items": {
+              "properties": {
+                "id": {
+                  "description": "Reading id from the prior library.",
+                  "type": "string",
+                },
+                "reason": {
+                  "description": "One-clause reason for the connection.",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "id",
+                "reason",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "keywords": {
+            "description": "Specific noun phrases.",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "novelty_verdict": {
+            "description": "Verdict relative to the user's prior library.",
+            "enum": [
+              "novel",
+              "familiar",
+              "duplicate",
+            ],
+            "type": "string",
+          },
+          "orgs": {
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "people": {
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "summary_markdown": {
+            "description": "2-6 short paragraphs in markdown.",
+            "type": "string",
+          },
+          "tags": {
+            "description": "Broad topical buckets.",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "title": {
+            "description": "Article title (5-120 chars).",
+            "type": "string",
+          },
+          "tldr": {
+            "description": "1-3 sentence summary.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "title",
+          "tldr",
+          "tags",
+          "keywords",
+          "people",
+          "orgs",
+          "novelty_verdict",
+          "connections",
+          "summary_markdown",
+        ],
+        "type": "object",
+      },
+      "name": "emit_reading",
+    },
+  ],
+}
+`;

@@ -1,6 +1,11 @@
 # Copy to .migrate.vars and fill in. .migrate.vars is gitignored.
 # Read by `npm run migrate` (scripts/migrate.ts) when a flag/env var is missing.
 # Resolution order: --flag > env var (same name) > this file > error.
+#
+# Also read by `npm run corpus-recover -- --batch` (the bulk Message Batch path):
+# it uses the R2_* + VECTORIZE_* + CF_API_TOKEN values below to write R2/Vectorize
+# directly, plus ANTHROPIC_API_KEY / OPENAI_API_KEY / ANTHROPIC_MODEL from
+# .dev.vars/.prd.vars.
 
 MIGRATE_SQLITE=./backlite.db
 MIGRATE_CONTENT_DIR=./backlite-data

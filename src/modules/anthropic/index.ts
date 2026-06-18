@@ -141,20 +141,18 @@ interface AnthropicMessageResponse {
   };
 }
 
-export async function summarizeReading(
+// The Anthropic Messages request body for one reading. Pure + exported so the
+// realtime path (summarizeReading) and the bulk Message Batch path build a
+// byte-identical body — same tools + system prefix, hence a shared prompt cache.
+// Render order is tools → system → messages; cache_control on the last system
+// block caches tools + system together in one breakpoint.
+export function buildSummarizeRequestBody(
   input: SummarizeReadingInput,
-  deps: AnthropicDeps,
-): Promise<SummarizeReadingResult> {
-  if (input.extractedText.length === 0) {
-    throw new Error("summarizeReading: extractedText must be non-empty");
-  }
-
-  const body = {
-    model: deps.model,
+  model: string,
+): object {
+  return {
+    model,
     max_tokens: 8192,
-    // System prompt + tool definition together form the cacheable prefix.
-    // Render order is tools → system → messages, so cache_control on the last
-    // system block caches tools + system in one breakpoint.
     system: [
       {
         type: "text",
@@ -182,6 +180,43 @@ export async function summarizeReading(
       },
     ],
   };
+}
+
+// Parse a Messages `content` array (realtime or batch result) into the validated
+// reading + usage. Shared so both paths apply the same forced-tool-use contract.
+export function parseEmitReadingResult(
+  content: AnthropicMessageResponse["content"],
+  usage: AnthropicMessageResponse["usage"],
+): SummarizeReadingResult {
+  const toolUse = content.find(
+    (b): b is AnthropicToolUseBlock =>
+      b.type === "tool_use" && (b as AnthropicToolUseBlock).name === EMIT_READING_TOOL_NAME,
+  );
+  if (!toolUse) {
+    throw new NoToolUseError(
+      `Anthropic response did not contain a tool_use block for ${EMIT_READING_TOOL_NAME}`,
+    );
+  }
+
+  const parsed = EmitReadingToolInputSchema.safeParse(toolUse.input);
+  if (!parsed.success) {
+    throw new BadToolInputError(
+      `tool_use input failed validation: ${parsed.error.message}`,
+    );
+  }
+
+  return { reading: parsed.data, usage };
+}
+
+export async function summarizeReading(
+  input: SummarizeReadingInput,
+  deps: AnthropicDeps,
+): Promise<SummarizeReadingResult> {
+  if (input.extractedText.length === 0) {
+    throw new Error("summarizeReading: extractedText must be non-empty");
+  }
+
+  const body = buildSummarizeRequestBody(input, deps.model);
 
   const init: RequestInit = {
     method: "POST",
@@ -202,24 +237,7 @@ export async function summarizeReading(
   }
 
   const json = (await response.json()) as AnthropicMessageResponse;
-  const toolUse = json.content.find(
-    (b): b is AnthropicToolUseBlock =>
-      b.type === "tool_use" && (b as AnthropicToolUseBlock).name === EMIT_READING_TOOL_NAME,
-  );
-  if (!toolUse) {
-    throw new NoToolUseError(
-      `Anthropic response did not contain a tool_use block for ${EMIT_READING_TOOL_NAME}`,
-    );
-  }
-
-  const parsed = EmitReadingToolInputSchema.safeParse(toolUse.input);
-  if (!parsed.success) {
-    throw new BadToolInputError(
-      `tool_use input failed validation: ${parsed.error.message}`,
-    );
-  }
-
-  return { reading: parsed.data, usage: json.usage };
+  return parseEmitReadingResult(json.content, json.usage);
 }
 
 function buildUserMessage(input: SummarizeReadingInput): string {

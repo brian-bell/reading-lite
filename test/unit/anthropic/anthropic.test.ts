@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   summarizeReading,
+  buildSummarizeRequestBody,
+  parseEmitReadingResult,
   AnthropicError,
   NoToolUseError,
   BadToolInputError,
@@ -226,5 +228,74 @@ describe("summarizeReading", () => {
       ),
     ).rejects.toThrow();
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildSummarizeRequestBody", () => {
+  it("produces the model, tool def, tool_choice, and cacheable system prefix", () => {
+    const body = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-opus-4-8",
+    ) as Record<string, any>;
+    expect(body.model).toBe("claude-opus-4-8");
+    expect(body.tool_choice).toEqual({ type: "tool", name: EMIT_READING_TOOL_NAME });
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0].name).toBe(EMIT_READING_TOOL_NAME);
+    const lastSystem = body.system[body.system.length - 1];
+    expect(lastSystem.cache_control).toEqual({ type: "ephemeral" });
+    expect(body.messages[0].role).toBe("user");
+  });
+
+  it("is byte-identical to what summarizeReading sends (single source of truth)", async () => {
+    const input = {
+      url: "https://example.com/article-xyz",
+      extractedText: "## Heading\n\nbody text here",
+      title: "T",
+      similarReadings: [
+        { id: "rd_a", url: "https://example.com/x", title: "X", tldr: "About X" },
+      ],
+    };
+    const fetchFn = vi.fn<typeof fetch>(async () => ok(toolUseResponse(validToolInput)));
+    await summarizeReading(input, { fetch: fetchFn, apiKey: "sk", model: "claude-opus-4-8" });
+    const sent = fetchFn.mock.calls[0]![1]!.body as string;
+    expect(JSON.stringify(buildSummarizeRequestBody(input, "claude-opus-4-8"))).toBe(sent);
+  });
+
+  it("keeps the cacheable prefix (tools + system) stable", () => {
+    const body = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-opus-4-8",
+    ) as Record<string, any>;
+    // Snapshot guards against silent prompt-cache invalidation: any byte change
+    // in tools+system busts every cached prefix across the batch.
+    expect({ tools: body.tools, system: body.system }).toMatchSnapshot();
+  });
+});
+
+describe("parseEmitReadingResult", () => {
+  const usage = { input_tokens: 7, output_tokens: 3 };
+
+  it("returns the parsed reading + usage on a valid tool_use block", () => {
+    const out = parseEmitReadingResult(
+      [{ type: "tool_use", id: "toolu_1", name: EMIT_READING_TOOL_NAME, input: validToolInput }],
+      usage,
+    );
+    expect(out.reading).toEqual(validToolInput);
+    expect(out.usage).toEqual(usage);
+  });
+
+  it("throws NoToolUseError when no emit_reading block is present", () => {
+    expect(() =>
+      parseEmitReadingResult([{ type: "text", text: "nope" }], usage),
+    ).toThrow(NoToolUseError);
+  });
+
+  it("throws BadToolInputError when the tool input fails validation", () => {
+    expect(() =>
+      parseEmitReadingResult(
+        [{ type: "tool_use", id: "t", name: EMIT_READING_TOOL_NAME, input: { ...validToolInput, novelty_verdict: "maybe" } }],
+        usage,
+      ),
+    ).toThrow(BadToolInputError);
   });
 });
