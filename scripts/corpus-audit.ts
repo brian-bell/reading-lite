@@ -2,7 +2,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { buildFailedRows, buildPendingRows, tallyStatuses } from "./corpus-lib/audit";
+import { buildFailedOrphanDupRows, buildFailedRows, buildPendingRows, tallyStatuses } from "./corpus-lib/audit";
 import { isNewsletterHost, isTeaser, shortUrl } from "./corpus-lib/classify";
 import { resolveBucket } from "./corpus-lib/config";
 import { renderIndexMarkdown } from "./corpus-lib/render";
@@ -95,26 +95,28 @@ async function main(): Promise<void> {
   const items = await readListIndex(deps);
 
   const failed = buildFailedRows(items);
+  const failedOrphanDups = buildFailedOrphanDupRows(items);
   const pending = buildPendingRows(items, Date.now());
   if (args.deep) await deepenStrandedStages(pending, deps);
   const teasers = args.teasers ? await detectTeasers(items, deps) : [];
   const tally = tallyStatuses(items);
 
   await fs.mkdir(path.resolve(args.out), { recursive: true });
-  const rows = [...failed, ...pending, ...teasers];
+  const rows = [...failed, ...failedOrphanDups, ...pending, ...teasers];
   await fs.writeFile(
     path.join(args.out, "index.json"),
     JSON.stringify({ generated: "corpus non-ready inventory", totals: tally, rows }, null, 2) + "\n",
   );
   await fs.writeFile(
     path.join(args.out, "INDEX.md"),
-    renderIndexMarkdown(failed, pending, teasers, tally, new Date().toISOString().slice(0, 10)),
+    renderIndexMarkdown(failed, pending, teasers, tally, new Date().toISOString().slice(0, 10), failedOrphanDups),
   );
 
   process.stdout.write(JSON.stringify({
     bucket: args.bucket,
     totals: tally,
     failed: failed.length,
+    failed_orphan_dups: failedOrphanDups.length,
     pending_stranded: pending.filter((p) => p.class === "stranded").length,
     pending_orphan_dups: pending.filter((p) => p.class === "orphan-dup").length,
     pending_fresh: pending.filter((p) => p.class === "fresh").length,

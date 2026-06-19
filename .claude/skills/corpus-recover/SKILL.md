@@ -27,7 +27,7 @@ Each audit row maps to one action:
 | Pending **stranded**; `BadToolInputError` (summarize); `FetchTimeoutError`; HTTP 5xx origin errors | **reprocess** — `POST /readings/:id/reprocess {force:true}` |
 | Fetch-blocked **HTTP 403 / 429**; **oversized** (article) | **local-extract** — fetch locally with a browser UA, re-import via `POST /readings/import-markdown` |
 | Dead links (404/410); paywalls (401/402/451); not-articles (PDF/YouTube); Reddit; teasers | **skip** — recorded, no action |
-| Pending **orphan-dup** | **none** — cosmetic; the URL already has a ready reading |
+| **Orphan-dup** (failed *or* pending) | **none** — cosmetic; the URL already has a ready reading. Drop with `corpus-drop`, don't recover |
 | Pending **fresh** (within the pending TTL) | **none** — likely still in-flight; don't duplicate active work |
 
 The mapping lives in `scripts/corpus-lib/policy.ts` (`recoveryAction`).

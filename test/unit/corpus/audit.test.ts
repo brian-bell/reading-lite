@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildFailedRows, buildPendingRows, tallyByIds, tallyStatuses } from "../../../scripts/corpus-lib/audit";
+import {
+  buildFailedOrphanDupRows,
+  buildFailedRows,
+  buildPendingRows,
+  tallyByIds,
+  tallyStatuses,
+} from "../../../scripts/corpus-lib/audit";
 import type { ListItem } from "../../../scripts/corpus-lib/types";
 
 const NOW = Date.parse("2026-06-18T00:00:00.000Z");
@@ -29,6 +35,38 @@ describe("buildFailedRows", () => {
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].url).toBe("https://b.com/y");
+  });
+});
+
+describe("buildFailedOrphanDupRows", () => {
+  it("surfaces failed copies whose url already has a ready reading, deduped + counted", () => {
+    const rows = buildFailedOrphanDupRows([
+      item({ id: "f1", url: "https://a.com/x", status: "failed", error: { code: "BadStatusError", message: "status 403", stage: "fetch_source" } }),
+      item({ id: "f1b", url: "https://a.com/x", status: "failed", created_at: "2026-06-10T00:00:00.000Z", error: { code: "BadStatusError", message: "status 403", stage: "fetch_source" } }),
+      item({ id: "r1", url: "https://a.com/x", status: "ready" }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://a.com/x");
+    expect(rows[0].class).toBe("orphan-dup");
+    expect(rows[0].category).toBe("failed");
+    expect(rows[0].attempts).toBe(2);
+  });
+
+  it("ignores failed urls with no ready copy (those are real failures)", () => {
+    const rows = buildFailedOrphanDupRows([
+      item({ id: "f2", url: "https://b.com/y", status: "failed", error: { code: "OversizedResponseError", message: "", stage: "fetch_source" } }),
+    ]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("partitions cleanly against buildFailedRows for the same corpus", () => {
+    const items = [
+      item({ id: "f1", url: "https://a.com/x", status: "failed", error: { code: "BadStatusError", message: "status 403", stage: "fetch_source" } }),
+      item({ id: "r1", url: "https://a.com/x", status: "ready" }),
+      item({ id: "f2", url: "https://b.com/y", status: "failed", error: { code: "OversizedResponseError", message: "", stage: "fetch_source" } }),
+    ];
+    expect(buildFailedRows(items).map((r) => r.url)).toEqual(["https://b.com/y"]);
+    expect(buildFailedOrphanDupRows(items).map((r) => r.url)).toEqual(["https://a.com/x"]);
   });
 });
 

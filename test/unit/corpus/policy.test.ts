@@ -19,6 +19,10 @@ describe("recoveryAction", () => {
     expect(recoveryAction(row({ category: "pending", class: "fresh" })).action).toBe("none");
   });
 
+  it("leaves a failed orphan-dup alone (url already ready — a corpus-drop job, not recover)", () => {
+    expect(recoveryAction(row({ category: "failed", class: "orphan-dup", code: "BadStatusError", message: "status 403" })).action).toBe("none");
+  });
+
   it("skips teasers", () => {
     expect(recoveryAction(row({ category: "teaser" })).action).toBe("skip");
   });

@@ -17,8 +17,12 @@ export interface ActionDecision {
 export function recoveryAction(row: AuditRow): ActionDecision {
   if (row.category === "teaser") return { action: "skip", why: "paywall teaser — only preview content" };
 
+  // An orphan-dup (pending or failed) shares a url with a ready reading — the
+  // content is already in the corpus, so there's nothing to recover. It's a
+  // corpus-drop candidate, not a corpus-recover one.
+  if (row.class === "orphan-dup") return { action: "none", why: "url already has a ready reading (cosmetic dup)" };
+
   if (row.category === "pending") {
-    if (row.class === "orphan-dup") return { action: "none", why: "url already has a ready reading (cosmetic dup)" };
     if (row.class === "fresh") return { action: "none", why: "pending within TTL — likely still in-flight" };
     return { action: "reprocess", why: "stranded — never completed; re-run pipeline" };
   }
