@@ -1129,6 +1129,49 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 
+  it("deduplicates Markdown imports for the same source URL while pending", async () => {
+    const sourceUrl = "https://example.com/import-markdown-pending-dedupe";
+    const markdown = "# Pending Import\n\nThis import has not been processed yet.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+
+    const first = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Pending Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const firstBody = (await first.json()) as { id: string; status: string };
+
+    const second = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Pending Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const secondBody = (await second.json()) as { id: string; status: string };
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(200);
+    expect(secondBody).toMatchObject({ id: firstBody.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: firstBody.id, trigger: "import" });
+  });
+
   it("imports Markdown over a failed URL reading for the same source URL", async () => {
     const sourceUrl = "https://example.com/failed-then-imported-markdown";
     const markdown = "# Imported Recovery\n\nThe user supplied the captured text.";

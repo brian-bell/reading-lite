@@ -175,55 +175,16 @@ export function createApp(opts: AppOptions = {}) {
       }
     }
 
-    const source: ProcessReadingSource = {
-      kind: "markdown",
-      markdown: parsed.data.markdown,
-      ...(parsed.data.title === undefined ? {} : { title: parsed.data.title }),
-    };
-    const args = await newReadingArgs(url, services, source);
-    const attemptStartedAt = services.now();
-    const attemptId = newAttemptId(services);
-    const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
-    const pendingManifest: Manifest = {
-      id: args.id,
+    const result = await createNewReadingForMarkdownImport(
+      reader,
+      c.env,
+      services,
       url,
-      url_hash: args.urlHash,
-      source_type: "markdown",
-      status: "pending",
-      active_attempt: activeAttempt,
-      ...(parsed.data.title === undefined ? {} : { title: parsed.data.title }),
-      content_type: "text/markdown; charset=utf-8",
-      content_status: "captured",
-      content_bytes: new TextEncoder().encode(parsed.data.markdown).byteLength,
-      content_sha256: await sha256Hex(parsed.data.markdown),
-      created_at: args.createdAt,
-      updated_at: args.createdAt,
-    };
-    if (!c.env.READING_JOBS) {
-      return c.json(
-        { error: "queue binding READING_JOBS is not configured" },
-        503,
-      );
-    }
-
-    await reader.writeManifest(args.keyPrefix, pendingManifest);
-    await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(pendingManifest, args.keyPrefix),
+      parsed.data.markdown,
+      parsed.data.title,
+      parsed.data.email ?? false,
     );
-
-    await c.env.READING_JOBS.send({
-      ...args,
-      attemptId,
-      attemptStartedAt,
-      trigger: "import",
-      email: parsed.data.email ?? false,
-    });
-
-    return c.json(
-      { id: args.id, status: "pending", poll: `/readings/${args.id}`, attempt_id: attemptId },
-      202,
-    );
+    return c.json(result.body, result.status);
   });
 
   app.get("/readings", async (c) => {
@@ -702,6 +663,131 @@ async function enqueueReprocess(
       id: effectiveManifest.id,
       status: nextManifest.status,
       poll: `/readings/${effectiveManifest.id}`,
+      attempt_id: attemptId,
+    },
+    status: 202,
+  };
+}
+
+async function createNewReadingForMarkdownImport(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  url: string,
+  markdown: string,
+  title: string | undefined,
+  email: boolean,
+): Promise<SubmitJsonResult> {
+  const source: ProcessReadingSource = {
+    kind: "markdown",
+    markdown,
+    ...(title === undefined ? {} : { title }),
+  };
+  const args = await newReadingArgs(url, services, source);
+  const attemptStartedAt = services.now();
+  const attemptId = newAttemptId(services);
+  const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
+  const markdownBytes = new TextEncoder().encode(markdown);
+  const pendingManifest: Manifest = {
+    id: args.id,
+    url,
+    url_hash: args.urlHash,
+    source_type: "markdown",
+    status: "pending",
+    active_attempt: activeAttempt,
+    ...(title === undefined ? {} : { title }),
+    content_type: "text/markdown; charset=utf-8",
+    content_status: "captured",
+    content_bytes: markdownBytes.byteLength,
+    content_sha256: await sha256Hex(markdown),
+    created_at: args.createdAt,
+    updated_at: args.createdAt,
+  };
+  if (!env.READING_JOBS) {
+    return {
+      body: { error: "queue binding READING_JOBS is not configured" },
+      status: 503,
+    };
+  }
+
+  const pointer = { id: args.id, key_prefix: args.keyPrefix };
+  try {
+    await reader.writeByUrlPointer(args.urlHash, pointer, { ifNotExists: true });
+  } catch (err) {
+    if (!(err instanceof PointerExistsError)) throw err;
+    const claimed = await reader.readByUrlPointer(args.urlHash);
+    if (claimed) {
+      const claimedManifest = await reader.readManifest(claimed.key_prefix);
+      if (claimedManifest && ownedManifestMatches(claimed, claimedManifest, url, args.urlHash)) {
+        const effective = annotateStale(claimedManifest, env, services);
+        if (effective.status !== "failed") return { body: effective, status: 200 };
+        return enqueueMarkdownImport(
+          reader,
+          env,
+          services,
+          claimed,
+          effective,
+          markdown,
+          title,
+          email,
+        );
+      }
+      return {
+        body: {
+          error: "reading owner is still initializing",
+          id: claimed.id,
+          poll: `/readings/${claimed.id}`,
+        },
+        status: 409,
+      };
+    }
+    throw err;
+  }
+
+  await reader.writeRaw(
+    args.keyPrefix,
+    "md",
+    markdownBytes,
+    "text/markdown; charset=utf-8",
+  );
+  await reader.writeExtracted(args.keyPrefix, markdown);
+  await reader.writeManifest(args.keyPrefix, pendingManifest);
+  await reader.writeByIdPointer(args.id, pointer);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(pendingManifest, args.keyPrefix),
+  );
+
+  try {
+    await env.READING_JOBS.send({
+      ...args,
+      attemptId,
+      attemptStartedAt,
+      trigger: "import",
+      email,
+    });
+  } catch (err) {
+    console.error(err);
+    const failedManifest = manifestForQueueSendFailure(
+      pendingManifest,
+      activeAttempt,
+      err,
+      services,
+    );
+    await reader.writeManifest(args.keyPrefix, failedManifest);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(failedManifest, args.keyPrefix),
+    );
+    return {
+      body: { error: "queue send failed", id: args.id },
+      status: 503,
+    };
+  }
+
+  return {
+    body: {
+      id: args.id,
+      status: "pending",
+      poll: `/readings/${args.id}`,
       attempt_id: attemptId,
     },
     status: 202,
