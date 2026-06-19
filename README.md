@@ -126,32 +126,12 @@ reading, the current ready manifest remains the fallback; if the reprocess
 attempt succeeds it replaces the manifest and vector, and if it fails the ready
 manifest is preserved with `last_attempt.status = "failed"`.
 
-Two local scripts support bulk retry work. First gather failed attempts into
-gitignored local files:
-
-```sh
-npm run gather:failed -- --base https://reading-lite.bbell.dev
-```
-
-This writes one JSON record per failed attempt plus `index.json` under
-`.failed-attempts/<timestamp>/`. Failed manifests that predate attempt history
-are captured as legacy records. Each record includes the reading, failed
-attempt, and a retry decision. Then reprocess a single retryable failed reading
-from a record file or directory:
-
-```sh
-# dry run: prints whether the selected reading would be retried/skipped
-npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z --reading rd_abc
-
-# enqueue the selected retryable reading
-npm run reprocess:failed -- --input .failed-attempts/20260502T183000Z --reading rd_abc --execute
-```
-
-Retryability is conservative: explicit `retryable` from the Worker wins; legacy
-`FetchTimeoutError`, OpenAI/Anthropic failures, stale pending/active attempts,
-and source HTTP 5xx are retried; source HTTP 4xx such as 404, blocked hosts,
-oversized responses, and unknown errors are skipped unless
-`--include-non-retryable` is passed.
+For bulk retry work, use the corpus tools: `npm run corpus-audit` inventories
+every non-ready reading and classifies each failure by reason (read-only), and
+`npm run corpus-recover` acts on that audit — reprocessing recoverable readings
+through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
+the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
+Both default to a dry run; pass `--execute` to act.
 
 ## Web SPA
 
@@ -250,8 +230,6 @@ src/
 scripts/
   deploy.ts, deploy-web.ts      # wrangler deploy wrappers (dry-run by default)
   read-url.ts                   # CLI: POST a single URL
-  gather-failed-attempts.ts     # CLI: collect failed attempts into local files
-  reprocess-failed-attempts.ts  # CLI: retry a failed reading by id
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
   corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = bulk Message Batch path)
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
@@ -262,12 +240,13 @@ scripts/
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
   import-markdown.ts + import-markdown-lib/{...}          # local .md → import-markdown
+  run-with-vars.ts              # helper: overlay a dotenv file onto env, then run a command
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
   unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
                                 #   http-retry, email, stores, process-reading, queue, corpus
                                 # node pool: import-bookmarks, import-markdown,
-                                #   check-corpus, process-reading-list, reprocess-failed,
+                                #   check-corpus, process-reading-list,
                                 #   corpus, lib
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}

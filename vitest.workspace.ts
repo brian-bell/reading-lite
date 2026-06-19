@@ -46,7 +46,6 @@ export default [
         "test/unit/corpus/**/*.test.ts",
         "test/unit/check-corpus/**/*.test.ts",
         "test/unit/process-reading-list/**/*.test.ts",
-        "test/unit/reprocess-failed/**/*.test.ts",
       ],
       environment: "node",
     },
