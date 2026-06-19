@@ -1005,6 +1005,72 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(vector.vectors.has(staleId)).toBe(false);
   });
 
+  it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
+    const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-same-reading-success";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_SAME_READING";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const newerPending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_NEW",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T19:30:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+    };
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.24),
+      metadata: { url, title: "Existing vector" },
+    });
+    await reader.writeManifest(keyPrefix, newerPending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "pending",
+      active_attempt: { id: "at_NEW" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "pending", active_attempt: { id: "at_NEW" } }],
+    });
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
+  });
+
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
     const reader = new ReadingStore(env.READINGS_BUCKET);
@@ -1051,6 +1117,67 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       status: "failed",
     });
     await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    consoleErr.mockRestore();
+  });
+
+  it("does not let a stale failed attempt overwrite a newer attempt for the same reading", async () => {
+    const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-same-reading-failure";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_SAME_READING_FAILED";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const newerPending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_NEW_FAILED",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T19:30:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+    };
+    await reader.writeManifest(keyPrefix, newerPending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD_FAILED",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "pending",
+      active_attempt: { id: "at_NEW_FAILED" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "pending", active_attempt: { id: "at_NEW_FAILED" } }],
+    });
+    expect(consoleErr).toHaveBeenCalled();
     consoleErr.mockRestore();
   });
 

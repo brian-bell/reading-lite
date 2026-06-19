@@ -123,8 +123,8 @@ export async function processReading(
       }),
     );
 
-    let ownsUrlForFinalWrites = await ensureByUrlPointerForCompletedReading(reader, args);
-    if (ownsUrlForFinalWrites) {
+    const terminalState = await terminalWriteState(reader, args, { claimMissingPointer: true });
+    if (terminalState.canPublishVisibility) {
       await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
         similarity.upsert(args.id, tldrEmbed.embedding, {
           url: args.url,
@@ -133,7 +133,7 @@ export async function processReading(
           created_at: args.createdAt,
         }),
       );
-    } else {
+    } else if (terminalState.canRemoveVisibility) {
       await similarity.delete(args.id);
     }
 
@@ -171,9 +171,11 @@ export async function processReading(
       },
     };
 
-    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", () =>
-      reader.writeManifest(args.keyPrefix, finalManifest),
-    );
+    if (terminalState.canWriteManifest) {
+      await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", () =>
+        reader.writeManifest(args.keyPrefix, finalManifest),
+      );
+    }
     await runStage(
       attempt,
       reader,
@@ -181,12 +183,11 @@ export async function processReading(
       services,
       "write_indexes",
       async () => {
-        ownsUrlForFinalWrites = await ensureByUrlPointerForCompletedReading(reader, args);
-        if (ownsUrlForFinalWrites) {
+        if (terminalState.canPublishVisibility) {
           await reader.appendOrReplaceListIndexItem(
             manifestToIndexItem(finalManifest, args.keyPrefix),
           );
-        } else {
+        } else if (terminalState.canRemoveVisibility) {
           await reader.removeListIndexItem(args.id);
         }
       },
@@ -200,16 +201,18 @@ export async function processReading(
       last_attempt: summarizeAttempt(attempt),
     };
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    await reader.writeManifest(args.keyPrefix, finalManifest);
-    if (ownsUrlForFinalWrites) {
+    if (terminalState.canWriteManifest) {
+      await reader.writeManifest(args.keyPrefix, finalManifest);
+    }
+    if (terminalState.canPublishVisibility) {
       await reader.appendOrReplaceListIndexItem(
         manifestToIndexItem(finalManifest, args.keyPrefix),
       );
-    } else {
+    } else if (terminalState.canRemoveVisibility) {
       await reader.removeListIndexItem(args.id);
     }
 
-    if (ownsUrlForFinalWrites && shouldSendEmail(args)) {
+    if (terminalState.canPublishVisibility && shouldSendEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -344,6 +347,7 @@ async function markFailed(
   attempt.finished_at = failedAt;
   attempt.error = error;
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
+  const terminalState = await terminalWriteState(reader, args, { claimMissingPointer: false });
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -357,16 +361,18 @@ async function markFailed(
       updated_at: services.now(),
     };
     try {
-      await reader.writeManifest(args.keyPrefix, manifest);
+      if (terminalState.canWriteManifest) {
+        await reader.writeManifest(args.keyPrefix, manifest);
+      }
     } catch (writeErr) {
       console.error(writeErr);
     }
     try {
-      if (await readingCanPublishTerminalWrite(reader, args)) {
+      if (terminalState.canPublishVisibility) {
         await reader.appendOrReplaceListIndexItem(
           manifestToIndexItem(manifest, args.keyPrefix),
         );
-      } else {
+      } else if (terminalState.canRemoveVisibility) {
         await reader.removeListIndexItem(args.id);
       }
     } catch (indexErr) {
@@ -395,16 +401,18 @@ async function markFailed(
   // either way). Log and move on; the index TTL annotator will eventually flip
   // stale pending entries even if both writes drop.
   try {
-    await reader.writeManifest(args.keyPrefix, manifest);
+    if (terminalState.canWriteManifest) {
+      await reader.writeManifest(args.keyPrefix, manifest);
+    }
   } catch (writeErr) {
     console.error(writeErr);
   }
   try {
-    if (await readingCanPublishTerminalWrite(reader, args)) {
+    if (terminalState.canPublishVisibility) {
       await reader.appendOrReplaceListIndexItem(
         manifestToIndexItem(manifest, args.keyPrefix),
       );
-    } else {
+    } else if (terminalState.canRemoveVisibility) {
       await reader.removeListIndexItem(args.id);
     }
   } catch (indexErr) {
@@ -413,14 +421,6 @@ async function markFailed(
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
-}
-
-async function readingCanPublishTerminalWrite(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<boolean> {
-  const existing = await reader.readByUrlPointer(args.urlHash);
-  return !existing || (existing.id === args.id && existing.key_prefix === args.keyPrefix);
 }
 
 export async function newReadingArgs(
@@ -482,27 +482,53 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
-async function ensureByUrlPointerForCompletedReading(
+interface TerminalWriteState {
+  canWriteManifest: boolean;
+  canPublishVisibility: boolean;
+  canRemoveVisibility: boolean;
+}
+
+async function terminalWriteState(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-): Promise<boolean> {
+  opts: { claimMissingPointer: boolean },
+): Promise<TerminalWriteState> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  const activeAttemptId = manifest?.active_attempt?.id;
+  const attemptId = args.attemptId ?? `at_${args.id}`;
+  const legacyPendingWithoutAttempt = activeAttemptId === undefined && manifest?.status === "pending";
+  const activeAttemptMatches = activeAttemptId === attemptId || legacyPendingWithoutAttempt;
+  const activeAttemptConflict = activeAttemptId !== undefined && activeAttemptId !== attemptId;
+  let ownsUrl = false;
+  let ownerAllowsVisibility = false;
   const existing = await reader.readByUrlPointer(args.urlHash);
   if (existing) {
-    return existing.id === args.id && existing.key_prefix === args.keyPrefix;
+    ownsUrl = existing.id === args.id && existing.key_prefix === args.keyPrefix;
+    ownerAllowsVisibility = ownsUrl;
+  } else if (opts.claimMissingPointer && activeAttemptMatches) {
+    try {
+      await reader.writeByUrlPointer(
+        args.urlHash,
+        { id: args.id, key_prefix: args.keyPrefix },
+        { ifNotExists: true },
+      );
+      ownsUrl = true;
+      ownerAllowsVisibility = true;
+    } catch (err) {
+      if (!(err instanceof PointerExistsError)) throw err;
+      const claimed = await reader.readByUrlPointer(args.urlHash);
+      ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
+      ownerAllowsVisibility = ownsUrl;
+    }
+  } else {
+    ownerAllowsVisibility = true;
   }
 
-  try {
-    await reader.writeByUrlPointer(
-      args.urlHash,
-      { id: args.id, key_prefix: args.keyPrefix },
-      { ifNotExists: true },
-    );
-    return true;
-  } catch (err) {
-    if (!(err instanceof PointerExistsError)) throw err;
-    const claimed = await reader.readByUrlPointer(args.urlHash);
-    return claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
-  }
+  return {
+    canWriteManifest: !activeAttemptConflict,
+    canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
+    canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
+  };
 }
 
 export function newAttemptId(services: Services): string {
