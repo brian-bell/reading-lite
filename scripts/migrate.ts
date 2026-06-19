@@ -1,16 +1,17 @@
 #!/usr/bin/env tsx
 import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
-import { AwsClient } from "aws4fetch";
 import { loadDotVars } from "./lib/dotvars";
 import { normalizeBacklitRow } from "./migrate-lib/normalize";
 import { runMigration } from "./migrate-lib/run";
-import type {
-  R2Client,
-  R2PutOptions,
-  VectorizeClient,
-  VectorizeUpsertVector,
-} from "./migrate-lib/clients";
+import {
+  makeR2Client,
+  makeVectorizeClient,
+  dryRunR2,
+  dryRunVectorize,
+  type R2Client,
+  type VectorizeClient,
+} from "./lib/cf-clients";
 
 interface Args {
   sqlite: string;
@@ -105,84 +106,23 @@ overwrite manifests + pointers and upsert by id, so partial migrations resume
 cleanly.`);
 }
 
-function makeR2Client(args: Args): R2Client {
+function r2ClientForArgs(args: Args): R2Client {
   if (args.dryRun) return dryRunR2();
-  const aws = new AwsClient({
+  return makeR2Client({
+    accountId: args.r2AccountId,
     accessKeyId: args.r2AccessKey,
     secretAccessKey: args.r2SecretKey,
-    service: "s3",
-    region: "auto",
+    bucket: args.r2Bucket,
   });
-  const base = `https://${args.r2AccountId}.r2.cloudflarestorage.com/${args.r2Bucket}`;
-  return {
-    async put(key: string, body: Uint8Array | string, opts?: R2PutOptions) {
-      const headers: Record<string, string> = {};
-      if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await aws.fetch(`${base}/${encodePath(key)}`, {
-        method: "PUT",
-        body,
-        headers,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
-      }
-    },
-    async head(key: string) {
-      const res = await aws.fetch(`${base}/${encodePath(key)}`, { method: "HEAD" });
-      return res.ok;
-    },
-  };
 }
 
-function makeVectorizeClient(args: Args): VectorizeClient {
+function vectorizeClientForArgs(args: Args): VectorizeClient {
   if (args.dryRun) return dryRunVectorize();
-  const url = `https://api.cloudflare.com/client/v4/accounts/${args.vectorizeAccountId}/vectorize/v2/indexes/${args.vectorizeIndex}/upsert`;
-  return {
-    async upsert(vectors: VectorizeUpsertVector[]) {
-      const ndjson = vectors.map((v) => JSON.stringify(v)).join("\n");
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "authorization": `Bearer ${args.cfApiToken}`,
-          "content-type": "application/x-ndjson",
-        },
-        body: ndjson,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Vectorize upsert failed: ${res.status} ${text}`);
-      }
-    },
-  };
-}
-
-function dryRunR2(): R2Client {
-  return {
-    async put(key) {
-      process.stderr.write(`[dry-run] R2 PUT ${key}\n`);
-    },
-    async head() {
-      return false;
-    },
-  };
-}
-
-function dryRunVectorize(): VectorizeClient {
-  return {
-    async upsert(vectors) {
-      for (const v of vectors) {
-        process.stderr.write(`[dry-run] Vectorize upsert ${v.id}\n`);
-      }
-    },
-  };
-}
-
-function encodePath(key: string): string {
-  return key
-    .split("/")
-    .map((p) => encodeURIComponent(p))
-    .join("/");
+  return makeVectorizeClient({
+    accountId: args.vectorizeAccountId,
+    index: args.vectorizeIndex,
+    apiToken: args.cfApiToken,
+  });
 }
 
 interface RawRow {
@@ -247,8 +187,8 @@ function parseJsonObject(raw: string | null): unknown {
 async function main() {
   const args = parseCliArgs();
   const db = new Database(args.sqlite, { readonly: true });
-  const r2 = makeR2Client(args);
-  const vectorize = makeVectorizeClient(args);
+  const r2 = r2ClientForArgs(args);
+  const vectorize = vectorizeClientForArgs(args);
   const report = await runMigration(readRows(db), {
     r2,
     vectorize,

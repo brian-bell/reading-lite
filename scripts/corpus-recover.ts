@@ -1,13 +1,18 @@
 #!/usr/bin/env -S npx tsx
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
+import type { ExtractedContent } from "../src/modules/extractor/index";
 import { extractFromUrl } from "../src/modules/extractor/index";
-import { resolveApiTarget, resolveBucket } from "./corpus-lib/config";
+import { resolveApiTarget, resolveBatchConfig, resolveBucket } from "./corpus-lib/config";
 import { importMarkdown, reprocessReading, type ApiDeps } from "./corpus-lib/api";
 import { planByAction, recoveryAction } from "./corpus-lib/policy";
 import { shouldPauseAfter } from "./corpus-lib/throttle";
 import { tallyByIds } from "./corpus-lib/audit";
 import { readListIndex } from "./corpus-lib/wrangler-r2";
+import { makeR2Client, makeVectorizeClient } from "./lib/cf-clients";
+import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/batch/clients";
+import { runBatch } from "./corpus-lib/batch/run";
+import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,6 +36,12 @@ interface Args {
   monitor: boolean;
   wave: number;
   wavePauseMs: number;
+  batch: boolean;
+  // Raw --bucket flag (undefined when not passed). The read/monitor path uses
+  // the defaulted `bucket`; the batch *write* path must pass this through so
+  // resolveBatchConfig can fall back to MIGRATE_R2_BUCKET (staging) rather than
+  // being masked by the default production bucket.
+  bucketFlag?: string;
 }
 
 function parseCliArgs(): Args {
@@ -46,6 +57,7 @@ function parseCliArgs(): Args {
       monitor: { type: "boolean", default: false },
       wave: { type: "string" },
       "wave-pause": { type: "string" },
+      batch: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
@@ -59,11 +71,13 @@ function parseCliArgs(): Args {
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
     bucket: resolveBucket(values.bucket),
+    ...(values.bucket === undefined ? {} : { bucketFlag: values.bucket }),
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
     wave: parsePositive(values.wave, "wave", Infinity),
     wavePauseMs: parsePositive(values["wave-pause"], "wave-pause", 60) * 1000,
+    batch: values.batch === true,
   };
 }
 
@@ -96,6 +110,11 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
   --wave <n>        Pause between every n submissions so the queue can drain
                     (prevents swamping upstream rate limits). Default: unbounded.
   --wave-pause <s>  Seconds to pause at each wave boundary. Default: 60.
+  --batch           Bulk path: summarize reprocess+local-extract rows via the
+                    Anthropic Message Batch API (~50% cheaper, no rate-limit
+                    burst) instead of the realtime queue. --wave is ignored.
+                    Resumes an in-flight batch from ./index.batch.json. Needs R2
+                    + Vectorize creds (.migrate.vars) and ANTHROPIC/OPENAI keys.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
@@ -118,6 +137,12 @@ async function main(): Promise<void> {
   );
 
   const actions: RecoveryAction[] = args.only ? [args.only] : ["reprocess", "local-extract"];
+
+  if (args.batch) {
+    await runBatchMode(args, plan, actions);
+    return;
+  }
+
   if (!args.execute) {
     let remaining = args.limit;
     for (const a of actions) {
@@ -207,6 +232,94 @@ async function main(): Promise<void> {
 
   printSummary({ executed: true, reprocessed, extracted, errors, touched });
   if (errors > 0) process.exit(1);
+}
+
+// Bulk path: summarize reprocess + local-extract rows through the Anthropic
+// Message Batch API. --wave is irrelevant here (no realtime burst to pace).
+async function runBatchMode(
+  args: Args,
+  plan: Record<RecoveryAction, AuditRow[]>,
+  actions: RecoveryAction[],
+): Promise<void> {
+  if (Number.isFinite(args.wave)) {
+    process.stderr.write("  ! --wave is ignored in --batch mode (no realtime queue to pace)\n");
+  }
+
+  // reprocess + local-extract both reduce to extract→summarize→embed→write here.
+  const batchRows: AuditRow[] = [];
+  let remaining = args.limit;
+  for (const a of actions) {
+    if (a !== "reprocess" && a !== "local-extract") continue;
+    for (const r of plan[a]) {
+      if (remaining <= 0) break;
+      remaining--;
+      batchRows.push(r);
+    }
+  }
+
+  const scPath = sidecarPath(args.index);
+  const existing = await loadSidecar(scPath);
+
+  if (!args.execute) {
+    if (existing) {
+      process.stderr.write(`  [dry-run batch] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${scPath}\n`);
+    } else {
+      for (const r of batchRows) {
+        process.stderr.write(`  [dry-run batch] ${r.short} — summarize via Message Batch (~50% cheaper, async)\n`);
+      }
+      process.stderr.write(`  [dry-run batch] would submit ${batchRows.length} reading(s) in one batch\n`);
+    }
+    printSummary({ executed: false, reprocessed: 0, extracted: 0, errors: 0, touched: [] });
+    return;
+  }
+
+  let cfg;
+  try {
+    cfg = resolveBatchConfig({ ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }) });
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(2);
+  }
+
+  const fetchFn = globalThis.fetch;
+  const result = await runBatch(batchRows, {
+    r2: makeR2Client(cfg.r2, fetchFn),
+    vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
+    batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
+    embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
+    extract: (url: string): Promise<ExtractedContent> =>
+      extractFromUrl(url, { fetch: browserFetch, timeoutMs: 30_000, maxBytes: 30_000_000 }),
+    model: cfg.anthropicModel,
+    now: () => new Date().toISOString(),
+    sleep: (ms: number) => sleep(ms).then(() => undefined),
+    loadSidecar: () => loadSidecar(scPath),
+    saveSidecar: (s) => saveSidecar(scPath, s),
+    log: (line) => process.stderr.write(line + "\n"),
+  });
+
+  // The batch finished and results are written — the sidecar is no longer needed.
+  await clearSidecar(scPath);
+
+  const ready = result.report.filter((r) => r.status === "ready").length;
+  const failed = result.report.filter((r) => r.status === "failed").length;
+  const skipped = result.report.filter((r) => r.status === "skipped").length;
+  process.stdout.write(
+    JSON.stringify(
+      {
+        executed: true,
+        mode: "batch",
+        resumed: result.resumed,
+        batch_id: result.batchId,
+        ready,
+        failed,
+        skipped,
+        dropped: result.dropped.length,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  if (failed > 0) process.exit(1);
 }
 
 function printSummary(s: { executed: boolean; reprocessed: number; extracted: number; errors: number; touched: string[] }): void {

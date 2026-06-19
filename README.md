@@ -301,9 +301,11 @@ scripts/
   gather-failed-attempts.ts     # CLI: collect failed attempts into local files
   reprocess-failed-attempts.ts  # CLI: retry a failed reading by id
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
-  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces bulk submits)
+  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = bulk Message Batch path)
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
   corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
+  corpus-lib/batch/{...}        # bulk path: Anthropic Message Batch + OpenAI array embed, phase pipeline, resume sidecar
+  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (migrate + corpus-recover --batch)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   migrate.ts + migrate-lib/{plan,run,clients}.ts          # Backlite backfill

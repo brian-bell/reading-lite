@@ -1,18 +1,9 @@
-export interface R2PutOptions {
-  contentType?: string;
-}
-
-export interface R2Client {
-  put(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<void>;
-  head(key: string): Promise<boolean>;
-}
-
-export interface VectorizeUpsertVector {
-  id: string;
-  values: number[];
-  metadata: Record<string, string | number | boolean | string[]>;
-}
-
-export interface VectorizeClient {
-  upsert(vectors: VectorizeUpsertVector[]): Promise<void>;
-}
+// The migrate path's client contracts now live in the shared cf-clients module
+// (used by both migrate.ts and corpus-recover --batch). Re-exported here so
+// existing imports under migrate-lib keep working.
+export type {
+  R2PutOptions,
+  R2Client,
+  VectorizeUpsertVector,
+  VectorizeClient,
+} from "../lib/cf-clients";

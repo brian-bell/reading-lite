@@ -1,7 +1,9 @@
 import { loadDotVars } from "../lib/dotvars";
+import type { R2Config, VectorizeConfig } from "../lib/cf-clients";
 
 export const DEFAULT_BUCKET = "reading-lite";
 export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 
 // R2 bucket to read the corpus from (read path uses wrangler / Cloudflare auth,
 // not the reading API token).
@@ -25,4 +27,64 @@ export function resolveApiTarget(flags: { url?: string; token?: string }): ApiTa
     loadDotVars(".dev.vars").READER_API_TOKEN ??
     "";
   return { base, token };
+}
+
+export interface BatchConfig {
+  r2: R2Config;
+  vectorize: VectorizeConfig;
+  anthropicApiKey: string;
+  anthropicModel: string;
+  openaiApiKey: string;
+}
+
+// Credentials for the bulk batch path. R2 (S3) + Vectorize come from .migrate.vars
+// (MIGRATE_*, shared with the migration script); the Anthropic/OpenAI keys and
+// model come from .dev.vars/.prd.vars (the same names the worker uses). A flat
+// var map is injected so this is testable; production reads env + the dot files.
+export function resolveBatchConfig(
+  flags: { bucket?: string },
+  deps?: { vars?: Record<string, string | undefined> },
+): BatchConfig {
+  const vars =
+    deps?.vars ??
+    {
+      ...loadDotVars(".dev.vars"),
+      ...loadDotVars(".prd.vars"),
+      ...loadDotVars(".migrate.vars"),
+      ...process.env,
+    };
+
+  const missing: string[] = [];
+  const need = (key: string): string => {
+    const v = vars[key];
+    if (!v) missing.push(key);
+    return v ?? "";
+  };
+
+  const accountId = need("MIGRATE_R2_ACCOUNT_ID");
+  const accessKeyId = need("MIGRATE_R2_ACCESS_KEY");
+  const secretAccessKey = need("MIGRATE_R2_SECRET_KEY");
+  const bucket =
+    flags.bucket ?? vars.MIGRATE_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
+  const cfApiToken = need("MIGRATE_CF_API_TOKEN");
+  const anthropicApiKey = need("ANTHROPIC_API_KEY");
+  const openaiApiKey = need("OPENAI_API_KEY");
+
+  if (missing.length > 0) {
+    throw new Error(
+      `missing batch config: ${missing.join(", ")} (set in env or .migrate.vars/.dev.vars)`,
+    );
+  }
+
+  return {
+    r2: { accountId, accessKeyId, secretAccessKey, bucket },
+    vectorize: {
+      accountId: vars.MIGRATE_VECTORIZE_ACCOUNT_ID ?? accountId,
+      index: vars.MIGRATE_VECTORIZE_INDEX ?? bucket,
+      apiToken: cfApiToken,
+    },
+    anthropicApiKey,
+    anthropicModel: vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
+    openaiApiKey,
+  };
 }

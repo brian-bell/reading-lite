@@ -109,6 +109,7 @@ describe("migrateOne", () => {
       put: vi.fn(async () => {
         throw new Error("r2 down");
       }),
+      get: vi.fn(async () => null),
       head: vi.fn(async () => false),
     };
     const vectorize = makeVectorize();
