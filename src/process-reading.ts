@@ -177,6 +177,15 @@ export async function processReading(
     canPublishVisibility = state.canPublishVisibility;
     canRemoveVisibility = state.canRemoveVisibility;
     if (!state.canWriteManifest) return;
+    let manifestWritten = false;
+    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
+      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
+    });
+    if (!manifestWritten) {
+      await restoreCurrentListVisibility(reader, args);
+      return;
+    }
+
     if (canPublishVisibility) {
       await runStage(attempt, reader, args.keyPrefix, services, "write_indexes", () =>
         reader.appendOrReplaceListIndexItem(
@@ -193,17 +202,6 @@ export async function processReading(
       );
     } else if (canRemoveVisibility) {
       await removeAttemptVisibility(reader, similarity, args);
-    }
-
-    let manifestWritten = false;
-    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
-      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
-    });
-    if (!manifestWritten) {
-      if (canPublishVisibility) {
-        await restoreCurrentListVisibility(reader, args);
-      }
-      return;
     }
 
     if (canPublishVisibility && shouldSendEmail(args)) {
@@ -341,7 +339,10 @@ async function markFailed(
   attempt.finished_at = failedAt;
   attempt.error = error;
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
-  const terminalState = await terminalWriteState(reader, args, { claimMissingPointer: false });
+  const terminalState = await terminalWriteState(reader, args, {
+    claimMissingPointer: false,
+    allowLastAttempt: true,
+  });
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -354,15 +355,16 @@ async function markFailed(
       last_attempt: summarizeAttempt(attempt),
       updated_at: services.now(),
     };
+    const manifestWritten = await writeTerminalManifestDefensively(
+      reader,
+      args,
+      manifest,
+      terminalState,
+    );
     try {
-      if (terminalState.canWriteManifest) {
-        await writeManifestForTerminalState(reader, args, manifest, terminalState);
-      }
-    } catch (writeErr) {
-      console.error(writeErr);
-    }
-    try {
-      if (terminalState.canPublishVisibility) {
+      if (!manifestWritten) {
+        await restoreCurrentListVisibility(reader, args);
+      } else if (terminalState.canPublishVisibility) {
         await reader.appendOrReplaceListIndexItem(
           manifestToIndexItem(manifest, args.keyPrefix),
         );
@@ -394,15 +396,16 @@ async function markFailed(
   // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
   // either way). Log and move on; the index TTL annotator will eventually flip
   // stale pending entries even if both writes drop.
+  const manifestWritten = await writeTerminalManifestDefensively(
+    reader,
+    args,
+    manifest,
+    terminalState,
+  );
   try {
-    if (terminalState.canWriteManifest) {
-      await writeManifestForTerminalState(reader, args, manifest, terminalState);
-    }
-  } catch (writeErr) {
-    console.error(writeErr);
-  }
-  try {
-    if (terminalState.canPublishVisibility) {
+    if (!manifestWritten) {
+      await restoreCurrentListVisibility(reader, args);
+    } else if (terminalState.canPublishVisibility) {
       await reader.appendOrReplaceListIndexItem(
         manifestToIndexItem(manifest, args.keyPrefix),
       );
@@ -486,14 +489,15 @@ interface TerminalWriteState {
 async function terminalWriteState(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-  opts: { claimMissingPointer: boolean },
+  opts: { claimMissingPointer: boolean; allowLastAttempt?: boolean },
 ): Promise<TerminalWriteState> {
   const stored = await reader.readManifestWithEtag(args.keyPrefix);
   const manifest = stored?.manifest ?? null;
   const activeAttemptId = manifest?.active_attempt?.id;
   const attemptId = args.attemptId ?? `at_${args.id}`;
   const legacyPendingWithoutAttempt = activeAttemptId === undefined && manifest?.status === "pending";
-  const activeAttemptMatches = activeAttemptId === attemptId || legacyPendingWithoutAttempt;
+  const lastAttemptMatches = opts.allowLastAttempt === true && manifest?.last_attempt?.id === attemptId;
+  const activeAttemptMatches = activeAttemptId === attemptId || legacyPendingWithoutAttempt || lastAttemptMatches;
   const activeAttemptConflict = activeAttemptId !== undefined && activeAttemptId !== attemptId;
   let ownsUrl = false;
   let ownerAllowsVisibility = false;
@@ -551,6 +555,20 @@ async function writeManifestForTerminalState(
   }
   await reader.writeManifest(args.keyPrefix, manifest);
   return true;
+}
+
+async function writeTerminalManifestDefensively(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  state: TerminalWriteState,
+): Promise<boolean> {
+  try {
+    return await writeManifestForTerminalState(reader, args, manifest, state);
+  } catch (writeErr) {
+    console.error(writeErr);
+    return false;
+  }
 }
 
 async function restoreCurrentListVisibility(
