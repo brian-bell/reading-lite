@@ -25,6 +25,11 @@ export interface StoredByUrlPointer {
   etag: string;
 }
 
+export interface StoredManifest {
+  manifest: Manifest;
+  etag: string;
+}
+
 const MANIFEST_FILE = "manifest.json";
 const EXTRACTED_FILE = "extracted.md";
 const RAW_PREFIX = "raw.";
@@ -138,6 +143,32 @@ export class ReadingStore {
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ManifestSchema.parse(json);
+  }
+
+  async readManifestWithEtag(keyPrefix: string): Promise<StoredManifest | null> {
+    const obj = await this.bucket.get(`${keyPrefix}/${MANIFEST_FILE}`);
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    return {
+      manifest: ManifestSchema.parse(json),
+      etag: obj.etag,
+    };
+  }
+
+  async replaceManifestIfCurrent(
+    keyPrefix: string,
+    expectedEtag: string,
+    manifest: Manifest,
+  ): Promise<boolean> {
+    const written = await this.bucket.put(
+      `${keyPrefix}/${MANIFEST_FILE}`,
+      JSON.stringify(manifest),
+      {
+        httpMetadata: { contentType: "application/json" },
+        onlyIf: { etagMatches: expectedEtag },
+      },
+    );
+    return written !== null;
   }
 
   async writeRaw(

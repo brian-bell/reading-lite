@@ -61,18 +61,20 @@ export async function processReading(
 
     const extracted = await extractSource(args, env, services, reader, attempt);
 
-    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", () =>
-      reader.writeRaw(
+    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", async () => {
+      if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+      await reader.writeRaw(
         args.keyPrefix,
         extToken(extracted.content_type),
         extracted.raw,
         extracted.content_type,
-      ),
-    );
-    if (extracted.markdown) {
-      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", () =>
-        reader.writeExtracted(args.keyPrefix, extracted.markdown!),
       );
+    });
+    if (extracted.markdown) {
+      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", async () => {
+        if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+        await reader.writeExtracted(args.keyPrefix, extracted.markdown!);
+      });
     }
 
     const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
@@ -124,20 +126,6 @@ export async function processReading(
       }),
     );
 
-    const terminalState = await terminalWriteState(reader, args, { claimMissingPointer: true });
-    if (terminalState.canPublishVisibility) {
-      await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
-        similarity.upsert(args.id, tldrEmbed.embedding, {
-          url: args.url,
-          title: llm.reading.title,
-          tags: llm.reading.tags,
-          created_at: args.createdAt,
-        }),
-      );
-    } else if (terminalState.canRemoveVisibility) {
-      await similarity.delete(args.id);
-    }
-
     let finalManifest: Manifest = {
       id: args.id,
       url: args.url,
@@ -172,27 +160,6 @@ export async function processReading(
       },
     };
 
-    if (terminalState.canWriteManifest) {
-      await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", () =>
-        reader.writeManifest(args.keyPrefix, finalManifest),
-      );
-    }
-    await runStage(
-      attempt,
-      reader,
-      args.keyPrefix,
-      services,
-      "write_indexes",
-      async () => {
-        if (terminalState.canPublishVisibility) {
-          await reader.appendOrReplaceListIndexItem(
-            manifestToIndexItem(finalManifest, args.keyPrefix),
-          );
-        } else if (terminalState.canRemoveVisibility) {
-          await reader.removeListIndexItem(args.id);
-        }
-      },
-    );
     attempt.status = "succeeded";
     attempt.finished_at = services.now();
     attempt.error = undefined;
@@ -202,18 +169,39 @@ export async function processReading(
       last_attempt: summarizeAttempt(attempt),
     };
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    if (terminalState.canWriteManifest) {
-      await reader.writeManifest(args.keyPrefix, finalManifest);
-    }
-    if (terminalState.canPublishVisibility) {
-      await reader.appendOrReplaceListIndexItem(
-        manifestToIndexItem(finalManifest, args.keyPrefix),
+
+    let canPublishVisibility = false;
+    let canRemoveVisibility = false;
+    let manifestWritten = false;
+    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
+      const state = await terminalWriteState(reader, args, { claimMissingPointer: true });
+      canPublishVisibility = state.canPublishVisibility;
+      canRemoveVisibility = state.canRemoveVisibility;
+      if (!state.canWriteManifest) return;
+      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
+    });
+    if (!manifestWritten) return;
+
+    if (canPublishVisibility) {
+      await runStage(attempt, reader, args.keyPrefix, services, "write_indexes", () =>
+        reader.appendOrReplaceListIndexItem(
+          manifestToIndexItem(finalManifest, args.keyPrefix),
+        ),
       );
-    } else if (terminalState.canRemoveVisibility) {
+      await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
+        similarity.upsert(args.id, tldrEmbed.embedding, {
+          url: args.url,
+          title: llm.reading.title,
+          tags: llm.reading.tags,
+          created_at: args.createdAt,
+        }),
+      );
+    } else if (canRemoveVisibility) {
       await reader.removeListIndexItem(args.id);
+      await similarity.delete(args.id);
     }
 
-    if (terminalState.canPublishVisibility && shouldSendEmail(args)) {
+    if (canPublishVisibility && shouldSendEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -363,7 +351,7 @@ async function markFailed(
     };
     try {
       if (terminalState.canWriteManifest) {
-        await reader.writeManifest(args.keyPrefix, manifest);
+        await writeManifestForTerminalState(reader, args, manifest, terminalState);
       }
     } catch (writeErr) {
       console.error(writeErr);
@@ -403,7 +391,7 @@ async function markFailed(
   // stale pending entries even if both writes drop.
   try {
     if (terminalState.canWriteManifest) {
-      await reader.writeManifest(args.keyPrefix, manifest);
+      await writeManifestForTerminalState(reader, args, manifest, terminalState);
     }
   } catch (writeErr) {
     console.error(writeErr);
@@ -487,6 +475,7 @@ interface TerminalWriteState {
   canWriteManifest: boolean;
   canPublishVisibility: boolean;
   canRemoveVisibility: boolean;
+  manifestEtag?: string;
 }
 
 async function terminalWriteState(
@@ -494,7 +483,8 @@ async function terminalWriteState(
   args: ProcessReadingArgs,
   opts: { claimMissingPointer: boolean },
 ): Promise<TerminalWriteState> {
-  const manifest = await reader.readManifest(args.keyPrefix);
+  const stored = await reader.readManifestWithEtag(args.keyPrefix);
+  const manifest = stored?.manifest ?? null;
   const activeAttemptId = manifest?.active_attempt?.id;
   const attemptId = args.attemptId ?? `at_${args.id}`;
   const legacyPendingWithoutAttempt = activeAttemptId === undefined && manifest?.status === "pending";
@@ -529,6 +519,7 @@ async function terminalWriteState(
     canWriteManifest: activeAttemptMatches || !manifest,
     canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
     canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
+    ...(stored ? { manifestEtag: stored.etag } : {}),
   };
 }
 
@@ -541,6 +532,20 @@ async function readingCanWriteAttemptArtifacts(
   const activeAttemptId = manifest.active_attempt?.id;
   const attemptId = args.attemptId ?? `at_${args.id}`;
   return activeAttemptId === attemptId || (activeAttemptId === undefined && manifest.status === "pending");
+}
+
+async function writeManifestForTerminalState(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  state: TerminalWriteState,
+): Promise<boolean> {
+  if (!state.canWriteManifest) return false;
+  if (state.manifestEtag) {
+    return reader.replaceManifestIfCurrent(args.keyPrefix, state.manifestEtag, manifest);
+  }
+  await reader.writeManifest(args.keyPrefix, manifest);
+  return true;
 }
 
 export function newAttemptId(services: Services): string {
