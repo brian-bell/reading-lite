@@ -78,6 +78,27 @@ describe("extractFromUrl", () => {
     expect(out.markdown).not.toContain("var x=1");
   });
 
+  it("keeps <head>/<title> text out of the salvaged markdown (title is metadata)", async () => {
+    // When the fallback turndowns documentElement (empty-body case), the <head>
+    // must be stripped so the page <title> doesn't leak into the content — it
+    // belongs in the title field, and a title-only shell must not look captured.
+    const fetchFn = fakeFetch({
+      "https://docs.example/titled": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `<head><title>Page Title Should Not Leak</title></head>${HTML_NO_BODY_CRASH}`,
+      },
+    });
+    const out = await extractFromUrl("https://docs.example/titled", {
+      fetch: fetchFn,
+      timeoutMs: 5_000,
+      maxBytes: 1_000_000,
+    });
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Page Title Should Not Leak");
+    expect(out.markdown).toContain("property value");
+    expect(out.markdown).not.toContain("Page Title Should Not Leak");
+  });
+
   // A page that crashes Readability but has no salvageable text (script-only)
   // must still degrade to raw_only — the fallback returns null on empty output.
   it("stays raw_only when readability throws and there is nothing to salvage", async () => {

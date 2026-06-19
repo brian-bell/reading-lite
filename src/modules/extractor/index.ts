@@ -190,7 +190,14 @@ function rawDomToMarkdown(html: string): Article | null {
   // Re-parse the ORIGINAL html — Readability mutates the document during
   // parse(), so the post-crash tree is unreliable.
   const { document } = parseHTML(html);
-  for (const el of document.querySelectorAll("script, style, noscript, template")) {
+  // Capture the title before stripping <head> — it's metadata, not content.
+  const title = document.querySelector("title")?.textContent?.trim() || undefined;
+  // Strip <head> along with non-content nodes: when we fall back to
+  // documentElement (empty-body case), turndown-ing the whole <html> would
+  // otherwise pull <head><title>/<meta> text into the markdown, which could make
+  // a content-less JS shell look `captured` (a title-only page) instead of
+  // staying `raw_only`.
+  for (const el of document.querySelectorAll("head, script, style, noscript, template")) {
     el.remove();
   }
   // The issue-#18 tree has an empty <body> with the real content hoisted as a
@@ -204,7 +211,6 @@ function rawDomToMarkdown(html: string): Article | null {
     .turndown(root as unknown as Parameters<TurndownService["turndown"]>[0])
     .trim();
   if (markdown.length === 0) return null;
-  const title = document.querySelector("title")?.textContent?.trim() || undefined;
   return { markdown, title };
 }
 
