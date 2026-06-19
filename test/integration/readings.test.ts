@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
-import type { Services } from "../../src/services";
+import { sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
@@ -58,6 +58,14 @@ function installQueueStub(): ProcessReadingArgs[] {
     }),
   } as unknown as Queue<ProcessReadingArgs>;
   return queuedJobs;
+}
+
+function installRejectingQueueStub(error: unknown = new Error("queue send failed")) {
+  (env as unknown as { READING_JOBS: Queue<ProcessReadingArgs> }).READING_JOBS = {
+    send: vi.fn(async () => {
+      throw error;
+    }),
+  } as unknown as Queue<ProcessReadingArgs>;
 }
 
 async function drainQueue(services: Services): Promise<void> {
@@ -400,6 +408,68 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     ]);
   });
 
+  it("does not steal ownership while the winning submit has claimed the URL but not written its manifest", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/claim-gap";
+    let releaseManifestWrite!: () => void;
+    let manifestWriteStarted!: () => void;
+    const manifestWriteStartedPromise = new Promise<void>((resolve) => {
+      manifestWriteStarted = resolve;
+    });
+    const releaseManifestWritePromise = new Promise<void>((resolve) => {
+      releaseManifestWrite = resolve;
+    });
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let delayed = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      async (...args: Parameters<R2Bucket["put"]>) => {
+        const [key] = args;
+        if (!delayed && key.endsWith("/manifest.json")) {
+          delayed = true;
+          manifestWriteStarted();
+          await releaseManifestWritePromise;
+        }
+        return originalPut(...args);
+      },
+    );
+
+    const first = app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    await manifestWriteStartedPromise;
+
+    const second = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({
+      error: "reading owner is still initializing",
+      poll: expect.stringMatching(/^\/readings\/rd_/),
+    });
+    expect(queuedJobs).toHaveLength(0);
+
+    releaseManifestWrite();
+    const firstResponse = await first;
+    expect(firstResponse.status).toBe(202);
+    const firstBody = (await firstResponse.json()) as { id: string };
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.id).toBe(firstBody.id);
+    putSpy.mockRestore();
+  });
+
   it("resubmitting a failed URL reprocesses the same reading id", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const services = makeServices(fetchFn);
@@ -497,6 +567,345 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     expect(lookup.status).toBe(200);
     expect(await lookup.json()).toEqual({ id });
+  });
+
+  it("claims and reprocesses a legacy failed reading when index/list.json is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-failed-no-index";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const id = "rd_LEGACY_NO_INDEX";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const legacy: Manifest = {
+      id,
+      url,
+      url_hash: "e".repeat(64),
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
+  });
+
+  it("claims the newest legacy failed reading when index/list.json has an older same-url row", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-stale-index";
+    const older: Manifest = {
+      id: "rd_OLDER",
+      url,
+      url_hash: "c".repeat(64),
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "older failed copy" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T18:00:00.000Z",
+      updated_at: "2026-04-26T18:00:00.000Z",
+    };
+    const newer: Manifest = {
+      ...older,
+      id: "rd_NEWER",
+      url_hash: "d".repeat(64),
+      error: { code: "new", message: "newer failed copy" },
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const olderPrefix = buildKeyPrefix(older.id, older.created_at);
+    const newerPrefix = buildKeyPrefix(newer.id, newer.created_at);
+    await reader.writeManifest(olderPrefix, older);
+    await reader.writeManifest(newerPrefix, newer);
+    await reader.writeByIdPointer(older.id, { id: older.id, key_prefix: olderPrefix });
+    await reader.writeByIdPointer(newer.id, { id: newer.id, key_prefix: newerPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(older, olderPrefix));
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: newer.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: newer.id, trigger: "reprocess" });
+  });
+
+  it("claims a legacy failed reading when index/list.json exists but lacks the URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-missing-from-index";
+    const legacy: Manifest = {
+      id: "rd_MISSING_FROM_INDEX",
+      url,
+      url_hash: "f".repeat(64),
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "failed copy missing from index" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_INDEXED_OTHER",
+      url: "https://example.com/other-indexed-url",
+      url_hash: "a".repeat(64),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
+  });
+
+  it("repairs a stale by-url pointer whose manifest is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/damaged-pointer";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_ORPHAN");
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id: body.id });
+  });
+
+  it("repairs a stale by-url pointer to an existing manifest for the URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/damaged-pointer-existing-manifest";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    const legacy: Manifest = {
+      id: "rd_EXISTING",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:10:00.000Z",
+      updated_at: "2026-04-26T19:10:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
+  });
+
+  it("repairs a missing by-id pointer when a duplicate submit finds the by-url owner", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/missing-by-id-pointer";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_MISSING_BY_ID";
+    const keyPrefix = buildKeyPrefix(id, "2026-04-26T19:00:00.000Z");
+    const manifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Recovered",
+      tldr: "Recovered summary",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 123,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const pointer = { id, key_prefix: keyPrefix };
+    await reader.writeByUrlPointer(urlHash, pointer);
+    await reader.writeManifest(keyPrefix, manifest);
+
+    const duplicate = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ id, status: "ready" });
+
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(get.status).toBe(200);
+    expect(await get.json()).toMatchObject({ id, status: "ready" });
+  });
+
+  it("does not treat a future-dated missing-manifest owner as fresh", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/future-dated-pointer";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_FUTURE",
+      key_prefix: "readings/2026/04/26T210000Z-rd_FUTURE",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_FUTURE");
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+  });
+
+  it("does not let a stale successful job overwrite a newer by-url owner", async () => {
+    const services = makeServices(makeStubFetch());
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-job-success";
+    const urlHash = await sha256Hex(url);
+    const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
+    const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+
+    const stalePrefix = buildKeyPrefix("rd_STALE", "2026-04-26T19:00:00.000Z");
+    await processReading(
+      {
+        id: "rd_STALE",
+        url,
+        urlHash,
+        createdAt: "2026-04-26T19:00:00.000Z",
+        keyPrefix: stalePrefix,
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
+      id: "rd_STALE",
+      status: "ready",
+    });
   });
 
   it("imports Markdown without fetching the source URL", async () => {
@@ -729,6 +1138,174 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(lookup.status).toBe(404);
+    consoleErr.mockRestore();
+  });
+
+  it("marks a submit as retryable failed when queue send rejects after the pending write", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/queue-send-reject";
+    installRejectingQueueStub();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(503);
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    const { id } = (await lookup.json()) as { id: string };
+    const failed = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(failed.status).toBe(200);
+    expect(await failed.json()).toMatchObject({
+      id,
+      status: "failed",
+      error: { code: "QueueSendError", retryable: true },
+    });
+
+    installQueueStub();
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+    consoleErr.mockRestore();
+  });
+
+  it("marks a failed reading retryable failed when reprocess queue send rejects", async () => {
+    const idCounter = { n: 0 };
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await failingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/reprocess-send-reject-failed" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(failingServices);
+
+    installRejectingQueueStub();
+    const retryingServices = makeServices(makeStubFetch(), idCounter);
+    const retryingApp = createApp({ services: retryingServices });
+    const retry = await retryingApp.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(503);
+    const get = await retryingApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const failed = (await get.json()) as Record<string, unknown>;
+    expect(failed.active_attempt).toBeUndefined();
+    expect(failed).toMatchObject({
+      id,
+      status: "failed",
+      last_attempt: { status: "failed", error: { code: "QueueSendError", retryable: true } },
+      error: { code: "QueueSendError", retryable: true },
+    });
+    consoleErr.mockRestore();
+  });
+
+  it("keeps a ready reading ready when reprocess queue send rejects", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/reprocess-send-reject-ready" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+
+    installRejectingQueueStub();
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(503);
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const ready = (await get.json()) as Record<string, unknown>;
+    expect(ready.active_attempt).toBeUndefined();
+    expect(ready).toMatchObject({
+      id,
+      status: "ready",
+      title: "Test Article",
+      last_attempt: { status: "failed", error: { code: "QueueSendError", retryable: true } },
+    });
     consoleErr.mockRestore();
   });
 

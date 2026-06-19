@@ -19,6 +19,11 @@ export class PointerExistsError extends Error {
   }
 }
 
+export interface StoredByUrlPointer {
+  pointer: ByUrlPointer;
+  etag: string;
+}
+
 const MANIFEST_FILE = "manifest.json";
 const EXTRACTED_FILE = "extracted.md";
 const RAW_PREFIX = "raw.";
@@ -271,6 +276,32 @@ export class ReadingStore {
     return ByUrlPointerSchema.parse(json);
   }
 
+  async readByUrlPointerWithEtag(urlHash: string): Promise<StoredByUrlPointer | null> {
+    const obj = await this.bucket.get(`${BY_URL_PREFIX}${urlHash}`);
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    return {
+      pointer: ByUrlPointerSchema.parse(json),
+      etag: obj.etag,
+    };
+  }
+
+  async replaceByUrlPointerIfCurrent(
+    urlHash: string,
+    expectedEtag: string,
+    pointer: ByUrlPointer,
+  ): Promise<boolean> {
+    const result = await this.bucket.put(
+      `${BY_URL_PREFIX}${urlHash}`,
+      JSON.stringify(pointer),
+      {
+        httpMetadata: { contentType: "application/json" },
+        onlyIf: { etagMatches: expectedEtag },
+      },
+    );
+    return result !== null;
+  }
+
   async writeByIdPointer(id: string, pointer: ByUrlPointer): Promise<void> {
     await this.bucket.put(`${BY_ID_PREFIX}${id}`, JSON.stringify(pointer), {
       httpMetadata: { contentType: "application/json" },
@@ -349,6 +380,23 @@ export class ReadingStore {
     return index?.items.find((i) => i.id === id) ?? null;
   }
 
+  async findManifestByUrl(url: string): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+    const index = await this.readListIndex();
+    // URL recovery is only used when the by-url owner is absent or damaged.
+    // In that state an incomplete index/list.json cannot be trusted, so merge
+    // indexed candidates with a manifest scan and choose the newest surviving
+    // manifest for the URL.
+    const rebuilt = await this.rebuildListIndex();
+    const candidates = new Map<string, ListIndexItem>();
+    for (const item of index?.items ?? []) {
+      if (item.url === url) candidates.set(item.key_prefix, item);
+    }
+    for (const item of rebuilt.items) {
+      if (item.url === url) candidates.set(item.key_prefix, item);
+    }
+    return this.findNewestManifestByUrl([...candidates.values()], url);
+  }
+
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
     let index = await this.readListIndex();
     if (!index) {
@@ -388,15 +436,45 @@ export class ReadingStore {
     return { readings: slice, total_filtered: filtered.length };
   }
 
+  private async findNewestManifestByUrl(
+    items: ListIndexItem[],
+    url: string,
+  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+    const matches = items.filter((item) => item.url === url);
+    matches.sort((a, b) => {
+      const aTime = a.updated_at ?? a.created_at;
+      const bTime = b.updated_at ?? b.created_at;
+      return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+    });
+    for (const item of matches) {
+      const manifest = await this.readManifest(item.key_prefix);
+      if (manifest) return { keyPrefix: item.key_prefix, manifest };
+    }
+    return null;
+  }
+
   private async rebuildListIndex(): Promise<{ items: ListIndexItem[]; complete: boolean }> {
-    // Personal-scale fallback: scan readings/ for manifests, parse each, and
-    // synthesise an index. Used when index/list.json is missing (cold cache or
-    // a bucket whose index was never built); the result is persisted by the caller (only when
-    // complete) so subsequent reads are O(index-size).
-    const list = await this.bucket.list({ prefix: READINGS_PREFIX, limit: 1000 });
-    const manifestKeys = list.objects
-      .map((o) => o.key)
-      .filter((k) => k.endsWith(`/${MANIFEST_FILE}`));
+    // Recovery fallback: scan readings/ for manifests, parse each, and
+    // synthesise an index when URL ownership/index state is missing or stale.
+    // The result is persisted by callers only when every page was read.
+    const manifestKeys: string[] = [];
+    let cursor: string | undefined;
+    let complete = true;
+    do {
+      const list = await this.bucket.list({
+        prefix: READINGS_PREFIX,
+        limit: 1000,
+        ...(cursor ? { cursor } : {}),
+      });
+      manifestKeys.push(
+        ...list.objects
+          .map((o) => o.key)
+          .filter((k) => k.endsWith(`/${MANIFEST_FILE}`)),
+      );
+      if (list.truncated && !list.cursor) complete = false;
+      cursor = list.truncated ? list.cursor : undefined;
+    } while (cursor);
+
     const items: ListIndexItem[] = [];
     for (const key of manifestKeys) {
       const obj = await this.bucket.get(key);
@@ -407,6 +485,6 @@ export class ReadingStore {
       const keyPrefix = key.slice(0, -("/" + MANIFEST_FILE).length);
       items.push(manifestToIndexItem(parsed.data, keyPrefix));
     }
-    return { items, complete: !list.truncated };
+    return { items, complete };
   }
 }

@@ -24,6 +24,7 @@ import {
   manifestToIndexItem,
   PointerExistsError,
   ReadingStore,
+  type StoredByUrlPointer,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
 import { defaultServices, sha256Hex, type Services } from "./services";
@@ -31,6 +32,8 @@ import { defaultServices, sha256Hex, type Services } from "./services";
 export interface AppOptions {
   services?: Services;
 }
+
+const MISSING_MANIFEST_OWNER_GRACE_MS = 5 * 60 * 1000;
 
 export function createApp(opts: AppOptions = {}) {
   const services = opts.services ?? defaultServices();
@@ -59,23 +62,33 @@ export function createApp(opts: AppOptions = {}) {
 
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const urlHash = await sha256Hex(url);
-    const existing = await reader.readByUrlPointer(urlHash);
+    const existing = await reader.readByUrlPointerWithEtag(urlHash);
     if (existing) {
-      const m = await reader.readManifest(existing.key_prefix);
+      const m = await reader.readManifest(existing.pointer.key_prefix);
       if (m) {
         const result = await submitResultForOwnedReading(
           reader,
           c.env,
           services,
-          existing,
+          existing.pointer,
           m,
           { email: parsed.data.email ?? true },
         );
         return c.json(result.body, result.status);
       }
+      const result = await missingManifestOwnerResult(
+        reader,
+        c.env,
+        services,
+        url,
+        urlHash,
+        existing,
+        parsed.data.email ?? true,
+      );
+      return c.json(result.body, result.status);
     }
 
-    const legacy = await findManifestByUrl(reader, url);
+    const legacy = await reader.findManifestByUrl(url);
     if (legacy) {
       const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
       try {
@@ -91,102 +104,43 @@ export function createApp(opts: AppOptions = {}) {
         return c.json(result.body, result.status);
       } catch (err) {
         if (!(err instanceof PointerExistsError)) throw err;
-        const claimed = await reader.readByUrlPointer(urlHash);
+        const claimed = await reader.readByUrlPointerWithEtag(urlHash);
         if (claimed) {
-          const claimedManifest = await reader.readManifest(claimed.key_prefix);
+          const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
           if (claimedManifest) {
             const result = await submitResultForOwnedReading(
               reader,
               c.env,
               services,
-              claimed,
+              claimed.pointer,
               claimedManifest,
               { email: parsed.data.email ?? true },
             );
             return c.json(result.body, result.status);
           }
-          return c.json(
-            { id: claimed.id, status: "pending", poll: `/readings/${claimed.id}` },
-            202,
+          const result = await missingManifestOwnerResult(
+            reader,
+            c.env,
+            services,
+            url,
+            urlHash,
+            claimed,
+            parsed.data.email ?? true,
           );
+          return c.json(result.body, result.status);
         }
         throw err;
       }
     }
 
-    const args = await newReadingArgs(url, services);
-    const attemptStartedAt = services.now();
-    const attemptId = newAttemptId(services);
-    const activeAttempt = newAttemptSummary(attemptId, "submit", attemptStartedAt);
-    const pendingManifest: Manifest = {
-      id: args.id,
+    const result = await createNewReadingForSubmit(
+      reader,
+      c.env,
+      services,
       url,
-      url_hash: args.urlHash,
-      source_type: "url",
-      status: "pending",
-      active_attempt: activeAttempt,
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: args.createdAt,
-      updated_at: args.createdAt,
-    };
-    if (!c.env.READING_JOBS) {
-      return c.json(
-        { error: "queue binding READING_JOBS is not configured" },
-        503,
-      );
-    }
-
-    try {
-      await reader.writeByUrlPointer(
-        args.urlHash,
-        { id: args.id, key_prefix: args.keyPrefix },
-        { ifNotExists: true },
-      );
-    } catch (err) {
-      if (!(err instanceof PointerExistsError)) throw err;
-      const claimed = await reader.readByUrlPointer(urlHash);
-      if (claimed) {
-        const claimedManifest = await reader.readManifest(claimed.key_prefix);
-        if (claimedManifest) {
-          const result = await submitResultForOwnedReading(
-            reader,
-            c.env,
-            services,
-            claimed,
-            claimedManifest,
-            { email: parsed.data.email ?? true },
-          );
-          return c.json(result.body, result.status);
-        }
-        return c.json(
-          { id: claimed.id, status: "pending", poll: `/readings/${claimed.id}` },
-          202,
-        );
-      }
-      throw err;
-    }
-
-    await reader.writeManifest(args.keyPrefix, pendingManifest);
-    await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(pendingManifest, args.keyPrefix),
+      parsed.data.email ?? true,
     );
-
-    await c.env.READING_JOBS.send({
-      ...args,
-      attemptId,
-      attemptStartedAt,
-      trigger: "submit",
-      email: parsed.data.email ?? true,
-    });
-
-    return c.json(
-      { id: args.id, status: "pending", poll: `/readings/${args.id}`, attempt_id: attemptId },
-      202,
-    );
+    return c.json(result.body, result.status);
   });
 
   app.post("/readings/import-markdown", async (c) => {
@@ -423,6 +377,7 @@ async function submitResultForOwnedReading(
   manifest: Manifest,
   opts: { email: boolean },
 ): Promise<SubmitJsonResult> {
+  await reader.writeByIdPointer(pointer.id, pointer);
   const effectiveManifest = annotateStale(manifest, env, services);
   if (effectiveManifest.status !== "failed") {
     return { body: effectiveManifest, status: 200 };
@@ -432,22 +387,209 @@ async function submitResultForOwnedReading(
   });
 }
 
-async function findManifestByUrl(
+async function createNewReadingForSubmit(
   reader: ReadingStore,
+  env: Env,
+  services: Services,
   url: string,
-): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
-  const index = await reader.readListIndex();
-  const matches = index?.items.filter((item) => item.url === url) ?? [];
-  matches.sort((a, b) => {
-    const aTime = a.updated_at ?? a.created_at;
-    const bTime = b.updated_at ?? b.created_at;
-    return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
-  });
-  for (const item of matches) {
-    const manifest = await reader.readManifest(item.key_prefix);
-    if (manifest) return { keyPrefix: item.key_prefix, manifest };
+  email: boolean,
+  claim: { replaceEtag?: string } = {},
+): Promise<SubmitJsonResult> {
+  const args = await newReadingArgs(url, services);
+  const attemptStartedAt = services.now();
+  const attemptId = newAttemptId(services);
+  const activeAttempt = newAttemptSummary(attemptId, "submit", attemptStartedAt);
+  const pendingManifest: Manifest = {
+    id: args.id,
+    url,
+    url_hash: args.urlHash,
+    source_type: "url",
+    status: "pending",
+    active_attempt: activeAttempt,
+    content_type: "application/octet-stream",
+    content_status: "captured",
+    content_bytes: 0,
+    content_sha256: "0".repeat(64),
+    created_at: args.createdAt,
+    updated_at: args.createdAt,
+  };
+  if (!env.READING_JOBS) {
+    return {
+      body: { error: "queue binding READING_JOBS is not configured" },
+      status: 503,
+    };
   }
-  return null;
+
+  const pointer = { id: args.id, key_prefix: args.keyPrefix };
+  try {
+    if (claim.replaceEtag) {
+      const replaced = await reader.replaceByUrlPointerIfCurrent(
+        args.urlHash,
+        claim.replaceEtag,
+        pointer,
+      );
+      if (!replaced) throw new PointerExistsError(args.urlHash);
+    } else {
+      await reader.writeByUrlPointer(
+        args.urlHash,
+        pointer,
+        { ifNotExists: true },
+      );
+    }
+  } catch (err) {
+    if (!(err instanceof PointerExistsError)) throw err;
+    const claimed = await reader.readByUrlPointerWithEtag(args.urlHash);
+    if (claimed) {
+      const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
+      if (claimedManifest) {
+        return submitResultForOwnedReading(
+          reader,
+          env,
+          services,
+          claimed.pointer,
+          claimedManifest,
+          { email },
+        );
+      }
+      return missingManifestOwnerResult(
+        reader,
+        env,
+        services,
+        url,
+        args.urlHash,
+        claimed,
+        email,
+      );
+    }
+    throw err;
+  }
+
+  await reader.writeManifest(args.keyPrefix, pendingManifest);
+  await reader.writeByIdPointer(args.id, pointer);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(pendingManifest, args.keyPrefix),
+  );
+
+  try {
+    await env.READING_JOBS.send({
+      ...args,
+      attemptId,
+      attemptStartedAt,
+      trigger: "submit",
+      email,
+    });
+  } catch (err) {
+    console.error(err);
+    const failedManifest = manifestForQueueSendFailure(
+      pendingManifest,
+      activeAttempt,
+      err,
+      services,
+    );
+    await reader.writeManifest(args.keyPrefix, failedManifest);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(failedManifest, args.keyPrefix),
+    );
+    return {
+      body: { error: "queue send failed", id: args.id },
+      status: 503,
+    };
+  }
+
+  return {
+    body: {
+      id: args.id,
+      status: "pending",
+      poll: `/readings/${args.id}`,
+      attempt_id: attemptId,
+    },
+    status: 202,
+  };
+}
+
+async function missingManifestOwnerResult(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  url: string,
+  urlHash: string,
+  owner: StoredByUrlPointer,
+  email: boolean,
+): Promise<SubmitJsonResult> {
+  if (!isFreshMissingManifestPointer(owner.pointer, services.now())) {
+    const legacy = await reader.findManifestByUrl(url);
+    if (legacy) {
+      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
+      const replaced = await reader.replaceByUrlPointerIfCurrent(
+        urlHash,
+        owner.etag,
+        pointer,
+      );
+      if (replaced) {
+        return submitResultForOwnedReading(
+          reader,
+          env,
+          services,
+          pointer,
+          legacy.manifest,
+          { email },
+        );
+      }
+
+      const current = await reader.readByUrlPointerWithEtag(urlHash);
+      if (current) {
+        const currentManifest = await reader.readManifest(current.pointer.key_prefix);
+        if (currentManifest) {
+          return submitResultForOwnedReading(
+            reader,
+            env,
+            services,
+            current.pointer,
+            currentManifest,
+            { email },
+          );
+        }
+        return missingManifestOwnerResult(
+          reader,
+          env,
+          services,
+          url,
+          urlHash,
+          current,
+          email,
+        );
+      }
+    }
+
+    return createNewReadingForSubmit(reader, env, services, url, email, {
+      replaceEtag: owner.etag,
+    });
+  }
+
+  return {
+    body: {
+      error: "reading owner is still initializing",
+      id: owner.pointer.id,
+      poll: `/readings/${owner.pointer.id}`,
+    },
+    status: 409,
+  };
+}
+
+function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {
+  const createdAtMs = keyPrefixCreatedAtMs(pointer.key_prefix);
+  if (createdAtMs === null) return false;
+  const ageMs = Date.parse(nowIso) - createdAtMs;
+  return ageMs >= 0 && ageMs < MISSING_MANIFEST_OWNER_GRACE_MS;
+}
+
+function keyPrefixCreatedAtMs(keyPrefix: string): number | null {
+  const m = keyPrefix.match(
+    /^readings\/(\d{4})\/(\d{2})\/(\d{2})T(\d{2})(\d{2})(\d{2})Z-/,
+  );
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 }
 
 async function enqueueReprocess(
@@ -504,7 +646,25 @@ async function enqueueReprocess(
     manifestToIndexItem(nextManifest, pointer.key_prefix),
   );
 
-  await env.READING_JOBS.send(args);
+  try {
+    await env.READING_JOBS.send(args);
+  } catch (err) {
+    console.error(err);
+    const failedManifest = manifestForQueueSendFailure(
+      effectiveManifest,
+      activeAttempt,
+      err,
+      services,
+    );
+    await reader.writeManifest(pointer.key_prefix, failedManifest);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(failedManifest, pointer.key_prefix),
+    );
+    return {
+      body: { error: "queue send failed", id: effectiveManifest.id },
+      status: 503,
+    };
+  }
 
   return {
     body: {
@@ -514,6 +674,48 @@ async function enqueueReprocess(
       attempt_id: attemptId,
     },
     status: 202,
+  };
+}
+
+function manifestForQueueSendFailure(
+  manifest: Manifest,
+  activeAttempt: ProcessingAttemptSummary,
+  err: unknown,
+  services: Services,
+): Manifest {
+  const failedAt = services.now();
+  const error = {
+    code: "QueueSendError",
+    message: err instanceof Error ? err.message : "queue send failed",
+    stage: "queued" as const,
+    failed_at: failedAt,
+    retryable: true,
+  };
+  const failedAttempt: ProcessingAttemptSummary = {
+    ...activeAttempt,
+    status: "failed",
+    stage: "queued",
+    finished_at: failedAt,
+    error,
+  };
+
+  if (manifest.status === "ready") {
+    return {
+      ...manifest,
+      active_attempt: undefined,
+      last_attempt: failedAttempt,
+      updated_at: failedAt,
+    };
+  }
+
+  return {
+    ...manifest,
+    status: "failed",
+    active_attempt: undefined,
+    last_attempt: failedAttempt,
+    error,
+    ...(manifest.status === "pending" ? { content_status: "failed" as const } : {}),
+    updated_at: failedAt,
   };
 }
 

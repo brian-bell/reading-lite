@@ -575,4 +575,66 @@ describe("ReadingStore — listManifests", () => {
     expect(consoleWarn).toHaveBeenCalled();
     consoleWarn.mockRestore();
   });
+
+  it("paginates scan-and-rebuild before persisting the rebuilt index", async () => {
+    const first = emptyManifest({
+      id: "rd_a",
+      status: "ready",
+      title: "A",
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+    const second = emptyManifest({
+      id: "rd_b",
+      status: "ready",
+      title: "B",
+      created_at: "2026-04-26T20:00:01.000Z",
+    });
+    const firstKey = `${buildKeyPrefix(first.id, first.created_at)}/manifest.json`;
+    const secondKey = `${buildKeyPrefix(second.id, second.created_at)}/manifest.json`;
+    const puts: Array<{ key: string; value: string }> = [];
+    const listCalls: Array<string | undefined> = [];
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") return null;
+        if (key === firstKey) {
+          return { text: async () => JSON.stringify(first) } as unknown as R2ObjectBody;
+        }
+        if (key === secondKey) {
+          return { text: async () => JSON.stringify(second) } as unknown as R2ObjectBody;
+        }
+        return null;
+      },
+      put: async (key: string, value: string) => {
+        puts.push({ key, value });
+      },
+      list: async (opts?: R2ListOptions) => {
+        listCalls.push(opts?.cursor);
+        if (!opts?.cursor) {
+          return {
+            objects: [{ key: firstKey }],
+            truncated: true,
+            cursor: "next-page",
+          };
+        }
+        return {
+          objects: [{ key: secondKey }],
+          truncated: false,
+        };
+      },
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_b", "rd_a"]);
+    expect(listCalls).toEqual([undefined, "next-page"]);
+    const indexWrite = puts.find((p) => p.key === "index/list.json");
+    expect(indexWrite).toBeDefined();
+    expect(JSON.parse(indexWrite!.value)).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: "rd_a" }),
+        expect.objectContaining({ id: "rd_b" }),
+      ]),
+    });
+  });
 });

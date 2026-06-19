@@ -1,6 +1,7 @@
 import {
   buildKeyPrefix,
   manifestToIndexItem,
+  PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -175,10 +176,7 @@ export async function processReading(
       services,
       "write_indexes",
       async () => {
-        await reader.writeByUrlPointer(
-          args.urlHash,
-          { id: args.id, key_prefix: args.keyPrefix },
-        );
+        await ensureByUrlPointerForCompletedReading(reader, args);
         await reader.appendOrReplaceListIndexItem(
           manifestToIndexItem(finalManifest, args.keyPrefix),
         );
@@ -453,6 +451,24 @@ async function extractedFromMarkdown(
 
 function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
+}
+
+async function ensureByUrlPointerForCompletedReading(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  const existing = await reader.readByUrlPointer(args.urlHash);
+  if (existing) return;
+
+  try {
+    await reader.writeByUrlPointer(
+      args.urlHash,
+      { id: args.id, key_prefix: args.keyPrefix },
+      { ifNotExists: true },
+    );
+  } catch (err) {
+    if (!(err instanceof PointerExistsError)) throw err;
+  }
 }
 
 export function newAttemptId(services: Services): string {
