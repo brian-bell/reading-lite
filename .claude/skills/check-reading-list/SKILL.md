@@ -55,8 +55,8 @@ npm run check-corpus -- --file in.json --out annotated.json
 # Count anything present in the corpus (pending/failed too).
 npm run check-corpus -- --file in.json --any-status
 
-# Staging bucket.
-npm run check-corpus -- --file in.json --bucket reading-lite-staging
+# An alternate R2 bucket.
+npm run check-corpus -- --file in.json --bucket some-other-bucket
 ```
 
 Flags: `--file` (required), `--out` (default: in place), `--bucket` (default

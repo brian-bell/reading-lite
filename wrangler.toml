@@ -1,21 +1,22 @@
 # reading-lite — Cloudflare Worker
 #
 # Two environments:
-#   * default (staging) — used by `wrangler dev` for local testing only
-#                         (never deployed; the staging worker name guards against
-#                         an accidental bare `wrangler deploy` clobbering prod).
+#   * default (dev)     — used by `wrangler dev` for local testing only
+#                         (never deployed; the distinct dev worker name guards
+#                         against an accidental bare `wrangler deploy` clobbering
+#                         prod). Binds to a local Miniflare-emulated R2 bucket;
+#                         no remote resources are touched.
 #   * production        — used by `npm run deploy` (always passes --env production),
 #                         served at reading-lite.bbell.dev.
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
-#   2. `npx wrangler r2 bucket create reading-lite-staging` (one-time).
-#   3. `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine`.
-#   4. `npm run dev`.
-# Note: the staging environment does not configure a queue. POST /readings and
-# /readings/:id/reprocess will fail under `wrangler dev` until you create
-# `reading-lite-staging` (or another queue) and add a [[queues.producers]] +
-# [[queues.consumers]] block here. Read-only routes work without it.
+#   2. `npm run dev`.
+# Note: `wrangler dev` runs against a local emulated R2 bucket (initially empty)
+# and has no Vectorize binding, so search returns no results locally. POST
+# /readings and /readings/:id/reprocess also fail under `wrangler dev` (no queue
+# binding). Read-only list/detail routes work against whatever you write locally.
+# Most submission/search behavior is covered by the integration tests instead.
 #
 # Production setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite`
@@ -26,7 +27,7 @@
 #   `wrangler secret put ANTHROPIC_API_KEY --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
 
-name = "reading-lite-staging"
+name = "reading-lite-dev"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
@@ -55,18 +56,14 @@ RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
 
-# `remote = true` makes `wrangler dev` bind to the real staging bucket
-# instead of Miniflare's local emulator, so existing rows are visible from
-# the dev server. Vectorize has no local emulator; remote is required.
+# No `remote`, so `wrangler dev` binds to Miniflare's local R2 emulator
+# (a local, initially-empty namespace) rather than any deployed bucket. There is
+# deliberately no Vectorize binding here: Vectorize has no local emulator, and a
+# remote binding would point dev at production data. Search therefore returns no
+# results under `wrangler dev`; exercise it against the deployed worker instead.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
-bucket_name = "reading-lite-staging"
-remote = true
-
-[[vectorize]]
-binding = "READINGS_INDEX"
-index_name = "reading-lite-staging"
-remote = true
+bucket_name = "reading-lite"
 
 # ---- production ----
 # Deploy with `npm run deploy -- --execute` (which passes --env production).

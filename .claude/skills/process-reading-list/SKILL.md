@@ -76,7 +76,7 @@ npm run check-corpus -- --file list.json            # promote freshly-ready ones
 ## Notes / gotchas
 
 - The default endpoint is **production**, matching `check-reading-list`'s
-  default production bucket. Use `--url` for a local/staging worker, and make
+  default production bucket. Use `--url` for a local worker, and make
   sure `--token` matches whichever environment you target.
 - Submitting triggers paid summarization on the server. Use `--dry-run` first;
   the default per-URL prompt is the safety rail — `--quick` removes it.

@@ -63,23 +63,9 @@ npm test                         # vitest workspace (workers pool + node pool)
 npm run typecheck
 ```
 
-You'll need staging R2 + Vectorize resources before `wrangler dev` works:
+`wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
 
-```sh
-npx wrangler login
-npx wrangler r2 bucket create reading-lite-staging
-npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
-```
-
-`wrangler dev` (top-level `wrangler.toml`) targets the `reading-lite-staging` bucket + index for local testing only — never deployed. Both bindings are marked `remote = true`, so dev runs your code locally against the real staging bucket and Vectorize index. Production resources (`reading-lite` bucket + index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
-
-> **`POST /readings` needs a Queue binding, which the staging config omits by default.** Without `READING_JOBS`, the route returns 503 — read-only routes (list/search/detail) work fine in `wrangler dev`. To exercise submission locally, create a staging queue and add producer + consumer bindings to the top-level `wrangler.toml` (see the note next to the production queue config there):
->
-> ```sh
-> npx wrangler queues create reading-lite-staging
-> ```
->
-> Most submission behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need a real queue.
+> **`wrangler dev` has no Vectorize binding and no Queue binding by design.** Search returns no results locally (Vectorize has no local emulator, and a remote binding would point dev at production data), and `POST /readings` / `/readings/:id/reprocess` return 503 without `READING_JOBS`. Read-only list/detail routes work against whatever you write to the local bucket. Most submission/search behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need real bindings.
 
 ### Required secrets (production)
 
@@ -298,6 +284,6 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — Node-side script tests (corpus, import, shared `lib`) use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
-Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke against staging bindings (`wrangler dev`) and the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
+Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke via local `wrangler dev` and against the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
 
 `cd web && npm test` runs the SPA tests (jsdom + window.fetch stubs).

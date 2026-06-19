@@ -100,7 +100,7 @@ npm run corpus-recover -- --index .../index.json --execute --monitor
 npm run corpus-recover -- --index .../index.json --only reprocess --execute
 npm run corpus-recover -- --index .../index.json --only local-extract --limit 5 --execute
 
-# Point at a local/staging worker.
+# Point at a local worker.
 npm run corpus-recover -- --index .../index.json --url http://127.0.0.1:8787 --execute
 ```
 
