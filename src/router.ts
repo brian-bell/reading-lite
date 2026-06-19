@@ -484,6 +484,7 @@ async function dispositionFromPointer(
   if (!pointer) return null;
   const manifest = await reader.readManifest(pointer.key_prefix).catch(() => null);
   if (!manifest) return null;
+  await reader.writeByIdPointer(pointer.id, pointer);
   const effectiveManifest = annotateStale(manifest, env, services);
   if (effectiveManifest.status === "failed") {
     return { kind: "reprocess", pointer, manifest: effectiveManifest };
@@ -521,6 +522,7 @@ async function legacyDispositionFromList(
 
   const manifest = await reader.readManifest(item.key_prefix).catch(() => null);
   if (!manifest) return null;
+  await reader.writeByIdPointer(pointer.id, pointer);
   const effectiveManifest = annotateStale(manifest, env, services);
   if (effectiveManifest.status === "failed") return { kind: "reprocess", pointer, manifest: effectiveManifest };
   return { kind: "return", manifest: effectiveManifest };

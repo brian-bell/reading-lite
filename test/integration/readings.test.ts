@@ -517,6 +517,74 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await reader.readByUrlPointer(urlHash)).toEqual({ id, key_prefix: prefix });
   });
 
+  it("heals legacy failed reading pointers before reprocessing from a URL submit", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-failed";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_LEGACY_FAILED";
+    const createdAt = "2026-04-26T18:00:00.000Z";
+    const prefix = buildKeyPrefix(id, createdAt);
+    const failed: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: {
+        code: "LegacyBatchFailure",
+        stage: "summarize",
+        message: "legacy batch failure",
+        retryable: true,
+        failed_at: "2026-04-26T18:00:02.000Z",
+      },
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "d".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T18:00:02.000Z",
+    };
+    await reader.writeManifest(prefix, failed);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, prefix));
+
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ id, status: "pending", poll: `/readings/${id}` });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({ id, key_prefix: prefix });
+    expect(await reader.readByIdPointer(id)).toEqual({ id, key_prefix: prefix });
+
+    const pending = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(pending.status).toBe(200);
+    expect(await pending.json()).toMatchObject({ id, status: "pending" });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const ready = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toMatchObject({ id, status: "ready" });
+  });
+
   it("prefers a legacy ready row over a pending same-URL row when healing by-url", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/legacy-ready-over-pending";
