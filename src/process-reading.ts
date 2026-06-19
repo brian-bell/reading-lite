@@ -172,16 +172,10 @@ export async function processReading(
 
     let canPublishVisibility = false;
     let canRemoveVisibility = false;
-    let manifestWritten = false;
-    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
-      const state = await terminalWriteState(reader, args, { claimMissingPointer: true });
-      canPublishVisibility = state.canPublishVisibility;
-      canRemoveVisibility = state.canRemoveVisibility;
-      if (!state.canWriteManifest) return;
-      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
-    });
-    if (!manifestWritten) return;
-
+    const state = await terminalWriteState(reader, args, { claimMissingPointer: true });
+    canPublishVisibility = state.canPublishVisibility;
+    canRemoveVisibility = state.canRemoveVisibility;
+    if (!state.canWriteManifest) return;
     if (canPublishVisibility) {
       await runStage(attempt, reader, args.keyPrefix, services, "write_indexes", () =>
         reader.appendOrReplaceListIndexItem(
@@ -199,6 +193,18 @@ export async function processReading(
     } else if (canRemoveVisibility) {
       await reader.removeListIndexItem(args.id);
       await similarity.delete(args.id);
+    }
+
+    let manifestWritten = false;
+    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
+      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
+    });
+    if (!manifestWritten) {
+      if (canPublishVisibility) {
+        await reader.removeListIndexItem(args.id);
+        await similarity.delete(args.id);
+      }
+      return;
     }
 
     if (canPublishVisibility && shouldSendEmail(args)) {
