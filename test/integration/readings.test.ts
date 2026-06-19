@@ -524,13 +524,14 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/legacy-failed-no-pointer";
+    const urlHash = await sha256Hex(url);
     const createdAt = "2026-04-26T19:00:00.000Z";
     const id = "rd_LEGACY";
     const keyPrefix = buildKeyPrefix(id, createdAt);
     const legacy: Manifest = {
       id,
       url,
-      url_hash: "f".repeat(64),
+      url_hash: urlHash,
       source_type: "url",
       status: "failed",
       error: { code: "BadStatusError", message: "bad response status 404" },
@@ -574,13 +575,14 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/legacy-failed-no-index";
+    const urlHash = await sha256Hex(url);
     const createdAt = "2026-04-26T19:00:00.000Z";
     const id = "rd_LEGACY_NO_INDEX";
     const keyPrefix = buildKeyPrefix(id, createdAt);
     const legacy: Manifest = {
       id,
       url,
-      url_hash: "e".repeat(64),
+      url_hash: urlHash,
       source_type: "url",
       status: "failed",
       error: { code: "BadStatusError", message: "bad response status 404" },
@@ -615,10 +617,11 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/legacy-stale-index";
+    const urlHash = await sha256Hex(url);
     const older: Manifest = {
       id: "rd_OLDER",
       url,
-      url_hash: "c".repeat(64),
+      url_hash: urlHash,
       source_type: "url",
       status: "failed",
       error: { code: "old", message: "older failed copy" },
@@ -632,7 +635,6 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const newer: Manifest = {
       ...older,
       id: "rd_NEWER",
-      url_hash: "d".repeat(64),
       error: { code: "new", message: "newer failed copy" },
       created_at: "2026-04-26T19:00:00.000Z",
       updated_at: "2026-04-26T19:00:00.000Z",
@@ -666,10 +668,12 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/legacy-missing-from-index";
+    const urlHash = await sha256Hex(url);
+    const indexedUrl = "https://example.com/other-indexed-url";
     const legacy: Manifest = {
       id: "rd_MISSING_FROM_INDEX",
       url,
-      url_hash: "f".repeat(64),
+      url_hash: urlHash,
       source_type: "url",
       status: "failed",
       error: { code: "old", message: "failed copy missing from index" },
@@ -683,8 +687,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const indexed: Manifest = {
       ...legacy,
       id: "rd_INDEXED_OTHER",
-      url: "https://example.com/other-indexed-url",
-      url_hash: "a".repeat(64),
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
     };
     const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
     const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
@@ -841,6 +845,62 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     expect(get.status).toBe(200);
     expect(await get.json()).toMatchObject({ id, status: "ready" });
+  });
+
+  it("repairs a by-url pointer that points to a manifest for a different URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/mismatched-by-url-owner";
+    const urlHash = await sha256Hex(url);
+    const otherUrl = "https://example.com/other-owned-reading";
+    const otherHash = await sha256Hex(otherUrl);
+    const otherId = "rd_OTHER_OWNER";
+    const otherPrefix = buildKeyPrefix(otherId, "2026-04-26T19:00:00.000Z");
+    const otherManifest: Manifest = {
+      id: otherId,
+      url: otherUrl,
+      url_hash: otherHash,
+      source_type: "url",
+      status: "ready",
+      title: "Other",
+      tldr: "Other summary",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 123,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    await reader.writeManifest(otherPrefix, otherManifest);
+    await reader.writeByIdPointer(otherId, { id: otherId, key_prefix: otherPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: otherId, key_prefix: otherPrefix });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe(otherId);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+    expect(await reader.readByUrlPointer(urlHash)).toMatchObject({ id: body.id });
+
+    const other = await app.request(
+      `/readings/${otherId}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(other.status).toBe(200);
+    expect(await other.json()).toMatchObject({ id: otherId, url: otherUrl });
   });
 
   it("does not treat a future-dated missing-manifest owner as fresh", async () => {

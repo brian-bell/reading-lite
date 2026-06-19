@@ -65,7 +65,7 @@ export function createApp(opts: AppOptions = {}) {
     const existing = await reader.readByUrlPointerWithEtag(urlHash);
     if (existing) {
       const m = await reader.readManifest(existing.pointer.key_prefix);
-      if (m) {
+      if (m && ownedManifestMatches(existing.pointer, m, url, urlHash)) {
         const result = await submitResultForOwnedReading(
           reader,
           c.env,
@@ -76,7 +76,7 @@ export function createApp(opts: AppOptions = {}) {
         );
         return c.json(result.body, result.status);
       }
-      const result = await missingManifestOwnerResult(
+      const result = await damagedOwnerResult(
         reader,
         c.env,
         services,
@@ -84,6 +84,7 @@ export function createApp(opts: AppOptions = {}) {
         urlHash,
         existing,
         parsed.data.email ?? true,
+        { allowFreshInitializingConflict: !m },
       );
       return c.json(result.body, result.status);
     }
@@ -107,7 +108,7 @@ export function createApp(opts: AppOptions = {}) {
         const claimed = await reader.readByUrlPointerWithEtag(urlHash);
         if (claimed) {
           const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
-          if (claimedManifest) {
+          if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, urlHash)) {
             const result = await submitResultForOwnedReading(
               reader,
               c.env,
@@ -118,7 +119,7 @@ export function createApp(opts: AppOptions = {}) {
             );
             return c.json(result.body, result.status);
           }
-          const result = await missingManifestOwnerResult(
+          const result = await damagedOwnerResult(
             reader,
             c.env,
             services,
@@ -126,6 +127,7 @@ export function createApp(opts: AppOptions = {}) {
             urlHash,
             claimed,
             parsed.data.email ?? true,
+            { allowFreshInitializingConflict: !claimedManifest },
           );
           return c.json(result.body, result.status);
         }
@@ -441,7 +443,7 @@ async function createNewReadingForSubmit(
     const claimed = await reader.readByUrlPointerWithEtag(args.urlHash);
     if (claimed) {
       const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
-      if (claimedManifest) {
+      if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, args.urlHash)) {
         return submitResultForOwnedReading(
           reader,
           env,
@@ -451,7 +453,7 @@ async function createNewReadingForSubmit(
           { email },
         );
       }
-      return missingManifestOwnerResult(
+      return damagedOwnerResult(
         reader,
         env,
         services,
@@ -459,6 +461,7 @@ async function createNewReadingForSubmit(
         args.urlHash,
         claimed,
         email,
+        { allowFreshInitializingConflict: !claimedManifest },
       );
     }
     throw err;
@@ -507,7 +510,7 @@ async function createNewReadingForSubmit(
   };
 }
 
-async function missingManifestOwnerResult(
+async function damagedOwnerResult(
   reader: ReadingStore,
   env: Env,
   services: Services,
@@ -515,8 +518,12 @@ async function missingManifestOwnerResult(
   urlHash: string,
   owner: StoredByUrlPointer,
   email: boolean,
+  opts: { allowFreshInitializingConflict: boolean },
 ): Promise<SubmitJsonResult> {
-  if (!isFreshMissingManifestPointer(owner.pointer, services.now())) {
+  if (
+    !opts.allowFreshInitializingConflict ||
+    !isFreshMissingManifestPointer(owner.pointer, services.now())
+  ) {
     const legacy = await reader.findManifestByUrl(url);
     if (legacy) {
       const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
@@ -539,7 +546,7 @@ async function missingManifestOwnerResult(
       const current = await reader.readByUrlPointerWithEtag(urlHash);
       if (current) {
         const currentManifest = await reader.readManifest(current.pointer.key_prefix);
-        if (currentManifest) {
+        if (currentManifest && ownedManifestMatches(current.pointer, currentManifest, url, urlHash)) {
           return submitResultForOwnedReading(
             reader,
             env,
@@ -549,7 +556,7 @@ async function missingManifestOwnerResult(
             { email },
           );
         }
-        return missingManifestOwnerResult(
+        return damagedOwnerResult(
           reader,
           env,
           services,
@@ -557,6 +564,7 @@ async function missingManifestOwnerResult(
           urlHash,
           current,
           email,
+          { allowFreshInitializingConflict: !currentManifest },
         );
       }
     }
@@ -574,6 +582,15 @@ async function missingManifestOwnerResult(
     },
     status: 409,
   };
+}
+
+function ownedManifestMatches(
+  pointer: ByUrlPointer,
+  manifest: Manifest,
+  url: string,
+  urlHash: string,
+): boolean {
+  return manifest.id === pointer.id && manifest.url === url && manifest.url_hash === urlHash;
 }
 
 function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {

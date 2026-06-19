@@ -11,6 +11,7 @@ import {
   type ListIndex,
   type ListIndexItem,
 } from "../../schemas/api";
+import { sha256Hex } from "../../services";
 
 export class PointerExistsError extends Error {
   constructor(public readonly urlHash: string) {
@@ -394,7 +395,7 @@ export class ReadingStore {
     for (const item of rebuilt.items) {
       if (item.url === url) candidates.set(item.key_prefix, item);
     }
-    return this.findNewestManifestByUrl([...candidates.values()], url);
+    return this.findNewestManifestByUrl([...candidates.values()], url, await sha256Hex(url));
   }
 
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
@@ -439,6 +440,7 @@ export class ReadingStore {
   private async findNewestManifestByUrl(
     items: ListIndexItem[],
     url: string,
+    urlHash: string,
   ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
     const matches = items.filter((item) => item.url === url);
     matches.sort((a, b) => {
@@ -448,7 +450,9 @@ export class ReadingStore {
     });
     for (const item of matches) {
       const manifest = await this.readManifest(item.key_prefix);
-      if (manifest) return { keyPrefix: item.key_prefix, manifest };
+      if (manifest?.url === url && manifest.url_hash === urlHash) {
+        return { keyPrefix: item.key_prefix, manifest };
+      }
     }
     return null;
   }

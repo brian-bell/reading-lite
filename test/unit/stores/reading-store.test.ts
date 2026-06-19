@@ -637,4 +637,25 @@ describe("ReadingStore — listManifests", () => {
       ]),
     });
   });
+
+  it("ignores stale exact-url index rows whose manifest belongs to another URL", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const requestedUrl = "https://example.com/requested";
+    const other = emptyManifest({
+      id: "rd_other",
+      url: "https://example.com/other",
+      url_hash: "b".repeat(64),
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const otherPrefix = buildKeyPrefix(other.id, other.created_at);
+    await store.writeManifest(otherPrefix, other);
+    await store.appendOrReplaceListIndexItem({
+      ...manifestToIndexItem(other, otherPrefix),
+      url: requestedUrl,
+    });
+
+    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
+  });
 });
