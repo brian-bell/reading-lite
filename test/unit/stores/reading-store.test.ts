@@ -367,6 +367,14 @@ describe("ReadingStore — appendOrReplaceListIndexItem", () => {
     expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
   });
 
+  it("does not create an empty index when removing from a cold bucket", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+
+    await store.removeListIndexItem("rd_missing");
+
+    await expect(store.readListIndex()).resolves.toBeNull();
+  });
+
   it("retries and merges a concurrent write instead of clobbering it", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET, { sleep: async () => {} });
     await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));

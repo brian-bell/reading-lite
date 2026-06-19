@@ -341,6 +341,8 @@ export class ReadingStore {
   }
 
   async removeListIndexItem(id: string): Promise<void> {
+    const index = await this.readListIndex();
+    if (!index) return;
     await this.mutateListIndex((items) => items.filter((i) => i.id !== id));
   }
 
