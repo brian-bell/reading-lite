@@ -2,7 +2,11 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
-import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
+import {
+  processReading,
+  removeAttemptVisibility,
+  type ProcessReadingArgs,
+} from "../../src/process-reading";
 import { sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
@@ -1003,6 +1007,73 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(vector.upsert).not.toHaveBeenCalled();
     expect(vector.deleteByIds).toHaveBeenCalledWith([staleId]);
     expect(vector.vectors.has(staleId)).toBe(false);
+  });
+
+  it("keeps the vector when cleanup runs against a pending manifest carrying a foreign last_attempt", async () => {
+    // Crafted seed for an otherwise-unreachable divergence: the list row is
+    // vacant-pending (active+last cleared) so the list gate removes it, but the
+    // manifest at the same prefix is pending with a last_attempt from another
+    // attempt. The vector gate must refuse — a last_attempt signals another
+    // attempt touched the reading, so this attempt may not own the vector.
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const similarity = new SimilarityStore(env.READINGS_INDEX);
+    const id = "rd_DIVERGENT";
+    const url = "https://example.com/divergent-cleanup";
+    const urlHash = await sha256Hex(url);
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+
+    const divergentManifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: undefined,
+      last_attempt: {
+        id: "at_PRIOR",
+        trigger: "submit",
+        status: "failed",
+        started_at: createdAt,
+        finished_at: createdAt,
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, divergentManifest);
+    // The list row is vacant-pending: the list gate WILL match (and remove it).
+    await reader.appendOrReplaceListIndexItem({
+      id,
+      key_prefix: keyPrefix,
+      url,
+      status: "pending",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.42),
+      metadata: { url, title: "Divergent vector" },
+    });
+
+    await removeAttemptVisibility(reader, similarity, {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_FOREIGN",
+    });
+
+    // List row removed (list gate's vacant-pending rule matched)...
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    // ...but the vector is KEPT (manifest gate refuses on the foreign last_attempt).
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
   });
 
   it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
