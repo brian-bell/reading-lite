@@ -1172,6 +1172,41 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id: firstBody.id, trigger: "import" });
   });
 
+  it("repairs a stale missing by-url owner during Markdown import", async () => {
+    const sourceUrl = "https://example.com/import-repairs-missing-owner";
+    const markdown = "# Repaired Import\n\nThis import replaces a stale owner.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN_IMPORT",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Repaired Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const body = (await submit.json()) as { id: string; status: string };
+
+    expect(submit.status).toBe(202);
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_ORPHAN_IMPORT");
+    expect(await reader.readByUrlPointer(urlHash)).toMatchObject({ id: body.id });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "import" });
+  });
+
   it("imports Markdown over a failed URL reading for the same source URL", async () => {
     const sourceUrl = "https://example.com/failed-then-imported-markdown";
     const markdown = "# Imported Recovery\n\nThe user supplied the captured text.";

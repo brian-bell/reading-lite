@@ -715,33 +715,59 @@ async function createNewReadingForMarkdownImport(
     await reader.writeByUrlPointer(args.urlHash, pointer, { ifNotExists: true });
   } catch (err) {
     if (!(err instanceof PointerExistsError)) throw err;
-    const claimed = await reader.readByUrlPointer(args.urlHash);
+    const claimed = await reader.readByUrlPointerWithEtag(args.urlHash);
     if (claimed) {
-      const claimedManifest = await reader.readManifest(claimed.key_prefix);
-      if (claimedManifest && ownedManifestMatches(claimed, claimedManifest, url, args.urlHash)) {
+      const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
+      if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, args.urlHash)) {
         const effective = annotateStale(claimedManifest, env, services);
         if (effective.status !== "failed") return { body: effective, status: 200 };
         return enqueueMarkdownImport(
           reader,
           env,
           services,
-          claimed,
+          claimed.pointer,
           effective,
           markdown,
           title,
           email,
         );
       }
-      return {
-        body: {
-          error: "reading owner is still initializing",
-          id: claimed.id,
-          poll: `/readings/${claimed.id}`,
-        },
-        status: 409,
-      };
+      if (!claimedManifest && isFreshMissingManifestPointer(claimed.pointer, services.now())) {
+        return {
+          body: {
+            error: "reading owner is still initializing",
+            id: claimed.pointer.id,
+            poll: `/readings/${claimed.pointer.id}`,
+          },
+          status: 409,
+        };
+      }
+      const replaced = await reader.replaceByUrlPointerIfCurrent(
+        args.urlHash,
+        claimed.etag,
+        pointer,
+      );
+      if (replaced) {
+        // Continue with this newly claimed import below.
+      } else {
+        return createNewReadingForMarkdownImport(
+          reader,
+          env,
+          services,
+          url,
+          markdown,
+          title,
+          email,
+        );
+      }
+    } else {
+      throw err;
     }
-    throw err;
+    if (claimed) {
+      // Ownership was repaired to `pointer`; fall through to write objects.
+    } else {
+      throw err;
+    }
   }
 
   await reader.writeRaw(
