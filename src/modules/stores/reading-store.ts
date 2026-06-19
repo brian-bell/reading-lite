@@ -256,13 +256,12 @@ export class ReadingStore {
     opts: { ifNotExists?: boolean } = {},
   ): Promise<void> {
     const key = `${BY_URL_PREFIX}${urlHash}`;
-    if (opts.ifNotExists) {
-      const existing = await this.bucket.head(key);
-      if (existing) throw new PointerExistsError(urlHash);
-    }
-    await this.bucket.put(key, JSON.stringify(pointer), {
+    const putOpts: R2PutOptions = {
       httpMetadata: { contentType: "application/json" },
-    });
+    };
+    if (opts.ifNotExists) putOpts.onlyIf = new Headers({ "If-None-Match": "*" });
+    const result = await this.bucket.put(key, JSON.stringify(pointer), putOpts);
+    if (opts.ifNotExists && result === null) throw new PointerExistsError(urlHash);
   }
 
   async readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null> {

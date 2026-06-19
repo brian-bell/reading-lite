@@ -17,8 +17,11 @@ Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.
 ```
 POST /readings { url }
   ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
-  └─ else: write a "pending" manifest, enqueue a job on the READING_JOBS
-           queue, return 202. Poll GET /readings/:id until ready/failed.
+  └─ else: claim the by-url owner, write a "pending" manifest, enqueue a
+           job on the READING_JOBS queue, return 202. Poll GET
+           /readings/:id until ready/failed. Re-submitting a pending URL
+           returns the owned reading; re-submitting a failed URL reprocesses
+           that same id.
 
 READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
         fetch URL (timeout + size cap)
@@ -28,8 +31,9 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → Anthropic messages.create with forced tool use (`emit_reading`)
       → OpenAI embed the final TL;DR
       → Vectorize.upsert(id, tldr_embedding, metadata)
-      → R2 write final manifest + by-url pointer
-      (on any error → write status="failed" manifest; skip by-url pointer)
+      → R2 write final manifest + confirm by-url pointer
+      (on any error → write status="failed" manifest; the eager by-url
+       owner stays in place so a later submit can reprocess the same id)
       (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
        manifest stays pending until a later delivery completes. A message
        that exhausts max_retries routes to the reading-lite-dlq queue,
@@ -98,7 +102,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
-| `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
+| `POST /readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
 | `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. Defaults `email` to false. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
@@ -106,7 +110,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | `POST /readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
 | `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
-| `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
+| `GET /readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
 | `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
 List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.

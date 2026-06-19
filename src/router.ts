@@ -15,9 +15,14 @@ import {
   PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
 } from "./schemas/api";
-import type { Manifest, ProcessingAttemptSummary } from "./schemas/manifest";
+import type {
+  ByUrlPointer,
+  Manifest,
+  ProcessingAttemptSummary,
+} from "./schemas/manifest";
 import {
   manifestToIndexItem,
+  PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -57,7 +62,56 @@ export function createApp(opts: AppOptions = {}) {
     const existing = await reader.readByUrlPointer(urlHash);
     if (existing) {
       const m = await reader.readManifest(existing.key_prefix);
-      if (m) return c.json(m, 200);
+      if (m) {
+        const result = await submitResultForOwnedReading(
+          reader,
+          c.env,
+          services,
+          existing,
+          m,
+          { email: parsed.data.email ?? true },
+        );
+        return c.json(result.body, result.status);
+      }
+    }
+
+    const legacy = await findManifestByUrl(reader, url);
+    if (legacy) {
+      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
+      try {
+        await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
+        const result = await submitResultForOwnedReading(
+          reader,
+          c.env,
+          services,
+          pointer,
+          legacy.manifest,
+          { email: parsed.data.email ?? true },
+        );
+        return c.json(result.body, result.status);
+      } catch (err) {
+        if (!(err instanceof PointerExistsError)) throw err;
+        const claimed = await reader.readByUrlPointer(urlHash);
+        if (claimed) {
+          const claimedManifest = await reader.readManifest(claimed.key_prefix);
+          if (claimedManifest) {
+            const result = await submitResultForOwnedReading(
+              reader,
+              c.env,
+              services,
+              claimed,
+              claimedManifest,
+              { email: parsed.data.email ?? true },
+            );
+            return c.json(result.body, result.status);
+          }
+          return c.json(
+            { id: claimed.id, status: "pending", poll: `/readings/${claimed.id}` },
+            202,
+          );
+        }
+        throw err;
+      }
     }
 
     const args = await newReadingArgs(url, services);
@@ -83,6 +137,36 @@ export function createApp(opts: AppOptions = {}) {
         { error: "queue binding READING_JOBS is not configured" },
         503,
       );
+    }
+
+    try {
+      await reader.writeByUrlPointer(
+        args.urlHash,
+        { id: args.id, key_prefix: args.keyPrefix },
+        { ifNotExists: true },
+      );
+    } catch (err) {
+      if (!(err instanceof PointerExistsError)) throw err;
+      const claimed = await reader.readByUrlPointer(urlHash);
+      if (claimed) {
+        const claimedManifest = await reader.readManifest(claimed.key_prefix);
+        if (claimedManifest) {
+          const result = await submitResultForOwnedReading(
+            reader,
+            c.env,
+            services,
+            claimed,
+            claimedManifest,
+            { email: parsed.data.email ?? true },
+          );
+          return c.json(result.body, result.status);
+        }
+        return c.json(
+          { id: claimed.id, status: "pending", poll: `/readings/${claimed.id}` },
+          202,
+        );
+      }
+      throw err;
     }
 
     await reader.writeManifest(args.keyPrefix, pendingManifest);
@@ -268,58 +352,15 @@ export function createApp(opts: AppOptions = {}) {
     if (!ptr) return c.json({ error: "not found" }, 404);
     const manifest = await reader.readManifest(ptr.key_prefix);
     if (!manifest) return c.json({ error: "not found" }, 404);
-    const effectiveManifest = annotateStale(manifest, c.env, services);
-    if (effectiveManifest.active_attempt?.status === "running" && !parsed.data.force) {
-      return c.json({ error: "reading already has an active attempt" }, 409);
-    }
-    if (!c.env.READING_JOBS) {
-      return c.json(
-        { error: "queue binding READING_JOBS is not configured" },
-        503,
-      );
-    }
-
-    const attemptStartedAt = services.now();
-    const attemptId = newAttemptId(services);
-    const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
-    let source: ProcessReadingSource | undefined;
-    if (effectiveManifest.source_type === "markdown") {
-      const extracted = await reader.readExtracted(ptr.key_prefix);
-      if (!extracted) {
-        return c.json({ error: "markdown content not available" }, 409);
-      }
-      source = {
-        kind: "markdown",
-        markdown: await extracted.text(),
-        ...(effectiveManifest.title === undefined ? {} : { title: effectiveManifest.title }),
-      };
-    }
-    const args: ProcessReadingArgs = {
-      id: effectiveManifest.id,
-      url: effectiveManifest.url,
-      urlHash: effectiveManifest.url_hash,
-      createdAt: effectiveManifest.created_at,
-      keyPrefix: ptr.key_prefix,
-      source,
-      attemptId,
-      attemptStartedAt,
-      trigger: "reprocess",
-      preserveReadyManifest: effectiveManifest.status === "ready" ? effectiveManifest : undefined,
-      email: parsed.data.email ?? false,
-    };
-    const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
-
-    await reader.writeManifest(ptr.key_prefix, nextManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(nextManifest, ptr.key_prefix),
+    const result = await enqueueReprocess(
+      reader,
+      c.env,
+      services,
+      ptr,
+      manifest,
+      { force: parsed.data.force, email: parsed.data.email ?? false },
     );
-
-    await c.env.READING_JOBS.send(args);
-
-    return c.json(
-      { id: effectiveManifest.id, status: nextManifest.status, poll: `/readings/${effectiveManifest.id}`, attempt_id: attemptId },
-      202,
-    );
+    return c.json(result.body, result.status);
   });
 
   app.get("/readings/:id", async (c) => {
@@ -367,6 +408,113 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   return app;
+}
+
+type SubmitJsonResult = {
+  body: unknown;
+  status: 200 | 202 | 409 | 503;
+};
+
+async function submitResultForOwnedReading(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  pointer: ByUrlPointer,
+  manifest: Manifest,
+  opts: { email: boolean },
+): Promise<SubmitJsonResult> {
+  const effectiveManifest = annotateStale(manifest, env, services);
+  if (effectiveManifest.status !== "failed") {
+    return { body: effectiveManifest, status: 200 };
+  }
+  return enqueueReprocess(reader, env, services, pointer, effectiveManifest, {
+    email: opts.email,
+  });
+}
+
+async function findManifestByUrl(
+  reader: ReadingStore,
+  url: string,
+): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+  const index = await reader.readListIndex();
+  const matches = index?.items.filter((item) => item.url === url) ?? [];
+  matches.sort((a, b) => {
+    const aTime = a.updated_at ?? a.created_at;
+    const bTime = b.updated_at ?? b.created_at;
+    return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+  });
+  for (const item of matches) {
+    const manifest = await reader.readManifest(item.key_prefix);
+    if (manifest) return { keyPrefix: item.key_prefix, manifest };
+  }
+  return null;
+}
+
+async function enqueueReprocess(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  pointer: ByUrlPointer,
+  manifest: Manifest,
+  opts: { force?: boolean; email: boolean },
+): Promise<SubmitJsonResult> {
+  const effectiveManifest = annotateStale(manifest, env, services);
+  if (effectiveManifest.active_attempt?.status === "running" && !opts.force) {
+    return { body: { error: "reading already has an active attempt" }, status: 409 };
+  }
+  if (!env.READING_JOBS) {
+    return {
+      body: { error: "queue binding READING_JOBS is not configured" },
+      status: 503,
+    };
+  }
+
+  const attemptStartedAt = services.now();
+  const attemptId = newAttemptId(services);
+  const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
+  let source: ProcessReadingSource | undefined;
+  if (effectiveManifest.source_type === "markdown") {
+    const extracted = await reader.readExtracted(pointer.key_prefix);
+    if (!extracted) {
+      return { body: { error: "markdown content not available" }, status: 409 };
+    }
+    source = {
+      kind: "markdown",
+      markdown: await extracted.text(),
+      ...(effectiveManifest.title === undefined ? {} : { title: effectiveManifest.title }),
+    };
+  }
+  const args: ProcessReadingArgs = {
+    id: effectiveManifest.id,
+    url: effectiveManifest.url,
+    urlHash: effectiveManifest.url_hash,
+    createdAt: effectiveManifest.created_at,
+    keyPrefix: pointer.key_prefix,
+    source,
+    attemptId,
+    attemptStartedAt,
+    trigger: "reprocess",
+    preserveReadyManifest: effectiveManifest.status === "ready" ? effectiveManifest : undefined,
+    email: opts.email,
+  };
+  const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
+
+  await reader.writeManifest(pointer.key_prefix, nextManifest);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(nextManifest, pointer.key_prefix),
+  );
+
+  await env.READING_JOBS.send(args);
+
+  return {
+    body: {
+      id: effectiveManifest.id,
+      status: nextManifest.status,
+      poll: `/readings/${effectiveManifest.id}`,
+      attempt_id: attemptId,
+    },
+    status: 202,
+  };
 }
 
 function manifestForActiveAttempt(

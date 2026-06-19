@@ -153,6 +153,25 @@ describe("ReadingStore — by-url pointer", () => {
     const read = await store.readByUrlPointer(hash);
     expect(read?.id).toBe("rd_X");
   });
+
+  it("ifNotExists=true allows only one concurrent writer to claim a by-url pointer", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const hash = "b".repeat(64);
+    const prefixA = buildKeyPrefix("rd_A", "2026-04-26T20:00:00.000Z");
+    const prefixB = buildKeyPrefix("rd_B", "2026-04-26T20:00:01.000Z");
+
+    const results = await Promise.allSettled([
+      store.writeByUrlPointer(hash, { id: "rd_A", key_prefix: prefixA }, { ifNotExists: true }),
+      store.writeByUrlPointer(hash, { id: "rd_B", key_prefix: prefixB }, { ifNotExists: true }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toBeDefined();
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(PointerExistsError);
+    const read = await store.readByUrlPointer(hash);
+    expect(read?.id === "rd_A" || read?.id === "rd_B").toBe(true);
+  });
 });
 
 describe("ReadingStore — by-id pointer", () => {
