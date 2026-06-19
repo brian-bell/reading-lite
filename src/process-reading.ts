@@ -57,6 +57,7 @@ export async function processReading(
 
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
 
     const extracted = await extractSource(args, env, services, reader, attempt);
 
@@ -525,10 +526,21 @@ async function terminalWriteState(
   }
 
   return {
-    canWriteManifest: !activeAttemptConflict,
+    canWriteManifest: activeAttemptMatches || !manifest,
     canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
     canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
   };
+}
+
+async function readingCanWriteAttemptArtifacts(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return true;
+  const activeAttemptId = manifest.active_attempt?.id;
+  const attemptId = args.attemptId ?? `at_${args.id}`;
+  return activeAttemptId === attemptId || (activeAttemptId === undefined && manifest.status === "pending");
 }
 
 export function newAttemptId(services: Services): string {

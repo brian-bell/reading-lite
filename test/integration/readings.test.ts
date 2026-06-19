@@ -1071,6 +1071,89 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(vector.vectors.has(id)).toBe(true);
   });
 
+  it("does not let a stale successful attempt overwrite a newer ready reading", async () => {
+    const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-after-ready";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_READY_WINNER";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const ready: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Winning Title",
+      tldr: "The newer attempt already won.",
+      tags: ["winner"],
+      summary_markdown: "Winning summary",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 18,
+      extracted_bytes: 18,
+      content_sha256: "1".repeat(64),
+      fetched_at: "2026-04-26T19:30:00.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+      last_attempt: {
+        id: "at_NEW_READY",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T19:29:00.000Z",
+        finished_at: "2026-04-26T19:30:00.000Z",
+      },
+    };
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.84),
+      metadata: { url, title: "Winning Title" },
+    });
+    await reader.writeManifest(keyPrefix, ready);
+    await reader.writeRaw(
+      keyPrefix,
+      "html",
+      new TextEncoder().encode("winner raw"),
+      "text/html; charset=utf-8",
+    );
+    await reader.writeExtracted(keyPrefix, "winner extracted");
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, keyPrefix));
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD_READY",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "ready",
+      title: "Winning Title",
+      last_attempt: { id: "at_NEW_READY" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "ready", title: "Winning Title" }],
+    });
+    expect(await (await reader.readRaw(keyPrefix, "html"))?.text()).toBe("winner raw");
+    expect(await (await reader.readExtracted(keyPrefix))?.text()).toBe("winner extracted");
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
+  });
+
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
     const reader = new ReadingStore(env.READINGS_BUCKET);
@@ -1177,7 +1260,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await expect(reader.readListIndex()).resolves.toMatchObject({
       items: [{ id, status: "pending", active_attempt: { id: "at_NEW_FAILED" } }],
     });
-    expect(consoleErr).toHaveBeenCalled();
+    expect(consoleErr).not.toHaveBeenCalled();
     consoleErr.mockRestore();
   });
 
