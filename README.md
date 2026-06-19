@@ -240,6 +240,7 @@ scripts/
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
   import-markdown.ts + import-markdown-lib/{...}          # local .md → import-markdown
+  run-with-vars.ts              # helper: overlay a dotenv file onto env, then run a command
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
   unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
