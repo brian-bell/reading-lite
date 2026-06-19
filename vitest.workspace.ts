@@ -15,6 +15,7 @@ export default [
         "test/unit/http-retry/**/*.test.ts",
         "test/unit/queue/**/*.test.ts",
         "test/unit/stores/**/*.test.ts",
+        "test/unit/modules/**/*.test.ts",
         "test/unit/process-reading/**/*.test.ts",
       ],
       poolOptions: {
