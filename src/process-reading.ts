@@ -123,14 +123,17 @@ export async function processReading(
       }),
     );
 
-    await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
-      similarity.upsert(args.id, tldrEmbed.embedding, {
-        url: args.url,
-        title: llm.reading.title,
-        tags: llm.reading.tags,
-        created_at: args.createdAt,
-      }),
-    );
+    let ownsUrlForFinalWrites = await ensureByUrlPointerForCompletedReading(reader, args);
+    if (ownsUrlForFinalWrites) {
+      await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
+        similarity.upsert(args.id, tldrEmbed.embedding, {
+          url: args.url,
+          title: llm.reading.title,
+          tags: llm.reading.tags,
+          created_at: args.createdAt,
+        }),
+      );
+    }
 
     let finalManifest: Manifest = {
       id: args.id,
@@ -176,10 +179,12 @@ export async function processReading(
       services,
       "write_indexes",
       async () => {
-        await ensureByUrlPointerForCompletedReading(reader, args);
-        await reader.appendOrReplaceListIndexItem(
-          manifestToIndexItem(finalManifest, args.keyPrefix),
-        );
+        ownsUrlForFinalWrites = await ensureByUrlPointerForCompletedReading(reader, args);
+        if (ownsUrlForFinalWrites) {
+          await reader.appendOrReplaceListIndexItem(
+            manifestToIndexItem(finalManifest, args.keyPrefix),
+          );
+        }
       },
     );
     attempt.status = "succeeded";
@@ -192,11 +197,13 @@ export async function processReading(
     };
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     await reader.writeManifest(args.keyPrefix, finalManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(finalManifest, args.keyPrefix),
-    );
+    if (ownsUrlForFinalWrites) {
+      await reader.appendOrReplaceListIndexItem(
+        manifestToIndexItem(finalManifest, args.keyPrefix),
+      );
+    }
 
-    if (shouldSendEmail(args)) {
+    if (ownsUrlForFinalWrites && shouldSendEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -456,9 +463,11 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
 async function ensureByUrlPointerForCompletedReading(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-): Promise<void> {
+): Promise<boolean> {
   const existing = await reader.readByUrlPointer(args.urlHash);
-  if (existing) return;
+  if (existing) {
+    return existing.id === args.id && existing.key_prefix === args.keyPrefix;
+  }
 
   try {
     await reader.writeByUrlPointer(
@@ -466,8 +475,11 @@ async function ensureByUrlPointerForCompletedReading(
       { id: args.id, key_prefix: args.keyPrefix },
       { ifNotExists: true },
     );
+    return true;
   } catch (err) {
     if (!(err instanceof PointerExistsError)) throw err;
+    const claimed = await reader.readByUrlPointer(args.urlHash);
+    return claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
   }
 }
 

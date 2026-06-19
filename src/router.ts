@@ -159,13 +159,14 @@ export function createApp(opts: AppOptions = {}) {
     if (existing) {
       const m = await reader.readManifest(existing.key_prefix);
       if (m && ownedManifestMatches(existing, m, url, urlHash)) {
-        if (m.status !== "failed") return c.json(annotateStale(m, c.env, services), 200);
+        const effective = annotateStale(m, c.env, services);
+        if (effective.status !== "failed") return c.json(effective, 200);
         const result = await enqueueMarkdownImport(
           reader,
           c.env,
           services,
           existing,
-          m,
+          effective,
           parsed.data.markdown,
           parsed.data.title,
           parsed.data.email ?? false,
@@ -718,7 +719,10 @@ async function enqueueMarkdownImport(
   email: boolean,
 ): Promise<SubmitJsonResult> {
   const effectiveManifest = annotateStale(manifest, env, services);
-  if (effectiveManifest.active_attempt?.status === "running") {
+  if (
+    effectiveManifest.status !== "failed" &&
+    effectiveManifest.active_attempt?.status === "running"
+  ) {
     return { body: { error: "reading already has an active attempt" }, status: 409 };
   }
   if (!env.READING_JOBS) {

@@ -942,6 +942,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
   it("does not let a stale successful job overwrite a newer by-url owner", async () => {
     const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/stale-job-success";
     const urlHash = await sha256Hex(url);
@@ -974,6 +975,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       id: "rd_STALE",
       status: "ready",
     });
+    await expect(reader.readListIndex()).resolves.toBeNull();
+    expect(vector.upsert).not.toHaveBeenCalled();
   });
 
   it("imports Markdown without fetching the source URL", async () => {
@@ -1155,6 +1158,86 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(await content.text()).toBe(markdown);
+  });
+
+  it("imports Markdown over a stale pending URL reading for the same source URL", async () => {
+    const sourceUrl = "https://example.com/stale-pending-then-imported-markdown";
+    const markdown = "# Imported Stale Pending\n\nThe user supplied the captured text.";
+    const fetchFn = makeStubFetch({
+      toolInput: {
+        title: "Imported Stale Pending",
+        tldr: "A stale pending URL was recovered with markdown.",
+        tags: ["markdown"],
+        keywords: ["recovery"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Recovered summary",
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const stalePending: Manifest = {
+      id: "rd_STALE_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_STALE",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T18:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T18:00:00.000Z",
+      updated_at: "2026-04-26T18:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(stalePending.id, stalePending.created_at);
+    await reader.writeManifest(keyPrefix, stalePending);
+    await reader.writeByIdPointer(stalePending.id, {
+      id: stalePending.id,
+      key_prefix: keyPrefix,
+    });
+    await reader.writeByUrlPointer(urlHash, {
+      id: stalePending.id,
+      key_prefix: keyPrefix,
+    });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(stalePending, keyPrefix));
+
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Imported Stale Pending",
+          markdown,
+        }),
+      }),
+      customEnv,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({
+      id: stalePending.id,
+      status: "pending",
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: stalePending.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Imported Stale Pending", markdown },
+    });
   });
 
   it("failure path: source returns 404 -> manifest ends failed with by-url ownership, error logged", async () => {
