@@ -1154,6 +1154,139 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(vector.vectors.has(id)).toBe(true);
   });
 
+  it("does not let stale success cleanup erase newer visibility after losing the manifest CAS", async () => {
+    const services = makeServices(makeStubFetch({
+      toolInput: {
+        title: "Stale Title",
+        tldr: "A stale summary.",
+        tags: ["stale"],
+        keywords: ["stale"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Stale summary",
+      },
+    }));
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-cas-cleanup";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_CAS_WINNER";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const pending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_OLD",
+        trigger: "submit",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-04-26T19:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const newerReady: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Winning Title",
+      tldr: "The newer attempt already won.",
+      tags: ["winner"],
+      keywords: ["winner"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Winning summary",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 18,
+      extracted_bytes: 18,
+      content_sha256: "1".repeat(64),
+      fetched_at: "2026-04-26T19:30:00.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+      last_attempt: {
+        id: "at_NEW_READY",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T19:29:00.000Z",
+        finished_at: "2026-04-26T19:30:00.000Z",
+      },
+    };
+    await reader.writeManifest(keyPrefix, pending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
+
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const manifestKey = `${keyPrefix}/manifest.json`;
+    let injectedWinner = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === manifestKey && options?.onlyIf && !injectedWinner) {
+          injectedWinner = true;
+          vector.vectors.set(id, {
+            values: new Array(1536).fill(0.84),
+            metadata: { url, title: "Winning Title" },
+          });
+          await originalPut(manifestKey, JSON.stringify(newerReady), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          await originalPut("index/list.json", JSON.stringify({
+            version: 1,
+            items: [manifestToIndexItem(newerReady, keyPrefix)],
+          }), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          return null;
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+    putSpy.mockRestore();
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "ready",
+      title: "Winning Title",
+      last_attempt: { id: "at_NEW_READY" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "ready", title: "Winning Title", last_attempt: { id: "at_NEW_READY" } }],
+    });
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.get(id)?.metadata.title).toBe("Winning Title");
+  });
+
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
     const reader = new ReadingStore(env.READINGS_BUCKET);

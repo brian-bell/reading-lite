@@ -21,6 +21,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
+import type { ListIndexItem } from "./schemas/api";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -191,8 +192,7 @@ export async function processReading(
         }),
       );
     } else if (canRemoveVisibility) {
-      await reader.removeListIndexItem(args.id);
-      await similarity.delete(args.id);
+      await removeAttemptVisibility(reader, similarity, args);
     }
 
     let manifestWritten = false;
@@ -201,8 +201,7 @@ export async function processReading(
     });
     if (!manifestWritten) {
       if (canPublishVisibility) {
-        await reader.removeListIndexItem(args.id);
-        await similarity.delete(args.id);
+        await restoreCurrentListVisibility(reader, args);
       }
       return;
     }
@@ -368,7 +367,7 @@ async function markFailed(
           manifestToIndexItem(manifest, args.keyPrefix),
         );
       } else if (terminalState.canRemoveVisibility) {
-        await reader.removeListIndexItem(args.id);
+        await removeAttemptListVisibility(reader, args);
       }
     } catch (indexErr) {
       console.error(indexErr);
@@ -408,7 +407,7 @@ async function markFailed(
         manifestToIndexItem(manifest, args.keyPrefix),
       );
     } else if (terminalState.canRemoveVisibility) {
-      await reader.removeListIndexItem(args.id);
+      await removeAttemptListVisibility(reader, args);
     }
   } catch (indexErr) {
     console.error(indexErr);
@@ -552,6 +551,65 @@ async function writeManifestForTerminalState(
   }
   await reader.writeManifest(args.keyPrefix, manifest);
   return true;
+}
+
+async function restoreCurrentListVisibility(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return;
+  await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));
+}
+
+async function removeAttemptVisibility(
+  reader: ReadingStore,
+  similarity: SimilarityStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  if (!(await removeAttemptListVisibility(reader, args))) return;
+  if (!(await readingCanRemoveAttemptVector(reader, args))) return;
+  await similarity.delete(args.id);
+}
+
+async function removeAttemptListVisibility(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  let removed = false;
+  await reader.removeListIndexItemIf(args.id, (item) => {
+    const matches = listItemBelongsToAttempt(args, item);
+    removed = removed || matches;
+    return matches;
+  });
+  return removed;
+}
+
+async function readingCanRemoveAttemptVector(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return true;
+  return manifestBelongsToAttempt(args, manifest);
+}
+
+function listItemBelongsToAttempt(
+  args: ProcessReadingArgs,
+  item: ListIndexItem,
+): boolean {
+  if (item.id !== args.id || item.key_prefix !== args.keyPrefix) return false;
+  const attemptId = args.attemptId ?? `at_${args.id}`;
+  if (item.active_attempt?.id === attemptId) return true;
+  if (item.last_attempt?.id === attemptId) return true;
+  return item.active_attempt === undefined && item.last_attempt === undefined && item.status === "pending";
+}
+
+function manifestBelongsToAttempt(args: ProcessReadingArgs, manifest: Manifest): boolean {
+  const attemptId = args.attemptId ?? `at_${args.id}`;
+  if (manifest.active_attempt?.id === attemptId) return true;
+  if (manifest.last_attempt?.id === attemptId) return true;
+  return manifest.active_attempt === undefined && manifest.status === "pending";
 }
 
 export function newAttemptId(services: Services): string {

@@ -375,6 +375,21 @@ describe("ReadingStore — appendOrReplaceListIndexItem", () => {
     await expect(store.readListIndex()).resolves.toBeNull();
   });
 
+  it("removes an item only when the predicate matches", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await store.appendOrReplaceListIndexItem(
+      indexItem({ id: "rd_a", status: "pending" }),
+    );
+
+    await store.removeListIndexItemIf("rd_a", (item) => item.status === "ready");
+    await expect(store.readListIndex()).resolves.toMatchObject({
+      items: [{ id: "rd_a", status: "pending" }],
+    });
+
+    await store.removeListIndexItemIf("rd_a", (item) => item.status === "pending");
+    await expect(store.readListIndex()).resolves.toMatchObject({ items: [] });
+  });
+
   it("retries and merges a concurrent write instead of clobbering it", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET, { sleep: async () => {} });
     await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));

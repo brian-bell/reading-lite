@@ -377,6 +377,17 @@ export class ReadingStore {
     await this.mutateListIndex((items) => items.filter((i) => i.id !== id));
   }
 
+  async removeListIndexItemIf(
+    id: string,
+    predicate: (item: ListIndexItem) => boolean,
+  ): Promise<void> {
+    const index = await this.readListIndex();
+    if (!index) return;
+    await this.mutateListIndex((items) =>
+      items.filter((i) => i.id !== id || !predicate(i)),
+    );
+  }
+
   // Read-modify-write of index/list.json guarded by an R2 compare-and-set:
   // the put is conditional on the etag we read (If-None-Match:* when the object
   // is absent). A concurrent writer changes the etag, R2 returns null for our
