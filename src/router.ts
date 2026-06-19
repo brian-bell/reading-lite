@@ -158,7 +158,20 @@ export function createApp(opts: AppOptions = {}) {
     const existing = await reader.readByUrlPointer(urlHash);
     if (existing) {
       const m = await reader.readManifest(existing.key_prefix);
-      if (m) return c.json(m, 200);
+      if (m && ownedManifestMatches(existing, m, url, urlHash)) {
+        if (m.status !== "failed") return c.json(annotateStale(m, c.env, services), 200);
+        const result = await enqueueMarkdownImport(
+          reader,
+          c.env,
+          services,
+          existing,
+          m,
+          parsed.data.markdown,
+          parsed.data.title,
+          parsed.data.email ?? false,
+        );
+        return c.json(result.body, result.status);
+      }
     }
 
     const source: ProcessReadingSource = {
@@ -524,7 +537,7 @@ async function damagedOwnerResult(
     !opts.allowFreshInitializingConflict ||
     !isFreshMissingManifestPointer(owner.pointer, services.now())
   ) {
-    const legacy = await reader.findManifestByUrl(url);
+    const legacy = await reader.findManifestByUrl(url, { deepScan: true });
     if (legacy) {
       const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
       const replaced = await reader.replaceByUrlPointerIfCurrent(
@@ -687,6 +700,101 @@ async function enqueueReprocess(
     body: {
       id: effectiveManifest.id,
       status: nextManifest.status,
+      poll: `/readings/${effectiveManifest.id}`,
+      attempt_id: attemptId,
+    },
+    status: 202,
+  };
+}
+
+async function enqueueMarkdownImport(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  pointer: ByUrlPointer,
+  manifest: Manifest,
+  markdown: string,
+  title: string | undefined,
+  email: boolean,
+): Promise<SubmitJsonResult> {
+  const effectiveManifest = annotateStale(manifest, env, services);
+  if (effectiveManifest.active_attempt?.status === "running") {
+    return { body: { error: "reading already has an active attempt" }, status: 409 };
+  }
+  if (!env.READING_JOBS) {
+    return {
+      body: { error: "queue binding READING_JOBS is not configured" },
+      status: 503,
+    };
+  }
+
+  const attemptStartedAt = services.now();
+  const attemptId = newAttemptId(services);
+  const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
+  const markdownTitle = title ?? effectiveManifest.title;
+  const source: ProcessReadingSource = {
+    kind: "markdown",
+    markdown,
+    ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
+  };
+  const args: ProcessReadingArgs = {
+    id: effectiveManifest.id,
+    url: effectiveManifest.url,
+    urlHash: effectiveManifest.url_hash,
+    createdAt: effectiveManifest.created_at,
+    keyPrefix: pointer.key_prefix,
+    source,
+    attemptId,
+    attemptStartedAt,
+    trigger: "import",
+    email,
+  };
+  const manifestWithoutError: Manifest = { ...effectiveManifest };
+  delete manifestWithoutError.error;
+  delete manifestWithoutError.active_attempt;
+  const pendingManifest: Manifest = {
+    ...manifestWithoutError,
+    source_type: "markdown",
+    status: "pending",
+    active_attempt: activeAttempt,
+    ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
+    content_type: "text/markdown; charset=utf-8",
+    content_status: "captured",
+    content_bytes: new TextEncoder().encode(markdown).byteLength,
+    content_sha256: await sha256Hex(markdown),
+    updated_at: attemptStartedAt,
+  };
+
+  await reader.writeManifest(pointer.key_prefix, pendingManifest);
+  await reader.writeByIdPointer(effectiveManifest.id, pointer);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(pendingManifest, pointer.key_prefix),
+  );
+
+  try {
+    await env.READING_JOBS.send(args);
+  } catch (err) {
+    console.error(err);
+    const failedManifest = manifestForQueueSendFailure(
+      pendingManifest,
+      activeAttempt,
+      err,
+      services,
+    );
+    await reader.writeManifest(pointer.key_prefix, failedManifest);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(failedManifest, pointer.key_prefix),
+    );
+    return {
+      body: { error: "queue send failed", id: effectiveManifest.id },
+      status: 503,
+    };
+  }
+
+  return {
+    body: {
+      id: effectiveManifest.id,
+      status: pendingManifest.status,
       poll: `/readings/${effectiveManifest.id}`,
       attempt_id: attemptId,
     },

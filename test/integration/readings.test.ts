@@ -663,7 +663,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id: newer.id, trigger: "reprocess" });
   });
 
-  it("claims a legacy failed reading when index/list.json exists but lacks the URL", async () => {
+  it("repairs a damaged by-url owner from a legacy failed reading missing from index/list.json", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
@@ -697,6 +697,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
     await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
 
     const retry = await app.fetch(
       new Request("http://t/readings", {
@@ -710,6 +714,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     expect(retry.status).toBe(202);
     expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
   });
@@ -1057,6 +1065,96 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     expect(calledUrls).not.toContain(sourceUrl);
     expect(resendCalls(fetchFn)).toHaveLength(0);
+  });
+
+  it("imports Markdown over a failed URL reading for the same source URL", async () => {
+    const sourceUrl = "https://example.com/failed-then-imported-markdown";
+    const markdown = "# Imported Recovery\n\nThe user supplied the captured text.";
+    const fetchFn = makeStubFetch({
+      toolInput: {
+        title: "Imported Recovery",
+        tldr: "A failed URL was recovered with markdown.",
+        tags: ["markdown"],
+        keywords: ["recovery"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Recovered summary",
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const failed: Manifest = {
+      id: "rd_FAILED_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
+    await reader.writeManifest(keyPrefix, failed);
+    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Imported Recovery",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.clone().json()).toMatchObject({
+      id: failed.id,
+      status: "pending",
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: failed.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Imported Recovery", markdown },
+    });
+
+    await drainQueue(services);
+
+    const get = await app.request(
+      `/readings/${failed.id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(get.status).toBe(200);
+    expect(await get.json()).toMatchObject({
+      id: failed.id,
+      status: "ready",
+      source_type: "markdown",
+      title: "Imported Recovery",
+      last_attempt: { trigger: "import" },
+    });
+
+    const content = await app.request(
+      `/readings/${failed.id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(markdown);
   });
 
   it("failure path: source returns 404 -> manifest ends failed with by-url ownership, error logged", async () => {

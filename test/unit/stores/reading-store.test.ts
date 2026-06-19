@@ -658,4 +658,36 @@ describe("ReadingStore — listManifests", () => {
 
     await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
   });
+
+  it("does not scan manifests when the list index has no rows for the URL", async () => {
+    const requestedUrl = "https://example.com/requested";
+    const listIndex: ListIndex = {
+      version: 1,
+      items: [
+        indexItem({
+          id: "rd_other",
+          key_prefix: "readings/2026/04/26T200000Z-rd_other",
+          url: "https://example.com/other",
+        }),
+      ],
+    };
+    let listCalls = 0;
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") {
+          return { text: async () => JSON.stringify(listIndex) } as unknown as R2ObjectBody;
+        }
+        throw new Error(`unexpected object read: ${key}`);
+      },
+      list: async () => {
+        listCalls++;
+        return { objects: [], truncated: false };
+      },
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+
+    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
+    expect(listCalls).toBe(0);
+  });
 });

@@ -64,6 +64,10 @@ export interface ListManifestsParams {
   tag?: string;
 }
 
+export interface FindManifestByUrlOptions {
+  deepScan?: boolean;
+}
+
 export function manifestToIndexItem(
   m: Manifest,
   keyPrefix: string,
@@ -381,20 +385,28 @@ export class ReadingStore {
     return index?.items.find((i) => i.id === id) ?? null;
   }
 
-  async findManifestByUrl(url: string): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+  async findManifestByUrl(
+    url: string,
+    opts: FindManifestByUrlOptions = {},
+  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
     const index = await this.readListIndex();
-    // URL recovery is only used when the by-url owner is absent or damaged.
-    // In that state an incomplete index/list.json cannot be trusted, so merge
-    // indexed candidates with a manifest scan and choose the newest surviving
-    // manifest for the URL.
-    const rebuilt = await this.rebuildListIndex();
     const candidates = new Map<string, ListIndexItem>();
-    for (const item of index?.items ?? []) {
+    const indexedMatches = (index?.items ?? []).filter((item) => item.url === url);
+    for (const item of indexedMatches) {
       if (item.url === url) candidates.set(item.key_prefix, item);
     }
-    for (const item of rebuilt.items) {
-      if (item.url === url) candidates.set(item.key_prefix, item);
+
+    // Avoid turning every first-time URL submit into a full bucket scan. We
+    // scan when there is no index to consult, when an indexed same-URL row
+    // needs stale-index reconciliation, or when a damaged owner asks for the
+    // strongest repair path explicitly.
+    if (!index || indexedMatches.length > 0 || opts.deepScan) {
+      const rebuilt = await this.rebuildListIndex();
+      for (const item of rebuilt.items) {
+        if (item.url === url) candidates.set(item.key_prefix, item);
+      }
     }
+
     return this.findNewestManifestByUrl([...candidates.values()], url, await sha256Hex(url));
   }
 
