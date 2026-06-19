@@ -736,6 +736,7 @@ async function enqueueMarkdownImport(
   const attemptId = newAttemptId(services);
   const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
   const markdownTitle = title ?? effectiveManifest.title;
+  const markdownBytes = new TextEncoder().encode(markdown);
   const source: ProcessReadingSource = {
     kind: "markdown",
     markdown,
@@ -764,11 +765,18 @@ async function enqueueMarkdownImport(
     ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
     content_type: "text/markdown; charset=utf-8",
     content_status: "captured",
-    content_bytes: new TextEncoder().encode(markdown).byteLength,
+    content_bytes: markdownBytes.byteLength,
     content_sha256: await sha256Hex(markdown),
     updated_at: attemptStartedAt,
   };
 
+  await reader.writeRaw(
+    pointer.key_prefix,
+    "md",
+    markdownBytes,
+    "text/markdown; charset=utf-8",
+  );
+  await reader.writeExtracted(pointer.key_prefix, markdown);
   await reader.writeManifest(pointer.key_prefix, pendingManifest);
   await reader.writeByIdPointer(effectiveManifest.id, pointer);
   await reader.appendOrReplaceListIndexItem(

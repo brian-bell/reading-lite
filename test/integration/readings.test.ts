@@ -1219,6 +1219,75 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await content.text()).toBe(markdown);
   });
 
+  it("keeps markdown import retryable when queue send fails", async () => {
+    const sourceUrl = "https://example.com/import-queue-send-fails";
+    const markdown = "# Retryable Import\n\nThe markdown body should survive queue failure.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const failed: Manifest = {
+      id: "rd_IMPORT_QUEUE_FAIL",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
+    await reader.writeManifest(keyPrefix, failed);
+    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
+    installRejectingQueueStub();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const importAttempt = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Retryable Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(importAttempt.status).toBe(503);
+    const extracted = await reader.readExtracted(keyPrefix);
+    expect(await extracted?.text()).toBe(markdown);
+
+    installQueueStub();
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: failed.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: failed.id,
+      trigger: "reprocess",
+      source: { kind: "markdown", title: "Retryable Import", markdown },
+    });
+    consoleErr.mockRestore();
+  });
+
   it("imports Markdown over a stale pending URL reading for the same source URL", async () => {
     const sourceUrl = "https://example.com/stale-pending-then-imported-markdown";
     const markdown = "# Imported Stale Pending\n\nThe user supplied the captured text.";
