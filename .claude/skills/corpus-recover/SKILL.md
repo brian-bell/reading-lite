@@ -36,7 +36,7 @@ The mapping lives in `scripts/corpus-lib/policy.ts` (`recoveryAction`).
 
 ## Bulk path: `--batch` (Anthropic Message Batch API)
 
-For a backlog (migrations, recovering dozens–thousands), `--batch` summarizes
+For a backlog (backfills, recovering dozens–thousands), `--batch` summarizes
 through the **Anthropic Message Batches API** instead of the realtime queue:
 **~50% cheaper**, no per-minute rate-limit burst, nothing to strand. Use it for
 non-latency-sensitive backfills; the realtime queue (and `--wave`) stays the
@@ -78,8 +78,8 @@ npm run corpus-recover -- --index .../index.json --batch --execute
   `corpus-audit` may label the readings "stranded" if they outlive
   `PENDING_TTL_SECONDS` — benign; the sidecar is the source of truth and the
   terminal writes land on completion.
-- **Credentials:** needs R2 (S3) + Vectorize creds from `.migrate.vars`
-  (`MIGRATE_*`, shared with the migration script) plus `ANTHROPIC_API_KEY` /
+- **Credentials:** needs R2 (S3) + Vectorize creds from `.corpus.vars`
+  (`CORPUS_*`) plus `ANTHROPIC_API_KEY` /
   `OPENAI_API_KEY` / `ANTHROPIC_MODEL` from `.dev.vars`/`.prd.vars`.
 
 ## Prerequisites

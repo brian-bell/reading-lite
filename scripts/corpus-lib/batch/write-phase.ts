@@ -31,8 +31,8 @@ const LIST_INDEX_KEY = "index/list.json";
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
 //              ready snapshot) + index item, and NO by-url pointer (failed URLs
 //              stay re-submittable).
-// index/list.json is merged once at the end (read-modify-write), mirroring the
-// migrate bulk path. The script is effectively the sole writer during a backfill.
+// index/list.json is merged once at the end (read-modify-write). The script is
+// effectively the sole writer during a backfill.
 export async function writeResults(
   sidecar: Sidecar,
   results: BatchResult[],

@@ -56,7 +56,7 @@ RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
 
 # `remote = true` makes `wrangler dev` bind to the real staging bucket
-# instead of Miniflare's local emulator, so migrated rows are visible from
+# instead of Miniflare's local emulator, so existing rows are visible from
 # the dev server. Vectorize has no local emulator; remote is required.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"

@@ -37,10 +37,10 @@ export interface BatchConfig {
   openaiApiKey: string;
 }
 
-// Credentials for the bulk batch path. R2 (S3) + Vectorize come from .migrate.vars
-// (MIGRATE_*, shared with the migration script); the Anthropic/OpenAI keys and
-// model come from .dev.vars/.prd.vars (the same names the worker uses). A flat
-// var map is injected so this is testable; production reads env + the dot files.
+// Credentials for the bulk batch path. R2 (S3) + Vectorize come from .corpus.vars
+// (CORPUS_*); the Anthropic/OpenAI keys and model come from .dev.vars/.prd.vars
+// (the same names the worker uses). A flat var map is injected so this is
+// testable; production reads env + the dot files.
 export function resolveBatchConfig(
   flags: { bucket?: string },
   deps?: { vars?: Record<string, string | undefined> },
@@ -50,7 +50,7 @@ export function resolveBatchConfig(
     {
       ...loadDotVars(".dev.vars"),
       ...loadDotVars(".prd.vars"),
-      ...loadDotVars(".migrate.vars"),
+      ...loadDotVars(".corpus.vars"),
       ...process.env,
     };
 
@@ -61,26 +61,26 @@ export function resolveBatchConfig(
     return v ?? "";
   };
 
-  const accountId = need("MIGRATE_R2_ACCOUNT_ID");
-  const accessKeyId = need("MIGRATE_R2_ACCESS_KEY");
-  const secretAccessKey = need("MIGRATE_R2_SECRET_KEY");
+  const accountId = need("CORPUS_R2_ACCOUNT_ID");
+  const accessKeyId = need("CORPUS_R2_ACCESS_KEY");
+  const secretAccessKey = need("CORPUS_R2_SECRET_KEY");
   const bucket =
-    flags.bucket ?? vars.MIGRATE_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
-  const cfApiToken = need("MIGRATE_CF_API_TOKEN");
+    flags.bucket ?? vars.CORPUS_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
+  const cfApiToken = need("CORPUS_CF_API_TOKEN");
   const anthropicApiKey = need("ANTHROPIC_API_KEY");
   const openaiApiKey = need("OPENAI_API_KEY");
 
   if (missing.length > 0) {
     throw new Error(
-      `missing batch config: ${missing.join(", ")} (set in env or .migrate.vars/.dev.vars)`,
+      `missing batch config: ${missing.join(", ")} (set in env or .corpus.vars/.dev.vars)`,
     );
   }
 
   return {
     r2: { accountId, accessKeyId, secretAccessKey, bucket },
     vectorize: {
-      accountId: vars.MIGRATE_VECTORIZE_ACCOUNT_ID ?? accountId,
-      index: vars.MIGRATE_VECTORIZE_INDEX ?? bucket,
+      accountId: vars.CORPUS_VECTORIZE_ACCOUNT_ID ?? accountId,
+      index: vars.CORPUS_VECTORIZE_INDEX ?? bucket,
       apiToken: cfApiToken,
     },
     anthropicApiKey,
