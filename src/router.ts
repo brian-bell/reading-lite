@@ -205,6 +205,12 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
+    // `wrangler dev` runs without a Vectorize binding (no local emulator), so
+    // degrade to an empty result set rather than throwing a 500. In production
+    // the binding is always present.
+    if (!c.env.READINGS_INDEX) {
+      return c.json({ items: [] });
+    }
     const similarity = new SimilarityStore(c.env.READINGS_INDEX);
     const items = await similarity.query(parsed.data.query_embedding, parsed.data.k);
     return c.json({ items });

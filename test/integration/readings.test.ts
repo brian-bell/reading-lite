@@ -1224,6 +1224,25 @@ describe("POST /readings/similar", () => {
     expect(json.items).toHaveLength(1);
     expect(json.items[0]!.id).toBe("rd_seed");
   });
+
+  it("returns an empty result set when the Vectorize binding is absent (local dev)", async () => {
+    // `wrangler dev` runs without a READINGS_INDEX binding (no local emulator).
+    // The route must degrade to empty results, not throw a 500.
+    delete (env as unknown as { READINGS_INDEX?: VectorizeIndex }).READINGS_INDEX;
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.request(
+      "/readings/similar",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ query_embedding: new Array(1536).fill(0.1), k: 5 }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { items: unknown[] };
+    expect(json.items).toEqual([]);
+  });
 });
 
 describe("GET /readings — list with q, tag, offset, limit", () => {
