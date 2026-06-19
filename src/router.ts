@@ -175,6 +175,29 @@ export function createApp(opts: AppOptions = {}) {
       }
     }
 
+    const legacy = await reader.findManifestByUrl(url);
+    if (legacy) {
+      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
+      try {
+        await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
+        const effective = annotateStale(legacy.manifest, c.env, services);
+        if (effective.status !== "failed") return c.json(effective, 200);
+        const result = await enqueueMarkdownImport(
+          reader,
+          c.env,
+          services,
+          pointer,
+          effective,
+          parsed.data.markdown,
+          parsed.data.title,
+          parsed.data.email ?? false,
+        );
+        return c.json(result.body, result.status);
+      } catch (err) {
+        if (!(err instanceof PointerExistsError)) throw err;
+      }
+    }
+
     const result = await createNewReadingForMarkdownImport(
       reader,
       c.env,

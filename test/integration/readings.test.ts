@@ -1297,6 +1297,60 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await content.text()).toBe(markdown);
   });
 
+  it("imports Markdown over a legacy failed reading that has no by-url pointer", async () => {
+    const sourceUrl = "https://example.com/legacy-failed-import-markdown";
+    const markdown = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const legacy: Manifest = {
+      id: "rd_LEGACY_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Legacy Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: keyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: legacy.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Import", markdown },
+    });
+  });
+
   it("keeps markdown import retryable when queue send fails", async () => {
     const sourceUrl = "https://example.com/import-queue-send-fails";
     const markdown = "# Retryable Import\n\nThe markdown body should survive queue failure.";
