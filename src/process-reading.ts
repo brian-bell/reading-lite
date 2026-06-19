@@ -184,6 +184,8 @@ export async function processReading(
           await reader.appendOrReplaceListIndexItem(
             manifestToIndexItem(finalManifest, args.keyPrefix),
           );
+        } else {
+          await reader.removeListIndexItem(args.id);
         }
       },
     );
@@ -201,6 +203,8 @@ export async function processReading(
       await reader.appendOrReplaceListIndexItem(
         manifestToIndexItem(finalManifest, args.keyPrefix),
       );
+    } else {
+      await reader.removeListIndexItem(args.id);
     }
 
     if (ownsUrlForFinalWrites && shouldSendEmail(args)) {
@@ -360,6 +364,8 @@ async function markFailed(
         await reader.appendOrReplaceListIndexItem(
           manifestToIndexItem(manifest, args.keyPrefix),
         );
+      } else {
+        await reader.removeListIndexItem(args.id);
       }
     } catch (indexErr) {
       console.error(indexErr);
@@ -396,6 +402,8 @@ async function markFailed(
       await reader.appendOrReplaceListIndexItem(
         manifestToIndexItem(manifest, args.keyPrefix),
       );
+    } else {
+      await reader.removeListIndexItem(args.id);
     }
   } catch (indexErr) {
     console.error(indexErr);

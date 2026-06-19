@@ -953,13 +953,23 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       key_prefix: ownerPrefix,
     });
 
-    const stalePrefix = buildKeyPrefix("rd_STALE", "2026-04-26T19:00:00.000Z");
+    const staleId = "rd_STALE";
+    const staleCreatedAt = "2026-04-26T19:00:00.000Z";
+    const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
+    await reader.appendOrReplaceListIndexItem({
+      id: staleId,
+      key_prefix: stalePrefix,
+      url,
+      status: "pending",
+      created_at: staleCreatedAt,
+      updated_at: staleCreatedAt,
+    });
     await processReading(
       {
-        id: "rd_STALE",
+        id: staleId,
         url,
         urlHash,
-        createdAt: "2026-04-26T19:00:00.000Z",
+        createdAt: staleCreatedAt,
         keyPrefix: stalePrefix,
         trigger: "submit",
       },
@@ -972,10 +982,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       key_prefix: ownerPrefix,
     });
     await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
-      id: "rd_STALE",
+      id: staleId,
       status: "ready",
     });
-    await expect(reader.readListIndex()).resolves.toBeNull();
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
     expect(vector.upsert).not.toHaveBeenCalled();
   });
 
@@ -992,13 +1002,23 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const stalePrefix = buildKeyPrefix("rd_STALE_FAILED", "2026-04-26T19:00:00.000Z");
+    const staleId = "rd_STALE_FAILED";
+    const staleCreatedAt = "2026-04-26T19:00:00.000Z";
+    const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
+    await reader.appendOrReplaceListIndexItem({
+      id: staleId,
+      key_prefix: stalePrefix,
+      url,
+      status: "pending",
+      created_at: staleCreatedAt,
+      updated_at: staleCreatedAt,
+    });
     await processReading(
       {
-        id: "rd_STALE_FAILED",
+        id: staleId,
         url,
         urlHash,
-        createdAt: "2026-04-26T19:00:00.000Z",
+        createdAt: staleCreatedAt,
         keyPrefix: stalePrefix,
         trigger: "submit",
       },
@@ -1011,10 +1031,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       key_prefix: ownerPrefix,
     });
     await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
-      id: "rd_STALE_FAILED",
+      id: staleId,
       status: "failed",
     });
-    await expect(reader.readListIndex()).resolves.toBeNull();
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
     consoleErr.mockRestore();
   });
 
