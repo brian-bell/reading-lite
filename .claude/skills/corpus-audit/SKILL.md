@@ -1,6 +1,6 @@
 ---
 name: corpus-audit
-description: Read-only health audit of the reading-lite corpus. Inventories every reading that is not "ready" (failed + pending), categorizes each failure by reason, splits pending into stranded vs orphan-duplicate, and optionally flags paywall-teaser readings. Writes index.json + INDEX.md. Use to see what is broken in the corpus and why, before recovering. Safe to run anytime — never writes to the corpus.
+description: Read-only health audit of the reading-lite corpus. Inventories every reading that is not "ready" (failed + pending), categorizes each failure by reason, splits both failed and pending into real failures vs orphan-duplicates (a url that already has a ready copy — droppable cruft), and optionally flags paywall-teaser readings. Writes index.json + INDEX.md. Use to see what is broken in the corpus and why, before recovering. Safe to run anytime — never writes to the corpus.
 ---
 
 # corpus-audit
@@ -15,7 +15,8 @@ is **not** `ready`, with a categorized reason for each. Read-only: it reads
 Writes two files to `--out` (default: cwd):
 - **`index.json`** — structured rows (the input `corpus-recover` consumes).
 - **`INDEX.md`** — human-readable tables, grouped:
-  - **Failed** — deduped by URL, with a derived reason (HTTP 403/404/429/5xx, paywalls, dead links, oversized, summarize failures, etc.). A failed URL that *also* has a `ready` copy (e.g. drained by a prior local-extract) is excluded.
+  - **Failed** — deduped by URL, with a derived reason (HTTP 403/404/429/5xx, paywalls, dead links, oversized, summarize failures, etc.). Real failures only: a failed URL that *also* has a `ready` copy is moved to the next group instead.
+  - **Failed — orphan dup** — failed copies of a URL that *already* has a `ready` reading (earlier attempts left behind after a later success, or a re-submit that lost a fetch race). Not real failures — cosmetic cruft. The `ready` copy owns the by-url pointer + embedding, so these are safe to remove with `corpus-drop <url>` (which keeps the ready copy). `× N` is the failed-copy count per URL.
   - **Pending — stranded** — never completed and older than the pending TTL, no `ready` copy (reprocess candidates).
   - **Pending — orphan dup** — the URL already has a `ready` reading (cosmetic index cruft).
   - **Pending — in-flight** — within the pending TTL; likely still processing, no action.
@@ -52,7 +53,8 @@ Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--o
 
 ## How categories are decided
 - **Failed reason** comes from the manifest error code + the HTTP status embedded in `BadStatusError` messages, with a few hand-verified per-URL overrides (PDF, YouTube, confirmed dead links). Reddit URLs are flagged as needing the `.json` endpoint.
-- **Stranded vs orphan-dup vs in-flight**: a pending URL that *also* has a `ready` reading is an orphan duplicate; one within the pending TTL (900s, mirroring `PENDING_TTL_SECONDS`; measured from `updated_at` when present) is in-flight (`fresh`); only an older pending with no `ready` copy is genuinely stranded.
+- **Orphan dup (failed or pending)**: any non-ready reading whose URL *also* has a `ready` reading. The content is already in the corpus, so it can't be recovered — `corpus-recover` maps it to `none`, and the fix is `corpus-drop`. This applies symmetrically to failed and pending readings.
+- **Stranded vs orphan-dup vs in-flight** (pending): a pending URL that *also* has a `ready` reading is an orphan duplicate; one within the pending TTL (900s, mirroring `PENDING_TTL_SECONDS`; measured from `updated_at` when present) is in-flight (`fresh`); only an older pending with no `ready` copy is genuinely stranded.
 - **Teaser** (`--teasers` only): a `ready` pragmaticengineer/substack reading whose extracted content is short (< ~2.5 KB) or short-ish with a paywall-cutoff marker. Subscribe *footers* on full articles are deliberately not enough.
 
 ## Implementation
@@ -62,4 +64,4 @@ Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--o
 - Tests: `test/unit/corpus/` (node project)
 
 ## Next step
-Feed the resulting `index.json` to **`corpus-recover`** to act on it (reprocess / re-extract). That step writes and costs money; this one doesn't.
+Feed the resulting `index.json` to **`corpus-recover`** to act on it (reprocess / re-extract). That step writes and costs money; this one doesn't. For the **orphan dup** groups (failed or pending), there's nothing to recover — clean them with **`corpus-drop`** instead (it keeps the ready copy).

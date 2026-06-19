@@ -6,24 +6,47 @@ import type { AuditRow, ListItem } from "./types";
 // may still be in-flight or backing off, so we don't treat it as stranded.
 export const STRANDED_AFTER_MS = 900_000;
 
+function failedRow(rep: ListItem, count: number): AuditRow {
+  return {
+    category: "failed",
+    url: rep.url,
+    short: shortUrl(rep.url),
+    reading_id: rep.id,
+    key_prefix: rep.key_prefix,
+    attempts: count,
+    code: rep.error?.code ?? "?",
+    stage: rep.error?.stage ?? "—",
+    message: rep.error?.message ?? "",
+    reason: reasonForFailure(rep.error?.code, rep.error?.message, rep.url),
+  };
+}
+
+const byReasonThenUrl = (a: AuditRow, b: AuditRow) =>
+  (a.reason ?? "").localeCompare(b.reason ?? "") || a.short.localeCompare(b.short);
+
+// Real, actionable failures: a failed url with NO ready copy. A url that also
+// has a ready reading is excluded here and surfaced by buildFailedOrphanDupRows
+// instead — recovery would be pointless (the content is already in the corpus).
 export function buildFailedRows(items: ListItem[]): AuditRow[] {
   const siblings = siblingStatuses(items);
   const failed = items.filter((i) => i.status === "failed");
   return dedupeByUrl(failed)
     .filter(({ rep }) => !siblings.get(rep.url)?.has("ready"))
-    .map(({ rep, count }) => ({
-      category: "failed" as const,
-      url: rep.url,
-      short: shortUrl(rep.url),
-      reading_id: rep.id,
-      key_prefix: rep.key_prefix,
-      attempts: count,
-      code: rep.error?.code ?? "?",
-      stage: rep.error?.stage ?? "—",
-      message: rep.error?.message ?? "",
-      reason: reasonForFailure(rep.error?.code, rep.error?.message, rep.url),
-    }))
-    .sort((a, b) => (a.reason ?? "").localeCompare(b.reason ?? "") || a.short.localeCompare(b.short));
+    .map(({ rep, count }) => failedRow(rep, count))
+    .sort(byReasonThenUrl);
+}
+
+// Cosmetic cruft: failed copies of a url that already has a ready reading
+// (e.g. earlier failed attempts left behind after a later success, or a
+// re-submit that lost a fetch race). The ready copy owns the by-url pointer +
+// embedding, so these are safe to drop via corpus-drop — not to recover.
+export function buildFailedOrphanDupRows(items: ListItem[]): AuditRow[] {
+  const siblings = siblingStatuses(items);
+  const failed = items.filter((i) => i.status === "failed");
+  return dedupeByUrl(failed)
+    .filter(({ rep }) => siblings.get(rep.url)?.has("ready"))
+    .map(({ rep, count }) => ({ ...failedRow(rep, count), class: "orphan-dup" as const }))
+    .sort(byReasonThenUrl);
 }
 
 export function buildPendingRows(
