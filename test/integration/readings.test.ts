@@ -979,6 +979,45 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(vector.upsert).not.toHaveBeenCalled();
   });
 
+  it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
+    const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-job-failure";
+    const urlHash = await sha256Hex(url);
+    const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
+    const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const stalePrefix = buildKeyPrefix("rd_STALE_FAILED", "2026-04-26T19:00:00.000Z");
+    await processReading(
+      {
+        id: "rd_STALE_FAILED",
+        url,
+        urlHash,
+        createdAt: "2026-04-26T19:00:00.000Z",
+        keyPrefix: stalePrefix,
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
+      id: "rd_STALE_FAILED",
+      status: "failed",
+    });
+    await expect(reader.readListIndex()).resolves.toBeNull();
+    consoleErr.mockRestore();
+  });
+
   it("imports Markdown without fetching the source URL", async () => {
     const sourceUrl = "https://x.com/example/status/2047312986696454584";
     const markdown = "# Imported Markdown\n\nThis is already captured local content.";

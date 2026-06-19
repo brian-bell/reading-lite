@@ -356,9 +356,11 @@ async function markFailed(
       console.error(writeErr);
     }
     try {
-      await reader.appendOrReplaceListIndexItem(
-        manifestToIndexItem(manifest, args.keyPrefix),
-      );
+      if (await readingCanPublishTerminalWrite(reader, args)) {
+        await reader.appendOrReplaceListIndexItem(
+          manifestToIndexItem(manifest, args.keyPrefix),
+        );
+      }
     } catch (indexErr) {
       console.error(indexErr);
     }
@@ -390,15 +392,25 @@ async function markFailed(
     console.error(writeErr);
   }
   try {
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(manifest, args.keyPrefix),
-    );
+    if (await readingCanPublishTerminalWrite(reader, args)) {
+      await reader.appendOrReplaceListIndexItem(
+        manifestToIndexItem(manifest, args.keyPrefix),
+      );
+    }
   } catch (indexErr) {
     console.error(indexErr);
   }
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
+}
+
+async function readingCanPublishTerminalWrite(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  const existing = await reader.readByUrlPointer(args.urlHash);
+  return !existing || (existing.id === args.id && existing.key_prefix === args.keyPrefix);
 }
 
 export async function newReadingArgs(
