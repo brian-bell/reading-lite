@@ -580,7 +580,7 @@ async function restoreCurrentListVisibility(
   await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));
 }
 
-async function removeAttemptVisibility(
+export async function removeAttemptVisibility(
   reader: ReadingStore,
   similarity: SimilarityStore,
   args: ProcessReadingArgs,
@@ -612,7 +612,7 @@ async function readingCanRemoveAttemptVector(
   return manifestBelongsToAttempt(args, manifest);
 }
 
-function listItemBelongsToAttempt(
+export function listItemBelongsToAttempt(
   args: ProcessReadingArgs,
   item: ListIndexItem,
 ): boolean {
@@ -623,11 +623,17 @@ function listItemBelongsToAttempt(
   return item.active_attempt === undefined && item.last_attempt === undefined && item.status === "pending";
 }
 
-function manifestBelongsToAttempt(args: ProcessReadingArgs, manifest: Manifest): boolean {
+export function manifestBelongsToAttempt(args: ProcessReadingArgs, manifest: Manifest): boolean {
   const attemptId = args.attemptId ?? `at_${args.id}`;
   if (manifest.active_attempt?.id === attemptId) return true;
   if (manifest.last_attempt?.id === attemptId) return true;
-  return manifest.active_attempt === undefined && manifest.status === "pending";
+  // Match the list-row gate's stricter vacant-pending rule: a manifest carrying
+  // a last_attempt was touched by another attempt, so we may not own its vector.
+  return (
+    manifest.active_attempt === undefined &&
+    manifest.last_attempt === undefined &&
+    manifest.status === "pending"
+  );
 }
 
 export function newAttemptId(services: Services): string {
