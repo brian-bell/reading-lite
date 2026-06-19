@@ -133,6 +133,8 @@ export async function processReading(
           created_at: args.createdAt,
         }),
       );
+    } else {
+      await similarity.delete(args.id);
     }
 
     let finalManifest: Manifest = {

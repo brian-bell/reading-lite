@@ -15,12 +15,21 @@ import type { Manifest } from "../../src/schemas/manifest";
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
 // has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per test.
 type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): { upsert: AnyMock; query: AnyMock; vectors: Map<string, { values: number[]; metadata: Record<string, unknown> }> } {
+function installVectorizeStub(): {
+  upsert: AnyMock;
+  query: AnyMock;
+  deleteByIds: AnyMock;
+  vectors: Map<string, { values: number[]; metadata: Record<string, unknown> }>;
+} {
   const vectors = new Map<string, { values: number[]; metadata: Record<string, unknown> }>();
   const upsert = vi.fn(async (vs: VectorizeVector[]) => {
     for (const v of vs) {
       vectors.set(v.id, { values: v.values as number[], metadata: (v.metadata ?? {}) as Record<string, unknown> });
     }
+    return { mutationId: "m" } as VectorizeAsyncMutation;
+  });
+  const deleteByIds = vi.fn(async (ids: string[]) => {
+    for (const id of ids) vectors.delete(id);
     return { mutationId: "m" } as VectorizeAsyncMutation;
   });
   const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
@@ -32,9 +41,10 @@ function installVectorizeStub(): { upsert: AnyMock; query: AnyMock; vectors: Map
   });
   (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
     upsert,
+    deleteByIds,
     query,
   } as unknown as VectorizeIndex;
-  return { upsert, query, vectors };
+  return { upsert, query, deleteByIds, vectors };
 }
 
 async function clearBucket() {
@@ -956,6 +966,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const staleId = "rd_STALE";
     const staleCreatedAt = "2026-04-26T19:00:00.000Z";
     const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
+    vector.vectors.set(staleId, {
+      values: new Array(1536).fill(0.42),
+      metadata: { url, title: "Old stale vector" },
+    });
     await reader.appendOrReplaceListIndexItem({
       id: staleId,
       key_prefix: stalePrefix,
@@ -987,6 +1001,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
     await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
     expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).toHaveBeenCalledWith([staleId]);
+    expect(vector.vectors.has(staleId)).toBe(false);
   });
 
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
@@ -1406,6 +1422,74 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       id: legacy.id,
       trigger: "import",
       source: { kind: "markdown", title: "Legacy Damaged Owner", markdown },
+    });
+  });
+
+  it("imports Markdown over a legacy failed reading missing from a stale list index", async () => {
+    const sourceUrl = "https://example.com/legacy-import-stale-index";
+    const markdown = "# Legacy Stale Index\n\nThe user supplied text for an unindexed old failed URL.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const indexedUrl = "https://example.com/other-import-index-row";
+    const legacy: Manifest = {
+      id: "rd_LEGACY_IMPORT_STALE_INDEX",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_IMPORT_INDEXED_OTHER",
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN_IMPORT_STALE_INDEX",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT_STALE_INDEX",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Legacy Stale Index",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: legacy.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Stale Index", markdown },
     });
   });
 

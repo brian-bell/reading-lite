@@ -173,7 +173,10 @@ export function createApp(opts: AppOptions = {}) {
       }
     }
 
-    const legacy = await reader.findManifestByUrl(url);
+    const legacy = await reader.findManifestByUrl(
+      url,
+      existing ? { deepScan: true } : undefined,
+    );
     if (legacy) {
       const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
       try {
