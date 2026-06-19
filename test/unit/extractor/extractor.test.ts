@@ -52,13 +52,14 @@ describe("extractFromUrl", () => {
 
   // Minimal reduction of the docs.spring.io page from issue #18: content
   // followed by a <script>, with no <body> wrapper. linkedom parses this into a
-  // document whose content sits outside an (empty) body, which makes
-  // Readability._grabArticle walk the ancestor chain past <html> to null and
-  // throw `TypeError: Cannot read properties of null (reading 'tagName')`. We
-  // must catch that and degrade to raw_only rather than crash the reading.
+  // document whose content is hoisted as a sibling of an (empty) body under
+  // documentElement, which makes Readability._grabArticle walk the ancestor
+  // chain past <html> to null and throw `TypeError: Cannot read properties of
+  // null (reading 'tagName')`. We catch that and salvage the text by
+  // turndown-ing the raw DOM, so the page is `captured` rather than discarded.
   const HTML_NO_BODY_CRASH = `<div id="content"><article><h1>Reference</h1>${"<p>property value property value property value property value</p>".repeat(8)}</article></div><script>var x=1;</script>`;
 
-  it("degrades to raw_only when readability throws on a body-less page (issue #18)", async () => {
+  it("salvages markdown via raw-DOM fallback when readability throws (issue #18)", async () => {
     const fetchFn = fakeFetch({
       "https://docs.example/no-body": {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -66,6 +67,49 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://docs.example/no-body", {
+      fetch: fetchFn,
+      timeoutMs: 5_000,
+      maxBytes: 1_000_000,
+    });
+    expect(out.content_status).toBe("captured");
+    expect(out.markdown).toContain("Reference");
+    expect(out.markdown).toContain("property value");
+    // <script> is stripped, not dumped into the markdown as text.
+    expect(out.markdown).not.toContain("var x=1");
+  });
+
+  it("keeps <head>/<title> text out of the salvaged markdown (title is metadata)", async () => {
+    // When the fallback turndowns documentElement (empty-body case), the <head>
+    // must be stripped so the page <title> doesn't leak into the content — it
+    // belongs in the title field, and a title-only shell must not look captured.
+    const fetchFn = fakeFetch({
+      "https://docs.example/titled": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: `<head><title>Page Title Should Not Leak</title></head>${HTML_NO_BODY_CRASH}`,
+      },
+    });
+    const out = await extractFromUrl("https://docs.example/titled", {
+      fetch: fetchFn,
+      timeoutMs: 5_000,
+      maxBytes: 1_000_000,
+    });
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Page Title Should Not Leak");
+    expect(out.markdown).toContain("property value");
+    expect(out.markdown).not.toContain("Page Title Should Not Leak");
+  });
+
+  // A page that crashes Readability but has no salvageable text (script-only)
+  // must still degrade to raw_only — the fallback returns null on empty output.
+  it("stays raw_only when readability throws and there is nothing to salvage", async () => {
+    const fetchFn = fakeFetch({
+      "https://docs.example/script-only": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        // No <body>; the only node is a script, so the salvage turndown is empty.
+        body: `<div id="content"><article></article></div><script>var x=1;</script>`,
+      },
+    });
+    const out = await extractFromUrl("https://docs.example/script-only", {
       fetch: fetchFn,
       timeoutMs: 5_000,
       maxBytes: 1_000_000,

@@ -166,17 +166,52 @@ function readabilityFromHtml(html: string, url: string): Article | null {
   // no <body> (the docs.spring.io case in issue #18, where the static fetch is a
   // script-only JS shell): Readability._grabArticle walks the topCandidate's
   // ancestor chain toward BODY, runs off the top of the tree to null, and reads
-  // `null.tagName`. Don't let one malformed document crash the reading with a
-  // raw TypeError — degrade to raw_only, the same outcome as "no article found".
+  // `null.tagName`. Rather than discard the page, salvage its text by
+  // turndown-ing the raw parsed DOM. Only the throw path falls back — a clean
+  // "no article" verdict still degrades to raw_only (we don't want to summarize
+  // boilerplate from pages Readability deliberately rejected).
   try {
     return readabilityFromHtmlUnsafe(html, url);
   } catch (e) {
-    // Leave a breadcrumb in tail logs — a swallowed crash is more surprising
-    // than a clean "no article", and a new class of pathological page silently
-    // degrading to raw_only should still be diagnosable.
-    console.warn(`readability/turndown threw on ${url}, degrading to raw_only:`, e);
+    console.warn(`readability/turndown threw on ${url}, trying raw-DOM fallback:`, e);
+    const salvaged = rawDomToMarkdown(html);
+    if (salvaged) {
+      console.warn(`raw-DOM fallback salvaged ${salvaged.markdown.length} chars for ${url}`);
+      return salvaged;
+    }
     return null;
   }
+}
+
+// Last-resort salvage when Readability crashes: turndown the raw DOM directly.
+// Loses Readability's boilerplate stripping, but recovers the text of pages it
+// can't parse at all (issue #18). Returns null when there's nothing to salvage.
+function rawDomToMarkdown(html: string): Article | null {
+  // Re-parse the ORIGINAL html — Readability mutates the document during
+  // parse(), so the post-crash tree is unreliable.
+  const { document } = parseHTML(html);
+  // Capture the title before stripping <head> — it's metadata, not content.
+  const title = document.querySelector("title")?.textContent?.trim() || undefined;
+  // Strip <head> along with non-content nodes: when we fall back to
+  // documentElement (empty-body case), turndown-ing the whole <html> would
+  // otherwise pull <head><title>/<meta> text into the markdown, which could make
+  // a content-less JS shell look `captured` (a title-only page) instead of
+  // staying `raw_only`.
+  for (const el of document.querySelectorAll("head, script, style, noscript, template")) {
+    el.remove();
+  }
+  // The issue-#18 tree has an empty <body> with the real content hoisted as a
+  // sibling under documentElement, so prefer <body> only when it holds text;
+  // otherwise turndown the whole documentElement.
+  const body = document.body;
+  const root =
+    body && body.textContent && body.textContent.trim().length > 0 ? body : document.documentElement;
+  if (!root) return null;
+  const markdown = makeTurndown()
+    .turndown(root as unknown as Parameters<TurndownService["turndown"]>[0])
+    .trim();
+  if (markdown.length === 0) return null;
+  return { markdown, title };
 }
 
 function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
@@ -195,11 +230,7 @@ function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
   const article = reader.parse();
   if (!article || !article.content) return null;
 
-  const turndown = new TurndownService({
-    headingStyle: "atx",
-    codeBlockStyle: "fenced",
-    bulletListMarker: "-",
-  });
+  const turndown = makeTurndown();
   const { document: contentDoc } = parseHTML(
     `<!doctype html><html><body>${article.content}</body></html>`,
   );
@@ -209,6 +240,14 @@ function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
   if (markdown.length === 0) return null;
 
   return { markdown, title: article.title?.trim() || undefined };
+}
+
+function makeTurndown(): TurndownService {
+  return new TurndownService({
+    headingStyle: "atx",
+    codeBlockStyle: "fenced",
+    bulletListMarker: "-",
+  });
 }
 
 function escapeAttr(s: string): string {
