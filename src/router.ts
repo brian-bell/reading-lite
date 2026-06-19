@@ -276,9 +276,44 @@ export function createApp(opts: AppOptions = {}) {
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const hash = await sha256Hex(url);
-    const ptr = await reader.readByUrlPointer(hash);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    return c.json({ id: ptr.id });
+    const owner = await reader.readByUrlPointerWithEtag(hash);
+    if (!owner) return c.json({ error: "not found" }, 404);
+    const manifest = await reader.readManifest(owner.pointer.key_prefix);
+    if (manifest && ownedManifestMatches(owner.pointer, manifest, url, hash)) {
+      return c.json({ id: owner.pointer.id });
+    }
+    if (!manifest && isFreshMissingManifestPointer(owner.pointer, services.now())) {
+      return c.json(
+        {
+          error: "reading owner is still initializing",
+          id: owner.pointer.id,
+          poll: `/readings/${owner.pointer.id}`,
+        },
+        409,
+      );
+    }
+    const legacy = await reader.findManifestByUrl(url, { deepScan: true });
+    if (legacy) {
+      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
+      const replaced = await reader.replaceByUrlPointerIfCurrent(hash, owner.etag, pointer);
+      if (replaced) return c.json({ id: pointer.id });
+      const current = await reader.readByUrlPointer(hash);
+      const currentManifest = current ? await reader.readManifest(current.key_prefix) : null;
+      if (current && currentManifest && ownedManifestMatches(current, currentManifest, url, hash)) {
+        return c.json({ id: current.id });
+      }
+      if (current && !currentManifest && isFreshMissingManifestPointer(current, services.now())) {
+        return c.json(
+          {
+            error: "reading owner is still initializing",
+            id: current.id,
+            poll: `/readings/${current.id}`,
+          },
+          409,
+        );
+      }
+    }
+    return c.json({ error: "not found" }, 404);
   });
 
   app.post("/readings/similar", async (c) => {

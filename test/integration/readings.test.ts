@@ -2751,6 +2751,101 @@ describe("GET /readings/lookup", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  it("returns 409 for a fresh initializing by-url owner", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-initializing";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_LOOKUP_INITIALIZING",
+      key_prefix: "readings/2026/04/26T195900Z-rd_LOOKUP_INITIALIZING",
+    });
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: "reading owner is still initializing",
+      id: "rd_LOOKUP_INITIALIZING",
+      poll: "/readings/rd_LOOKUP_INITIALIZING",
+    });
+  });
+
+  it("repairs a stale lookup owner to a legacy manifest missing from the list index", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-legacy-stale-index";
+    const urlHash = await sha256Hex(url);
+    const indexedUrl = "https://example.com/lookup-other-index-row";
+    const legacy: Manifest = {
+      id: "rd_LOOKUP_LEGACY",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_LOOKUP_INDEXED_OTHER",
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_LOOKUP_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN",
+    });
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: legacy.id });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+  });
+
+  it("returns 404 for a stale lookup owner without a matching manifest", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-orphan";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_LOOKUP_ORPHAN_ONLY",
+      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN_ONLY",
+    });
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("POST /readings/similar", () => {
