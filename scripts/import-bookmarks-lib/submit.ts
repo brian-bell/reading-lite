@@ -90,13 +90,16 @@ async function processOne(
       body: JSON.stringify({ url }),
     }, opts.fetch);
     if (res.status === 202 || res.status === 200) {
-      const body = (await res.json().catch(() => ({}))) as { id?: unknown };
+      const body = (await res.json().catch(() => ({}))) as {
+        id?: unknown;
+        status?: unknown;
+      };
       const id = typeof body.id === "string" ? body.id : undefined;
       return {
         index,
         total,
         url,
-        classification: res.status === 202 ? "new" : "existing",
+        classification: res.status === 200 && body.status === "ready" ? "existing" : "new",
         id,
       };
     }

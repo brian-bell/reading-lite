@@ -106,6 +106,34 @@ describe("submitMarkdownAll", () => {
     expect(results[1]!.error).toMatch(/400/);
   });
 
+  it("treats 200 pending as newly submitted, not existing ready content", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "rd_pending", status: "pending" }));
+
+    const results: MarkdownSubmitResult[] = [];
+    const summary = await submitMarkdownAll(
+      [
+        {
+          sourceUrl: "https://example.com/pending",
+          markdown: "# Pending",
+          filePath: "/tmp/pending.md",
+        },
+      ],
+      {
+        fetch: fetchMock,
+        destinationUrl: DEST,
+        token: "tok",
+        email: false,
+        onResult: (result) => {
+          results.push(result);
+        },
+      },
+    );
+
+    expect(summary).toMatchObject({ new: 1, existing: 0 });
+    expect(results[0]).toMatchObject({ classification: "new", id: "rd_pending" });
+  });
+
   it("retries transport errors and surfaces failure after exhausting retries", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       throw new TypeError("network down");

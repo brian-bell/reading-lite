@@ -65,6 +65,10 @@ describe("markDeadLettered", () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.writeByUrlPointer(manifest.url_hash, {
+      id: manifest.id,
+      key_prefix: KEY_PREFIX,
+    });
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
     await markDeadLettered(args(), env as unknown as Env, services());
@@ -77,8 +81,12 @@ describe("markDeadLettered", () => {
     const item = await reader.findListIndexItem("rd_DLQ");
     expect(item?.status).toBe("failed");
 
-    // Failed readings must stay re-submittable: no by-url pointer.
-    expect(await reader.readByUrlPointer("d".repeat(64))).toBeNull();
+    // Failed readings remain re-submittable through POST, but keep ownership
+    // of their URL so a retry reprocesses this same id.
+    expect(await reader.readByUrlPointer("d".repeat(64))).toEqual({
+      id: "rd_DLQ",
+      key_prefix: KEY_PREFIX,
+    });
   });
 
   it("rolls back to the preserved ready snapshot when a reprocess of a ready reading is dead-lettered", async () => {

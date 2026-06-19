@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
-import type { Services } from "../../src/services";
+import { sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
@@ -302,6 +302,351 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
+  it("claims the by-url pointer immediately when submitting a new URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/eager-claim";
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const ptr = await reader.readByUrlPointer(await sha256Hex(url));
+    expect(ptr?.id).toBe(id);
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
+  });
+
+  it("does not overwrite a claimed URL whose manifest is not visible yet", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/in-flight-cross-isolate-claim";
+    const urlHash = await sha256Hex(url);
+    const claimedId = "rd_CLAIMED_PENDING";
+    const claimedPrefix = buildKeyPrefix(claimedId, "2026-04-26T19:59:00.000Z");
+    await reader.writeByUrlPointer(urlHash, {
+      id: claimedId,
+      key_prefix: claimedPrefix,
+    });
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      id: claimedId,
+      status: "pending",
+      poll: `/readings/${claimedId}`,
+    });
+    expect(queuedJobs).toHaveLength(0);
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: claimedId,
+      key_prefix: claimedPrefix,
+    });
+  });
+
+  it("re-submitting a pending URL returns the existing reading without enqueueing another submit", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const url = "https://example.com/pending-dedup";
+
+    const first = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx,
+    );
+    expect(first.status).toBe(202);
+    const { id } = (await first.json()) as { id: string };
+    expect(queuedJobs).toHaveLength(1);
+
+    const second = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(second.status).toBe(200);
+    const manifest = (await second.json()) as Manifest;
+    expect(manifest).toMatchObject({ id, status: "pending", url });
+    expect(queuedJobs).toHaveLength(1);
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ id: string; url: string }> };
+    expect(body.readings.filter((r) => r.url === url).map((r) => r.id)).toEqual([id]);
+  });
+
+  it("re-submitting a stale pending URL reprocesses the existing reading", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-pending-submit";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_STALE_SUBMIT";
+    const createdAt = "2026-04-26T18:00:00.000Z";
+    const prefix = buildKeyPrefix(id, createdAt);
+    const stalePending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_stale_submit",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T18:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(prefix, stalePending);
+    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: prefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(stalePending, prefix));
+
+    const services = makeServices(makeStubFetch(), { n: 0 }, "2026-04-26T20:00:00.000Z");
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      { ...env, PENDING_TTL_SECONDS: "300" },
+      ctx,
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("heals a legacy ready reading that has no by-url pointer", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-ready";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_LEGACY_READY";
+    const createdAt = "2026-04-26T18:00:00.000Z";
+    const prefix = buildKeyPrefix(id, createdAt);
+    const ready: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Legacy Ready",
+      tldr: "Already done.",
+      tags: ["legacy"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Already done.",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "a".repeat(64),
+      fetched_at: "2026-04-26T18:00:01.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T18:00:02.000Z",
+    };
+    await reader.writeManifest(prefix, ready);
+    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, prefix));
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id, status: "ready" });
+    expect(queuedJobs).toHaveLength(0);
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({ id, key_prefix: prefix });
+  });
+
+  it("prefers a legacy ready row over a pending same-URL row when healing by-url", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-ready-over-pending";
+    const urlHash = await sha256Hex(url);
+    const readyId = "rd_LEGACY_READY_WIN";
+    const pendingId = "rd_LEGACY_PENDING_LOSE";
+    const readyCreated = "2026-04-26T18:00:00.000Z";
+    const pendingCreated = "2026-04-26T19:00:00.000Z";
+    const readyPrefix = buildKeyPrefix(readyId, readyCreated);
+    const pendingPrefix = buildKeyPrefix(pendingId, pendingCreated);
+    const ready: Manifest = {
+      id: readyId,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Legacy Ready Winner",
+      tldr: "Ready wins.",
+      tags: ["legacy"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Ready wins.",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "b".repeat(64),
+      fetched_at: "2026-04-26T18:00:01.000Z",
+      created_at: readyCreated,
+      updated_at: "2026-04-26T18:00:02.000Z",
+    };
+    const pending: Manifest = {
+      id: pendingId,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: pendingCreated,
+      updated_at: pendingCreated,
+    };
+    await reader.writeManifest(readyPrefix, ready);
+    await reader.writeManifest(pendingPrefix, pending);
+    await reader.writeByIdPointer(readyId, { id: readyId, key_prefix: readyPrefix });
+    await reader.writeByIdPointer(pendingId, { id: pendingId, key_prefix: pendingPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, pendingPrefix));
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, readyPrefix));
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: readyId, status: "ready" });
+    expect(queuedJobs).toHaveLength(0);
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: readyId,
+      key_prefix: readyPrefix,
+    });
+  });
+
+  it("heals a dangling by-url pointer to an existing legacy ready row", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dangling-pointer-with-ready";
+    const urlHash = await sha256Hex(url);
+    const readyId = "rd_DANGLING_READY";
+    const missingId = "rd_DANGLING_MISSING";
+    const createdAt = "2026-04-26T18:00:00.000Z";
+    const readyPrefix = buildKeyPrefix(readyId, createdAt);
+    const missingPrefix = buildKeyPrefix(missingId, "2026-04-26T17:00:00.000Z");
+    const ready: Manifest = {
+      id: readyId,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Recovered Ready",
+      tldr: "Recovered existing row.",
+      tags: ["legacy"],
+      keywords: [],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Recovered existing row.",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "c".repeat(64),
+      fetched_at: "2026-04-26T18:00:01.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T18:00:02.000Z",
+    };
+    await reader.writeManifest(readyPrefix, ready);
+    await reader.writeByIdPointer(readyId, { id: readyId, key_prefix: readyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: missingId, key_prefix: missingPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, readyPrefix));
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: readyId, status: "ready" });
+    expect(queuedJobs).toHaveLength(0);
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: readyId,
+      key_prefix: readyPrefix,
+    });
+  });
+
   it("imports Markdown without fetching the source URL", async () => {
     const sourceUrl = "https://x.com/example/status/2047312986696454584";
     const markdown = "# Imported Markdown\n\nThis is already captured local content.";
@@ -336,6 +681,10 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       ctx,
     );
     expect(submit.status).toBe(202);
+    const { id } = (await submit.clone().json()) as { id: string };
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const ptr = await reader.readByUrlPointer(await sha256Hex(sourceUrl));
+    expect(ptr?.id).toBe(id);
     expect(queuedJobs[0]).toMatchObject({
       url: sourceUrl,
       trigger: "import",
@@ -346,7 +695,6 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
-    const { id } = (await submit.clone().json()) as { id: string };
     const get = await app.request(
       `/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -393,7 +741,99 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 
-  it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
+  it("import-markdown over a failed URL reading retries the same id with markdown content", async () => {
+    const idCounter = { n: 0 };
+    const sourceUrl = "https://example.com/import-over-failed-url";
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const firstCtx = createExecutionContext();
+    const first = await failingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env,
+      firstCtx,
+    );
+    expect(first.status).toBe(202);
+    const { id } = (await first.json()) as { id: string };
+    await drainQueue(failingServices);
+    await waitOnExecutionContext(firstCtx);
+
+    const markdown = "# Replacement\n\nImported body.";
+    const importServices = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Replacement",
+          tldr: "Imported replacement content.",
+          tags: ["markdown"],
+          keywords: ["replacement"],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "Replacement summary",
+        },
+      }),
+      idCounter,
+    );
+    const importApp = createApp({ services: importServices });
+    const importCtx = createExecutionContext();
+    const retry = await importApp.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Replacement",
+          markdown,
+        }),
+      }),
+      env,
+      importCtx,
+    );
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Replacement", markdown },
+    });
+
+    await drainQueue(importServices);
+    await waitOnExecutionContext(importCtx);
+
+    const get = await importApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({
+      id,
+      status: "ready",
+      source_type: "markdown",
+      title: "Replacement",
+      content_type: "text/markdown; charset=utf-8",
+      last_attempt: { trigger: "import", status: "succeeded" },
+    });
+
+    const content = await importApp.request(
+      `/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(markdown);
+    consoleErr.mockRestore();
+  });
+
+  it("failure path: source returns 404, manifest ends failed, keeps by-url pointer, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const services = makeServices(fetchFn);
     const app = createApp({ services });
@@ -429,11 +869,77 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
-    expect(lookup.status).toBe(404);
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
 
     // The background failure should be logged for the operator (wrangler tail),
     // not silently swallowed.
     expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  it("re-submitting a failed URL reprocesses the existing reading in-place", async () => {
+    const idCounter = { n: 0 };
+    const url = "https://example.com/retry-by-submit";
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
+    const ctx1 = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await failingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx1,
+    );
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(failingServices);
+    await waitOnExecutionContext(ctx1);
+
+    const succeedingServices = makeServices(makeStubFetch(), idCounter);
+    const succeedingApp = createApp({ services: succeedingServices });
+    const ctx2 = createExecutionContext();
+    const retry = await succeedingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    const retryJson = (await retry.json()) as { id: string; attempt_id: string };
+    expect(retryJson.id).toBe(id);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+
+    const pending = await succeedingApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect((await pending.json()) as Manifest).toMatchObject({ id, status: "pending" });
+
+    await drainQueue(succeedingServices);
+    await waitOnExecutionContext(ctx2);
+
+    const list = await succeedingApp.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ id: string; url: string; status: string }> };
+    expect(body.readings.filter((r) => r.url === url)).toEqual([
+      expect.objectContaining({ id, status: "ready" }),
+    ]);
     consoleErr.mockRestore();
   });
 
@@ -601,7 +1107,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     };
     expect(diagnostics.attempts[0]!.status).toBe("failed");
     expect(diagnostics.attempts[0]!.error?.stage).toBe("fetch_source");
-    expect(diagnostics.pointers.by_url.exists).toBe(false);
+    expect(diagnostics.pointers.by_url.exists).toBe(true);
     expect(diagnostics.objects.some((o) => o.key.endsWith("/attempts/at_rd_TEST02.json"))).toBe(true);
     consoleErr.mockRestore();
   });
@@ -825,27 +1331,32 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
   });
 
-  it("a burst of 5 simultaneous submits all enqueue and drain to ready", async () => {
+  it("a burst of 5 simultaneous submits for one URL creates one reading", async () => {
     const idCounter = { n: 0 };
     const services = makeServices(makeStubFetch(), idCounter);
     const app = createApp({ services });
     const ctx = createExecutionContext();
 
     const responses = await Promise.all(
-      Array.from({ length: 5 }, (_, i) =>
+      Array.from({ length: 5 }, () =>
         app.fetch(
           new Request("http://t/readings", {
             method: "POST",
             headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-            body: JSON.stringify({ url: `https://example.com/burst-${i}` }),
+            body: JSON.stringify({ url: "https://example.com/burst" }),
           }),
           env,
           ctx,
         ),
       ),
     );
-    expect(responses.every((r) => r.status === 202)).toBe(true);
-    expect(queuedJobs.length).toBe(5);
+    expect(responses.some((r) => r.status === 202)).toBe(true);
+    expect(responses.every((r) => r.status === 202 || r.status === 200)).toBe(true);
+    expect(queuedJobs).toHaveLength(1);
+    const ids = await Promise.all(
+      responses.map(async (r) => ((await r.json()) as { id: string }).id),
+    );
+    expect(new Set(ids).size).toBe(1);
 
     await drainQueue(services);
     await waitOnExecutionContext(ctx);
@@ -856,7 +1367,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       env,
     );
     const body = (await list.json()) as { readings: Array<{ status: string; url: string }> };
-    expect(body.readings).toHaveLength(5);
+    expect(body.readings).toHaveLength(1);
     expect(body.readings.every((r) => r.status === "ready")).toBe(true);
   });
 });

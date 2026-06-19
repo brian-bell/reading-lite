@@ -10,15 +10,17 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (418 root tests across 43 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully tested across the Worker, scripts, and SPA.
 
 ## Architecture at a glance
 
 ```
 POST /readings { url }
-  ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
-  └─ else: write a "pending" manifest, enqueue a job on the READING_JOBS
-           queue, return 202. Poll GET /readings/:id until ready/failed.
+  ├─ claim/resolve index/by-url/{sha256(url)}
+  ├─ ready or pending owner? return the existing manifest (200)
+  ├─ failed owner? reprocess the same id (202)
+  └─ unowned URL? write a "pending" manifest, enqueue READING_JOBS,
+     return 202. Poll GET /readings/:id until ready/failed.
 
 READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
         fetch URL (timeout + size cap)
@@ -28,8 +30,8 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → Anthropic messages.create with forced tool use (`emit_reading`)
       → OpenAI embed the final TL;DR
       → Vectorize.upsert(id, tldr_embedding, metadata)
-      → R2 write final manifest + by-url pointer
-      (on any error → write status="failed" manifest; skip by-url pointer)
+      → R2 write final manifest + confirm by-url pointer
+      (on any error → write status="failed" manifest; keep submit-time claim)
       (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
        manifest stays pending until a later delivery completes. A message
        that exhausts max_retries routes to the reading-lite-dlq queue,
@@ -98,18 +100,18 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
-| `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
-| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. Defaults `email` to false. |
+| `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs and failed-owner retries; returns 200 with the existing manifest for ready or pending URLs. Background work fills the manifest. |
+| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. A failed URL owner is retried in place with the supplied Markdown. Defaults `email` to false. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
 | `POST /readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
 | `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
-| `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
+| `GET /readings/lookup?url=` | 200 `{ id }` for known owned URLs, including pending/failed readings, 404 otherwise. |
 | `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
-List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
+List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every submit/import (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
 
 The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
 
@@ -120,18 +122,21 @@ response shows whether by-id/by-url pointers line up, whether expected R2
 objects exist, and which processing stage failed (`fetch_source`,
 `embed_source`, `summarize`, `upsert_vector`, `write_indexes`, etc.).
 
-Use `POST /readings/:id/reprocess` to retry the exact reading id. For a failed
-reading, the manifest becomes `pending` while the new attempt runs. For a ready
-reading, the current ready manifest remains the fallback; if the reprocess
-attempt succeeds it replaces the manifest and vector, and if it fails the ready
-manifest is preserved with `last_attempt.status = "failed"`.
+Use `POST /readings/:id/reprocess` to retry the exact reading id, or simply
+submit the same URL again. For a failed reading, the manifest becomes `pending`
+while the new attempt runs. For a ready reading, the current ready manifest
+remains the fallback; if the reprocess attempt succeeds it replaces the
+manifest and vector, and if it fails the ready manifest is preserved with
+`last_attempt.status = "failed"`.
 
 For bulk retry work, use the corpus tools: `npm run corpus-audit` inventories
 every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
 through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
-Both default to a dry run; pass `--execute` to act.
+Both default to a dry run; pass `--execute` to act. `corpus-delete-orphans`
+removes duplicate non-ready entries and deletes `index/by-url/{hash}` only when
+the stored pointer id/key_prefix belongs to the reading being removed.
 
 ## Web SPA
 
@@ -168,7 +173,7 @@ npm run import-bookmarks -- \
   --url https://reading-lite.bbell.dev/readings
 ```
 
-`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
+`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; accepted or existing-ready responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
 
 ## Importing local Markdown
 
@@ -184,7 +189,8 @@ body to `POST /readings/import-markdown`. Duplicate files with the same source
 URL are collapsed before submit; the largest Markdown file wins. Imported
 readings store the Markdown as both raw content and `extracted.md`, then reuse
 the normal embedding, similarity, Claude summary, Vectorize, manifest, and list
-index pipeline.
+index pipeline. Importing Markdown for a URL whose current reading is failed
+reuses that reading id and treats the supplied Markdown as the new source.
 
 ```sh
 # preview the plan; no token required

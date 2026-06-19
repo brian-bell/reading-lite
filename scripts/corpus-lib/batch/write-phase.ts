@@ -109,7 +109,9 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests (no by-url pointer).
+  // 3. Write the failure manifests. Batch does not mint by-url claims; the
+  // interactive POST resolver can reclaim these legacy failed rows from
+  // index/list.json on the next submit.
   for (const { target, error } of failures) {
     const manifest = target.preserveReadyManifest
       ? rolledForward(target.preserveReadyManifest, deps.now())

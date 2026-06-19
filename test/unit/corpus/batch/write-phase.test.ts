@@ -161,7 +161,8 @@ describe("writeResults — failure path", () => {
     expect(m.status).toBe("failed");
     expect(m.error?.retryable).toBe(true);
     expect(m.error?.stage).toBe("summarize");
-    // Failed URLs must stay re-submittable: no by-url pointer.
+    // Batch failures do not mint by-url claims; POST can reclaim the row from
+    // index/list.json on a later retry.
     expect(r2.store.has(`index/by-url/${"a".repeat(64)}`)).toBe(false);
   });
 

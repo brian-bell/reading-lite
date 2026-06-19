@@ -1,7 +1,7 @@
 // Deletes "orphan-dup" pending readings identified by corpus-audit: pending
 // entries whose URL already has a `ready` reading. They are cosmetic index
-// cruft — the ready copy owns the canonical `index/by-url/{hash}` pointer, so
-// removing the orphan touches nothing the ready copy depends on.
+// cruft. If the target owns index/by-url/{hash}, delete that pointer too; if a
+// surviving reading owns it, leave it alone.
 //
 // Per orphan we delete, under its own id-scoped prefix only:
 //   {prefix}/manifest.json        (durability: rebuildListIndex keys off this)
@@ -9,6 +9,7 @@
 //   {prefix}/raw.{ext}            (best-effort, common exts)
 //   {prefix}/attempts/{id}.json   (ids read live from the manifest)
 //   index/by-id/{id}              (so GET /readings/:id 404s instead of resolving)
+//   index/by-url/{hash}           (only when its stored id/key_prefix match)
 // Then we rewrite index/list.json once, dropping the orphan ids.
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
@@ -18,6 +19,12 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  byUrlPointerKey,
+  deletionTargetFromCurrentItem,
+  hasReadySibling,
+  ownedByUrlPointerKey,
+} from "./corpus-lib/delete-plan";
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
@@ -69,9 +76,9 @@ URL that the deduped audit omits are still caught).
 Default is a DRY RUN: prints every object it would delete and the list.json diff.
 Add --execute to perform the deletes and rewrite index/list.json.
 
-Only safe for readings that do not own an index/by-url/{hash} pointer — i.e.
-pending or failed readings (the pointer is written only on success). Deleting a
-ready reading this way would leave its by-url pointer dangling.
+Ready readings are refused. Pending/failed readings may own an
+index/by-url/{hash} pointer; this tool deletes it only when the pointer body
+matches the removed reading's id and key_prefix.
 
 Run when nothing is being submitted: the list.json rewrite is a plain put, not a
 CAS write, so a concurrent queue write could be lost.`);
@@ -134,18 +141,55 @@ async function putListIndex(opts: Opts, json: string): Promise<void> {
 
 const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
 
+function targetFromCurrentListItem(
+  id: string,
+  item: any,
+): { id: string; prefix: string; url: string } {
+  try {
+    return deletionTargetFromCurrentItem(id, item);
+  } catch (e) {
+    console.error(`refusing to proceed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+}
+
+function requireReadySibling(
+  items: any[],
+  target: { id: string; prefix: string; url: string },
+): { id: string; prefix: string; url: string } {
+  if (!hasReadySibling(items, target)) {
+    console.error(
+      `refusing to proceed: ${target.id} is not currently an orphan-dup ` +
+      `(no ready sibling for ${target.url})`,
+    );
+    process.exit(1);
+  }
+  return target;
+}
+
 // Derive the deletable keys under one orphan's prefix. Reads the manifest live
 // to recover attempt ids; falls back to best-effort guesses when absent.
 async function keysForOrphan(
   opts: Opts,
   id: string,
   prefix: string,
+  url: string,
 ): Promise<string[]> {
   const keys = new Set<string>();
   keys.add(`${prefix}/manifest.json`);
   keys.add(`${prefix}/extracted.md`);
   for (const ext of COMMON_RAW_EXTS) keys.add(`${prefix}/raw.${ext}`);
   keys.add(`index/by-id/${id}`);
+
+  const byUrlKey = byUrlPointerKey(url);
+  const byUrlRaw = await getObject(opts, byUrlKey);
+  const ownedByUrlKey = ownedByUrlPointerKey({
+    url,
+    pointerRaw: byUrlRaw,
+    id,
+    keyPrefix: prefix,
+  });
+  if (ownedByUrlKey) keys.add(ownedByUrlKey);
 
   const raw = await getObject(opts, `${prefix}/manifest.json`);
   if (raw) {
@@ -183,15 +227,7 @@ async function main(): Promise<void> {
     label = "readings (--ids)";
     targets = opts.ids.map((id) => {
       const it = byId.get(id);
-      if (!it) {
-        console.error(`refusing to proceed: id ${id} not found in index/list.json`);
-        process.exit(1);
-      }
-      if (it.status === "ready") {
-        console.error(`refusing to proceed: ${id} is ready — deleting it would dangle its by-url pointer`);
-        process.exit(1);
-      }
-      return { id, prefix: it.key_prefix, url: it.url };
+      return targetFromCurrentListItem(id, it);
     });
   } else {
     let parsed: any;
@@ -205,7 +241,12 @@ async function main(): Promise<void> {
     label = "orphan-dup readings";
     targets = (parsed.rows ?? [])
       .filter((r: any) => r.category === "pending" && r.class === "orphan-dup")
-      .map((r: any) => ({ id: r.reading_id, prefix: r.key_prefix, url: r.url }));
+      .map((r: any) =>
+        requireReadySibling(
+          listItems,
+          targetFromCurrentListItem(r.reading_id, byId.get(r.reading_id)),
+        ),
+      );
   }
 
   if (targets.length === 0) {
@@ -237,7 +278,7 @@ async function main(): Promise<void> {
   let errored = 0;
 
   for (const o of targets) {
-    const keys = await keysForOrphan(opts, o.id, o.prefix);
+    const keys = await keysForOrphan(opts, o.id, o.prefix, o.url);
     console.log(`• ${o.id}  ${o.url}`);
     for (const key of keys) {
       if (!opts.execute) {

@@ -69,8 +69,8 @@ Reads index/list.json straight out of the reading-lite R2 bucket (via
 wrangler), then stamps each entry of a reading-list JSON file with
 "processed": true|false depending on whether its URL is already in the corpus.
 
-Membership is exact-URL match against entries whose status is "ready" — the
-same key the worker hashes for its by-url dedup pointer.
+Membership is exact-URL match against entries whose status is "ready" by
+default. Use --status or --any-status to count pending/failed owned URLs too.
 
   --file <path>     Reading-list JSON: an array of { url, ... } entries (required).
   --out <path>      Where to write the annotated JSON. Default: in place (--file).

@@ -1,9 +1,9 @@
 // Pure corpus-membership logic. Kept free of I/O so it is unit-testable:
 // the wrangler call lives in fetch-index.ts and the file read/write in the CLI.
 
-// Mirror of the worker's terminal statuses (src/schemas/manifest.ts). A reading
-// only earns a success-only by-url pointer when it reaches "ready", so that is
-// what "already in the corpus" means by default.
+// Mirror of the worker's terminal statuses (src/schemas/manifest.ts). By
+// default, "already in the corpus" means ready; callers can opt into pending
+// or failed matches when they want ownership rather than finished content.
 export type CorpusStatus = "pending" | "ready" | "failed";
 
 export interface CorpusItem {
@@ -69,8 +69,8 @@ export interface AnnotateResult {
   summary: AnnotateSummary;
 }
 
-// Membership is exact-URL match — the same key the worker hashes for its by-url
-// dedup pointer, so this agrees with what a re-submit would classify.
+// Membership is exact-URL match, using the same URL string the worker hashes for
+// its by-url ownership pointer.
 export function annotateEntries(
   entries: ReadingListEntry[],
   corpusUrls: Set<string>,

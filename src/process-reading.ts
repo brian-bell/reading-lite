@@ -309,8 +309,9 @@ export async function markDeadLettered(
   // This narrows, but doesn't fully close, the window: a brand-new reprocess
   // landing between this read and markFailed's write would still be clobbered.
   // That residual race is last-writer-wins (the repo's documented stance) and
-  // benign — the loser is a reading that is being reprocessed anyway and, since
-  // we never write a by-url pointer on failure, stays re-submittable.
+  // benign — the loser is a reading that is being reprocessed anyway. The
+  // submit path owns the by-url claim, so a failed terminal write stays
+  // retryable without minting a duplicate id.
   const attemptId = args.attemptId ?? `at_${args.id}`;
   if (existing && existing.active_attempt?.id !== attemptId) return;
 
@@ -391,8 +392,9 @@ async function markFailed(
   } catch (indexErr) {
     console.error(indexErr);
   }
-  // Intentionally do NOT write the by-url pointer: failed readings should not
-  // dedup future submissions of the same URL.
+  // Intentionally do NOT create the by-url pointer here. Current submissions
+  // claim the pointer before enqueueing; older failed readings without a claim
+  // are reclaimed by the POST resolver on their next submit.
 }
 
 export async function newReadingArgs(

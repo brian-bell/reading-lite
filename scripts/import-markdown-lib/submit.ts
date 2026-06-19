@@ -79,14 +79,17 @@ async function processOne(
       opts.fetch,
     );
     if (res.status === 202 || res.status === 200) {
-      const responseBody = (await res.json().catch(() => ({}))) as { id?: unknown };
+      const responseBody = (await res.json().catch(() => ({}))) as {
+        id?: unknown;
+        status?: unknown;
+      };
       const id = typeof responseBody.id === "string" ? responseBody.id : undefined;
       return {
         index,
         total,
         sourceUrl: article.sourceUrl,
         filePath: article.filePath,
-        classification: res.status === 202 ? "new" : "existing",
+        classification: res.status === 200 && responseBody.status === "ready" ? "existing" : "new",
         id,
       };
     }

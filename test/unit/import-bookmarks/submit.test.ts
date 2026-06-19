@@ -51,6 +51,50 @@ describe("submitAll", () => {
     expect(byUrl["javascript:void(0)"]!.classification).toBe("skipped");
   });
 
+  it("treats 200 pending as submitted but not ready", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "rd_pending", status: "pending" }));
+
+    const results: SubmitResult[] = [];
+    const summary = await submitAll(["https://pending.test/"], {
+      fetch: fetchMock,
+      destinationUrl: DEST,
+      token: "tok",
+      onResult: async (r) => {
+        results.push(r);
+      },
+    });
+
+    expect(summary).toMatchObject({ new: 1, existing: 0 });
+    expect(results[0]).toMatchObject({
+      url: "https://pending.test/",
+      classification: "new",
+      id: "rd_pending",
+    });
+  });
+
+  it("treats 200 ready as existing", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { id: "rd_ready", status: "ready" }));
+
+    const results: SubmitResult[] = [];
+    const summary = await submitAll(["https://ready.test/"], {
+      fetch: fetchMock,
+      destinationUrl: DEST,
+      token: "tok",
+      onResult: async (r) => {
+        results.push(r);
+      },
+    });
+
+    expect(summary).toMatchObject({ new: 0, existing: 1 });
+    expect(results[0]).toMatchObject({
+      url: "https://ready.test/",
+      classification: "existing",
+      id: "rd_ready",
+    });
+  });
+
   it("classifies network errors as 'error' after exhausting retries", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       throw new TypeError("network down");
