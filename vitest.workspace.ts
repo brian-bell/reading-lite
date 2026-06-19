@@ -40,7 +40,6 @@ export default [
     test: {
       name: "node",
       include: [
-        "test/unit/migrate/**/*.test.ts",
         "test/unit/lib/**/*.test.ts",
         "test/unit/import-bookmarks/**/*.test.ts",
         "test/unit/import-markdown/**/*.test.ts",

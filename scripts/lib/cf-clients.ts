@@ -1,6 +1,6 @@
 import { AwsClient } from "aws4fetch";
 
-// Shared Cloudflare clients for the Node bulk scripts (migrate, corpus-recover
+// Shared Cloudflare clients for the Node bulk scripts (corpus-recover
 // --batch). R2 over the S3 API (SigV4 via aws4fetch); Vectorize over the REST
 // API. fetch is injected (default: global) so tests stub it — no globals reached
 // for inside the factory.

@@ -392,7 +392,7 @@ export class ReadingStore {
   private async rebuildListIndex(): Promise<{ items: ListIndexItem[]; complete: boolean }> {
     // Personal-scale fallback: scan readings/ for manifests, parse each, and
     // synthesise an index. Used when index/list.json is missing (cold cache or
-    // pre-migration data); the result is persisted by the caller (only when
+    // a bucket whose index was never built); the result is persisted by the caller (only when
     // complete) so subsequent reads are O(index-size).
     const list = await this.bucket.list({ prefix: READINGS_PREFIX, limit: 1000 });
     const manifestKeys = list.objects

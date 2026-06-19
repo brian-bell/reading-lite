@@ -39,7 +39,7 @@ interface Args {
   batch: boolean;
   // Raw --bucket flag (undefined when not passed). The read/monitor path uses
   // the defaulted `bucket`; the batch *write* path must pass this through so
-  // resolveBatchConfig can fall back to MIGRATE_R2_BUCKET (staging) rather than
+  // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (staging) rather than
   // being masked by the default production bucket.
   bucketFlag?: string;
 }
@@ -114,7 +114,7 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
                     Anthropic Message Batch API (~50% cheaper, no rate-limit
                     burst) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
-                    + Vectorize creds (.migrate.vars) and ANTHROPIC/OPENAI keys.
+                    + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;

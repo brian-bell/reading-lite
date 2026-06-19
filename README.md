@@ -123,7 +123,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
 | `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
-List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. cold cache after migration), the list endpoint falls back to scan-and-rebuild.
+List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
 
 The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
 
@@ -182,40 +182,6 @@ cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy with `npm run deploy:web -- --execute` (dry-run by default).
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
-
-## Migration from Backlite
-
-A one-shot script backfills the new R2 bucket + Vectorize index from a Backlite SQLite snapshot + content directory. Read-only against Backlite; idempotent against the target.
-
-```sh
-npm run migrate -- \
-  --sqlite ./backlite.db \
-  --content-dir ./backlite-data \
-  --r2-account-id $CF_ACCOUNT_ID \
-  --r2-access-key $R2_ACCESS_KEY_ID \
-  --r2-secret-key $R2_SECRET_ACCESS_KEY \
-  --r2-bucket reading-lite \
-  --cf-api-token $CF_API_TOKEN \
-  --vectorize-account-id $CF_ACCOUNT_ID \
-  --vectorize-index reading-lite
-```
-
-Add `--dry-run` to print the planned R2 + Vectorize operations without hitting any remote API. Every flag also accepts an env var (`MIGRATE_<UPPER_SNAKE_CASE>`) or a value under the same name in a gitignored `.migrate.vars` file at the repo root. Resolution order: `--flag` > env var > `.migrate.vars`.
-
-```sh
-cp .migrate.vars.example .migrate.vars   # fill in keys + bucket/index
-npm run migrate -- --dry-run             # no flags, no exports needed
-```
-
-The `--cf-api-token` needs Vectorize Edit permission. R2 keys come from the R2 dashboard's "Manage R2 API Tokens".
-
-The migration writes a CSV report (`id,status,error`) to stdout — capture it for verification:
-
-```sh
-npm run migrate -- ... > migration-report.csv 2> migration.log
-```
-
-> **Embedding dimension is locked to 1536.** Migrating reuses the existing OpenAI `text-embedding-3-small` vectors; switching to a 768-dim model later requires a re-embed and a fresh index.
 
 ## Importing Chrome bookmarks
 
@@ -305,18 +271,18 @@ scripts/
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
   corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
   corpus-lib/batch/{...}        # bulk path: Anthropic Message Batch + OpenAI array embed, phase pipeline, resume sidecar
-  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (migrate + corpus-recover --batch)
+  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
-  migrate.ts + migrate-lib/{plan,run,clients}.ts          # Backlite backfill
   import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
   import-markdown.ts + import-markdown-lib/{...}          # local .md → import-markdown
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
   unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
                                 #   http-retry, email, stores, process-reading, queue, corpus
-                                # node pool: migrate, import-bookmarks, import-markdown,
-                                #   check-corpus, process-reading-list, reprocess-failed
+                                # node pool: import-bookmarks, import-markdown,
+                                #   check-corpus, process-reading-list, reprocess-failed,
+                                #   corpus, lib
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts
@@ -330,7 +296,7 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 `npm test` (from the repo root) runs all root tests across two Vitest projects:
 
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
-- **node** — migration script tests use `node:fs`/`os`/`path` and a real temp dir for fixture files.
+- **node** — Node-side script tests (corpus, import, shared `lib`) use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
 Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke against staging bindings (`wrangler dev`) and the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
 
