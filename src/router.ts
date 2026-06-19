@@ -159,14 +159,12 @@ export function createApp(opts: AppOptions = {}) {
     if (existing) {
       const m = await reader.readManifest(existing.key_prefix);
       if (m && ownedManifestMatches(existing, m, url, urlHash)) {
-        const effective = annotateStale(m, c.env, services);
-        if (effective.status !== "failed") return c.json(effective, 200);
-        const result = await enqueueMarkdownImport(
+        const result = await markdownImportResultForOwnedReading(
           reader,
           c.env,
           services,
           existing,
-          effective,
+          m,
           parsed.data.markdown,
           parsed.data.title,
           parsed.data.email ?? false,
@@ -180,14 +178,12 @@ export function createApp(opts: AppOptions = {}) {
       const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
       try {
         await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
-        const effective = annotateStale(legacy.manifest, c.env, services);
-        if (effective.status !== "failed") return c.json(effective, 200);
-        const result = await enqueueMarkdownImport(
+        const result = await markdownImportResultForOwnedReading(
           reader,
           c.env,
           services,
           pointer,
-          effective,
+          legacy.manifest,
           parsed.data.markdown,
           parsed.data.title,
           parsed.data.email ?? false,
@@ -195,6 +191,51 @@ export function createApp(opts: AppOptions = {}) {
         return c.json(result.body, result.status);
       } catch (err) {
         if (!(err instanceof PointerExistsError)) throw err;
+        const claimed = await reader.readByUrlPointerWithEtag(urlHash);
+        if (claimed) {
+          const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
+          if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, urlHash)) {
+            const result = await markdownImportResultForOwnedReading(
+              reader,
+              c.env,
+              services,
+              claimed.pointer,
+              claimedManifest,
+              parsed.data.markdown,
+              parsed.data.title,
+              parsed.data.email ?? false,
+            );
+            return c.json(result.body, result.status);
+          }
+          if (!claimedManifest && isFreshMissingManifestPointer(claimed.pointer, services.now())) {
+            return c.json(
+              {
+                error: "reading owner is still initializing",
+                id: claimed.pointer.id,
+                poll: `/readings/${claimed.pointer.id}`,
+              },
+              409,
+            );
+          }
+          const replaced = await reader.replaceByUrlPointerIfCurrent(
+            urlHash,
+            claimed.etag,
+            pointer,
+          );
+          if (replaced) {
+            const result = await markdownImportResultForOwnedReading(
+              reader,
+              c.env,
+              services,
+              pointer,
+              legacy.manifest,
+              parsed.data.markdown,
+              parsed.data.title,
+              parsed.data.email ?? false,
+            );
+            return c.json(result.body, result.status);
+          }
+        }
       }
     }
 
@@ -605,6 +646,30 @@ function keyPrefixCreatedAtMs(keyPrefix: string): number | null {
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m;
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+}
+
+async function markdownImportResultForOwnedReading(
+  reader: ReadingStore,
+  env: Env,
+  services: Services,
+  pointer: ByUrlPointer,
+  manifest: Manifest,
+  markdown: string,
+  title: string | undefined,
+  email: boolean,
+): Promise<SubmitJsonResult> {
+  const effective = annotateStale(manifest, env, services);
+  if (effective.status !== "failed") return { body: effective, status: 200 };
+  return enqueueMarkdownImport(
+    reader,
+    env,
+    services,
+    pointer,
+    effective,
+    markdown,
+    title,
+    email,
+  );
 }
 
 async function enqueueReprocess(
