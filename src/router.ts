@@ -24,9 +24,9 @@ import {
   manifestToIndexItem,
   PointerExistsError,
   ReadingStore,
-  type StoredByUrlPointer,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
+import { ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
 
 export interface AppOptions {
@@ -59,90 +59,40 @@ export function createApp(opts: AppOptions = {}) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
     const url = parsed.data.url;
+    const email = parsed.data.email ?? true;
 
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const urlHash = await sha256Hex(url);
-    const existing = await reader.readByUrlPointerWithEtag(urlHash);
-    if (existing) {
-      const m = await reader.readManifest(existing.pointer.key_prefix);
-      if (m && ownedManifestMatches(existing.pointer, m, url, urlHash)) {
+    const claim = new ReadingClaim(reader, services);
+    const owner = await claim.resolveOwner(url);
+    switch (owner.kind) {
+      case "owned": {
         const result = await submitResultForOwnedReading(
           reader,
           c.env,
           services,
-          existing.pointer,
-          m,
-          { email: parsed.data.email ?? true },
+          owner.pointer,
+          owner.manifest,
+          { email },
         );
         return c.json(result.body, result.status);
       }
-      const result = await damagedOwnerResult(
-        reader,
-        c.env,
-        services,
-        url,
-        urlHash,
-        existing,
-        parsed.data.email ?? true,
-        { allowFreshInitializingConflict: !m },
-      );
-      return c.json(result.body, result.status);
-    }
-
-    const legacy = await reader.findManifestByUrl(url);
-    if (legacy) {
-      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
-      try {
-        await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
-        const result = await submitResultForOwnedReading(
+      case "initializing": {
+        const result = initializingResponse(owner.pointer);
+        return c.json(result.body, result.status);
+      }
+      case "unclaimed": {
+        const result = await createNewReadingForSubmit(
           reader,
           c.env,
           services,
-          pointer,
-          legacy.manifest,
-          { email: parsed.data.email ?? true },
+          claim,
+          url,
+          email,
+          { replaceEtag: owner.replaceEtag },
         );
         return c.json(result.body, result.status);
-      } catch (err) {
-        if (!(err instanceof PointerExistsError)) throw err;
-        const claimed = await reader.readByUrlPointerWithEtag(urlHash);
-        if (claimed) {
-          const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
-          if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, urlHash)) {
-            const result = await submitResultForOwnedReading(
-              reader,
-              c.env,
-              services,
-              claimed.pointer,
-              claimedManifest,
-              { email: parsed.data.email ?? true },
-            );
-            return c.json(result.body, result.status);
-          }
-          const result = await damagedOwnerResult(
-            reader,
-            c.env,
-            services,
-            url,
-            urlHash,
-            claimed,
-            parsed.data.email ?? true,
-            { allowFreshInitializingConflict: !claimedManifest },
-          );
-          return c.json(result.body, result.status);
-        }
-        throw err;
       }
     }
-
-    const result = await createNewReadingForSubmit(
-      reader,
-      c.env,
-      services,
-      url,
-      parsed.data.email ?? true,
-    );
-    return c.json(result.body, result.status);
   });
 
   app.post("/readings/import-markdown", async (c) => {
@@ -470,9 +420,10 @@ async function createNewReadingForSubmit(
   reader: ReadingStore,
   env: Env,
   services: Services,
+  claim: ReadingClaim,
   url: string,
   email: boolean,
-  claim: { replaceEtag?: string } = {},
+  opts: { replaceEtag?: string } = {},
 ): Promise<SubmitJsonResult> {
   const args = await newReadingArgs(url, services);
   const attemptStartedAt = services.now();
@@ -500,49 +451,15 @@ async function createNewReadingForSubmit(
   }
 
   const pointer = { id: args.id, key_prefix: args.keyPrefix };
-  try {
-    if (claim.replaceEtag) {
-      const replaced = await reader.replaceByUrlPointerIfCurrent(
-        args.urlHash,
-        claim.replaceEtag,
-        pointer,
-      );
-      if (!replaced) throw new PointerExistsError(args.urlHash);
-    } else {
-      await reader.writeByUrlPointer(
-        args.urlHash,
-        pointer,
-        { ifNotExists: true },
-      );
-    }
-  } catch (err) {
-    if (!(err instanceof PointerExistsError)) throw err;
-    const claimed = await reader.readByUrlPointerWithEtag(args.urlHash);
-    if (claimed) {
-      const claimedManifest = await reader.readManifest(claimed.pointer.key_prefix);
-      if (claimedManifest && ownedManifestMatches(claimed.pointer, claimedManifest, url, args.urlHash)) {
-        return submitResultForOwnedReading(
-          reader,
-          env,
-          services,
-          claimed.pointer,
-          claimedManifest,
-          { email },
-        );
-      }
-      return damagedOwnerResult(
-        reader,
-        env,
-        services,
-        url,
-        args.urlHash,
-        claimed,
+  const claimed = await claimByUrlSlot(reader, claim, url, args.urlHash, pointer, {
+    replaceEtag: opts.replaceEtag,
+    onOwned: (res) =>
+      submitResultForOwnedReading(reader, env, services, res.pointer, res.manifest, {
         email,
-        { allowFreshInitializingConflict: !claimedManifest },
-      );
-    }
-    throw err;
-  }
+      }),
+    fallbackId: args.id,
+  });
+  if (!claimed.ok) return claimed.result;
 
   let failureMessage = "reading setup failed";
   try {
@@ -586,80 +503,72 @@ async function createNewReadingForSubmit(
   };
 }
 
-async function damagedOwnerResult(
+// Bounds the claim → re-resolve retry when a concurrent submit wins the by-url
+// slot from under us. The original protocol recursed without limit; the resolver
+// converges in practice within one or two reads, so a small cap is a safety net
+// against pathological contention rather than a tuning knob.
+const CLAIM_MAX_ATTEMPTS = 4;
+
+type ClaimSlotResult =
+  | { ok: true }
+  | { ok: false; result: SubmitJsonResult };
+
+// Claims the by-url slot for a freshly-minted reading, retrying through the
+// resolver when a concurrent writer wins the race. Returns `{ ok: true }` once
+// the slot is ours to write into, or `{ ok: false, result }` to defer to the
+// winning owner (`onOwned`), report a still-initializing owner (409), or give up
+// under persistent contention.
+async function claimByUrlSlot(
   reader: ReadingStore,
-  env: Env,
-  services: Services,
+  claim: ReadingClaim,
   url: string,
   urlHash: string,
-  owner: StoredByUrlPointer,
-  email: boolean,
-  opts: { allowFreshInitializingConflict: boolean },
-): Promise<SubmitJsonResult> {
-  if (
-    !opts.allowFreshInitializingConflict ||
-    !isFreshMissingManifestPointer(owner.pointer, services.now())
-  ) {
-    const legacy = await reader.findManifestByUrl(url, { deepScan: true });
-    if (legacy) {
-      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
-      const replaced = await reader.replaceByUrlPointerIfCurrent(
-        urlHash,
-        owner.etag,
-        pointer,
-      );
-      if (replaced) {
-        return submitResultForOwnedReading(
-          reader,
-          env,
-          services,
-          pointer,
-          legacy.manifest,
-          { email },
-        );
+  pointer: ByUrlPointer,
+  opts: {
+    replaceEtag?: string;
+    onOwned: (res: { pointer: ByUrlPointer; manifest: Manifest }) => Promise<SubmitJsonResult>;
+    fallbackId: string;
+  },
+): Promise<ClaimSlotResult> {
+  let replaceEtag = opts.replaceEtag;
+  for (let attempt = 0; attempt < CLAIM_MAX_ATTEMPTS; attempt++) {
+    try {
+      if (replaceEtag) {
+        const replaced = await reader.replaceByUrlPointerIfCurrent(urlHash, replaceEtag, pointer);
+        if (!replaced) throw new PointerExistsError(urlHash);
+      } else {
+        await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
       }
-
-      const current = await reader.readByUrlPointerWithEtag(urlHash);
-      if (current) {
-        const currentManifest = await reader.readManifest(current.pointer.key_prefix);
-        if (currentManifest && ownedManifestMatches(current.pointer, currentManifest, url, urlHash)) {
-          return submitResultForOwnedReading(
-            reader,
-            env,
-            services,
-            current.pointer,
-            currentManifest,
-            { email },
-          );
-        }
-        return damagedOwnerResult(
-          reader,
-          env,
-          services,
-          url,
-          urlHash,
-          current,
-          email,
-          { allowFreshInitializingConflict: !currentManifest },
-        );
+      return { ok: true };
+    } catch (err) {
+      if (!(err instanceof PointerExistsError)) throw err;
+      // Lost the slot — re-resolve and defer to whoever now owns it, or retry
+      // the claim against the (possibly damaged) pointer they left behind.
+      const res = await claim.resolveOwner(url);
+      if (res.kind === "owned") return { ok: false, result: await opts.onOwned(res) };
+      if (res.kind === "initializing") {
+        return { ok: false, result: initializingResponse(res.pointer) };
       }
+      replaceEtag = res.replaceEtag;
     }
-
-    return createNewReadingForSubmit(reader, env, services, url, email, {
-      replaceEtag: owner.etag,
-    });
   }
+  return { ok: false, result: initializingResponse({ id: opts.fallbackId, key_prefix: "" }) };
+}
 
+function initializingResponse(pointer: ByUrlPointer): SubmitJsonResult {
   return {
     body: {
       error: "reading owner is still initializing",
-      id: owner.pointer.id,
-      poll: `/readings/${owner.pointer.id}`,
+      id: pointer.id,
+      poll: `/readings/${pointer.id}`,
     },
     status: 409,
   };
 }
 
+// Still used by the import-markdown and lookup handlers until they are rewired
+// onto ReadingClaim; removed once they switch over (these mirror the same-named
+// helpers now living in src/modules/reading-claim.ts).
 function ownedManifestMatches(
   pointer: ByUrlPointer,
   manifest: Manifest,
