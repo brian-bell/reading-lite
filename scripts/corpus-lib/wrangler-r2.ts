@@ -97,6 +97,16 @@ const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
 // Every deletable key under one reading's id-scoped prefix. Reads the manifest
 // live to recover attempt ids; raw.* exts are best-effort guesses (idempotent
 // deletes absorb the misses).
+//
+// Attempt coverage is limited to the manifest's active_attempt + last_attempt.
+// Each reprocess writes a new attempts/{at_*}.json, but the manifest records
+// only those two ids, and the `wrangler r2 object` CLI (this tool's only R2
+// access — corpus-drop intentionally needs just `wrangler login`, not S3/API
+// creds) has no prefix list. So on a reading reprocessed >2x, earlier attempt
+// JSONs can be orphaned. They're tiny, invisible to audits, and dangle nothing
+// (manifest/by-id/list entry are all gone), so this is an accepted minor
+// residue rather than a correctness problem; a full sweep would need S3
+// ListObjectsV2, which we deliberately don't pull into this tool.
 export async function keysForReading(
   id: string,
   keyPrefix: string,

@@ -27,6 +27,15 @@ export type ResolveResult =
   | { ok: true; targets: DropTarget[]; keptReady: DropListItem[] }
   | { ok: false; errors: string[] };
 
+// Only rewrite index/list.json once every object delete succeeded. If any
+// delete errored (e.g. a transient R2 failure on manifest.json or a pointer),
+// dropping the reading from the list would hide it from audits while its
+// objects/pointers linger — an inconsistent corpus that's harder to retry.
+// Leaving the list intact keeps the reading visible and the drop re-runnable.
+export function shouldRewriteIndex(erroredDeletes: number): boolean {
+  return erroredDeletes === 0;
+}
+
 const isId = (s: string): boolean => s.startsWith("rd_");
 
 export function resolveDropTargets(items: DropListItem[], selectors: string[]): ResolveResult {

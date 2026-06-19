@@ -11,7 +11,7 @@
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
-import { resolveDropTargets, type DropTarget } from "./corpus-lib/drop";
+import { resolveDropTargets, shouldRewriteIndex, type DropTarget } from "./corpus-lib/drop";
 import {
   deleteObject,
   keysForReading,
@@ -139,13 +139,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Don't rewrite the index if any object delete failed: removing the reading
+  // from index/list.json while its objects/pointers linger would hide a
+  // half-deleted reading from future audits. Leave the list intact so the drop
+  // stays visible and re-runnable.
+  if (!shouldRewriteIndex(errored)) {
+    console.error(
+      `\n${errored} object delete(s) failed — leaving index/list.json unchanged ` +
+      `so the partially-deleted reading stays visible. Re-run to retry.`,
+    );
+    console.error(`objects deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
+    process.exitCode = 1;
+    return;
+  }
+
   await writeListIndex(kept, deps);
   console.log("\nindex/list.json rewritten.");
-  console.log(
-    `Done. objects deleted: ${deleted}, absent (skipped): ${absent}` +
-    (errored ? `, errors: ${errored}` : ""),
-  );
-  if (errored) process.exitCode = 1;
+  console.log(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
 }
 
 main().catch((e: unknown) => {
