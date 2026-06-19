@@ -37,6 +37,11 @@ interface Args {
   wave: number;
   wavePauseMs: number;
   batch: boolean;
+  // Raw --bucket flag (undefined when not passed). The read/monitor path uses
+  // the defaulted `bucket`; the batch *write* path must pass this through so
+  // resolveBatchConfig can fall back to MIGRATE_R2_BUCKET (staging) rather than
+  // being masked by the default production bucket.
+  bucketFlag?: string;
 }
 
 function parseCliArgs(): Args {
@@ -66,6 +71,7 @@ function parseCliArgs(): Args {
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
     bucket: resolveBucket(values.bucket),
+    ...(values.bucket === undefined ? {} : { bucketFlag: values.bucket }),
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
@@ -269,7 +275,7 @@ async function runBatchMode(
 
   let cfg;
   try {
-    cfg = resolveBatchConfig({ bucket: args.bucket });
+    cfg = resolveBatchConfig({ ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }) });
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(2);
