@@ -544,13 +544,14 @@ async function createNewReadingForSubmit(
     throw err;
   }
 
-  await reader.writeManifest(args.keyPrefix, pendingManifest);
-  await reader.writeByIdPointer(args.id, pointer);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(pendingManifest, args.keyPrefix),
-  );
-
+  let failureMessage = "reading setup failed";
   try {
+    await reader.writeManifest(args.keyPrefix, pendingManifest);
+    await reader.writeByIdPointer(args.id, pointer);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(pendingManifest, args.keyPrefix),
+    );
+    failureMessage = "queue send failed";
     await env.READING_JOBS.send({
       ...args,
       attemptId,
@@ -560,18 +561,16 @@ async function createNewReadingForSubmit(
     });
   } catch (err) {
     console.error(err);
-    const failedManifest = manifestForQueueSendFailure(
+    await writeFailedActivationManifest(
+      reader,
+      args.keyPrefix,
       pendingManifest,
       activeAttempt,
       err,
       services,
     );
-    await reader.writeManifest(args.keyPrefix, failedManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(failedManifest, args.keyPrefix),
-    );
     return {
-      body: { error: "queue send failed", id: args.id },
+      body: { error: failureMessage, id: args.id },
       status: 503,
     };
   }
@@ -759,27 +758,26 @@ async function enqueueReprocess(
   };
   const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
 
-  await reader.writeManifest(pointer.key_prefix, nextManifest);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(nextManifest, pointer.key_prefix),
-  );
-
+  let failureMessage = "reading setup failed";
   try {
+    await reader.writeManifest(pointer.key_prefix, nextManifest);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(nextManifest, pointer.key_prefix),
+    );
+    failureMessage = "queue send failed";
     await env.READING_JOBS.send(args);
   } catch (err) {
     console.error(err);
-    const failedManifest = manifestForQueueSendFailure(
+    await writeFailedActivationManifest(
+      reader,
+      pointer.key_prefix,
       effectiveManifest,
       activeAttempt,
       err,
       services,
     );
-    await reader.writeManifest(pointer.key_prefix, failedManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(failedManifest, pointer.key_prefix),
-    );
     return {
-      body: { error: "queue send failed", id: effectiveManifest.id },
+      body: { error: failureMessage, id: effectiveManifest.id },
       status: 503,
     };
   }
@@ -896,20 +894,21 @@ async function createNewReadingForMarkdownImport(
     }
   }
 
-  await reader.writeRaw(
-    args.keyPrefix,
-    "md",
-    markdownBytes,
-    "text/markdown; charset=utf-8",
-  );
-  await reader.writeExtracted(args.keyPrefix, markdown);
-  await reader.writeManifest(args.keyPrefix, pendingManifest);
-  await reader.writeByIdPointer(args.id, pointer);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(pendingManifest, args.keyPrefix),
-  );
-
+  let failureMessage = "reading setup failed";
   try {
+    await reader.writeRaw(
+      args.keyPrefix,
+      "md",
+      markdownBytes,
+      "text/markdown; charset=utf-8",
+    );
+    await reader.writeExtracted(args.keyPrefix, markdown);
+    await reader.writeManifest(args.keyPrefix, pendingManifest);
+    await reader.writeByIdPointer(args.id, pointer);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(pendingManifest, args.keyPrefix),
+    );
+    failureMessage = "queue send failed";
     await env.READING_JOBS.send({
       ...args,
       attemptId,
@@ -919,18 +918,16 @@ async function createNewReadingForMarkdownImport(
     });
   } catch (err) {
     console.error(err);
-    const failedManifest = manifestForQueueSendFailure(
+    await writeFailedActivationManifest(
+      reader,
+      args.keyPrefix,
       pendingManifest,
       activeAttempt,
       err,
       services,
     );
-    await reader.writeManifest(args.keyPrefix, failedManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(failedManifest, args.keyPrefix),
-    );
     return {
-      body: { error: "queue send failed", id: args.id },
+      body: { error: failureMessage, id: args.id },
       status: 503,
     };
   }
@@ -1008,35 +1005,34 @@ async function enqueueMarkdownImport(
     updated_at: attemptStartedAt,
   };
 
-  await reader.writeRaw(
-    pointer.key_prefix,
-    "md",
-    markdownBytes,
-    "text/markdown; charset=utf-8",
-  );
-  await reader.writeExtracted(pointer.key_prefix, markdown);
-  await reader.writeManifest(pointer.key_prefix, pendingManifest);
-  await reader.writeByIdPointer(effectiveManifest.id, pointer);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(pendingManifest, pointer.key_prefix),
-  );
-
+  let failureMessage = "reading setup failed";
   try {
+    await reader.writeRaw(
+      pointer.key_prefix,
+      "md",
+      markdownBytes,
+      "text/markdown; charset=utf-8",
+    );
+    await reader.writeExtracted(pointer.key_prefix, markdown);
+    await reader.writeManifest(pointer.key_prefix, pendingManifest);
+    await reader.writeByIdPointer(effectiveManifest.id, pointer);
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(pendingManifest, pointer.key_prefix),
+    );
+    failureMessage = "queue send failed";
     await env.READING_JOBS.send(args);
   } catch (err) {
     console.error(err);
-    const failedManifest = manifestForQueueSendFailure(
+    await writeFailedActivationManifest(
+      reader,
+      pointer.key_prefix,
       pendingManifest,
       activeAttempt,
       err,
       services,
     );
-    await reader.writeManifest(pointer.key_prefix, failedManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(failedManifest, pointer.key_prefix),
-    );
     return {
-      body: { error: "queue send failed", id: effectiveManifest.id },
+      body: { error: failureMessage, id: effectiveManifest.id },
       status: 503,
     };
   }
@@ -1050,6 +1046,26 @@ async function enqueueMarkdownImport(
     },
     status: 202,
   };
+}
+
+async function writeFailedActivationManifest(
+  reader: ReadingStore,
+  keyPrefix: string,
+  manifest: Manifest,
+  activeAttempt: ProcessingAttemptSummary,
+  err: unknown,
+  services: Services,
+): Promise<void> {
+  const failedManifest = manifestForQueueSendFailure(
+    manifest,
+    activeAttempt,
+    err,
+    services,
+  );
+  await reader.writeManifest(keyPrefix, failedManifest);
+  await reader.appendOrReplaceListIndexItem(
+    manifestToIndexItem(failedManifest, keyPrefix),
+  );
 }
 
 function manifestForQueueSendFailure(

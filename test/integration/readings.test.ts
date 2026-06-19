@@ -1514,6 +1514,68 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     consoleErr.mockRestore();
   });
 
+  it("marks a claimed submit retryable when setup fails before queueing", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/setup-fails-after-claim";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_TEST01";
+    const byIdKey = `index/by-id/${id}`;
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let failedByIdWrite = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byIdKey && !failedByIdWrite) {
+          failedByIdWrite = true;
+          throw new Error("simulated setup failure");
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await app.request(
+      "/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      env,
+    );
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(queuedJobs).toHaveLength(0);
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id,
+      key_prefix: buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"),
+    });
+    await expect(reader.readManifest(buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"))).resolves.toMatchObject({
+      id,
+      status: "failed",
+      error: { retryable: true },
+    });
+
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+    const retry = await app.request(
+      "/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      env,
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+  });
+
   it("imports Markdown without fetching the source URL", async () => {
     const sourceUrl = "https://x.com/example/status/2047312986696454584";
     const markdown = "# Imported Markdown\n\nThis is already captured local content.";
@@ -1603,6 +1665,81 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
     expect(calledUrls).not.toContain(sourceUrl);
     expect(resendCalls(fetchFn)).toHaveLength(0);
+  });
+
+  it("marks a claimed Markdown import retryable when setup fails before queueing", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const sourceUrl = "https://example.com/import-setup-fails-after-claim";
+    const markdown = "# Setup Failure\n\nRetry me immediately.";
+    const urlHash = await sha256Hex(sourceUrl);
+    const id = "rd_TEST01";
+    const createdAt = "2026-04-26T20:00:01.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const rawKey = `${keyPrefix}/raw.md`;
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let failedRawWrite = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === rawKey && !failedRawWrite) {
+          failedRawWrite = true;
+          throw new Error("simulated markdown setup failure");
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await app.request(
+      "/readings/import-markdown",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Setup Failure",
+          markdown,
+        }),
+      },
+      env,
+    );
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(queuedJobs).toHaveLength(0);
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({ id, key_prefix: keyPrefix });
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "failed",
+      source_type: "markdown",
+      error: { retryable: true },
+    });
+
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+    const retry = await app.request(
+      "/readings/import-markdown",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Setup Failure",
+          markdown,
+        }),
+      },
+      env,
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id,
+      trigger: "import",
+      source: { kind: "markdown", markdown, title: "Setup Failure" },
+    });
   });
 
   it("deduplicates Markdown imports for the same source URL while pending", async () => {
