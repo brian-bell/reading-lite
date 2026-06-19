@@ -1,6 +1,6 @@
 ---
 name: corpus-drop
-description: Remove one or more readings from the reading-lite corpus, identified by URL or by reading id. Resolves each selector against index/list.json, deletes every object under the reading's id-scoped prefix, and rewrites index/list.json. Non-ready only — refuses ready readings (which own a by-url pointer + embedding). Dry-run by default; writes only with --execute. Use to drop dead links, junk, or duplicate failed copies from the corpus.
+description: Remove one or more readings from the reading-lite corpus, identified by URL or by reading id. Resolves each selector against index/list.json, deletes every object under the reading's id-scoped prefix, and rewrites index/list.json. Non-ready only — refuses ready readings (which own a by-url pointer + embedding). Dry-run by default; writes only with --execute. Use whenever the user wants to drop, delete, or remove a specific reading, URL, dead link, junk, or duplicate failed copy from the corpus — including when they just paste a URL or rd_ id and say to get rid of it.
 ---
 
 # corpus-drop
