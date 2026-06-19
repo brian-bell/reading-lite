@@ -33,8 +33,6 @@ export interface AppOptions {
   services?: Services;
 }
 
-const MISSING_MANIFEST_OWNER_GRACE_MS = 5 * 60 * 1000;
-
 export function createApp(opts: AppOptions = {}) {
   const services = opts.services ?? defaultServices();
   const app = new Hono<{ Bindings: Env }>();
@@ -166,45 +164,18 @@ export function createApp(opts: AppOptions = {}) {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const hash = await sha256Hex(url);
-    const owner = await reader.readByUrlPointerWithEtag(hash);
-    if (!owner) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(owner.pointer.key_prefix);
-    if (manifest && ownedManifestMatches(owner.pointer, manifest, url, hash)) {
-      return c.json({ id: owner.pointer.id });
-    }
-    if (!manifest && isFreshMissingManifestPointer(owner.pointer, services.now())) {
-      return c.json(
-        {
-          error: "reading owner is still initializing",
-          id: owner.pointer.id,
-          poll: `/readings/${owner.pointer.id}`,
-        },
-        409,
-      );
-    }
-    const legacy = await reader.findManifestByUrl(url, { deepScan: true });
-    if (legacy) {
-      const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
-      const replaced = await reader.replaceByUrlPointerIfCurrent(hash, owner.etag, pointer);
-      if (replaced) return c.json({ id: pointer.id });
-      const current = await reader.readByUrlPointer(hash);
-      const currentManifest = current ? await reader.readManifest(current.key_prefix) : null;
-      if (current && currentManifest && ownedManifestMatches(current, currentManifest, url, hash)) {
-        return c.json({ id: current.id });
+    const claim = new ReadingClaim(reader, services);
+    const owner = await claim.resolveOwner(url);
+    switch (owner.kind) {
+      case "owned":
+        return c.json({ id: owner.pointer.id });
+      case "initializing": {
+        const result = initializingResponse(owner.pointer);
+        return c.json(result.body, result.status);
       }
-      if (current && !currentManifest && isFreshMissingManifestPointer(current, services.now())) {
-        return c.json(
-          {
-            error: "reading owner is still initializing",
-            id: current.id,
-            poll: `/readings/${current.id}`,
-          },
-          409,
-        );
-      }
+      case "unclaimed":
+        return c.json({ error: "not found" }, 404);
     }
-    return c.json({ error: "not found" }, 404);
   });
 
   app.post("/readings/similar", async (c) => {
@@ -505,34 +476,6 @@ function initializingResponse(pointer: ByUrlPointer): SubmitJsonResult {
     },
     status: 409,
   };
-}
-
-// Still used by the import-markdown and lookup handlers until they are rewired
-// onto ReadingClaim; removed once they switch over (these mirror the same-named
-// helpers now living in src/modules/reading-claim.ts).
-function ownedManifestMatches(
-  pointer: ByUrlPointer,
-  manifest: Manifest,
-  url: string,
-  urlHash: string,
-): boolean {
-  return manifest.id === pointer.id && manifest.url === url && manifest.url_hash === urlHash;
-}
-
-function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {
-  const createdAtMs = keyPrefixCreatedAtMs(pointer.key_prefix);
-  if (createdAtMs === null) return false;
-  const ageMs = Date.parse(nowIso) - createdAtMs;
-  return ageMs >= 0 && ageMs < MISSING_MANIFEST_OWNER_GRACE_MS;
-}
-
-function keyPrefixCreatedAtMs(keyPrefix: string): number | null {
-  const m = keyPrefix.match(
-    /^readings\/(\d{4})\/(\d{2})\/(\d{2})T(\d{2})(\d{2})(\d{2})Z-/,
-  );
-  if (!m) return null;
-  const [, y, mo, d, h, mi, s] = m;
-  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 }
 
 async function markdownImportResultForOwnedReading(
