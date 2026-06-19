@@ -26,7 +26,7 @@ import {
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
-import { ReadingClaim } from "./modules/reading-claim";
+import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
 
 export interface AppOptions {
@@ -41,6 +41,12 @@ export function createApp(opts: AppOptions = {}) {
 
   app.onError((err, c) => {
     console.error(err);
+    // Bounded ownership-resolution contention is retryable, not an internal
+    // fault — surface it as 503 (mirroring claimByUrlSlot's own exhaustion)
+    // rather than letting the generic 500 mask a "retry me" condition.
+    if (err instanceof OwnerResolutionContentionError) {
+      return c.json({ error: "could not resolve url ownership under contention" }, 503);
+    }
     return c.json({ error: "internal" }, 500);
   });
 

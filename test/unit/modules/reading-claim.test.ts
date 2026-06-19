@@ -4,7 +4,10 @@ import {
   buildKeyPrefix,
   ReadingStore,
 } from "../../../src/modules/stores/reading-store";
-import { ReadingClaim } from "../../../src/modules/reading-claim";
+import {
+  OwnerResolutionContentionError,
+  ReadingClaim,
+} from "../../../src/modules/reading-claim";
 import { sha256Hex, type Services } from "../../../src/services";
 import type { Manifest } from "../../../src/schemas/manifest";
 
@@ -353,8 +356,11 @@ describe("ReadingClaim.resolveOwner", () => {
       .spyOn(store, "replaceByUrlPointerIfCurrent")
       .mockResolvedValue(false);
 
+    // A typed, retryable error (not a generic Error) so the router can map it to
+    // 503 instead of a 500 that masks transient contention.
+    await expect(claim.resolveOwner(url)).rejects.toBeInstanceOf(OwnerResolutionContentionError);
     await expect(claim.resolveOwner(url)).rejects.toThrow(/exhausted 3 attempts/i);
-    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy).toHaveBeenCalledTimes(6);
     spy.mockRestore();
   });
 });

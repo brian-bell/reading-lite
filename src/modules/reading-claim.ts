@@ -2,6 +2,18 @@ import type { ByUrlPointer, Manifest } from "../schemas/manifest";
 import { sha256Hex, type Services } from "../services";
 import { PointerExistsError, ReadingStore } from "./stores/reading-store";
 
+// Thrown when the bounded read→repair→re-resolve loop never converges because a
+// concurrent writer keeps winning the pointer CAS. This is *retryable* ownership
+// contention, not an internal fault — callers (or the router's error handler)
+// should surface it as a 503 so the client retries, the same way the router's
+// bounded claim loop maps its own exhaustion to 503.
+export class OwnerResolutionContentionError extends Error {
+  constructor(attempts: number) {
+    super(`resolveOwner: exhausted ${attempts} attempts resolving URL ownership under contention`);
+    this.name = "OwnerResolutionContentionError";
+  }
+}
+
 // A by-url pointer whose manifest is missing is treated as a still-initializing
 // owner (not damaged) while the pointer's key_prefix timestamp is younger than
 // this grace window. `POST /readings` writes the pointer before the pending
@@ -128,9 +140,7 @@ export class ReadingClaim {
       }
     }
 
-    throw new Error(
-      `resolveOwner: exhausted ${this.maxAttempts} attempts resolving URL ownership under contention`,
-    );
+    throw new OwnerResolutionContentionError(this.maxAttempts);
   }
 }
 

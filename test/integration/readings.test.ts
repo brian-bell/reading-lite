@@ -816,6 +816,66 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs).toHaveLength(0);
   });
 
+  it("returns 503 (not 500) when a recoverable repair stays contended past the bound", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/repair-forever-contended";
+    const urlHash = await sha256Hex(url);
+    // A damaged orphan pointer over a *recoverable* legacy: resolveOwner stays in
+    // the repair branch (deepScan finds the legacy) and keeps trying to CAS-replace
+    // the pointer onto it — it never reaches the claimByUrlSlot path.
+    const legacy: Manifest = {
+      id: "rd_REPAIR_LEGACY",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "legacy copy" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // Every CAS-replace of the by-url pointer loses, so resolveOwner never
+    // converges and must throw its bounded-contention error.
+    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const byUrlKey = `index/by-url/${urlHash}`;
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byUrlKey && options?.onlyIf) return null;
+        return realPut(key, value as ArrayBuffer, options);
+      }) as typeof env.READINGS_BUCKET.put);
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    spy.mockRestore();
+
+    // Retryable contention surfaces as 503, not the generic 500 from app.onError.
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: "could not resolve url ownership under contention",
+    });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
   it("repairs a stale by-url pointer to an existing manifest for the URL", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
