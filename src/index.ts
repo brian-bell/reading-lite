@@ -7,7 +7,7 @@ export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
   // Optional so the router can return a clear 503 when the binding is missing
-  // (e.g. wrangler dev / staging without a queue) instead of a runtime crash.
+  // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingArgs>;
   READER_API_TOKEN: string;
   ANTHROPIC_API_KEY: string;

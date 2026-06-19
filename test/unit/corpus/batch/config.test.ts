@@ -33,18 +33,18 @@ describe("resolveBatchConfig", () => {
   it("lets --bucket override the configured bucket and defaults the index to it", () => {
     const { CORPUS_VECTORIZE_INDEX, ...noIndex } = full;
     void CORPUS_VECTORIZE_INDEX;
-    const cfg = resolveBatchConfig({ bucket: "reading-lite-staging" }, { vars: noIndex });
-    expect(cfg.r2.bucket).toBe("reading-lite-staging");
-    expect(cfg.vectorize.index).toBe("reading-lite-staging");
+    const cfg = resolveBatchConfig({ bucket: "reading-lite-alt" }, { vars: noIndex });
+    expect(cfg.r2.bucket).toBe("reading-lite-alt");
+    expect(cfg.vectorize.index).toBe("reading-lite-alt");
   });
 
-  it("honors CORPUS_R2_BUCKET when no --bucket flag is passed (staging isn't masked)", () => {
+  it("honors CORPUS_R2_BUCKET when no --bucket flag is passed (alt bucket isn't masked)", () => {
     // The CLI must pass an *absent* flag through (not a defaulted production
-    // bucket), so a staging .corpus.vars writes to its own bucket.
-    const staging = { ...full, CORPUS_R2_BUCKET: "reading-lite-staging", CORPUS_VECTORIZE_INDEX: "reading-lite-staging" };
-    const cfg = resolveBatchConfig({}, { vars: staging });
-    expect(cfg.r2.bucket).toBe("reading-lite-staging");
-    expect(cfg.vectorize.index).toBe("reading-lite-staging");
+    // bucket), so a .corpus.vars pointing at an alternate bucket writes there.
+    const alt = { ...full, CORPUS_R2_BUCKET: "reading-lite-alt", CORPUS_VECTORIZE_INDEX: "reading-lite-alt" };
+    const cfg = resolveBatchConfig({}, { vars: alt });
+    expect(cfg.r2.bucket).toBe("reading-lite-alt");
+    expect(cfg.vectorize.index).toBe("reading-lite-alt");
   });
 
   it("throws listing all missing required fields", () => {

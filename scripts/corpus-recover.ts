@@ -39,8 +39,8 @@ interface Args {
   batch: boolean;
   // Raw --bucket flag (undefined when not passed). The read/monitor path uses
   // the defaulted `bucket`; the batch *write* path must pass this through so
-  // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (staging) rather than
-  // being masked by the default production bucket.
+  // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (an alternate bucket)
+  // rather than being masked by the default production bucket.
   bucketFlag?: string;
 }
 

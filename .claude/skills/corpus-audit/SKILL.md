@@ -43,8 +43,8 @@ npm run corpus-audit -- --teasers
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
 npm run corpus-audit -- --deep
 
-# Staging bucket / local miniflare.
-npm run corpus-audit -- --bucket reading-lite-staging
+# An alternate R2 bucket, or the local miniflare cache.
+npm run corpus-audit -- --bucket some-other-bucket
 npm run corpus-audit -- --local
 ```
 

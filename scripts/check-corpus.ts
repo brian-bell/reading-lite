@@ -75,7 +75,7 @@ same key the worker hashes for its by-url dedup pointer.
   --file <path>     Reading-list JSON: an array of { url, ... } entries (required).
   --out <path>      Where to write the annotated JSON. Default: in place (--file).
   --bucket <name>   R2 bucket. Default: READING_LITE_BUCKET env, then
-                    "${DEFAULT_BUCKET}" (production). Staging: "reading-lite-staging".
+                    "${DEFAULT_BUCKET}" (production).
   --status <s>      Status(es) that count as in-corpus. Repeatable.
                     Default: ready.
   --any-status      Shorthand for --status ready --status pending --status failed.
