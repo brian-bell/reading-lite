@@ -162,6 +162,24 @@ interface Article {
 }
 
 function readabilityFromHtml(html: string, url: string): Article | null {
+  // Readability/Turndown can throw on pathological documents — e.g. a page with
+  // no <body> (the docs.spring.io case in issue #18, where the static fetch is a
+  // script-only JS shell): Readability._grabArticle walks the topCandidate's
+  // ancestor chain toward BODY, runs off the top of the tree to null, and reads
+  // `null.tagName`. Don't let one malformed document crash the reading with a
+  // raw TypeError — degrade to raw_only, the same outcome as "no article found".
+  try {
+    return readabilityFromHtmlUnsafe(html, url);
+  } catch (e) {
+    // Leave a breadcrumb in tail logs — a swallowed crash is more surprising
+    // than a clean "no article", and a new class of pathological page silently
+    // degrading to raw_only should still be diagnosable.
+    console.warn(`readability/turndown threw on ${url}, degrading to raw_only:`, e);
+    return null;
+  }
+}
+
+function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
   // Inject a <base> into <head> so Readability resolves relative links against
   // the source URL. Skip the injection when the page already has its own
   // <base> (so we don't override the page's intent) or has no <head> at all.

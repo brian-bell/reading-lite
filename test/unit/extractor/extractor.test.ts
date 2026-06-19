@@ -50,6 +50,30 @@ describe("extractFromUrl", () => {
     expect(out.content_sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // Minimal reduction of the docs.spring.io page from issue #18: content
+  // followed by a <script>, with no <body> wrapper. linkedom parses this into a
+  // document whose content sits outside an (empty) body, which makes
+  // Readability._grabArticle walk the ancestor chain past <html> to null and
+  // throw `TypeError: Cannot read properties of null (reading 'tagName')`. We
+  // must catch that and degrade to raw_only rather than crash the reading.
+  const HTML_NO_BODY_CRASH = `<div id="content"><article><h1>Reference</h1>${"<p>property value property value property value property value</p>".repeat(8)}</article></div><script>var x=1;</script>`;
+
+  it("degrades to raw_only when readability throws on a body-less page (issue #18)", async () => {
+    const fetchFn = fakeFetch({
+      "https://docs.example/no-body": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: HTML_NO_BODY_CRASH,
+      },
+    });
+    const out = await extractFromUrl("https://docs.example/no-body", {
+      fetch: fetchFn,
+      timeoutMs: 5_000,
+      maxBytes: 1_000_000,
+    });
+    expect(out.content_status).toBe("raw_only");
+    expect(out.markdown).toBeUndefined();
+  });
+
   it("falls back to raw_only when readability finds no article", async () => {
     const fetchFn = fakeFetch({
       "https://example.com/sparse": {
