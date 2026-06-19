@@ -36,6 +36,16 @@ export interface ReadingClaimOptions {
   maxAttempts?: number;
 }
 
+export interface ResolveOwnerOptions {
+  // When false, the cold path (no by-url pointer at all) does NOT scan for a
+  // pointerless legacy reading or claim a pointer for it — it returns
+  // `unclaimed` immediately. Read-only callers (GET /readings/lookup) pass this
+  // so a lookup never writes to R2 and a URL with no live pointer reports "not
+  // found", exactly as before this protocol was extracted. Write callers
+  // (submit, import) leave it at the default and adopt the legacy reading.
+  claimColdLegacy?: boolean;
+}
+
 /**
  * The read → match → repair → resolve protocol for URL ownership, extracted from
  * the router so the six submit/import/lookup call sites collapse to a single
@@ -56,7 +66,11 @@ export class ReadingClaim {
     this.maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   }
 
-  async resolveOwner(url: string): Promise<OwnerResolution> {
+  async resolveOwner(
+    url: string,
+    opts: ResolveOwnerOptions = {},
+  ): Promise<OwnerResolution> {
+    const claimColdLegacy = opts.claimColdLegacy ?? true;
     const urlHash = await sha256Hex(url);
 
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
@@ -92,9 +106,13 @@ export class ReadingClaim {
         return { kind: "unclaimed", replaceEtag: existing.etag };
       }
 
-      // No pointer at all. Cold path: a legacy reading may exist without a
-      // pointer (no deep scan — first-time submits must not pay a full bucket
-      // scan). Claim its pointer; if nothing is found, the URL is free.
+      // No pointer at all. Read-only callers stop here: with no live pointer the
+      // URL is "not found", and a lookup must never scan or write.
+      if (!claimColdLegacy) return { kind: "unclaimed" };
+
+      // Cold path: a legacy reading may exist without a pointer (no deep scan —
+      // first-time submits must not pay a full bucket scan). Claim its pointer;
+      // if nothing is found, the URL is free.
       const legacy = await this.store.findManifestByUrl(url);
       if (!legacy) return { kind: "unclaimed" };
 

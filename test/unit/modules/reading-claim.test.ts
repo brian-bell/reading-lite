@@ -275,6 +275,68 @@ describe("ReadingClaim.resolveOwner", () => {
     expect(res).toEqual({ kind: "unclaimed", replaceEtag: stored!.etag });
   });
 
+  it("deep-scans only when repairing an existing pointer, never on the cold path", async () => {
+    const { store, claim } = newClaim();
+    const spy = vi.spyOn(store, "findManifestByUrl");
+
+    // Cold path: no pointer → findManifestByUrl(url) with no deepScan, so a
+    // first-time submit never pays a full bucket scan.
+    await claim.resolveOwner("https://example.com/cold-scan");
+    expect(spy).toHaveBeenLastCalledWith("https://example.com/cold-scan");
+
+    // Repair path: a damaged pointer → deepScan:true (the strongest recovery).
+    const url = "https://example.com/repair-scan";
+    const urlHash = await sha256Hex(url);
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    await claim.resolveOwner(url);
+    expect(spy).toHaveBeenLastCalledWith(url, { deepScan: true });
+
+    spy.mockRestore();
+  });
+
+  it("does not scan or claim a cold legacy when claimColdLegacy is false", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/read-only-cold";
+    const urlHash = await sha256Hex(url);
+    await writeReading(store, url, { id: "rd_LEGACY", status: "ready" });
+    const spy = vi.spyOn(store, "findManifestByUrl");
+
+    const res = await claim.resolveOwner(url, { claimColdLegacy: false });
+
+    // No live pointer → "not found"; the legacy is neither scanned for nor claimed.
+    expect(res).toEqual({ kind: "unclaimed" });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await store.readByUrlPointer(urlHash)).toBeNull();
+    spy.mockRestore();
+  });
+
+  it("still repairs a damaged pointer when claimColdLegacy is false (read-only repair)", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/read-only-repair";
+    const urlHash = await sha256Hex(url);
+    const legacy = await writeReading(store, url, {
+      id: "rd_LEGACY",
+      status: "ready",
+      created_at: "2026-04-26T19:00:00.000Z",
+    });
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    const res = await claim.resolveOwner(url, { claimColdLegacy: false });
+
+    expect(res.kind).toBe("owned");
+    if (res.kind === "owned") expect(res.pointer.id).toBe("rd_LEGACY");
+    expect(await store.readByUrlPointer(urlHash)).toEqual({
+      id: "rd_LEGACY",
+      key_prefix: legacy.keyPrefix,
+    });
+  });
+
   it("terminates after the bounded attempts under persistent CAS contention", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     const claim = new ReadingClaim(store, fakeServices(), { maxAttempts: 3 });

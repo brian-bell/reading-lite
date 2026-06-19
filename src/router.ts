@@ -75,7 +75,7 @@ export function createApp(opts: AppOptions = {}) {
         return c.json(result.body, result.status);
       }
       case "initializing": {
-        const result = initializingResponse(owner.pointer);
+        const result = initializingResponse(owner.pointer.id);
         return c.json(result.body, result.status);
       }
       case "unclaimed": {
@@ -123,7 +123,7 @@ export function createApp(opts: AppOptions = {}) {
         return c.json(result.body, result.status);
       }
       case "initializing": {
-        const result = initializingResponse(owner.pointer);
+        const result = initializingResponse(owner.pointer.id);
         return c.json(result.body, result.status);
       }
       case "unclaimed": {
@@ -165,12 +165,15 @@ export function createApp(opts: AppOptions = {}) {
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const claim = new ReadingClaim(reader, services);
-    const owner = await claim.resolveOwner(url);
+    // Read-only: a lookup repairs a damaged pointer it finds, but never claims a
+    // cold pointerless legacy (that would be a write on a GET) — no live pointer
+    // means "not found".
+    const owner = await claim.resolveOwner(url, { claimColdLegacy: false });
     switch (owner.kind) {
       case "owned":
         return c.json({ id: owner.pointer.id });
       case "initializing": {
-        const result = initializingResponse(owner.pointer);
+        const result = initializingResponse(owner.pointer.id);
         return c.json(result.body, result.status);
       }
       case "unclaimed":
@@ -369,7 +372,6 @@ async function createNewReadingForSubmit(
       submitResultForOwnedReading(reader, env, services, res.pointer, res.manifest, {
         email,
       }),
-    fallbackId: args.id,
   });
   if (!claimed.ok) return claimed.result;
 
@@ -429,7 +431,8 @@ type ClaimSlotResult =
 // resolver when a concurrent writer wins the race. Returns `{ ok: true }` once
 // the slot is ours to write into, or `{ ok: false, result }` to defer to the
 // winning owner (`onOwned`), report a still-initializing owner (409), or give up
-// under persistent contention.
+// under persistent contention (503 — distinct from a settled owner, so the
+// client retries rather than polling a reading that was never written).
 async function claimByUrlSlot(
   reader: ReadingStore,
   claim: ReadingClaim,
@@ -439,7 +442,6 @@ async function claimByUrlSlot(
   opts: {
     replaceEtag?: string;
     onOwned: (res: { pointer: ByUrlPointer; manifest: Manifest }) => Promise<SubmitJsonResult>;
-    fallbackId: string;
   },
 ): Promise<ClaimSlotResult> {
   let replaceEtag = opts.replaceEtag;
@@ -459,20 +461,26 @@ async function claimByUrlSlot(
       const res = await claim.resolveOwner(url);
       if (res.kind === "owned") return { ok: false, result: await opts.onOwned(res) };
       if (res.kind === "initializing") {
-        return { ok: false, result: initializingResponse(res.pointer) };
+        return { ok: false, result: initializingResponse(res.pointer.id) };
       }
       replaceEtag = res.replaceEtag;
     }
   }
-  return { ok: false, result: initializingResponse({ id: opts.fallbackId, key_prefix: "" }) };
+  return {
+    ok: false,
+    result: {
+      body: { error: "could not claim url ownership under contention" },
+      status: 503,
+    },
+  };
 }
 
-function initializingResponse(pointer: ByUrlPointer): SubmitJsonResult {
+function initializingResponse(id: string): SubmitJsonResult {
   return {
     body: {
       error: "reading owner is still initializing",
-      id: pointer.id,
-      poll: `/readings/${pointer.id}`,
+      id,
+      poll: `/readings/${id}`,
     },
     status: 409,
   };
@@ -643,7 +651,6 @@ async function createNewReadingForMarkdownImport(
         title,
         email,
       ),
-    fallbackId: args.id,
   });
   if (!claimed.ok) return claimed.result;
 

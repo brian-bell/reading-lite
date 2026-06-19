@@ -773,6 +773,49 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await lookup.json()).toEqual({ id: body.id });
   });
 
+  it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/forever-contended";
+    const urlHash = await sha256Hex(url);
+    // A stale damaged orphan with no recoverable legacy: resolveOwner returns
+    // unclaimed{replaceEtag}, so every claim attempt is a CAS-replace.
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // Make every conditional write to the by-url slot lose, so the claim never
+    // converges and the bounded retry must give up rather than spin forever.
+    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const byUrlKey = `index/by-url/${urlHash}`;
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byUrlKey && options?.onlyIf) return null;
+        return realPut(key, value as ArrayBuffer, options);
+      }) as typeof env.READINGS_BUCKET.put);
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    spy.mockRestore();
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: "could not claim url ownership under contention",
+    });
+    // Never wrote a manifest or queued a job for the un-claimable reading.
+    expect(queuedJobs).toHaveLength(0);
+  });
+
   it("repairs a stale by-url pointer to an existing manifest for the URL", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -3367,6 +3410,40 @@ describe("GET /readings/lookup", () => {
       id: legacy.id,
       key_prefix: legacyPrefix,
     });
+  });
+
+  it("returns 404 without writing a pointer for a legacy reading that has none", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-legacy-no-pointer";
+    const urlHash = await sha256Hex(url);
+    const legacy: Manifest = {
+      id: "rd_LOOKUP_LEGACY_NP",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, legacyPrefix));
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    // A lookup never claims a cold legacy — no live pointer means "not found",
+    // and the GET must not write a by-url pointer as a side effect.
+    expect(res.status).toBe(404);
+    expect(await reader.readByUrlPointer(urlHash)).toBeNull();
   });
 
   it("returns 404 for a stale lookup owner without a matching manifest", async () => {
