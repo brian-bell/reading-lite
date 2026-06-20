@@ -23,12 +23,15 @@ Companion script: `scripts/manual/idempotency-smoke.sh` (concrete curls for A–
 
 ## Group 0 — Automated gate (do first)
 
-- [ ] `npm test` — full vitest suite passes
-- [ ] `npm run typecheck` — clean
-- [ ] Confirm new suites ran: `test/unit/modules/reading-claim.test.ts`,
+- [x] `npm test` — full vitest suite passes
+- [x] `npm run typecheck` — clean
+- [x] Confirm new suites ran: `test/unit/modules/reading-claim.test.ts`,
       `test/unit/process-reading/attempt-ownership.test.ts`,
       `test/unit/process-reading/commit-terminal.test.ts`, expanded
       `test/integration/readings.test.ts`
+
+Run note (2026-06-20): `npm test` passed 551 tests across 53 files, including
+the four idempotency-focused suites above. `npm run typecheck` passed.
 
 ---
 
@@ -64,7 +67,7 @@ Use a fresh throwaway `$U` per row.
 - [ ] **C3** `failed` URL → `200 {id}`
 - [ ] **C4** owner inside missing-manifest grace window → `409 "reading owner is still initializing"` `{id,poll}`
 - [ ] **C5** unknown URL → `404 {error:"not found"}`
-- [ ] **C6 (integration):** damaged pointer → lookup returns `404` and does **no** deep scan / **no** R2 write
+- [x] **C6 (integration):** damaged pointer → lookup returns `404` and does **no** deep scan / **no** R2 write
 
 ---
 
@@ -82,29 +85,35 @@ Use a fresh throwaway `$U` per row.
 
 ## Group E — Terminal-write ownership gating (integration-primary)
 
-- [ ] **E1** superseded attempt finishing late does **not** overwrite newer manifest/list/vector (`hasConflict` early-return)
-- [ ] **E2** success path emails/publishes only when `published === true`
-- [ ] **E3** lost-CAS terminal write re-syncs list only if we still own the by-url pointer (no row resurrection)
-- [ ] **E4** non-owner duplicate failure clears **list row only**, never the URL pointer or winner's vector
-- [ ] **E5** DLQ `markDeadLettered` on a taken-over reading does **not** clobber (strict `isActive` gate)
+- [x] **E1** superseded attempt finishing late does **not** overwrite newer manifest/list/vector (`hasConflict` early-return)
+- [x] **E2** success path emails/publishes only when `published === true`
+- [x] **E3** lost-CAS terminal write re-syncs list only if we still own the by-url pointer (no row resurrection)
+- [x] **E4** non-owner duplicate failure clears **list row only**, never the URL pointer or winner's vector
+- [x] **E5** DLQ `markDeadLettered` on a taken-over reading does **not** clobber (strict `isActive` gate)
 
 ---
 
 ## Group F — Setup / queue-send failure (local + integration)
 
-- [ ] **F1 (local):** no `READING_JOBS` → `POST /readings`, `/import-markdown`, `/reprocess` all `503 "queue binding READING_JOBS is not configured"`
-- [ ] **F2 (integration):** queue `send` throws → `503 {error:"queue send failed",id}`; reading left as retryable `failed` (`QueueSendError`, `retryable:true`)
-- [ ] **F3 (integration):** `ready` reading whose reprocess queue-send fails → rolls back to `ready` + `last_attempt.status="failed"`
+- [x] **F1 (local):** no `READING_JOBS` → `POST /readings`, `/import-markdown`, `/reprocess` all `503 "queue binding READING_JOBS is not configured"`
+- [x] **F2 (integration):** queue `send` throws → `503 {error:"queue send failed",id}`; reading left as retryable `failed` (`QueueSendError`, `retryable:true`)
+- [x] **F3 (integration):** `ready` reading whose reprocess queue-send fails → rolls back to `ready` + `last_attempt.status="failed"`
+
+Run note (2026-06-20): local `wrangler dev` with no queue binding returned
+the expected `503` for `POST /readings` and `POST /readings/import-markdown`
+via `scripts/manual/idempotency-smoke.sh f1`; local auth/validation also
+checked (`/health` 200, missing/wrong bearer 401, invalid URL 400). The
+reprocess no-queue branch is covered by the integration suite.
 
 ---
 
 ## Group G — Contention / damaged / cold-legacy (integration-only)
 
-- [ ] **G1** concurrent submits converge on one owner; no duplicate ids
-- [ ] **G2** claim contention exhausts 4 attempts → `503 "could not claim url ownership under contention"`
-- [ ] **G3** resolve contention exhausts 8 attempts → `503 "could not resolve url ownership under contention"`
-- [ ] **G4** damaged pointer on a write path repaired (deep scan memoized, scanned ≤1×) or overwritten via `replaceEtag`
-- [ ] **G5** cold legacy adopted on submit; no duplicate
+- [x] **G1** concurrent submits converge on one owner; no duplicate ids
+- [x] **G2** claim contention exhausts 4 attempts → `503 "could not claim url ownership under contention"`
+- [x] **G3** resolve contention exhausts 8 attempts → `503 "could not resolve url ownership under contention"`
+- [x] **G4** damaged pointer on a write path repaired (deep scan memoized, scanned ≤1×) or overwritten via `replaceEtag`
+- [x] **G5** cold legacy adopted on submit; no duplicate
 
 ---
 
@@ -113,6 +122,10 @@ Use a fresh throwaway `$U` per row.
 - [ ] **H1 (deployed):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
 - [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
 - [ ] **H3 (cleanup):** `npm run corpus-audit` then `npm run corpus-drop` every throwaway `$U`
+
+Run note (2026-06-20): `cd web && npm test` passed 22 tests and
+`cd web && npm run build` passed. Actual browser smoke remains manual because
+local Worker submits cannot complete without `READING_JOBS`.
 
 ---
 
@@ -123,3 +136,15 @@ Use a fresh throwaway `$U` per row.
 3. Deployed: A → B → C → D → H1/H2 (interleave lookup + corpus-audit)
 4. Read-through integration coverage for E, F2/F3, G
 5. H3 cleanup
+
+## Manual items remaining
+
+These were intentionally not run on 2026-06-20 because the documented cleanup
+tooling (`npm run corpus-drop`) refuses to delete ready readings, so deployed
+ready-state smoke would leave throwaway entries in the personal prod corpus.
+
+- Deployed Group A: A1-A5 and the A2-A4 lookup/audit checks.
+- Deployed Group B: B1-B5.
+- Deployed Group C spot-checks: C1-C5, even though C6 and the lookup states are covered by integration tests.
+- Deployed Group D: D1-D5.
+- Deployed Group H: H1, H2 browser smoke against a real completing backend, and H3 cleanup after any deployed throwaway URLs.
