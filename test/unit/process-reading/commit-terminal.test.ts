@@ -305,4 +305,24 @@ describe("commitTerminalManifest", () => {
 
     expect(stages).toEqual(["write_manifest", "write_indexes", "upsert_vector"]);
   });
+
+  it("11: defensive failure path + active-attempt conflict → no restore (unifies with success path)", async () => {
+    // The failure-path divergence the extraction deliberately removed: pre-refactor
+    // markFailed re-synced the foreign row via restoreCurrentListVisibility when a
+    // conflicting attempt owned the manifest; the unified contract skips it (plan 005
+    // case 2). Lock that: a foreign active_attempt under defensive:true writes nothing.
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt("at_OTHER") }));
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+
+    const out = await commitTerminalManifest(reader, null, args(), readyManifest(), {
+      claimMissingPointer: false,
+      allowLastAttempt: true,
+      defensive: true,
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect((await reader.readManifest(PREFIX))?.active_attempt?.id).toBe("at_OTHER");
+    expect(append).not.toHaveBeenCalled(); // no restore re-sync of the foreign row
+  });
 });

@@ -471,7 +471,9 @@ export interface CommitTerminalOpts {
 // removal clears list only (see plan 006 for the related cleanup-gate bug).
 //
 // Returns `published` so the caller can gate post-commit side effects (the
-// success path only emails when the reading became publicly visible).
+// success path only emails when the reading became publicly visible). `committed`
+// is observability for tests (the plan's documented contract); production callers
+// gate on `published` only, so don't treat `committed` as a load-bearing signal.
 export async function commitTerminalManifest(
   reader: ReadingStore,
   similarity: SimilarityStore | null,
@@ -487,7 +489,12 @@ export async function commitTerminalManifest(
     allowLastAttempt: opts.allowLastAttempt,
   });
   // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
-  // restore — the other attempt owns visibility too.
+  // restore — the other attempt owns visibility too. This unifies the two old
+  // call sites: the success path already early-returned here, but the failure
+  // path used to fall through writeManifestForTerminalState (which returns false
+  // on conflict) into a restoreCurrentListVisibility re-sync of the foreign row.
+  // That re-sync was a no-op on data the owning attempt maintains anyway;
+  // skipping it is intentional (plan 005, case 2).
   if (!state.canWriteManifest) return { committed: false, published: false };
 
   const written = await run("write_manifest", () =>
@@ -496,8 +503,10 @@ export async function commitTerminalManifest(
       : writeManifestForTerminalState(reader, args, manifest, state),
   );
   if (!written) {
-    // CAS lost mid-flight (etag changed) or a defensive write threw: restore the
-    // current list visibility so we don't leave a half-published row behind.
+    // Manifest not written despite owning the attempt: a lost CAS (etag changed
+    // mid-flight) on either path, or — on the defensive path only — a swallowed
+    // write throw. Restore the current list visibility so we don't leave a
+    // half-published row behind.
     await reconcileVisibility(opts.defensive, () =>
       restoreCurrentListVisibility(reader, args),
     );
