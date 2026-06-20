@@ -117,7 +117,11 @@ export class ReadingClaim {
 
         // Damaged owner (manifest mismatched, or stale-missing). Read-only
         // callers (lookup) opt out of repair: no bucket scan, no CAS write — the
-        // URL reads as "not found" until a write path repairs it.
+        // URL reads as "not found" until a write path repairs it. This returns
+        // `unclaimed` WITHOUT `replaceEtag` on purpose: `repairDamaged:false` is
+        // a read-path-only option, so no caller will try to claim the damaged
+        // slot off this result. (A write caller must leave repairDamaged at its
+        // default and gets the etag-bearing `unclaimed` from the scan path below.)
         if (!repairDamaged) return { kind: "unclaimed" };
 
         // Try to repair to a recovered legacy reading. A deep scan is the

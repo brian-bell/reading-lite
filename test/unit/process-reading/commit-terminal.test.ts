@@ -349,4 +349,25 @@ describe("commitTerminalManifest", () => {
     expect(out.committed).toBe(false);
     expect(append).not.toHaveBeenCalled(); // no resurrection of the non-owner row
   });
+
+  it("13: CAS loss + no url pointer (failure path) → restore still re-syncs the row", async () => {
+    // The no-pointer branch is the failure-path default (ownerAllowsVisibility=true).
+    // The Fix-#2 gate only suppresses re-append for a FOREIGN pointer; with no
+    // pointer at all the row must still be restored. Guards against a future edit
+    // that flips the `pointer && ...` short-circuit and breaks this default.
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    // No by-url pointer written.
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+
+    const out = await commitTerminalManifest(reader, null, args(), readyManifest(), {
+      claimMissingPointer: false,
+      allowLastAttempt: true,
+      defensive: true,
+    });
+
+    expect(out.committed).toBe(false);
+    expect(append).toHaveBeenCalledTimes(1); // no-pointer → restore re-syncs
+  });
 });

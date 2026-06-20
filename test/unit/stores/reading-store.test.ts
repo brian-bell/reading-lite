@@ -748,6 +748,36 @@ describe("ReadingStore — listManifests", () => {
     expect(found?.manifest.id).toBe("rd_ready");
   });
 
+  it("prefers a ready owner over a newer pending duplicate of the same URL", async () => {
+    // The middle rank (pending) must also lose to ready: an in-flight reprocess
+    // (newer, pending) must not steal URL ownership from the completed ready copy.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup-pending";
+    const urlHash = await sha256Hex(url);
+
+    const ready = emptyManifest({
+      id: "rd_ready",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const pending = emptyManifest({
+      id: "rd_pending",
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
+    await store.writeManifest(buildKeyPrefix(pending.id, pending.created_at), pending);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_ready");
+  });
+
   it("prefers the newest reading among same-status duplicates of the same URL", async () => {
     // The status tiebreak must not override recency *within* a status class:
     // two ready copies still resolve to the most recently updated one.

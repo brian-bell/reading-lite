@@ -648,6 +648,11 @@ async function restoreCurrentListVisibility(
   // blindly re-appending here would resurrect a row it unpublished. Mirror
   // terminalWriteState's `ownerAllowsVisibility = ownsUrl` gate: re-sync only
   // when we still own the URL (or no pointer exists, the failure-path default).
+  // This narrows the resurrection window but doesn't close it: a winner that
+  // changes the pointer *after* this read still loses to our re-append. That
+  // residual race is last-writer-wins (the repo's documented stance) and
+  // self-heals — the winner's removeAttemptListVisibility gate re-removes our
+  // row on its next pass, or a later terminal write reconciles it.
   const pointer = await reader.readByUrlPointer(args.urlHash);
   if (pointer && (pointer.id !== args.id || pointer.key_prefix !== args.keyPrefix)) return;
   await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));

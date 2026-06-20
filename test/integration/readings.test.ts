@@ -801,6 +801,30 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     putSpy.mockRestore();
   });
 
+  it("GET /readings/lookup returns 409 initializing for a fresh pointer whose manifest is not yet written", async () => {
+    // Read-only repair is off, but the grace-window path is preserved: a pointer
+    // whose manifest hasn't landed yet but is still inside the grace window (the
+    // pointer-before-manifest write order) reports the owner as initializing (409),
+    // not "not found" — so a poller knows to keep polling rather than re-submit.
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-initializing";
+    const urlHash = await sha256Hex(url);
+    // Fresh pointer: key_prefix timestamp == services.now() baseTime (20:00:00Z).
+    const fresh = { id: "rd_FRESH", key_prefix: "readings/2026/04/26T200000Z-rd_FRESH" };
+    await reader.writeByUrlPointer(urlHash, fresh);
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ id: "rd_FRESH" });
+  });
+
   it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
