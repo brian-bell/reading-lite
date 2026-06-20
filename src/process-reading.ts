@@ -171,40 +171,29 @@ export async function processReading(
     };
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
-    let canPublishVisibility = false;
-    let canRemoveVisibility = false;
-    const state = await terminalWriteState(reader, args, { claimMissingPointer: true });
-    canPublishVisibility = state.canPublishVisibility;
-    canRemoveVisibility = state.canRemoveVisibility;
-    if (!state.canWriteManifest) return;
-    let manifestWritten = false;
-    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", async () => {
-      manifestWritten = await writeManifestForTerminalState(reader, args, finalManifest, state);
-    });
-    if (!manifestWritten) {
-      await restoreCurrentListVisibility(reader, args);
-      return;
-    }
+    const { published } = await commitTerminalManifest(
+      reader,
+      similarity,
+      args,
+      finalManifest,
+      {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: {
+          embedding: tldrEmbed.embedding,
+          meta: {
+            url: args.url,
+            title: llm.reading.title,
+            tags: llm.reading.tags,
+            created_at: args.createdAt,
+          },
+        },
+        instrument: (stage, fn) =>
+          runStage(attempt, reader, args.keyPrefix, services, stage, fn),
+      },
+    );
 
-    if (canPublishVisibility) {
-      await runStage(attempt, reader, args.keyPrefix, services, "write_indexes", () =>
-        reader.appendOrReplaceListIndexItem(
-          manifestToIndexItem(finalManifest, args.keyPrefix),
-        ),
-      );
-      await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
-        similarity.upsert(args.id, tldrEmbed.embedding, {
-          url: args.url,
-          title: llm.reading.title,
-          tags: llm.reading.tags,
-          created_at: args.createdAt,
-        }),
-      );
-    } else if (canRemoveVisibility) {
-      await removeAttemptVisibility(reader, similarity, args);
-    }
-
-    if (canPublishVisibility && shouldSendEmail(args)) {
+    if (published && shouldSendEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -339,10 +328,6 @@ async function markFailed(
   attempt.finished_at = failedAt;
   attempt.error = error;
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
-  const terminalState = await terminalWriteState(reader, args, {
-    claimMissingPointer: false,
-    allowLastAttempt: true,
-  });
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -355,25 +340,12 @@ async function markFailed(
       last_attempt: summarizeAttempt(attempt),
       updated_at: services.now(),
     };
-    const manifestWritten = await writeTerminalManifestDefensively(
-      reader,
-      args,
-      manifest,
-      terminalState,
-    );
-    try {
-      if (!manifestWritten) {
-        await restoreCurrentListVisibility(reader, args);
-      } else if (terminalState.canPublishVisibility) {
-        await reader.appendOrReplaceListIndexItem(
-          manifestToIndexItem(manifest, args.keyPrefix),
-        );
-      } else if (terminalState.canRemoveVisibility) {
-        await removeAttemptListVisibility(reader, args);
-      }
-    } catch (indexErr) {
-      console.error(indexErr);
-    }
+    // similarity: null → list-only visibility (the failure-path asymmetry).
+    await commitTerminalManifest(reader, null, args, manifest, {
+      claimMissingPointer: false,
+      allowLastAttempt: true,
+      defensive: true,
+    });
     return;
   }
 
@@ -394,27 +366,13 @@ async function markFailed(
   };
   // We're already on the failure path inside the queue consumer — a transient
   // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
-  // either way). Log and move on; the index TTL annotator will eventually flip
-  // stale pending entries even if both writes drop.
-  const manifestWritten = await writeTerminalManifestDefensively(
-    reader,
-    args,
-    manifest,
-    terminalState,
-  );
-  try {
-    if (!manifestWritten) {
-      await restoreCurrentListVisibility(reader, args);
-    } else if (terminalState.canPublishVisibility) {
-      await reader.appendOrReplaceListIndexItem(
-        manifestToIndexItem(manifest, args.keyPrefix),
-      );
-    } else if (terminalState.canRemoveVisibility) {
-      await removeAttemptListVisibility(reader, args);
-    }
-  } catch (indexErr) {
-    console.error(indexErr);
-  }
+  // either way). The defensive write logs and moves on; the index TTL annotator
+  // will eventually flip stale pending entries even if both writes drop.
+  await commitTerminalManifest(reader, null, args, manifest, {
+    claimMissingPointer: false,
+    allowLastAttempt: true,
+    defensive: true,
+  });
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
@@ -484,6 +442,116 @@ interface TerminalWriteState {
   canPublishVisibility: boolean;
   canRemoveVisibility: boolean;
   manifestEtag?: string;
+}
+
+export interface CommitTerminalOpts {
+  claimMissingPointer: boolean;
+  allowLastAttempt?: boolean;
+  // false: write throws propagate (success path → outer catch marks failed).
+  // true: throws are swallowed + logged (failure path has nowhere to bubble).
+  defensive: boolean;
+  // Provided only when publishing a vector; omitted on failure paths.
+  vector?: {
+    embedding: number[];
+    meta: { url: string; title: string; tags: string[]; created_at: string };
+  };
+  // The success path passes a runStage-bound closure so each sub-write still logs
+  // a stage event; failure paths omit it and write plainly.
+  instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
+}
+
+// The single home of the terminal-write ordering invariant: CAS-write the
+// manifest, then reconcile list + vector visibility, restoring on a lost CAS.
+// All three call sites (success, markFailed preserve, markFailed normal) funnel
+// through here so none of them re-spells the ordering or touches the private
+// TerminalWriteState booleans.
+//
+// `similarity` is null on the failure paths, which encodes the deliberate
+// success/failure asymmetry: success removal clears list AND vector, failure
+// removal clears list only (see plan 006 for the related cleanup-gate bug).
+//
+// Returns `published` so the caller can gate post-commit side effects (the
+// success path only emails when the reading became publicly visible). `committed`
+// is observability for tests (the plan's documented contract); production callers
+// gate on `published` only, so don't treat `committed` as a load-bearing signal.
+export async function commitTerminalManifest(
+  reader: ReadingStore,
+  similarity: SimilarityStore | null,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  opts: CommitTerminalOpts,
+): Promise<{ committed: boolean; published: boolean }> {
+  const run =
+    opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
+
+  const state = await terminalWriteState(reader, args, {
+    claimMissingPointer: opts.claimMissingPointer,
+    allowLastAttempt: opts.allowLastAttempt,
+  });
+  // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
+  // restore — the other attempt owns visibility too. This unifies the two old
+  // call sites: the success path already early-returned here, but the failure
+  // path used to fall through writeManifestForTerminalState (which returns false
+  // on conflict) into a restoreCurrentListVisibility re-sync of the foreign row.
+  // That re-sync was a no-op on data the owning attempt maintains anyway;
+  // skipping it is intentional (plan 005, case 2).
+  if (!state.canWriteManifest) return { committed: false, published: false };
+
+  const written = await run("write_manifest", () =>
+    opts.defensive
+      ? writeTerminalManifestDefensively(reader, args, manifest, state)
+      : writeManifestForTerminalState(reader, args, manifest, state),
+  );
+  if (!written) {
+    // Manifest not written despite owning the attempt: a lost CAS (etag changed
+    // mid-flight) on either path, or — on the defensive path only — a swallowed
+    // write throw. Restore the current list visibility so we don't leave a
+    // half-published row behind.
+    await reconcileVisibility(opts.defensive, () =>
+      restoreCurrentListVisibility(reader, args),
+    );
+    return { committed: false, published: false };
+  }
+
+  if (state.canPublishVisibility) {
+    await reconcileVisibility(opts.defensive, async () => {
+      await run("write_indexes", () =>
+        reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
+      );
+      if (opts.vector && similarity) {
+        await run("upsert_vector", () =>
+          similarity.upsert(args.id, opts.vector!.embedding, opts.vector!.meta),
+        );
+      }
+    });
+    return { committed: true, published: true };
+  }
+
+  if (state.canRemoveVisibility) {
+    await reconcileVisibility(opts.defensive, async () => {
+      if (similarity) await removeAttemptVisibility(reader, similarity, args);
+      else await removeAttemptListVisibility(reader, args);
+    });
+  }
+  return { committed: true, published: false };
+}
+
+// Visibility reconciliation honors `defensive`: on the failure path a transient
+// R2 hiccup has nowhere to bubble (the queue consumer acks either way), so log
+// and move on; on the success path throws propagate to the outer catch.
+async function reconcileVisibility(
+  defensive: boolean,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (!defensive) {
+    await fn();
+    return;
+  }
+  try {
+    await fn();
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 async function terminalWriteState(
