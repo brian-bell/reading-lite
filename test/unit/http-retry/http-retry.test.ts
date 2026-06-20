@@ -110,6 +110,31 @@ describe("fetchWithRetry", () => {
     expect(sleeps).toEqual([50, 100]);
   });
 
+  it("aborts retry backoff when the request signal is aborted", async () => {
+    const fetchFn = vi.fn(async () => res(500));
+    const controller = new AbortController();
+    let rejectSleep: ((e: unknown) => void) | undefined;
+    const sleep = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSleep = reject;
+        }),
+    );
+    const promise = fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://x",
+      { signal: controller.signal },
+      { maxAttempts: 3, baseDelayMs: 50, maxDelayMs: 1_000, sleep, random: () => 1 },
+    );
+
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    rejectSleep?.(new Error("late sleep cleanup"));
+  });
+
   it("returns the last 5xx response after maxAttempts", async () => {
     const fetchFn = vi.fn(async () => res(503, "still down"));
     const { sleep, sleeps } = recordingSleep();

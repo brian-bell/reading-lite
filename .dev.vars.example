@@ -2,3 +2,6 @@
 READER_API_TOKEN=dev-local-token
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
+REDDIT_CLIENT_ID=reddit-client-id
+REDDIT_CLIENT_SECRET=reddit-client-secret
+REDDIT_USER_AGENT=web:reading-lite-dev:1.0 (contact: you@example.com)

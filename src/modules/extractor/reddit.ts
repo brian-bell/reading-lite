@@ -7,6 +7,7 @@ const REDDIT_HOSTS = new Set([
   "np.reddit.com",
   "m.reddit.com",
   "i.reddit.com",
+  "redd.it",
 ]);
 
 export function isRedditThreadUrl(rawUrl: string): boolean {
@@ -16,18 +17,27 @@ export function isRedditThreadUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
-  if (!REDDIT_HOSTS.has(u.hostname.toLowerCase())) return false;
+  const host = u.hostname.toLowerCase();
+  if (!REDDIT_HOSTS.has(host)) return false;
+  if (host === "redd.it") return /^\/[a-z0-9]+\/?$/i.test(u.pathname);
   return /\/comments\/[a-z0-9]+/i.test(u.pathname) || /\/comment\/[a-z0-9]+/i.test(u.pathname);
 }
 
 export function redditJsonUrl(rawUrl: string): string {
   const u = new URL(rawUrl);
+  const shortId = u.hostname.toLowerCase() === "redd.it" ? u.pathname.split("/").filter(Boolean)[0] : undefined;
+  u.protocol = "https:";
+  u.username = "";
+  u.password = "";
   u.hostname = "oauth.reddit.com";
-  u.pathname = u.pathname.replace(/\/+$/, "") + ".json";
+  u.port = "";
+  const path = u.pathname.replace(/\/+$/, "").replace(/\.json$/i, "");
+  u.pathname = shortId ? `/comments/${shortId}.json` : `${path}.json`;
   u.search = "";
   u.hash = "";
   u.searchParams.set("raw_json", "1");
   u.searchParams.set("limit", "20");
+  u.searchParams.set("sort", "top");
   return u.toString();
 }
 

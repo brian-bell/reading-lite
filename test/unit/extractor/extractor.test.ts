@@ -61,6 +61,7 @@ const redditDeps = {
   maxBytes: 1_000_000,
   redditClientId: "client-id",
   redditClientSecret: "client-secret",
+  redditUserAgent: "web:reading-lite:test (by /u/tester)",
   retry: {
     sleep: async () => {},
     maxAttempts: 3,
@@ -249,7 +250,7 @@ describe("extractFromUrl", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ access_token: "t" }),
         },
-        "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+        "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20&sort=top": {
           headers: { "content-type": "application/json" },
           body: REDDIT_THREAD_JSON,
         },
@@ -275,7 +276,7 @@ describe("extractFromUrl", () => {
     const listingCall = calls.find((c) => c.url.startsWith("https://oauth.reddit.com/"));
     const headers = new Headers(listingCall?.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer t");
-    expect(headers.get("user-agent")).toBeTruthy();
+    expect(headers.get("user-agent")).toBe("web:reading-lite:test (by /u/tester)");
   });
 
   it("propagates RateLimitedError when Reddit token fetch is rate-limited", async () => {
@@ -301,7 +302,7 @@ describe("extractFromUrl", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ access_token: "t" }),
       },
-      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20&sort=top": {
         status: 429,
         headers: { "retry-after": "11" },
         body: "slow down",
@@ -322,7 +323,7 @@ describe("extractFromUrl", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ access_token: "t" }),
       },
-      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20&sort=top": {
         headers: { "content-type": "text/html" },
         body: "<html>challenge</html>",
       },

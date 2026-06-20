@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BadStatusError } from "../../../src/modules/extractor";
-import { fetchRedditToken, REDDIT_UA } from "../../../src/modules/extractor/reddit-auth";
+import { BadStatusError, FetchTimeoutError, OversizedResponseError } from "../../../src/modules/extractor";
+import { fetchRedditToken } from "../../../src/modules/extractor/reddit-auth";
 
 describe("fetchRedditToken", () => {
   it("posts client credentials grant with Basic auth and a descriptive user-agent", async () => {
@@ -17,6 +17,7 @@ describe("fetchRedditToken", () => {
       fetch: fetchFn,
       clientId: "client-id",
       clientSecret: "client-secret",
+      userAgent: "web:reading-lite:test (by /u/tester)",
     });
 
     expect(token).toBe("token-123");
@@ -25,7 +26,7 @@ describe("fetchRedditToken", () => {
     const headers = new Headers(recorded?.init?.headers);
     expect(headers.get("authorization")).toBe(`Basic ${btoa("client-id:client-secret")}`);
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
-    expect(headers.get("user-agent")).toBe(REDDIT_UA);
+    expect(headers.get("user-agent")).toBe("web:reading-lite:test (by /u/tester)");
     expect(recorded?.init?.body).toBe("grant_type=client_credentials");
   });
 
@@ -48,5 +49,35 @@ describe("fetchRedditToken", () => {
         clientSecret: "client-secret",
       }),
     ).rejects.toMatchObject({ name: "RateLimitedError", retryAfterMs: 3_000 });
+  });
+
+  it("applies timeout and maxBytes bounds to token responses", async () => {
+    const neverFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+
+    await expect(
+      fetchRedditToken({
+        fetch: neverFetch,
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        timeoutMs: 1,
+      }),
+    ).rejects.toBeInstanceOf(FetchTimeoutError);
+
+    const tooBigFetch = async (): Promise<Response> =>
+      new Response(JSON.stringify({ access_token: "token-123" }), {
+        headers: { "content-length": "1000" },
+      });
+
+    await expect(
+      fetchRedditToken({
+        fetch: tooBigFetch,
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        maxBytes: 10,
+      }),
+    ).rejects.toBeInstanceOf(OversizedResponseError);
   });
 });

@@ -434,6 +434,7 @@ async function extractSource(
       retry: retryDepsFromEnv(env),
       redditClientId: env.REDDIT_CLIENT_ID,
       redditClientSecret: env.REDDIT_CLIENT_SECRET,
+      redditUserAgent: env.REDDIT_USER_AGENT,
     }),
   );
 }

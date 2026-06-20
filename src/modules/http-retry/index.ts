@@ -51,7 +51,7 @@ export async function fetchWithRetry(
 
       response.body?.cancel().catch(() => {});
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
-      await deps.sleep(wait);
+      await sleepWithAbort(wait, deps.sleep, init.signal);
     } catch (e) {
       if (e instanceof RateLimitedError) throw e;
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
@@ -60,7 +60,7 @@ export async function fetchWithRetry(
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
-      await deps.sleep(wait);
+      await sleepWithAbort(wait, deps.sleep, init.signal);
     }
   }
 
@@ -79,6 +79,28 @@ function isAbortError(e: unknown): boolean {
     "name" in e &&
     (e as { name: unknown }).name === "AbortError"
   );
+}
+
+async function sleepWithAbort(
+  ms: number,
+  sleep: (ms: number) => Promise<void>,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+  if (signal.aborted) throw abortError();
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    sleep(ms).then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
 }
 
 function jitteredBackoff(

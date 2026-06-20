@@ -32,6 +32,7 @@ export default [
               RESEND_API_KEY: "test-resend-key",
               REDDIT_CLIENT_ID: "test-reddit-id",
               REDDIT_CLIENT_SECRET: "test-reddit-secret",
+              REDDIT_USER_AGENT: "web:reading-lite:test (by /u/tester)",
             },
           },
         },

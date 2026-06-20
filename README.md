@@ -88,6 +88,7 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
+| `REDDIT_USER_AGENT` | `web:reading-lite:1.0 (contact: reading-lite)` | Descriptive Reddit API user-agent for OAuth thread/comment extraction. Override with an app/contact-specific value. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create`. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
