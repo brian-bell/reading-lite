@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  listItemBelongsToAttempt,
-  manifestBelongsToAttempt,
+  attemptOwnership,
   type ProcessReadingArgs,
 } from "../../../src/process-reading";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
-import type { ListIndexItem } from "../../../src/schemas/api";
 
 const ID = "rd_X";
 const PREFIX = "readings/2026/06/19T000000Z-rd_X";
@@ -32,6 +30,8 @@ function attempt(id: string): ProcessingAttemptSummary {
   };
 }
 
+// The verdict reads only active_attempt / last_attempt / status, the shape both
+// Manifest and ListIndexItem share. We exercise it through a Manifest builder.
 function manifest(overrides: Partial<Manifest>): Manifest {
   return {
     id: ID,
@@ -48,63 +48,105 @@ function manifest(overrides: Partial<Manifest>): Manifest {
   };
 }
 
-function item(overrides: Partial<ListIndexItem>): ListIndexItem {
-  return {
-    id: ID,
-    key_prefix: PREFIX,
-    url: URL,
-    status: "pending",
-    created_at: "2026-06-19T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-describe("attempt-ownership cleanup gates", () => {
-  it("manifest and list gates both refuse a pending reading that has a foreign last_attempt but no active_attempt", () => {
-    // A foreign attempt asks both cleanup gates whether it owns this reading.
-    // The reading is pending with active_attempt cleared but a last_attempt set
-    // by another attempt. Both gates must refuse (false): the vector (manifest)
-    // gate used to be more permissive here, so a stale successful cleanup would
-    // delete the vector for a reading the list-row gate refused to remove.
-    // Pin concrete `false` (not gate-equality) so the regression can't slip back
-    // by both gates breaking to `true` in lockstep.
-    const ownerArgs = args({ attemptId: "at_OTHER" });
-    const divergent = {
-      active_attempt: undefined,
-      last_attempt: attempt("at_PRIOR"),
-      status: "pending" as const,
-    };
-
-    expect(manifestBelongsToAttempt(ownerArgs, manifest(divergent))).toBe(false);
-    expect(listItemBelongsToAttempt(ownerArgs, item(divergent))).toBe(false);
+describe("attemptOwnership verdict", () => {
+  it("isActive when active_attempt.id matches this attempt", () => {
+    const o = attemptOwnership(
+      manifest({ active_attempt: attempt("at_MINE"), status: "pending" }),
+      args({ attemptId: "at_MINE" }),
+    );
+    expect(o.isActive).toBe(true);
+    expect(o.hasConflict).toBe(false);
+    expect(o.isLegacyPending).toBe(false);
+    expect(o.isVacantPending).toBe(false);
   });
 
-  it("the manifest gate still grants ownership when last_attempt is this attempt (real success-cleanup path)", () => {
-    // The branch the no-regression argument rests on: in the reachable
-    // success-cleanup path the attempt writes its own terminal manifest stamping
-    // itself as last_attempt, then runs cleanup. The id-match branch must fire
-    // BEFORE the tightened legacy clause, so this attempt's own vector is still
-    // deletable. If this regresses, vectors leak on the stale-success path.
-    const ownerArgs = args({ attemptId: "at_MINE" });
-    const owned = {
-      active_attempt: undefined,
-      // Mirror the production success manifest: status "ready", this attempt
-      // stamped as last_attempt. The id-match branch must win regardless.
-      last_attempt: { ...attempt("at_MINE"), status: "succeeded" as const },
-      status: "ready" as const,
-    };
-    expect(manifestBelongsToAttempt(ownerArgs, manifest(owned))).toBe(true);
+  it("isLast when last_attempt.id matches this attempt", () => {
+    // markFailed stamps last_attempt before computing terminal state, so the
+    // terminal-write and cleanup gates must recognize a finished attempt by last.
+    const o = attemptOwnership(
+      manifest({
+        active_attempt: undefined,
+        last_attempt: { ...attempt("at_MINE"), status: "succeeded" },
+        status: "ready",
+      }),
+      args({ attemptId: "at_MINE" }),
+    );
+    expect(o.isLast).toBe(true);
+    expect(o.isActive).toBe(false);
+    expect(o.hasConflict).toBe(false);
   });
 
-  it("both gates still grant ownership on a fully vacant pending reading", () => {
-    // The agreeing state exercised by the HTTP surface today: no active, no last,
-    // pending → both gates say "belongs", vector gets deleted. Must stay true.
-    const vacant = {
-      active_attempt: undefined,
-      last_attempt: undefined,
-      status: "pending" as const,
-    };
-    expect(manifestBelongsToAttempt(args(), manifest(vacant))).toBe(true);
-    expect(listItemBelongsToAttempt(args(), item(vacant))).toBe(true);
+  it("isLegacyPending when active_attempt is absent and status is pending", () => {
+    // The write-side rule: a pre-attempt-tracking pending manifest (active
+    // cleared) is still writable by the attempt processing it, even with a
+    // foreign last_attempt set.
+    const o = attemptOwnership(
+      manifest({
+        active_attempt: undefined,
+        last_attempt: attempt("at_PRIOR"),
+        status: "pending",
+      }),
+      args({ attemptId: "at_MINE" }),
+    );
+    expect(o.isLegacyPending).toBe(true);
+    // But it is NOT vacant-pending — last_attempt is set, so cleanup must refuse.
+    expect(o.isVacantPending).toBe(false);
+  });
+
+  it("isVacantPending only when active AND last are both absent and pending", () => {
+    const o = attemptOwnership(
+      manifest({ active_attempt: undefined, last_attempt: undefined, status: "pending" }),
+      args(),
+    );
+    expect(o.isVacantPending).toBe(true);
+    expect(o.isLegacyPending).toBe(true);
+  });
+
+  it("isVacantPending is false once a (foreign) last_attempt exists — the Part-1 fix", () => {
+    // This is the divergence Part 1 unified: a pending reading with active
+    // cleared but a foreign last_attempt set. Cleanup gates compose
+    // isActive||isLast||isVacantPending, so all three must be false here.
+    const o = attemptOwnership(
+      manifest({
+        active_attempt: undefined,
+        last_attempt: attempt("at_PRIOR"),
+        status: "pending",
+      }),
+      args({ attemptId: "at_OTHER" }),
+    );
+    expect(o.isActive).toBe(false);
+    expect(o.isLast).toBe(false);
+    expect(o.isVacantPending).toBe(false);
+  });
+
+  it("hasConflict when active_attempt is defined and foreign", () => {
+    const o = attemptOwnership(
+      manifest({ active_attempt: attempt("at_OTHER"), status: "pending" }),
+      args({ attemptId: "at_MINE" }),
+    );
+    expect(o.hasConflict).toBe(true);
+    expect(o.isActive).toBe(false);
+    // A foreign active attempt blocks the write-side legacy-pending grant too.
+    expect(o.isLegacyPending).toBe(false);
+  });
+
+  it("defaults the attemptId to at_<id> when args.attemptId is absent", () => {
+    // The single home of the `at_${id}` fallback. A manifest whose active_attempt
+    // is the derived id belongs to an args with no explicit attemptId.
+    const o = attemptOwnership(
+      manifest({ active_attempt: attempt(`at_${ID}`), status: "pending" }),
+      args(),
+    );
+    expect(o.isActive).toBe(true);
+    expect(o.hasConflict).toBe(false);
+  });
+
+  it("treats a null manifest as no ownership and no conflict", () => {
+    const o = attemptOwnership(null, args());
+    expect(o.isActive).toBe(false);
+    expect(o.isLast).toBe(false);
+    expect(o.isLegacyPending).toBe(false);
+    expect(o.isVacantPending).toBe(false);
+    expect(o.hasConflict).toBe(false);
   });
 });
