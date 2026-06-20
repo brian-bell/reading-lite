@@ -773,6 +773,34 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await lookup.json()).toEqual({ id: body.id });
   });
 
+  it("GET /readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-readonly";
+    const urlHash = await sha256Hex(url);
+    // A damaged orphan pointer (manifest missing, past the grace window). A write
+    // path would deep-scan + CAS-repair it; a lookup must do neither.
+    const orphan = { id: "rd_ORPHAN", key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN" };
+    await reader.writeByUrlPointer(urlHash, orphan);
+
+    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(lookup.status).toBe(404);
+    expect(listSpy).not.toHaveBeenCalled(); // no bucket scan on a GET
+    expect(putSpy).not.toHaveBeenCalled(); // no pointer-repair write on a GET
+    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
+    listSpy.mockRestore();
+    putSpy.mockRestore();
+  });
+
   it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -3420,7 +3448,7 @@ describe("GET /readings/lookup", () => {
     });
   });
 
-  it("repairs a stale lookup owner to a legacy manifest missing from the list index", async () => {
+  it("does not repair a stale lookup owner (read-only); leaves the deep scan + repair to the next write", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/lookup-legacy-stale-index";
@@ -3453,10 +3481,16 @@ describe("GET /readings/lookup", () => {
     await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
     await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
-    await reader.writeByUrlPointer(urlHash, {
+    const orphan = {
       id: "rd_LOOKUP_ORPHAN",
       key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN",
-    });
+    };
+    await reader.writeByUrlPointer(urlHash, orphan);
+
+    // Even though a recoverable legacy exists, the read-only lookup must not
+    // deep-scan the bucket to find it nor rewrite the pointer — that repair is
+    // deferred to the next write path (covered by the submit/import repair tests).
+    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
 
     const res = await app.request(
       `/readings/lookup?url=${encodeURIComponent(url)}`,
@@ -3464,12 +3498,10 @@ describe("GET /readings/lookup", () => {
       env,
     );
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: legacy.id });
-    expect(await reader.readByUrlPointer(urlHash)).toEqual({
-      id: legacy.id,
-      key_prefix: legacyPrefix,
-    });
+    expect(res.status).toBe(404);
+    expect(listSpy).not.toHaveBeenCalled(); // no full-bucket deep scan on a GET
+    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
+    listSpy.mockRestore();
   });
 
   it("returns 404 without writing a pointer for a legacy reading that has none", async () => {

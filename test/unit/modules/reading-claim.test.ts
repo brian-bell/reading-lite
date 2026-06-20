@@ -316,9 +316,40 @@ describe("ReadingClaim.resolveOwner", () => {
     spy.mockRestore();
   });
 
-  it("still repairs a damaged pointer when claimColdLegacy is false (read-only repair)", async () => {
+  it("does not scan or write to repair a damaged pointer when repairDamaged is false", async () => {
+    // The read-only lookup path (GET /readings/lookup) passes repairDamaged:false
+    // so a GET never deep-scans the bucket or CAS-writes the pointer. A damaged
+    // pointer reads as "not found"; the write paths (submit/import) still repair.
     const { store, claim } = newClaim();
-    const url = "https://example.com/read-only-repair";
+    const url = "https://example.com/read-only-no-repair";
+    const urlHash = await sha256Hex(url);
+    await writeReading(store, url, {
+      id: "rd_LEGACY",
+      status: "ready",
+      created_at: "2026-04-26T19:00:00.000Z",
+    });
+    const orphanPointer = {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    };
+    await store.writeByUrlPointer(urlHash, orphanPointer);
+    const scan = vi.spyOn(store, "findManifestByUrl");
+
+    const res = await claim.resolveOwner(url, {
+      claimColdLegacy: false,
+      repairDamaged: false,
+    });
+
+    // Read-only: no repair → unclaimed, no bucket scan, pointer left untouched.
+    expect(res.kind).toBe("unclaimed");
+    expect(scan).not.toHaveBeenCalled();
+    expect(await store.readByUrlPointer(urlHash)).toEqual(orphanPointer);
+    scan.mockRestore();
+  });
+
+  it("still repairs a damaged pointer with default opts (write paths)", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/default-repair";
     const urlHash = await sha256Hex(url);
     const legacy = await writeReading(store, url, {
       id: "rd_LEGACY",
@@ -330,7 +361,7 @@ describe("ReadingClaim.resolveOwner", () => {
       key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
     });
 
-    const res = await claim.resolveOwner(url, { claimColdLegacy: false });
+    const res = await claim.resolveOwner(url);
 
     expect(res.kind).toBe("owned");
     if (res.kind === "owned") expect(res.pointer.id).toBe("rd_LEGACY");

@@ -56,6 +56,13 @@ export interface ResolveOwnerOptions {
   // found", exactly as before this protocol was extracted. Write callers
   // (submit, import) leave it at the default and adopt the legacy reading.
   claimColdLegacy?: boolean;
+  // When false, a damaged by-url pointer (manifest mismatched, or stale-missing)
+  // is NOT repaired: no `deepScan` bucket rebuild and no `replaceByUrlPointer`
+  // CAS write — it reports `unclaimed` ("not found"). Read-only callers
+  // (GET /readings/lookup) pass this so a GET stays side-effect-free and O(1):
+  // it neither scans the whole bucket nor mutates R2. Write callers leave it at
+  // the default and repair the pointer in place.
+  repairDamaged?: boolean;
 }
 
 /**
@@ -83,6 +90,7 @@ export class ReadingClaim {
     opts: ResolveOwnerOptions = {},
   ): Promise<OwnerResolution> {
     const claimColdLegacy = opts.claimColdLegacy ?? true;
+    const repairDamaged = opts.repairDamaged ?? true;
     const urlHash = await sha256Hex(url);
 
     // The deep-scan repair target is stable across CAS retries: a concurrent
@@ -107,11 +115,16 @@ export class ReadingClaim {
           return { kind: "initializing", pointer: existing.pointer };
         }
 
-        // Damaged owner (manifest mismatched, or stale-missing): try to repair
-        // to a recovered legacy reading. A deep scan is the strongest repair —
-        // this is the import-only `deepScan: existing ? true : undefined` policy,
-        // unified: we deep-scan exactly when an existing pointer needs repair.
-        // Memoized so a contended CAS retry doesn't rescan the whole bucket.
+        // Damaged owner (manifest mismatched, or stale-missing). Read-only
+        // callers (lookup) opt out of repair: no bucket scan, no CAS write — the
+        // URL reads as "not found" until a write path repairs it.
+        if (!repairDamaged) return { kind: "unclaimed" };
+
+        // Try to repair to a recovered legacy reading. A deep scan is the
+        // strongest repair — this is the import-only `deepScan: existing ? true
+        // : undefined` policy, unified: we deep-scan exactly when an existing
+        // pointer needs repair. Memoized so a contended CAS retry doesn't rescan
+        // the whole bucket.
         if (repairLegacy === undefined) {
           repairLegacy = await this.store.findManifestByUrl(url, { deepScan: true });
         }

@@ -171,10 +171,15 @@ export function createApp(opts: AppOptions = {}) {
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const claim = new ReadingClaim(reader, services);
-    // Read-only: a lookup repairs a damaged pointer it finds, but never claims a
-    // cold pointerless legacy (that would be a write on a GET) — no live pointer
-    // means "not found".
-    const owner = await claim.resolveOwner(url, { claimColdLegacy: false });
+    // Read-only: a GET must be side-effect-free and cheap, so a lookup neither
+    // claims a cold pointerless legacy nor repairs a damaged pointer (both are
+    // R2 writes, and repair triggers a full-bucket deep scan). Only a live,
+    // valid pointer resolves; anything else is "not found", leaving repair to
+    // the next write (submit/import).
+    const owner = await claim.resolveOwner(url, {
+      claimColdLegacy: false,
+      repairDamaged: false,
+    });
     switch (owner.kind) {
       case "owned":
         return c.json({ id: owner.pointer.id });
