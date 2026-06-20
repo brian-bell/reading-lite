@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
-import type { ExtractedContent } from "../src/modules/extractor/index";
+import type { ExtractedContent, ExtractorDeps } from "../src/modules/extractor/index";
 import { extractFromUrl } from "../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket } from "./corpus-lib/config";
 import { importMarkdown, reprocessReading, type ApiDeps } from "./corpus-lib/api";
@@ -14,6 +14,7 @@ import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/ba
 import { runBatch } from "./corpus-lib/batch/run";
 import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
+import { loadDotVars } from "./lib/dotvars";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -24,6 +25,23 @@ const browserFetch: typeof fetch = (input, init = {}) => {
   headers.set("accept-language", "en-US,en;q=0.9");
   return fetch(input as RequestInfo, { ...init, headers, redirect: "follow" });
 };
+
+function recoveryExtractorDeps(fetchFn: typeof fetch): ExtractorDeps {
+  const vars = {
+    ...loadDotVars(".dev.vars"),
+    ...loadDotVars(".prd.vars"),
+    ...loadDotVars(".corpus.vars"),
+    ...process.env,
+  };
+  return {
+    fetch: fetchFn,
+    timeoutMs: 30_000,
+    maxBytes: 30_000_000,
+    redditClientId: vars.REDDIT_CLIENT_ID,
+    redditClientSecret: vars.REDDIT_CLIENT_SECRET,
+    redditUserAgent: vars.REDDIT_USER_AGENT,
+  };
+}
 
 interface Args {
   index: string;
@@ -166,6 +184,7 @@ async function main(): Promise<void> {
   let reprocessed = 0;
   let extracted = 0;
   let errors = 0;
+  const extractorDeps = recoveryExtractorDeps(browserFetch);
   // One cap across the whole batch — --limit bounds total writes, not per-action.
   let remaining = args.limit;
   // Successful submissions across the whole batch, for wave pacing (see
@@ -198,7 +217,7 @@ async function main(): Promise<void> {
       if (remaining <= 0) break;
       remaining--;
       try {
-        const ex = await extractFromUrl(r.url, { fetch: browserFetch, timeoutMs: 30_000, maxBytes: 30_000_000 });
+        const ex = await extractFromUrl(r.url, extractorDeps);
         if (ex.content_status !== "captured" || !ex.markdown?.trim()) {
           errors++; (r as any).result = `local-extract failed: ${ex.content_status} (${ex.content_type})`;
           process.stderr.write(`  local-extract ${r.short} -> no markdown (${ex.content_status})\n`);
@@ -282,13 +301,13 @@ async function runBatchMode(
   }
 
   const fetchFn = globalThis.fetch;
+  const extractorDeps = recoveryExtractorDeps(browserFetch);
   const result = await runBatch(batchRows, {
     r2: makeR2Client(cfg.r2, fetchFn),
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
     batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
-    extract: (url: string): Promise<ExtractedContent> =>
-      extractFromUrl(url, { fetch: browserFetch, timeoutMs: 30_000, maxBytes: 30_000_000 }),
+    extract: (url: string): Promise<ExtractedContent> => extractFromUrl(url, extractorDeps),
     model: cfg.anthropicModel,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),
