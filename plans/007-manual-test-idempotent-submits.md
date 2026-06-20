@@ -50,7 +50,7 @@ personal production corpus.
       (`BASE=<staging-url>` plus staging token).
 - [x] **S5** Add or document staging-safe corpus audit/drop commands that target
       only the staging bucket/index.
-- [ ] **S6** Confirm staging cleanup can remove every throwaway URL created by
+- [x] **S6** Confirm staging cleanup can remove every throwaway URL created by
       A/B/C/D/H before running the full matrix.
 
 Run note (2026-06-20): Cloudflare staging resources were created and the
@@ -61,18 +61,29 @@ Resources: R2 bucket `reading-lite-staging`, Vectorize index
 --env staging`. A read-only lookup smoke against staging returned `404
 {error:"not found"}` for an unknown URL.
 
+Run note (2026-06-20 staging smoke): staging cleanup removed all throwaway
+ready/failed readings created by the smoke run, including ready Vectorize
+vectors and `index/by-url/{hash}` pointers. Final staging audit and list both
+reported zero readings.
+
 ---
 
 ## Group A — Submit idempotency matrix (Cloudflare staging)
 
 Use a fresh throwaway `$U` per row.
 
-- [ ] **A1** new URL → `POST /readings {url}` returns `202 {id,status:"pending",poll}`; poll → `ready`
-- [ ] **A2** re-submit the now-`ready` URL → **`200`** with existing manifest, **same id**, no duplicate list row
-- [ ] **A3** re-submit while `pending` (two quick POSTs) → both resolve to the **same id**, never a second reading
-- [ ] **A4** re-submit a `failed` URL → **`202` reprocessing the same id** (new `attempt_id`); `GET /readings/:id` flips back to `pending`
-- [ ] **A5** `email:true` / `email:false` both accepted; default `true` for submit
-- [ ] **Across A2–A4**: `GET /readings/lookup?url=$U` returns the same id throughout; `npm run corpus-audit` shows no orphan-duplicate
+- [x] **A1** new URL → `POST /readings {url}` returns `202 {id,status:"pending",poll}`; poll → `ready`
+- [x] **A2** re-submit the now-`ready` URL → **`200`** with existing manifest, **same id**, no duplicate list row
+- [x] **A3** re-submit while `pending` (two quick POSTs) → both resolve to the **same id**, never a second reading
+- [x] **A4** re-submit a `failed` URL → **`202` reprocessing the same id** (new `attempt_id`); `GET /readings/:id` flips back to `pending`
+- [x] **A5** `email:true` / `email:false` both accepted; default `true` for submit
+- [x] **Across A2–A4**: `GET /readings/lookup?url=$U` returns the same id throughout; `npm run corpus-audit` shows no orphan-duplicate
+
+Run note (2026-06-20 staging smoke): A1/A2/A5 passed for
+`rd_FS1FQZA06G`. A3 visible-pending re-submit returned `200` with the same id
+`rd_SSW82MJRJ0`; a true concurrent variant hit the initializing guard with
+`409` but still returned the same owner id `rd_ZPGHRGPKDM`. A4 failed URL
+`rd_435XVHP05S` re-submitted with `202`, same id, and a new attempt.
 
 ---
 
@@ -80,22 +91,29 @@ Use a fresh throwaway `$U` per row.
 
 `POST /readings/import-markdown {source_url, markdown, title?}`
 
-- [ ] **B1** new `source_url` → `202`, processes markdown → `ready`
-- [ ] **B2** re-import a `ready` `source_url` → **`200`** existing manifest, no duplicate
+- [x] **B1** new `source_url` → `202`, processes markdown → `ready`
+- [x] **B2** re-import a `ready` `source_url` → **`200`** existing manifest, no duplicate
 - [ ] **B3** re-import a `failed` `source_url` → **`202`** same id; new markdown/title **replaces** raw + extracted; `active_attempt`/`error` cleared
 - [ ] **B4** import over a `pending` non-failed owner → `409 "reading already has an active attempt"`
 - [ ] **B5** default `email` for import is **false** (no email unless `email:true`)
+
+Run note (2026-06-20 staging smoke): B1/B2 passed for markdown import id
+`rd_RY5XATQWYN`.
 
 ---
 
 ## Group C — Lookup is read-only (Cloudflare staging + integration)
 
-- [ ] **C1** `ready` URL → `200 {id}`
-- [ ] **C2** `pending` URL → `200 {id}`
-- [ ] **C3** `failed` URL → `200 {id}`
+- [x] **C1** `ready` URL → `200 {id}`
+- [x] **C2** `pending` URL → `200 {id}`
+- [x] **C3** `failed` URL → `200 {id}`
 - [ ] **C4** owner inside missing-manifest grace window → `409 "reading owner is still initializing"` `{id,poll}`
-- [ ] **C5** unknown URL → `404 {error:"not found"}`
+- [x] **C5** unknown URL → `404 {error:"not found"}`
 - [x] **C6 (integration):** damaged pointer → lookup returns `404` and does **no** deep scan / **no** R2 write
+
+Run note (2026-06-20 staging smoke): C1/C2/C3/C5 passed on staging. A targeted
+C4 lookup race returned `404` before the pointer was visible, so C4 remains
+open for a deterministic staging or integration-only check.
 
 ---
 
@@ -105,9 +123,12 @@ Use a fresh throwaway `$U` per row.
 
 - [ ] **D1** reprocess `failed` → `202`, `pending` → `ready`
 - [ ] **D2** reprocess `ready` whose attempt then fails → prior ready manifest **preserved** with `last_attempt.status="failed"`
-- [ ] **D3** reprocess while `running`, no force → `409 "reading already has an active attempt"`
-- [ ] **D4** same with `{force:true}` → `202`
+- [x] **D3** reprocess while `running`, no force → `409 "reading already has an active attempt"`
+- [x] **D4** same with `{force:true}` → `202`
 - [ ] **D5** reprocess a `markdown` reading with no stored extracted → `409 "markdown content not available"`
+
+Run note (2026-06-20 staging smoke): D3/D4 passed against ready reading
+`rd_FS1FQZA06G`; the forced reprocess finished and cleared `active_attempt`.
 
 ---
 
@@ -148,11 +169,16 @@ suite.
 
 ## Group H — Cross-cutting regression
 
-- [ ] **H1 (Cloudflare staging):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
+- [x] **H1 (Cloudflare staging):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
 - [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
-- [ ] **H3 (cleanup):** `npm run corpus-audit -- --bucket reading-lite-staging` then
+- [x] **H3 (cleanup):** `npm run corpus-audit -- --bucket reading-lite-staging` then
       `npm run corpus-drop -- $U --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute`
       for every throwaway `$U`
+
+Run note (2026-06-20 staging smoke): H1 list/q/tag/offset/limit passed; each
+throwaway URL had exactly one list row before cleanup. H3 cleanup removed five
+main smoke readings plus the C4 race throwaway; final staging audit totals were
+all zero and `GET /readings?limit=20` returned an empty list.
 
 Local-only rerun (2026-06-20): `cd web && npm test` passed 22 tests and
 `cd web && npm run build` passed. Actual browser smoke remains manual because
@@ -171,13 +197,13 @@ local Worker submits cannot complete without `READING_JOBS`.
 
 ## Manual items remaining
 
-These were intentionally not run on 2026-06-20 during the local-only rerun
-because local `wrangler dev` has no queue/Vectorize binding and cannot complete
-submit/import/reprocess flows to `ready`.
+Remaining after the 2026-06-20 staging smoke:
 
-- Cloudflare staging prerequisite: S1-S6.
-- Staging Group A: A1-A5 and the A2-A4 lookup/audit checks.
-- Staging Group B: B1-B5.
-- Staging Group C spot-checks: C1-C5, even though C6 and the lookup states are covered by integration tests.
-- Staging Group D: D1-D5.
-- Staging Group H: H1, H2 browser smoke against a real completing backend, and H3 cleanup after any staging throwaway URLs.
+- **B3** re-import failed Markdown owner and verify raw/extracted replacement.
+- **B4** import over a visible pending non-failed owner and verify `409`.
+- **B5** verify import default email is false using staging email instrumentation or logs.
+- **C4** deterministically verify lookup inside the missing-manifest grace window returns `409`; the staging race attempted during smoke returned `404` before the pointer was visible.
+- **D1** reprocess a retryable/transient failed reading through to `ready`.
+- **D2** make a ready reading's reprocess attempt fail and verify the prior ready manifest is preserved.
+- **D5** reprocess a Markdown reading with missing stored extracted content.
+- **H2** SPA browser smoke against the staging Worker.
