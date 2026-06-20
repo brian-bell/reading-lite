@@ -72,6 +72,16 @@ export async function deleteObject(
   return "error";
 }
 
+export async function deleteVector(
+  index: string,
+  id: string,
+  deps: Pick<R2Deps, "run"> = {},
+): Promise<"deleted" | "error"> {
+  const run = deps.run ?? defaultRunner;
+  const { code } = await run("wrangler", ["vectorize", "delete-vectors", index, "--ids", id]);
+  return code === 0 ? "deleted" : "error";
+}
+
 // Rewrites index/list.json wholesale (a plain put, not a CAS write — run when
 // nothing is being submitted so a concurrent queue write can't be lost).
 export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<void> {
@@ -120,6 +130,7 @@ export async function keysForReading(
   for (const ext of COMMON_RAW_EXTS) keys.add(`${keyPrefix}/raw.${ext}`);
   const m = await readManifest(keyPrefix, deps);
   if (m) {
+    if (typeof m.url_hash === "string") keys.add(`index/by-url/${m.url_hash}`);
     for (const k of ["active_attempt", "last_attempt"]) {
       const at = m?.[k]?.id;
       if (typeof at === "string") keys.add(`${keyPrefix}/attempts/${at}.json`);

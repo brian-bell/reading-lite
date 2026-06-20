@@ -44,6 +44,7 @@ export default [
         "test/unit/lib/**/*.test.ts",
         "test/unit/import-bookmarks/**/*.test.ts",
         "test/unit/import-markdown/**/*.test.ts",
+        "test/unit/deploy/**/*.test.ts",
         "test/unit/corpus/**/*.test.ts",
         "test/unit/check-corpus/**/*.test.ts",
         "test/unit/process-reading-list/**/*.test.ts",

@@ -4,16 +4,16 @@
 // (a `rd_…` id, or a URL) against index/list.json, delete every object under
 // each target's id-scoped prefix, then rewrite index/list.json once.
 //
-// Non-ready only by design. A `ready` reading owns its index/by-url/{hash}
-// pointer and a Vectorize embedding; deleting it here would dangle both. So an
-// explicitly-named ready id is refused, and a URL keeps any ready copy while
-// dropping only its non-ready duplicates.
+// Non-ready only by default. A ready reading also owns a Vectorize embedding,
+// so ready deletion is an explicit staging-cleanup path:
+//   --allow-ready --bucket reading-lite-staging --vectorize reading-lite-staging
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
 import { resolveDropTargets, shouldRewriteIndex, type DropTarget } from "./corpus-lib/drop";
 import {
   deleteObject,
+  deleteVector,
   keysForReading,
   readListIndex,
   writeListIndex,
@@ -25,6 +25,8 @@ interface Opts {
   bucket: string;
   remote: boolean;
   execute: boolean;
+  allowReady: boolean;
+  vectorizeIndex?: string;
 }
 
 function parseArgs(argv: string[]): Opts {
@@ -33,6 +35,7 @@ function parseArgs(argv: string[]): Opts {
     bucket: process.env.READING_LITE_BUCKET ?? "reading-lite",
     remote: true,
     execute: false,
+    allowReady: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -40,8 +43,10 @@ function parseArgs(argv: string[]): Opts {
       printHelp();
       process.exit(0);
     } else if (a === "--execute") opts.execute = true;
+    else if (a === "--allow-ready") opts.allowReady = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = argv[++i];
+    else if (a === "--vectorize") opts.vectorizeIndex = argv[++i];
     else if (a.startsWith("--")) {
       console.error(`unknown flag: ${a}`);
       process.exit(2);
@@ -55,12 +60,15 @@ function printHelp(): void {
 
 Usage:
   tsx scripts/corpus-drop.ts <selector...> [--bucket reading-lite] [--local] [--execute]
+  tsx scripts/corpus-drop.ts <selector...> --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging [--execute]
 
 A selector is either a reading id (rd_…) or a URL. URLs resolve to every
 non-ready copy of that URL in index/list.json; ids resolve to that one reading.
 
-Non-ready only: a ready reading owns its by-url pointer + embedding, so a named
-ready id is refused and a URL keeps its ready copy (dropping only duplicates).
+Non-ready only by default: a ready reading owns an embedding, so a named ready
+id is refused and a URL keeps its ready copy (dropping only duplicates).
+Staging cleanup can opt into ready deletion with --allow-ready, which requires
+--vectorize and refuses the production bucket name.
 
 Default is a DRY RUN — prints every object it would delete and the list.json
 diff. Add --execute to perform the deletes and rewrite index/list.json.
@@ -71,7 +79,8 @@ a CAS write, so a concurrent queue write could be lost.
 Examples:
   tsx scripts/corpus-drop.ts rd_ABC123
   tsx scripts/corpus-drop.ts https://example.com/dead-link --execute
-  tsx scripts/corpus-drop.ts rd_ABC https://a.com https://b.com --execute`);
+  tsx scripts/corpus-drop.ts rd_ABC https://a.com https://b.com --execute
+  tsx scripts/corpus-drop.ts https://example.com/staging-smoke --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute`);
 }
 
 async function main(): Promise<void> {
@@ -80,11 +89,19 @@ async function main(): Promise<void> {
     console.error("no selectors given. Pass one or more reading ids or URLs (see --help).");
     process.exit(2);
   }
+  if (opts.allowReady && opts.bucket === "reading-lite") {
+    console.error("refusing --allow-ready against production bucket reading-lite");
+    process.exit(2);
+  }
+  if (opts.allowReady && !opts.vectorizeIndex) {
+    console.error("--allow-ready requires --vectorize <index> so ready embeddings are removed");
+    process.exit(2);
+  }
 
   const deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
   const items = await readListIndex(deps);
 
-  const resolved = resolveDropTargets(items, opts.selectors);
+  const resolved = resolveDropTargets(items, opts.selectors, { allowReady: opts.allowReady });
   if (!resolved.ok) {
     for (const e of resolved.errors) console.error(`✗ ${e}`);
     process.exit(1);
@@ -101,6 +118,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
+  if (opts.vectorizeIndex) console.log(`Vectorize: ${opts.vectorizeIndex}`);
   console.log(`Readings to drop: ${targets.length}`);
   console.log(`Mode: ${opts.execute ? "EXECUTE" : "DRY RUN"}\n`);
   for (const k of keptReady) console.log(`· keeping ready copy ${k.id}  ${k.url}`);
@@ -117,6 +135,15 @@ async function main(): Promise<void> {
   for (const t of targets) {
     const keys = await keysForReading(t.id, t.prefix, deps);
     console.log(`• ${t.id}  ${t.url}`);
+    if (t.status === "ready" && opts.vectorizeIndex) {
+      if (!opts.execute) {
+        console.log(`    would delete vector  ${opts.vectorizeIndex}/${t.id}`);
+      } else {
+        const res = await deleteVector(opts.vectorizeIndex, t.id);
+        if (res === "deleted") { deleted++; console.log(`    deleted   vector:${opts.vectorizeIndex}/${t.id}`); }
+        else { errored++; console.error(`    ! delete error  vector:${opts.vectorizeIndex}/${t.id}`); continue; }
+      }
+    }
     for (const key of keys) {
       if (!opts.execute) {
         console.log(`    would delete  ${key}`);

@@ -12,25 +12,27 @@
 # Usage:
 #   READER_API_TOKEN=... ./scripts/manual/idempotency-smoke.sh <group> [url]
 #
-#   BASE   env var  base URL (default http://127.0.0.1:8787; prod: https://reading-lite.bbell.dev)
-#   TOKEN  resolved from READER_API_TOKEN env, else --token, else .dev.vars
+#   BASE       env var base URL (default http://127.0.0.1:8787; staging: your staging Worker URL)
+#   VARS_FILE  env var dotenv fallback for token (default .dev.vars; staging: .stg.vars)
+#   TOKEN      resolved from READER_API_TOKEN env, else --token, else $VARS_FILE
 #
 # Groups:
-#   a    Submit idempotency matrix (A1-A5) — needs queue (deployed)
-#   b    Markdown-import idempotency (B1-B5) — needs queue (deployed)
+#   a    Submit idempotency matrix (A1-A5) — needs queue (Cloudflare staging)
+#   b    Markdown-import idempotency (B1-B5) — needs queue (Cloudflare staging)
 #   c    Lookup read-only (C1-C5)
-#   d    Reprocess (D1, D3, D4) — needs queue (deployed); pass an existing id as [url]
+#   d    Reprocess (D1, D3, D4) — needs queue (Cloudflare staging); pass an existing id as [url]
 #   f1   No-queue 503 guard (local wrangler dev)
 #   one  Single submit + poll of [url]
 #
 # Examples:
 #   ./scripts/manual/idempotency-smoke.sh f1
-#   BASE=https://reading-lite.bbell.dev ./scripts/manual/idempotency-smoke.sh a "https://example.com/throwaway-$RANDOM"
-#   BASE=https://reading-lite.bbell.dev ./scripts/manual/idempotency-smoke.sh c "https://example.com/known-url"
+#   VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.workers.dev ./scripts/manual/idempotency-smoke.sh a "https://example.com/throwaway-$RANDOM"
+#   VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.workers.dev ./scripts/manual/idempotency-smoke.sh c "https://example.com/known-url"
 #
 set -euo pipefail
 
 BASE="${BASE:-http://127.0.0.1:8787}"
+VARS_FILE="${VARS_FILE:-.dev.vars}"
 
 # --- token resolution: READER_API_TOKEN env > --token > .dev.vars -------------
 TOKEN="${READER_API_TOKEN:-}"
@@ -42,11 +44,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 set -- "${ARGS[@]:-}"
-if [ -z "$TOKEN" ] && [ -f .dev.vars ]; then
-  TOKEN="$(grep -E '^READER_API_TOKEN=' .dev.vars | head -1 | cut -d= -f2- | tr -d '"'"'"'')"
+if [ -z "$TOKEN" ] && [ -f "$VARS_FILE" ]; then
+  TOKEN="$(grep -E '^READER_API_TOKEN=' "$VARS_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"'')"
 fi
 if [ -z "$TOKEN" ]; then
-  echo "No token. Set READER_API_TOKEN, pass --token, or add it to .dev.vars" >&2
+  echo "No token. Set READER_API_TOKEN, pass --token, or add it to $VARS_FILE" >&2
   exit 1
 fi
 

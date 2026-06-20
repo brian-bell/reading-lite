@@ -42,16 +42,24 @@ The deployed-style matrix needs Cloudflare staging infrastructure so smoke tests
 can exercise real Queue, R2, and Vectorize behavior without mutating the
 personal production corpus.
 
-- [ ] **S1** Provision an isolated staging Worker route/base URL.
-- [ ] **S2** Provision isolated staging R2 bucket, Vectorize index, Queue, and DLQ bindings.
-- [ ] **S3** Configure staging secrets/env separately from prod (`READER_API_TOKEN`,
+- [x] **S1** Provision an isolated staging Worker route/base URL.
+- [x] **S2** Provision isolated staging R2 bucket, Vectorize index, Queue, and DLQ bindings.
+- [x] **S3** Configure staging secrets/env separately from prod (`READER_API_TOKEN`,
       Anthropic/OpenAI keys, email settings if enabled).
-- [ ] **S4** Add documented staging run commands for `scripts/manual/idempotency-smoke.sh`
+- [x] **S4** Add documented staging run commands for `scripts/manual/idempotency-smoke.sh`
       (`BASE=<staging-url>` plus staging token).
-- [ ] **S5** Add or document staging-safe corpus audit/drop commands that target
+- [x] **S5** Add or document staging-safe corpus audit/drop commands that target
       only the staging bucket/index.
 - [ ] **S6** Confirm staging cleanup can remove every throwaway URL created by
       A/B/C/D/H before running the full matrix.
+
+Run note (2026-06-20): Cloudflare staging resources were created and the
+Worker was deployed at `https://reading-lite-staging.bellbm.workers.dev`.
+Resources: R2 bucket `reading-lite-staging`, Vectorize index
+`reading-lite-staging`, Queue `reading-lite-staging`, DLQ
+`reading-lite-staging-dlq`. Staging secrets were set with `wrangler secret put
+--env staging`. A read-only lookup smoke against staging returned `404
+{error:"not found"}` for an unknown URL.
 
 ---
 
@@ -142,7 +150,9 @@ suite.
 
 - [ ] **H1 (Cloudflare staging):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
 - [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
-- [ ] **H3 (cleanup):** `npm run corpus-audit` then `npm run corpus-drop` every throwaway `$U`
+- [ ] **H3 (cleanup):** `npm run corpus-audit -- --bucket reading-lite-staging` then
+      `npm run corpus-drop -- $U --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute`
+      for every throwaway `$U`
 
 Local-only rerun (2026-06-20): `cd web && npm test` passed 22 tests and
 `cd web && npm run build` passed. Actual browser smoke remains manual because

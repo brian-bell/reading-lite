@@ -67,13 +67,62 @@ npm test                         # vitest workspace (workers pool + node pool)
 npm run typecheck
 ```
 
-`wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
+`wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Staging resources (`reading-lite-staging` bucket, Queue/DLQ, and Vectorize index) live under `[env.staging]`; production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`.
 
 > **`wrangler dev` has no Vectorize binding and no Queue binding by design.** Search returns no results locally (Vectorize has no local emulator, and a remote binding would point dev at production data), and `POST /readings` / `/readings/:id/reprocess` return 503 without `READING_JOBS`. Read-only list/detail routes work against whatever you write to the local bucket. Most submission/search behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need real bindings.
 
-### Required secrets (production)
+### Deployed environments
 
-Set via `wrangler secret put` against the deployed Worker:
+Staging is for real end-to-end smoke tests without mutating the production
+corpus. One-time Cloudflare resources:
+
+```sh
+npx wrangler r2 bucket create reading-lite-staging
+npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
+npx wrangler queues create reading-lite-staging
+npx wrangler queues create reading-lite-staging-dlq
+```
+
+Set staging Worker secrets separately from production:
+
+```sh
+wrangler secret put READER_API_TOKEN --env staging
+wrangler secret put ANTHROPIC_API_KEY --env staging
+wrangler secret put OPENAI_API_KEY --env staging
+```
+
+Deploy staging with dry-run defaults:
+
+```sh
+cp .stg.vars.example .stg.vars   # fill in staging values
+make deploy-worker ENV=stg
+make deploy-worker ENV=stg EXECUTE=1
+make deploy-web ENV=stg
+make deploy-web ENV=stg EXECUTE=1
+```
+
+Run idempotency smoke against staging:
+
+```sh
+VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.workers.dev \
+  ./scripts/manual/idempotency-smoke.sh a "https://example.com/reading-lite-staging-$RANDOM"
+```
+
+Clean staging throwaways, including ready readings:
+
+```sh
+npm run corpus-audit -- --bucket reading-lite-staging
+npm run corpus-drop -- "https://example.com/reading-lite-staging-123" \
+  --bucket reading-lite-staging \
+  --allow-ready \
+  --vectorize reading-lite-staging \
+  --execute
+```
+
+### Required secrets
+
+Set via `wrangler secret put --env staging` or `--env production` against the
+deployed Worker:
 
 | Secret | What |
 |---|---|
@@ -149,7 +198,7 @@ npm run dev                            # wrangler dev on http://127.0.0.1:8787
 cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 ```
 
-The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy with `npm run deploy:web -- --execute` (dry-run by default).
+The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy production with `npm run deploy:web -- --execute` or `make deploy-web ENV=prd EXECUTE=1`; deploy a Pages preview for staging with `make deploy-web ENV=stg EXECUTE=1`.
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
 
@@ -196,6 +245,11 @@ npm run import-markdown -- --dir ~/Documents/articles --dry-run
 
 # submit to local dev
 npm run import-markdown -- --dir ~/Documents/articles
+
+# submit to staging
+npm run import-markdown -- \
+  --dir ~/Documents/articles \
+  --url https://reading-lite-staging.<workers-subdomain>.workers.dev/readings/import-markdown
 
 # submit to production
 npm run import-markdown -- \
@@ -255,7 +309,7 @@ test/
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts
-wrangler.toml                   # production config (R2 + Vectorize bindings)
+wrangler.toml                   # local, staging, and production Worker config
 wrangler.test.toml              # test config (R2 only; Vectorize is stub-injected)
 vitest.workspace.ts             # two projects: "workers" + "node"
 ```
@@ -267,6 +321,6 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — Node-side script tests (corpus, import, shared `lib`) use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
-Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke via local `wrangler dev` and against the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
+Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke via local `wrangler dev` and against Cloudflare staging is part of the PRD's verification plan.
 
 `cd web && npm test` runs the SPA tests (jsdom + window.fetch stubs).

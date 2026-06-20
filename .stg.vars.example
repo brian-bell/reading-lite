@@ -1,0 +1,22 @@
+# Copy to .stg.vars and fill in. .stg.vars is gitignored.
+#
+# Used by:
+#   make deploy-worker ENV=stg [EXECUTE=1]
+#   make deploy-web ENV=stg [EXECUTE=1]
+#   BASE=<staging-url> READER_API_TOKEN=<staging-token> ./scripts/manual/idempotency-smoke.sh a
+#
+# Secrets still need to be set in Cloudflare with:
+#   wrangler secret put READER_API_TOKEN --env staging
+#   wrangler secret put ANTHROPIC_API_KEY --env staging
+#   wrangler secret put OPENAI_API_KEY --env staging
+#
+# Keep this token different from production.
+
+READER_API_TOKEN=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+RESEND_API_KEY=
+
+# Optional: used only for scripts/manual smoke and docs examples.
+READER_URL=https://reading-lite-staging.<workers-subdomain>.workers.dev/readings
+BASE=https://reading-lite-staging.<workers-subdomain>.workers.dev
