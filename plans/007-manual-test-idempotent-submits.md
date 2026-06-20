@@ -15,6 +15,7 @@ The by-url pointer is now an **eager ownership claim** written at submit time
 |---|---|---|
 | `npm test` | Authoritative check (incl. races/damaged pointers) | — |
 | Local `wrangler dev` (`http://127.0.0.1:8787`) | Auth, validation, no-queue `503` paths | No queue/Vectorize → submits can't complete |
+| Cloudflare staging | Real end-to-end matrix without touching prod corpus | **Needed before A/B/C/D/H deployed-style smoke** |
 
 Companion script: `scripts/manual/idempotency-smoke.sh` (concrete curls for A–D).
 
@@ -35,7 +36,26 @@ passed. No deployed endpoints or remote corpus tooling were used.
 
 ---
 
-## Group A — Submit idempotency matrix (deployed)
+## Group S — Cloudflare staging prerequisite
+
+The deployed-style matrix needs Cloudflare staging infrastructure so smoke tests
+can exercise real Queue, R2, and Vectorize behavior without mutating the
+personal production corpus.
+
+- [ ] **S1** Provision an isolated staging Worker route/base URL.
+- [ ] **S2** Provision isolated staging R2 bucket, Vectorize index, Queue, and DLQ bindings.
+- [ ] **S3** Configure staging secrets/env separately from prod (`READER_API_TOKEN`,
+      Anthropic/OpenAI keys, email settings if enabled).
+- [ ] **S4** Add documented staging run commands for `scripts/manual/idempotency-smoke.sh`
+      (`BASE=<staging-url>` plus staging token).
+- [ ] **S5** Add or document staging-safe corpus audit/drop commands that target
+      only the staging bucket/index.
+- [ ] **S6** Confirm staging cleanup can remove every throwaway URL created by
+      A/B/C/D/H before running the full matrix.
+
+---
+
+## Group A — Submit idempotency matrix (Cloudflare staging)
 
 Use a fresh throwaway `$U` per row.
 
@@ -48,7 +68,7 @@ Use a fresh throwaway `$U` per row.
 
 ---
 
-## Group B — Markdown-import idempotency (deployed)
+## Group B — Markdown-import idempotency (Cloudflare staging)
 
 `POST /readings/import-markdown {source_url, markdown, title?}`
 
@@ -60,7 +80,7 @@ Use a fresh throwaway `$U` per row.
 
 ---
 
-## Group C — Lookup is read-only (deployed + integration)
+## Group C — Lookup is read-only (Cloudflare staging + integration)
 
 - [ ] **C1** `ready` URL → `200 {id}`
 - [ ] **C2** `pending` URL → `200 {id}`
@@ -71,7 +91,7 @@ Use a fresh throwaway `$U` per row.
 
 ---
 
-## Group D — Reprocess regression (deployed)
+## Group D — Reprocess regression (Cloudflare staging)
 
 `POST /readings/:id/reprocess`
 
@@ -120,7 +140,7 @@ suite.
 
 ## Group H — Cross-cutting regression
 
-- [ ] **H1 (deployed):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
+- [ ] **H1 (Cloudflare staging):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
 - [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
 - [ ] **H3 (cleanup):** `npm run corpus-audit` then `npm run corpus-drop` every throwaway `$U`
 
@@ -134,9 +154,10 @@ local Worker submits cannot complete without `READING_JOBS`.
 
 1. Group 0 gate
 2. Local: F1, auth, validation
-3. Deployed: A → B → C → D → H1/H2 (interleave lookup + corpus-audit)
-4. Read-through integration coverage for E, F2/F3, G
-5. H3 cleanup
+3. Staging prerequisite: S1-S6
+4. Cloudflare staging: A → B → C → D → H1/H2 (interleave lookup + staging corpus-audit)
+5. Read-through integration coverage for E, F2/F3, G
+6. H3 cleanup in staging
 
 ## Manual items remaining
 
@@ -144,8 +165,9 @@ These were intentionally not run on 2026-06-20 during the local-only rerun
 because local `wrangler dev` has no queue/Vectorize binding and cannot complete
 submit/import/reprocess flows to `ready`.
 
-- Deployed Group A: A1-A5 and the A2-A4 lookup/audit checks.
-- Deployed Group B: B1-B5.
-- Deployed Group C spot-checks: C1-C5, even though C6 and the lookup states are covered by integration tests.
-- Deployed Group D: D1-D5.
-- Deployed Group H: H1, H2 browser smoke against a real completing backend, and H3 cleanup after any deployed throwaway URLs.
+- Cloudflare staging prerequisite: S1-S6.
+- Staging Group A: A1-A5 and the A2-A4 lookup/audit checks.
+- Staging Group B: B1-B5.
+- Staging Group C spot-checks: C1-C5, even though C6 and the lookup states are covered by integration tests.
+- Staging Group D: D1-D5.
+- Staging Group H: H1, H2 browser smoke against a real completing backend, and H3 cleanup after any staging throwaway URLs.
