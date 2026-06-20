@@ -431,6 +431,9 @@ async function extractSource(
       fetch: services.fetch,
       timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
       maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
+      retry: retryDepsFromEnv(env),
+      redditClientId: env.REDDIT_CLIENT_ID,
+      redditClientSecret: env.REDDIT_CLIENT_SECRET,
     }),
   );
 }

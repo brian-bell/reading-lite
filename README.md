@@ -76,6 +76,8 @@ Set via `wrangler secret put` against the deployed Worker:
 | `READER_API_TOKEN` | Bearer token required on every protected route |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
+| `REDDIT_CLIENT_ID` | Reddit OAuth app client id for thread/comment extraction. Create a free "script" app at reddit.com/prefs/apps. |
+| `REDDIT_CLIENT_SECRET` | Reddit OAuth app secret. Reddit thread URLs are fetched through `oauth.reddit.com`; unauthenticated `.json` often returns an HTML challenge instead of JSON. |
 | `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):

@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError } from "../../../src/modules/extractor";
+import { RateLimitedError } from "../../../src/modules/http-retry";
 
-function fakeFetch(responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>) {
-  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+function fakeFetch(
+  responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>,
+  onRequest?: (url: string, init?: RequestInit) => void,
+) {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    onRequest?.(url, init);
     const res = responses[url];
     if (!res) throw new Error(`unexpected fetch: ${url}`);
     return new Response(res.body, { status: res.status ?? 200, headers: res.headers ?? {} });
@@ -23,6 +28,56 @@ const HTML_ARTICLE = `<!doctype html>
   </main>
   <footer>footer</footer>
 </body></html>`;
+
+const REDDIT_THREAD_JSON = JSON.stringify([
+  {
+    kind: "Listing",
+    data: {
+      children: [
+        {
+          kind: "t3",
+          data: {
+            title: "Learning idiomatic Go coming from Java",
+            selftext: "I have been writing Java for years and want to learn idiomatic Go.",
+            author: "poster",
+            subreddit_name_prefixed: "r/golang",
+            is_self: true,
+            url: "https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/",
+          },
+        },
+      ],
+    },
+  },
+  {
+    kind: "Listing",
+    data: {
+      children: [{ kind: "t1", data: { body: "Read the standard library.", author: "top", score: 20 } }],
+    },
+  },
+]);
+
+const redditDeps = {
+  timeoutMs: 5_000,
+  maxBytes: 1_000_000,
+  redditClientId: "client-id",
+  redditClientSecret: "client-secret",
+  retry: {
+    sleep: async () => {},
+    maxAttempts: 3,
+    baseDelayMs: 1,
+    maxDelayMs: 1,
+    random: () => 0,
+    now: () => 0,
+  },
+};
+
+async function sha256HexString(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 describe("extractFromUrl", () => {
   it("extracts HTML to markdown via readability + turndown", async () => {
@@ -184,6 +239,106 @@ describe("extractFromUrl", () => {
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toContain('"a": 1');
+  });
+
+  it("extracts Reddit threads through OAuth JSON and renders markdown", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = fakeFetch(
+      {
+        "https://www.reddit.com/api/v1/access_token": {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ access_token: "t" }),
+        },
+        "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+          headers: { "content-type": "application/json" },
+          body: REDDIT_THREAD_JSON,
+        },
+      },
+      (url, init) => calls.push({ url, init }),
+    );
+
+    const out = await extractFromUrl(
+      "https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/",
+      {
+        fetch: fetchFn,
+        ...redditDeps,
+      },
+    );
+
+    expect(out.content_status).toBe("captured");
+    expect(out.content_type).toBe("application/json");
+    expect(out.title).toBe("Learning idiomatic Go coming from Java");
+    expect(out.markdown).toContain("# Learning idiomatic Go coming from Java");
+    expect(out.markdown).toContain("I have been writing Java");
+    expect(out.content_sha256).toBe(await sha256HexString(REDDIT_THREAD_JSON));
+
+    const listingCall = calls.find((c) => c.url.startsWith("https://oauth.reddit.com/"));
+    const headers = new Headers(listingCall?.init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer t");
+    expect(headers.get("user-agent")).toBeTruthy();
+  });
+
+  it("propagates RateLimitedError when Reddit token fetch is rate-limited", async () => {
+    const fetchFn = fakeFetch({
+      "https://www.reddit.com/api/v1/access_token": {
+        status: 429,
+        headers: { "retry-after": "7" },
+        body: "slow down",
+      },
+    });
+
+    await expect(
+      extractFromUrl("https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/", {
+        fetch: fetchFn,
+        ...redditDeps,
+      }),
+    ).rejects.toBeInstanceOf(RateLimitedError);
+  });
+
+  it("propagates RateLimitedError when Reddit listing fetch is rate-limited", async () => {
+    const fetchFn = fakeFetch({
+      "https://www.reddit.com/api/v1/access_token": {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ access_token: "t" }),
+      },
+      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+        status: 429,
+        headers: { "retry-after": "11" },
+        body: "slow down",
+      },
+    });
+
+    await expect(
+      extractFromUrl("https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/", {
+        fetch: fetchFn,
+        ...redditDeps,
+      }),
+    ).rejects.toMatchObject({ name: "RateLimitedError", retryAfterMs: 11_000 });
+  });
+
+  it("keeps Reddit garbage JSON responses raw_only instead of throwing", async () => {
+    const fetchFn = fakeFetch({
+      "https://www.reddit.com/api/v1/access_token": {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ access_token: "t" }),
+      },
+      "https://oauth.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java.json?raw_json=1&limit=20": {
+        headers: { "content-type": "text/html" },
+        body: "<html>challenge</html>",
+      },
+    });
+
+    const out = await extractFromUrl(
+      "https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/",
+      {
+        fetch: fetchFn,
+        ...redditDeps,
+      },
+    );
+
+    expect(out.content_status).toBe("raw_only");
+    expect(out.content_type).toBe("application/json");
+    expect(out.markdown).toBeUndefined();
   });
 
   it("throws BadStatusError on non-2xx responses", async () => {

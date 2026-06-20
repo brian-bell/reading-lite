@@ -2,6 +2,9 @@ import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { ContentStatus } from "../../schemas/manifest";
+import { fetchWithRetry, parseRetryAfterMs, RateLimitedError, type RetryDeps } from "../http-retry";
+import { isRedditThreadUrl, redditJsonUrl, redditListingToMarkdown } from "./reddit";
+import { fetchRedditToken, REDDIT_UA } from "./reddit-auth";
 
 export class FetchTimeoutError extends Error {
   constructor(public readonly url: string, public readonly timeoutMs: number) {
@@ -35,6 +38,9 @@ export interface ExtractorDeps {
   fetch: typeof fetch;
   timeoutMs: number;
   maxBytes: number;
+  retry?: RetryDeps;
+  redditClientId?: string;
+  redditClientSecret?: string;
 }
 
 export interface ExtractedContent {
@@ -51,6 +57,8 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   assertSafeUrl(url);
+  if (isRedditThreadUrl(url)) return extractReddit(url, deps);
+
   const { raw, contentType } = await fetchBounded(url, deps);
   const content_sha256 = await sha256Hex(raw);
   const base = {
@@ -89,15 +97,58 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
   return { ...base, content_status: "raw_only" };
 }
 
+async function extractReddit(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
+  if (!deps.redditClientId || !deps.redditClientSecret) {
+    throw new Error("reddit credentials not configured");
+  }
+
+  const token = await fetchRedditToken({
+    fetch: deps.fetch,
+    clientId: deps.redditClientId,
+    clientSecret: deps.redditClientSecret,
+    retry: deps.retry,
+  });
+  const jsonUrl = redditJsonUrl(url);
+  const { raw } = await fetchBounded(jsonUrl, deps, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "user-agent": REDDIT_UA,
+      accept: "application/json",
+    },
+  });
+  const content_sha256 = await sha256Hex(raw);
+  const article = redditListingToMarkdown(new TextDecoder("utf-8").decode(raw));
+  const base = {
+    raw,
+    content_type: "application/json",
+    content_bytes: raw.byteLength,
+    content_sha256,
+  };
+
+  if (article) {
+    return {
+      ...base,
+      content_status: "captured",
+      markdown: article.markdown,
+      title: article.title,
+    };
+  }
+  return { ...base, content_status: "raw_only" };
+}
+
 async function fetchBounded(
   url: string,
   deps: ExtractorDeps,
+  init: RequestInit = {},
 ): Promise<{ raw: Uint8Array; contentType: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let response: Response;
   try {
-    response = await deps.fetch(url, { signal: controller.signal });
+    const requestInit: RequestInit = { ...init, signal: controller.signal };
+    response = deps.retry
+      ? await fetchWithRetry(deps.fetch, url, requestInit, deps.retry)
+      : await deps.fetch(url, requestInit);
   } catch (e) {
     if (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")) {
       throw new FetchTimeoutError(url, deps.timeoutMs);
@@ -107,6 +158,11 @@ async function fetchBounded(
     clearTimeout(timer);
   }
 
+  if (response.status === 429) {
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now);
+    response.body?.cancel().catch(() => {});
+    throw new RateLimitedError(429, retryAfterMs, url);
+  }
   if (!response.ok) throw new BadStatusError(url, response.status);
 
   const contentType = response.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE;

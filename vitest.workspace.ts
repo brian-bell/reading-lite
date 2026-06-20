@@ -30,6 +30,8 @@ export default [
               ANTHROPIC_API_KEY: "test-anthropic-key",
               OPENAI_API_KEY: "test-openai-key",
               RESEND_API_KEY: "test-resend-key",
+              REDDIT_CLIENT_ID: "test-reddit-id",
+              REDDIT_CLIENT_SECRET: "test-reddit-secret",
             },
           },
         },
