@@ -642,6 +642,14 @@ async function restoreCurrentListVisibility(
 ): Promise<void> {
   const manifest = await reader.readManifest(args.keyPrefix);
   if (!manifest) return;
+  // A lost CAS means a concurrent attempt won and already reconciled visibility.
+  // If the by-url pointer points at a DIFFERENT reading, this reading is a
+  // non-owner duplicate whose row that winner may have deliberately removed —
+  // blindly re-appending here would resurrect a row it unpublished. Mirror
+  // terminalWriteState's `ownerAllowsVisibility = ownsUrl` gate: re-sync only
+  // when we still own the URL (or no pointer exists, the failure-path default).
+  const pointer = await reader.readByUrlPointer(args.urlHash);
+  if (pointer && (pointer.id !== args.id || pointer.key_prefix !== args.keyPrefix)) return;
   await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));
 }
 

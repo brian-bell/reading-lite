@@ -325,4 +325,28 @@ describe("commitTerminalManifest", () => {
     expect((await reader.readManifest(PREFIX))?.active_attempt?.id).toBe("at_OTHER");
     expect(append).not.toHaveBeenCalled(); // no restore re-sync of the foreign row
   });
+
+  it("12: CAS loss + not url owner → restore does NOT resurrect a removed row", async () => {
+    // A non-owner duplicate (by-url pointer owned by a different reading) loses
+    // the manifest CAS. The concurrent owner already reconciled visibility — and
+    // may have deliberately removed this reading's list row. restoreCurrentList
+    // Visibility must NOT blindly re-append it; that would resurrect a row the
+    // owner unpublished. (Owns-pointer and no-pointer restores still re-sync — see
+    // tests 3 and 7.)
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: "rd_OTHER", key_prefix: "other/prefix" });
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+    const { similarity } = fakeVectorize();
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out.committed).toBe(false);
+    expect(append).not.toHaveBeenCalled(); // no resurrection of the non-owner row
+  });
 });
