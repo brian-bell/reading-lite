@@ -363,4 +363,28 @@ describe("ReadingClaim.resolveOwner", () => {
     expect(spy).toHaveBeenCalledTimes(6);
     spy.mockRestore();
   });
+
+  it("deep-scans only once while repairing a damaged pointer across CAS retries", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const claim = new ReadingClaim(store, fakeServices(), { maxAttempts: 4 });
+    const url = "https://example.com/repair-contended";
+    const urlHash = await sha256Hex(url);
+    await writeReading(store, url, { id: "rd_LEGACY", status: "ready" });
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // Every CAS-replace loses, so the repair branch re-runs for all 4 attempts.
+    const cas = vi.spyOn(store, "replaceByUrlPointerIfCurrent").mockResolvedValue(false);
+    // The deep scan (a full bucket rebuild) must be memoized — the repair target
+    // can't change between retries, so it runs once regardless of attempt count.
+    const scan = vi.spyOn(store, "findManifestByUrl");
+
+    await expect(claim.resolveOwner(url)).rejects.toBeInstanceOf(OwnerResolutionContentionError);
+    expect(cas).toHaveBeenCalledTimes(4);
+    expect(scan).toHaveBeenCalledTimes(1);
+    scan.mockRestore();
+    cas.mockRestore();
+  });
 });

@@ -85,6 +85,16 @@ export class ReadingClaim {
     const claimColdLegacy = opts.claimColdLegacy ?? true;
     const urlHash = await sha256Hex(url);
 
+    // The deep-scan repair target is stable across CAS retries: a concurrent
+    // writer can change the *pointer* (which we re-read every pass) but not
+    // whether a legacy reading for this URL exists. Scan at most once per call
+    // and reuse it — otherwise persistent contention would pay one full bucket
+    // rebuild (`deepScan`) per attempt, multiplying an expensive scan by
+    // `maxAttempts` (and, via the router's nested claim loop, on every GET
+    // /readings/lookup that hits a damaged pointer). `undefined` = not scanned;
+    // `null` = scanned, no legacy found.
+    let repairLegacy: { keyPrefix: string; manifest: Manifest } | null | undefined;
+
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
       const existing = await this.store.readByUrlPointerWithEtag(urlHash);
 
@@ -101,7 +111,11 @@ export class ReadingClaim {
         // to a recovered legacy reading. A deep scan is the strongest repair —
         // this is the import-only `deepScan: existing ? true : undefined` policy,
         // unified: we deep-scan exactly when an existing pointer needs repair.
-        const legacy = await this.store.findManifestByUrl(url, { deepScan: true });
+        // Memoized so a contended CAS retry doesn't rescan the whole bucket.
+        if (repairLegacy === undefined) {
+          repairLegacy = await this.store.findManifestByUrl(url, { deepScan: true });
+        }
+        const legacy = repairLegacy;
         if (legacy) {
           const pointer = { id: legacy.manifest.id, key_prefix: legacy.keyPrefix };
           const replaced = await this.store.replaceByUrlPointerIfCurrent(
