@@ -15,7 +15,6 @@ The by-url pointer is now an **eager ownership claim** written at submit time
 |---|---|---|
 | `npm test` | Authoritative check (incl. races/damaged pointers) | — |
 | Local `wrangler dev` (`http://127.0.0.1:8787`) | Auth, validation, no-queue `503` paths | No queue/Vectorize → submits can't complete |
-| Deployed (`https://reading-lite.bbell.dev`) | Real end-to-end matrix | **Personal prod corpus — use throwaway URLs + clean up** |
 
 Companion script: `scripts/manual/idempotency-smoke.sh` (concrete curls for A–D).
 
@@ -30,8 +29,9 @@ Companion script: `scripts/manual/idempotency-smoke.sh` (concrete curls for A–
       `test/unit/process-reading/commit-terminal.test.ts`, expanded
       `test/integration/readings.test.ts`
 
-Run note (2026-06-20): `npm test` passed 551 tests across 53 files, including
-the four idempotency-focused suites above. `npm run typecheck` passed.
+Local-only rerun (2026-06-20): `npm test` passed 551 tests across 53 files,
+including the four idempotency-focused suites above. `npm run typecheck`
+passed. No deployed endpoints or remote corpus tooling were used.
 
 ---
 
@@ -99,11 +99,12 @@ Use a fresh throwaway `$U` per row.
 - [x] **F2 (integration):** queue `send` throws → `503 {error:"queue send failed",id}`; reading left as retryable `failed` (`QueueSendError`, `retryable:true`)
 - [x] **F3 (integration):** `ready` reading whose reprocess queue-send fails → rolls back to `ready` + `last_attempt.status="failed"`
 
-Run note (2026-06-20): local `wrangler dev` with no queue binding returned
-the expected `503` for `POST /readings` and `POST /readings/import-markdown`
-via `scripts/manual/idempotency-smoke.sh f1`; local auth/validation also
-checked (`/health` 200, missing/wrong bearer 401, invalid URL 400). The
-reprocess no-queue branch is covered by the integration suite.
+Local-only rerun (2026-06-20): local `wrangler dev` with no queue binding
+returned the expected `503` for `POST /readings` and
+`POST /readings/import-markdown` via `scripts/manual/idempotency-smoke.sh f1`;
+local auth/validation also checked (`/health` 200, missing/wrong bearer 401,
+invalid URL 400). The reprocess no-queue branch is covered by the integration
+suite.
 
 ---
 
@@ -123,7 +124,7 @@ reprocess no-queue branch is covered by the integration suite.
 - [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
 - [ ] **H3 (cleanup):** `npm run corpus-audit` then `npm run corpus-drop` every throwaway `$U`
 
-Run note (2026-06-20): `cd web && npm test` passed 22 tests and
+Local-only rerun (2026-06-20): `cd web && npm test` passed 22 tests and
 `cd web && npm run build` passed. Actual browser smoke remains manual because
 local Worker submits cannot complete without `READING_JOBS`.
 
@@ -139,9 +140,9 @@ local Worker submits cannot complete without `READING_JOBS`.
 
 ## Manual items remaining
 
-These were intentionally not run on 2026-06-20 because the documented cleanup
-tooling (`npm run corpus-drop`) refuses to delete ready readings, so deployed
-ready-state smoke would leave throwaway entries in the personal prod corpus.
+These were intentionally not run on 2026-06-20 during the local-only rerun
+because local `wrangler dev` has no queue/Vectorize binding and cannot complete
+submit/import/reprocess flows to `ready`.
 
 - Deployed Group A: A1-A5 and the A2-A4 lookup/audit checks.
 - Deployed Group B: B1-B5.
