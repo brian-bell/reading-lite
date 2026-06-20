@@ -8,6 +8,7 @@ import {
 } from "../../../src/modules/stores/reading-store";
 import type { Manifest, ProcessingAttempt } from "../../../src/schemas/manifest";
 import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
+import { sha256Hex } from "../../../src/services";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -712,5 +713,68 @@ describe("ReadingStore — listManifests", () => {
 
     await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
     expect(listCalls).toBe(0);
+  });
+
+  it("prefers a ready owner over a newer failed duplicate of the same URL", async () => {
+    // Damaged-pointer repair (and legacy adoption) resolve URL ownership through
+    // findManifestByUrl. When a URL has both a ready reading and a *newer* failed
+    // duplicate (the recurring "failed orphan-dup" corpus state), the ready copy
+    // owns the URL and must win — ranking purely by recency would adopt the
+    // failed copy and orphan the ready summary by URL.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup";
+    const urlHash = await sha256Hex(url);
+
+    const ready = emptyManifest({
+      id: "rd_ready",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const failed = emptyManifest({
+      id: "rd_failed",
+      url,
+      url_hash: urlHash,
+      status: "failed",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
+    await store.writeManifest(buildKeyPrefix(failed.id, failed.created_at), failed);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_ready");
+  });
+
+  it("prefers the newest reading among same-status duplicates of the same URL", async () => {
+    // The status tiebreak must not override recency *within* a status class:
+    // two ready copies still resolve to the most recently updated one.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup-ready";
+    const urlHash = await sha256Hex(url);
+
+    const older = emptyManifest({
+      id: "rd_older",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const newer = emptyManifest({
+      id: "rd_newer",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(older.id, older.created_at), older);
+    await store.writeManifest(buildKeyPrefix(newer.id, newer.created_at), newer);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_newer");
   });
 });

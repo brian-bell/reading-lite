@@ -3,6 +3,7 @@ import {
   ProcessingAttemptSchema,
   ByUrlPointerSchema,
   type Manifest,
+  type ManifestStatus,
   type ProcessingAttempt,
   type ByUrlPointer,
 } from "../../schemas/manifest";
@@ -71,6 +72,20 @@ export interface ListManifestsParams {
 
 export interface FindManifestByUrlOptions {
   deepScan?: boolean;
+}
+
+// URL-ownership preference when duplicate readings exist for one URL: a
+// completed `ready` reading owns the URL over an in-flight `pending` one, which
+// in turn beats a `failed` one. Used to break ties in findNewestManifestByUrl
+// before falling back to recency.
+const OWNERSHIP_RANK: Record<ManifestStatus, number> = {
+  ready: 3,
+  pending: 2,
+  failed: 1,
+};
+
+function ownershipRank(status: ManifestStatus): number {
+  return OWNERSHIP_RANK[status] ?? 0;
 }
 
 export function manifestToIndexItem(
@@ -503,7 +518,15 @@ export class ReadingStore {
     urlHash: string,
   ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
     const matches = items.filter((item) => item.url === url);
+    // Ownership rank first, recency second. A URL can have duplicate readings
+    // (the recurring "failed orphan-dup" corpus state: a failed re-submit left
+    // beside an earlier ready copy). The ready copy owns the URL, so a `ready`
+    // owner must beat a *newer* `failed` one — ranking purely by updated_at would
+    // repair the by-url pointer to the failed duplicate and orphan the ready
+    // summary by URL. Within a status class, newest-by-updated_at still wins.
     matches.sort((a, b) => {
+      const rankDiff = ownershipRank(b.status) - ownershipRank(a.status);
+      if (rankDiff !== 0) return rankDiff;
       const aTime = a.updated_at ?? a.created_at;
       const bTime = b.updated_at ?? b.created_at;
       return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
