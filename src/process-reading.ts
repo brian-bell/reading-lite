@@ -21,7 +21,6 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
-import type { ListIndexItem } from "./schemas/api";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -306,8 +305,9 @@ export async function markDeadLettered(
   // That residual race is last-writer-wins (the repo's documented stance) and
   // benign — the loser is a reading that is being reprocessed anyway and stays
   // re-submittable through its existing by-url ownership claim.
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  if (existing && existing.active_attempt?.id !== attemptId) return;
+  // Strict active-only ownership: a newer attempt taking over (active flipped to
+  // a different id) means this DLQ message is stale and must not clobber it.
+  if (existing && !attemptOwnership(existing, args).isActive) return;
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
@@ -561,12 +561,10 @@ async function terminalWriteState(
 ): Promise<TerminalWriteState> {
   const stored = await reader.readManifestWithEtag(args.keyPrefix);
   const manifest = stored?.manifest ?? null;
-  const activeAttemptId = manifest?.active_attempt?.id;
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  const legacyPendingWithoutAttempt = activeAttemptId === undefined && manifest?.status === "pending";
-  const lastAttemptMatches = opts.allowLastAttempt === true && manifest?.last_attempt?.id === attemptId;
-  const activeAttemptMatches = activeAttemptId === attemptId || legacyPendingWithoutAttempt || lastAttemptMatches;
-  const activeAttemptConflict = activeAttemptId !== undefined && activeAttemptId !== attemptId;
+  const owner = attemptOwnership(manifest, args);
+  const activeAttemptMatches =
+    owner.isActive || owner.isLegacyPending || (opts.allowLastAttempt === true && owner.isLast);
+  const activeAttemptConflict = owner.hasConflict;
   let ownsUrl = false;
   let ownerAllowsVisibility = false;
   const existing = await reader.readByUrlPointer(args.urlHash);
@@ -606,9 +604,8 @@ async function readingCanWriteAttemptArtifacts(
 ): Promise<boolean> {
   const manifest = await reader.readManifest(args.keyPrefix);
   if (!manifest) return true;
-  const activeAttemptId = manifest.active_attempt?.id;
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  return activeAttemptId === attemptId || (activeAttemptId === undefined && manifest.status === "pending");
+  const owner = attemptOwnership(manifest, args);
+  return owner.isActive || owner.isLegacyPending;
 }
 
 async function writeManifestForTerminalState(
@@ -664,7 +661,12 @@ async function removeAttemptListVisibility(
 ): Promise<boolean> {
   let removed = false;
   await reader.removeListIndexItemIf(args.id, (item) => {
-    const matches = listItemBelongsToAttempt(args, item);
+    // The list-row cleanup gate: the row must be this reading's (id + key_prefix)
+    // AND this attempt must own it under the cleanup rule (active, last, or the
+    // stricter vacant-pending — see plan 006).
+    if (item.id !== args.id || item.key_prefix !== args.keyPrefix) return false;
+    const owner = attemptOwnership(item, args);
+    const matches = owner.isActive || owner.isLast || owner.isVacantPending;
     removed = removed || matches;
     return matches;
   });
@@ -677,31 +679,49 @@ async function readingCanRemoveAttemptVector(
 ): Promise<boolean> {
   const manifest = await reader.readManifest(args.keyPrefix);
   if (!manifest) return true;
-  return manifestBelongsToAttempt(args, manifest);
+  const owner = attemptOwnership(manifest, args);
+  return owner.isActive || owner.isLast || owner.isVacantPending;
 }
 
-export function listItemBelongsToAttempt(
+// The single home of the `attemptId ?? at_${id}` fallback. The writer side
+// (newProcessingAttempt, which stamps active_attempt.id) and every ownership gate
+// (via attemptOwnership) derive identity through this one function, so the stored
+// id and the id the gates compare against can never drift.
+function resolveAttemptId(args: ProcessReadingArgs): string {
+  return args.attemptId ?? `at_${args.id}`;
+}
+
+// The one verdict every "does this attempt still own the reading?" site composes,
+// so the five gates (artifact-write, terminal-write, vector-removal,
+// list-row-removal, dead-letter) share a single definition of the active/last/
+// pending rules. The gates differ on purpose — they pick different booleans — so
+// this is a vocabulary, not a single predicate. Reads only the active_attempt /
+// last_attempt / status shape that Manifest and ListIndexItem both carry.
+interface AttemptOwnership {
+  isActive: boolean; // active_attempt.id === attemptId
+  isLast: boolean; // last_attempt.id === attemptId
+  isLegacyPending: boolean; // active undefined && status pending (write-side gates)
+  isVacantPending: boolean; // active undefined && last undefined && pending (cleanup gates)
+  hasConflict: boolean; // active defined && active !== attemptId
+}
+
+type AttemptOwnershipSource = Pick<Manifest, "active_attempt" | "last_attempt" | "status">;
+
+export function attemptOwnership(
+  source: AttemptOwnershipSource | null,
   args: ProcessReadingArgs,
-  item: ListIndexItem,
-): boolean {
-  if (item.id !== args.id || item.key_prefix !== args.keyPrefix) return false;
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  if (item.active_attempt?.id === attemptId) return true;
-  if (item.last_attempt?.id === attemptId) return true;
-  return item.active_attempt === undefined && item.last_attempt === undefined && item.status === "pending";
-}
-
-export function manifestBelongsToAttempt(args: ProcessReadingArgs, manifest: Manifest): boolean {
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  if (manifest.active_attempt?.id === attemptId) return true;
-  if (manifest.last_attempt?.id === attemptId) return true;
-  // Match the list-row gate's stricter vacant-pending rule: a manifest carrying
-  // a last_attempt was touched by another attempt, so we may not own its vector.
-  return (
-    manifest.active_attempt === undefined &&
-    manifest.last_attempt === undefined &&
-    manifest.status === "pending"
-  );
+): AttemptOwnership {
+  const attemptId = resolveAttemptId(args);
+  const activeAttemptId = source?.active_attempt?.id;
+  const lastAttemptId = source?.last_attempt?.id;
+  const isPending = source?.status === "pending";
+  return {
+    isActive: activeAttemptId === attemptId,
+    isLast: lastAttemptId === attemptId,
+    isLegacyPending: activeAttemptId === undefined && isPending,
+    isVacantPending: activeAttemptId === undefined && lastAttemptId === undefined && isPending,
+    hasConflict: activeAttemptId !== undefined && activeAttemptId !== attemptId,
+  };
 }
 
 export function newAttemptId(services: Services): string {
@@ -723,7 +743,7 @@ export function newAttemptSummary(
 }
 
 function newProcessingAttempt(args: ProcessReadingArgs, services: Services): ProcessingAttempt {
-  const id = args.attemptId ?? `at_${args.id}`;
+  const id = resolveAttemptId(args);
   const startedAt = args.attemptStartedAt ?? services.now();
   return {
     ...newAttemptSummary(id, args.trigger ?? "submit", startedAt),
