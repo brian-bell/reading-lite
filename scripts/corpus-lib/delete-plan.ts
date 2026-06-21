@@ -64,6 +64,15 @@ export async function keysForDroppedReading(
 // owned by `droppedId`. Returns null when the pointer is owned by another
 // (surviving) reading, is absent, or is unparseable — so cleanup never deletes a
 // pointer a different reading depends on.
+//
+// The slot is recomputed from `url` rather than read from the manifest's stored
+// `url_hash`, and that is safe: the worker derives `manifest.url`,
+// `manifest.url_hash = sha256Hex(manifest.url)`, and the list/audit `url` (a copy
+// of `manifest.url`) from one identical string with no normalization, and the
+// Node `urlHash` helper is unit-tested to reproduce the worker `sha256Hex`. So
+// `urlHash(url) === manifest.url_hash` by construction; recomputing keeps this
+// helper usable when the manifest is absent/corrupt (its `url_hash` gone) and
+// independent of the manifest read.
 export async function byUrlPointerKeyIfOwned(
   droppedId: string,
   url: string,
