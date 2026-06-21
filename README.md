@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (570 root tests across 55 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript with root and SPA test suites.
 
 ## Architecture at a glance
 
@@ -62,7 +62,7 @@ The Worker is composed of six deeply-isolated modules (each unit-tested with stu
 ```sh
 npm install
 cp .dev.vars.example .dev.vars   # fill in API keys
-npm run dev                      # wrangler dev with R2 + Vectorize bindings
+npm run dev                      # wrangler dev with local R2 only; Queue/Vectorize absent by design
 npm test                         # vitest workspace (workers pool + node pool)
 npm run typecheck
 ```
@@ -93,6 +93,7 @@ Set staging Worker secrets separately from production:
 wrangler secret put READER_API_TOKEN --env staging
 wrangler secret put ANTHROPIC_API_KEY --env staging
 wrangler secret put OPENAI_API_KEY --env staging
+wrangler secret put RESEND_API_KEY --env staging
 ```
 
 To tear down the isolated staging Worker and resources, review the dry run
@@ -167,6 +168,9 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
 | `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
+| `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
+| `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
+| `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call retry delay; `Retry-After` is clamped to this value. |
 
 ## API
 
@@ -176,7 +180,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `POST /readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
-| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. Defaults `email` to false. |
+| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
@@ -326,7 +330,7 @@ scripts/
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
   unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
-                                #   http-retry, email, stores, process-reading, queue, corpus
+                                #   http-retry, email, stores, process-reading, queue
                                 # node pool: import-bookmarks, import-markdown,
                                 #   check-corpus, process-reading-list,
                                 #   corpus, lib

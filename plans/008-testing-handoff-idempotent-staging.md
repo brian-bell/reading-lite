@@ -54,7 +54,7 @@ Repo support added:
 
 Local verification:
 
-- `npm test`: 570 passed
+- `npm test`: passed
 - `npm run typecheck`: passed
 - `npm run deploy -- --env staging`: dry-run passed
 - `npm run deploy -- --env staging --execute`: deployed
@@ -66,7 +66,7 @@ Local verification:
 - `npm run staging:teardown -- --execute` idempotent rerun: passed with Worker, Queue/DLQ, Vectorize index, and R2 bucket already absent
 - `npm run staging:setup -- --execute` followed by `npm run staging:teardown -- --execute`: passed after treating missing Worker consumers on existing queues as already removed; deleted Queue/DLQ, Vectorize index, and empty R2 bucket
 - `npx vitest run test/unit/deploy/staging-env.test.ts`: passed
-- `cd web && npm test`: 22 passed
+- `cd web && npm test`: passed
 - `cd web && npm run build`: passed
 - `make help`: shows staging commands
 

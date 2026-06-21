@@ -30,9 +30,9 @@ Companion script: `scripts/manual/idempotency-smoke.sh` (concrete curls for A–
       `test/unit/process-reading/commit-terminal.test.ts`, expanded
       `test/integration/readings.test.ts`
 
-Local-only rerun (2026-06-20): `npm test` passed 551 tests across 53 files,
-including the four idempotency-focused suites above. `npm run typecheck`
-passed. No deployed endpoints or remote corpus tooling were used.
+Local-only rerun (2026-06-20): `npm test` passed, including the four
+idempotency-focused suites above. `npm run typecheck` passed. No deployed
+endpoints or remote corpus tooling were used.
 
 ---
 
@@ -235,12 +235,12 @@ throwaway URL had exactly one list row before cleanup. H3 cleanup removed five
 main smoke readings plus the C4 race throwaway; final staging audit totals were
 all zero and `GET /readings?limit=20` returned an empty list.
 
-Local-only rerun (2026-06-20): `cd web && npm test` passed 22 tests and
-`cd web && npm run build` passed. Actual browser smoke remains manual because
+Local-only rerun (2026-06-20): `cd web && npm test` passed and `cd web &&
+npm run build` passed. Actual browser smoke remains manual because
 local Worker submits cannot complete without `READING_JOBS`.
 
 Run note (2026-06-21): web non-browser checks still pass: `cd web &&
-npm test` passed 22 tests and `cd web && npm run build` passed. A staging SPA
+npm test` passed and `cd web && npm run build` passed. A staging SPA
 browser smoke was attempted with Vite running locally and `/readings` proxied to
 the staging Worker, but Chrome control from Codex was unavailable. Chrome,
 the Codex Chrome Extension, and the native host manifest all checked out, but
