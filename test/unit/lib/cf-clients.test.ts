@@ -56,6 +56,54 @@ describe("makeR2Client", () => {
     expect(await makeR2Client(r2Config, okFetch as unknown as typeof fetch).head("k")).toBe(true);
     expect(await makeR2Client(r2Config, missFetch as unknown as typeof fetch).head("k")).toBe(false);
   });
+
+  it("lists object keys across continuation-token pages", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response(
+          `<?xml version="1.0" encoding="UTF-8"?>
+          <ListBucketResult>
+            <IsTruncated>true</IsTruncated>
+            <NextContinuationToken>next token</NextContinuationToken>
+            <Contents><Key>index/list.json</Key></Contents>
+            <Contents><Key>readings/a&amp;b/manifest.json</Key></Contents>
+          </ListBucketResult>`,
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          `<?xml version="1.0" encoding="UTF-8"?>
+          <ListBucketResult>
+            <IsTruncated>false</IsTruncated>
+            <Contents><Key>index/by-id/rd_1</Key></Contents>
+          </ListBucketResult>`,
+          { status: 200 },
+        ),
+      );
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+
+    await expect(r2.listKeys()).resolves.toEqual([
+      "index/list.json",
+      "readings/a&b/manifest.json",
+      "index/by-id/rd_1",
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const second = fetchFn.mock.calls[1]![0] as Request;
+    expect(second.url).toContain("continuation-token=next+token");
+  });
+
+  it("deletes object keys", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+
+    await r2.delete("index/list.json");
+
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("DELETE");
+    expect(req.url).toContain("acct123.r2.cloudflarestorage.com/reading-lite/index/list.json");
+  });
 });
 
 describe("makeVectorizeClient", () => {

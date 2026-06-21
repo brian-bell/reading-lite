@@ -2,8 +2,12 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
-import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
-import type { Services } from "../../src/services";
+import {
+  processReading,
+  removeAttemptVisibility,
+  type ProcessReadingArgs,
+} from "../../src/process-reading";
+import { sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
@@ -15,12 +19,21 @@ import type { Manifest } from "../../src/schemas/manifest";
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
 // has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per test.
 type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): { upsert: AnyMock; query: AnyMock; vectors: Map<string, { values: number[]; metadata: Record<string, unknown> }> } {
+function installVectorizeStub(): {
+  upsert: AnyMock;
+  query: AnyMock;
+  deleteByIds: AnyMock;
+  vectors: Map<string, { values: number[]; metadata: Record<string, unknown> }>;
+} {
   const vectors = new Map<string, { values: number[]; metadata: Record<string, unknown> }>();
   const upsert = vi.fn(async (vs: VectorizeVector[]) => {
     for (const v of vs) {
       vectors.set(v.id, { values: v.values as number[], metadata: (v.metadata ?? {}) as Record<string, unknown> });
     }
+    return { mutationId: "m" } as VectorizeAsyncMutation;
+  });
+  const deleteByIds = vi.fn(async (ids: string[]) => {
+    for (const id of ids) vectors.delete(id);
     return { mutationId: "m" } as VectorizeAsyncMutation;
   });
   const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
@@ -32,9 +45,10 @@ function installVectorizeStub(): { upsert: AnyMock; query: AnyMock; vectors: Map
   });
   (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
     upsert,
+    deleteByIds,
     query,
   } as unknown as VectorizeIndex;
-  return { upsert, query, vectors };
+  return { upsert, query, deleteByIds, vectors };
 }
 
 async function clearBucket() {
@@ -58,6 +72,14 @@ function installQueueStub(): ProcessReadingArgs[] {
     }),
   } as unknown as Queue<ProcessReadingArgs>;
   return queuedJobs;
+}
+
+function installRejectingQueueStub(error: unknown = new Error("queue send failed")) {
+  (env as unknown as { READING_JOBS: Queue<ProcessReadingArgs> }).READING_JOBS = {
+    send: vi.fn(async () => {
+      throw error;
+    }),
+  } as unknown as Queue<ProcessReadingArgs>;
 }
 
 async function drainQueue(services: Services): Promise<void> {
@@ -302,6 +324,1484 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
+  it("makes a new URL discoverable by lookup before processing finishes", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/pending-lookup" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(submit.status).toBe(202);
+    const submitJson = (await submit.json()) as { id: string };
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent("https://example.com/pending-lookup")}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id: submitJson.id });
+  });
+
+  it("returns the existing pending reading for a duplicate submit without enqueueing duplicate work", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/pending-duplicate";
+
+    const first = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(first.status).toBe(202);
+    const firstJson = (await first.json()) as { id: string };
+
+    const second = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(second.status).toBe(200);
+    const secondJson = (await second.json()) as Manifest;
+    expect(secondJson.id).toBe(firstJson.id);
+    expect(secondJson.status).toBe("pending");
+    expect(queuedJobs).toHaveLength(1);
+  });
+
+  it("converges simultaneous submits of one URL to one reading and one queued job", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const url = "https://example.com/burst-same-url";
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        app.fetch(
+          new Request("http://t/readings", {
+            method: "POST",
+            headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+            body: JSON.stringify({ url }),
+          }),
+          env,
+          ctx,
+        ),
+      ),
+    );
+    expect(responses.every((r) => r.status === 200 || r.status === 202)).toBe(true);
+    const bodies = await Promise.all(
+      responses.map((response) => response.json() as Promise<{ id: string }>),
+    );
+    expect(new Set(bodies.map((body) => body.id)).size).toBe(1);
+    expect(queuedJobs).toHaveLength(1);
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ id: string; status: string; url: string }> };
+    expect(body.readings.filter((reading) => reading.url === url)).toEqual([
+      expect.objectContaining({ id: bodies[0]!.id, status: "ready", url }),
+    ]);
+  });
+
+  it("does not steal ownership while the winning submit has claimed the URL but not written its manifest", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/claim-gap";
+    let releaseManifestWrite!: () => void;
+    let manifestWriteStarted!: () => void;
+    const manifestWriteStartedPromise = new Promise<void>((resolve) => {
+      manifestWriteStarted = resolve;
+    });
+    const releaseManifestWritePromise = new Promise<void>((resolve) => {
+      releaseManifestWrite = resolve;
+    });
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let delayed = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      async (...args: Parameters<R2Bucket["put"]>) => {
+        const [key] = args;
+        if (!delayed && key.endsWith("/manifest.json")) {
+          delayed = true;
+          manifestWriteStarted();
+          await releaseManifestWritePromise;
+        }
+        return originalPut(...args);
+      },
+    );
+
+    const first = app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    await manifestWriteStartedPromise;
+
+    const second = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({
+      error: "reading owner is still initializing",
+      poll: expect.stringMatching(/^\/readings\/rd_/),
+    });
+    expect(queuedJobs).toHaveLength(0);
+
+    releaseManifestWrite();
+    const firstResponse = await first;
+    expect(firstResponse.status).toBe(202);
+    const firstBody = (await firstResponse.json()) as { id: string };
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.id).toBe(firstBody.id);
+    putSpy.mockRestore();
+  });
+
+  it("resubmitting a failed URL reprocesses the same reading id", async () => {
+    const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const url = "https://example.com/retry-failed-submit";
+
+    const first = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await first.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+    expect(queuedJobs).toHaveLength(0);
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(202);
+    const retryJson = (await retry.json()) as { id: string; status: string; attempt_id: string };
+    expect(retryJson).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ id: string; url: string }> };
+    expect(body.readings.filter((reading) => reading.url === url)).toEqual([
+      expect.objectContaining({ id, url }),
+    ]);
+    consoleErr.mockRestore();
+  });
+
+  it("claims and reprocesses a legacy failed reading that has no by-url pointer", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-failed-no-pointer";
+    const urlHash = await sha256Hex(url);
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const id = "rd_LEGACY";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const legacy: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
+  });
+
+  it("claims and reprocesses a legacy failed reading when index/list.json is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-failed-no-index";
+    const urlHash = await sha256Hex(url);
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const id = "rd_LEGACY_NO_INDEX";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const legacy: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
+  });
+
+  it("claims the newest legacy failed reading when index/list.json has an older same-url row", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-stale-index";
+    const urlHash = await sha256Hex(url);
+    const older: Manifest = {
+      id: "rd_OLDER",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "older failed copy" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T18:00:00.000Z",
+      updated_at: "2026-04-26T18:00:00.000Z",
+    };
+    const newer: Manifest = {
+      ...older,
+      id: "rd_NEWER",
+      error: { code: "new", message: "newer failed copy" },
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const olderPrefix = buildKeyPrefix(older.id, older.created_at);
+    const newerPrefix = buildKeyPrefix(newer.id, newer.created_at);
+    await reader.writeManifest(olderPrefix, older);
+    await reader.writeManifest(newerPrefix, newer);
+    await reader.writeByIdPointer(older.id, { id: older.id, key_prefix: olderPrefix });
+    await reader.writeByIdPointer(newer.id, { id: newer.id, key_prefix: newerPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(older, olderPrefix));
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: newer.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: newer.id, trigger: "reprocess" });
+  });
+
+  it("repairs a damaged by-url owner from a legacy failed reading missing from index/list.json", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/legacy-missing-from-index";
+    const urlHash = await sha256Hex(url);
+    const indexedUrl = "https://example.com/other-indexed-url";
+    const legacy: Manifest = {
+      id: "rd_MISSING_FROM_INDEX",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "failed copy missing from index" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_INDEXED_OTHER",
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
+  });
+
+  it("repairs a stale by-url pointer whose manifest is missing", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/damaged-pointer";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_ORPHAN");
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id: body.id });
+  });
+
+  it("GET /readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-readonly";
+    const urlHash = await sha256Hex(url);
+    // A damaged orphan pointer (manifest missing, past the grace window). A write
+    // path would deep-scan + CAS-repair it; a lookup must do neither.
+    const orphan = { id: "rd_ORPHAN", key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN" };
+    await reader.writeByUrlPointer(urlHash, orphan);
+
+    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(lookup.status).toBe(404);
+    expect(listSpy).not.toHaveBeenCalled(); // no bucket scan on a GET
+    expect(putSpy).not.toHaveBeenCalled(); // no pointer-repair write on a GET
+    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
+    listSpy.mockRestore();
+    putSpy.mockRestore();
+  });
+
+  it("GET /readings/lookup returns 409 initializing for a fresh pointer whose manifest is not yet written", async () => {
+    // Read-only repair is off, but the grace-window path is preserved: a pointer
+    // whose manifest hasn't landed yet but is still inside the grace window (the
+    // pointer-before-manifest write order) reports the owner as initializing (409),
+    // not "not found" — so a poller knows to keep polling rather than re-submit.
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-initializing";
+    const urlHash = await sha256Hex(url);
+    // Fresh pointer: key_prefix timestamp == services.now() baseTime (20:00:00Z).
+    const fresh = { id: "rd_FRESH", key_prefix: "readings/2026/04/26T200000Z-rd_FRESH" };
+    await reader.writeByUrlPointer(urlHash, fresh);
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ id: "rd_FRESH" });
+  });
+
+  it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/forever-contended";
+    const urlHash = await sha256Hex(url);
+    // A stale damaged orphan with no recoverable legacy: resolveOwner returns
+    // unclaimed{replaceEtag}, so every claim attempt is a CAS-replace.
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // Make every conditional write to the by-url slot lose, so the claim never
+    // converges and the bounded retry must give up rather than spin forever.
+    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const byUrlKey = `index/by-url/${urlHash}`;
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byUrlKey && options?.onlyIf) return null;
+        return realPut(key, value as ArrayBuffer, options);
+      }) as typeof env.READINGS_BUCKET.put);
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    spy.mockRestore();
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: "could not claim url ownership under contention",
+    });
+    // Never wrote a manifest or queued a job for the un-claimable reading.
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  it("returns 503 (not 500) when a recoverable repair stays contended past the bound", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/repair-forever-contended";
+    const urlHash = await sha256Hex(url);
+    // A damaged orphan pointer over a *recoverable* legacy: resolveOwner stays in
+    // the repair branch (deepScan finds the legacy) and keeps trying to CAS-replace
+    // the pointer onto it — it never reaches the claimByUrlSlot path.
+    const legacy: Manifest = {
+      id: "rd_REPAIR_LEGACY",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "old", message: "legacy copy" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // Every CAS-replace of the by-url pointer loses, so resolveOwner never
+    // converges and must throw its bounded-contention error.
+    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const byUrlKey = `index/by-url/${urlHash}`;
+    const spy = vi
+      .spyOn(env.READINGS_BUCKET, "put")
+      .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byUrlKey && options?.onlyIf) return null;
+        return realPut(key, value as ArrayBuffer, options);
+      }) as typeof env.READINGS_BUCKET.put);
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    spy.mockRestore();
+
+    // Retryable contention surfaces as 503, not the generic 500 from app.onError.
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: "could not resolve url ownership under contention",
+    });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  it("repairs a stale by-url pointer to an existing manifest for the URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/damaged-pointer-existing-manifest";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    const legacy: Manifest = {
+      id: "rd_EXISTING",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:10:00.000Z",
+      updated_at: "2026-04-26T19:10:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
+  });
+
+  it("repairs a missing by-id pointer when a duplicate submit finds the by-url owner", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/missing-by-id-pointer";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_MISSING_BY_ID";
+    const keyPrefix = buildKeyPrefix(id, "2026-04-26T19:00:00.000Z");
+    const manifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Recovered",
+      tldr: "Recovered summary",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 123,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const pointer = { id, key_prefix: keyPrefix };
+    await reader.writeByUrlPointer(urlHash, pointer);
+    await reader.writeManifest(keyPrefix, manifest);
+
+    const duplicate = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ id, status: "ready" });
+
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(get.status).toBe(200);
+    expect(await get.json()).toMatchObject({ id, status: "ready" });
+  });
+
+  it("repairs a by-url pointer that points to a manifest for a different URL", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/mismatched-by-url-owner";
+    const urlHash = await sha256Hex(url);
+    const otherUrl = "https://example.com/other-owned-reading";
+    const otherHash = await sha256Hex(otherUrl);
+    const otherId = "rd_OTHER_OWNER";
+    const otherPrefix = buildKeyPrefix(otherId, "2026-04-26T19:00:00.000Z");
+    const otherManifest: Manifest = {
+      id: otherId,
+      url: otherUrl,
+      url_hash: otherHash,
+      source_type: "url",
+      status: "ready",
+      title: "Other",
+      tldr: "Other summary",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 123,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    await reader.writeManifest(otherPrefix, otherManifest);
+    await reader.writeByIdPointer(otherId, { id: otherId, key_prefix: otherPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: otherId, key_prefix: otherPrefix });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe(otherId);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+    expect(await reader.readByUrlPointer(urlHash)).toMatchObject({ id: body.id });
+
+    const other = await app.request(
+      `/readings/${otherId}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(other.status).toBe(200);
+    expect(await other.json()).toMatchObject({ id: otherId, url: otherUrl });
+  });
+
+  it("does not treat a future-dated missing-manifest owner as fresh", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/future-dated-pointer";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_FUTURE",
+      key_prefix: "readings/2026/04/26T210000Z-rd_FUTURE",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    const body = (await submit.json()) as { id: string; status: string };
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_FUTURE");
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
+  });
+
+  it("does not let a stale successful job overwrite a newer by-url owner", async () => {
+    const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-job-success";
+    const urlHash = await sha256Hex(url);
+    const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
+    const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+
+    const staleId = "rd_STALE";
+    const staleCreatedAt = "2026-04-26T19:00:00.000Z";
+    const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
+    vector.vectors.set(staleId, {
+      values: new Array(1536).fill(0.42),
+      metadata: { url, title: "Old stale vector" },
+    });
+    await reader.appendOrReplaceListIndexItem({
+      id: staleId,
+      key_prefix: stalePrefix,
+      url,
+      status: "pending",
+      created_at: staleCreatedAt,
+      updated_at: staleCreatedAt,
+    });
+    await processReading(
+      {
+        id: staleId,
+        url,
+        urlHash,
+        createdAt: staleCreatedAt,
+        keyPrefix: stalePrefix,
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
+      id: staleId,
+      status: "ready",
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).toHaveBeenCalledWith([staleId]);
+    expect(vector.vectors.has(staleId)).toBe(false);
+  });
+
+  it("keeps the vector when cleanup runs against a pending manifest carrying a foreign last_attempt", async () => {
+    // Crafted seed for an otherwise-unreachable divergence: the list row is
+    // vacant-pending (active+last cleared) so the list gate removes it, but the
+    // manifest at the same prefix is pending with a last_attempt from another
+    // attempt. The vector gate must refuse — a last_attempt signals another
+    // attempt touched the reading, so this attempt may not own the vector.
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const similarity = new SimilarityStore(env.READINGS_INDEX);
+    const id = "rd_DIVERGENT";
+    const url = "https://example.com/divergent-cleanup";
+    const urlHash = await sha256Hex(url);
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+
+    const divergentManifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: undefined,
+      last_attempt: {
+        id: "at_PRIOR",
+        trigger: "submit",
+        status: "failed",
+        started_at: createdAt,
+        finished_at: createdAt,
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, divergentManifest);
+    // The list row is vacant-pending: the list gate WILL match (and remove it).
+    await reader.appendOrReplaceListIndexItem({
+      id,
+      key_prefix: keyPrefix,
+      url,
+      status: "pending",
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.42),
+      metadata: { url, title: "Divergent vector" },
+    });
+
+    await removeAttemptVisibility(reader, similarity, {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_FOREIGN",
+    });
+
+    // List row removed (list gate's vacant-pending rule matched)...
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    // ...but the vector is KEPT (manifest gate refuses on the foreign last_attempt).
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
+  });
+
+  it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
+    const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-same-reading-success";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_SAME_READING";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const newerPending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_NEW",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T19:30:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+    };
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.24),
+      metadata: { url, title: "Existing vector" },
+    });
+    await reader.writeManifest(keyPrefix, newerPending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "pending",
+      active_attempt: { id: "at_NEW" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "pending", active_attempt: { id: "at_NEW" } }],
+    });
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
+  });
+
+  it("does not let a stale successful attempt overwrite a newer ready reading", async () => {
+    const services = makeServices(makeStubFetch());
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-after-ready";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_READY_WINNER";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const ready: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Winning Title",
+      tldr: "The newer attempt already won.",
+      tags: ["winner"],
+      summary_markdown: "Winning summary",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 18,
+      extracted_bytes: 18,
+      content_sha256: "1".repeat(64),
+      fetched_at: "2026-04-26T19:30:00.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+      last_attempt: {
+        id: "at_NEW_READY",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T19:29:00.000Z",
+        finished_at: "2026-04-26T19:30:00.000Z",
+      },
+    };
+    vector.vectors.set(id, {
+      values: new Array(1536).fill(0.84),
+      metadata: { url, title: "Winning Title" },
+    });
+    await reader.writeManifest(keyPrefix, ready);
+    await reader.writeRaw(
+      keyPrefix,
+      "html",
+      new TextEncoder().encode("winner raw"),
+      "text/html; charset=utf-8",
+    );
+    await reader.writeExtracted(keyPrefix, "winner extracted");
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, keyPrefix));
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD_READY",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "ready",
+      title: "Winning Title",
+      last_attempt: { id: "at_NEW_READY" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "ready", title: "Winning Title" }],
+    });
+    expect(await (await reader.readRaw(keyPrefix, "html"))?.text()).toBe("winner raw");
+    expect(await (await reader.readExtracted(keyPrefix))?.text()).toBe("winner extracted");
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.has(id)).toBe(true);
+  });
+
+  it("does not let stale success cleanup erase newer visibility after losing the manifest CAS", async () => {
+    const services = makeServices(makeStubFetch({
+      toolInput: {
+        title: "Stale Title",
+        tldr: "A stale summary.",
+        tags: ["stale"],
+        keywords: ["stale"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Stale summary",
+      },
+    }));
+    const vector = installVectorizeStub();
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-cas-cleanup";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_CAS_WINNER";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const pending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_OLD",
+        trigger: "submit",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-04-26T19:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const newerReady: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Winning Title",
+      tldr: "The newer attempt already won.",
+      tags: ["winner"],
+      keywords: ["winner"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Winning summary",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 18,
+      extracted_bytes: 18,
+      content_sha256: "1".repeat(64),
+      fetched_at: "2026-04-26T19:30:00.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+      last_attempt: {
+        id: "at_NEW_READY",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T19:29:00.000Z",
+        finished_at: "2026-04-26T19:30:00.000Z",
+      },
+    };
+    await reader.writeManifest(keyPrefix, pending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
+
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const manifestKey = `${keyPrefix}/manifest.json`;
+    let injectedWinner = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === manifestKey && options?.onlyIf && !injectedWinner) {
+          injectedWinner = true;
+          vector.vectors.set(id, {
+            values: new Array(1536).fill(0.84),
+            metadata: { url, title: "Winning Title" },
+          });
+          await originalPut(manifestKey, JSON.stringify(newerReady), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          await originalPut("index/list.json", JSON.stringify({
+            version: 1,
+            items: [manifestToIndexItem(newerReady, keyPrefix)],
+          }), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          return null;
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+    putSpy.mockRestore();
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "ready",
+      title: "Winning Title",
+      last_attempt: { id: "at_NEW_READY" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "ready", title: "Winning Title", last_attempt: { id: "at_NEW_READY" } }],
+    });
+    expect(vector.upsert).not.toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.get(id)?.metadata.title).toBe("Winning Title");
+  });
+
+  it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
+    const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-job-failure";
+    const urlHash = await sha256Hex(url);
+    const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
+    const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const staleId = "rd_STALE_FAILED";
+    const staleCreatedAt = "2026-04-26T19:00:00.000Z";
+    const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
+    await reader.appendOrReplaceListIndexItem({
+      id: staleId,
+      key_prefix: stalePrefix,
+      url,
+      status: "pending",
+      created_at: staleCreatedAt,
+      updated_at: staleCreatedAt,
+    });
+    await processReading(
+      {
+        id: staleId,
+        url,
+        urlHash,
+        createdAt: staleCreatedAt,
+        keyPrefix: stalePrefix,
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id: "rd_OWNER",
+      key_prefix: ownerPrefix,
+    });
+    await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
+      id: staleId,
+      status: "failed",
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    consoleErr.mockRestore();
+  });
+
+  it("does not let stale failure cleanup publish an old index row after losing the manifest CAS", async () => {
+    const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-failure-cas-cleanup";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_FAILED_CAS_WINNER";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const pending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_OLD_FAILED",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T19:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const newerReady: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      title: "Failure Winner",
+      tldr: "The newer successful attempt won.",
+      tags: ["winner"],
+      keywords: ["winner"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "Winning summary",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 18,
+      extracted_bytes: 18,
+      content_sha256: "2".repeat(64),
+      fetched_at: "2026-04-26T19:30:00.000Z",
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+      last_attempt: {
+        id: "at_NEW_READY",
+        trigger: "submit",
+        status: "succeeded",
+        stage: "write_indexes",
+        started_at: "2026-04-26T19:29:00.000Z",
+        finished_at: "2026-04-26T19:30:00.000Z",
+      },
+    };
+    await reader.writeManifest(keyPrefix, pending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
+
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const manifestKey = `${keyPrefix}/manifest.json`;
+    let injectedWinner = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === manifestKey && options?.onlyIf && !injectedWinner) {
+          injectedWinner = true;
+          await originalPut(manifestKey, JSON.stringify(newerReady), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          await originalPut("index/list.json", JSON.stringify({
+            version: 1,
+            items: [manifestToIndexItem(newerReady, keyPrefix)],
+          }), {
+            httpMetadata: { contentType: "application/json" },
+          });
+          return null;
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD_FAILED",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "ready",
+      title: "Failure Winner",
+      last_attempt: { id: "at_NEW_READY" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "ready", title: "Failure Winner", last_attempt: { id: "at_NEW_READY" } }],
+    });
+  });
+
+  it("does not let a stale failed attempt overwrite a newer attempt for the same reading", async () => {
+    const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/stale-same-reading-failure";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_SAME_READING_FAILED";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const newerPending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_NEW_FAILED",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T19:30:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:30:00.000Z",
+    };
+    await reader.writeManifest(keyPrefix, newerPending);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await processReading(
+      {
+        id,
+        url,
+        urlHash,
+        createdAt,
+        keyPrefix,
+        attemptId: "at_OLD_FAILED",
+        attemptStartedAt: "2026-04-26T19:00:00.000Z",
+        trigger: "submit",
+      },
+      env as unknown as Env,
+      services,
+    );
+
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "pending",
+      active_attempt: { id: "at_NEW_FAILED" },
+    });
+    await expect(reader.readListIndex()).resolves.toMatchObject({
+      items: [{ id, status: "pending", active_attempt: { id: "at_NEW_FAILED" } }],
+    });
+    expect(consoleErr).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  it("marks a claimed submit retryable when setup fails before queueing", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/setup-fails-after-claim";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_TEST01";
+    const byIdKey = `index/by-id/${id}`;
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let failedByIdWrite = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === byIdKey && !failedByIdWrite) {
+          failedByIdWrite = true;
+          throw new Error("simulated setup failure");
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await app.request(
+      "/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      env,
+    );
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(queuedJobs).toHaveLength(0);
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
+      id,
+      key_prefix: buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"),
+    });
+    await expect(reader.readManifest(buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"))).resolves.toMatchObject({
+      id,
+      status: "failed",
+      error: { retryable: true },
+    });
+
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+    const retry = await app.request(
+      "/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      env,
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+  });
+
   it("imports Markdown without fetching the source URL", async () => {
     const sourceUrl = "https://x.com/example/status/2047312986696454584";
     const markdown = "# Imported Markdown\n\nThis is already captured local content.";
@@ -393,7 +1893,579 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 
-  it("failure path: source returns 404 → manifest ends failed, no by-url pointer, error logged", async () => {
+  it("marks a claimed Markdown import retryable when setup fails before queueing", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const sourceUrl = "https://example.com/import-setup-fails-after-claim";
+    const markdown = "# Setup Failure\n\nRetry me immediately.";
+    const urlHash = await sha256Hex(sourceUrl);
+    const id = "rd_TEST01";
+    const createdAt = "2026-04-26T20:00:01.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const rawKey = `${keyPrefix}/raw.md`;
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let failedRawWrite = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === rawKey && !failedRawWrite) {
+          failedRawWrite = true;
+          throw new Error("simulated markdown setup failure");
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = await app.request(
+      "/readings/import-markdown",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Setup Failure",
+          markdown,
+        }),
+      },
+      env,
+    );
+    expect(first.status).toBe(503);
+    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(queuedJobs).toHaveLength(0);
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({ id, key_prefix: keyPrefix });
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id,
+      status: "failed",
+      source_type: "markdown",
+      error: { retryable: true },
+    });
+
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+    const retry = await app.request(
+      "/readings/import-markdown",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Setup Failure",
+          markdown,
+        }),
+      },
+      env,
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id,
+      trigger: "import",
+      source: { kind: "markdown", markdown, title: "Setup Failure" },
+    });
+  });
+
+  it("deduplicates Markdown imports for the same source URL while pending", async () => {
+    const sourceUrl = "https://example.com/import-markdown-pending-dedupe";
+    const markdown = "# Pending Import\n\nThis import has not been processed yet.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+
+    const first = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Pending Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const firstBody = (await first.json()) as { id: string; status: string };
+
+    const second = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Pending Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const secondBody = (await second.json()) as { id: string; status: string };
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(200);
+    expect(secondBody).toMatchObject({ id: firstBody.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: firstBody.id, trigger: "import" });
+  });
+
+  it("repairs a stale missing by-url owner during Markdown import", async () => {
+    const sourceUrl = "https://example.com/import-repairs-missing-owner";
+    const markdown = "# Repaired Import\n\nThis import replaces a stale owner.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN_IMPORT",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Repaired Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const body = (await submit.json()) as { id: string; status: string };
+
+    expect(submit.status).toBe(202);
+    expect(body).toMatchObject({ status: "pending" });
+    expect(body.id).not.toBe("rd_ORPHAN_IMPORT");
+    expect(await reader.readByUrlPointer(urlHash)).toMatchObject({ id: body.id });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "import" });
+  });
+
+  it("imports Markdown over a failed URL reading for the same source URL", async () => {
+    const sourceUrl = "https://example.com/failed-then-imported-markdown";
+    const markdown = "# Imported Recovery\n\nThe user supplied the captured text.";
+    const fetchFn = makeStubFetch({
+      toolInput: {
+        title: "Imported Recovery",
+        tldr: "A failed URL was recovered with markdown.",
+        tags: ["markdown"],
+        keywords: ["recovery"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Recovered summary",
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const failed: Manifest = {
+      id: "rd_FAILED_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
+    await reader.writeManifest(keyPrefix, failed);
+    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Imported Recovery",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.clone().json()).toMatchObject({
+      id: failed.id,
+      status: "pending",
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: failed.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Imported Recovery", markdown },
+    });
+
+    await drainQueue(services);
+
+    const get = await app.request(
+      `/readings/${failed.id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(get.status).toBe(200);
+    expect(await get.json()).toMatchObject({
+      id: failed.id,
+      status: "ready",
+      source_type: "markdown",
+      title: "Imported Recovery",
+      last_attempt: { trigger: "import" },
+    });
+
+    const content = await app.request(
+      `/readings/${failed.id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(markdown);
+  });
+
+  it("imports Markdown over a legacy failed reading that has no by-url pointer", async () => {
+    const sourceUrl = "https://example.com/legacy-failed-import-markdown";
+    const markdown = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const legacy: Manifest = {
+      id: "rd_LEGACY_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Legacy Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: keyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: legacy.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Import", markdown },
+    });
+  });
+
+  it("imports Markdown over a legacy failed reading when the by-url pointer is damaged", async () => {
+    const sourceUrl = "https://example.com/legacy-import-damaged-owner";
+    const markdown = "# Legacy Damaged Owner\n\nThe user supplied text for the old failed URL.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const legacy: Manifest = {
+      id: "rd_LEGACY_DAMAGED_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN_IMPORT",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Legacy Damaged Owner",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: keyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: legacy.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Damaged Owner", markdown },
+    });
+  });
+
+  it("imports Markdown over a legacy failed reading missing from a stale list index", async () => {
+    const sourceUrl = "https://example.com/legacy-import-stale-index";
+    const markdown = "# Legacy Stale Index\n\nThe user supplied text for an unindexed old failed URL.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const indexedUrl = "https://example.com/other-import-index-row";
+    const legacy: Manifest = {
+      id: "rd_LEGACY_IMPORT_STALE_INDEX",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_IMPORT_INDEXED_OTHER",
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN_IMPORT_STALE_INDEX",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT_STALE_INDEX",
+    });
+
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Legacy Stale Index",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({
+      id: legacy.id,
+      key_prefix: legacyPrefix,
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: legacy.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Stale Index", markdown },
+    });
+  });
+
+  it("keeps markdown import retryable when queue send fails", async () => {
+    const sourceUrl = "https://example.com/import-queue-send-fails";
+    const markdown = "# Retryable Import\n\nThe markdown body should survive queue failure.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const failed: Manifest = {
+      id: "rd_IMPORT_QUEUE_FAIL",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
+    await reader.writeManifest(keyPrefix, failed);
+    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
+    installRejectingQueueStub();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const importAttempt = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Retryable Import",
+          markdown,
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(importAttempt.status).toBe(503);
+    const extracted = await reader.readExtracted(keyPrefix);
+    expect(await extracted?.text()).toBe(markdown);
+
+    installQueueStub();
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id: failed.id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: failed.id,
+      trigger: "reprocess",
+      source: { kind: "markdown", title: "Retryable Import", markdown },
+    });
+    consoleErr.mockRestore();
+  });
+
+  it("imports Markdown over a stale pending URL reading for the same source URL", async () => {
+    const sourceUrl = "https://example.com/stale-pending-then-imported-markdown";
+    const markdown = "# Imported Stale Pending\n\nThe user supplied the captured text.";
+    const fetchFn = makeStubFetch({
+      toolInput: {
+        title: "Imported Stale Pending",
+        tldr: "A stale pending URL was recovered with markdown.",
+        tags: ["markdown"],
+        keywords: ["recovery"],
+        people: [],
+        orgs: [],
+        novelty_verdict: "novel",
+        connections: [],
+        summary_markdown: "Recovered summary",
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const urlHash = await sha256Hex(sourceUrl);
+    const stalePending: Manifest = {
+      id: "rd_STALE_IMPORT",
+      url: sourceUrl,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: {
+        id: "at_STALE",
+        trigger: "submit",
+        status: "running",
+        stage: "fetch_source",
+        started_at: "2026-04-26T18:00:00.000Z",
+      },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T18:00:00.000Z",
+      updated_at: "2026-04-26T18:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(stalePending.id, stalePending.created_at);
+    await reader.writeManifest(keyPrefix, stalePending);
+    await reader.writeByIdPointer(stalePending.id, {
+      id: stalePending.id,
+      key_prefix: keyPrefix,
+    });
+    await reader.writeByUrlPointer(urlHash, {
+      id: stalePending.id,
+      key_prefix: keyPrefix,
+    });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(stalePending, keyPrefix));
+
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const submit = await app.fetch(
+      new Request("http://t/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source_url: sourceUrl,
+          title: "Imported Stale Pending",
+          markdown,
+        }),
+      }),
+      customEnv,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(202);
+    expect(await submit.json()).toMatchObject({
+      id: stalePending.id,
+      status: "pending",
+    });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id: stalePending.id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Imported Stale Pending", markdown },
+    });
+  });
+
+  it("failure path: source returns 404 -> manifest ends failed with by-url ownership, error logged", async () => {
     const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
     const services = makeServices(fetchFn);
     const app = createApp({ services });
@@ -429,7 +2501,8 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
-    expect(lookup.status).toBe(404);
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
 
     // The background failure should be logged for the operator (wrangler tail),
     // not silently swallowed.
@@ -525,6 +2598,180 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(submit.status).toBe(503);
     const body = (await submit.json()) as { error: string };
     expect(body.error).toMatch(/queue/i);
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent("https://example.com/no-queue")}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(404);
+    consoleErr.mockRestore();
+  });
+
+  it("marks a submit as retryable failed when queue send rejects after the pending write", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/queue-send-reject";
+    installRejectingQueueStub();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(503);
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    const { id } = (await lookup.json()) as { id: string };
+    const failed = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(failed.status).toBe(200);
+    expect(await failed.json()).toMatchObject({
+      id,
+      status: "failed",
+      error: { code: "QueueSendError", retryable: true },
+    });
+
+    installQueueStub();
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+    consoleErr.mockRestore();
+  });
+
+  it("marks a failed reading retryable failed when reprocess queue send rejects", async () => {
+    const idCounter = { n: 0 };
+    const failingServices = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const failingApp = createApp({ services: failingServices });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await failingApp.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/reprocess-send-reject-failed" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(failingServices);
+
+    installRejectingQueueStub();
+    const retryingServices = makeServices(makeStubFetch(), idCounter);
+    const retryingApp = createApp({ services: retryingServices });
+    const retry = await retryingApp.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(503);
+    const get = await retryingApp.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const failed = (await get.json()) as Record<string, unknown>;
+    expect(failed.active_attempt).toBeUndefined();
+    expect(failed).toMatchObject({
+      id,
+      status: "failed",
+      last_attempt: { status: "failed", error: { code: "QueueSendError", retryable: true } },
+      error: { code: "QueueSendError", retryable: true },
+    });
+    consoleErr.mockRestore();
+  });
+
+  it("keeps a ready reading ready when reprocess queue send rejects", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/reprocess-send-reject-ready" }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+
+    installRejectingQueueStub();
+    const retry = await app.fetch(
+      new Request(`http://t/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(503);
+    const get = await app.request(
+      `/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const ready = (await get.json()) as Record<string, unknown>;
+    expect(ready.active_attempt).toBeUndefined();
+    expect(ready).toMatchObject({
+      id,
+      status: "ready",
+      title: "Test Article",
+      last_attempt: { status: "failed", error: { code: "QueueSendError", retryable: true } },
+    });
     consoleErr.mockRestore();
   });
 
@@ -601,7 +2848,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     };
     expect(diagnostics.attempts[0]!.status).toBe("failed");
     expect(diagnostics.attempts[0]!.error?.stage).toBe("fetch_source");
-    expect(diagnostics.pointers.by_url.exists).toBe(false);
+    expect(diagnostics.pointers.by_url.exists).toBe(true);
     expect(diagnostics.objects.some((o) => o.key.endsWith("/attempts/at_rd_TEST02.json"))).toBe(true);
     consoleErr.mockRestore();
   });
@@ -1198,6 +3445,139 @@ describe("GET /readings/lookup", () => {
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 409 for a fresh initializing by-url owner", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-initializing";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_LOOKUP_INITIALIZING",
+      key_prefix: "readings/2026/04/26T195900Z-rd_LOOKUP_INITIALIZING",
+    });
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: "reading owner is still initializing",
+      id: "rd_LOOKUP_INITIALIZING",
+      poll: "/readings/rd_LOOKUP_INITIALIZING",
+    });
+  });
+
+  it("does not repair a stale lookup owner (read-only); leaves the deep scan + repair to the next write", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-legacy-stale-index";
+    const urlHash = await sha256Hex(url);
+    const indexedUrl = "https://example.com/lookup-other-index-row";
+    const legacy: Manifest = {
+      id: "rd_LOOKUP_LEGACY",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const indexed: Manifest = {
+      ...legacy,
+      id: "rd_LOOKUP_INDEXED_OTHER",
+      url: indexedUrl,
+      url_hash: await sha256Hex(indexedUrl),
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    const orphan = {
+      id: "rd_LOOKUP_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN",
+    };
+    await reader.writeByUrlPointer(urlHash, orphan);
+
+    // Even though a recoverable legacy exists, the read-only lookup must not
+    // deep-scan the bucket to find it nor rewrite the pointer — that repair is
+    // deferred to the next write path (covered by the submit/import repair tests).
+    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    expect(res.status).toBe(404);
+    expect(listSpy).not.toHaveBeenCalled(); // no full-bucket deep scan on a GET
+    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
+    listSpy.mockRestore();
+  });
+
+  it("returns 404 without writing a pointer for a legacy reading that has none", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-legacy-no-pointer";
+    const urlHash = await sha256Hex(url);
+    const legacy: Manifest = {
+      id: "rd_LOOKUP_LEGACY_NP",
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, legacyPrefix));
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
+    // A lookup never claims a cold legacy — no live pointer means "not found",
+    // and the GET must not write a by-url pointer as a side effect.
+    expect(res.status).toBe(404);
+    expect(await reader.readByUrlPointer(urlHash)).toBeNull();
+  });
+
+  it("returns 404 for a stale lookup owner without a matching manifest", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/lookup-orphan";
+    const urlHash = await sha256Hex(url);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_LOOKUP_ORPHAN_ONLY",
+      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN_ONLY",
+    });
+
+    const res = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+
     expect(res.status).toBe(404);
   });
 });

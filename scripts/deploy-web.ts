@@ -3,10 +3,12 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 interface Args {
   execute: boolean;
   skipBuild: boolean;
+  branch: string;
 }
 
 const WEB_DIR = "web";
@@ -17,6 +19,7 @@ function parseCliArgs(): Args {
     options: {
       execute: { type: "boolean", default: false },
       "skip-build": { type: "boolean", default: false },
+      branch: { type: "string", default: "main" },
       help: { type: "boolean", default: false },
     },
   });
@@ -29,16 +32,18 @@ function parseCliArgs(): Args {
   return {
     execute: values.execute === true,
     skipBuild: values["skip-build"] === true,
+    branch: values.branch ?? "main",
   };
 }
 
 function printUsage() {
-  process.stderr.write(`Usage: tsx scripts/deploy-web.ts [--execute] [--skip-build] [--help]
+  process.stderr.write(`Usage: tsx scripts/deploy-web.ts [--branch <name>] [--execute] [--skip-build] [--help]
 
 Builds web/ and deploys web/dist to Cloudflare Pages (project "reading-lite",
-branch "main" — the project's production branch). Dry-run by default — the
+branch "main" by default). Dry-run by default - the
 build always runs, but the upload only happens with --execute.
 
+  --branch       Pages deploy branch (main=production, staging=preview)
   --execute      actually upload (otherwise prints the would-run command)
   --skip-build   skip "npm run build" inside web/ (use existing web/dist)
   --help         show this message
@@ -92,7 +97,7 @@ async function main() {
   const args = parseCliArgs();
   const mode = args.execute ? "DEPLOY" : "DRY RUN";
 
-  process.stderr.write(`[${mode}] project=reading-lite branch=main\n`);
+  process.stderr.write(`[${mode}] project=reading-lite branch=${args.branch}\n`);
 
   if (!args.skipBuild) {
     process.stderr.write(`[${mode}] $ (cd ${WEB_DIR} && npm run build)\n\n`);
@@ -113,13 +118,7 @@ async function main() {
     `\n[${mode}] ${DIST_DIR}: ${summary.files} files, ${formatBytes(summary.bytes)}\n`,
   );
 
-  const wranglerArgs = [
-    "pages",
-    "deploy",
-    "dist",
-    "--branch=main",
-    "--commit-dirty=true",
-  ];
+  const wranglerArgs = buildWranglerPagesArgs(args.branch);
   process.stderr.write(
     `[${mode}] $ (cd ${WEB_DIR} && wrangler ${wranglerArgs.join(" ")})\n\n`,
   );
@@ -133,7 +132,21 @@ async function main() {
   process.exit(code);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+function buildWranglerPagesArgs(branch: string): string[] {
+  return [
+    "pages",
+    "deploy",
+    "dist",
+    `--branch=${branch}`,
+    "--commit-dirty=true",
+  ];
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+export { buildWranglerPagesArgs };

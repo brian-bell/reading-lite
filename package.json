@@ -8,6 +8,8 @@
     "dev": "wrangler dev",
     "deploy": "tsx scripts/deploy.ts",
     "deploy:web": "tsx scripts/deploy-web.ts",
+    "staging:setup": "tsx scripts/staging-setup.ts",
+    "staging:teardown": "tsx scripts/staging-teardown.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

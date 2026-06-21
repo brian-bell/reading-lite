@@ -10,15 +10,18 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (418 root tests across 43 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript with root and SPA test suites.
 
 ## Architecture at a glance
 
 ```
 POST /readings { url }
   ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
-  └─ else: write a "pending" manifest, enqueue a job on the READING_JOBS
-           queue, return 202. Poll GET /readings/:id until ready/failed.
+  └─ else: claim the by-url owner, write a "pending" manifest, enqueue a
+           job on the READING_JOBS queue, return 202. Poll GET
+           /readings/:id until ready/failed. Re-submitting a pending URL
+           returns the owned reading; re-submitting a failed URL reprocesses
+           that same id.
 
 READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
         fetch URL (timeout + size cap)
@@ -28,8 +31,9 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → Anthropic messages.create with forced tool use (`emit_reading`)
       → OpenAI embed the final TL;DR
       → Vectorize.upsert(id, tldr_embedding, metadata)
-      → R2 write final manifest + by-url pointer
-      (on any error → write status="failed" manifest; skip by-url pointer)
+      → R2 write final manifest + confirm by-url pointer
+      (on any error → write status="failed" manifest; the eager by-url
+       owner stays in place so a later submit can reprocess the same id)
       (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
        manifest stays pending until a later delivery completes. A message
        that exhausts max_retries routes to the reading-lite-dlq queue,
@@ -58,18 +62,92 @@ The Worker is composed of six deeply-isolated modules (each unit-tested with stu
 ```sh
 npm install
 cp .dev.vars.example .dev.vars   # fill in API keys
-npm run dev                      # wrangler dev with R2 + Vectorize bindings
+npm run dev                      # wrangler dev with local R2 only; Queue/Vectorize absent by design
 npm test                         # vitest workspace (workers pool + node pool)
 npm run typecheck
 ```
 
-`wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`; deploys always go there via `npm run deploy -- --execute` (dry-run by default).
+`wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Staging resources (`reading-lite-staging` bucket, Queue/DLQ, and Vectorize index) live under `[env.staging]`; production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`.
 
 > **`wrangler dev` has no Vectorize binding and no Queue binding by design.** Search returns no results locally (Vectorize has no local emulator, and a remote binding would point dev at production data), and `POST /readings` / `/readings/:id/reprocess` return 503 without `READING_JOBS`. Read-only list/detail routes work against whatever you write to the local bucket. Most submission/search behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need real bindings.
 
-### Required secrets (production)
+### Deployed environments
 
-Set via `wrangler secret put` against the deployed Worker:
+Staging is for real end-to-end smoke tests without mutating the production
+corpus. One-time Cloudflare resources are managed by dry-run-first wrappers:
+
+```sh
+npm run staging:setup
+npm run staging:setup -- --execute
+# or:
+make staging-setup EXECUTE=1
+```
+
+Setup is idempotent: if a staging bucket, Queue/DLQ, or Vectorize index already
+exists, the script treats Cloudflare's "already exists" response as success and
+continues.
+
+Set staging Worker secrets separately from production:
+
+```sh
+wrangler secret put READER_API_TOKEN --env staging
+wrangler secret put ANTHROPIC_API_KEY --env staging
+wrangler secret put OPENAI_API_KEY --env staging
+wrangler secret put RESEND_API_KEY --env staging
+```
+
+To tear down the isolated staging Worker and resources, review the dry run
+first. The script removes Queue consumers before deleting the Worker, then
+deletes Queue/DLQ and Vectorize resources, empties the staging R2 bucket via
+the S3-compatible R2 API, and deletes the bucket. The bucket-empty step requires
+`CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`, and `CORPUS_R2_SECRET_KEY` in
+the environment or `.corpus.vars`; the bucket name is still forced to
+`reading-lite-staging`. The script is hard-coded to staging resource names and
+refuses production-looking names:
+
+```sh
+npm run staging:teardown
+npm run staging:teardown -- --execute
+# or:
+make staging-teardown EXECUTE=1
+```
+
+Teardown is also idempotent: missing Queue consumers, Worker, Queue/DLQ,
+Vectorize index, or R2 bucket are treated as already removed. Unexpected
+Wrangler or R2 API failures still stop the script.
+
+Deploy staging with dry-run defaults:
+
+```sh
+cp .stg.vars.example .stg.vars   # fill in staging values
+make deploy-worker ENV=stg
+make deploy-worker ENV=stg EXECUTE=1
+make deploy-web ENV=stg
+make deploy-web ENV=stg EXECUTE=1
+```
+
+Run idempotency smoke against staging:
+
+```sh
+VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.workers.dev \
+  ./scripts/manual/idempotency-smoke.sh a "https://example.com/reading-lite-staging-$RANDOM"
+```
+
+Clean staging throwaways, including ready readings:
+
+```sh
+npm run corpus-audit -- --bucket reading-lite-staging
+npm run corpus-drop -- "https://example.com/reading-lite-staging-123" \
+  --bucket reading-lite-staging \
+  --allow-ready \
+  --vectorize reading-lite-staging \
+  --execute
+```
+
+### Required secrets
+
+Set via `wrangler secret put --env staging` or `--env production` against the
+deployed Worker:
 
 | Secret | What |
 |---|---|
@@ -90,6 +168,9 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
 | `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
+| `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
+| `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
+| `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call retry delay; `Retry-After` is clamped to this value. |
 
 ## API
 
@@ -98,15 +179,15 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
-| `POST /readings` | Body `{ url }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for already-ingested URLs. Background work fills the manifest. |
-| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, but skips source fetching and processes the supplied Markdown as the captured article. Defaults `email` to false. |
+| `POST /readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
+| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
 | `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
 | `POST /readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
 | `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
-| `GET /readings/lookup?url=` | 200 `{ id }` for known URLs, 404 otherwise. |
+| `GET /readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
 | `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
 List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
@@ -145,7 +226,7 @@ npm run dev                            # wrangler dev on http://127.0.0.1:8787
 cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 ```
 
-The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy with `npm run deploy:web -- --execute` (dry-run by default).
+The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy production with `npm run deploy:web -- --execute` or `make deploy-web ENV=prd EXECUTE=1`; deploy a Pages preview for staging with `make deploy-web ENV=stg EXECUTE=1`.
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
 
@@ -192,6 +273,11 @@ npm run import-markdown -- --dir ~/Documents/articles --dry-run
 
 # submit to local dev
 npm run import-markdown -- --dir ~/Documents/articles
+
+# submit to staging
+npm run import-markdown -- \
+  --dir ~/Documents/articles \
+  --url https://reading-lite-staging.<workers-subdomain>.workers.dev/readings/import-markdown
 
 # submit to production
 npm run import-markdown -- \
@@ -244,14 +330,14 @@ scripts/
 test/
   integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
   unit/                         # workers pool: schemas, extractor, embeddings, anthropic,
-                                #   http-retry, email, stores, process-reading, queue, corpus
+                                #   http-retry, email, stores, process-reading, queue
                                 # node pool: import-bookmarks, import-markdown,
                                 #   check-corpus, process-reading-list,
                                 #   corpus, lib
 web/                            # React SPA (separate npm project)
   src/{App.tsx, api.ts, types.ts, styles.css, main.tsx, test/setup.ts}
   index.html, package.json, tsconfig.json, vite.config.ts
-wrangler.toml                   # production config (R2 + Vectorize bindings)
+wrangler.toml                   # local, staging, and production Worker config
 wrangler.test.toml              # test config (R2 only; Vectorize is stub-injected)
 vitest.workspace.ts             # two projects: "workers" + "node"
 ```
@@ -263,6 +349,6 @@ vitest.workspace.ts             # two projects: "workers" + "node"
 - **workers** — schemas, deep modules, R2 store, integration tests against the Hono router using `cloudflare:test`'s `env` (Miniflare-backed R2). Vectorize is not natively emulated by Miniflare, so each test that needs it injects a stub binding directly into `env.READINGS_INDEX`.
 - **node** — Node-side script tests (corpus, import, shared `lib`) use `node:fs`/`os`/`path` and a real temp dir for fixture files.
 
-Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke via local `wrangler dev` and against the deployed Worker (`reading-lite.bbell.dev`) is part of the PRD's verification plan.
+Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. Manual smoke via local `wrangler dev` and against Cloudflare staging is part of the PRD's verification plan.
 
 `cd web && npm test` runs the SPA tests (jsdom + window.fetch stubs).
