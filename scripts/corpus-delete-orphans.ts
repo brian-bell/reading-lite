@@ -9,6 +9,10 @@
 //   {prefix}/raw.{ext}            (best-effort, common exts)
 //   {prefix}/attempts/{id}.json   (ids read live from the manifest)
 //   index/by-id/{id}              (so GET /readings/:id 404s instead of resolving)
+//   index/by-url/{hash}           (ONLY if the stored pointer is owned by this
+//                                  orphan — under eager URL ownership the slot
+//                                  for this URL usually belongs to the surviving
+//                                  ready copy, which we must not touch)
 // Then we rewrite index/list.json once, dropping the orphan ids.
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
@@ -18,6 +22,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keysForDroppedReading } from "./corpus-lib/delete-plan";
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
@@ -69,9 +74,10 @@ URL that the deduped audit omits are still caught).
 Default is a DRY RUN: prints every object it would delete and the list.json diff.
 Add --execute to perform the deletes and rewrite index/list.json.
 
-Only safe for readings that do not own an index/by-url/{hash} pointer — i.e.
-pending or failed readings (the pointer is written only on success). Deleting a
-ready reading this way would leave its by-url pointer dangling.
+For non-ready readings only. by-url pointers are eager URL ownership claims, so a
+failed/pending reading may own its index/by-url/{hash} pointer — that pointer is
+deleted only when it is actually owned by the dropped reading, never when it
+belongs to a surviving ready copy of the same URL.
 
 Run when nothing is being submitted: the list.json rewrite is a plain put, not a
 CAS write, so a concurrent queue write could be lost.`);
@@ -132,34 +138,28 @@ async function putListIndex(opts: Opts, json: string): Promise<void> {
   }
 }
 
-const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
-
-// Derive the deletable keys under one orphan's prefix. Reads the manifest live
-// to recover attempt ids; falls back to best-effort guesses when absent.
+// Derive the deletable keys under one orphan's prefix via the shared
+// ownership-aware plan. The by-url pointer is included only when this orphan
+// actually owns it — under eager URL ownership the pointer for this URL may
+// belong to the surviving ready copy, which we must not delete.
 async function keysForOrphan(
   opts: Opts,
   id: string,
   prefix: string,
+  url: string,
 ): Promise<string[]> {
-  const keys = new Set<string>();
-  keys.add(`${prefix}/manifest.json`);
-  keys.add(`${prefix}/extracted.md`);
-  for (const ext of COMMON_RAW_EXTS) keys.add(`${prefix}/raw.${ext}`);
-  keys.add(`index/by-id/${id}`);
-
-  const raw = await getObject(opts, `${prefix}/manifest.json`);
-  if (raw) {
-    try {
-      const m = JSON.parse(raw);
-      for (const k of ["active_attempt", "last_attempt"]) {
-        const at = m?.[k]?.id;
-        if (typeof at === "string") keys.add(`${prefix}/attempts/${at}.json`);
+  return keysForDroppedReading(id, prefix, url, {
+    readManifest: async (kp) => {
+      const raw = await getObject(opts, `${kp}/manifest.json`);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
       }
-    } catch {
-      /* manifest unparseable — manifest.json delete still covers the index */
-    }
-  }
-  return [...keys];
+    },
+    readObject: (key) => getObject(opts, key),
+  });
 }
 
 async function main(): Promise<void> {
@@ -237,7 +237,7 @@ async function main(): Promise<void> {
   let errored = 0;
 
   for (const o of targets) {
-    const keys = await keysForOrphan(opts, o.id, o.prefix);
+    const keys = await keysForOrphan(opts, o.id, o.prefix, o.url);
     console.log(`• ${o.id}  ${o.url}`);
     for (const key of keys) {
       if (!opts.execute) {

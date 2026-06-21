@@ -133,7 +133,7 @@ async function main(): Promise<void> {
   let errored = 0;
 
   for (const t of targets) {
-    const keys = await keysForReading(t.id, t.prefix, deps);
+    const keys = await keysForReading(t.id, t.prefix, t.url, deps);
     console.log(`• ${t.id}  ${t.url}`);
     if (t.status === "ready" && opts.vectorizeIndex) {
       if (!opts.execute) {

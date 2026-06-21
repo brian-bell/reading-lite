@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keysForDroppedReading } from "./delete-plan";
 import type { ListItem } from "./types";
 
 export interface RunResult {
@@ -102,41 +103,24 @@ export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<v
   }
 }
 
-const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
-
-// Every deletable key under one reading's id-scoped prefix. Reads the manifest
-// live to recover attempt ids; raw.* exts are best-effort guesses (idempotent
-// deletes absorb the misses).
-//
-// Attempt coverage is limited to the manifest's active_attempt + last_attempt.
-// Each reprocess writes a new attempts/{at_*}.json, but the manifest records
-// only those two ids, and the `wrangler r2 object` CLI (this tool's only R2
-// access — corpus-drop intentionally needs just `wrangler login`, not S3/API
-// creds) has no prefix list. So on a reading reprocessed >2x, earlier attempt
-// JSONs can be orphaned. They're tiny, invisible to audits, and dangle nothing
-// (manifest/by-id/list entry are all gone), so this is an accepted minor
-// residue rather than a correctness problem; a full sweep would need S3
-// ListObjectsV2, which we deliberately don't pull into this tool.
+// Every deletable key under one reading's id-scoped prefix, including its by-url
+// ownership pointer ONLY when the dropped reading actually owns it (the pointer
+// can legitimately belong to a surviving ready copy of the same URL — see
+// `keysForDroppedReading`). Reads the manifest and pointer live; raw.* exts are
+// best-effort guesses that idempotent deletes absorb. The `wrangler r2 object`
+// CLI (this tool's only R2 access — corpus-drop intentionally needs just
+// `wrangler login`, not S3/API creds) has no prefix list, so attempt coverage is
+// limited to the manifest's two recorded attempt ids.
 export async function keysForReading(
   id: string,
   keyPrefix: string,
+  url: string,
   deps: R2Deps,
 ): Promise<string[]> {
-  const keys = new Set<string>([
-    `${keyPrefix}/manifest.json`,
-    `${keyPrefix}/extracted.md`,
-    `index/by-id/${id}`,
-  ]);
-  for (const ext of COMMON_RAW_EXTS) keys.add(`${keyPrefix}/raw.${ext}`);
-  const m = await readManifest(keyPrefix, deps);
-  if (m) {
-    if (typeof m.url_hash === "string") keys.add(`index/by-url/${m.url_hash}`);
-    for (const k of ["active_attempt", "last_attempt"]) {
-      const at = m?.[k]?.id;
-      if (typeof at === "string") keys.add(`${keyPrefix}/attempts/${at}.json`);
-    }
-  }
-  return [...keys];
+  return keysForDroppedReading(id, keyPrefix, url, {
+    readManifest: (kp) => readManifest(kp, deps),
+    readObject: (key) => readObject(key, deps),
+  });
 }
 
 const defaultRunner: Runner = (cmd, args) =>
