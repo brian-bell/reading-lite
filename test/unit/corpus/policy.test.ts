@@ -38,9 +38,16 @@ describe("recoveryAction", () => {
     expect(recoveryAction(row({ code: "OversizedResponseError", reason: "Response exceeded fetch byte cap" })).action).toBe("local-extract");
   });
 
-  it("reason overrides win over status (PDF/reddit skip even on a 403)", () => {
+  it("reason overrides win over status (PDF skips even on a 403)", () => {
     expect(recoveryAction(row({ code: "BadStatusError", message: "status 403", reason: "Not an article — PDF" })).action).toBe("skip");
-    expect(recoveryAction(row({ code: "BadStatusError", message: "status 403", reason: "Reddit — needs .json endpoint" })).action).toBe("skip");
+  });
+
+  it("routes reddit reasons to local-extract (OAuth extractor handles them), overriding status", () => {
+    // A reddit failure is recoverable now that the extractor fetches via the
+    // OAuth .json endpoint; route it to local-extract even on a status that
+    // would otherwise reprocess (5xx) or skip (404).
+    expect(recoveryAction(row({ code: "BadStatusError", message: "status 526", reason: "Reddit — fetch via OAuth .json endpoint" })).action).toBe("local-extract");
+    expect(recoveryAction(row({ code: "BadStatusError", message: "status 404", reason: "Reddit — fetch via OAuth .json endpoint" })).action).toBe("local-extract");
   });
 });
 

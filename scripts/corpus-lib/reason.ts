@@ -31,7 +31,7 @@ export function reasonForFailure(
   url: string,
 ): string {
   if (FAILURE_OVERRIDES[url]) return FAILURE_OVERRIDES[url];
-  if (/reddit\.com/i.test(url)) return "Reddit — HTML not parseable (needs .json endpoint)";
+  if (/reddit\.com/i.test(url)) return "Reddit — fetch via OAuth .json endpoint";
   switch (code) {
     case "BadStatusError": {
       const s = httpStatusFromMessage(message);

@@ -136,7 +136,7 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
-fetch-blocked 403/429 + oversized -> local-extract + markdown import;
+fetch-blocked 403/429 + oversized + reddit -> local-extract + markdown import;
 dead links / paywalls / non-articles / teasers -> skip.`);
 }
 

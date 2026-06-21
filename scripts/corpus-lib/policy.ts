@@ -30,7 +30,7 @@ export function recoveryAction(row: AuditRow): ActionDecision {
   // failed
   const reason = row.reason ?? "";
   if (/not an article|PDF|YouTube/i.test(reason)) return { action: "skip", why: "not an article (PDF/video)" };
-  if (/reddit/i.test(reason)) return { action: "skip", why: "reddit — needs .json endpoint, not handled" };
+  if (/reddit/i.test(reason)) return { action: "local-extract", why: "reddit — re-fetch locally via OAuth .json endpoint" };
   if (/teaser/i.test(reason)) return { action: "skip", why: "paywall teaser" };
 
   switch (row.code) {
