@@ -132,7 +132,7 @@ B3/B5 passed:
 - `/content` and `/content/raw` matched the replacement markdown
 - Diagnostics showed zero `send_email` events for default import email behavior
 
-B4 exposed a checklist/implementation mismatch:
+B4 passed after product decision:
 
 - URL: `https://example.com/reading-lite-staging-b4-20260621T001259Z`
 - ID: `rd_7CNWDH302Q`
@@ -141,8 +141,7 @@ B4 exposed a checklist/implementation mismatch:
 - Second import returned `200`, same id, status `pending`, no error
 - This matches current router behavior and the integration test
   `deduplicates Markdown imports for the same source URL while pending`
-- PR #38 has a top-level comment noting that B4 should either expect `200` or
-  the implementation/tests should change to enforce `409`
+- Product decision: this `200 pending` same-owner response is expected behavior
 
 ### Group C
 
@@ -296,24 +295,12 @@ npm run corpus-audit -- --bucket reading-lite-staging --out /tmp/reading-lite-st
 
 ## Manual Items Remaining
 
-These remain open in `plans/007-manual-test-idempotent-submits.md`:
+This remains open in `plans/007-manual-test-idempotent-submits.md`:
 
-- **B4** resolve the checklist/implementation mismatch: staging returned `200`
-  same-owner `pending` for visible-pending markdown re-import, not the
-  checklist's expected `409`.
 - **H2** SPA browser smoke against the staging Worker once browser control is
   available to Codex, or via another approved browser path.
 
 ## Suggested Verification Approaches
-
-B4:
-
-- Decide whether the intended contract is same-owner `200 pending` or active
-  attempt `409`.
-- If `200` is intended, update the B4 checkbox text and keep the existing
-  router/integration behavior.
-- If `409` is intended, change `markdownImportResultForOwnedReading` and the
-  integration test that currently expects `200`.
 
 H2:
 

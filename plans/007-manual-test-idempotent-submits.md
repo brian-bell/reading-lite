@@ -108,7 +108,7 @@ Run note (2026-06-20 staging smoke): A1/A2/A5 passed for
 - [x] **B1** new `source_url` → `202`, processes markdown → `ready`
 - [x] **B2** re-import a `ready` `source_url` → **`200`** existing manifest, no duplicate
 - [x] **B3** re-import a `failed` `source_url` → **`202`** same id; new markdown/title **replaces** raw + extracted; `active_attempt`/`error` cleared
-- [ ] **B4** import over a `pending` non-failed owner → `409 "reading already has an active attempt"`
+- [x] **B4** re-import over a visible `pending` non-failed owner → **`200`** existing pending manifest, same id, no duplicate
 - [x] **B5** default `email` for import is **false** (no email unless `email:true`)
 
 Run note (2026-06-20 staging smoke): B1/B2 passed for markdown import id
@@ -123,14 +123,11 @@ returned `202` with the same id, reached `ready`, changed `source_type` to
 B5 passed from the same import attempt: diagnostics showed zero `send_email`
 events for the default import body and latest trigger `import`.
 
-B4 remains open because staging exposed a checklist/contract mismatch rather
-than the expected `409`: visible-pending re-import for
+B4 passed after product decision: visible-pending re-import for
 `https://example.com/reading-lite-staging-b4-20260621T001259Z`, id
 `rd_7CNWDH302Q`, returned `200` with the same id and status `pending`. That
 matches the current router behavior and the integration test
-`deduplicates Markdown imports for the same source URL while pending`. A PR
-comment was added to decide whether B4 should expect `200` or the
-implementation/tests should change to `409`.
+`deduplicates Markdown imports for the same source URL while pending`.
 
 ---
 
@@ -144,8 +141,8 @@ implementation/tests should change to `409`.
 - [x] **C6 (integration):** damaged pointer → lookup returns `404` and does **no** deep scan / **no** R2 write
 
 Run note (2026-06-20 staging smoke): C1/C2/C3/C5 passed on staging. A targeted
-C4 lookup race returned `404` before the pointer was visible, so C4 remains
-open for a deterministic staging or integration-only check.
+C4 lookup race returned `404` before the pointer was visible, so the
+deterministic fixture below was used to prove the grace-window behavior.
 
 Run note (2026-06-21 staging): C4 passed deterministically by writing a fresh
 staging-only `index/by-url/{hash}` pointer with no manifest, then calling
@@ -263,10 +260,7 @@ after opening Chrome through the plugin helper. H2 remains unchecked.
 
 ## Manual items remaining
 
-Remaining after the 2026-06-21 staging verification:
+Remaining after the 2026-06-21 staging verification and B4 product decision:
 
-- **B4** resolve the checklist/implementation mismatch: staging returned `200`
-  same-owner `pending` for a visible-pending markdown re-import, not the
-  checklist's expected `409`.
 - **H2** SPA browser smoke against the staging Worker once Chrome control is
   available to Codex, or via another approved browser path.
