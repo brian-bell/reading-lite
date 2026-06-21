@@ -18,6 +18,19 @@ export interface R2Deps {
   run?: Runner;
 }
 
+// True when wrangler stderr signals the object genuinely does not exist (an R2
+// NoSuchKey / "key does not exist" message), as opposed to a transient or
+// permission error. Matches the textual not-found phrases only — deliberately
+// NOT a bare "404" substring: by-url keys are SHA-256 hex strings that can
+// themselves contain "404", and wrangler echoes the key path in error text, so
+// a "404" match would misclassify a transient 5xx/403 on such a key as absent.
+// The textual phrases contain spaces/non-hex letters, so they cannot collide
+// with a hex key. Erring toward "not absent" is the safe direction: it makes an
+// ambiguous failure surface as an error rather than a silent miss.
+export function isObjectNotFound(stderr: string): boolean {
+  return /not found|does not exist|no such key|nosuchkey/i.test(stderr);
+}
+
 type GetOutcome =
   | { kind: "present"; body: string }
   | { kind: "absent" }
@@ -36,7 +49,7 @@ async function getOutcome(key: string, deps: R2Deps): Promise<GetOutcome> {
   if (/not logged in/i.test(stderr)) {
     throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return { kind: "absent" };
+  if (isObjectNotFound(stderr)) return { kind: "absent" };
   return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
 }
 
@@ -95,7 +108,7 @@ export async function deleteObject(
   if (deps.remote !== false) args.push("--remote");
   const { code, stderr } = await run("wrangler", args);
   if (code === 0) return "deleted";
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return "absent";
+  if (isObjectNotFound(stderr)) return "absent";
   return "error";
 }
 

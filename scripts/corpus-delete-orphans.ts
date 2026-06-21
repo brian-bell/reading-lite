@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { keysForDroppedReading } from "./corpus-lib/delete-plan";
 import { shouldRewriteIndex } from "./corpus-lib/drop";
+import { isObjectNotFound } from "./corpus-lib/wrangler-r2";
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
@@ -112,7 +113,7 @@ async function getOutcome(opts: Opts, key: string): Promise<GetOutcome> {
   if (/not logged in|not authenticated/i.test(stderr)) {
     throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return { kind: "absent" };
+  if (isObjectNotFound(stderr)) return { kind: "absent" };
   return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
 }
 
@@ -138,7 +139,7 @@ async function deleteObject(opts: Opts, key: string): Promise<"deleted" | "absen
   if (opts.remote) args.push("--remote");
   const { code, stderr } = await run("npx", ["wrangler", ...args]);
   if (code === 0) return "deleted";
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return "absent";
+  if (isObjectNotFound(stderr)) return "absent";
   console.error(`  ! delete error for ${key}: ${stderr.trim().split("\n").pop()}`);
   return "error";
 }
