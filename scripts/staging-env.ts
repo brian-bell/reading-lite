@@ -64,6 +64,7 @@ const MISSING_CONSUMER = [
   ...MISSING_RESOURCE,
   /not a consumer/i,
   /no consumer/i,
+  /no worker consumer/i,
   /not configured/i,
 ];
 

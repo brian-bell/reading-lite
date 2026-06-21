@@ -206,6 +206,25 @@ describe("staging environment scripts", () => {
     expect(code).toBe(0);
   });
 
+  it("continues when a queue exists but its Worker consumer is absent", async () => {
+    const commands = buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES);
+    const consumerCommand = commands.find((command) =>
+      command.args.includes("consumer"),
+    );
+    expect(consumerCommand).toBeDefined();
+    const code = await runWranglerCommands([consumerCommand!], {
+      log: () => {},
+      runner: async () => ({
+        code: 1,
+        stdout: "",
+        stderr:
+          "No worker consumer 'reading-lite-staging' exists for queue reading-lite-staging",
+      }),
+    });
+
+    expect(code).toBe(0);
+  });
+
   it("stops on non-idempotent wrangler failures", async () => {
     const calls: string[][] = [];
     const code = await runWranglerCommands(
