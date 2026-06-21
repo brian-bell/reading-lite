@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { keysForDroppedReading } from "./corpus-lib/delete-plan";
+import { shouldRewriteIndex } from "./corpus-lib/drop";
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
@@ -270,13 +271,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Don't rewrite the index if any object delete failed: removing an orphan from
+  // index/list.json while its objects/pointers (including a by-url ownership
+  // pointer it owns) linger would hide a half-deleted reading from future audits.
+  // Mirror corpus-drop — leave the list intact so the cleanup stays visible and
+  // re-runnable.
+  if (!shouldRewriteIndex(errored)) {
+    console.error(
+      `\n${errored} object delete(s) failed — leaving index/list.json unchanged ` +
+      `so the partially-deleted reading(s) stay visible. Re-run to retry.`,
+    );
+    console.error(`objects deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
+    process.exitCode = 1;
+    return;
+  }
+
   await putListIndex(opts, JSON.stringify({ version: 1, items: keptItems }));
   console.log("\nindex/list.json rewritten.");
-  console.log(
-    `Done. objects deleted: ${deleted}, absent (skipped): ${absent}` +
-    (errored ? `, errors: ${errored}` : ""),
-  );
-  if (errored) process.exitCode = 1;
+  console.log(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
 }
 
 main().catch((e) => {
