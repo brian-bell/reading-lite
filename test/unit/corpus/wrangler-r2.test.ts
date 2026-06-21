@@ -67,6 +67,20 @@ describe("keysForReading", () => {
     expect(keys).not.toContain(pointerKey);
   });
 
+  it("aborts the drop when the by-url pointer read fails for a non-absent reason", async () => {
+    // A transient/permission failure on the pointer GET (not a 404, not an auth
+    // error) must NOT be mistaken for "pointer absent" — that would drop the
+    // reading and rewrite list.json while a pointer it owns lingers. Fail loud.
+    const run: Runner = async (_cmd, args) => {
+      const target = String(args[3]);
+      if (target.endsWith("/manifest.json")) return { code: 0, stdout: "{}", stderr: "" };
+      return { code: 1, stdout: "", stderr: "Internal Server Error (500)" };
+    };
+    await expect(
+      keysForReading(id, prefix, url, { bucket: "b", remote: true, run }),
+    ).rejects.toThrow();
+  });
+
   it("tolerates a missing/unreadable manifest (still returns the static keys)", async () => {
     const keys = await keysForReading(id, prefix, url, deps({}));
     expect(keys).toContain(`${prefix}/manifest.json`);

@@ -45,6 +45,17 @@ describe("byUrlPointerKeyIfOwned", () => {
     const read = async () => JSON.stringify({ id: 123, key_prefix: prefix });
     expect(await byUrlPointerKeyIfOwned(id, url, read)).toBeNull();
   });
+
+  it("propagates a read error rather than treating an unreadable pointer as absent", async () => {
+    // A transient/permission read failure must NOT be collapsed into "not owned":
+    // doing so would delete the reading and rewrite list.json while a pointer it
+    // genuinely owns lingers. The reader signals an untrusted read by throwing;
+    // ownership stays undetermined and the drop aborts.
+    const read = async () => {
+      throw new Error("could not read index/by-url/...: Internal Server Error");
+    };
+    await expect(byUrlPointerKeyIfOwned(id, url, read)).rejects.toThrow(/could not read/);
+  });
 });
 
 describe("keysForDroppedReading", () => {
@@ -73,6 +84,16 @@ describe("keysForDroppedReading", () => {
   it("omits the pointer when no pointer object exists", async () => {
     const keys = await keysForDroppedReading(id, prefix, url, deps({}));
     expect(keys).not.toContain(pointerKey);
+  });
+
+  it("aborts (propagates) when the pointer read cannot be trusted", async () => {
+    const failing = {
+      readManifest: async () => null,
+      readObject: async () => {
+        throw new Error("could not read index/by-url/...: 503 Service Unavailable");
+      },
+    };
+    await expect(keysForDroppedReading(id, prefix, url, failing)).rejects.toThrow(/could not read/);
   });
 
   it("always covers the id-scoped static keys and manifest attempt files", async () => {

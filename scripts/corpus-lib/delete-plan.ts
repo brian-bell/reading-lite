@@ -19,7 +19,9 @@ const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
 export interface DeletePlanDeps {
   // Reads and parses the reading's manifest, or null when absent/unparseable.
   readManifest: (keyPrefix: string) => Promise<unknown | null>;
-  // Reads a raw R2 object body as a string, or null when the key is absent.
+  // Reads a raw R2 object body as a string. Returns null ONLY for a
+  // confirmed-absent key, and MUST throw on an untrusted read error (transient
+  // failure, permission denied) so ownership is never silently undetermined.
   readObject: (key: string) => Promise<string | null>;
 }
 
@@ -63,7 +65,10 @@ export async function keysForDroppedReading(
 // Returns `index/by-url/{sha256(url)}` only when the stored pointer object is
 // owned by `droppedId`. Returns null when the pointer is owned by another
 // (surviving) reading, is absent, or is unparseable — so cleanup never deletes a
-// pointer a different reading depends on.
+// pointer a different reading depends on. A read error is NOT swallowed: per the
+// `readObject` contract it throws, so an unreadable pointer aborts the drop
+// rather than being mistaken for an absent one (which would strand an owned
+// pointer while list.json is rewritten).
 //
 // The slot is recomputed from `url` rather than read from the manifest's stored
 // `url_hash`, and that is safe: the worker derives `manifest.url`,

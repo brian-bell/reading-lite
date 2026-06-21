@@ -18,21 +18,47 @@ export interface R2Deps {
   run?: Runner;
 }
 
-// Reads an object out of the R2 bucket via wrangler. Returns null when the
-// object is absent (wrangler exits non-zero), which optional reads (manifest,
-// extracted.md) tolerate.
-export async function readObject(key: string, deps: R2Deps): Promise<string | null> {
+type GetOutcome =
+  | { kind: "present"; body: string }
+  | { kind: "absent" }
+  | { kind: "error"; detail: string };
+
+// Runs a single `r2 object get` and classifies the result. An auth failure
+// always throws (the whole tool is unusable). A "not found" stderr means the key
+// is genuinely absent; any other non-zero exit is an untrusted read error that
+// the caller must not mistake for absence.
+async function getOutcome(key: string, deps: R2Deps): Promise<GetOutcome> {
   const run = deps.run ?? defaultRunner;
   const args = ["r2", "object", "get", `${deps.bucket}/${key}`, "--pipe"];
   if (deps.remote !== false) args.push("--remote");
   const { code, stdout, stderr } = await run("wrangler", args);
-  if (code !== 0) {
-    if (/not logged in/i.test(stderr)) {
-      throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
-    }
-    return null;
+  if (code === 0) return { kind: "present", body: stdout };
+  if (/not logged in/i.test(stderr)) {
+    throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  return stdout;
+  if (/not found|does not exist|404|no such key/i.test(stderr)) return { kind: "absent" };
+  return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
+}
+
+// Reads an object out of the R2 bucket via wrangler. Returns null when the
+// object is absent OR unreadable — lenient by design so optional reads (manifest,
+// extracted.md) tolerate a transient miss. For reads where "absent" and "could
+// not read" must be distinguished (by-url ownership), use readObjectStrict.
+export async function readObject(key: string, deps: R2Deps): Promise<string | null> {
+  const r = await getOutcome(key, deps);
+  return r.kind === "present" ? r.body : null;
+}
+
+// Like readObject, but returns null ONLY for a confirmed-absent key and throws
+// on any untrusted read error. The by-url ownership read depends on this: a
+// transient/permission failure must not be collapsed into "pointer absent",
+// which would delete the reading and rewrite list.json while a pointer it owns
+// lingers (see byUrlPointerKeyIfOwned).
+export async function readObjectStrict(key: string, deps: R2Deps): Promise<string | null> {
+  const r = await getOutcome(key, deps);
+  if (r.kind === "present") return r.body;
+  if (r.kind === "absent") return null;
+  throw new Error(`could not read ${key}: ${r.detail}`);
 }
 
 export async function readListIndex(deps: R2Deps): Promise<ListItem[]> {
@@ -128,7 +154,9 @@ export async function keysForReading(
         return null;
       }
     },
-    readObject: (key) => readObject(key, deps),
+    // Strict: a confirmed-absent pointer returns null (not owned), but an
+    // untrusted read error throws so we never strand a pointer this reading owns.
+    readObject: (key) => readObjectStrict(key, deps),
   });
 }
 

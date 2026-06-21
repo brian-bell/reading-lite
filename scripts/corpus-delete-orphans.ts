@@ -99,17 +99,38 @@ function objPath(bucket: string, key: string): string {
   return `${bucket}/${key}`;
 }
 
-async function getObject(opts: Opts, key: string): Promise<string | null> {
+type GetOutcome =
+  | { kind: "present"; body: string }
+  | { kind: "absent" }
+  | { kind: "error"; detail: string };
+
+async function getOutcome(opts: Opts, key: string): Promise<GetOutcome> {
   const args = ["r2", "object", "get", objPath(opts.bucket, key), "--pipe"];
   if (opts.remote) args.push("--remote");
   const { code, stdout, stderr } = await run("npx", ["wrangler", ...args]);
-  if (code !== 0) {
-    if (/not logged in|not authenticated/i.test(stderr)) {
-      throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
-    }
-    return null;
+  if (code === 0) return { kind: "present", body: stdout };
+  if (/not logged in|not authenticated/i.test(stderr)) {
+    throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  return stdout;
+  if (/not found|does not exist|404|no such key/i.test(stderr)) return { kind: "absent" };
+  return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
+}
+
+// Lenient read: null for absent OR unreadable. Fine for the optional manifest
+// read (a transient miss just degrades attempt-file coverage).
+async function getObject(opts: Opts, key: string): Promise<string | null> {
+  const r = await getOutcome(opts, key);
+  return r.kind === "present" ? r.body : null;
+}
+
+// Strict read: null only for a confirmed-absent key; throws on an untrusted read
+// error. Used for the by-url ownership read so an unreadable pointer aborts the
+// drop instead of being mistaken for "not owned".
+async function getObjectStrict(opts: Opts, key: string): Promise<string | null> {
+  const r = await getOutcome(opts, key);
+  if (r.kind === "present") return r.body;
+  if (r.kind === "absent") return null;
+  throw new Error(`could not read ${key}: ${r.detail}`);
 }
 
 async function deleteObject(opts: Opts, key: string): Promise<"deleted" | "absent" | "error"> {
@@ -159,7 +180,8 @@ async function keysForOrphan(
         return null;
       }
     },
-    readObject: (key) => getObject(opts, key),
+    // Strict: an unreadable pointer aborts rather than stranding an owned slot.
+    readObject: (key) => getObjectStrict(opts, key),
   });
 }
 
