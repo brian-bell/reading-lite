@@ -216,7 +216,10 @@ async function main(): Promise<void> {
   // Safety: every prefix must be id-scoped under readings/. Never touch a
   // prefix that doesn't carry its own reading id.
   for (const o of targets) {
-    if (!o.id || !o.prefix || !o.prefix.startsWith("readings/") || !o.prefix.endsWith(o.id)) {
+    if (
+      !o.id || !o.prefix || typeof o.url !== "string" ||
+      !o.prefix.startsWith("readings/") || !o.prefix.endsWith(o.id)
+    ) {
       console.error(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(o)}`);
       process.exit(1);
     }

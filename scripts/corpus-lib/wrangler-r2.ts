@@ -118,7 +118,16 @@ export async function keysForReading(
   deps: R2Deps,
 ): Promise<string[]> {
   return keysForDroppedReading(id, keyPrefix, url, {
-    readManifest: (kp) => readManifest(kp, deps),
+    // A corrupt manifest must not abort the drop: the static keys + pointer
+    // logic can still proceed, so a parse failure degrades to null (matching the
+    // DeletePlanDeps contract and the corpus-delete-orphans shim).
+    readManifest: async (kp) => {
+      try {
+        return await readManifest(kp, deps);
+      } catch {
+        return null;
+      }
+    },
     readObject: (key) => readObject(key, deps),
   });
 }

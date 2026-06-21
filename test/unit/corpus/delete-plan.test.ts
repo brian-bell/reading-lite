@@ -35,6 +35,16 @@ describe("byUrlPointerKeyIfOwned", () => {
     const read = async () => "not json";
     expect(await byUrlPointerKeyIfOwned(id, url, read)).toBeNull();
   });
+
+  it("excludes the pointer key when the stored object has no id field", async () => {
+    const read = async () => JSON.stringify({ key_prefix: prefix });
+    expect(await byUrlPointerKeyIfOwned(id, url, read)).toBeNull();
+  });
+
+  it("excludes the pointer key when the stored id is not a string", async () => {
+    const read = async () => JSON.stringify({ id: 123, key_prefix: prefix });
+    expect(await byUrlPointerKeyIfOwned(id, url, read)).toBeNull();
+  });
 });
 
 describe("keysForDroppedReading", () => {
