@@ -1,5 +1,7 @@
 #!/usr/bin/env tsx
 import { spawn } from "node:child_process";
+import { loadDotVars } from "./lib/dotvars";
+import type { R2Client, R2Config } from "./lib/cf-clients";
 
 export interface StagingResources {
   env: "staging";
@@ -113,6 +115,55 @@ export function buildStagingTeardownCommands(
 
 export function buildSecretCommands(): string[] {
   return STAGING_SECRET_NAMES.map((name) => `wrangler secret put ${name} --env staging`);
+}
+
+export function resolveStagingR2Config(
+  resources: StagingResources,
+  vars?: Record<string, string | undefined>,
+): R2Config {
+  validateStagingResources(resources);
+  const resolvedVars =
+    vars ??
+    {
+      ...loadDotVars(".corpus.vars"),
+      ...process.env,
+    };
+  const missing: string[] = [];
+  const need = (key: string): string => {
+    const value = resolvedVars[key];
+    if (!value) missing.push(key);
+    return value ?? "";
+  };
+  const config = {
+    accountId: need("CORPUS_R2_ACCOUNT_ID"),
+    accessKeyId: need("CORPUS_R2_ACCESS_KEY"),
+    secretAccessKey: need("CORPUS_R2_SECRET_KEY"),
+    bucket: resources.bucket,
+  };
+  if (missing.length > 0) {
+    throw new Error(
+      `missing staging teardown R2 config: ${missing.join(", ")} ` +
+        `(set in env or .corpus.vars)`,
+    );
+  }
+  return config;
+}
+
+export async function emptyR2Bucket(
+  client: Pick<R2Client, "listKeys" | "delete">,
+  bucket: string,
+  log: (line: string) => void = (line) => process.stderr.write(line + "\n"),
+): Promise<number> {
+  if (!bucket.includes("staging") || bucket === "reading-lite") {
+    throw new Error(`refusing to empty non-staging bucket: ${bucket}`);
+  }
+  const keys = await client.listKeys();
+  log(`[EXECUTE] empty R2 bucket ${bucket}: deleting ${keys.length} objects`);
+  for (const key of keys) {
+    await client.delete(key);
+    log(`[EXECUTE] deleted R2 object ${bucket}/${key}`);
+  }
+  return keys.length;
 }
 
 export function printCommandPlan(

@@ -256,6 +256,12 @@ npm run staging:teardown
 npm run staging:teardown -- --execute
 ```
 
+`staging:teardown` removes Queue consumers before deleting the Worker, then
+empties `reading-lite-staging` through the R2 S3 API before deleting the bucket.
+Set `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`, and
+`CORPUS_R2_SECRET_KEY` in env or `.corpus.vars`; the teardown script still
+forces the bucket name to `reading-lite-staging`.
+
 Audit staging:
 
 ```sh

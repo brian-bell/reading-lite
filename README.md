@@ -93,8 +93,12 @@ wrangler secret put OPENAI_API_KEY --env staging
 
 To tear down the isolated staging Worker and resources, review the dry run
 first. The script removes Queue consumers before deleting the Worker, then
-deletes Queue/DLQ, Vectorize, and R2 resources. It is hard-coded to staging
-resource names and refuses production-looking names:
+deletes Queue/DLQ and Vectorize resources, empties the staging R2 bucket via
+the S3-compatible R2 API, and deletes the bucket. The bucket-empty step requires
+`CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`, and `CORPUS_R2_SECRET_KEY` in
+the environment or `.corpus.vars`; the bucket name is still forced to
+`reading-lite-staging`. The script is hard-coded to staging resource names and
+refuses production-looking names:
 
 ```sh
 npm run staging:teardown
