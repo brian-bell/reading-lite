@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (562 root tests across 55 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (570 root tests across 55 files plus 22 SPA tests).
 
 ## Architecture at a glance
 
@@ -83,6 +83,10 @@ npm run staging:setup -- --execute
 make staging-setup EXECUTE=1
 ```
 
+Setup is idempotent: if a staging bucket, Queue/DLQ, or Vectorize index already
+exists, the script treats Cloudflare's "already exists" response as success and
+continues.
+
 Set staging Worker secrets separately from production:
 
 ```sh
@@ -106,6 +110,10 @@ npm run staging:teardown -- --execute
 # or:
 make staging-teardown EXECUTE=1
 ```
+
+Teardown is also idempotent: missing Queue consumers, Worker, Queue/DLQ,
+Vectorize index, or R2 bucket are treated as already removed. Unexpected
+Wrangler or R2 API failures still stop the script.
 
 Deploy staging with dry-run defaults:
 

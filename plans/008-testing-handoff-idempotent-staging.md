@@ -44,7 +44,8 @@ Repo support added:
 - staging deploy support in `scripts/deploy.ts`, `scripts/deploy-web.ts`, and `Makefile`
 - staging setup/teardown support in `scripts/staging-setup.ts`,
   `scripts/staging-teardown.ts`, `scripts/staging-env.ts`, `package.json`, and
-  `Makefile`
+  `Makefile`; setup and teardown are idempotent for already-created or
+  already-removed staging resources while still failing unexpected API errors
 - `.stg.vars.example`
 - `scripts/manual/idempotency-smoke.sh` supports `VARS_FILE=.stg.vars`
 - staging cleanup support in `corpus-drop --allow-ready --vectorize reading-lite-staging`
@@ -53,7 +54,7 @@ Repo support added:
 
 Local verification:
 
-- `npm test`: 558 passed
+- `npm test`: 570 passed
 - `npm run typecheck`: passed
 - `npm run deploy -- --env staging`: dry-run passed
 - `npm run deploy -- --env staging --execute`: deployed
@@ -261,6 +262,11 @@ empties `reading-lite-staging` through the R2 S3 API before deleting the bucket.
 Set `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`, and
 `CORPUS_R2_SECRET_KEY` in env or `.corpus.vars`; the teardown script still
 forces the bucket name to `reading-lite-staging`.
+
+Both lifecycle scripts are safe to re-run. Setup treats "already exists"
+responses as success, while teardown treats missing Queue consumers, Worker,
+Queue/DLQ, Vectorize index, and R2 bucket as already removed. Other Wrangler or
+R2 API failures still stop the script.
 
 Audit staging:
 

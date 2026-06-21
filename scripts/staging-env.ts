@@ -15,6 +15,20 @@ export interface StagingResources {
 export interface WranglerCommand {
   label: string;
   args: string[];
+  idempotentOk?: RegExp[];
+}
+
+export interface WranglerRunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type WranglerRunner = (args: string[]) => Promise<WranglerRunResult>;
+
+export interface RunWranglerDeps {
+  runner?: WranglerRunner;
+  log?: (line: string) => void;
 }
 
 export const DEFAULT_STAGING_RESOURCES: StagingResources = {
@@ -31,6 +45,25 @@ const STAGING_SECRET_NAMES = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "RESEND_API_KEY",
+];
+
+const ALREADY_EXISTS = [
+  /already exists/i,
+  /exists, and you own it/i,
+  /name already exists/i,
+];
+
+const MISSING_RESOURCE = [
+  /does not exist/i,
+  /not found/i,
+  /NoSuchBucket/i,
+];
+
+const MISSING_CONSUMER = [
+  ...MISSING_RESOURCE,
+  /not a consumer/i,
+  /no consumer/i,
+  /not configured/i,
 ];
 
 export function validateStagingResources(resources: StagingResources): void {
@@ -55,6 +88,7 @@ export function buildStagingSetupCommands(
     {
       label: "Create staging R2 bucket",
       args: ["r2", "bucket", "create", resources.bucket],
+      idempotentOk: ALREADY_EXISTS,
     },
     {
       label: "Create staging Vectorize index",
@@ -65,14 +99,17 @@ export function buildStagingSetupCommands(
         "--dimensions=1536",
         "--metric=cosine",
       ],
+      idempotentOk: ALREADY_EXISTS,
     },
     {
       label: "Create staging queue",
       args: ["queues", "create", resources.queue],
+      idempotentOk: ALREADY_EXISTS,
     },
     {
       label: "Create staging dead-letter queue",
       args: ["queues", "create", resources.dlq],
+      idempotentOk: ALREADY_EXISTS,
     },
   ];
 }
@@ -85,30 +122,37 @@ export function buildStagingTeardownCommands(
     {
       label: "Remove staging queue consumer",
       args: ["queues", "consumer", "remove", resources.queue, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
     },
     {
       label: "Remove staging dead-letter queue consumer",
       args: ["queues", "consumer", "remove", resources.dlq, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
     },
     {
       label: "Delete staging Worker",
       args: ["delete", resources.worker, "--env", resources.env, "--force"],
+      idempotentOk: MISSING_RESOURCE,
     },
     {
       label: "Delete staging queue",
       args: ["queues", "delete", resources.queue],
+      idempotentOk: MISSING_RESOURCE,
     },
     {
       label: "Delete staging dead-letter queue",
       args: ["queues", "delete", resources.dlq],
+      idempotentOk: MISSING_RESOURCE,
     },
     {
       label: "Delete staging Vectorize index",
       args: ["vectorize", "delete", resources.vectorizeIndex, "--force"],
+      idempotentOk: MISSING_RESOURCE,
     },
     {
       label: "Delete staging R2 bucket",
       args: ["r2", "bucket", "delete", resources.bucket],
+      idempotentOk: MISSING_RESOURCE,
     },
   ];
 }
@@ -157,7 +201,17 @@ export async function emptyR2Bucket(
   if (!bucket.includes("staging") || bucket === "reading-lite") {
     throw new Error(`refusing to empty non-staging bucket: ${bucket}`);
   }
-  const keys = await client.listKeys();
+  let keys: string[];
+  try {
+    keys = await client.listKeys();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/NoSuchBucket|not found|does not exist|404/i.test(message)) {
+      log(`[EXECUTE] R2 bucket ${bucket} is already absent`);
+      return 0;
+    }
+    throw error;
+  }
   log(`[EXECUTE] empty R2 bucket ${bucket}: deleting ${keys.length} objects`);
   for (const key of keys) {
     await client.delete(key);
@@ -181,23 +235,50 @@ export function printCommandPlan(
 
 export async function runWranglerCommands(
   commands: WranglerCommand[],
+  deps: RunWranglerDeps = {},
 ): Promise<number> {
+  const runner = deps.runner ?? runWrangler;
+  const log = deps.log ?? ((line: string) => process.stderr.write(line + "\n"));
   for (const command of commands) {
-    process.stderr.write(`\n[EXECUTE] ${command.label}\n`);
-    process.stderr.write(`[EXECUTE] $ wrangler ${command.args.join(" ")}\n`);
-    const code = await runWrangler(command.args);
-    if (code !== 0) return code;
+    log("");
+    log(`[EXECUTE] ${command.label}`);
+    log(`[EXECUTE] $ wrangler ${command.args.join(" ")}`);
+    const result = await runner(command.args);
+    if (result.code === 0) continue;
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (command.idempotentOk?.some((pattern) => pattern.test(output))) {
+      log(`[EXECUTE] already satisfied: ${command.label}`);
+      continue;
+    }
+    return result.code;
   }
   return 0;
 }
 
-function runWrangler(args: string[]): Promise<number> {
+function runWrangler(args: string[]): Promise<WranglerRunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("wrangler", args, {
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "pipe"],
       shell: false,
     });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout.push(chunk);
+      process.stdout.write(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr.push(chunk);
+      process.stderr.write(chunk);
+    });
     child.on("error", reject);
-    child.on("exit", (code) => resolve(code ?? 1));
+    child.on("exit", (code) =>
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      }),
+    );
   });
 }

@@ -6,12 +6,18 @@ import {
   buildStagingTeardownCommands,
   emptyR2Bucket,
   resolveStagingR2Config,
+  runWranglerCommands,
   validateStagingResources,
 } from "../../../scripts/staging-env";
+import type { WranglerCommand } from "../../../scripts/staging-env";
+
+function commandShape(commands: WranglerCommand[]) {
+  return commands.map(({ label, args }) => ({ label, args }));
+}
 
 describe("staging environment scripts", () => {
   it("builds the one-time staging resource setup commands", () => {
-    expect(buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES)).toEqual([
+    expect(commandShape(buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES))).toEqual([
       {
         label: "Create staging R2 bucket",
         args: ["r2", "bucket", "create", "reading-lite-staging"],
@@ -38,7 +44,7 @@ describe("staging environment scripts", () => {
   });
 
   it("builds destructive teardown commands in dependency-safe order", () => {
-    expect(buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES)).toEqual([
+    expect(commandShape(buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES))).toEqual([
       {
         label: "Remove staging queue consumer",
         args: ["queues", "consumer", "remove", "reading-lite-staging", "reading-lite-staging"],
@@ -68,6 +74,19 @@ describe("staging environment scripts", () => {
         args: ["r2", "bucket", "delete", "reading-lite-staging"],
       },
     ]);
+  });
+
+  it("marks setup and teardown commands as idempotent", () => {
+    expect(
+      buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES).every(
+        (command) => command.idempotentOk && command.idempotentOk.length > 0,
+      ),
+    ).toBe(true);
+    expect(
+      buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES).every(
+        (command) => command.idempotentOk && command.idempotentOk.length > 0,
+      ),
+    ).toBe(true);
   });
 
   it("prints the staging secrets that must be set manually", () => {
@@ -119,5 +138,80 @@ describe("staging environment scripts", () => {
     ).resolves.toBe(2);
     expect(deleted).toEqual(["index/list.json", "readings/a/manifest.json"]);
     expect(lines).toContain("[EXECUTE] empty R2 bucket reading-lite-staging: deleting 2 objects");
+  });
+
+  it("treats an absent R2 bucket as already empty", async () => {
+    const lines: string[] = [];
+    const client = {
+      listKeys: async () => {
+        throw new Error("R2 LIST failed: 404 NoSuchBucket");
+      },
+      delete: async () => {
+        throw new Error("should not delete");
+      },
+    };
+
+    await expect(
+      emptyR2Bucket(client, DEFAULT_STAGING_RESOURCES.bucket, (line) => lines.push(line)),
+    ).resolves.toBe(0);
+    expect(lines).toContain("[EXECUTE] R2 bucket reading-lite-staging is already absent");
+  });
+
+  it("continues after idempotent wrangler failures", async () => {
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    const code = await runWranglerCommands(
+      [
+        {
+          label: "Create existing bucket",
+          args: ["r2", "bucket", "create", "reading-lite-staging"],
+          idempotentOk: [/already exists/i],
+        },
+        {
+          label: "Create queue",
+          args: ["queues", "create", "reading-lite-staging"],
+        },
+      ],
+      {
+        log: (line) => logs.push(line),
+        runner: async (args) => {
+          calls.push(args);
+          return calls.length === 1
+            ? { code: 1, stdout: "", stderr: "bucket already exists" }
+            : { code: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(logs).toContain("[EXECUTE] already satisfied: Create existing bucket");
+  });
+
+  it("stops on non-idempotent wrangler failures", async () => {
+    const calls: string[][] = [];
+    const code = await runWranglerCommands(
+      [
+        {
+          label: "Delete worker",
+          args: ["delete", "reading-lite-staging"],
+          idempotentOk: [/not found/i],
+        },
+        {
+          label: "Delete queue",
+          args: ["queues", "delete", "reading-lite-staging"],
+        },
+      ],
+      {
+        log: () => {},
+        runner: async (args) => {
+          calls.push(args);
+          return { code: 1, stdout: "", stderr: "permission denied" };
+        },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(calls).toHaveLength(1);
   });
 });
