@@ -92,8 +92,9 @@ wrangler secret put OPENAI_API_KEY --env staging
 ```
 
 To tear down the isolated staging Worker and resources, review the dry run
-first. The script is hard-coded to staging resource names and refuses
-production-looking names:
+first. The script removes Queue consumers before deleting the Worker, then
+deletes Queue/DLQ, Vectorize, and R2 resources. It is hard-coded to staging
+resource names and refuses production-looking names:
 
 ```sh
 npm run staging:teardown

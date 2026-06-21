@@ -81,6 +81,14 @@ export function buildStagingTeardownCommands(
   validateStagingResources(resources);
   return [
     {
+      label: "Remove staging queue consumer",
+      args: ["queues", "consumer", "remove", resources.queue, resources.worker],
+    },
+    {
+      label: "Remove staging dead-letter queue consumer",
+      args: ["queues", "consumer", "remove", resources.dlq, resources.worker],
+    },
+    {
       label: "Delete staging Worker",
       args: ["delete", resources.worker, "--env", resources.env, "--force"],
     },

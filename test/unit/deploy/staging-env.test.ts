@@ -38,6 +38,14 @@ describe("staging environment scripts", () => {
   it("builds destructive teardown commands in dependency-safe order", () => {
     expect(buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES)).toEqual([
       {
+        label: "Remove staging queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging", "reading-lite-staging"],
+      },
+      {
+        label: "Remove staging dead-letter queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging-dlq", "reading-lite-staging"],
+      },
+      {
         label: "Delete staging Worker",
         args: ["delete", "reading-lite-staging", "--env", "staging", "--force"],
       },
