@@ -10,7 +10,7 @@ Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single W
 
 ## Status
 
-Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (418 root tests across 43 files plus 22 SPA tests).
+Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) (Worker + Cloudflare Pages SPA). Production-shaped TypeScript, fully unit-tested (562 root tests across 55 files plus 22 SPA tests).
 
 ## Architecture at a glance
 
@@ -74,13 +74,13 @@ npm run typecheck
 ### Deployed environments
 
 Staging is for real end-to-end smoke tests without mutating the production
-corpus. One-time Cloudflare resources:
+corpus. One-time Cloudflare resources are managed by dry-run-first wrappers:
 
 ```sh
-npx wrangler r2 bucket create reading-lite-staging
-npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine
-npx wrangler queues create reading-lite-staging
-npx wrangler queues create reading-lite-staging-dlq
+npm run staging:setup
+npm run staging:setup -- --execute
+# or:
+make staging-setup EXECUTE=1
 ```
 
 Set staging Worker secrets separately from production:
@@ -89,6 +89,17 @@ Set staging Worker secrets separately from production:
 wrangler secret put READER_API_TOKEN --env staging
 wrangler secret put ANTHROPIC_API_KEY --env staging
 wrangler secret put OPENAI_API_KEY --env staging
+```
+
+To tear down the isolated staging Worker and resources, review the dry run
+first. The script is hard-coded to staging resource names and refuses
+production-looking names:
+
+```sh
+npm run staging:teardown
+npm run staging:teardown -- --execute
+# or:
+make staging-teardown EXECUTE=1
 ```
 
 Deploy staging with dry-run defaults:

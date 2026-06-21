@@ -23,7 +23,7 @@ PAGES_BRANCH := $(if $(filter stg,$(ENV)),staging,main)
 DEPLOY_FLAGS := --env $(DEPLOY_ENV) $(EXECUTE_FLAG)
 DEPLOY_WEB_FLAGS := --branch $(PAGES_BRANCH) $(EXECUTE_FLAG) $(SKIP_BUILD_FLAG)
 
-.PHONY: help deploy-worker deploy-web
+.PHONY: help deploy-worker deploy-web staging-setup staging-teardown
 
 help:
 	@printf '%s\n' \
@@ -32,10 +32,12 @@ help:
 		'  make deploy-worker ENV=prd EXECUTE=1' \
 		'  make deploy-web ENV=stg EXECUTE=1 [SKIP_BUILD=1]' \
 		'  make deploy-web ENV=prd EXECUTE=1 [SKIP_BUILD=1]' \
+		'  make staging-setup [EXECUTE=1]' \
+		'  make staging-teardown [EXECUTE=1]' \
 		'' \
 		'Defaults:' \
 		'  ENV=dev loads .dev.vars; ENV=stg loads .stg.vars; ENV=prd loads .prd.vars.' \
-		'  EXECUTE=0 keeps deploy commands in dry-run mode.'
+		'  EXECUTE=0 keeps deploy/setup/teardown commands in dry-run mode.'
 
 deploy-worker:
 	@if [ -n "$(call truthy,$(EXECUTE))" ] && [ "$(ENV)" = "dev" ]; then \
@@ -50,3 +52,9 @@ deploy-web:
 		exit 2; \
 	fi
 	@$(RUN_WITH_VARS) npm run deploy:web -- $(DEPLOY_WEB_FLAGS)
+
+staging-setup:
+	@npm run staging:setup -- $(EXECUTE_FLAG)
+
+staging-teardown:
+	@npm run staging:teardown -- $(EXECUTE_FLAG)

@@ -61,6 +61,13 @@ Resources: R2 bucket `reading-lite-staging`, Vectorize index
 --env staging`. A read-only lookup smoke against staging returned `404
 {error:"not found"}` for an unknown URL.
 
+Run note (2026-06-21): staging setup/teardown wrappers were added:
+`npm run staging:setup` / `npm run staging:teardown` dry-run by default, with
+`-- --execute` to mutate Cloudflare resources. Make targets
+`make staging-setup EXECUTE=1` and `make staging-teardown EXECUTE=1` wrap the
+same scripts. The teardown command builder is hard-coded to staging names and
+refuses production-looking resource names.
+
 Run note (2026-06-20 staging smoke): staging cleanup removed all throwaway
 ready/failed readings created by the smoke run, including ready Vectorize
 vectors and `index/by-url/{hash}` pointers. Final staging audit and list both
@@ -93,12 +100,30 @@ Run note (2026-06-20 staging smoke): A1/A2/A5 passed for
 
 - [x] **B1** new `source_url` → `202`, processes markdown → `ready`
 - [x] **B2** re-import a `ready` `source_url` → **`200`** existing manifest, no duplicate
-- [ ] **B3** re-import a `failed` `source_url` → **`202`** same id; new markdown/title **replaces** raw + extracted; `active_attempt`/`error` cleared
+- [x] **B3** re-import a `failed` `source_url` → **`202`** same id; new markdown/title **replaces** raw + extracted; `active_attempt`/`error` cleared
 - [ ] **B4** import over a `pending` non-failed owner → `409 "reading already has an active attempt"`
-- [ ] **B5** default `email` for import is **false** (no email unless `email:true`)
+- [x] **B5** default `email` for import is **false** (no email unless `email:true`)
 
 Run note (2026-06-20 staging smoke): B1/B2 passed for markdown import id
 `rd_RY5XATQWYN`.
+
+Run note (2026-06-21 staging): B3 passed for URL
+`https://example.com/reading-lite-staging-b3-fail-20260621T001259Z`, id
+`rd_49KY4EX13H`. The initial URL submit reached `failed`; markdown re-import
+returned `202` with the same id, reached `ready`, changed `source_type` to
+`markdown`, replaced both extracted and raw markdown content, set title
+`B3 Replacement 20260621T001259Z`, and cleared `error` / `active_attempt`.
+B5 passed from the same import attempt: diagnostics showed zero `send_email`
+events for the default import body and latest trigger `import`.
+
+B4 remains open because staging exposed a checklist/contract mismatch rather
+than the expected `409`: visible-pending re-import for
+`https://example.com/reading-lite-staging-b4-20260621T001259Z`, id
+`rd_7CNWDH302Q`, returned `200` with the same id and status `pending`. That
+matches the current router behavior and the integration test
+`deduplicates Markdown imports for the same source URL while pending`. A PR
+comment was added to decide whether B4 should expect `200` or the
+implementation/tests should change to `409`.
 
 ---
 
@@ -107,7 +132,7 @@ Run note (2026-06-20 staging smoke): B1/B2 passed for markdown import id
 - [x] **C1** `ready` URL → `200 {id}`
 - [x] **C2** `pending` URL → `200 {id}`
 - [x] **C3** `failed` URL → `200 {id}`
-- [ ] **C4** owner inside missing-manifest grace window → `409 "reading owner is still initializing"` `{id,poll}`
+- [x] **C4** owner inside missing-manifest grace window → `409 "reading owner is still initializing"` `{id,poll}`
 - [x] **C5** unknown URL → `404 {error:"not found"}`
 - [x] **C6 (integration):** damaged pointer → lookup returns `404` and does **no** deep scan / **no** R2 write
 
@@ -115,20 +140,46 @@ Run note (2026-06-20 staging smoke): C1/C2/C3/C5 passed on staging. A targeted
 C4 lookup race returned `404` before the pointer was visible, so C4 remains
 open for a deterministic staging or integration-only check.
 
+Run note (2026-06-21 staging): C4 passed deterministically by writing a fresh
+staging-only `index/by-url/{hash}` pointer with no manifest, then calling
+`GET /readings/lookup`. The lookup returned `409` with
+`error:"reading owner is still initializing"`, id
+`rd_C420260621001259`, and poll `/readings/rd_C420260621001259`. The fixture
+pointer was deleted immediately afterward.
+
 ---
 
 ## Group D — Reprocess regression (Cloudflare staging)
 
 `POST /readings/:id/reprocess`
 
-- [ ] **D1** reprocess `failed` → `202`, `pending` → `ready`
-- [ ] **D2** reprocess `ready` whose attempt then fails → prior ready manifest **preserved** with `last_attempt.status="failed"`
+- [x] **D1** reprocess `failed` → `202`, `pending` → `ready`
+- [x] **D2** reprocess `ready` whose attempt then fails → prior ready manifest **preserved** with `last_attempt.status="failed"`
 - [x] **D3** reprocess while `running`, no force → `409 "reading already has an active attempt"`
 - [x] **D4** same with `{force:true}` → `202`
-- [ ] **D5** reprocess a `markdown` reading with no stored extracted → `409 "markdown content not available"`
+- [x] **D5** reprocess a `markdown` reading with no stored extracted → `409 "markdown content not available"`
 
 Run note (2026-06-20 staging smoke): D3/D4 passed against ready reading
 `rd_FS1FQZA06G`; the forced reprocess finished and cleared `active_attempt`.
+
+Run note (2026-06-21 staging): D1 passed by seeding a staging-only retryable
+failed manifest for `https://example.com/?reading-lite-staging-d1=20260621T001259Z`,
+id `rd_D120260621001259`, then calling `POST /readings/:id/reprocess`.
+The endpoint returned `202`, the queue processed the real URL, and the reading
+reached `ready` with `last_attempt.trigger:"reprocess"` and
+`last_attempt.status:"succeeded"`.
+
+D2 passed in a focused rerun with seeded ready id `rd_D2R20260621001741` and
+failing URL `https://example.com/reading-lite-staging-d2-fail-20260621T001741Z`.
+`POST /readings/:id/reprocess` returned `202`; while running, the manifest
+remained `ready` with the prior title. After the active attempt cleared, the
+manifest was still `ready`, title `D2 Preserved Title` was preserved, and
+`last_attempt` was `trigger:"reprocess"`, `status:"failed"`,
+`error.stage:"fetch_source"`.
+
+D5 passed for markdown id `rd_RGXT9G8FRM`: after deleting its staging
+`extracted.md`, `POST /readings/:id/reprocess` returned `409` with
+`error:"markdown content not available"`.
 
 ---
 
@@ -184,6 +235,14 @@ Local-only rerun (2026-06-20): `cd web && npm test` passed 22 tests and
 `cd web && npm run build` passed. Actual browser smoke remains manual because
 local Worker submits cannot complete without `READING_JOBS`.
 
+Run note (2026-06-21): web non-browser checks still pass: `cd web &&
+npm test` passed 22 tests and `cd web && npm run build` passed. A staging SPA
+browser smoke was attempted with Vite running locally and `/readings` proxied to
+the staging Worker, but Chrome control from Codex was unavailable. Chrome,
+the Codex Chrome Extension, and the native host manifest all checked out, but
+the bridge repeatedly reported `Browser is not available: extension`, even
+after opening Chrome through the plugin helper. H2 remains unchecked.
+
 ---
 
 ## Order
@@ -197,13 +256,10 @@ local Worker submits cannot complete without `READING_JOBS`.
 
 ## Manual items remaining
 
-Remaining after the 2026-06-20 staging smoke:
+Remaining after the 2026-06-21 staging verification:
 
-- **B3** re-import failed Markdown owner and verify raw/extracted replacement.
-- **B4** import over a visible pending non-failed owner and verify `409`.
-- **B5** verify import default email is false using staging email instrumentation or logs.
-- **C4** deterministically verify lookup inside the missing-manifest grace window returns `409`; the staging race attempted during smoke returned `404` before the pointer was visible.
-- **D1** reprocess a retryable/transient failed reading through to `ready`.
-- **D2** make a ready reading's reprocess attempt fail and verify the prior ready manifest is preserved.
-- **D5** reprocess a Markdown reading with missing stored extracted content.
-- **H2** SPA browser smoke against the staging Worker.
+- **B4** resolve the checklist/implementation mismatch: staging returned `200`
+  same-owner `pending` for a visible-pending markdown re-import, not the
+  checklist's expected `409`.
+- **H2** SPA browser smoke against the staging Worker once Chrome control is
+  available to Codex, or via another approved browser path.

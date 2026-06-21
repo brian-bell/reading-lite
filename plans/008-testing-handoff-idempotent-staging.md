@@ -4,13 +4,9 @@ Branch: `codex/issue-33-idempotent-url-submits`
 
 ## Current State
 
-Local branch is ahead of origin by five commits:
-
-- `3bc32b0 Record staging idempotency smoke results`
-- `aece12b Add Cloudflare staging infrastructure`
-- `07f948c Add staging prerequisite to idempotency plan`
-- `66e2a2d Record local-only idempotency rerun`
-- `b07ba2e Record idempotent submit test pass`
+Local branch contains the idempotent-submit verification work plus staging
+infrastructure/documentation updates. Use `git log --oneline` for the exact
+current commit stack before pushing.
 
 Untracked and intentionally untouched:
 
@@ -46,6 +42,9 @@ Repo support added:
 
 - `[env.staging]` in `wrangler.toml`
 - staging deploy support in `scripts/deploy.ts`, `scripts/deploy-web.ts`, and `Makefile`
+- staging setup/teardown support in `scripts/staging-setup.ts`,
+  `scripts/staging-teardown.ts`, `scripts/staging-env.ts`, `package.json`, and
+  `Makefile`
 - `.stg.vars.example`
 - `scripts/manual/idempotency-smoke.sh` supports `VARS_FILE=.stg.vars`
 - staging cleanup support in `corpus-drop --allow-ready --vectorize reading-lite-staging`
@@ -60,6 +59,11 @@ Local verification:
 - `npm run deploy -- --env staging --execute`: deployed
 - `npm run deploy:web -- --branch staging --skip-build`: dry-run passed
 - `npm run corpus-drop -- --help`: passed
+- `npm run staging:setup`: dry-run passed
+- `npm run staging:teardown`: dry-run passed
+- `npx vitest run test/unit/deploy/staging-env.test.ts`: passed
+- `cd web && npm test`: 22 passed
+- `cd web && npm run build`: passed
 - `make help`: shows staging commands
 
 Staging read-only lookup for an unknown URL returned:
@@ -112,17 +116,50 @@ B1/B2 passed:
 - Poll reached `ready`
 - Re-import ready returned `200`, same id
 
+B3/B5 passed:
+
+- URL: `https://example.com/reading-lite-staging-b3-fail-20260621T001259Z`
+- ID: `rd_49KY4EX13H`
+- Initial URL submit reached `failed` with `BadStatusError`
+- Markdown import returned `202 pending` with the same id
+- Poll reached `ready`
+- Manifest changed to `source_type:"markdown"`, title
+  `B3 Replacement 20260621T001259Z`, no `error`, no `active_attempt`
+- `/content` and `/content/raw` matched the replacement markdown
+- Diagnostics showed zero `send_email` events for default import email behavior
+
+B4 exposed a checklist/implementation mismatch:
+
+- URL: `https://example.com/reading-lite-staging-b4-20260621T001259Z`
+- ID: `rd_7CNWDH302Q`
+- First import returned `202`
+- `GET /readings/:id` showed visible `pending` with `active_attempt`
+- Second import returned `200`, same id, status `pending`, no error
+- This matches current router behavior and the integration test
+  `deduplicates Markdown imports for the same source URL while pending`
+- PR #38 has a top-level comment noting that B4 should either expect `200` or
+  the implementation/tests should change to enforce `409`
+
 ### Group C
 
 C1/C2/C3/C5 passed on staging.
 
-C4 attempted but remains open:
+C4 initial public race attempt did not prove the grace-window path:
 
 - URL: `https://example.com/?reading-lite-staging-c4=20260620T180006Z`
 - ID: `rd_DSZ4X2PEEN`
 - POST returned `202`
 - Immediate lookup returned `404` before the pointer was visible, so the intended `409` grace-window result was not proven
 - Throwaway was cleaned up
+
+C4 deterministic fixture passed:
+
+- URL: `https://example.com/reading-lite-staging-c4-fixture-20260621T001259Z`
+- ID: `rd_C420260621001259`
+- Wrote a fresh staging-only `index/by-url/{hash}` pointer with no manifest
+- Lookup returned `409 "reading owner is still initializing"` with the same
+  id and poll `/readings/rd_C420260621001259`
+- Fixture pointer was deleted immediately
 
 ### Group D
 
@@ -133,6 +170,33 @@ D3/D4 passed:
 - Second reprocess while running returned `409 "reading already has an active attempt"`
 - Force reprocess returned `202`
 - Forced attempt finished and cleared `active_attempt`
+
+D1 passed:
+
+- Seeded staging-only retryable failed manifest for
+  `https://example.com/?reading-lite-staging-d1=20260621T001259Z`
+- ID: `rd_D120260621001259`
+- `POST /readings/:id/reprocess` returned `202`
+- Real queue processing reached `ready`
+- `last_attempt.trigger:"reprocess"` and `last_attempt.status:"succeeded"`
+
+D2 passed:
+
+- Seeded ready manifest for failing URL
+  `https://example.com/reading-lite-staging-d2-fail-20260621T001741Z`
+- ID: `rd_D2R20260621001741`
+- `POST /readings/:id/reprocess` returned `202`
+- While active, the manifest remained `ready`
+- After the attempt finished, manifest still had status `ready`, title
+  `D2 Preserved Title`, no `active_attempt`, and
+  `last_attempt.trigger:"reprocess"`, `last_attempt.status:"failed"`,
+  `last_attempt.error.stage:"fetch_source"`
+
+D5 passed:
+
+- Markdown ID: `rd_RGXT9G8FRM`
+- Deleted its staging `extracted.md`
+- `POST /readings/:id/reprocess` returned `409 "markdown content not available"`
 
 ### Group H
 
@@ -152,6 +216,20 @@ H3/S6 cleanup passed:
 - Final staging audit: ready 0, pending 0, failed 0
 - Final `GET /readings?limit=20`: empty list
 
+H2 remains blocked:
+
+- Vite dev server and local proxy to the staging Worker were started
+- Chrome, the Codex Chrome Extension, and the native host manifest all checked
+  out locally
+- Codex browser control still reported `Browser is not available: extension`,
+  including after opening Chrome through the plugin helper and retrying
+- Web non-browser checks passed (`cd web && npm test`, `cd web && npm run build`)
+
+Additional cleanup passed after the 2026-06-21 focused runs:
+
+- Audit `/tmp/reading-lite-staging-audit-20260621T001259Z`: ready 0, pending 0, failed 0
+- Audit `/tmp/reading-lite-staging-audit-d2-20260621T001741Z`: ready 0, pending 0, failed 0
+
 ## Staging Commands
 
 Set common shell vars:
@@ -167,6 +245,15 @@ Run helper groups:
 BASE=$BASE VARS_FILE=.dev.vars ./scripts/manual/idempotency-smoke.sh a "https://example.com/?reading-lite-staging-a-$(date -u +%Y%m%dT%H%M%SZ)"
 BASE=$BASE VARS_FILE=.dev.vars ./scripts/manual/idempotency-smoke.sh b "https://example.com/reading-lite-staging-b-$(date -u +%Y%m%dT%H%M%SZ)"
 BASE=$BASE VARS_FILE=.dev.vars ./scripts/manual/idempotency-smoke.sh c "https://example.com/known-url"
+```
+
+Set up or tear down the isolated staging resources:
+
+```sh
+npm run staging:setup
+npm run staging:setup -- --execute
+npm run staging:teardown
+npm run staging:teardown -- --execute
 ```
 
 Audit staging:
@@ -196,59 +283,22 @@ npm run corpus-audit -- --bucket reading-lite-staging --out /tmp/reading-lite-st
 
 These remain open in `plans/007-manual-test-idempotent-submits.md`:
 
-- **B3** re-import failed Markdown owner and verify raw/extracted replacement.
-- **B4** import over visible pending non-failed owner and verify `409`.
-- **B5** verify import default email is false using staging email instrumentation or logs.
-- **C4** deterministically verify lookup inside the missing-manifest grace window returns `409`.
-- **D1** reprocess a retryable/transient failed reading through to `ready`.
-- **D2** make a ready reading's reprocess attempt fail and verify prior ready manifest is preserved.
-- **D5** reprocess a Markdown reading with missing stored extracted content.
-- **H2** SPA browser smoke against the staging Worker.
+- **B4** resolve the checklist/implementation mismatch: staging returned `200`
+  same-owner `pending` for visible-pending markdown re-import, not the
+  checklist's expected `409`.
+- **H2** SPA browser smoke against the staging Worker once browser control is
+  available to Codex, or via another approved browser path.
 
 ## Suggested Verification Approaches
 
-B3:
-
-1. Create a failed URL reading using a 404 URL.
-2. `POST /readings/import-markdown` for the same `source_url` with new markdown and title.
-3. Verify same id returns `202`.
-4. Poll to `ready`.
-5. Verify raw/extracted content and title changed, and `error` / `active_attempt` are cleared.
-
 B4:
 
-1. `POST /readings/import-markdown` for a fresh source URL.
-2. Wait until `GET /readings/:id` shows visible `pending`.
-3. Immediately re-import the same source URL.
-4. Expect `409 "reading already has an active attempt"`.
-
-B5:
-
-- Staging has `EMAIL_FROM` / `EMAIL_TO` empty, so direct email side effects may be disabled.
-- Best options are staging logs/attempt-event inspection, or temporarily enabling staging email settings with a safe test recipient/provider behavior.
-
-C4:
-
-- The public race is hard to hit because the pointer-before-manifest window is very small.
-- The previous staging attempt returned `404` before the pointer was visible.
-- Prefer a deterministic staging-only/admin fixture or rely on existing integration coverage unless a better manual hook is added.
-
-D1:
-
-- Needs a failed reading whose next reprocess succeeds.
-- Use a controllable URL that can flip from transient failure to success, or add a deterministic staging fixture.
-
-D2:
-
-- Needs a ready reading whose reprocess attempt then fails.
-- Use a controllable URL that returns success first, then failure on reprocess, or add a deterministic staging fixture.
-
-D5:
-
-1. Create a Markdown reading.
-2. Delete its stored `extracted.md` from staging R2.
-3. `POST /readings/:id/reprocess`.
-4. Expect `409 "markdown content not available"`.
+- Decide whether the intended contract is same-owner `200 pending` or active
+  attempt `409`.
+- If `200` is intended, update the B4 checkbox text and keep the existing
+  router/integration behavior.
+- If `409` is intended, change `markdownImportResultForOwnedReading` and the
+  integration test that currently expects `200`.
 
 H2:
 
