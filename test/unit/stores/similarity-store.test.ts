@@ -15,9 +15,13 @@ function makeBinding(opts: {
     query: vi.fn(async (_v: number[], _o: VectorizeQueryOptions): Promise<VectorizeMatches> =>
       opts.queryResult ?? { count: 0, matches: [] },
     ),
+    deleteByIds: vi.fn(async (_ids: string[]): Promise<VectorizeAsyncMutation> =>
+      ({ mutationId: "m_1" } as VectorizeAsyncMutation),
+    ),
   } as unknown as VectorizeIndex & {
     upsert: ReturnType<typeof vi.fn>;
     query: ReturnType<typeof vi.fn>;
+    deleteByIds: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -53,6 +57,15 @@ describe("SimilarityStore.upsert", () => {
       store.upsert("rd_X", new Array(768).fill(0), { url: "https://example.com/a" }),
     ).rejects.toBeInstanceOf(WrongEmbeddingDimensionError);
     expect(binding.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("SimilarityStore.delete", () => {
+  it("deletes the vector by reading id", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    await store.delete("rd_X");
+    expect(binding.deleteByIds).toHaveBeenCalledWith(["rd_X"]);
   });
 });
 

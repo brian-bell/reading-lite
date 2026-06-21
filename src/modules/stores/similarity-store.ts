@@ -38,6 +38,10 @@ export class SimilarityStore {
     ]);
   }
 
+  async delete(id: string): Promise<void> {
+    await this.index.deleteByIds([id]);
+  }
+
   async query(embedding: number[], topK: number): Promise<SimilarityMatch[]> {
     if (embedding.length !== EMBEDDING_DIM) {
       throw new WrongEmbeddingDimensionError(embedding.length);

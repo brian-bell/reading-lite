@@ -3,6 +3,7 @@ import {
   ProcessingAttemptSchema,
   ByUrlPointerSchema,
   type Manifest,
+  type ManifestStatus,
   type ProcessingAttempt,
   type ByUrlPointer,
 } from "../../schemas/manifest";
@@ -11,12 +12,23 @@ import {
   type ListIndex,
   type ListIndexItem,
 } from "../../schemas/api";
+import { sha256Hex } from "../../services";
 
 export class PointerExistsError extends Error {
   constructor(public readonly urlHash: string) {
     super(`by-url pointer already exists for hash ${urlHash}`);
     this.name = "PointerExistsError";
   }
+}
+
+export interface StoredByUrlPointer {
+  pointer: ByUrlPointer;
+  etag: string;
+}
+
+export interface StoredManifest {
+  manifest: Manifest;
+  etag: string;
 }
 
 const MANIFEST_FILE = "manifest.json";
@@ -56,6 +68,24 @@ export interface ListManifestsParams {
   limit: number;
   q?: string;
   tag?: string;
+}
+
+export interface FindManifestByUrlOptions {
+  deepScan?: boolean;
+}
+
+// URL-ownership preference when duplicate readings exist for one URL: a
+// completed `ready` reading owns the URL over an in-flight `pending` one, which
+// in turn beats a `failed` one. Used to break ties in findNewestManifestByUrl
+// before falling back to recency.
+const OWNERSHIP_RANK: Record<ManifestStatus, number> = {
+  ready: 3,
+  pending: 2,
+  failed: 1,
+};
+
+function ownershipRank(status: ManifestStatus): number {
+  return OWNERSHIP_RANK[status] ?? 0;
 }
 
 export function manifestToIndexItem(
@@ -128,6 +158,32 @@ export class ReadingStore {
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ManifestSchema.parse(json);
+  }
+
+  async readManifestWithEtag(keyPrefix: string): Promise<StoredManifest | null> {
+    const obj = await this.bucket.get(`${keyPrefix}/${MANIFEST_FILE}`);
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    return {
+      manifest: ManifestSchema.parse(json),
+      etag: obj.etag,
+    };
+  }
+
+  async replaceManifestIfCurrent(
+    keyPrefix: string,
+    expectedEtag: string,
+    manifest: Manifest,
+  ): Promise<boolean> {
+    const written = await this.bucket.put(
+      `${keyPrefix}/${MANIFEST_FILE}`,
+      JSON.stringify(manifest),
+      {
+        httpMetadata: { contentType: "application/json" },
+        onlyIf: { etagMatches: expectedEtag },
+      },
+    );
+    return written !== null;
   }
 
   async writeRaw(
@@ -256,13 +312,12 @@ export class ReadingStore {
     opts: { ifNotExists?: boolean } = {},
   ): Promise<void> {
     const key = `${BY_URL_PREFIX}${urlHash}`;
-    if (opts.ifNotExists) {
-      const existing = await this.bucket.head(key);
-      if (existing) throw new PointerExistsError(urlHash);
-    }
-    await this.bucket.put(key, JSON.stringify(pointer), {
+    const putOpts: R2PutOptions = {
       httpMetadata: { contentType: "application/json" },
-    });
+    };
+    if (opts.ifNotExists) putOpts.onlyIf = new Headers({ "If-None-Match": "*" });
+    const result = await this.bucket.put(key, JSON.stringify(pointer), putOpts);
+    if (opts.ifNotExists && result === null) throw new PointerExistsError(urlHash);
   }
 
   async readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null> {
@@ -270,6 +325,32 @@ export class ReadingStore {
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ByUrlPointerSchema.parse(json);
+  }
+
+  async readByUrlPointerWithEtag(urlHash: string): Promise<StoredByUrlPointer | null> {
+    const obj = await this.bucket.get(`${BY_URL_PREFIX}${urlHash}`);
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    return {
+      pointer: ByUrlPointerSchema.parse(json),
+      etag: obj.etag,
+    };
+  }
+
+  async replaceByUrlPointerIfCurrent(
+    urlHash: string,
+    expectedEtag: string,
+    pointer: ByUrlPointer,
+  ): Promise<boolean> {
+    const result = await this.bucket.put(
+      `${BY_URL_PREFIX}${urlHash}`,
+      JSON.stringify(pointer),
+      {
+        httpMetadata: { contentType: "application/json" },
+        onlyIf: { etagMatches: expectedEtag },
+      },
+    );
+    return result !== null;
   }
 
   async writeByIdPointer(id: string, pointer: ByUrlPointer): Promise<void> {
@@ -303,6 +384,23 @@ export class ReadingStore {
       ...items.filter((i) => i.id !== item.id),
       item,
     ]);
+  }
+
+  async removeListIndexItem(id: string): Promise<void> {
+    const index = await this.readListIndex();
+    if (!index) return;
+    await this.mutateListIndex((items) => items.filter((i) => i.id !== id));
+  }
+
+  async removeListIndexItemIf(
+    id: string,
+    predicate: (item: ListIndexItem) => boolean,
+  ): Promise<void> {
+    const index = await this.readListIndex();
+    if (!index) return;
+    await this.mutateListIndex((items) =>
+      items.filter((i) => i.id !== id || !predicate(i)),
+    );
   }
 
   // Read-modify-write of index/list.json guarded by an R2 compare-and-set:
@@ -350,6 +448,31 @@ export class ReadingStore {
     return index?.items.find((i) => i.id === id) ?? null;
   }
 
+  async findManifestByUrl(
+    url: string,
+    opts: FindManifestByUrlOptions = {},
+  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+    const index = await this.readListIndex();
+    const candidates = new Map<string, ListIndexItem>();
+    const indexedMatches = (index?.items ?? []).filter((item) => item.url === url);
+    for (const item of indexedMatches) {
+      if (item.url === url) candidates.set(item.key_prefix, item);
+    }
+
+    // Avoid turning every first-time URL submit into a full bucket scan. We
+    // scan when there is no index to consult, when an indexed same-URL row
+    // needs stale-index reconciliation, or when a damaged owner asks for the
+    // strongest repair path explicitly.
+    if (!index || indexedMatches.length > 0 || opts.deepScan) {
+      const rebuilt = await this.rebuildListIndex();
+      for (const item of rebuilt.items) {
+        if (item.url === url) candidates.set(item.key_prefix, item);
+      }
+    }
+
+    return this.findNewestManifestByUrl([...candidates.values()], url, await sha256Hex(url));
+  }
+
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
     let index = await this.readListIndex();
     if (!index) {
@@ -389,15 +512,56 @@ export class ReadingStore {
     return { readings: slice, total_filtered: filtered.length };
   }
 
+  private async findNewestManifestByUrl(
+    items: ListIndexItem[],
+    url: string,
+    urlHash: string,
+  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+    const matches = items.filter((item) => item.url === url);
+    // Ownership rank first, recency second. A URL can have duplicate readings
+    // (the recurring "failed orphan-dup" corpus state: a failed re-submit left
+    // beside an earlier ready copy). The ready copy owns the URL, so a `ready`
+    // owner must beat a *newer* `failed` one — ranking purely by updated_at would
+    // repair the by-url pointer to the failed duplicate and orphan the ready
+    // summary by URL. Within a status class, newest-by-updated_at still wins.
+    matches.sort((a, b) => {
+      const rankDiff = ownershipRank(b.status) - ownershipRank(a.status);
+      if (rankDiff !== 0) return rankDiff;
+      const aTime = a.updated_at ?? a.created_at;
+      const bTime = b.updated_at ?? b.created_at;
+      return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+    });
+    for (const item of matches) {
+      const manifest = await this.readManifest(item.key_prefix);
+      if (manifest?.url === url && manifest.url_hash === urlHash) {
+        return { keyPrefix: item.key_prefix, manifest };
+      }
+    }
+    return null;
+  }
+
   private async rebuildListIndex(): Promise<{ items: ListIndexItem[]; complete: boolean }> {
-    // Personal-scale fallback: scan readings/ for manifests, parse each, and
-    // synthesise an index. Used when index/list.json is missing (cold cache or
-    // a bucket whose index was never built); the result is persisted by the caller (only when
-    // complete) so subsequent reads are O(index-size).
-    const list = await this.bucket.list({ prefix: READINGS_PREFIX, limit: 1000 });
-    const manifestKeys = list.objects
-      .map((o) => o.key)
-      .filter((k) => k.endsWith(`/${MANIFEST_FILE}`));
+    // Recovery fallback: scan readings/ for manifests, parse each, and
+    // synthesise an index when URL ownership/index state is missing or stale.
+    // The result is persisted by callers only when every page was read.
+    const manifestKeys: string[] = [];
+    let cursor: string | undefined;
+    let complete = true;
+    do {
+      const list = await this.bucket.list({
+        prefix: READINGS_PREFIX,
+        limit: 1000,
+        ...(cursor ? { cursor } : {}),
+      });
+      manifestKeys.push(
+        ...list.objects
+          .map((o) => o.key)
+          .filter((k) => k.endsWith(`/${MANIFEST_FILE}`)),
+      );
+      if (list.truncated && !list.cursor) complete = false;
+      cursor = list.truncated ? list.cursor : undefined;
+    } while (cursor);
+
     const items: ListIndexItem[] = [];
     for (const key of manifestKeys) {
       const obj = await this.bucket.get(key);
@@ -408,6 +572,6 @@ export class ReadingStore {
       const keyPrefix = key.slice(0, -("/" + MANIFEST_FILE).length);
       items.push(manifestToIndexItem(parsed.data, keyPrefix));
     }
-    return { items, complete: !list.truncated };
+    return { items, complete };
   }
 }

@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 ENV ?= dev
 VARS_FILE := .$(ENV).vars
-VALID_ENVS := dev prd
+VALID_ENVS := dev stg prd
 
 ifneq ($(ENV),$(filter $(ENV),$(VALID_ENVS)))
 $(error ENV must be one of: $(VALID_ENVS))
@@ -18,31 +18,43 @@ EXECUTE_FLAG := $(if $(call truthy,$(EXECUTE)),--execute,)
 SKIP_BUILD_FLAG := $(if $(call truthy,$(SKIP_BUILD)),--skip-build,)
 
 RUN_WITH_VARS := npx tsx scripts/run-with-vars.ts --vars $(VARS_FILE) --
-DEPLOY_FLAGS := $(EXECUTE_FLAG)
-DEPLOY_WEB_FLAGS := $(EXECUTE_FLAG) $(SKIP_BUILD_FLAG)
+DEPLOY_ENV := $(if $(filter stg,$(ENV)),staging,production)
+PAGES_BRANCH := $(if $(filter stg,$(ENV)),staging,main)
+DEPLOY_FLAGS := --env $(DEPLOY_ENV) $(EXECUTE_FLAG)
+DEPLOY_WEB_FLAGS := --branch $(PAGES_BRANCH) $(EXECUTE_FLAG) $(SKIP_BUILD_FLAG)
 
-.PHONY: help deploy-worker deploy-web
+.PHONY: help deploy-worker deploy-web staging-setup staging-teardown
 
 help:
 	@printf '%s\n' \
 		'Usage:' \
+		'  make deploy-worker ENV=stg EXECUTE=1' \
 		'  make deploy-worker ENV=prd EXECUTE=1' \
+		'  make deploy-web ENV=stg EXECUTE=1 [SKIP_BUILD=1]' \
 		'  make deploy-web ENV=prd EXECUTE=1 [SKIP_BUILD=1]' \
+		'  make staging-setup [EXECUTE=1]' \
+		'  make staging-teardown [EXECUTE=1]' \
 		'' \
 		'Defaults:' \
-		'  ENV=dev loads .dev.vars; ENV=prd loads .prd.vars.' \
-		'  EXECUTE=0 keeps deploy commands in dry-run mode.'
+		'  ENV=dev loads .dev.vars; ENV=stg loads .stg.vars; ENV=prd loads .prd.vars.' \
+		'  EXECUTE=0 keeps deploy/setup/teardown commands in dry-run mode.'
 
 deploy-worker:
-	@if [ -n "$(call truthy,$(EXECUTE))" ] && [ "$(ENV)" != "prd" ]; then \
-		echo "Refusing production deploy with ENV=$(ENV). Use ENV=prd EXECUTE=1." >&2; \
+	@if [ -n "$(call truthy,$(EXECUTE))" ] && [ "$(ENV)" = "dev" ]; then \
+		echo "Refusing deployed worker upload with ENV=dev. Use ENV=stg or ENV=prd." >&2; \
 		exit 2; \
 	fi
 	@$(RUN_WITH_VARS) npm run deploy -- $(DEPLOY_FLAGS)
 
 deploy-web:
-	@if [ -n "$(call truthy,$(EXECUTE))" ] && [ "$(ENV)" != "prd" ]; then \
-		echo "Refusing production deploy with ENV=$(ENV). Use ENV=prd EXECUTE=1." >&2; \
+	@if [ -n "$(call truthy,$(EXECUTE))" ] && [ "$(ENV)" = "dev" ]; then \
+		echo "Refusing Pages upload with ENV=dev. Use ENV=stg or ENV=prd." >&2; \
 		exit 2; \
 	fi
 	@$(RUN_WITH_VARS) npm run deploy:web -- $(DEPLOY_WEB_FLAGS)
+
+staging-setup:
+	@npm run staging:setup -- $(EXECUTE_FLAG)
+
+staging-teardown:
+	@npm run staging:teardown -- $(EXECUTE_FLAG)

@@ -2,6 +2,7 @@ node_modules/
 dist/
 .wrangler/
 .dev.vars
+.stg.vars
 .corpus.vars
 .import-bookmarks-index.json
 .import-markdown-index.json

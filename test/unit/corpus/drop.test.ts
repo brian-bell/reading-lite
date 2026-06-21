@@ -65,6 +65,29 @@ describe("resolveDropTargets", () => {
     if (!r.ok) expect(r.errors[0]).toMatch(/only.*ready/i);
   });
 
+  it("allows ready id deletion only when explicitly requested", () => {
+    const r = resolveDropTargets(
+      [item({ id: "rd_ready", status: "ready" })],
+      ["rd_ready"],
+      { allowReady: true },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.targets).toMatchObject([{ id: "rd_ready", status: "ready" }]);
+  });
+
+  it("allows ready url deletion only when explicitly requested", () => {
+    const r = resolveDropTargets(
+      [item({ id: "rd_ready", url: "https://r.com", status: "ready" })],
+      ["https://r.com"],
+      { allowReady: true },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.targets.map((t) => t.id)).toEqual(["rd_ready"]);
+      expect(r.keptReady).toEqual([]);
+    }
+  });
+
   it("dedupes when an id and its url are both given", () => {
     const items = [item({ id: "rd_a", url: "https://a.com/p" })];
     const r = resolveDropTargets(items, ["rd_a", "https://a.com/p"]);

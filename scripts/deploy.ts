@@ -1,15 +1,18 @@
 #!/usr/bin/env tsx
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 interface Args {
   execute: boolean;
+  env: "production" | "staging";
 }
 
 function parseCliArgs(): Args {
   const { values } = parseArgs({
     options: {
       execute: { type: "boolean", default: false },
+      env: { type: "string", default: "production" },
       help: { type: "boolean", default: false },
     },
   });
@@ -19,15 +22,22 @@ function parseCliArgs(): Args {
     process.exit(0);
   }
 
-  return { execute: values.execute === true };
+  const env = parseDeployEnv(values.env);
+  if (!env) {
+    process.stderr.write(`invalid --env: ${values.env}. Expected production or staging.\n`);
+    process.exit(2);
+  }
+
+  return { execute: values.execute === true, env };
 }
 
 function printUsage() {
-  process.stderr.write(`Usage: tsx scripts/deploy.ts [--execute] [--help]
+  process.stderr.write(`Usage: tsx scripts/deploy.ts [--env production|staging] [--execute] [--help]
 
-Deploys the Cloudflare Worker (reading-lite). Dry-run by default — pass
+Deploys the Cloudflare Worker (reading-lite). Dry-run by default - pass
 --execute to actually upload.
 
+  --env       worker environment to deploy (default: production)
   --execute   actually upload (otherwise wrangler --dry-run is passed)
   --help      show this message
 
@@ -40,8 +50,12 @@ Secrets are NOT managed here. Set them once with:
 `);
 }
 
+function parseDeployEnv(value: unknown): Args["env"] | null {
+  return value === "production" || value === "staging" ? value : null;
+}
+
 function buildWranglerArgs(args: Args): string[] {
-  const out = ["deploy", "--env", "production"];
+  const out = ["deploy", "--env", args.env];
   if (!args.execute) out.push("--dry-run");
   return out;
 }
@@ -62,14 +76,18 @@ async function main() {
   const wranglerArgs = buildWranglerArgs(args);
   const mode = args.execute ? "DEPLOY" : "DRY RUN";
   process.stderr.write(
-    `[${mode}] worker=reading-lite\n` +
+    `[${mode}] worker=reading-lite env=${args.env}\n` +
       `[${mode}] $ wrangler ${wranglerArgs.join(" ")}\n\n`,
   );
   const code = await runWrangler(wranglerArgs);
   process.exit(code);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+export { buildWranglerArgs, parseDeployEnv };

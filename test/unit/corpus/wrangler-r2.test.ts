@@ -34,6 +34,11 @@ describe("keysForReading", () => {
     expect(keys).toContain(`${prefix}/attempts/at_LAST.json`);
   });
 
+  it("deletes the by-url pointer when the manifest records a url hash", async () => {
+    const keys = await keysForReading(id, prefix, deps({ url_hash: "a".repeat(64) }));
+    expect(keys).toContain(`index/by-url/${"a".repeat(64)}`);
+  });
+
   it("tolerates a missing/unreadable manifest (still returns the static keys)", async () => {
     const failRunner: Runner = async () => ({ code: 1, stdout: "", stderr: "not found" });
     const keys = await keysForReading(id, prefix, { bucket: "b", remote: true, run: failRunner });

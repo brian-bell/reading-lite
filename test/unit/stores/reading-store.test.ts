@@ -8,6 +8,7 @@ import {
 } from "../../../src/modules/stores/reading-store";
 import type { Manifest, ProcessingAttempt } from "../../../src/schemas/manifest";
 import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
+import { sha256Hex } from "../../../src/services";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -152,6 +153,25 @@ describe("ReadingStore — by-url pointer", () => {
     // The original pointer is preserved.
     const read = await store.readByUrlPointer(hash);
     expect(read?.id).toBe("rd_X");
+  });
+
+  it("ifNotExists=true allows only one concurrent writer to claim a by-url pointer", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const hash = "b".repeat(64);
+    const prefixA = buildKeyPrefix("rd_A", "2026-04-26T20:00:00.000Z");
+    const prefixB = buildKeyPrefix("rd_B", "2026-04-26T20:00:01.000Z");
+
+    const results = await Promise.allSettled([
+      store.writeByUrlPointer(hash, { id: "rd_A", key_prefix: prefixA }, { ifNotExists: true }),
+      store.writeByUrlPointer(hash, { id: "rd_B", key_prefix: prefixB }, { ifNotExists: true }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toBeDefined();
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(PointerExistsError);
+    const read = await store.readByUrlPointer(hash);
+    expect(read?.id === "rd_A" || read?.id === "rd_B").toBe(true);
   });
 });
 
@@ -346,6 +366,29 @@ describe("ReadingStore — appendOrReplaceListIndexItem", () => {
     await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_c" }));
     const idx = await store.readListIndex();
     expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
+  });
+
+  it("does not create an empty index when removing from a cold bucket", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+
+    await store.removeListIndexItem("rd_missing");
+
+    await expect(store.readListIndex()).resolves.toBeNull();
+  });
+
+  it("removes an item only when the predicate matches", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await store.appendOrReplaceListIndexItem(
+      indexItem({ id: "rd_a", status: "pending" }),
+    );
+
+    await store.removeListIndexItemIf("rd_a", (item) => item.status === "ready");
+    await expect(store.readListIndex()).resolves.toMatchObject({
+      items: [{ id: "rd_a", status: "pending" }],
+    });
+
+    await store.removeListIndexItemIf("rd_a", (item) => item.status === "pending");
+    await expect(store.readListIndex()).resolves.toMatchObject({ items: [] });
   });
 
   it("retries and merges a concurrent write instead of clobbering it", async () => {
@@ -555,5 +598,213 @@ describe("ReadingStore — listManifests", () => {
     expect(puts.find((p) => p.key === "index/list.json")).toBeUndefined();
     expect(consoleWarn).toHaveBeenCalled();
     consoleWarn.mockRestore();
+  });
+
+  it("paginates scan-and-rebuild before persisting the rebuilt index", async () => {
+    const first = emptyManifest({
+      id: "rd_a",
+      status: "ready",
+      title: "A",
+      created_at: "2026-04-26T20:00:00.000Z",
+    });
+    const second = emptyManifest({
+      id: "rd_b",
+      status: "ready",
+      title: "B",
+      created_at: "2026-04-26T20:00:01.000Z",
+    });
+    const firstKey = `${buildKeyPrefix(first.id, first.created_at)}/manifest.json`;
+    const secondKey = `${buildKeyPrefix(second.id, second.created_at)}/manifest.json`;
+    const puts: Array<{ key: string; value: string }> = [];
+    const listCalls: Array<string | undefined> = [];
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") return null;
+        if (key === firstKey) {
+          return { text: async () => JSON.stringify(first) } as unknown as R2ObjectBody;
+        }
+        if (key === secondKey) {
+          return { text: async () => JSON.stringify(second) } as unknown as R2ObjectBody;
+        }
+        return null;
+      },
+      put: async (key: string, value: string) => {
+        puts.push({ key, value });
+      },
+      list: async (opts?: R2ListOptions) => {
+        listCalls.push(opts?.cursor);
+        if (!opts?.cursor) {
+          return {
+            objects: [{ key: firstKey }],
+            truncated: true,
+            cursor: "next-page",
+          };
+        }
+        return {
+          objects: [{ key: secondKey }],
+          truncated: false,
+        };
+      },
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+    const page = await store.listManifests({ offset: 0, limit: 10 });
+
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_b", "rd_a"]);
+    expect(listCalls).toEqual([undefined, "next-page"]);
+    const indexWrite = puts.find((p) => p.key === "index/list.json");
+    expect(indexWrite).toBeDefined();
+    expect(JSON.parse(indexWrite!.value)).toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: "rd_a" }),
+        expect.objectContaining({ id: "rd_b" }),
+      ]),
+    });
+  });
+
+  it("ignores stale exact-url index rows whose manifest belongs to another URL", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const requestedUrl = "https://example.com/requested";
+    const other = emptyManifest({
+      id: "rd_other",
+      url: "https://example.com/other",
+      url_hash: "b".repeat(64),
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const otherPrefix = buildKeyPrefix(other.id, other.created_at);
+    await store.writeManifest(otherPrefix, other);
+    await store.appendOrReplaceListIndexItem({
+      ...manifestToIndexItem(other, otherPrefix),
+      url: requestedUrl,
+    });
+
+    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
+  });
+
+  it("does not scan manifests when the list index has no rows for the URL", async () => {
+    const requestedUrl = "https://example.com/requested";
+    const listIndex: ListIndex = {
+      version: 1,
+      items: [
+        indexItem({
+          id: "rd_other",
+          key_prefix: "readings/2026/04/26T200000Z-rd_other",
+          url: "https://example.com/other",
+        }),
+      ],
+    };
+    let listCalls = 0;
+    const bucket = {
+      get: async (key: string) => {
+        if (key === "index/list.json") {
+          return { text: async () => JSON.stringify(listIndex) } as unknown as R2ObjectBody;
+        }
+        throw new Error(`unexpected object read: ${key}`);
+      },
+      list: async () => {
+        listCalls++;
+        return { objects: [], truncated: false };
+      },
+    } as unknown as R2Bucket;
+
+    const store = new ReadingStore(bucket);
+
+    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
+    expect(listCalls).toBe(0);
+  });
+
+  it("prefers a ready owner over a newer failed duplicate of the same URL", async () => {
+    // Damaged-pointer repair (and legacy adoption) resolve URL ownership through
+    // findManifestByUrl. When a URL has both a ready reading and a *newer* failed
+    // duplicate (the recurring "failed orphan-dup" corpus state), the ready copy
+    // owns the URL and must win — ranking purely by recency would adopt the
+    // failed copy and orphan the ready summary by URL.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup";
+    const urlHash = await sha256Hex(url);
+
+    const ready = emptyManifest({
+      id: "rd_ready",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const failed = emptyManifest({
+      id: "rd_failed",
+      url,
+      url_hash: urlHash,
+      status: "failed",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
+    await store.writeManifest(buildKeyPrefix(failed.id, failed.created_at), failed);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_ready");
+  });
+
+  it("prefers a ready owner over a newer pending duplicate of the same URL", async () => {
+    // The middle rank (pending) must also lose to ready: an in-flight reprocess
+    // (newer, pending) must not steal URL ownership from the completed ready copy.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup-pending";
+    const urlHash = await sha256Hex(url);
+
+    const ready = emptyManifest({
+      id: "rd_ready",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const pending = emptyManifest({
+      id: "rd_pending",
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
+    await store.writeManifest(buildKeyPrefix(pending.id, pending.created_at), pending);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_ready");
+  });
+
+  it("prefers the newest reading among same-status duplicates of the same URL", async () => {
+    // The status tiebreak must not override recency *within* a status class:
+    // two ready copies still resolve to the most recently updated one.
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/dup-ready";
+    const urlHash = await sha256Hex(url);
+
+    const older = emptyManifest({
+      id: "rd_older",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:00:00.000Z",
+      updated_at: "2026-04-26T20:00:00.000Z",
+    });
+    const newer = emptyManifest({
+      id: "rd_newer",
+      url,
+      url_hash: urlHash,
+      status: "ready",
+      created_at: "2026-04-26T20:05:00.000Z",
+      updated_at: "2026-04-26T20:05:00.000Z",
+    });
+    await store.writeManifest(buildKeyPrefix(older.id, older.created_at), older);
+    await store.writeManifest(buildKeyPrefix(newer.id, newer.created_at), newer);
+
+    const found = await store.findManifestByUrl(url);
+    expect(found?.manifest.id).toBe("rd_newer");
   });
 });

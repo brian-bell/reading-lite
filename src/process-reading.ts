@@ -1,6 +1,7 @@
 import {
   buildKeyPrefix,
   manifestToIndexItem,
+  PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -56,21 +57,24 @@ export async function processReading(
 
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
 
     const extracted = await extractSource(args, env, services, reader, attempt);
 
-    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", () =>
-      reader.writeRaw(
+    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", async () => {
+      if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+      await reader.writeRaw(
         args.keyPrefix,
         extToken(extracted.content_type),
         extracted.raw,
         extracted.content_type,
-      ),
-    );
-    if (extracted.markdown) {
-      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", () =>
-        reader.writeExtracted(args.keyPrefix, extracted.markdown!),
       );
+    });
+    if (extracted.markdown) {
+      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", async () => {
+        if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+        await reader.writeExtracted(args.keyPrefix, extracted.markdown!);
+      });
     }
 
     const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
@@ -122,15 +126,6 @@ export async function processReading(
       }),
     );
 
-    await runStage(attempt, reader, args.keyPrefix, services, "upsert_vector", () =>
-      similarity.upsert(args.id, tldrEmbed.embedding, {
-        url: args.url,
-        title: llm.reading.title,
-        tags: llm.reading.tags,
-        created_at: args.createdAt,
-      }),
-    );
-
     let finalManifest: Manifest = {
       id: args.id,
       url: args.url,
@@ -165,25 +160,6 @@ export async function processReading(
       },
     };
 
-    await runStage(attempt, reader, args.keyPrefix, services, "write_manifest", () =>
-      reader.writeManifest(args.keyPrefix, finalManifest),
-    );
-    await runStage(
-      attempt,
-      reader,
-      args.keyPrefix,
-      services,
-      "write_indexes",
-      async () => {
-        await reader.writeByUrlPointer(
-          args.urlHash,
-          { id: args.id, key_prefix: args.keyPrefix },
-        );
-        await reader.appendOrReplaceListIndexItem(
-          manifestToIndexItem(finalManifest, args.keyPrefix),
-        );
-      },
-    );
     attempt.status = "succeeded";
     attempt.finished_at = services.now();
     attempt.error = undefined;
@@ -193,12 +169,30 @@ export async function processReading(
       last_attempt: summarizeAttempt(attempt),
     };
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    await reader.writeManifest(args.keyPrefix, finalManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(finalManifest, args.keyPrefix),
+
+    const { published } = await commitTerminalManifest(
+      reader,
+      similarity,
+      args,
+      finalManifest,
+      {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: {
+          embedding: tldrEmbed.embedding,
+          meta: {
+            url: args.url,
+            title: llm.reading.title,
+            tags: llm.reading.tags,
+            created_at: args.createdAt,
+          },
+        },
+        instrument: (stage, fn) =>
+          runStage(attempt, reader, args.keyPrefix, services, stage, fn),
+      },
     );
 
-    if (shouldSendEmail(args)) {
+    if (published && shouldSendEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -309,10 +303,11 @@ export async function markDeadLettered(
   // This narrows, but doesn't fully close, the window: a brand-new reprocess
   // landing between this read and markFailed's write would still be clobbered.
   // That residual race is last-writer-wins (the repo's documented stance) and
-  // benign — the loser is a reading that is being reprocessed anyway and, since
-  // we never write a by-url pointer on failure, stays re-submittable.
-  const attemptId = args.attemptId ?? `at_${args.id}`;
-  if (existing && existing.active_attempt?.id !== attemptId) return;
+  // benign — the loser is a reading that is being reprocessed anyway and stays
+  // re-submittable through its existing by-url ownership claim.
+  // Strict active-only ownership: a newer attempt taking over (active flipped to
+  // a different id) means this DLQ message is stale and must not clobber it.
+  if (existing && !attemptOwnership(existing, args).isActive) return;
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
@@ -345,18 +340,12 @@ async function markFailed(
       last_attempt: summarizeAttempt(attempt),
       updated_at: services.now(),
     };
-    try {
-      await reader.writeManifest(args.keyPrefix, manifest);
-    } catch (writeErr) {
-      console.error(writeErr);
-    }
-    try {
-      await reader.appendOrReplaceListIndexItem(
-        manifestToIndexItem(manifest, args.keyPrefix),
-      );
-    } catch (indexErr) {
-      console.error(indexErr);
-    }
+    // similarity: null → list-only visibility (the failure-path asymmetry).
+    await commitTerminalManifest(reader, null, args, manifest, {
+      claimMissingPointer: false,
+      allowLastAttempt: true,
+      defensive: true,
+    });
     return;
   }
 
@@ -377,22 +366,16 @@ async function markFailed(
   };
   // We're already on the failure path inside the queue consumer — a transient
   // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
-  // either way). Log and move on; the index TTL annotator will eventually flip
-  // stale pending entries even if both writes drop.
-  try {
-    await reader.writeManifest(args.keyPrefix, manifest);
-  } catch (writeErr) {
-    console.error(writeErr);
-  }
-  try {
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(manifest, args.keyPrefix),
-    );
-  } catch (indexErr) {
-    console.error(indexErr);
-  }
-  // Intentionally do NOT write the by-url pointer: failed readings should not
-  // dedup future submissions of the same URL.
+  // either way). The defensive write logs and moves on; the index TTL annotator
+  // will eventually flip stale pending entries even if both writes drop.
+  await commitTerminalManifest(reader, null, args, manifest, {
+    claimMissingPointer: false,
+    allowLastAttempt: true,
+    defensive: true,
+  });
+  // Intentionally do NOT change the by-url pointer here. URL submission claims
+  // ownership eagerly; a failed owner stays re-submittable because POST
+  // resolves failed ownership by reprocessing this same reading id.
 }
 
 export async function newReadingArgs(
@@ -458,6 +441,306 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
+interface TerminalWriteState {
+  canWriteManifest: boolean;
+  canPublishVisibility: boolean;
+  canRemoveVisibility: boolean;
+  manifestEtag?: string;
+}
+
+export interface CommitTerminalOpts {
+  claimMissingPointer: boolean;
+  allowLastAttempt?: boolean;
+  // false: write throws propagate (success path → outer catch marks failed).
+  // true: throws are swallowed + logged (failure path has nowhere to bubble).
+  defensive: boolean;
+  // Provided only when publishing a vector; omitted on failure paths.
+  vector?: {
+    embedding: number[];
+    meta: { url: string; title: string; tags: string[]; created_at: string };
+  };
+  // The success path passes a runStage-bound closure so each sub-write still logs
+  // a stage event; failure paths omit it and write plainly.
+  instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
+}
+
+// The single home of the terminal-write ordering invariant: CAS-write the
+// manifest, then reconcile list + vector visibility, restoring on a lost CAS.
+// All three call sites (success, markFailed preserve, markFailed normal) funnel
+// through here so none of them re-spells the ordering or touches the private
+// TerminalWriteState booleans.
+//
+// `similarity` is null on the failure paths, which encodes the deliberate
+// success/failure asymmetry: success removal clears list AND vector, failure
+// removal clears list only (see plan 006 for the related cleanup-gate bug).
+//
+// Returns `published` so the caller can gate post-commit side effects (the
+// success path only emails when the reading became publicly visible). `committed`
+// is observability for tests (the plan's documented contract); production callers
+// gate on `published` only, so don't treat `committed` as a load-bearing signal.
+export async function commitTerminalManifest(
+  reader: ReadingStore,
+  similarity: SimilarityStore | null,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  opts: CommitTerminalOpts,
+): Promise<{ committed: boolean; published: boolean }> {
+  const run =
+    opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
+
+  const state = await terminalWriteState(reader, args, {
+    claimMissingPointer: opts.claimMissingPointer,
+    allowLastAttempt: opts.allowLastAttempt,
+  });
+  // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
+  // restore — the other attempt owns visibility too. This unifies the two old
+  // call sites: the success path already early-returned here, but the failure
+  // path used to fall through writeManifestForTerminalState (which returns false
+  // on conflict) into a restoreCurrentListVisibility re-sync of the foreign row.
+  // That re-sync was a no-op on data the owning attempt maintains anyway;
+  // skipping it is intentional (plan 005, case 2).
+  if (!state.canWriteManifest) return { committed: false, published: false };
+
+  const written = await run("write_manifest", () =>
+    opts.defensive
+      ? writeTerminalManifestDefensively(reader, args, manifest, state)
+      : writeManifestForTerminalState(reader, args, manifest, state),
+  );
+  if (!written) {
+    // Manifest not written despite owning the attempt: a lost CAS (etag changed
+    // mid-flight) on either path, or — on the defensive path only — a swallowed
+    // write throw. Restore the current list visibility so we don't leave a
+    // half-published row behind.
+    await reconcileVisibility(opts.defensive, () =>
+      restoreCurrentListVisibility(reader, args),
+    );
+    return { committed: false, published: false };
+  }
+
+  if (state.canPublishVisibility) {
+    await reconcileVisibility(opts.defensive, async () => {
+      await run("write_indexes", () =>
+        reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
+      );
+      if (opts.vector && similarity) {
+        await run("upsert_vector", () =>
+          similarity.upsert(args.id, opts.vector!.embedding, opts.vector!.meta),
+        );
+      }
+    });
+    return { committed: true, published: true };
+  }
+
+  if (state.canRemoveVisibility) {
+    await reconcileVisibility(opts.defensive, async () => {
+      if (similarity) await removeAttemptVisibility(reader, similarity, args);
+      else await removeAttemptListVisibility(reader, args);
+    });
+  }
+  return { committed: true, published: false };
+}
+
+// Visibility reconciliation honors `defensive`: on the failure path a transient
+// R2 hiccup has nowhere to bubble (the queue consumer acks either way), so log
+// and move on; on the success path throws propagate to the outer catch.
+async function reconcileVisibility(
+  defensive: boolean,
+  fn: () => Promise<void>,
+): Promise<void> {
+  if (!defensive) {
+    await fn();
+    return;
+  }
+  try {
+    await fn();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function terminalWriteState(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  opts: { claimMissingPointer: boolean; allowLastAttempt?: boolean },
+): Promise<TerminalWriteState> {
+  const stored = await reader.readManifestWithEtag(args.keyPrefix);
+  const manifest = stored?.manifest ?? null;
+  const owner = attemptOwnership(manifest, args);
+  const activeAttemptMatches =
+    owner.isActive || owner.isLegacyPending || (opts.allowLastAttempt === true && owner.isLast);
+  const activeAttemptConflict = owner.hasConflict;
+  let ownsUrl = false;
+  let ownerAllowsVisibility = false;
+  const existing = await reader.readByUrlPointer(args.urlHash);
+  if (existing) {
+    ownsUrl = existing.id === args.id && existing.key_prefix === args.keyPrefix;
+    ownerAllowsVisibility = ownsUrl;
+  } else if (opts.claimMissingPointer && activeAttemptMatches) {
+    try {
+      await reader.writeByUrlPointer(
+        args.urlHash,
+        { id: args.id, key_prefix: args.keyPrefix },
+        { ifNotExists: true },
+      );
+      ownsUrl = true;
+      ownerAllowsVisibility = true;
+    } catch (err) {
+      if (!(err instanceof PointerExistsError)) throw err;
+      const claimed = await reader.readByUrlPointer(args.urlHash);
+      ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
+      ownerAllowsVisibility = ownsUrl;
+    }
+  } else {
+    ownerAllowsVisibility = true;
+  }
+
+  return {
+    canWriteManifest: activeAttemptMatches || !manifest,
+    canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
+    canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
+    ...(stored ? { manifestEtag: stored.etag } : {}),
+  };
+}
+
+async function readingCanWriteAttemptArtifacts(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return true;
+  const owner = attemptOwnership(manifest, args);
+  return owner.isActive || owner.isLegacyPending;
+}
+
+async function writeManifestForTerminalState(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  state: TerminalWriteState,
+): Promise<boolean> {
+  if (!state.canWriteManifest) return false;
+  if (state.manifestEtag) {
+    return reader.replaceManifestIfCurrent(args.keyPrefix, state.manifestEtag, manifest);
+  }
+  await reader.writeManifest(args.keyPrefix, manifest);
+  return true;
+}
+
+async function writeTerminalManifestDefensively(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  manifest: Manifest,
+  state: TerminalWriteState,
+): Promise<boolean> {
+  try {
+    return await writeManifestForTerminalState(reader, args, manifest, state);
+  } catch (writeErr) {
+    console.error(writeErr);
+    return false;
+  }
+}
+
+async function restoreCurrentListVisibility(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return;
+  // A lost CAS means a concurrent attempt won and already reconciled visibility.
+  // If the by-url pointer points at a DIFFERENT reading, this reading is a
+  // non-owner duplicate whose row that winner may have deliberately removed —
+  // blindly re-appending here would resurrect a row it unpublished. Mirror
+  // terminalWriteState's `ownerAllowsVisibility = ownsUrl` gate: re-sync only
+  // when we still own the URL (or no pointer exists, the failure-path default).
+  // This narrows the resurrection window but doesn't close it: a winner that
+  // changes the pointer *after* this read still loses to our re-append. That
+  // residual race is last-writer-wins (the repo's documented stance) and
+  // self-heals — the winner's removeAttemptListVisibility gate re-removes our
+  // row on its next pass, or a later terminal write reconciles it.
+  const pointer = await reader.readByUrlPointer(args.urlHash);
+  if (pointer && (pointer.id !== args.id || pointer.key_prefix !== args.keyPrefix)) return;
+  await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));
+}
+
+export async function removeAttemptVisibility(
+  reader: ReadingStore,
+  similarity: SimilarityStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  if (!(await removeAttemptListVisibility(reader, args))) return;
+  if (!(await readingCanRemoveAttemptVector(reader, args))) return;
+  await similarity.delete(args.id);
+}
+
+async function removeAttemptListVisibility(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  let removed = false;
+  await reader.removeListIndexItemIf(args.id, (item) => {
+    // The list-row cleanup gate: the row must be this reading's (id + key_prefix)
+    // AND this attempt must own it under the cleanup rule (active, last, or the
+    // stricter vacant-pending — see plan 006).
+    if (item.id !== args.id || item.key_prefix !== args.keyPrefix) return false;
+    const owner = attemptOwnership(item, args);
+    const matches = owner.isActive || owner.isLast || owner.isVacantPending;
+    removed = removed || matches;
+    return matches;
+  });
+  return removed;
+}
+
+async function readingCanRemoveAttemptVector(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  const manifest = await reader.readManifest(args.keyPrefix);
+  if (!manifest) return true;
+  const owner = attemptOwnership(manifest, args);
+  return owner.isActive || owner.isLast || owner.isVacantPending;
+}
+
+// The single home of the `attemptId ?? at_${id}` fallback. The writer side
+// (newProcessingAttempt, which stamps active_attempt.id) and every ownership gate
+// (via attemptOwnership) derive identity through this one function, so the stored
+// id and the id the gates compare against can never drift.
+function resolveAttemptId(args: ProcessReadingArgs): string {
+  return args.attemptId ?? `at_${args.id}`;
+}
+
+// The one verdict every "does this attempt still own the reading?" site composes,
+// so the five gates (artifact-write, terminal-write, vector-removal,
+// list-row-removal, dead-letter) share a single definition of the active/last/
+// pending rules. The gates differ on purpose — they pick different booleans — so
+// this is a vocabulary, not a single predicate. Reads only the active_attempt /
+// last_attempt / status shape that Manifest and ListIndexItem both carry.
+interface AttemptOwnership {
+  isActive: boolean; // active_attempt.id === attemptId
+  isLast: boolean; // last_attempt.id === attemptId
+  isLegacyPending: boolean; // active undefined && status pending (write-side gates)
+  isVacantPending: boolean; // active undefined && last undefined && pending (cleanup gates)
+  hasConflict: boolean; // active defined && active !== attemptId
+}
+
+type AttemptOwnershipSource = Pick<Manifest, "active_attempt" | "last_attempt" | "status">;
+
+export function attemptOwnership(
+  source: AttemptOwnershipSource | null,
+  args: ProcessReadingArgs,
+): AttemptOwnership {
+  const attemptId = resolveAttemptId(args);
+  const activeAttemptId = source?.active_attempt?.id;
+  const lastAttemptId = source?.last_attempt?.id;
+  const isPending = source?.status === "pending";
+  return {
+    isActive: activeAttemptId === attemptId,
+    isLast: lastAttemptId === attemptId,
+    isLegacyPending: activeAttemptId === undefined && isPending,
+    isVacantPending: activeAttemptId === undefined && lastAttemptId === undefined && isPending,
+    hasConflict: activeAttemptId !== undefined && activeAttemptId !== attemptId,
+  };
+}
+
 export function newAttemptId(services: Services): string {
   return `at_${services.newId()}`;
 }
@@ -477,7 +760,7 @@ export function newAttemptSummary(
 }
 
 function newProcessingAttempt(args: ProcessReadingArgs, services: Services): ProcessingAttempt {
-  const id = args.attemptId ?? `at_${args.id}`;
+  const id = resolveAttemptId(args);
   const startedAt = args.attemptStartedAt ?? services.now();
   return {
     ...newAttemptSummary(id, args.trigger ?? "submit", startedAt),

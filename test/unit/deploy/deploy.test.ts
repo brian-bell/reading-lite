@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { buildWranglerArgs, parseDeployEnv } from "../../../scripts/deploy";
+import { buildWranglerPagesArgs } from "../../../scripts/deploy-web";
+
+describe("Worker deploy wrapper", () => {
+  it("builds a dry-run production deploy by default-compatible args", () => {
+    expect(buildWranglerArgs({ env: "production", execute: false })).toEqual([
+      "deploy",
+      "--env",
+      "production",
+      "--dry-run",
+    ]);
+  });
+
+  it("builds an executable staging deploy", () => {
+    expect(buildWranglerArgs({ env: "staging", execute: true })).toEqual([
+      "deploy",
+      "--env",
+      "staging",
+    ]);
+  });
+
+  it("accepts only production and staging env names", () => {
+    expect(parseDeployEnv("production")).toBe("production");
+    expect(parseDeployEnv("staging")).toBe("staging");
+    expect(parseDeployEnv("dev")).toBeNull();
+  });
+});
+
+describe("Pages deploy wrapper", () => {
+  it("uses the staging branch for preview deploys", () => {
+    expect(buildWranglerPagesArgs("staging")).toEqual([
+      "pages",
+      "deploy",
+      "dist",
+      "--branch=staging",
+      "--commit-dirty=true",
+    ]);
+  });
+});
