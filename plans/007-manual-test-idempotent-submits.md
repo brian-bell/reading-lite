@@ -68,6 +68,13 @@ Run note (2026-06-21): staging setup/teardown wrappers were added:
 same scripts. The teardown command builder is hard-coded to staging names and
 refuses production-looking resource names.
 
+Run note (2026-06-21 teardown): `npm run staging:teardown -- --execute`
+completed against Cloudflare staging. It treated already-missing Queue
+consumers, Worker, Queue/DLQ, and Vectorize index as satisfied, emptied five
+remaining objects from `reading-lite-staging`, and deleted the R2 bucket. A
+second execute run also completed with every staging resource already absent,
+including the R2 bucket.
+
 Run note (2026-06-20 staging smoke): staging cleanup removed all throwaway
 ready/failed readings created by the smoke run, including ready Vectorize
 vectors and `index/by-url/{hash}` pointers. Final staging audit and list both

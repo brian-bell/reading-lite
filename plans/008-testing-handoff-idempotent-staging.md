@@ -62,6 +62,8 @@ Local verification:
 - `npm run corpus-drop -- --help`: passed
 - `npm run staging:setup`: dry-run passed
 - `npm run staging:teardown`: dry-run passed
+- `npm run staging:teardown -- --execute`: passed; emptied five remaining R2 objects and deleted the staging bucket
+- `npm run staging:teardown -- --execute` idempotent rerun: passed with Worker, Queue/DLQ, Vectorize index, and R2 bucket already absent
 - `npx vitest run test/unit/deploy/staging-env.test.ts`: passed
 - `cd web && npm test`: 22 passed
 - `cd web && npm run build`: passed

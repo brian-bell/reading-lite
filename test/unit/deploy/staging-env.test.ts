@@ -188,6 +188,24 @@ describe("staging environment scripts", () => {
     expect(logs).toContain("[EXECUTE] already satisfied: Create existing bucket");
   });
 
+  it("continues when Vectorize reports an index was already deleted", async () => {
+    const commands = buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES);
+    const vectorizeCommand = commands.find((command) =>
+      command.args.includes("vectorize"),
+    );
+    expect(vectorizeCommand).toBeDefined();
+    const code = await runWranglerCommands([vectorizeCommand!], {
+      log: () => {},
+      runner: async () => ({
+        code: 1,
+        stdout: "",
+        stderr: 'vectorize.index.deleted - Index name "reading-lite-staging" [code: 3005]',
+      }),
+    });
+
+    expect(code).toBe(0);
+  });
+
   it("stops on non-idempotent wrangler failures", async () => {
     const calls: string[][] = [];
     const code = await runWranglerCommands(

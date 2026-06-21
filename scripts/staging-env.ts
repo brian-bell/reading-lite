@@ -57,6 +57,7 @@ const MISSING_RESOURCE = [
   /does not exist/i,
   /not found/i,
   /NoSuchBucket/i,
+  /vectorize\.index\.deleted/i,
 ];
 
 const MISSING_CONSUMER = [
