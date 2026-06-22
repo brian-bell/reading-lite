@@ -55,4 +55,7 @@ submit, a markdown import, or a lookup. It lives in
   (idempotent on `id`) so list/search never go stale.
 - **Stale annotation** — a read-time overlay: a `pending` manifest past
   `PENDING_TTL_SECONDS`, or a `running` attempt past TTL, is surfaced as `failed`
-  without a write.
+  without a write. The rule lives in `src/modules/staleness.ts` (`stalenessOf`);
+  `annotateStale` / `annotateStaleIndexItem` in `router.ts` are thin adapters
+  that read the TTL from env and apply the verdict onto the manifest / index-item
+  shape.

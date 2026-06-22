@@ -28,6 +28,7 @@ import { SimilarityStore } from "./modules/stores/similarity-store";
 import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
 import { activateAttempt, type SubmitJsonResult } from "./attempt-activation";
+import { stalenessOf } from "./modules/staleness";
 
 export interface AppOptions {
   services?: Services;
@@ -743,30 +744,22 @@ function extFromContentType(contentType: string): string {
 }
 
 function annotateStale(manifest: Manifest, env: Env, services: Services): Manifest {
-  const activeExpired = expiredActiveAttempt(manifest.active_attempt, env, services);
-  if (activeExpired) {
+  const verdict = stalenessOf(manifest, pendingTtlSeconds(env), services.now());
+  if (verdict.expiredActiveAttempt) {
     const next: Manifest = {
       ...manifest,
       active_attempt: undefined,
-      last_attempt: activeExpired,
-      updated_at: activeExpired.finished_at ?? services.now(),
+      last_attempt: verdict.expiredActiveAttempt,
+      updated_at: verdict.expiredActiveAttempt.finished_at ?? services.now(),
     };
     if (manifest.status === "pending") {
-      return {
-        ...next,
-        status: "failed",
-        error: activeExpired.error,
-      };
+      return { ...next, status: "failed", error: verdict.expiredActiveAttempt.error };
     }
     return next;
   }
 
-  if (manifest.status !== "pending") return manifest;
-  const ttl = pendingTtlSeconds(env);
-  const updatedAt = Date.parse(manifest.updated_at);
-  const now = Date.parse(services.now());
-  if (Number.isFinite(updatedAt) && now - updatedAt > ttl * 1000) {
-    return { ...manifest, status: "failed", error: { code: "stale_pending", message: `pending > ${ttl}s` } };
+  if (verdict.pendingError) {
+    return { ...manifest, status: "failed", error: verdict.pendingError };
   }
   return manifest;
 }
@@ -776,61 +769,24 @@ function annotateStaleIndexItem(
   env: Env,
   services: Services,
 ): import("./schemas/api").ListIndexItem {
-  const activeExpired = expiredActiveAttempt(item.active_attempt, env, services);
-  if (activeExpired) {
+  const verdict = stalenessOf(item, pendingTtlSeconds(env), services.now());
+  if (verdict.expiredActiveAttempt) {
     const next: import("./schemas/api").ListIndexItem = {
       ...item,
       active_attempt: undefined,
-      last_attempt: activeExpired,
-      updated_at: activeExpired.finished_at ?? services.now(),
+      last_attempt: verdict.expiredActiveAttempt,
+      updated_at: verdict.expiredActiveAttempt.finished_at ?? services.now(),
     };
     if (item.status === "pending") {
-      return {
-        ...next,
-        status: "failed",
-        error: activeExpired.error,
-      };
+      return { ...next, status: "failed", error: verdict.expiredActiveAttempt.error };
     }
     return next;
   }
 
-  if (item.status !== "pending") return item;
-  const ttl = pendingTtlSeconds(env);
-  // Prefer updated_at — same semantics as the manifest-level annotateStale.
-  // Older index entries (pre-updated_at) fall back to created_at.
-  const ref = item.updated_at ?? item.created_at;
-  const updatedAt = Date.parse(ref);
-  const now = Date.parse(services.now());
-  if (Number.isFinite(updatedAt) && now - updatedAt > ttl * 1000) {
-    return { ...item, status: "failed", error: { code: "stale_pending", message: `pending > ${ttl}s` } };
+  if (verdict.pendingError) {
+    return { ...item, status: "failed", error: verdict.pendingError };
   }
   return item;
-}
-
-function expiredActiveAttempt(
-  activeAttempt: ProcessingAttemptSummary | undefined,
-  env: Env,
-  services: Services,
-): ProcessingAttemptSummary | null {
-  if (activeAttempt?.status !== "running") return null;
-  const ttl = pendingTtlSeconds(env);
-  const startedAt = Date.parse(activeAttempt.started_at);
-  const nowIso = services.now();
-  const now = Date.parse(nowIso);
-  if (!Number.isFinite(startedAt) || !Number.isFinite(now)) return null;
-  if (now - startedAt <= ttl * 1000) return null;
-  return {
-    ...activeAttempt,
-    status: "failed",
-    finished_at: nowIso,
-    error: {
-      code: "stale_active_attempt",
-      message: `active attempt > ${ttl}s`,
-      ...(activeAttempt.stage ? { stage: activeAttempt.stage } : {}),
-      failed_at: nowIso,
-      retryable: true,
-    },
-  };
 }
 
 function pendingTtlSeconds(env: Env): number {
