@@ -4,7 +4,7 @@ import {
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
 import type { Manifest, ProcessingStage } from "./schemas/manifest";
-import { attemptOwnership, type ProcessReadingArgs } from "./process-reading";
+import { attemptOwnership, type ProcessReadingArgs } from "./attempt-ownership";
 
 // The vector half of a reading's visibility: the tldr embedding plus the
 // metadata Vectorize stores alongside it. Provided only when publishing a vector

@@ -32,6 +32,14 @@ agent context: current commands, module map, conventions, and gotchas.
   decides which verb to call and the module enforces the list+vector pairing
   (list-only when `similarity` is null — the success/failure asymmetry). It is
   the terminal-side mirror of `activateAttempt` on the activation side.
+- `src/attempt-ownership.ts` is the neutral low layer both `process-reading.ts`
+  and `reading-visibility.ts` sit above: it owns `attemptOwnership` (the single
+  active/last/pending ownership verdict the five gates share), its
+  `resolveAttemptId` (`attemptId ?? at_${id}`) helper, and the
+  `ProcessReadingArgs` / `ProcessReadingSource` args shape they both read.
+  Homing it below both keeps the dependency graph acyclic
+  (`process-reading.ts → reading-visibility.ts → attempt-ownership.ts`, no
+  back-edge); `process-reading.ts` re-exports the args types for its callers.
 - `src/modules/reading-claim.ts` resolves URL ownership through
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` owns the read-time stale-annotation rule
