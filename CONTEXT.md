@@ -43,6 +43,14 @@ submit, a markdown import, or a lookup. It lives in
   the SPA hand-mirrors it in `web/src/types.ts`.
 - **Attempt** — one processing run (`submit` | `reprocess` | `import`). The
   manifest carries an `active_attempt` while running and a `last_attempt` after.
+- **Attempt activation** — the eager write-and-enqueue counterpart to the
+  **terminal write**, owned by `activateAttempt` in `src/attempt-activation.ts`.
+  The router claims the by-url slot, then `activateAttempt` writes artifacts (raw
+  + extracted, import paths only) → manifest → by-id pointer (all but reprocess)
+  → list index → queue message under one canonical ordering. Any throw before the
+  send rolls the slot back to a `failed` (retryable `QueueSendError`) manifest and
+  returns 503. Same lockstep discipline as `commitTerminalManifest` on the
+  terminal side.
 - **List index** — `index/list.json`, maintained on every terminal write
   (idempotent on `id`) so list/search never go stale.
 - **Stale annotation** — a read-time overlay: a `pending` manifest past

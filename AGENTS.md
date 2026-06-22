@@ -17,7 +17,13 @@ agent context: current commands, module map, conventions, and gotchas.
   dispatches to `processReading`; the DLQ dispatches to `markDeadLettered`.
 - `src/router.ts` owns the HTTP API, auth-protected `/readings*` routes,
   idempotent submit/import/reprocess behavior, lookup, diagnostics, and content
-  streaming.
+  streaming. After claiming the by-url slot it delegates the eager write +
+  enqueue to `activateAttempt`.
+- `src/attempt-activation.ts` owns `activateAttempt`, the single home for the
+  eager write-and-enqueue ordering (artifacts → manifest → by-id pointer → list
+  index → queue message) plus the rollback-to-failed funnel shared by submit,
+  reprocess, and both markdown-import paths. It is the activation mirror of
+  `commitTerminalManifest` on the terminal-write side.
 - `src/process-reading.ts` owns the background processing pipeline, attempt
   logging, terminal manifest commits, email logging, and failure handling.
 - `src/modules/reading-claim.ts` resolves URL ownership through
