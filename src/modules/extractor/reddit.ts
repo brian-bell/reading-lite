@@ -1,14 +1,12 @@
 import { z } from "zod";
 
-const REDDIT_HOSTS = new Set([
-  "reddit.com",
-  "www.reddit.com",
-  "old.reddit.com",
-  "np.reddit.com",
-  "m.reddit.com",
-  "i.reddit.com",
-  "redd.it",
-]);
+// Match any reddit.com web subdomain (www, old, np, m, i, sh, new, amp, ...)
+// plus the redd.it shortlink host. Reddit keeps adding share/desktop hosts
+// (sh.reddit.com, new.reddit.com), so an exact allow-list silently drops
+// pasted thread URLs into the generic HTML path instead of OAuth JSON.
+function isRedditHost(host: string): boolean {
+  return host === "reddit.com" || host.endsWith(".reddit.com");
+}
 
 export function isRedditThreadUrl(rawUrl: string): boolean {
   let u: URL;
@@ -18,8 +16,8 @@ export function isRedditThreadUrl(rawUrl: string): boolean {
     return false;
   }
   const host = u.hostname.toLowerCase();
-  if (!REDDIT_HOSTS.has(host)) return false;
   if (host === "redd.it") return /^\/[a-z0-9]+\/?$/i.test(u.pathname);
+  if (!isRedditHost(host)) return false;
   return /\/comments\/[a-z0-9]+/i.test(u.pathname) || /\/comment\/[a-z0-9]+/i.test(u.pathname);
 }
 

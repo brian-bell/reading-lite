@@ -53,11 +53,19 @@ describe("Reddit URL detection", () => {
     expect(isRedditThreadUrl("https://redd.it/d0zpsh")).toBe(true);
   });
 
+  it("recognizes thread URLs from other Reddit web subdomains", () => {
+    expect(isRedditThreadUrl("https://sh.reddit.com/r/golang/comments/d0zpsh/title/")).toBe(true);
+    expect(isRedditThreadUrl("https://new.reddit.com/r/golang/comments/d0zpsh/title/")).toBe(true);
+    expect(isRedditThreadUrl("https://amp.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1/")).toBe(true);
+  });
+
   it("rejects non-thread Reddit URLs and non-Reddit URLs", () => {
     expect(isRedditThreadUrl("https://reddit.com/r/golang")).toBe(false);
     expect(isRedditThreadUrl("https://reddit.com/user/foo")).toBe(false);
     expect(isRedditThreadUrl("https://redd.it/d0zpsh/extra")).toBe(false);
     expect(isRedditThreadUrl("https://example.com/r/golang/comments/d0zpsh/title/")).toBe(false);
+    expect(isRedditThreadUrl("https://notreddit.com/r/golang/comments/d0zpsh/title/")).toBe(false);
+    expect(isRedditThreadUrl("https://reddit.com.evil.com/r/golang/comments/d0zpsh/title/")).toBe(false);
     expect(isRedditThreadUrl("not a url")).toBe(false);
   });
 });
@@ -82,6 +90,9 @@ describe("redditJsonUrl", () => {
       "https://oauth.reddit.com/comments/d0zpsh.json?raw_json=1&limit=20&sort=top",
     );
     expect(redditJsonUrl("https://www.reddit.com/r/golang/comments/d0zpsh/title.json")).toBe(
+      "https://oauth.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
+    );
+    expect(redditJsonUrl("https://sh.reddit.com/r/golang/comments/d0zpsh/title/")).toBe(
       "https://oauth.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
     );
   });
