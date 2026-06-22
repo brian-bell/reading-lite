@@ -21,13 +21,13 @@ import type {
   ProcessingAttemptSummary,
 } from "./schemas/manifest";
 import {
-  manifestToIndexItem,
   PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
 import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
+import { activateAttempt, type SubmitJsonResult } from "./attempt-activation";
 
 export interface AppOptions {
   services?: Services;
@@ -319,11 +319,6 @@ export function createApp(opts: AppOptions = {}) {
   return app;
 }
 
-type SubmitJsonResult = {
-  body: unknown;
-  status: 200 | 202 | 409 | 503;
-};
-
 async function submitResultForOwnedReading(
   reader: ReadingStore,
   env: Env,
@@ -375,6 +370,7 @@ async function createNewReadingForSubmit(
       status: 503,
     };
   }
+  const queue = env.READING_JOBS;
 
   const pointer = { id: args.id, key_prefix: args.keyPrefix };
   const claimed = await claimByUrlSlot(reader, claim, url, args.urlHash, pointer, {
@@ -386,46 +382,14 @@ async function createNewReadingForSubmit(
   });
   if (!claimed.ok) return claimed.result;
 
-  let failureMessage = "reading setup failed";
-  try {
-    await reader.writeManifest(args.keyPrefix, pendingManifest);
-    await reader.writeByIdPointer(args.id, pointer);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(pendingManifest, args.keyPrefix),
-    );
-    failureMessage = "queue send failed";
-    await env.READING_JOBS.send({
-      ...args,
-      attemptId,
-      attemptStartedAt,
-      trigger: "submit",
-      email,
-    });
-  } catch (err) {
-    console.error(err);
-    await writeFailedActivationManifest(
-      reader,
-      args.keyPrefix,
-      pendingManifest,
-      activeAttempt,
-      err,
-      services,
-    );
-    return {
-      body: { error: failureMessage, id: args.id },
-      status: 503,
-    };
-  }
-
-  return {
-    body: {
-      id: args.id,
-      status: "pending",
-      poll: `/readings/${args.id}`,
-      attempt_id: attemptId,
-    },
-    status: 202,
-  };
+  return activateAttempt(reader, queue, services, {
+    keyPrefix: args.keyPrefix,
+    manifest: pendingManifest,
+    writeByIdPointer: true,
+    rollbackManifest: pendingManifest,
+    rollbackAttempt: activeAttempt,
+    queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "submit", email },
+  });
 }
 
 // Bounds the claim → re-resolve retry when a concurrent submit wins the by-url
@@ -539,6 +503,7 @@ async function enqueueReprocess(
       status: 503,
     };
   }
+  const queue = env.READING_JOBS;
 
   const attemptStartedAt = services.now();
   const attemptId = newAttemptId(services);
@@ -570,39 +535,14 @@ async function enqueueReprocess(
   };
   const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
 
-  let failureMessage = "reading setup failed";
-  try {
-    await reader.writeManifest(pointer.key_prefix, nextManifest);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(nextManifest, pointer.key_prefix),
-    );
-    failureMessage = "queue send failed";
-    await env.READING_JOBS.send(args);
-  } catch (err) {
-    console.error(err);
-    await writeFailedActivationManifest(
-      reader,
-      pointer.key_prefix,
-      effectiveManifest,
-      activeAttempt,
-      err,
-      services,
-    );
-    return {
-      body: { error: failureMessage, id: effectiveManifest.id },
-      status: 503,
-    };
-  }
-
-  return {
-    body: {
-      id: effectiveManifest.id,
-      status: nextManifest.status,
-      poll: `/readings/${effectiveManifest.id}`,
-      attempt_id: attemptId,
-    },
-    status: 202,
-  };
+  return activateAttempt(reader, queue, services, {
+    keyPrefix: pointer.key_prefix,
+    manifest: nextManifest,
+    writeByIdPointer: false,
+    rollbackManifest: effectiveManifest,
+    rollbackAttempt: activeAttempt,
+    queueMessage: args,
+  });
 }
 
 async function createNewReadingForMarkdownImport(
@@ -647,6 +587,7 @@ async function createNewReadingForMarkdownImport(
       status: 503,
     };
   }
+  const queue = env.READING_JOBS;
 
   const pointer = { id: args.id, key_prefix: args.keyPrefix };
   const claimed = await claimByUrlSlot(reader, claim, url, args.urlHash, pointer, {
@@ -665,53 +606,20 @@ async function createNewReadingForMarkdownImport(
   });
   if (!claimed.ok) return claimed.result;
 
-  let failureMessage = "reading setup failed";
-  try {
-    await reader.writeRaw(
-      args.keyPrefix,
-      "md",
-      markdownBytes,
-      "text/markdown; charset=utf-8",
-    );
-    await reader.writeExtracted(args.keyPrefix, markdown);
-    await reader.writeManifest(args.keyPrefix, pendingManifest);
-    await reader.writeByIdPointer(args.id, pointer);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(pendingManifest, args.keyPrefix),
-    );
-    failureMessage = "queue send failed";
-    await env.READING_JOBS.send({
-      ...args,
-      attemptId,
-      attemptStartedAt,
-      trigger: "import",
-      email,
-    });
-  } catch (err) {
-    console.error(err);
-    await writeFailedActivationManifest(
-      reader,
-      args.keyPrefix,
-      pendingManifest,
-      activeAttempt,
-      err,
-      services,
-    );
-    return {
-      body: { error: failureMessage, id: args.id },
-      status: 503,
-    };
-  }
-
-  return {
-    body: {
-      id: args.id,
-      status: "pending",
-      poll: `/readings/${args.id}`,
-      attempt_id: attemptId,
+  return activateAttempt(reader, queue, services, {
+    keyPrefix: args.keyPrefix,
+    manifest: pendingManifest,
+    writeByIdPointer: true,
+    artifacts: {
+      rawExt: "md",
+      rawBytes: markdownBytes,
+      rawContentType: "text/markdown; charset=utf-8",
+      extractedMarkdown: markdown,
     },
-    status: 202,
-  };
+    rollbackManifest: pendingManifest,
+    rollbackAttempt: activeAttempt,
+    queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "import", email },
+  });
 }
 
 async function enqueueMarkdownImport(
@@ -737,6 +645,7 @@ async function enqueueMarkdownImport(
       status: 503,
     };
   }
+  const queue = env.READING_JOBS;
 
   const attemptStartedAt = services.now();
   const attemptId = newAttemptId(services);
@@ -776,109 +685,20 @@ async function enqueueMarkdownImport(
     updated_at: attemptStartedAt,
   };
 
-  let failureMessage = "reading setup failed";
-  try {
-    await reader.writeRaw(
-      pointer.key_prefix,
-      "md",
-      markdownBytes,
-      "text/markdown; charset=utf-8",
-    );
-    await reader.writeExtracted(pointer.key_prefix, markdown);
-    await reader.writeManifest(pointer.key_prefix, pendingManifest);
-    await reader.writeByIdPointer(effectiveManifest.id, pointer);
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(pendingManifest, pointer.key_prefix),
-    );
-    failureMessage = "queue send failed";
-    await env.READING_JOBS.send(args);
-  } catch (err) {
-    console.error(err);
-    await writeFailedActivationManifest(
-      reader,
-      pointer.key_prefix,
-      pendingManifest,
-      activeAttempt,
-      err,
-      services,
-    );
-    return {
-      body: { error: failureMessage, id: effectiveManifest.id },
-      status: 503,
-    };
-  }
-
-  return {
-    body: {
-      id: effectiveManifest.id,
-      status: pendingManifest.status,
-      poll: `/readings/${effectiveManifest.id}`,
-      attempt_id: attemptId,
+  return activateAttempt(reader, queue, services, {
+    keyPrefix: pointer.key_prefix,
+    manifest: pendingManifest,
+    writeByIdPointer: true,
+    artifacts: {
+      rawExt: "md",
+      rawBytes: markdownBytes,
+      rawContentType: "text/markdown; charset=utf-8",
+      extractedMarkdown: markdown,
     },
-    status: 202,
-  };
-}
-
-async function writeFailedActivationManifest(
-  reader: ReadingStore,
-  keyPrefix: string,
-  manifest: Manifest,
-  activeAttempt: ProcessingAttemptSummary,
-  err: unknown,
-  services: Services,
-): Promise<void> {
-  const failedManifest = manifestForQueueSendFailure(
-    manifest,
-    activeAttempt,
-    err,
-    services,
-  );
-  await reader.writeManifest(keyPrefix, failedManifest);
-  await reader.appendOrReplaceListIndexItem(
-    manifestToIndexItem(failedManifest, keyPrefix),
-  );
-}
-
-function manifestForQueueSendFailure(
-  manifest: Manifest,
-  activeAttempt: ProcessingAttemptSummary,
-  err: unknown,
-  services: Services,
-): Manifest {
-  const failedAt = services.now();
-  const error = {
-    code: "QueueSendError",
-    message: err instanceof Error ? err.message : "queue send failed",
-    stage: "queued" as const,
-    failed_at: failedAt,
-    retryable: true,
-  };
-  const failedAttempt: ProcessingAttemptSummary = {
-    ...activeAttempt,
-    status: "failed",
-    stage: "queued",
-    finished_at: failedAt,
-    error,
-  };
-
-  if (manifest.status === "ready") {
-    return {
-      ...manifest,
-      active_attempt: undefined,
-      last_attempt: failedAttempt,
-      updated_at: failedAt,
-    };
-  }
-
-  return {
-    ...manifest,
-    status: "failed",
-    active_attempt: undefined,
-    last_attempt: failedAttempt,
-    error,
-    ...(manifest.status === "pending" ? { content_status: "failed" as const } : {}),
-    updated_at: failedAt,
-  };
+    rollbackManifest: pendingManifest,
+    rollbackAttempt: activeAttempt,
+    queueMessage: args,
+  });
 }
 
 function manifestForActiveAttempt(

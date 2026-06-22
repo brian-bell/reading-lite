@@ -17,6 +17,7 @@ export default [
         "test/unit/stores/**/*.test.ts",
         "test/unit/modules/**/*.test.ts",
         "test/unit/process-reading/**/*.test.ts",
+        "test/unit/attempt-activation/**/*.test.ts",
       ],
       poolOptions: {
         workers: {
