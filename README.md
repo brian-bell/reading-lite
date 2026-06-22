@@ -344,6 +344,7 @@ src/
     email.ts                    # Resend per-reading notification
     stores/
       reading-store.ts          # R2: manifest, raw, extracted, by-url + by-id
+      list-index.ts             # index/list.json: CAS, search, ownership, rebuild
       similarity-store.ts       # Vectorize: upsert + query
 scripts/
   deploy.ts, deploy-web.ts      # wrangler deploy wrappers (dry-run by default)

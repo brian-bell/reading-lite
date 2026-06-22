@@ -3,16 +3,30 @@ import {
   ProcessingAttemptSchema,
   ByUrlPointerSchema,
   type Manifest,
-  type ManifestStatus,
   type ProcessingAttempt,
   type ByUrlPointer,
 } from "../../schemas/manifest";
+import type { ListIndex, ListIndexItem } from "../../schemas/api";
 import {
-  ListIndexSchema,
-  type ListIndex,
-  type ListIndexItem,
-} from "../../schemas/api";
-import { sha256Hex } from "../../services";
+  ListIndexStore,
+  MANIFEST_FILE,
+  READINGS_PREFIX,
+  manifestToIndexItem,
+  type ListIndexCasDeps,
+  type ListManifestsParams,
+  type ListManifestsResult,
+  type FindManifestByUrlOptions,
+} from "./list-index";
+
+// Re-exported so existing call sites keep importing the list-index surface from
+// ReadingStore while the implementation lives in list-index.ts.
+export {
+  manifestToIndexItem,
+  type ListIndexCasDeps,
+  type ListManifestsParams,
+  type ListManifestsResult,
+  type FindManifestByUrlOptions,
+};
 
 export class PointerExistsError extends Error {
   constructor(public readonly urlHash: string) {
@@ -31,14 +45,14 @@ export interface StoredManifest {
   etag: string;
 }
 
-const MANIFEST_FILE = "manifest.json";
+// MANIFEST_FILE and READINGS_PREFIX are owned by list-index.ts (the manifest
+// scan + rebuild lives there) and imported above to keep the R2 layout
+// single-homed.
 const EXTRACTED_FILE = "extracted.md";
 const RAW_PREFIX = "raw.";
 const ATTEMPTS_PREFIX = "attempts/";
 const BY_URL_PREFIX = "index/by-url/";
 const BY_ID_PREFIX = "index/by-id/";
-const READINGS_PREFIX = "readings/";
-const LIST_INDEX_KEY = "index/list.json";
 
 export function buildKeyPrefix(id: string, createdAtIso: string): string {
   // Compact UTC timestamp: 2026-04-26T20:00:00.000Z → 2026/04/26T200000Z
@@ -58,93 +72,23 @@ export interface RawObject {
   size: number;
 }
 
-export interface ListManifestsResult {
-  readings: ListIndexItem[];
-  total_filtered: number;
-}
-
-export interface ListManifestsParams {
-  offset: number;
-  limit: number;
-  q?: string;
-  tag?: string;
-}
-
-export interface FindManifestByUrlOptions {
-  deepScan?: boolean;
-}
-
-// URL-ownership preference when duplicate readings exist for one URL: a
-// completed `ready` reading owns the URL over an in-flight `pending` one, which
-// in turn beats a `failed` one. Used to break ties in findNewestManifestByUrl
-// before falling back to recency.
-const OWNERSHIP_RANK: Record<ManifestStatus, number> = {
-  ready: 3,
-  pending: 2,
-  failed: 1,
-};
-
-function ownershipRank(status: ManifestStatus): number {
-  return OWNERSHIP_RANK[status] ?? 0;
-}
-
-export function manifestToIndexItem(
-  m: Manifest,
-  keyPrefix: string,
-): ListIndexItem {
-  const item: ListIndexItem = {
-    id: m.id,
-    key_prefix: keyPrefix,
-    url: m.url,
-    status: m.status,
-    created_at: m.created_at,
-    updated_at: m.updated_at,
-  };
-  if (m.title !== undefined) item.title = m.title;
-  if (m.tldr !== undefined) item.tldr = m.tldr;
-  if (m.tags !== undefined) item.tags = m.tags;
-  if (m.novelty_verdict !== undefined) item.novelty_verdict = m.novelty_verdict;
-  if (m.error !== undefined) item.error = m.error;
-  if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
-  if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;
-  return item;
-}
-
 export interface ReadingObjectInfo {
   key: string;
   size: number;
   uploaded?: string;
 }
 
-// Deps for the optimistic-concurrency loop on index/list.json. Injectable so
-// tests can drive contention deterministically and skip real backoff sleeps.
-export interface ListIndexCasDeps {
-  maxAttempts?: number;
-  baseDelayMs?: number;
-  sleep?: (ms: number) => Promise<void>;
-  random?: () => number;
-}
-
-interface ResolvedCasDeps {
-  maxAttempts: number;
-  baseDelayMs: number;
-  sleep: (ms: number) => Promise<void>;
-  random: () => number;
-}
-
 export class ReadingStore {
-  private readonly cas: ResolvedCasDeps;
+  // The list-index subsystem (index/list.json CAS, q/tag search, URL-ownership
+  // ranking, rebuild) lives in its own module; ReadingStore composes one and
+  // delegates its public index methods so existing call sites are unchanged.
+  private readonly listIndex: ListIndexStore;
 
   constructor(
     private readonly bucket: R2Bucket,
     casDeps: ListIndexCasDeps = {},
   ) {
-    this.cas = {
-      maxAttempts: casDeps.maxAttempts ?? 8,
-      baseDelayMs: casDeps.baseDelayMs ?? 20,
-      sleep: casDeps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-      random: casDeps.random ?? Math.random,
-    };
+    this.listIndex = new ListIndexStore(bucket, casDeps);
   }
 
   async writeManifest(keyPrefix: string, manifest: Manifest): Promise<void> {
@@ -379,212 +323,46 @@ export class ReadingStore {
     return { keyPrefix: ptr.key_prefix, manifest };
   }
 
+  // The list-index methods below delegate to the composed ListIndexStore. They
+  // preserve the existing ReadingStore call surface (process-reading.ts,
+  // attempt-activation.ts, reading-visibility.ts, router.ts, reading-claim.ts)
+  // while the implementation — CAS loop, ownership ranking, search, rebuild —
+  // lives in list-index.ts.
   async readListIndex(): Promise<ListIndex | null> {
-    const obj = await this.bucket.get(LIST_INDEX_KEY);
-    if (!obj) return null;
-    const json: unknown = JSON.parse(await obj.text());
-    return ListIndexSchema.parse(json);
+    return this.listIndex.readListIndex();
   }
 
   async writeListIndex(index: ListIndex): Promise<void> {
-    await this.bucket.put(LIST_INDEX_KEY, JSON.stringify(index), {
-      httpMetadata: { contentType: "application/json" },
-    });
+    await this.listIndex.writeListIndex(index);
   }
 
   async appendOrReplaceListIndexItem(item: ListIndexItem): Promise<void> {
-    await this.mutateListIndex((items) => [
-      ...items.filter((i) => i.id !== item.id),
-      item,
-    ]);
+    await this.listIndex.appendOrReplace(item);
   }
 
   async removeListIndexItem(id: string): Promise<void> {
-    const index = await this.readListIndex();
-    if (!index) return;
-    await this.mutateListIndex((items) => items.filter((i) => i.id !== id));
+    await this.listIndex.remove(id);
   }
 
   async removeListIndexItemIf(
     id: string,
     predicate: (item: ListIndexItem) => boolean,
   ): Promise<void> {
-    const index = await this.readListIndex();
-    if (!index) return;
-    await this.mutateListIndex((items) =>
-      items.filter((i) => i.id !== id || !predicate(i)),
-    );
-  }
-
-  // Read-modify-write of index/list.json guarded by an R2 compare-and-set:
-  // the put is conditional on the etag we read (If-None-Match:* when the object
-  // is absent). A concurrent writer changes the etag, R2 returns null for our
-  // put, and we re-read + re-apply rather than clobbering their item. This is
-  // what lets the queue consumer run with max_concurrency > 1 without losing
-  // index entries to last-writer-wins.
-  private async mutateListIndex(
-    mutate: (items: ListIndexItem[]) => ListIndexItem[],
-  ): Promise<void> {
-    for (let attempt = 0; attempt < this.cas.maxAttempts; attempt++) {
-      const obj = await this.bucket.get(LIST_INDEX_KEY);
-      const current = obj
-        ? ListIndexSchema.parse(JSON.parse(await obj.text()))
-        : { version: 1 as const, items: [] };
-      const next: ListIndex = { version: 1, items: mutate(current.items) };
-
-      const onlyIf: R2PutOptions["onlyIf"] = obj
-        ? { etagMatches: obj.etag }
-        : new Headers({ "If-None-Match": "*" });
-      const res = await this.bucket.put(LIST_INDEX_KEY, JSON.stringify(next), {
-        httpMetadata: { contentType: "application/json" },
-        onlyIf,
-      });
-      if (res !== null) return;
-
-      if (attempt < this.cas.maxAttempts - 1) {
-        await this.cas.sleep(this.casBackoffMs(attempt));
-      }
-    }
-    throw new Error(
-      `list index write failed: exhausted ${this.cas.maxAttempts} CAS attempts under contention`,
-    );
-  }
-
-  // Exponential backoff with full jitter, mirroring http-retry.
-  private casBackoffMs(attempt: number): number {
-    const ceiling = this.cas.baseDelayMs * 2 ** attempt;
-    return Math.floor(this.cas.random() * ceiling);
+    await this.listIndex.removeIf(id, predicate);
   }
 
   async findListIndexItem(id: string): Promise<ListIndexItem | null> {
-    const index = await this.readListIndex();
-    return index?.items.find((i) => i.id === id) ?? null;
+    return this.listIndex.find(id);
   }
 
   async findManifestByUrl(
     url: string,
     opts: FindManifestByUrlOptions = {},
   ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
-    const index = await this.readListIndex();
-    const candidates = new Map<string, ListIndexItem>();
-    const indexedMatches = (index?.items ?? []).filter((item) => item.url === url);
-    for (const item of indexedMatches) {
-      if (item.url === url) candidates.set(item.key_prefix, item);
-    }
-
-    // Avoid turning every first-time URL submit into a full bucket scan. We
-    // scan when there is no index to consult, when an indexed same-URL row
-    // needs stale-index reconciliation, or when a damaged owner asks for the
-    // strongest repair path explicitly.
-    if (!index || indexedMatches.length > 0 || opts.deepScan) {
-      const rebuilt = await this.rebuildListIndex();
-      for (const item of rebuilt.items) {
-        if (item.url === url) candidates.set(item.key_prefix, item);
-      }
-    }
-
-    return this.findNewestManifestByUrl([...candidates.values()], url, await sha256Hex(url));
+    return this.listIndex.findManifestByUrl(url, opts);
   }
 
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
-    let index = await this.readListIndex();
-    if (!index) {
-      const rebuilt = await this.rebuildListIndex();
-      index = { version: 1, items: rebuilt.items };
-      // Persist only when the rebuild was complete and non-empty. Skipping the
-      // write on `truncated` avoids permanently shadowing a >1000-manifest
-      // bucket with an incomplete index; skipping on `empty` avoids creating a
-      // stub on a totally cold bucket.
-      if (rebuilt.complete && rebuilt.items.length > 0) {
-        await this.writeListIndex(index);
-      } else if (!rebuilt.complete) {
-        console.warn(
-          `rebuildListIndex: R2 list returned truncated:true (>${rebuilt.items.length} manifests); not persisting partial index`,
-        );
-      }
-    }
-
-    const q = params.q?.trim().toLowerCase() ?? "";
-    const tag = params.tag?.trim().toLowerCase() ?? "";
-
-    const filtered = index.items.filter((item) => {
-      if (q !== "") {
-        const hay = `${item.title ?? ""}\n${item.tldr ?? ""}\n${item.url}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      if (tag !== "") {
-        const tags = (item.tags ?? []).map((t) => t.toLowerCase());
-        if (!tags.includes(tag)) return false;
-      }
-      return true;
-    });
-
-    filtered.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
-
-    const slice = filtered.slice(params.offset, params.offset + params.limit);
-    return { readings: slice, total_filtered: filtered.length };
-  }
-
-  private async findNewestManifestByUrl(
-    items: ListIndexItem[],
-    url: string,
-    urlHash: string,
-  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
-    const matches = items.filter((item) => item.url === url);
-    // Ownership rank first, recency second. A URL can have duplicate readings
-    // (the recurring "failed orphan-dup" corpus state: a failed re-submit left
-    // beside an earlier ready copy). The ready copy owns the URL, so a `ready`
-    // owner must beat a *newer* `failed` one — ranking purely by updated_at would
-    // repair the by-url pointer to the failed duplicate and orphan the ready
-    // summary by URL. Within a status class, newest-by-updated_at still wins.
-    matches.sort((a, b) => {
-      const rankDiff = ownershipRank(b.status) - ownershipRank(a.status);
-      if (rankDiff !== 0) return rankDiff;
-      const aTime = a.updated_at ?? a.created_at;
-      const bTime = b.updated_at ?? b.created_at;
-      return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
-    });
-    for (const item of matches) {
-      const manifest = await this.readManifest(item.key_prefix);
-      if (manifest?.url === url && manifest.url_hash === urlHash) {
-        return { keyPrefix: item.key_prefix, manifest };
-      }
-    }
-    return null;
-  }
-
-  private async rebuildListIndex(): Promise<{ items: ListIndexItem[]; complete: boolean }> {
-    // Recovery fallback: scan readings/ for manifests, parse each, and
-    // synthesise an index when URL ownership/index state is missing or stale.
-    // The result is persisted by callers only when every page was read.
-    const manifestKeys: string[] = [];
-    let cursor: string | undefined;
-    let complete = true;
-    do {
-      const list = await this.bucket.list({
-        prefix: READINGS_PREFIX,
-        limit: 1000,
-        ...(cursor ? { cursor } : {}),
-      });
-      manifestKeys.push(
-        ...list.objects
-          .map((o) => o.key)
-          .filter((k) => k.endsWith(`/${MANIFEST_FILE}`)),
-      );
-      if (list.truncated && !list.cursor) complete = false;
-      cursor = list.truncated ? list.cursor : undefined;
-    } while (cursor);
-
-    const items: ListIndexItem[] = [];
-    for (const key of manifestKeys) {
-      const obj = await this.bucket.get(key);
-      if (!obj) continue;
-      const json: unknown = JSON.parse(await obj.text());
-      const parsed = ManifestSchema.safeParse(json);
-      if (!parsed.success) continue;
-      const keyPrefix = key.slice(0, -("/" + MANIFEST_FILE).length);
-      items.push(manifestToIndexItem(parsed.data, keyPrefix));
-    }
-    return { items, complete };
+    return this.listIndex.list(params);
   }
 }
