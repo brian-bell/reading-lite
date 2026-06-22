@@ -1,10 +1,10 @@
 import {
   buildKeyPrefix,
-  manifestToIndexItem,
   PointerExistsError,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
+import { ReadingVisibility } from "./reading-visibility";
 import { extractFromUrl, type ExtractedContent } from "./modules/extractor";
 import { embed } from "./modules/embeddings";
 import {
@@ -484,6 +484,7 @@ export async function commitTerminalManifest(
 ): Promise<{ committed: boolean; published: boolean }> {
   const run =
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
+  const visibility = new ReadingVisibility(reader, similarity);
 
   const state = await terminalWriteState(reader, args, {
     claimMissingPointer: opts.claimMissingPointer,
@@ -493,7 +494,8 @@ export async function commitTerminalManifest(
   // restore — the other attempt owns visibility too. This unifies the two old
   // call sites: the success path already early-returned here, but the failure
   // path used to fall through writeManifestForTerminalState (which returns false
-  // on conflict) into a restoreCurrentListVisibility re-sync of the foreign row.
+  // on conflict) into a list re-sync (now ReadingVisibility.restoreIfOwner) of
+  // the foreign row.
   // That re-sync was a no-op on data the owning attempt maintains anyway;
   // skipping it is intentional (plan 005, case 2).
   if (!state.canWriteManifest) return { committed: false, published: false };
@@ -509,30 +511,20 @@ export async function commitTerminalManifest(
     // write throw. Restore the current list visibility so we don't leave a
     // half-published row behind.
     await reconcileVisibility(opts.defensive, () =>
-      restoreCurrentListVisibility(reader, args),
+      visibility.restoreIfOwner(args),
     );
     return { committed: false, published: false };
   }
 
   if (state.canPublishVisibility) {
-    await reconcileVisibility(opts.defensive, async () => {
-      await run("write_indexes", () =>
-        reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
-      );
-      if (opts.vector && similarity) {
-        await run("upsert_vector", () =>
-          similarity.upsert(args.id, opts.vector!.embedding, opts.vector!.meta),
-        );
-      }
-    });
+    await reconcileVisibility(opts.defensive, () =>
+      visibility.publish(manifest, args, opts.vector, { instrument: run }),
+    );
     return { committed: true, published: true };
   }
 
   if (state.canRemoveVisibility) {
-    await reconcileVisibility(opts.defensive, async () => {
-      if (similarity) await removeAttemptVisibility(reader, similarity, args);
-      else await removeAttemptListVisibility(reader, args);
-    });
+    await reconcileVisibility(opts.defensive, () => visibility.remove(args));
   }
   return { committed: true, published: false };
 }
@@ -635,66 +627,6 @@ async function writeTerminalManifestDefensively(
     console.error(writeErr);
     return false;
   }
-}
-
-async function restoreCurrentListVisibility(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<void> {
-  const manifest = await reader.readManifest(args.keyPrefix);
-  if (!manifest) return;
-  // A lost CAS means a concurrent attempt won and already reconciled visibility.
-  // If the by-url pointer points at a DIFFERENT reading, this reading is a
-  // non-owner duplicate whose row that winner may have deliberately removed —
-  // blindly re-appending here would resurrect a row it unpublished. Mirror
-  // terminalWriteState's `ownerAllowsVisibility = ownsUrl` gate: re-sync only
-  // when we still own the URL (or no pointer exists, the failure-path default).
-  // This narrows the resurrection window but doesn't close it: a winner that
-  // changes the pointer *after* this read still loses to our re-append. That
-  // residual race is last-writer-wins (the repo's documented stance) and
-  // self-heals — the winner's removeAttemptListVisibility gate re-removes our
-  // row on its next pass, or a later terminal write reconciles it.
-  const pointer = await reader.readByUrlPointer(args.urlHash);
-  if (pointer && (pointer.id !== args.id || pointer.key_prefix !== args.keyPrefix)) return;
-  await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix));
-}
-
-export async function removeAttemptVisibility(
-  reader: ReadingStore,
-  similarity: SimilarityStore,
-  args: ProcessReadingArgs,
-): Promise<void> {
-  if (!(await removeAttemptListVisibility(reader, args))) return;
-  if (!(await readingCanRemoveAttemptVector(reader, args))) return;
-  await similarity.delete(args.id);
-}
-
-async function removeAttemptListVisibility(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<boolean> {
-  let removed = false;
-  await reader.removeListIndexItemIf(args.id, (item) => {
-    // The list-row cleanup gate: the row must be this reading's (id + key_prefix)
-    // AND this attempt must own it under the cleanup rule (active, last, or the
-    // stricter vacant-pending — see plan 006).
-    if (item.id !== args.id || item.key_prefix !== args.keyPrefix) return false;
-    const owner = attemptOwnership(item, args);
-    const matches = owner.isActive || owner.isLast || owner.isVacantPending;
-    removed = removed || matches;
-    return matches;
-  });
-  return removed;
-}
-
-async function readingCanRemoveAttemptVector(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<boolean> {
-  const manifest = await reader.readManifest(args.keyPrefix);
-  if (!manifest) return true;
-  const owner = attemptOwnership(manifest, args);
-  return owner.isActive || owner.isLast || owner.isVacantPending;
 }
 
 // The single home of the `attemptId ?? at_${id}` fallback. The writer side
