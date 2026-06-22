@@ -9,6 +9,10 @@
 //   {prefix}/raw.{ext}            (best-effort, common exts)
 //   {prefix}/attempts/{id}.json   (ids read live from the manifest)
 //   index/by-id/{id}              (so GET /readings/:id 404s instead of resolving)
+//   index/by-url/{hash}           (ONLY if the stored pointer is owned by this
+//                                  orphan — under eager URL ownership the slot
+//                                  for this URL usually belongs to the surviving
+//                                  ready copy, which we must not touch)
 // Then we rewrite index/list.json once, dropping the orphan ids.
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
@@ -18,6 +22,9 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keysForDroppedReading } from "./corpus-lib/delete-plan";
+import { shouldRewriteIndex } from "./corpus-lib/drop";
+import { isObjectNotFound } from "./corpus-lib/wrangler-r2";
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
@@ -69,9 +76,10 @@ URL that the deduped audit omits are still caught).
 Default is a DRY RUN: prints every object it would delete and the list.json diff.
 Add --execute to perform the deletes and rewrite index/list.json.
 
-Only safe for readings that do not own an index/by-url/{hash} pointer — i.e.
-pending or failed readings (the pointer is written only on success). Deleting a
-ready reading this way would leave its by-url pointer dangling.
+For non-ready readings only. by-url pointers are eager URL ownership claims, so a
+failed/pending reading may own its index/by-url/{hash} pointer — that pointer is
+deleted only when it is actually owned by the dropped reading, never when it
+belongs to a surviving ready copy of the same URL.
 
 Run when nothing is being submitted: the list.json rewrite is a plain put, not a
 CAS write, so a concurrent queue write could be lost.`);
@@ -92,17 +100,38 @@ function objPath(bucket: string, key: string): string {
   return `${bucket}/${key}`;
 }
 
-async function getObject(opts: Opts, key: string): Promise<string | null> {
+type GetOutcome =
+  | { kind: "present"; body: string }
+  | { kind: "absent" }
+  | { kind: "error"; detail: string };
+
+async function getOutcome(opts: Opts, key: string): Promise<GetOutcome> {
   const args = ["r2", "object", "get", objPath(opts.bucket, key), "--pipe"];
   if (opts.remote) args.push("--remote");
   const { code, stdout, stderr } = await run("npx", ["wrangler", ...args]);
-  if (code !== 0) {
-    if (/not logged in|not authenticated/i.test(stderr)) {
-      throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
-    }
-    return null;
+  if (code === 0) return { kind: "present", body: stdout };
+  if (/not logged in|not authenticated/i.test(stderr)) {
+    throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  return stdout;
+  if (isObjectNotFound(stderr)) return { kind: "absent" };
+  return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
+}
+
+// Lenient read: null for absent OR unreadable. Fine for the optional manifest
+// read (a transient miss just degrades attempt-file coverage).
+async function getObject(opts: Opts, key: string): Promise<string | null> {
+  const r = await getOutcome(opts, key);
+  return r.kind === "present" ? r.body : null;
+}
+
+// Strict read: null only for a confirmed-absent key; throws on an untrusted read
+// error. Used for the by-url ownership read so an unreadable pointer aborts the
+// drop instead of being mistaken for "not owned".
+async function getObjectStrict(opts: Opts, key: string): Promise<string | null> {
+  const r = await getOutcome(opts, key);
+  if (r.kind === "present") return r.body;
+  if (r.kind === "absent") return null;
+  throw new Error(`could not read ${key}: ${r.detail}`);
 }
 
 async function deleteObject(opts: Opts, key: string): Promise<"deleted" | "absent" | "error"> {
@@ -110,7 +139,7 @@ async function deleteObject(opts: Opts, key: string): Promise<"deleted" | "absen
   if (opts.remote) args.push("--remote");
   const { code, stderr } = await run("npx", ["wrangler", ...args]);
   if (code === 0) return "deleted";
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return "absent";
+  if (isObjectNotFound(stderr)) return "absent";
   console.error(`  ! delete error for ${key}: ${stderr.trim().split("\n").pop()}`);
   return "error";
 }
@@ -132,34 +161,29 @@ async function putListIndex(opts: Opts, json: string): Promise<void> {
   }
 }
 
-const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
-
-// Derive the deletable keys under one orphan's prefix. Reads the manifest live
-// to recover attempt ids; falls back to best-effort guesses when absent.
+// Derive the deletable keys under one orphan's prefix via the shared
+// ownership-aware plan. The by-url pointer is included only when this orphan
+// actually owns it — under eager URL ownership the pointer for this URL may
+// belong to the surviving ready copy, which we must not delete.
 async function keysForOrphan(
   opts: Opts,
   id: string,
   prefix: string,
+  url: string,
 ): Promise<string[]> {
-  const keys = new Set<string>();
-  keys.add(`${prefix}/manifest.json`);
-  keys.add(`${prefix}/extracted.md`);
-  for (const ext of COMMON_RAW_EXTS) keys.add(`${prefix}/raw.${ext}`);
-  keys.add(`index/by-id/${id}`);
-
-  const raw = await getObject(opts, `${prefix}/manifest.json`);
-  if (raw) {
-    try {
-      const m = JSON.parse(raw);
-      for (const k of ["active_attempt", "last_attempt"]) {
-        const at = m?.[k]?.id;
-        if (typeof at === "string") keys.add(`${prefix}/attempts/${at}.json`);
+  return keysForDroppedReading(id, prefix, url, {
+    readManifest: async (kp) => {
+      const raw = await getObject(opts, `${kp}/manifest.json`);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
       }
-    } catch {
-      /* manifest unparseable — manifest.json delete still covers the index */
-    }
-  }
-  return [...keys];
+    },
+    // Strict: an unreadable pointer aborts rather than stranding an owned slot.
+    readObject: (key) => getObjectStrict(opts, key),
+  });
 }
 
 async function main(): Promise<void> {
@@ -216,7 +240,10 @@ async function main(): Promise<void> {
   // Safety: every prefix must be id-scoped under readings/. Never touch a
   // prefix that doesn't carry its own reading id.
   for (const o of targets) {
-    if (!o.id || !o.prefix || !o.prefix.startsWith("readings/") || !o.prefix.endsWith(o.id)) {
+    if (
+      !o.id || !o.prefix || typeof o.url !== "string" ||
+      !o.prefix.startsWith("readings/") || !o.prefix.endsWith(o.id)
+    ) {
       console.error(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(o)}`);
       process.exit(1);
     }
@@ -237,7 +264,7 @@ async function main(): Promise<void> {
   let errored = 0;
 
   for (const o of targets) {
-    const keys = await keysForOrphan(opts, o.id, o.prefix);
+    const keys = await keysForOrphan(opts, o.id, o.prefix, o.url);
     console.log(`• ${o.id}  ${o.url}`);
     for (const key of keys) {
       if (!opts.execute) {
@@ -267,13 +294,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Don't rewrite the index if any object delete failed: removing an orphan from
+  // index/list.json while its objects/pointers (including a by-url ownership
+  // pointer it owns) linger would hide a half-deleted reading from future audits.
+  // Mirror corpus-drop — leave the list intact so the cleanup stays visible and
+  // re-runnable.
+  if (!shouldRewriteIndex(errored)) {
+    console.error(
+      `\n${errored} object delete(s) failed — leaving index/list.json unchanged ` +
+      `so the partially-deleted reading(s) stay visible. Re-run to retry.`,
+    );
+    console.error(`objects deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
+    process.exitCode = 1;
+    return;
+  }
+
   await putListIndex(opts, JSON.stringify({ version: 1, items: keptItems }));
   console.log("\nindex/list.json rewritten.");
-  console.log(
-    `Done. objects deleted: ${deleted}, absent (skipped): ${absent}` +
-    (errored ? `, errors: ${errored}` : ""),
-  );
-  if (errored) process.exitCode = 1;
+  console.log(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
 }
 
 main().catch((e) => {

@@ -59,7 +59,10 @@ What it does, end to end (`scripts/corpus-lib/batch/`):
    write fresh content objects to R2, persist a resume sidecar.
 5. **poll → write** — poll to completion, then write manifests / pointers /
    vectors / `index/list.json` via the **same terminal-write contract** as the
-   worker (by-url pointer only on success; failed readings stay re-submittable).
+   worker. A success writes the `index/by-url/{hash}` pointer; a failure writes a
+   retryable failed manifest with **no** by-url pointer, so a failed batch URL
+   stays re-submittable as an unclaimed URL (the batch path does not eagerly
+   claim the by-url slot the way the realtime `POST /readings` path does).
 
 ```bash
 # Dry-run the batch plan (no writes, no spend).
