@@ -148,6 +148,15 @@ function fetchTranscriptViaYtDlp(watchUrl: string): string | undefined {
 // create a duplicate. Look the variants up and tell the operator to drop any
 // stale one (we don't auto-drop: that's a destructive R2/Vectorize operation
 // that belongs to the corpus-drop tool).
+// POSIX single-quote escaping for a value pasted into a shell command. The
+// passed-in URL is operator-supplied and `new URL` accepts characters like
+// `$()` in a query string, so wrapping it in double quotes would leave command
+// substitution live. Single quotes disable all expansion; an embedded `'` is
+// closed, escaped, and reopened.
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 async function warnNoncanonicalOwners(
   videoId: string,
   canonicalUrl: string,
@@ -168,7 +177,7 @@ async function warnNoncanonicalOwners(
     `\nnote: found ${found.length} existing reading(s) under a noncanonical URL for this video.\n` +
       `This import claims the canonical ${canonicalUrl}, so those will NOT be replaced —\n` +
       `drop the stale variant(s) to avoid a duplicate:\n` +
-      found.map((f) => `  npm run corpus-drop -- "${f.url}" --execute   # ${f.id ?? "?"}\n`).join(""),
+      found.map((f) => `  npm run corpus-drop -- ${shellQuote(f.url)} --execute   # ${f.id ?? "?"}\n`).join(""),
   );
 }
 
