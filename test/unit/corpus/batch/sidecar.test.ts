@@ -41,6 +41,13 @@ describe("sidecar load/save/clear", () => {
     expect(await loadSidecar(file)).toEqual(sample);
   });
 
+  it("fails closed (throws) on a malformed/truncated sidecar — never silently 'absent'", async () => {
+    // A crash mid-write can leave a corrupt sidecar after the batch was billed;
+    // treating it as absent would resubmit a second (double-billed) batch.
+    await fs.writeFile(file, '{"batchId":"msgbatch_1","tar');
+    await expect(loadSidecar(file)).rejects.toThrow(/unreadable\/malformed/i);
+  });
+
   it("clear removes the file (idempotent)", async () => {
     await saveSidecar(file, sample);
     await clearSidecar(file);

@@ -9,10 +9,26 @@ export function sidecarPath(indexPath: string): string {
 }
 
 export async function loadSidecar(path: string): Promise<Sidecar | null> {
+  // A genuinely-absent sidecar means "no in-flight batch" → proceed. But a read
+  // error or a truncated/malformed file must NOT be mistaken for absent: a crash
+  // mid-write (after Anthropic create was billed) can leave a corrupt sidecar, and
+  // silently treating it as missing would resubmit a second, double-billed batch.
+  // Fail closed so the operator reconciles manually.
+  let raw: string;
   try {
-    return JSON.parse(await fs.readFile(path, "utf8")) as Sidecar;
+    raw = await fs.readFile(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+  try {
+    return JSON.parse(raw) as Sidecar;
   } catch {
-    return null;
+    throw new Error(
+      `batch sidecar at ${path} exists but is unreadable/malformed — a previous run may ` +
+        `have crashed mid-write after creating (and being billed for) a batch. Check the ` +
+        `Anthropic console, then delete the sidecar before retrying.`,
+    );
   }
 }
 
