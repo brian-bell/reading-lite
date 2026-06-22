@@ -189,6 +189,29 @@ describe("ReadingStore — by-id pointer", () => {
   });
 });
 
+describe("ReadingStore — loadReadingById", () => {
+  it("returns null when the by-id pointer is missing", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    expect(await store.loadReadingById("rd_missing")).toBeNull();
+  });
+
+  it("returns null when the pointer exists but the manifest is missing", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const prefix = buildKeyPrefix("rd_X", "2026-04-26T20:00:00.000Z");
+    await store.writeByIdPointer("rd_X", { id: "rd_X", key_prefix: prefix });
+    expect(await store.loadReadingById("rd_X")).toBeNull();
+  });
+
+  it("returns the key prefix and manifest when both are present", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const m = emptyManifest({ id: "rd_X", title: "X" });
+    const prefix = buildKeyPrefix(m.id, m.created_at);
+    await store.writeManifest(prefix, m);
+    await store.writeByIdPointer(m.id, { id: m.id, key_prefix: prefix });
+    expect(await store.loadReadingById(m.id)).toEqual({ keyPrefix: prefix, manifest: m });
+  });
+});
+
 describe("manifestToIndexItem", () => {
   it("carries updated_at when set on the manifest", () => {
     const m = emptyManifest({

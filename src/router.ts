@@ -258,16 +258,14 @@ export function createApp(opts: AppOptions = {}) {
 
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const ptr = await reader.readByIdPointer(id);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(ptr.key_prefix);
-    if (!manifest) return c.json({ error: "not found" }, 404);
+    const found = await reader.loadReadingById(id);
+    if (!found) return c.json({ error: "not found" }, 404);
     const result = await enqueueReprocess(
       reader,
       c.env,
       services,
-      ptr,
-      manifest,
+      found.keyPrefix,
+      found.manifest,
       { force: parsed.data.force, email: parsed.data.email ?? false },
     );
     return c.json(result.body, result.status);
@@ -276,24 +274,20 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/readings/:id", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const ptr = await reader.readByIdPointer(id);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(ptr.key_prefix);
-    if (!manifest) return c.json({ error: "not found" }, 404);
-    return c.json(annotateStale(manifest, c.env, services));
+    const found = await reader.loadReadingById(id);
+    if (!found) return c.json({ error: "not found" }, 404);
+    return c.json(annotateStale(found.manifest, c.env, services));
   });
 
   app.get("/readings/:id/content", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const ptr = await reader.readByIdPointer(id);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(ptr.key_prefix);
-    if (!manifest) return c.json({ error: "not found" }, 404);
-    if (manifest.content_status !== "captured") {
+    const found = await reader.loadReadingById(id);
+    if (!found) return c.json({ error: "not found" }, 404);
+    if (found.manifest.content_status !== "captured") {
       return c.json({ error: "extracted markdown not available" }, 404);
     }
-    const obj = await reader.readExtracted(ptr.key_prefix);
+    const obj = await reader.readExtracted(found.keyPrefix);
     if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
@@ -304,12 +298,10 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/readings/:id/content/raw", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
-    const ptr = await reader.readByIdPointer(id);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(ptr.key_prefix);
-    if (!manifest) return c.json({ error: "not found" }, 404);
-    const ext = extFromContentType(manifest.content_type);
-    const obj = await reader.readRaw(ptr.key_prefix, ext);
+    const found = await reader.loadReadingById(id);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const ext = extFromContentType(found.manifest.content_type);
+    const obj = await reader.readRaw(found.keyPrefix, ext);
     if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
@@ -333,7 +325,7 @@ async function submitResultForOwnedReading(
   if (effectiveManifest.status !== "failed") {
     return { body: effectiveManifest, status: 200 };
   }
-  return enqueueReprocess(reader, env, services, pointer, effectiveManifest, {
+  return enqueueReprocess(reader, env, services, pointer.key_prefix, effectiveManifest, {
     email: opts.email,
   });
 }
@@ -490,7 +482,7 @@ async function enqueueReprocess(
   reader: ReadingStore,
   env: Env,
   services: Services,
-  pointer: ByUrlPointer,
+  keyPrefix: string,
   manifest: Manifest,
   opts: { force?: boolean; email: boolean },
 ): Promise<SubmitJsonResult> {
@@ -511,7 +503,7 @@ async function enqueueReprocess(
   const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
   let source: ProcessReadingSource | undefined;
   if (effectiveManifest.source_type === "markdown") {
-    const extracted = await reader.readExtracted(pointer.key_prefix);
+    const extracted = await reader.readExtracted(keyPrefix);
     if (!extracted) {
       return { body: { error: "markdown content not available" }, status: 409 };
     }
@@ -526,7 +518,7 @@ async function enqueueReprocess(
     url: effectiveManifest.url,
     urlHash: effectiveManifest.url_hash,
     createdAt: effectiveManifest.created_at,
-    keyPrefix: pointer.key_prefix,
+    keyPrefix,
     source,
     attemptId,
     attemptStartedAt,
@@ -537,7 +529,7 @@ async function enqueueReprocess(
   const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
 
   return activateAttempt(reader, queue, services, {
-    keyPrefix: pointer.key_prefix,
+    keyPrefix,
     manifest: nextManifest,
     writeByIdPointer: false,
     rollbackManifest: effectiveManifest,

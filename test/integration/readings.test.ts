@@ -2853,6 +2853,50 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     consoleErr.mockRestore();
   });
 
+  it("diagnostics surfaces a corrupt by-id pointer whose id mismatches the manifest", async () => {
+    // Guards the deliberate non-migration of the diagnostics handler to
+    // loadReadingById: that resolver discards the raw pointer's id, so routing
+    // diagnostics through it would make `matches_manifest` always-true and hide
+    // exactly the pointer corruption this endpoint exists to surface.
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/corrupt-pointer" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    // Read the live by-id pointer, then rewrite it with a mismatched id while
+    // keeping its key_prefix so the manifest still resolves.
+    const ptrObj = await env.READINGS_BUCKET.get(`index/by-id/${id}`);
+    const ptr = JSON.parse(await ptrObj!.text()) as { id: string; key_prefix: string };
+    await env.READINGS_BUCKET.put(
+      `index/by-id/${id}`,
+      JSON.stringify({ id: "rd_WRONG", key_prefix: ptr.key_prefix }),
+    );
+
+    const res = await app.request(
+      `/readings/${id}/diagnostics`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const diagnostics = (await res.json()) as {
+      pointers: { by_id: { pointer: { id: string }; matches_manifest: boolean } };
+    };
+    expect(diagnostics.pointers.by_id.pointer.id).toBe("rd_WRONG");
+    expect(diagnostics.pointers.by_id.matches_manifest).toBe(false);
+  });
+
   it("reprocesses a failed reading in-place and updates it to ready", async () => {
     const idCounter = { n: 0 };
     const failingServices = makeServices(
