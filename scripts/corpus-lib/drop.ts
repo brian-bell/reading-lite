@@ -2,16 +2,20 @@
 // like `rd_ABC`, or URLs) into the concrete reading targets to delete, using
 // `index/list.json` as the source of truth for each id's key_prefix.
 //
-// Drop is non-ready only by default — a `ready` reading owns its `index/by-url/{hash}`
-// pointer and a Vectorize embedding, so deleting it this way would dangle both.
-// Hence:
+// Drop is non-ready only by default — a `ready` reading owns a Vectorize
+// embedding (and, as the live owner of its URL, the by-url pointer), so dropping
+// it through this path would dangle the embedding. (Under eager URL ownership a
+// failed/pending reading may also own its by-url pointer; the deletion plan in
+// `delete-plan.ts` deletes that pointer only when it is genuinely owned by the
+// dropped reading, so dropping an orphan-duplicate never disturbs the survivor's
+// pointer.) Hence:
 //   - an explicitly-named ready id is a hard error (you asked for it by id),
 //   - a url selector silently keeps any ready copy and drops only the non-ready
 //     copies (the orphan-dup cleanup case), erroring only if the url has *no*
 //     non-ready copy to drop.
 //
 // Staging cleanup can opt into ready deletion with `allowReady`; callers must
-// also clean vectors and by-url pointers.
+// also clean vectors (the by-url pointer is handled by the deletion plan).
 
 export interface DropListItem {
   id: string;

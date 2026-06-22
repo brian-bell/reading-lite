@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keysForDroppedReading } from "./delete-plan";
 import type { ListItem } from "./types";
 
 export interface RunResult {
@@ -17,21 +18,60 @@ export interface R2Deps {
   run?: Runner;
 }
 
-// Reads an object out of the R2 bucket via wrangler. Returns null when the
-// object is absent (wrangler exits non-zero), which optional reads (manifest,
-// extracted.md) tolerate.
-export async function readObject(key: string, deps: R2Deps): Promise<string | null> {
+// True when wrangler stderr signals the object genuinely does not exist (an R2
+// NoSuchKey / "key does not exist" message), as opposed to a transient or
+// permission error. Matches the textual not-found phrases only — deliberately
+// NOT a bare "404" substring: by-url keys are SHA-256 hex strings that can
+// themselves contain "404", and wrangler echoes the key path in error text, so
+// a "404" match would misclassify a transient 5xx/403 on such a key as absent.
+// The textual phrases contain spaces/non-hex letters, so they cannot collide
+// with a hex key. Erring toward "not absent" is the safe direction: it makes an
+// ambiguous failure surface as an error rather than a silent miss.
+export function isObjectNotFound(stderr: string): boolean {
+  return /not found|does not exist|no such key|nosuchkey/i.test(stderr);
+}
+
+type GetOutcome =
+  | { kind: "present"; body: string }
+  | { kind: "absent" }
+  | { kind: "error"; detail: string };
+
+// Runs a single `r2 object get` and classifies the result. An auth failure
+// always throws (the whole tool is unusable). A "not found" stderr means the key
+// is genuinely absent; any other non-zero exit is an untrusted read error that
+// the caller must not mistake for absence.
+async function getOutcome(key: string, deps: R2Deps): Promise<GetOutcome> {
   const run = deps.run ?? defaultRunner;
   const args = ["r2", "object", "get", `${deps.bucket}/${key}`, "--pipe"];
   if (deps.remote !== false) args.push("--remote");
   const { code, stdout, stderr } = await run("wrangler", args);
-  if (code !== 0) {
-    if (/not logged in/i.test(stderr)) {
-      throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
-    }
-    return null;
+  if (code === 0) return { kind: "present", body: stdout };
+  if (/not logged in/i.test(stderr)) {
+    throw new Error("wrangler not authenticated — run `wrangler login` or set CLOUDFLARE_API_TOKEN");
   }
-  return stdout;
+  if (isObjectNotFound(stderr)) return { kind: "absent" };
+  return { kind: "error", detail: stderr.trim().split("\n").pop() ?? `exit ${code}` };
+}
+
+// Reads an object out of the R2 bucket via wrangler. Returns null when the
+// object is absent OR unreadable — lenient by design so optional reads (manifest,
+// extracted.md) tolerate a transient miss. For reads where "absent" and "could
+// not read" must be distinguished (by-url ownership), use readObjectStrict.
+export async function readObject(key: string, deps: R2Deps): Promise<string | null> {
+  const r = await getOutcome(key, deps);
+  return r.kind === "present" ? r.body : null;
+}
+
+// Like readObject, but returns null ONLY for a confirmed-absent key and throws
+// on any untrusted read error. The by-url ownership read depends on this: a
+// transient/permission failure must not be collapsed into "pointer absent",
+// which would delete the reading and rewrite list.json while a pointer it owns
+// lingers (see byUrlPointerKeyIfOwned).
+export async function readObjectStrict(key: string, deps: R2Deps): Promise<string | null> {
+  const r = await getOutcome(key, deps);
+  if (r.kind === "present") return r.body;
+  if (r.kind === "absent") return null;
+  throw new Error(`could not read ${key}: ${r.detail}`);
 }
 
 export async function readListIndex(deps: R2Deps): Promise<ListItem[]> {
@@ -68,7 +108,7 @@ export async function deleteObject(
   if (deps.remote !== false) args.push("--remote");
   const { code, stderr } = await run("wrangler", args);
   if (code === 0) return "deleted";
-  if (/not found|does not exist|404|no such key/i.test(stderr)) return "absent";
+  if (isObjectNotFound(stderr)) return "absent";
   return "error";
 }
 
@@ -102,41 +142,35 @@ export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<v
   }
 }
 
-const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
-
-// Every deletable key under one reading's id-scoped prefix. Reads the manifest
-// live to recover attempt ids; raw.* exts are best-effort guesses (idempotent
-// deletes absorb the misses).
-//
-// Attempt coverage is limited to the manifest's active_attempt + last_attempt.
-// Each reprocess writes a new attempts/{at_*}.json, but the manifest records
-// only those two ids, and the `wrangler r2 object` CLI (this tool's only R2
-// access — corpus-drop intentionally needs just `wrangler login`, not S3/API
-// creds) has no prefix list. So on a reading reprocessed >2x, earlier attempt
-// JSONs can be orphaned. They're tiny, invisible to audits, and dangle nothing
-// (manifest/by-id/list entry are all gone), so this is an accepted minor
-// residue rather than a correctness problem; a full sweep would need S3
-// ListObjectsV2, which we deliberately don't pull into this tool.
+// Every deletable key under one reading's id-scoped prefix, including its by-url
+// ownership pointer ONLY when the dropped reading actually owns it (the pointer
+// can legitimately belong to a surviving ready copy of the same URL — see
+// `keysForDroppedReading`). Reads the manifest and pointer live; raw.* exts are
+// best-effort guesses that idempotent deletes absorb. The `wrangler r2 object`
+// CLI (this tool's only R2 access — corpus-drop intentionally needs just
+// `wrangler login`, not S3/API creds) has no prefix list, so attempt coverage is
+// limited to the manifest's two recorded attempt ids.
 export async function keysForReading(
   id: string,
   keyPrefix: string,
+  url: string,
   deps: R2Deps,
 ): Promise<string[]> {
-  const keys = new Set<string>([
-    `${keyPrefix}/manifest.json`,
-    `${keyPrefix}/extracted.md`,
-    `index/by-id/${id}`,
-  ]);
-  for (const ext of COMMON_RAW_EXTS) keys.add(`${keyPrefix}/raw.${ext}`);
-  const m = await readManifest(keyPrefix, deps);
-  if (m) {
-    if (typeof m.url_hash === "string") keys.add(`index/by-url/${m.url_hash}`);
-    for (const k of ["active_attempt", "last_attempt"]) {
-      const at = m?.[k]?.id;
-      if (typeof at === "string") keys.add(`${keyPrefix}/attempts/${at}.json`);
-    }
-  }
-  return [...keys];
+  return keysForDroppedReading(id, keyPrefix, url, {
+    // A corrupt manifest must not abort the drop: the static keys + pointer
+    // logic can still proceed, so a parse failure degrades to null (matching the
+    // DeletePlanDeps contract and the corpus-delete-orphans shim).
+    readManifest: async (kp) => {
+      try {
+        return await readManifest(kp, deps);
+      } catch {
+        return null;
+      }
+    },
+    // Strict: a confirmed-absent pointer returns null (not owned), but an
+    // untrusted read error throws so we never strand a pointer this reading owns.
+    readObject: (key) => readObjectStrict(key, deps),
+  });
 }
 
 const defaultRunner: Runner = (cmd, args) =>
