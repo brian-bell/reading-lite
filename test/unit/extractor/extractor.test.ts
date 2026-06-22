@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError, RedditManualImportError } from "../../../src/modules/extractor";
+import { RateLimitedError } from "../../../src/modules/http-retry";
+import { canonicalWatchUrl, oembedUrl, timedtextJson3Url } from "../../../src/modules/extractor/youtube";
 
 function fakeFetch(
   responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>,
@@ -435,5 +437,134 @@ describe("extractFromUrl", () => {
     });
     expect(out.content_type).toBe("application/octet-stream");
     expect(out.content_status).toBe("raw_only");
+  });
+});
+
+describe("extractFromUrl — YouTube", () => {
+  const ID = "YtTWNzOtkxU";
+  const WATCH = canonicalWatchUrl(ID);
+  const OEMBED = oembedUrl(ID);
+  const CAPTION_BASE = "https://www.youtube.com/api/timedtext?v=YtTWNzOtkxU&lang=en";
+
+  const OEMBED_JSON = JSON.stringify({
+    title: "Greeting World",
+    author_name: "Some Channel",
+    author_url: "https://www.youtube.com/@some",
+  });
+
+  const WATCH_HTML = `<!doctype html><html><head><title>x</title></head><body>
+    <script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"YtTWNzOtkxU","shortDescription":"A short description of the talk."},"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"${CAPTION_BASE}","languageCode":"en"}]}}};</script>
+  </body></html>`;
+
+  const TIMEDTEXT_JSON3 = JSON.stringify({
+    events: [{ segs: [{ utf8: "hello there" }] }, { segs: [{ utf8: " friends" }] }],
+  });
+
+  const deps = { timeoutMs: 5_000, maxBytes: 1_000_000 };
+
+  it("captures title, author, description and transcript from a watch URL", async () => {
+    const calls: string[] = [];
+    const fetchFn = fakeFetch(
+      {
+        [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+        [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: WATCH_HTML },
+        [timedtextJson3Url(CAPTION_BASE)]: {
+          headers: { "content-type": "application/json" },
+          body: TIMEDTEXT_JSON3,
+        },
+      },
+      (url) => calls.push(url),
+    );
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).toContain("# Greeting World");
+    expect(out.markdown).toContain("[Some Channel](https://www.youtube.com/@some)");
+    expect(out.markdown).toContain("A short description of the talk.");
+    expect(out.markdown).toContain("## Transcript");
+    expect(out.markdown).toContain("hello there friends");
+    // Never routed through the generic Readability path.
+    expect(calls).toContain(OEMBED);
+  });
+
+  it("degrades to the oEmbed floor when the watch page is rate limited", async () => {
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { status: 429, headers: { "retry-after": "30" }, body: "rate limited" },
+    });
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).toContain("# Greeting World");
+    expect(out.markdown).not.toContain("## Transcript");
+  });
+
+  it("propagates RateLimitedError when the oEmbed floor is rate limited", async () => {
+    const fetchFn = fakeFetch({
+      [OEMBED]: { status: 429, headers: { "retry-after": "30" }, body: "rate limited" },
+    });
+    await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+  });
+
+  it("propagates RateLimitedError through the production retry wrapper (oEmbed 429)", async () => {
+    // Production wires `retry`, so 429 detection happens inside fetchWithRetry,
+    // not the inline check in fetchBounded. Pin the as-deployed queue-retry path.
+    const fetchFn = fakeFetch({
+      [OEMBED]: { status: 429, headers: { "retry-after": "30" }, body: "rate limited" },
+    });
+    await expect(
+      extractFromUrl(WATCH, {
+        fetch: fetchFn,
+        ...deps,
+        retry: { sleep: async () => {}, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+      }),
+    ).rejects.toBeInstanceOf(RateLimitedError);
+  });
+
+  it("fails the reading when oEmbed errors with a non-429 status (BadStatusError)", async () => {
+    // Tier 1 is the required floor: a 5xx there is a real failure, distinct from
+    // the best-effort watch-page/transcript fetches which degrade.
+    const fetchFn = fakeFetch({
+      [OEMBED]: { status: 503, body: "unavailable" },
+    });
+    await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(
+      BadStatusError,
+    );
+  });
+
+  it("throws BadStatusError when the video is unavailable (oEmbed 404)", async () => {
+    const fetchFn = fakeFetch({
+      [OEMBED]: { status: 404, body: "not found" },
+    });
+    await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(
+      BadStatusError,
+    );
+  });
+
+  it("routes youtu.be short links through the YouTube path", async () => {
+    const calls: string[] = [];
+    const fetchFn = fakeFetch(
+      {
+        [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+        [WATCH]: { status: 429, headers: { "retry-after": "1" }, body: "x" },
+      },
+      (url) => calls.push(url),
+    );
+
+    const out = await extractFromUrl("https://youtu.be/YtTWNzOtkxU?t=30", {
+      fetch: fetchFn,
+      ...deps,
+    });
+
+    expect(out.title).toBe("Greeting World");
+    // Resolved to the canonical oEmbed lookup rather than fetching the short link.
+    expect(calls).toContain(OEMBED);
+    expect(calls).not.toContain("https://youtu.be/YtTWNzOtkxU?t=30");
   });
 });

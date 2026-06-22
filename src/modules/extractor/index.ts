@@ -5,6 +5,18 @@ import type { ContentStatus } from "../../schemas/manifest";
 import { fetchWithRetry, parseRetryAfterMs, RateLimitedError, type RetryDeps } from "../http-retry";
 import { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
 import { isRedditThreadUrl } from "./reddit";
+import {
+  buildYoutubeMarkdown,
+  canonicalWatchUrl,
+  isYoutubeFetchableHost,
+  isYoutubeWatchUrl,
+  oembedUrl,
+  parseOembed,
+  parsePlayerResponse,
+  parseVideoId,
+  timedtextJson3Url,
+  timedtextToText,
+} from "./youtube";
 
 export { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
 
@@ -33,6 +45,10 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
   // so fail with guidance toward the local reddit-import skill instead of
   // burning a generic fetch that would only capture the challenge page.
   if (isRedditThreadUrl(url)) throw new RedditManualImportError(url);
+  // YouTube watch pages are JS shells with no article body. Build markdown from
+  // the public oEmbed metadata (reliable floor) plus best-effort description +
+  // transcript scraped from the watch page (issue #17).
+  if (isYoutubeWatchUrl(url)) return extractYoutube(url, deps);
 
   const { raw, contentType } = await fetchBounded(url, deps);
   const content_sha256 = await sha256Hex(raw);
@@ -70,6 +86,78 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
   }
 
   return { ...base, content_status: "raw_only" };
+}
+
+// A desktop browser UA + consent cookie cut down on the consent-wall / bot
+// friction the worker hits when fetching the watch page directly.
+const YOUTUBE_WATCH_HEADERS = {
+  "user-agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  "accept-language": "en-US,en;q=0.9",
+  cookie: "CONSENT=YES+cb",
+} as const;
+
+// Tiered YouTube extraction: oEmbed is the required floor (title + author, and a
+// 429 here surfaces RateLimitedError so the queue retries); the watch-page
+// description/captions and the timedtext transcript are best-effort enrichment
+// that degrade to the floor on any error rather than fail the reading.
+async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
+  const videoId = parseVideoId(url);
+  if (!videoId) throw new BadStatusError(url, 400);
+  const watchUrl = canonicalWatchUrl(videoId);
+
+  // Tier 1 — oEmbed floor. Let RateLimitedError / BadStatusError propagate.
+  const oembedRaw = await fetchBounded(oembedUrl(videoId), deps);
+  const oembed = parseOembed(new TextDecoder("utf-8").decode(oembedRaw.raw));
+  if (!oembed) throw new BadStatusError(oembedUrl(videoId), 502);
+
+  // Tier 2 — watch page (best-effort): description + caption tracks.
+  let description: string | undefined;
+  let captionBaseUrl: string | undefined;
+  let watchRaw: Uint8Array | undefined;
+  try {
+    const watch = await fetchBounded(watchUrl, deps, { headers: { ...YOUTUBE_WATCH_HEADERS } });
+    watchRaw = watch.raw;
+    const player = parsePlayerResponse(new TextDecoder("utf-8").decode(watch.raw));
+    description = player?.shortDescription;
+    captionBaseUrl = player?.captionTracks[0]?.baseUrl;
+  } catch (e) {
+    console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
+  }
+
+  // Tier 3 — transcript (best-effort): first caption track, json3.
+  let transcript: string | undefined;
+  if (captionBaseUrl && isYoutubeFetchableHost(captionBaseUrl)) {
+    try {
+      const tt = await fetchBounded(timedtextJson3Url(captionBaseUrl), deps);
+      transcript = timedtextToText(new TextDecoder("utf-8").decode(tt.raw)) || undefined;
+    } catch (e) {
+      console.warn(`youtube transcript fetch failed for ${watchUrl}:`, e);
+    }
+  }
+
+  const markdown = buildYoutubeMarkdown({
+    title: oembed.title,
+    authorName: oembed.authorName,
+    authorUrl: oembed.authorUrl,
+    watchUrl,
+    description,
+    transcript,
+  });
+
+  // Persist the richest bytes we actually fetched as `raw` so the R2 raw.{ext}
+  // write stays meaningful and the sha covers real fetched content.
+  const raw = watchRaw ?? oembedRaw.raw;
+  const content_type = watchRaw ? "text/html; charset=utf-8" : "application/json; charset=utf-8";
+  return {
+    raw,
+    content_type,
+    content_bytes: raw.byteLength,
+    content_sha256: await sha256Hex(raw),
+    content_status: "captured",
+    markdown,
+    title: oembed.title,
+  };
 }
 
 async function fetchBounded(

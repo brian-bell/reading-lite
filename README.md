@@ -50,7 +50,7 @@ The Worker is composed of six deeply-isolated modules (each unit-tested with stu
 
 | Module | Responsibility |
 |---|---|
-| `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown |
+| `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown; special-cases YouTube watch pages (oEmbed + transcript) |
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
 | `anthropic` | one-shot `messages.create` with `tool_choice: {type: "tool", name: "emit_reading"}`; system + tool def cached via `cache_control` |
 | `stores` | `ReadingStore` over R2 (manifest, raw, extracted, by-url + by-id pointers) and `SimilarityStore` over Vectorize |
@@ -306,6 +306,18 @@ Reddit app or OAuth credentials are needed. The skill wraps
 `scripts/reddit-import.ts <redditUrl> --json <saved.json>` (which also has a
 `--dry-run` to preview the Markdown).
 
+### YouTube videos
+
+YouTube watch pages have no server-rendered article body, so the extractor
+handles them in-worker instead of via Readability. Submitting a
+`youtube.com/watch`, `youtu.be`, `shorts`, `live`, or `embed` URL builds Markdown
+from the public oEmbed metadata (title + author — the reliable floor), plus a
+best-effort description (scraped from the page's `ytInitialPlayerResponse`) and
+transcript (the first caption track) when YouTube serves them. Unlike Reddit,
+no skill or manual import is required — the URL summarizes to `ready` directly.
+Description and transcript are best-effort: when YouTube rate-limits or gates the
+watch page, the reading still lands `ready` on the title + author floor.
+
 ## Repo layout
 
 ```
@@ -317,7 +329,7 @@ src/
   services.ts                   # Services interface (DI for fetch / now / id)
   schemas/                      # zod: manifest, tool input, API request/response
   modules/
-    extractor/                  # HTML→Markdown pipeline + bounded fetch
+    extractor/                  # HTML→Markdown pipeline + bounded fetch; youtube.ts in-worker path
     embeddings/                 # OpenAI client
     anthropic/                  # forced tool use + prompt caching
     http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
