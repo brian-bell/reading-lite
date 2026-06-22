@@ -1,4 +1,4 @@
-import type { ByUrlPointer, Manifest, ManifestStatus } from "../../../src/schemas/manifest";
+import type { ByUrlPointer, Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
 import { stalenessOf, type StaleInput } from "../../../src/modules/staleness";
@@ -29,23 +29,18 @@ export interface SkippedArticle {
   reason: "already-ready" | "pending-in-flight";
 }
 
-// A cold-legacy owner resolved from index/list.json — the master list that still
-// includes readings written before the by-url pointer scheme (no pointer). Only
-// the staleness-relevant fields are needed to decide skip vs. re-ingest.
-export interface ListOwner extends StaleInput {
-  status: ManifestStatus;
-}
-
 export interface PrepareFreshDeps {
   // Reads the by-url ownership pointer for a URL hash, or null when unclaimed.
   readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null>;
   // Reads the manifest at a key prefix (R2 via S3), or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
-  // Resolves the best (ready>pending>failed, then recency) index/list.json owner
-  // of a URL — the cold-legacy adoption the worker's ReadingClaim does before
-  // minting, so a pointerless legacy ready/pending reading is not duplicated.
-  // Optional: when omitted, only the by-url pointer is consulted.
-  findListOwner?(url: string): Promise<ListOwner | null>;
+  // Resolves a synthetic by-url pointer for a URL from index/list.json — the best
+  // (ready>pending>failed, then recency) candidate's {id, key_prefix} — so the
+  // worker's cold-legacy adoption is mirrored: a pointerless legacy reading is
+  // not duplicated. The pointer is NOT trusted blindly; prepareFreshMarkdown
+  // re-reads and verifies the manifest behind it (the index row can be stale).
+  // Optional: when omitted, only the real by-url pointer is consulted.
+  findListPointer?(url: string): Promise<ByUrlPointer | null>;
   // Mints a fresh reading id (mirrors services.newId).
   mintId(): string;
   now(): string;
@@ -85,15 +80,19 @@ export async function prepareFreshMarkdown(
 
   for (const article of articles) {
     const urlHash = await deps.sha256(article.sourceUrl);
-    const pointer = await deps.readByUrlPointer(urlHash);
+    // The real by-url pointer is authoritative. When there isn't one, fall back to
+    // a synthetic pointer resolved from index/list.json — the worker's cold-legacy
+    // adoption, so a pointerless legacy reading for this URL is not duplicated.
+    const byUrlPointer = await deps.readByUrlPointer(urlHash);
+    const pointer =
+      byUrlPointer ?? (deps.findListPointer ? await deps.findListPointer(article.sourceUrl) : null);
+
+    // Always verify the manifest behind whichever pointer we have, and trust it
+    // only on the same id/url/url_hash match the worker's ReadingClaim requires
+    // (ownedManifestMatches). This guards both a damaged by-url pointer AND a stale
+    // index row whose manifest was deleted or now points at a different URL — in
+    // either case `owner` is null and we mint/repair rather than skip or clobber.
     const existing = pointer ? await deps.readManifest(pointer.key_prefix) : null;
-    // Only trust the pointer when its manifest GENUINELY owns this URL — the same
-    // id/url/url_hash match the worker's ReadingClaim (ownedManifestMatches)
-    // requires. A damaged or stale pointer (missing manifest, or one that resolves
-    // to a different URL's reading) is NOT trusted: reusing it would overwrite
-    // that other reading, and skipping on it would silently drop this URL. We mint
-    // a fresh slot instead and let write-phase repair the by-url pointer on
-    // success.
     const owner =
       pointer &&
       existing &&
@@ -125,26 +124,15 @@ export async function prepareFreshMarkdown(
       id = owner.id;
       keyPrefix = pointer!.key_prefix;
       createdAt = owner.created_at;
-    } else if (pointer && !existing && isFreshMissingManifestPointer(pointer, deps.now())) {
-      // A pointer written just before its pending manifest (the worker claims
-      // by-url first) is a legitimately-initializing owner inside the grace window,
-      // NOT a damaged pointer — skip it as in-flight rather than mint a fresh slot
-      // that would clobber the activation.
+    } else if (byUrlPointer && !existing && isFreshMissingManifestPointer(byUrlPointer, deps.now())) {
+      // A real by-url pointer written just before its pending manifest (the worker
+      // claims by-url first) is a legitimately-initializing owner inside the grace
+      // window, NOT a damaged pointer — skip it as in-flight rather than mint a
+      // fresh slot that would clobber the activation. Only the real pointer gets
+      // this grace; a list.json row is written after the manifest, not before.
       skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
       continue;
     } else {
-      // No trusted by-url owner. Before minting, adopt a pointerless legacy owner
-      // from index/list.json (the worker's cold-legacy step) so an existing ready
-      // or fresh-pending reading for this URL is not duplicated.
-      const legacy = deps.findListOwner ? await deps.findListOwner(article.sourceUrl) : null;
-      if (legacy?.status === "ready") {
-        skipped.push({ url: article.sourceUrl, reason: "already-ready" });
-        continue;
-      }
-      if (legacy?.status === "pending" && !isStalePending(legacy, ttlSeconds, deps.now())) {
-        skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
-        continue;
-      }
       id = deps.mintId();
       createdAt = deps.now();
       keyPrefix = buildKeyPrefix(id, createdAt);

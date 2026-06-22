@@ -224,34 +224,57 @@ describe("prepareFreshMarkdown", () => {
   });
 
   it("adopts (skips) a pointerless legacy READY reading from index/list.json", async () => {
-    // No by-url pointer, but list.json has a ready reading for this URL.
+    // No by-url pointer, but list.json resolves a ready reading for this URL —
+    // and its manifest verifies (id/url/url_hash match), so we skip it.
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListOwner: vi.fn(async () => ({ status: "ready" as const, created_at: "2026-01-01T00:00:00.000Z" })),
+      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      readManifest: vi.fn(async () => manifest({ id: "rd_legacy", status: "ready" })),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
     expect(targets).toHaveLength(0);
     expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
   });
 
-  it("skips a pointerless legacy FRESH-pending reading from index/list.json", async () => {
+  it("re-ingests a pointerless legacy FAILED reading in place (adopts, no duplicate)", async () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListOwner: vi.fn(async () => ({ status: "pending" as const, created_at: NOW, updated_at: NOW })),
-    });
-    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
-    expect(targets).toHaveLength(0);
-    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "pending-in-flight" }]);
-  });
-
-  it("mints fresh when the only legacy list owner is failed (no duplicate-ready risk)", async () => {
-    const deps = makeDeps({
-      readByUrlPointer: vi.fn(async () => null),
-      findListOwner: vi.fn(async () => ({ status: "failed" as const, created_at: "2026-01-01T00:00:00.000Z" })),
+      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      readManifest: vi.fn(async () => manifest({ id: "rd_legacy", status: "failed" })),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
     expect(skipped).toHaveLength(0);
     expect(targets).toHaveLength(1);
+    expect(targets[0]!.target.readingId).toBe("rd_legacy");
+    expect(targets[0]!.target.keyPrefix).toBe("readings/kp-legacy");
+  });
+
+  it("mints fresh (does NOT skip) when a list.json row is stale — manifest deleted", async () => {
+    // Finding: a stale index row whose manifest is gone must not silently drop the
+    // import. The candidate pointer resolves but its manifest read is null → mint.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      readManifest: vi.fn(async () => null),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.target.readingId).toBe("rd_new0");
+  });
+
+  it("mints fresh when a list.json row's manifest now points at a DIFFERENT url", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      readManifest: vi.fn(async () =>
+        manifest({ id: "rd_legacy", status: "ready", url: "https://example.com/OTHER" }),
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.target.readingId).toBe("rd_new0");
   });
 
   it("produces a target whose synthetic manifest is schema-valid", async () => {
