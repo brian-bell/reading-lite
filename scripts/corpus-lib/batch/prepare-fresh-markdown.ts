@@ -1,13 +1,18 @@
-import type { ByUrlPointer, Manifest } from "../../../src/schemas/manifest";
+import type { ByUrlPointer, Manifest, ManifestStatus } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
-import { stalenessOf } from "../../../src/modules/staleness";
+import { stalenessOf, type StaleInput } from "../../../src/modules/staleness";
 import type { DroppedTarget, ExtractedTarget } from "./types";
 
 // Mirror the worker's PENDING_TTL_SECONDS (wrangler.toml, all envs). A pending
 // owner older than this is stale — the worker's read path treats it as failed,
 // so we re-ingest it in place rather than skip it forever.
 export const PENDING_TTL_SECONDS_DEFAULT = 900;
+
+// Mirror reading-claim.ts's MISSING_MANIFEST_OWNER_GRACE_MS: a by-url pointer
+// written just before its pending manifest is a legitimately-initializing owner,
+// not a damaged pointer, for this window.
+const MISSING_MANIFEST_OWNER_GRACE_MS = 5 * 60 * 1000;
 
 // A planned, deduped, non-oversized markdown file with its source URL resolved.
 export interface FreshMarkdownArticle {
@@ -24,11 +29,23 @@ export interface SkippedArticle {
   reason: "already-ready" | "pending-in-flight";
 }
 
+// A cold-legacy owner resolved from index/list.json — the master list that still
+// includes readings written before the by-url pointer scheme (no pointer). Only
+// the staleness-relevant fields are needed to decide skip vs. re-ingest.
+export interface ListOwner extends StaleInput {
+  status: ManifestStatus;
+}
+
 export interface PrepareFreshDeps {
   // Reads the by-url ownership pointer for a URL hash, or null when unclaimed.
   readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null>;
   // Reads the manifest at a key prefix (R2 via S3), or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
+  // Resolves the best (ready>pending>failed, then recency) index/list.json owner
+  // of a URL — the cold-legacy adoption the worker's ReadingClaim does before
+  // minting, so a pointerless legacy ready/pending reading is not duplicated.
+  // Optional: when omitted, only the by-url pointer is consulted.
+  findListOwner?(url: string): Promise<ListOwner | null>;
   // Mints a fresh reading id (mirrors services.newId).
   mintId(): string;
   now(): string;
@@ -108,7 +125,26 @@ export async function prepareFreshMarkdown(
       id = owner.id;
       keyPrefix = pointer!.key_prefix;
       createdAt = owner.created_at;
+    } else if (pointer && !existing && isFreshMissingManifestPointer(pointer, deps.now())) {
+      // A pointer written just before its pending manifest (the worker claims
+      // by-url first) is a legitimately-initializing owner inside the grace window,
+      // NOT a damaged pointer — skip it as in-flight rather than mint a fresh slot
+      // that would clobber the activation.
+      skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
+      continue;
     } else {
+      // No trusted by-url owner. Before minting, adopt a pointerless legacy owner
+      // from index/list.json (the worker's cold-legacy step) so an existing ready
+      // or fresh-pending reading for this URL is not duplicated.
+      const legacy = deps.findListOwner ? await deps.findListOwner(article.sourceUrl) : null;
+      if (legacy?.status === "ready") {
+        skipped.push({ url: article.sourceUrl, reason: "already-ready" });
+        continue;
+      }
+      if (legacy?.status === "pending" && !isStalePending(legacy, ttlSeconds, deps.now())) {
+        skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
+        continue;
+      }
       id = deps.mintId();
       createdAt = deps.now();
       keyPrefix = buildKeyPrefix(id, createdAt);
@@ -166,10 +202,27 @@ export async function prepareFreshMarkdown(
   return { targets, skipped, dropped };
 }
 
-// A pending manifest counts as stale (treat as failed → re-ingest) when its
-// active attempt or the pending record itself has exceeded TTL — the same verdict
-// the worker applies at read time.
-function isStalePending(manifest: Manifest, ttlSeconds: number, nowIso: string): boolean {
-  const verdict = stalenessOf(manifest, ttlSeconds, nowIso);
+// A pending record counts as stale (treat as failed → re-ingest) when its active
+// attempt or the pending record itself has exceeded TTL — the same verdict the
+// worker applies at read time. Accepts any StaleInput (a manifest or a list item).
+function isStalePending(record: StaleInput, ttlSeconds: number, nowIso: string): boolean {
+  const verdict = stalenessOf(record, ttlSeconds, nowIso);
   return verdict.expiredActiveAttempt !== null || verdict.pendingError !== null;
+}
+
+// Mirror reading-claim.ts: a by-url pointer with no manifest is an initializing
+// owner (not damaged) while its key-prefix timestamp is younger than the grace
+// window. The key prefix encodes created_at as readings/YYYY/MM/DDTHHMMSSZ-<id>.
+function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {
+  const createdAtMs = keyPrefixCreatedAtMs(pointer.key_prefix);
+  if (createdAtMs === null) return false;
+  const ageMs = Date.parse(nowIso) - createdAtMs;
+  return ageMs >= 0 && ageMs < MISSING_MANIFEST_OWNER_GRACE_MS;
+}
+
+function keyPrefixCreatedAtMs(keyPrefix: string): number | null {
+  const m = keyPrefix.match(/^readings\/(\d{4})\/(\d{2})\/(\d{2})T(\d{2})(\d{2})(\d{2})Z-/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 }

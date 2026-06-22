@@ -1,9 +1,11 @@
 #!/usr/bin/env -S npx tsx
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { ManifestSchema, ByUrlPointerSchema, type Manifest, type ByUrlPointer } from "../src/schemas/manifest";
+import { ManifestSchema, ByUrlPointerSchema, type Manifest, type ByUrlPointer, type ManifestStatus } from "../src/schemas/manifest";
+import { ListIndexItemSchema } from "../src/schemas/api";
 import { mintReadingId, sha256Hex } from "../src/services";
 import { resolveBatchConfig } from "./corpus-lib/config";
+import type { ListOwner } from "./corpus-lib/batch/prepare-fresh-markdown";
 import { MARKDOWN_IMPORT_MAX_BYTES, readMarkdownDir } from "./import-markdown-lib/parse";
 import { planFreshMarkdownIngest, type IngestPlan } from "./corpus-lib/batch/ingest-plan";
 import { runFreshMarkdownBatch } from "./corpus-lib/batch/run-fresh-markdown";
@@ -82,10 +84,12 @@ instead of the realtime queue. The markdown is the article — no URL is fetched
                     Default: <dir>/.corpus-ingest.batch.json.
   --help            Show this message.
 
-Dry-run by default. Idempotent: re-running skips ready owners and re-ingests
-failed (and stranded-pending, past the worker's PENDING_TTL) owners in place;
-never duplicates an already-ready URL. Crash-safe via the sidecar — a re-run
-resumes the in-flight batch instead of re-billing.
+Dry-run by default. Idempotent: re-running skips ready owners (by-url pointer OR
+a pointerless legacy reading in index/list.json) and re-ingests failed (and
+stranded-pending, past the worker's PENDING_TTL) owners in place; never
+duplicates an already-ready URL. A by-url pointer written just before its pending
+manifest (the worker's claim window) is honored as in-flight, not clobbered.
+Crash-safe via the sidecar — a re-run resumes the in-flight batch, not re-bills.
 
 Needs R2 + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys, the same
 credential world as 'corpus-recover --batch' (not the HTTP bearer token).
@@ -113,10 +117,56 @@ function idempotencyDeps(r2: R2Client) {
       const raw = await r2.get(`${keyPrefix}/manifest.json`);
       return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
     },
+    findListOwner: makeListOwnerResolver(r2),
     mintId: mintReadingId,
     now: () => new Date().toISOString(),
     sha256: sha256Hex,
   };
+}
+
+const OWNERSHIP_RANK: Record<ManifestStatus, number> = { ready: 3, pending: 2, failed: 1 };
+
+// Lazily index index/list.json by URL (the master list, which includes legacy
+// readings with no by-url pointer) and return the best owner per URL — ready >
+// pending > failed, then most recent. Read once and cached across articles.
+function makeListOwnerResolver(r2: R2Client): (url: string) => Promise<ListOwner | null> {
+  let byUrl: Map<string, ListOwner> | null = null;
+  const load = async (): Promise<Map<string, ListOwner>> => {
+    const map = new Map<string, ListOwner>();
+    const raw = await r2.get("index/list.json");
+    if (!raw) return map;
+    let items: unknown[] = [];
+    try {
+      const parsed = JSON.parse(raw) as { items?: unknown[] };
+      items = Array.isArray(parsed.items) ? parsed.items : [];
+    } catch {
+      return map;
+    }
+    for (const candidate of items) {
+      const item = ListIndexItemSchema.safeParse(candidate);
+      if (!item.success) continue;
+      const owner: ListOwner = {
+        status: item.data.status,
+        created_at: item.data.created_at,
+        ...(item.data.updated_at === undefined ? {} : { updated_at: item.data.updated_at }),
+        ...(item.data.active_attempt === undefined ? {} : { active_attempt: item.data.active_attempt }),
+      };
+      const prev = map.get(item.data.url);
+      if (!prev || beats(owner, prev)) map.set(item.data.url, owner);
+    }
+    return map;
+  };
+  return async (url: string): Promise<ListOwner | null> => {
+    if (!byUrl) byUrl = await load();
+    return byUrl.get(url) ?? null;
+  };
+}
+
+function beats(a: ListOwner, b: ListOwner): boolean {
+  const ra = OWNERSHIP_RANK[a.status] ?? 0;
+  const rb = OWNERSHIP_RANK[b.status] ?? 0;
+  if (ra !== rb) return ra > rb;
+  return Date.parse(a.created_at ?? "") > Date.parse(b.created_at ?? "");
 }
 
 async function main(): Promise<void> {

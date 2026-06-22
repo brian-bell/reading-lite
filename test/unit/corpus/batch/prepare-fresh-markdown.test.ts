@@ -191,7 +191,7 @@ describe("prepareFreshMarkdown", () => {
     expect(t.urlHash).toBe(await deps.sha256("https://example.com/a"));
   });
 
-  it("mints a fresh slot for a dangling pointer (manifest missing)", async () => {
+  it("mints a fresh slot for an old/unparseable dangling pointer (manifest missing)", async () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => ({ id: "rd_gone", key_prefix: "readings/kp-gone" })),
       readManifest: vi.fn(async () => null),
@@ -200,6 +200,58 @@ describe("prepareFreshMarkdown", () => {
     expect(skipped).toHaveLength(0);
     expect(targets).toHaveLength(1);
     expect(targets[0]!.target.readingId).toBe("rd_new0");
+  });
+
+  it("skips a FRESH pointer-without-manifest as in-flight (worker grace window)", async () => {
+    // pointer key prefix timestamp is ~1 min before NOW → still initializing.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_init", key_prefix: "readings/2026/06/22T115900Z-rd_init" })),
+      readManifest: vi.fn(async () => null),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "pending-in-flight" }]);
+  });
+
+  it("mints fresh for an OLD pointer-without-manifest (past the grace window)", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_old", key_prefix: "readings/2026/06/22T100000Z-rd_old" })),
+      readManifest: vi.fn(async () => null),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+  });
+
+  it("adopts (skips) a pointerless legacy READY reading from index/list.json", async () => {
+    // No by-url pointer, but list.json has a ready reading for this URL.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListOwner: vi.fn(async () => ({ status: "ready" as const, created_at: "2026-01-01T00:00:00.000Z" })),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
+  });
+
+  it("skips a pointerless legacy FRESH-pending reading from index/list.json", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListOwner: vi.fn(async () => ({ status: "pending" as const, created_at: NOW, updated_at: NOW })),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "pending-in-flight" }]);
+  });
+
+  it("mints fresh when the only legacy list owner is failed (no duplicate-ready risk)", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListOwner: vi.fn(async () => ({ status: "failed" as const, created_at: "2026-01-01T00:00:00.000Z" })),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
   });
 
   it("produces a target whose synthetic manifest is schema-valid", async () => {
