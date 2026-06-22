@@ -54,6 +54,38 @@ describe("recoveryAction", () => {
     );
   });
 
+  it("recovers a legacy YouTube audit row whose stored reason still says 'not an article' (issue #17)", () => {
+    // A pre-#17 audit file carries the old override reason verbatim. The URL is
+    // a YouTube watch page, so the legacy "Not an article" reason must not
+    // short-circuit to skip — it routes by its actual error instead.
+    expect(
+      recoveryAction(
+        row({
+          url: "https://www.youtube.com/watch?v=YtTWNzOtkxU",
+          code: "BadStatusError",
+          message: "status 503",
+          reason: "Not an article — YouTube video page",
+        }),
+      ).action,
+    ).toBe("reprocess");
+    // youtu.be short links too.
+    expect(
+      recoveryAction(
+        row({
+          url: "https://youtu.be/YtTWNzOtkxU",
+          code: "BadToolInputError",
+          reason: "Not an article — YouTube video page",
+        }),
+      ).action,
+    ).toBe("reprocess");
+  });
+
+  it("still skips a genuine non-article (PDF) reason for non-YouTube urls", () => {
+    expect(
+      recoveryAction(row({ url: "https://a.com/x.pdf", code: "BadStatusError", message: "status 200", reason: "Not an article — PDF" })).action,
+    ).toBe("skip");
+  });
+
   it("does not skip a reason merely because it mentions YouTube (issue #17)", () => {
     // YouTube is no longer a hard-skip class, so a reason string containing
     // "YouTube" must route by its actual error rather than skip.
