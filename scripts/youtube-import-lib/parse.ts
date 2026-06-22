@@ -20,6 +20,17 @@ import { MARKDOWN_IMPORT_MAX_BYTES } from "../import-markdown-lib/parse";
 
 const TRUNCATION_NOTICE = "\n\n_[transcript truncated to fit the import size limit]_";
 
+// /readings/import-markdown enqueues a ProcessReadingArgs message whose body is
+// the markdown plus an envelope (id, url, urlHash, keyPrefix, attempt metadata,
+// source.kind/title, JSON framing) and ~100 bytes of Cloudflare-internal queue
+// metadata. The 128 KB queue limit applies to that serialized message, not the
+// markdown alone, so capping the markdown at exactly MARKDOWN_IMPORT_MAX_BYTES
+// can still push the send over the limit *after* the reading is claimed/written.
+// Unlike hand-authored markdown, this cap fills the transcript right up to the
+// ceiling, so reserve generous headroom (the real envelope is well under 1 KB).
+const QUEUE_ENVELOPE_RESERVE = 1024;
+const MARKDOWN_MESSAGE_BUDGET = MARKDOWN_IMPORT_MAX_BYTES - QUEUE_ENVELOPE_RESERVE;
+
 // Slice `text` to at most `maxBytes` UTF-8 bytes without leaving a split
 // multibyte character (Buffer.toString renders a dangling sequence as U+FFFD).
 function truncateUtf8(text: string, maxBytes: number): string {
@@ -42,14 +53,14 @@ function capTranscript(
   const trimmed = transcript?.trim();
   if (!trimmed) return undefined;
   const full = buildYoutubeMarkdown({ ...parts, transcript: trimmed });
-  if (Buffer.byteLength(full, "utf8") <= MARKDOWN_IMPORT_MAX_BYTES) return trimmed;
+  if (Buffer.byteLength(full, "utf8") <= MARKDOWN_MESSAGE_BUDGET) return trimmed;
 
   const withoutTranscript = buildYoutubeMarkdown({ ...parts, transcript: undefined });
   const overhead =
     Buffer.byteLength(withoutTranscript, "utf8") +
     Buffer.byteLength("\n\n## Transcript\n\n", "utf8") +
     Buffer.byteLength(TRUNCATION_NOTICE, "utf8");
-  const budget = MARKDOWN_IMPORT_MAX_BYTES - overhead;
+  const budget = MARKDOWN_MESSAGE_BUDGET - overhead;
   return truncateUtf8(trimmed, budget) + TRUNCATION_NOTICE;
 }
 

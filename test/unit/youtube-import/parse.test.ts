@@ -35,17 +35,19 @@ describe("buildYoutubeImport", () => {
     expect(req!.markdown).toContain("first tip second tip third tip");
   });
 
-  it("truncates an oversized transcript so the markdown stays under the queue byte limit", () => {
+  it("truncates an oversized transcript so the queue message stays under the byte limit", () => {
     // The Worker forwards import markdown inside a Cloudflare queue message
-    // (128 KB cap), so a long transcript must be trimmed before posting rather
-    // than 503-ing server-side after a reading is already claimed.
+    // (128 KB cap on the *whole* ProcessReadingArgs envelope, not the markdown
+    // alone), so a long transcript must be trimmed with envelope headroom before
+    // posting rather than 503-ing server-side after a reading is already claimed.
     const huge = "lorem ipsum dolor ".repeat(20_000); // ~360 KB
     const req = buildYoutubeImport("https://www.youtube.com/watch?v=YtTWNzOtkxU", {
       oembedJson: OEMBED,
       transcript: huge,
     });
     expect(req).not.toBeNull();
-    expect(Buffer.byteLength(req!.markdown, "utf8")).toBeLessThanOrEqual(128_000);
+    // Leaves room for the serialized queue envelope under the 128 KB limit.
+    expect(Buffer.byteLength(req!.markdown, "utf8")).toBeLessThanOrEqual(127_000);
     expect(req!.markdown).toContain("## Transcript");
     expect(req!.markdown).toContain("truncated");
   });
