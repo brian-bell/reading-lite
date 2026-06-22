@@ -28,6 +28,10 @@ agent context: current commands, module map, conventions, and gotchas.
   logging, terminal manifest commits, email logging, and failure handling.
 - `src/modules/reading-claim.ts` resolves URL ownership through
   `index/by-url/{sha256(url)}` pointers.
+- `src/modules/staleness.ts` owns the read-time stale-annotation rule
+  (`stalenessOf`): a `running` attempt or `pending` record past TTL surfaces as
+  `failed` without a write. `router.ts`'s `annotateStale` /
+  `annotateStaleIndexItem` are thin adapters over it.
 - `src/modules/stores/reading-store.ts` wraps R2 manifests, raw/extracted
   content, by-id/by-url pointers, attempts, diagnostics, and the list index.
 - `src/modules/stores/similarity-store.ts` wraps Vectorize query/upsert/delete.
