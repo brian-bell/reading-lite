@@ -13,10 +13,9 @@ logged-in Chrome session instead of OAuth.
   thread `.json` renders correct markdown.
 - ✅ **Layer 3 — Live import path (prod):** Chrome → public `.json` → import →
   `ready`, verified against production (reading `rd_9VTDEM3PMQ`).
-- ⏳ **Deferred to post-deployment:** the Worker-rejection path and the
-  corpus-recover Reddit routing can only be checked *live* once this branch is
-  deployed (prod currently runs the pre-PR Worker). Both are covered by automated
-  tests; see [Post-deployment manual verification](#post-deployment-manual-verification).
+- ✅ **Post-deployment (verified live on prod 2026-06-21):** the Worker-rejection
+  path and the corpus-recover Reddit routing were confirmed against the deployed
+  Worker. See [Post-deployment manual verification](#post-deployment-manual-verification).
 
 ## Why not OAuth / `wrangler dev`?
 
@@ -121,20 +120,26 @@ npx tsx scripts/reddit-import.ts \
 
 ## Post-deployment manual verification
 
-These need the **deployed Worker running this branch** (staging or prod). They
-can't be checked against current prod, which still runs the pre-PR Worker. All
-are covered by automated tests; this is the live confirmation after `npm run
-deploy -- --env <env> --execute`.
+These need the **deployed Worker running this branch**. Verified live against
+**production** on 2026-06-21 (the Reddit handling from PR #45 is on `main` and
+deployed). All are also covered by automated tests.
 
-- [ ] **Worker rejects Reddit URLs.** `POST /readings` with a `reddit.com` /
-      `redd.it` / `/r/<sub>/s/<token>` URL → reading lands `failed` with
-      `error.code === "RedditManualImportError"` (not a captured bot-challenge,
-      not `raw_only`), and the URL stays re-submittable.
-      *(Automated: `test/integration/readings.test.ts`.)*
-- [ ] **corpus-recover routes Reddit to skip.** Run `corpus-audit` over a corpus
-      containing a failed Reddit row, then `corpus-recover` (dry-run): the row is
-      planned as **`skip`** ("import via local reddit-import skill"), not
-      `local-extract`. *(Automated: `test/unit/corpus/{reason,policy}.test.ts`.)*
+- [x] **Worker rejects Reddit URLs.** Verified live: re-submitting the existing
+      failed row `rd_WMEQVCZKAF`
+      (`reddit.com/r/golang/comments/d0zpsh/...`) reprocessed **in place** (same
+      id, `last_attempt.trigger: reprocess`) to `failed` with
+      `error.code === "RedditManualImportError"` at stage `fetch_source` — a
+      throw-before-fetch that **flipped the stale `BadStatusError`** (HTTP 403
+      bot-challenge captured by the pre-PR Worker), confirming the deployed
+      Worker degrades Reddit without fetching. The reading stays `failed` and
+      re-submittable. *(Automated: `test/integration/readings.test.ts`.)*
+- [x] **corpus-recover routes Reddit to skip.** Verified live: `corpus-audit`
+      over prod found 4 failed Reddit rows; `corpus-recover` (dry-run) /
+      `recoveryAction` classified **all 4 as `skip`** ("reddit — import via local
+      reddit-import skill"), including the freshly-reprocessed
+      `RedditManualImportError` row — none routed to `local-extract` (only the
+      YouTube 429 rows were). *(Automated:
+      `test/unit/corpus/{reason,policy}.test.ts`.)*
 - [ ] **(Optional) Live `--batch`.** `corpus-recover --batch` was not run live
       (needs R2 + Vectorize + Anthropic batch creds and a real backlog). It is
       unchanged by this PR and covered by `test/unit/corpus/batch/**`; Reddit rows
