@@ -70,8 +70,9 @@ instead of the realtime queue. The markdown is the article — no URL is fetched
   --help            Show this message.
 
 Dry-run by default. Idempotent: re-running skips ready owners and re-ingests
-failed owners in place; never duplicates an already-ready URL. Crash-safe via
-the sidecar — a re-run resumes the in-flight batch instead of re-billing.
+failed (and stranded-pending, past the worker's PENDING_TTL) owners in place;
+never duplicates an already-ready URL. Crash-safe via the sidecar — a re-run
+resumes the in-flight batch instead of re-billing.
 
 Needs R2 + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys, the same
 credential world as 'corpus-recover --batch' (not the HTTP bearer token).
@@ -81,7 +82,11 @@ unclaimed during the in-flight batch window. A concurrent realtime submit of the
 same URL could create a duplicate. Run this as the sole writer for the URLs.
 Source URLs are normalized (via new URL().toString()) before hashing, so a
 trailing-slash variant of a URL imported through the realtime HTTP route may not
-dedup against it; this tool is self-consistent for re-runs.`);
+dedup against it; this tool is self-consistent for re-runs.
+A target that terminally fails (batch errored/expired/bad tool input) is written
+as an addressable failed reading (by-id pointer) — recover it with reprocess.
+Re-running the directory would mint a new id for it, since the by-url slot is
+only claimed on success.`);
 }
 
 // R2-backed idempotency reader for prepareFreshMarkdown.

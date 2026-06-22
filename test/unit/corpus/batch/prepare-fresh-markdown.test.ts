@@ -94,16 +94,52 @@ describe("prepareFreshMarkdown", () => {
     ]);
   });
 
-  it("skips a pending owner with an in-flight warning", async () => {
+  it("skips a fresh pending owner (within TTL) with an in-flight warning", async () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => ({ id: "rd_existing", key_prefix: "readings/kp-existing" })),
-      readManifest: vi.fn(async () => manifest({ status: "pending" })),
+      // updated_at == now, so well inside the pending TTL window.
+      readManifest: vi.fn(async () => manifest({ status: "pending", updated_at: NOW })),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
     expect(targets).toHaveLength(0);
     expect(skipped).toEqual([
       { url: "https://example.com/a", reason: "pending-in-flight" },
     ]);
+  });
+
+  it("re-ingests a STALE pending owner in place (matches the worker's read-time staleness rule)", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_stranded", key_prefix: "readings/kp-stranded" })),
+      // updated_at far in the past → past PENDING_TTL → stranded, must re-ingest.
+      readManifest: vi.fn(async () =>
+        manifest({
+          id: "rd_stranded",
+          status: "pending",
+          updated_at: "2026-01-01T00:00:00.000Z",
+          created_at: "2026-01-01T00:00:00.000Z",
+          url_hash: "c".repeat(64),
+        }),
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    const t = targets[0]!.target;
+    expect(t.readingId).toBe("rd_stranded");
+    expect(t.keyPrefix).toBe("readings/kp-stranded");
+    expect(t.urlHash).toBe("c".repeat(64));
+  });
+
+  it("honors a custom pendingTtlSeconds when deciding pending staleness", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_existing", key_prefix: "readings/kp-existing" })),
+      // 10 minutes old; with a 5s TTL it is stale and re-ingests.
+      readManifest: vi.fn(async () => manifest({ status: "pending", updated_at: "2026-06-22T11:50:00.000Z" })),
+      pendingTtlSeconds: 5,
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
   });
 
   it("re-ingests a failed owner in place, reusing its id/key_prefix/created_at", async () => {

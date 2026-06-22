@@ -163,6 +163,12 @@ describe("writeResults — failure path", () => {
     expect(m.error?.stage).toBe("summarize");
     // Failed URLs must stay re-submittable: no by-url pointer.
     expect(r2.store.has(`index/by-url/${"a".repeat(64)}`)).toBe(false);
+    // ...but the by-id pointer IS written so the failed reading is addressable
+    // via /readings/:id and reprocess (no orphan list rows).
+    expect(JSON.parse(r2.store.get("index/by-id/rd_a")!)).toEqual({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
   });
 
   it("does not upsert a vector for a failed reading", async () => {

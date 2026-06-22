@@ -263,8 +263,12 @@ npm run corpus-ingest -- --dir ~/Documents/tweets --execute
   credential world (not the HTTP bearer-token world), is dry-run by default
   (`--execute` to write), and resumes an in-flight batch from
   `<dir>/.corpus-ingest.batch.json`. It does the idempotency check the worker's
-  eager `ReadingClaim` does online (ready/pending owners skip, failed owners
-  re-ingest in place). CAVEAT: `write-phase` only writes the `by-url` pointer on
+  eager `ReadingClaim` does online (ready owners skip; fresh pending owners skip,
+  but a pending owner past `PENDING_TTL_SECONDS` re-ingests in place via the same
+  `stalenessOf` rule the worker applies at read time; failed owners re-ingest in
+  place). A target that terminally fails still gets a `by-id` pointer (so it is
+  addressable / reprocessable, not an orphan list row), but no `by-url` pointer.
+  CAVEAT: `write-phase` only writes the `by-url` pointer on
   success, so the URL stays unclaimed during the in-flight batch window — a
   concurrent realtime submit of the same URL could create a duplicate. Run it as
   the sole writer for those URLs. Source URLs still come from a `**Source:**`

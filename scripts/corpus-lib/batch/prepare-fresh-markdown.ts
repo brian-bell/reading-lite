@@ -1,7 +1,13 @@
 import type { ByUrlPointer, Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
+import { stalenessOf } from "../../../src/modules/staleness";
 import type { DroppedTarget, ExtractedTarget } from "./types";
+
+// Mirror the worker's PENDING_TTL_SECONDS (wrangler.toml, all envs). A pending
+// owner older than this is stale — the worker's read path treats it as failed,
+// so we re-ingest it in place rather than skip it forever.
+export const PENDING_TTL_SECONDS_DEFAULT = 900;
 
 // A planned, deduped, non-oversized markdown file with its source URL resolved.
 export interface FreshMarkdownArticle {
@@ -27,6 +33,9 @@ export interface PrepareFreshDeps {
   mintId(): string;
   now(): string;
   sha256(input: string): Promise<string>;
+  // Pending-owner staleness threshold (mirrors the worker's PENDING_TTL_SECONDS).
+  // Defaults to PENDING_TTL_SECONDS_DEFAULT when omitted.
+  pendingTtlSeconds?: number;
 }
 
 export interface PrepareFreshResult {
@@ -55,6 +64,7 @@ export async function prepareFreshMarkdown(
   const targets: ExtractedTarget[] = [];
   const skipped: SkippedArticle[] = [];
   const dropped: DroppedTarget[] = [];
+  const ttlSeconds = deps.pendingTtlSeconds ?? PENDING_TTL_SECONDS_DEFAULT;
 
   for (const article of articles) {
     const urlHash = await deps.sha256(article.sourceUrl);
@@ -71,12 +81,17 @@ export async function prepareFreshMarkdown(
         skipped.push({ url: article.sourceUrl, reason: "already-ready" });
         continue;
       }
-      if (existing?.status === "pending") {
+      // A pending owner is in-flight only while inside the TTL window. Past it,
+      // the worker's read path (annotateStale/stalenessOf) treats it as failed —
+      // so a stranded pending from an expired queue attempt must re-ingest here,
+      // not skip forever.
+      if (existing?.status === "pending" && !isStalePending(existing, ttlSeconds, deps.now())) {
         skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
         continue;
       }
-      // A failed owner (or a dangling pointer with no manifest) is re-ingested in
-      // place: reuse its slot so we don't strand the old key prefix.
+      // A failed owner, a stale pending owner, or a dangling pointer with no
+      // manifest is re-ingested in place: reuse its slot so we don't strand the
+      // old key prefix.
       id = existing?.id ?? pointer.id;
       keyPrefix = pointer.key_prefix;
       createdAt = existing?.created_at ?? deps.now();
@@ -134,4 +149,12 @@ export async function prepareFreshMarkdown(
   }
 
   return { targets, skipped, dropped };
+}
+
+// A pending manifest counts as stale (treat as failed → re-ingest) when its
+// active attempt or the pending record itself has exceeded TTL — the same verdict
+// the worker applies at read time.
+function isStalePending(manifest: Manifest, ttlSeconds: number, nowIso: string): boolean {
+  const verdict = stalenessOf(manifest, ttlSeconds, nowIso);
+  return verdict.expiredActiveAttempt !== null || verdict.pendingError !== null;
 }
