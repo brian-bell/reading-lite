@@ -2,13 +2,14 @@
 //
 // Import a Reddit thread into reading-lite from a `.json` listing payload that
 // was fetched through a logged-in browser session (see the reddit-import
-// skill). Companion to plans/009-testing-reddit-oauth.md.
+// skill). Companion to plans/009-testing-reddit-import.md.
 //
 // The worker can't fetch Reddit directly (datacenter egress gets a
 // bot-challenge), so the flow is: the skill drives Chrome to fetch the public
 // `<thread>.json`, saves it, and this tool parses it with the shared
 // `redditListingToMarkdown` parser and POSTs the markdown to
-// `/readings/import-markdown`. The reading is keyed by the original thread URL.
+// `/readings/import-markdown`. The reading is keyed by the canonical thread URL
+// the skill resolves (passed as the positional arg).
 //
 // Usage:
 //   npx tsx scripts/reddit-import.ts <redditThreadUrl> --json <file> [options]

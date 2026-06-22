@@ -28,9 +28,18 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
    settles (this also follows `redd.it` / share-link redirects):
    `navigate_page({ url: <redditUrl>, type: "url", timeout: 30000 })`.
 
-2. **Fetch the public JSON** from the resolved page, *returning the parsed object*
-   so the saved file is clean JSON (not a double-encoded string). Save it under
-   the repo with `evaluate_script`'s `filePath`:
+2. **Capture the canonical URL.** After navigation, read Chrome's resolved
+   location (this is what dedupes `redd.it` shortlinks and tracking-param variants
+   to one reading) — use it as the import key in step 3:
+
+   ```js
+   // function (inline result, no filePath):
+   () => location.origin + location.pathname.replace(/\/$/, "")
+   ```
+
+3. **Fetch the public JSON** from the resolved page, *returning the parsed object*
+   so the saved file is clean Reddit listing JSON (not a double-encoded string).
+   Save it under the repo with `evaluate_script`'s `filePath`:
 
    ```js
    // function:
@@ -38,34 +47,39 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
      const jsonUrl = location.origin + location.pathname.replace(/\/$/, "") +
        ".json?raw_json=1&limit=20&sort=top";
      const res = await fetch(jsonUrl, { headers: { accept: "application/json" }, credentials: "include" });
+     if (!res.ok || !(res.headers.get("content-type") || "").includes("json")) {
+       return { error: res.status };   // not logged in / hit a challenge
+     }
      return await res.json();   // return the OBJECT; filePath then writes valid JSON
    }
-   // filePath: ".reddit-thread.tmp.json"
+   // filePath: ".reddit-thread.tmp.json" (gitignored)
    ```
 
-   If the fetch returns non-JSON or a non-200, the session likely isn't logged in
-   or hit a challenge — stop and tell the user to open the thread in Chrome first.
+   If the result is `{ error: ... }`, the session likely isn't logged in or hit a
+   challenge — stop and tell the user to open the thread in Chrome first.
 
-3. **Import** with the helper, keyed by the *original* URL the user gave (that's
-   the reading's `source_url` / ownership key):
+4. **Import** with the helper, keyed by the **canonical URL** from step 2 — that
+   becomes the reading's `source_url` / ownership key:
 
    ```sh
-   npx tsx scripts/reddit-import.ts "<originalRedditUrl>" --json .reddit-thread.tmp.json
+   npx tsx scripts/reddit-import.ts "<canonicalRedditUrl>" --json .reddit-thread.tmp.json
    ```
 
    Use `--dry-run` first to show the rendered markdown without writing. Add
    `--api-url <base>` / `--token <tok>` to target staging or pass a token
    explicitly. The tool prints the new reading id and a poll URL.
 
-4. **Clean up** the temp file (`rm .reddit-thread.tmp.json`) and report the id /
-   poll URL. The reading processes through the normal queue → poll
+5. **Clean up** the temp file (`rm .reddit-thread.tmp.json`; it's gitignored, but
+   it can hold content from your logged-in session so don't leave it around) and
+   report the id / poll URL. The reading processes through the normal queue → poll
    `GET /readings/:id` until `ready`.
 
 ## Notes / gotchas
 
-- **Original URL vs fetched host:** always pass the URL the user pasted as the
-  positional arg — it becomes the canonical `source_url`. The `.json` host the
-  browser actually hit doesn't matter.
+- **Use the resolved canonical URL as the import key**, not the raw string the
+  user pasted. It becomes the reading's `source_url`, so keying on the resolved
+  `origin + pathname` (step 2) dedupes `redd.it/<id>`, `old.reddit.com`, and
+  tracking-param variants of the same thread to a single reading.
 - **No Reddit app / OAuth needed.** This path deliberately avoids API credentials;
   it relies only on your normal logged-in Reddit browser session.
 - **`redd.it` shortlinks** work — step 1's navigation resolves them to the full

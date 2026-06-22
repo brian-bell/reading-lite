@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRedditThreadUrl, redditJsonUrl, redditListingToMarkdown } from "../../../src/modules/extractor/reddit";
+import { isRedditThreadUrl, redditListingToMarkdown } from "../../../src/modules/extractor/reddit";
 
 const REDDIT_THREAD_JSON = JSON.stringify([
   {
@@ -67,34 +67,6 @@ describe("Reddit URL detection", () => {
     expect(isRedditThreadUrl("https://notreddit.com/r/golang/comments/d0zpsh/title/")).toBe(false);
     expect(isRedditThreadUrl("https://reddit.com.evil.com/r/golang/comments/d0zpsh/title/")).toBe(false);
     expect(isRedditThreadUrl("not a url")).toBe(false);
-  });
-});
-
-describe("redditJsonUrl", () => {
-  it("rewrites supported Reddit URLs to the public JSON listing endpoint", () => {
-    expect(
-      redditJsonUrl("https://www.reddit.com/r/coding/comments/wienze/hexagonal_architecture_in_java_simplified/?sort=top#frag"),
-    ).toBe(
-      "https://www.reddit.com/r/coding/comments/wienze/hexagonal_architecture_in_java_simplified.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("https://old.reddit.com/r/golang/comments/d0zpsh/title/")).toBe(
-      "https://www.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("https://www.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1/")).toBe(
-      "https://www.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("http://user:pass@www.reddit.com:8080/r/golang/comments/d0zpsh/title/")).toBe(
-      "https://www.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("https://redd.it/d0zpsh?context=3")).toBe(
-      "https://www.reddit.com/comments/d0zpsh.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("https://www.reddit.com/r/golang/comments/d0zpsh/title.json")).toBe(
-      "https://www.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
-    );
-    expect(redditJsonUrl("https://sh.reddit.com/r/golang/comments/d0zpsh/title/")).toBe(
-      "https://www.reddit.com/r/golang/comments/d0zpsh/title.json?raw_json=1&limit=20&sort=top",
-    );
   });
 });
 

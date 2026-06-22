@@ -21,28 +21,6 @@ export function isRedditThreadUrl(rawUrl: string): boolean {
   return /\/comments\/[a-z0-9]+/i.test(u.pathname) || /\/comment\/[a-z0-9]+/i.test(u.pathname);
 }
 
-// Build the public `.json` listing URL for a Reddit thread. The reddit-import
-// skill fetches this through a logged-in Chrome session (which clears Reddit's
-// JS bot-challenge), so we target the public `www.reddit.com` host rather than
-// the OAuth host — no app credentials involved.
-export function redditJsonUrl(rawUrl: string): string {
-  const u = new URL(rawUrl);
-  const shortId = u.hostname.toLowerCase() === "redd.it" ? u.pathname.split("/").filter(Boolean)[0] : undefined;
-  u.protocol = "https:";
-  u.username = "";
-  u.password = "";
-  u.hostname = "www.reddit.com";
-  u.port = "";
-  const path = u.pathname.replace(/\/+$/, "").replace(/\.json$/i, "");
-  u.pathname = shortId ? `/comments/${shortId}.json` : `${path}.json`;
-  u.search = "";
-  u.hash = "";
-  u.searchParams.set("raw_json", "1");
-  u.searchParams.set("limit", "20");
-  u.searchParams.set("sort", "top");
-  return u.toString();
-}
-
 const Post = z
   .object({
     title: z.string(),
