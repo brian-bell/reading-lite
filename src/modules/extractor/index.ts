@@ -3,20 +3,16 @@ import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { ContentStatus } from "../../schemas/manifest";
 import { fetchWithRetry, parseRetryAfterMs, RateLimitedError, type RetryDeps } from "../http-retry";
-import { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError } from "./errors";
-import { isRedditThreadUrl, redditJsonUrl, redditListingToMarkdown } from "./reddit";
-import { fetchRedditToken, redditUserAgent } from "./reddit-auth";
+import { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
+import { isRedditThreadUrl } from "./reddit";
 
-export { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError } from "./errors";
+export { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
   timeoutMs: number;
   maxBytes: number;
   retry?: RetryDeps;
-  redditClientId?: string;
-  redditClientSecret?: string;
-  redditUserAgent?: string;
 }
 
 export interface ExtractedContent {
@@ -33,7 +29,10 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   assertSafeUrl(url);
-  if (isRedditThreadUrl(url)) return extractReddit(url, deps);
+  // Reddit thread JSON can't be fetched from datacenter egress (bot-challenge),
+  // so fail with guidance toward the local reddit-import skill instead of
+  // burning a generic fetch that would only capture the challenge page.
+  if (isRedditThreadUrl(url)) throw new RedditManualImportError(url);
 
   const { raw, contentType } = await fetchBounded(url, deps);
   const content_sha256 = await sha256Hex(raw);
@@ -70,49 +69,6 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
     return { ...base, content_status: "captured", markdown: pretty };
   }
 
-  return { ...base, content_status: "raw_only" };
-}
-
-async function extractReddit(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
-  if (!deps.redditClientId || !deps.redditClientSecret) {
-    throw new Error("reddit credentials not configured");
-  }
-
-  const token = await fetchRedditToken({
-    fetch: deps.fetch,
-    clientId: deps.redditClientId,
-    clientSecret: deps.redditClientSecret,
-    retry: deps.retry,
-    timeoutMs: deps.timeoutMs,
-    maxBytes: deps.maxBytes,
-    userAgent: deps.redditUserAgent,
-  });
-  const jsonUrl = redditJsonUrl(url);
-  const userAgent = redditUserAgent(deps.redditUserAgent);
-  const { raw } = await fetchBounded(jsonUrl, deps, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      "user-agent": userAgent,
-      accept: "application/json",
-    },
-  });
-  const content_sha256 = await sha256Hex(raw);
-  const article = redditListingToMarkdown(new TextDecoder("utf-8").decode(raw));
-  const base = {
-    raw,
-    content_type: "application/json",
-    content_bytes: raw.byteLength,
-    content_sha256,
-  };
-
-  if (article) {
-    return {
-      ...base,
-      content_status: "captured",
-      markdown: article.markdown,
-      title: article.title,
-    };
-  }
   return { ...base, content_status: "raw_only" };
 }
 

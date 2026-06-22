@@ -154,8 +154,6 @@ deployed Worker:
 | `READER_API_TOKEN` | Bearer token required on every protected route |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
-| `REDDIT_CLIENT_ID` | Reddit OAuth app client id for thread/comment extraction. Create a free "script" app at reddit.com/prefs/apps. |
-| `REDDIT_CLIENT_SECRET` | Reddit OAuth app secret. Reddit thread URLs are fetched through `oauth.reddit.com`; unauthenticated `.json` often returns an HTML challenge instead of JSON. |
 | `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):
@@ -166,7 +164,6 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
-| `REDDIT_USER_AGENT` | `web:reading-lite:1.0 (contact: reading-lite)` | Descriptive Reddit API user-agent for OAuth thread/comment extraction. Override with an app/contact-specific value. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create`. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
@@ -296,6 +293,18 @@ Cloudflare Queues 128 KB message limit are blocked before any POST; successful
 new/existing responses move every file for that source URL into a `processed/`
 subdirectory under the import directory. Emails are off by default; pass
 `--email` to request email notifications for imported readings.
+
+### Reddit threads
+
+Reddit serves a bot-challenge to datacenter egress, so the Worker can't fetch
+thread JSON directly — a `POST /readings` with a `reddit.com` / `redd.it` URL
+deliberately lands `failed`. Add Reddit threads with the **`reddit-import`**
+skill instead: it drives a logged-in Chrome session to fetch the public
+`<thread>.json`, renders the post + top comments to Markdown with the same
+parser the Worker uses, and imports it via `POST /readings/import-markdown`. No
+Reddit app or OAuth credentials are needed. The skill wraps
+`scripts/reddit-import.ts <redditUrl> --json <saved.json>` (which also has a
+`--dry-run` to preview the Markdown).
 
 ## Repo layout
 

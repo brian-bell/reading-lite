@@ -31,7 +31,7 @@ export function reasonForFailure(
   url: string,
 ): string {
   if (FAILURE_OVERRIDES[url]) return FAILURE_OVERRIDES[url];
-  if (/reddit\.com|redd\.it/i.test(url)) return "Reddit — fetch via OAuth .json endpoint";
+  if (/reddit\.com|redd\.it/i.test(url)) return "Reddit — import via local reddit-import skill";
   switch (code) {
     case "BadStatusError": {
       const s = httpStatusFromMessage(message);

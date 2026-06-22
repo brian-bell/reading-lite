@@ -20,9 +20,6 @@ export interface Env {
   PENDING_TTL_SECONDS: string;
   FETCH_TIMEOUT_MS: string;
   FETCH_MAX_BYTES: string;
-  REDDIT_CLIENT_ID: string;
-  REDDIT_CLIENT_SECRET: string;
-  REDDIT_USER_AGENT?: string;
   ANTHROPIC_MODEL: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;

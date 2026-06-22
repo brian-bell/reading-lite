@@ -19,19 +19,19 @@ describe("makeBrowserFetch", () => {
     expect(seen()?.get("accept-language")).toBe("en-US,en;q=0.9");
   });
 
-  it("preserves caller-supplied Reddit OAuth headers instead of clobbering them", async () => {
+  it("preserves caller-supplied headers instead of clobbering them", async () => {
     const { base, seen } = capture();
-    await makeBrowserFetch(base)("https://oauth.reddit.com/r/x/comments/1.json", {
+    // A caller that sets specific headers (auth, a custom UA, a JSON accept) on
+    // purpose must have them survive — the wrapper only fills the gaps.
+    await makeBrowserFetch(base)("https://api.example.com/resource.json", {
       headers: {
         authorization: "Bearer tok",
-        "user-agent": "web:reading-lite:1.0",
+        "user-agent": "custom-agent/1.0",
         accept: "application/json",
       },
     });
-    // The Reddit extractor sets these on purpose; Reddit throttles generic
-    // browser UAs and the OAuth endpoint expects JSON, so they must survive.
     expect(seen()?.get("authorization")).toBe("Bearer tok");
-    expect(seen()?.get("user-agent")).toBe("web:reading-lite:1.0");
+    expect(seen()?.get("user-agent")).toBe("custom-agent/1.0");
     expect(seen()?.get("accept")).toBe("application/json");
     // A default the caller omitted is still filled.
     expect(seen()?.get("accept-language")).toBe("en-US,en;q=0.9");

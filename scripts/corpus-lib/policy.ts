@@ -30,7 +30,10 @@ export function recoveryAction(row: AuditRow): ActionDecision {
   // failed
   const reason = row.reason ?? "";
   if (/not an article|PDF|YouTube/i.test(reason)) return { action: "skip", why: "not an article (PDF/video)" };
-  if (/reddit/i.test(reason)) return { action: "local-extract", why: "reddit — re-fetch locally via OAuth .json endpoint" };
+  // Reddit can't be re-fetched from a Node script — Reddit serves a bot-challenge
+  // to non-browser clients. Skip it here; the reading is recovered by running the
+  // reddit-import skill, which drives a logged-in Chrome session.
+  if (/reddit/i.test(reason)) return { action: "skip", why: "reddit — import via local reddit-import skill" };
   if (/teaser/i.test(reason)) return { action: "skip", why: "paywall teaser" };
 
   switch (row.code) {

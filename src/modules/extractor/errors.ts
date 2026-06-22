@@ -25,3 +25,17 @@ export class BlockedHostError extends Error {
     this.name = "BlockedHostError";
   }
 }
+
+// Reddit serves an HTML bot-challenge to datacenter egress, so the Worker
+// cannot fetch thread JSON directly. Instead of degrading to a useless raw
+// capture, fail visibly with guidance: Reddit threads are imported locally with
+// the `reddit-import` skill, which fetches the public `.json` through a
+// logged-in Chrome session and re-imports the markdown.
+export class RedditManualImportError extends Error {
+  constructor(public readonly url: string) {
+    super(
+      `Reddit threads can't be fetched from the worker (bot-challenge); import locally with the reddit-import skill: ${url}`,
+    );
+    this.name = "RedditManualImportError";
+  }
+}

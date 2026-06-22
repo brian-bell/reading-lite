@@ -95,8 +95,6 @@ describe("staging environment scripts", () => {
       "wrangler secret put ANTHROPIC_API_KEY --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",
-      "wrangler secret put REDDIT_CLIENT_ID --env staging",
-      "wrangler secret put REDDIT_CLIENT_SECRET --env staging",
     ]);
   });
 

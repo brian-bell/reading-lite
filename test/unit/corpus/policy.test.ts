@@ -42,12 +42,12 @@ describe("recoveryAction", () => {
     expect(recoveryAction(row({ code: "BadStatusError", message: "status 403", reason: "Not an article — PDF" })).action).toBe("skip");
   });
 
-  it("routes reddit reasons to local-extract (OAuth extractor handles them), overriding status", () => {
-    // A reddit failure is recoverable now that the extractor fetches via the
-    // OAuth .json endpoint; route it to local-extract even on a status that
-    // would otherwise reprocess (5xx) or skip (404).
-    expect(recoveryAction(row({ code: "BadStatusError", message: "status 526", reason: "Reddit — fetch via OAuth .json endpoint" })).action).toBe("local-extract");
-    expect(recoveryAction(row({ code: "BadStatusError", message: "status 404", reason: "Reddit — fetch via OAuth .json endpoint" })).action).toBe("local-extract");
+  it("routes reddit reasons to skip (import via the local skill), overriding status", () => {
+    // Reddit can't be re-fetched from a Node script (bot-challenge), so it's
+    // skipped here regardless of status; recovery is the reddit-import skill,
+    // which drives a logged-in Chrome session.
+    expect(recoveryAction(row({ code: "BadStatusError", message: "status 526", reason: "Reddit — import via local reddit-import skill" })).action).toBe("skip");
+    expect(recoveryAction(row({ code: "BadStatusError", message: "status 404", reason: "Reddit — import via local reddit-import skill" })).action).toBe("skip");
   });
 });
 

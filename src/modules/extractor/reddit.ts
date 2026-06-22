@@ -3,7 +3,7 @@ import { z } from "zod";
 // Match any reddit.com web subdomain (www, old, np, m, i, sh, new, amp, ...)
 // plus the redd.it shortlink host. Reddit keeps adding share/desktop hosts
 // (sh.reddit.com, new.reddit.com), so an exact allow-list silently drops
-// pasted thread URLs into the generic HTML path instead of OAuth JSON.
+// pasted thread URLs into the generic HTML path instead of the JSON path.
 function isRedditHost(host: string): boolean {
   return host === "reddit.com" || host.endsWith(".reddit.com");
 }
@@ -21,13 +21,17 @@ export function isRedditThreadUrl(rawUrl: string): boolean {
   return /\/comments\/[a-z0-9]+/i.test(u.pathname) || /\/comment\/[a-z0-9]+/i.test(u.pathname);
 }
 
+// Build the public `.json` listing URL for a Reddit thread. The reddit-import
+// skill fetches this through a logged-in Chrome session (which clears Reddit's
+// JS bot-challenge), so we target the public `www.reddit.com` host rather than
+// the OAuth host — no app credentials involved.
 export function redditJsonUrl(rawUrl: string): string {
   const u = new URL(rawUrl);
   const shortId = u.hostname.toLowerCase() === "redd.it" ? u.pathname.split("/").filter(Boolean)[0] : undefined;
   u.protocol = "https:";
   u.username = "";
   u.password = "";
-  u.hostname = "oauth.reddit.com";
+  u.hostname = "www.reddit.com";
   u.port = "";
   const path = u.pathname.replace(/\/+$/, "").replace(/\.json$/i, "");
   u.pathname = shortId ? `/comments/${shortId}.json` : `${path}.json`;

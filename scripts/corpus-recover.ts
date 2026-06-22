@@ -14,7 +14,6 @@ import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/ba
 import { runBatch } from "./corpus-lib/batch/run";
 import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
-import { loadDotVars } from "./lib/dotvars";
 import { makeBrowserFetch } from "./corpus-lib/browser-fetch";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -22,19 +21,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const browserFetch = makeBrowserFetch(fetch);
 
 function recoveryExtractorDeps(fetchFn: typeof fetch): ExtractorDeps {
-  const vars = {
-    ...loadDotVars(".dev.vars"),
-    ...loadDotVars(".prd.vars"),
-    ...loadDotVars(".corpus.vars"),
-    ...process.env,
-  };
   return {
     fetch: fetchFn,
     timeoutMs: 30_000,
     maxBytes: 30_000_000,
-    redditClientId: vars.REDDIT_CLIENT_ID,
-    redditClientSecret: vars.REDDIT_CLIENT_SECRET,
-    redditUserAgent: vars.REDDIT_USER_AGENT,
   };
 }
 
