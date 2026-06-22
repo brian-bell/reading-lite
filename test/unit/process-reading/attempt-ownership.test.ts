@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attemptOwnership,
   type ProcessReadingArgs,
-} from "../../../src/process-reading";
+} from "../../../src/attempt-ownership";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
 
 const ID = "rd_X";
