@@ -318,6 +318,14 @@ no skill or manual import is required — the URL summarizes to `ready` directly
 Description and transcript are best-effort: when YouTube rate-limits or gates the
 watch page, the reading still lands `ready` on the title + author floor.
 
+In practice the worker is usually blocked from the watch page (datacenter
+egress), so it lands the floor only. For a full extraction — description plus
+transcript — run the **`youtube-import`** skill locally:
+`npx tsx scripts/youtube-import.ts "<youtubeUrl>"` (add `--dry-run` to preview).
+It fetches the watch page from your residential IP and uses `yt-dlp` for the
+transcript, then imports the rich markdown via `POST /readings/import-markdown` —
+reusing the same parsers the worker uses. Requires `yt-dlp` on PATH.
+
 ## Repo layout
 
 ```

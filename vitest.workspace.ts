@@ -47,6 +47,7 @@ export default [
         "test/unit/deploy/**/*.test.ts",
         "test/unit/corpus/**/*.test.ts",
         "test/unit/reddit-import/**/*.test.ts",
+        "test/unit/youtube-import/**/*.test.ts",
         "test/unit/check-corpus/**/*.test.ts",
         "test/unit/process-reading-list/**/*.test.ts",
       ],
