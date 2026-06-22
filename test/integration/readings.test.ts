@@ -4,9 +4,9 @@ import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import {
   processReading,
-  removeAttemptVisibility,
   type ProcessReadingArgs,
 } from "../../src/process-reading";
+import { ReadingVisibility } from "../../src/reading-visibility";
 import { sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
@@ -1215,7 +1215,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       metadata: { url, title: "Divergent vector" },
     });
 
-    await removeAttemptVisibility(reader, similarity, {
+    await new ReadingVisibility(reader, similarity).remove({
       id,
       url,
       urlHash,

@@ -151,7 +151,7 @@ describe("commitTerminalManifest", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
-  it("3: CAS loss → restoreCurrentListVisibility called, committed:false", async () => {
+  it("3: CAS loss → restoreIfOwner re-syncs the row, committed:false", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
     await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
@@ -308,7 +308,7 @@ describe("commitTerminalManifest", () => {
 
   it("11: defensive failure path + active-attempt conflict → no restore (unifies with success path)", async () => {
     // The failure-path divergence the extraction deliberately removed: pre-refactor
-    // markFailed re-synced the foreign row via restoreCurrentListVisibility when a
+    // markFailed re-synced the foreign row via the restore path when a
     // conflicting attempt owned the manifest; the unified contract skips it (plan 005
     // case 2). Lock that: a foreign active_attempt under defensive:true writes nothing.
     const reader = newReader();
@@ -329,8 +329,8 @@ describe("commitTerminalManifest", () => {
   it("12: CAS loss + not url owner → restore does NOT resurrect a removed row", async () => {
     // A non-owner duplicate (by-url pointer owned by a different reading) loses
     // the manifest CAS. The concurrent owner already reconciled visibility — and
-    // may have deliberately removed this reading's list row. restoreCurrentList
-    // Visibility must NOT blindly re-append it; that would resurrect a row the
+    // may have deliberately removed this reading's list row. restoreIfOwner
+    // must NOT blindly re-append it; that would resurrect a row the
     // owner unpublished. (Owns-pointer and no-pointer restores still re-sync — see
     // tests 3 and 7.)
     const reader = newReader();

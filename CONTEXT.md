@@ -53,6 +53,15 @@ submit, a markdown import, or a lookup. It lives in
   terminal side.
 - **List index** — `index/list.json`, maintained on every terminal write
   (idempotent on `id`) so list/search never go stale.
+- **Reading visibility** — a reading is publicly visible iff its **list index**
+  row and its Vectorize vector are both present, and only the attempt that owns
+  the reading may change either. That list+vector lockstep and the owner gate
+  live in `src/reading-visibility.ts` (`ReadingVisibility`), exposing three verbs:
+  `publish` (append row + upsert vector), `remove` (remove row + delete vector,
+  list-only when there is no Vectorize binding — the success/failure asymmetry),
+  and `restoreIfOwner` (re-sync the row after a lost manifest CAS).
+  `commitTerminalManifest` decides *what* to do (publish / remove / nothing) and
+  the module enforces *how*. It is the terminal-side mirror of `activateAttempt`.
 - **Stale annotation** — a read-time overlay: a `pending` manifest past
   `PENDING_TTL_SECONDS`, or a `running` attempt past TTL, is surfaced as `failed`
   without a write. The rule lives in `src/modules/staleness.ts` (`stalenessOf`);

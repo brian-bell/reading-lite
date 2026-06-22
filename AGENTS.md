@@ -26,6 +26,12 @@ agent context: current commands, module map, conventions, and gotchas.
   `commitTerminalManifest` on the terminal-write side.
 - `src/process-reading.ts` owns the background processing pipeline, attempt
   logging, terminal manifest commits, email logging, and failure handling.
+- `src/reading-visibility.ts` owns `ReadingVisibility`, the single home for the
+  list-row + Vectorize-vector lockstep and the owner gate that protects it. It
+  exposes `publish` / `remove` / `restoreIfOwner`; `commitTerminalManifest`
+  decides which verb to call and the module enforces the list+vector pairing
+  (list-only when `similarity` is null — the success/failure asymmetry). It is
+  the terminal-side mirror of `activateAttempt` on the activation side.
 - `src/modules/reading-claim.ts` resolves URL ownership through
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` owns the read-time stale-annotation rule
