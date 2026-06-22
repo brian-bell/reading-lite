@@ -366,6 +366,19 @@ export class ReadingStore {
     return ByUrlPointerSchema.parse(json);
   }
 
+  // Resolve a reading id to its manifest via the by-id pointer hop. Returns
+  // null when either the pointer or the manifest it points at is absent, so
+  // callers branch once instead of repeating the two-read 404 dance.
+  async loadReadingById(
+    id: string,
+  ): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+    const ptr = await this.readByIdPointer(id);
+    if (!ptr) return null;
+    const manifest = await this.readManifest(ptr.key_prefix);
+    if (!manifest) return null;
+    return { keyPrefix: ptr.key_prefix, manifest };
+  }
+
   async readListIndex(): Promise<ListIndex | null> {
     const obj = await this.bucket.get(LIST_INDEX_KEY);
     if (!obj) return null;
