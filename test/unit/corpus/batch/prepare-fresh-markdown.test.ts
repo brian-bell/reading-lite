@@ -8,6 +8,15 @@ import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest"
 
 const NOW = "2026-06-22T12:00:00.000Z";
 
+// Deterministic, schema-valid (64 lowercase hex) stand-in for sha256. Shared by
+// the fake deps and the manifest fixtures so a healthy owner satisfies the real
+// invariant url_hash === sha256(url).
+function fakeSha(input: string): string {
+  let h = 0;
+  for (let i = 0; i < input.length; i++) h = (h * 31 + input.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, "0").repeat(8).slice(0, 64);
+}
+
 function article(over: Partial<FreshMarkdownArticle> = {}): FreshMarkdownArticle {
   return {
     sourceUrl: "https://example.com/a",
@@ -18,10 +27,11 @@ function article(over: Partial<FreshMarkdownArticle> = {}): FreshMarkdownArticle
 }
 
 function manifest(over: Partial<Manifest> = {}): Manifest {
+  const url = over.url ?? "https://example.com/a";
   return {
     id: "rd_existing",
-    url: "https://example.com/a",
-    url_hash: "a".repeat(64),
+    url,
+    url_hash: fakeSha(url),
     source_type: "url",
     status: "failed",
     content_type: "text/html",
@@ -42,12 +52,7 @@ function makeDeps(over: Partial<PrepareFreshDeps> = {}): PrepareFreshDeps {
     readManifest: vi.fn(async () => null),
     mintId: vi.fn(() => `rd_new${n++}`),
     now: () => NOW,
-    sha256: vi.fn(async (input: string) => {
-      // Deterministic but schema-valid (64 lowercase hex chars).
-      let h = 0;
-      for (let i = 0; i < input.length; i++) h = (h * 31 + input.charCodeAt(i)) >>> 0;
-      return h.toString(16).padStart(8, "0").repeat(8).slice(0, 64);
-    }),
+    sha256: vi.fn(async (input: string) => fakeSha(input)),
     ...over,
   };
 }
@@ -117,7 +122,6 @@ describe("prepareFreshMarkdown", () => {
           status: "pending",
           updated_at: "2026-01-01T00:00:00.000Z",
           created_at: "2026-01-01T00:00:00.000Z",
-          url_hash: "c".repeat(64),
         }),
       ),
     });
@@ -127,7 +131,7 @@ describe("prepareFreshMarkdown", () => {
     const t = targets[0]!.target;
     expect(t.readingId).toBe("rd_stranded");
     expect(t.keyPrefix).toBe("readings/kp-stranded");
-    expect(t.urlHash).toBe("c".repeat(64));
+    expect(t.urlHash).toBe(fakeSha("https://example.com/a"));
   });
 
   it("honors a custom pendingTtlSeconds when deciding pending staleness", async () => {
@@ -146,7 +150,7 @@ describe("prepareFreshMarkdown", () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => ({ id: "rd_existing", key_prefix: "readings/kp-existing" })),
       readManifest: vi.fn(async () =>
-        manifest({ id: "rd_existing", status: "failed", created_at: "2025-12-01T00:00:00.000Z", url_hash: "f".repeat(64) }),
+        manifest({ id: "rd_existing", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
       ),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
@@ -156,10 +160,46 @@ describe("prepareFreshMarkdown", () => {
     expect(t.readingId).toBe("rd_existing");
     expect(t.keyPrefix).toBe("readings/kp-existing");
     expect(t.createdAt).toBe("2025-12-01T00:00:00.000Z");
-    expect(t.urlHash).toBe("f".repeat(64));
+    expect(t.urlHash).toBe(fakeSha("https://example.com/a"));
     // re-ingest must flip source_type to markdown even over a url failure
     expect(t.manifest.source_type).toBe("markdown");
     expect(t.manifest.status).not.toBe("ready");
+  });
+
+  it("does not trust a damaged pointer that resolves to a DIFFERENT url's manifest", async () => {
+    // index/by-url/{hash(A)} is damaged: it points at a manifest for URL B
+    // (different id/url/url_hash). We must NOT skip A as ready, nor reuse B's
+    // slot — mint a fresh slot for A so write-phase repairs the pointer.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_B", key_prefix: "readings/kp-B" })),
+      readManifest: vi.fn(async () =>
+        manifest({
+          id: "rd_B",
+          url: "https://example.com/OTHER",
+          url_hash: "d".repeat(64),
+          status: "ready",
+        }),
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    const t = targets[0]!.target;
+    // fresh id (minted), NOT rd_B; the by-url slot is A's own hash, not B's.
+    expect(t.readingId).toBe("rd_new0");
+    expect(t.keyPrefix).not.toBe("readings/kp-B");
+    expect(t.urlHash).toBe(await deps.sha256("https://example.com/a"));
+  });
+
+  it("mints a fresh slot for a dangling pointer (manifest missing)", async () => {
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_gone", key_prefix: "readings/kp-gone" })),
+      readManifest: vi.fn(async () => null),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.target.readingId).toBe("rd_new0");
   });
 
   it("produces a target whose synthetic manifest is schema-valid", async () => {

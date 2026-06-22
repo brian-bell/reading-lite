@@ -69,15 +69,29 @@ export async function prepareFreshMarkdown(
   for (const article of articles) {
     const urlHash = await deps.sha256(article.sourceUrl);
     const pointer = await deps.readByUrlPointer(urlHash);
+    const existing = pointer ? await deps.readManifest(pointer.key_prefix) : null;
+    // Only trust the pointer when its manifest GENUINELY owns this URL — the same
+    // id/url/url_hash match the worker's ReadingClaim (ownedManifestMatches)
+    // requires. A damaged or stale pointer (missing manifest, or one that resolves
+    // to a different URL's reading) is NOT trusted: reusing it would overwrite
+    // that other reading, and skipping on it would silently drop this URL. We mint
+    // a fresh slot instead and let write-phase repair the by-url pointer on
+    // success.
+    const owner =
+      pointer &&
+      existing &&
+      existing.id === pointer.id &&
+      existing.url === article.sourceUrl &&
+      existing.url_hash === urlHash
+        ? existing
+        : null;
 
     let id: string;
     let keyPrefix: string;
     let createdAt: string;
-    let effectiveUrlHash = urlHash;
 
-    if (pointer) {
-      const existing = await deps.readManifest(pointer.key_prefix);
-      if (existing?.status === "ready") {
+    if (owner) {
+      if (owner.status === "ready") {
         skipped.push({ url: article.sourceUrl, reason: "already-ready" });
         continue;
       }
@@ -85,22 +99,23 @@ export async function prepareFreshMarkdown(
       // the worker's read path (annotateStale/stalenessOf) treats it as failed —
       // so a stranded pending from an expired queue attempt must re-ingest here,
       // not skip forever.
-      if (existing?.status === "pending" && !isStalePending(existing, ttlSeconds, deps.now())) {
+      if (owner.status === "pending" && !isStalePending(owner, ttlSeconds, deps.now())) {
         skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
         continue;
       }
-      // A failed owner, a stale pending owner, or a dangling pointer with no
-      // manifest is re-ingested in place: reuse its slot so we don't strand the
-      // old key prefix.
-      id = existing?.id ?? pointer.id;
-      keyPrefix = pointer.key_prefix;
-      createdAt = existing?.created_at ?? deps.now();
-      effectiveUrlHash = existing?.url_hash ?? urlHash;
+      // A failed or stale-pending owner is re-ingested in place: reuse its slot so
+      // we don't strand the old key prefix.
+      id = owner.id;
+      keyPrefix = pointer!.key_prefix;
+      createdAt = owner.created_at;
     } else {
       id = deps.mintId();
       createdAt = deps.now();
       keyPrefix = buildKeyPrefix(id, createdAt);
     }
+    // The by-url slot is always this URL's own hash — a trusted owner matches it,
+    // and a fresh/repaired slot claims it.
+    const effectiveUrlHash = urlHash;
 
     const markdownBytes = new TextEncoder().encode(article.markdown);
     const contentSha256 = await deps.sha256(article.markdown);

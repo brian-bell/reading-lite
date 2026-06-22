@@ -34,8 +34,8 @@ function article(name: string, sourceUrl: string | undefined, body: string): Mar
 function manifest(over: Partial<Manifest> = {}): Manifest {
   return {
     id: "rd_existing",
-    url: "https://example.com/x",
-    url_hash: "a".repeat(64),
+    url: over.url ?? "https://example.com/a",
+    url_hash: hex(over.url ?? "https://example.com/a"),
     source_type: "markdown",
     status: "ready",
     content_type: "text/markdown; charset=utf-8",

@@ -44,10 +44,23 @@ function parseCliArgs(): Args {
   return {
     dir: values.dir,
     execute: values.execute === true,
-    limit: values.limit ? Number(values.limit) : Infinity,
+    limit: parseLimit(values.limit),
     ...(values.bucket === undefined ? {} : { bucket: values.bucket }),
     sidecar: values.sidecar ?? path.join(values.dir, ".corpus-ingest.batch.json"),
   };
+}
+
+// A malformed --limit must not silently disable the cap: Number("abc") is NaN,
+// which downstream treats as unbounded and could submit an entire (paid) backlog.
+// Reject anything that isn't a positive integer before any batch is created.
+function parseLimit(raw: string | undefined): number {
+  if (raw === undefined) return Infinity;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.error(`--limit must be a positive integer (got ${raw})`);
+    process.exit(2);
+  }
+  return n;
 }
 
 function printUsage(): void {
