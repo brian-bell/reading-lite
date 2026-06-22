@@ -31,7 +31,11 @@ export function recoveryAction(row: AuditRow): ActionDecision {
   const reason = row.reason ?? "";
   // YouTube watch pages are now extractable (issue #17), so they're no longer a
   // hard-skip class — a failed YouTube reading routes by its actual error below.
-  if (/not an article|PDF/i.test(reason)) return { action: "skip", why: "not an article (PDF)" };
+  // A pre-#17 audit file can still carry the stored override reason
+  // "Not an article — YouTube video page", so exempt YouTube urls from the
+  // non-article shortcut rather than trusting the legacy reason text.
+  const isYoutube = /youtube\.com|youtu\.be/i.test(row.url);
+  if (!isYoutube && /not an article|PDF/i.test(reason)) return { action: "skip", why: "not an article (PDF)" };
   // Reddit can't be re-fetched from a Node script — Reddit serves a bot-challenge
   // to non-browser clients. Skip it here; the reading is recovered by running the
   // reddit-import skill, which drives a logged-in Chrome session.
