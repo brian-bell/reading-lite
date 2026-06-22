@@ -59,6 +59,15 @@ describe("Reddit URL detection", () => {
     expect(isRedditThreadUrl("https://amp.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1/")).toBe(true);
   });
 
+  it("recognizes /s/ share-redirect links (app share button)", () => {
+    // These resolve to a thread but carry no /comments/ segment. They must be
+    // detected so the worker fails them (RedditManualImportError) rather than
+    // following the redirect and capturing the bot-challenge page.
+    expect(isRedditThreadUrl("https://www.reddit.com/r/golang/s/AbC123xyz")).toBe(true);
+    expect(isRedditThreadUrl("https://sh.reddit.com/r/golang/s/AbC123xyz")).toBe(true);
+    expect(isRedditThreadUrl("https://reddit.com/r/Xennials/s/9zQ1k")).toBe(true);
+  });
+
   it("rejects non-thread Reddit URLs and non-Reddit URLs", () => {
     expect(isRedditThreadUrl("https://reddit.com/r/golang")).toBe(false);
     expect(isRedditThreadUrl("https://reddit.com/user/foo")).toBe(false);

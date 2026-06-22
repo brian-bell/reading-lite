@@ -82,8 +82,9 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
   tracking-param variants of the same thread to a single reading.
 - **No Reddit app / OAuth needed.** This path deliberately avoids API credentials;
   it relies only on your normal logged-in Reddit browser session.
-- **`redd.it` shortlinks** work — step 1's navigation resolves them to the full
-  thread URL before the in-page `.json` fetch.
+- **`redd.it` shortlinks and `/r/<sub>/s/<token>` share links** work — step 1's
+  navigation resolves the redirect to the full thread URL before the in-page
+  `.json` fetch (and step 2 captures that resolved URL as the canonical key).
 - This is **local + manual** by design; it can't run inside the worker or the SPA
   submit flow.
 

@@ -18,7 +18,15 @@ export function isRedditThreadUrl(rawUrl: string): boolean {
   const host = u.hostname.toLowerCase();
   if (host === "redd.it") return /^\/[a-z0-9]+\/?$/i.test(u.pathname);
   if (!isRedditHost(host)) return false;
-  return /\/comments\/[a-z0-9]+/i.test(u.pathname) || /\/comment\/[a-z0-9]+/i.test(u.pathname);
+  // `/comments/<id>` and `/comment/<id>` are direct thread/comment permalinks;
+  // `/s/<token>` is the app share-button redirect (e.g. /r/<sub>/s/<token>),
+  // which has no /comments/ segment but resolves to a thread — include it so it
+  // routes to RedditManualImportError instead of the generic fetch path.
+  return (
+    /\/comments\/[a-z0-9]+/i.test(u.pathname) ||
+    /\/comment\/[a-z0-9]+/i.test(u.pathname) ||
+    /\/s\/[a-z0-9]+/i.test(u.pathname)
+  );
 }
 
 const Post = z

@@ -218,6 +218,20 @@ describe("extractFromUrl", () => {
     ).rejects.toBeInstanceOf(RedditManualImportError);
   });
 
+  it("fails Reddit /s/ share-redirect links with RedditManualImportError (no fetch)", async () => {
+    const calls: Array<{ url: string }> = [];
+    const fetchFn = fakeFetch({}, (url) => calls.push({ url }));
+    await expect(
+      extractFromUrl("https://www.reddit.com/r/golang/s/AbC123xyz", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      }),
+    ).rejects.toBeInstanceOf(RedditManualImportError);
+    // Must not follow the share redirect and capture the bot-challenge page.
+    expect(calls).toHaveLength(0);
+  });
+
   it("throws BadStatusError on non-2xx responses", async () => {
     const fetchFn = fakeFetch({
       "https://example.com/missing": { status: 404, body: "not found" },
