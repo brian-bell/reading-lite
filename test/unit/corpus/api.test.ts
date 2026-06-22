@@ -27,6 +27,13 @@ describe("lookupReading", () => {
     expect(await lookupReading("https://x", deps(fetch))).toEqual({ found: true, id: "rd_1" });
   });
 
+  it("reports found with the id on a 409 initializing owner", async () => {
+    const fetch = vi.fn(async () =>
+      jsonResponse(409, { error: "reading owner is still initializing", id: "rd_2", poll: "/readings/rd_2" }),
+    ) as unknown as typeof globalThis.fetch;
+    expect(await lookupReading("https://x", deps(fetch))).toEqual({ found: true, id: "rd_2" });
+  });
+
   it("reports not found on a 404", async () => {
     const fetch = vi.fn(async () => jsonResponse(404, { error: "not found" })) as unknown as typeof globalThis.fetch;
     expect(await lookupReading("https://x", deps(fetch))).toEqual({ found: false });

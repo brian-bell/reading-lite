@@ -34,15 +34,19 @@ export interface LookupResult {
 }
 
 // GET /readings/lookup?url= — read-only resolve of a URL to its owning reading.
-// 404 = no owner; 200/202 = an owner exists (ready/pending). Used to detect a
-// pre-existing reading under a noncanonical URL variant before importing.
+// 404 = no owner; 200/202 = an owner exists (ready/pending); 409 = an owner
+// exists but is still initializing (pointer claimed, manifest not yet written).
+// All three owner responses carry the reading id. Used to detect a pre-existing
+// reading under a noncanonical URL variant before importing, so a 409 must count
+// as found too — otherwise a just-submitted variant slips through and we create
+// a canonical duplicate instead of warning the operator.
 export async function lookupReading(url: string, deps: ApiDeps): Promise<LookupResult> {
   try {
     const res = await deps.fetch(`${deps.base}/readings/lookup?url=${encodeURIComponent(url)}`, {
       headers: { authorization: `Bearer ${deps.token}` },
     });
     if (res.status === 404) return { found: false };
-    if (res.ok || res.status === 202) {
+    if (res.ok || res.status === 202 || res.status === 409) {
       const json = (await res.json().catch(() => ({}))) as { id?: unknown };
       return { found: true, id: typeof json.id === "string" ? json.id : undefined };
     }
