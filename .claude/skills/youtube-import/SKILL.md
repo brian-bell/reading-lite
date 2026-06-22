@@ -57,11 +57,23 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    npx tsx scripts/youtube-import.ts "<youtubeUrl>"
    ```
 
+   The import always claims the **canonical** watch URL, but a thin reading may
+   have been submitted under a noncanonical form (`youtu.be`, `/shorts`, `/live`,
+   `/embed`). Before importing, the tool looks those variants up and prints a
+   `corpus-drop` line for each pre-existing one — drop the variant it names (not
+   necessarily the canonical URL) to avoid leaving a duplicate behind.
+
 ## Notes / gotchas
 
 - **Canonical key.** The import is keyed by the canonical
   `https://www.youtube.com/watch?v=<id>` URL (derived from any accepted form), so
-  `youtu.be/<id>`, `/shorts/<id>`, and `?t=` variants dedupe to one reading.
+  `youtu.be/<id>`, `/shorts/<id>`, and `?t=` variants this tool imports dedupe to
+  one reading. A reading **already** stored under a noncanonical form (from a
+  prior `/readings` submission) is a separate by-url owner — the tool detects and
+  warns about those (see step 3) rather than silently duplicating.
+- **Transcript size cap.** Import markdown rides a Cloudflare queue message
+  (128 KB). A very long transcript is truncated to fit (with a visible notice)
+  so the import can't 503 server-side after a reading is already claimed.
 - **Transcript is best-effort.** Manually-captioned and many auto-captioned
   videos work via yt-dlp; some return nothing. Description (from the watch page)
   is the reliable win over the worker; transcript is the bonus.

@@ -64,6 +64,23 @@ export function canonicalWatchUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
+// Every canonical-ish URL form a video may have been stored under. by-url
+// ownership hashes the exact submitted URL, so a reading saved as youtu.be /
+// shorts / live / embed is invisible to a lookup on the canonical watch URL.
+// youtube-import uses this to find a pre-existing thin reading under a variant
+// before importing canonically (so the operator can drop the duplicate).
+export function youtubeWatchUrlVariants(videoId: string): string[] {
+  return [
+    canonicalWatchUrl(videoId),
+    `https://youtube.com/watch?v=${videoId}`,
+    `https://m.youtube.com/watch?v=${videoId}`,
+    `https://youtu.be/${videoId}`,
+    `https://www.youtube.com/shorts/${videoId}`,
+    `https://www.youtube.com/live/${videoId}`,
+    `https://www.youtube.com/embed/${videoId}`,
+  ];
+}
+
 export function oembedUrl(videoId: string): string {
   return `https://www.youtube.com/oembed?url=${encodeURIComponent(
     canonicalWatchUrl(videoId),

@@ -35,6 +35,41 @@ describe("buildYoutubeImport", () => {
     expect(req!.markdown).toContain("first tip second tip third tip");
   });
 
+  it("truncates an oversized transcript so the markdown stays under the queue byte limit", () => {
+    // The Worker forwards import markdown inside a Cloudflare queue message
+    // (128 KB cap), so a long transcript must be trimmed before posting rather
+    // than 503-ing server-side after a reading is already claimed.
+    const huge = "lorem ipsum dolor ".repeat(20_000); // ~360 KB
+    const req = buildYoutubeImport("https://www.youtube.com/watch?v=YtTWNzOtkxU", {
+      oembedJson: OEMBED,
+      transcript: huge,
+    });
+    expect(req).not.toBeNull();
+    expect(Buffer.byteLength(req!.markdown, "utf8")).toBeLessThanOrEqual(128_000);
+    expect(req!.markdown).toContain("## Transcript");
+    expect(req!.markdown).toContain("truncated");
+  });
+
+  it("does not split a multibyte character when truncating", () => {
+    const huge = "café ".repeat(40_000); // multibyte é, ~280 KB
+    const req = buildYoutubeImport("https://www.youtube.com/watch?v=YtTWNzOtkxU", {
+      oembedJson: OEMBED,
+      transcript: huge,
+    });
+    // A valid round-trip means no lone surrogate / replacement char was emitted.
+    expect(req!.markdown).not.toContain("�");
+    expect(Buffer.byteLength(req!.markdown, "utf8")).toBeLessThanOrEqual(128_000);
+  });
+
+  it("keeps a normal-sized transcript intact (no truncation notice)", () => {
+    const req = buildYoutubeImport("https://www.youtube.com/watch?v=YtTWNzOtkxU", {
+      oembedJson: OEMBED,
+      transcript: "first tip second tip third tip",
+    });
+    expect(req!.markdown).toContain("first tip second tip third tip");
+    expect(req!.markdown).not.toContain("truncated");
+  });
+
   it("falls back to the oEmbed floor when the watch page is unavailable", () => {
     const req = buildYoutubeImport("https://www.youtube.com/watch?v=YtTWNzOtkxU", {
       oembedJson: OEMBED,

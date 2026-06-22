@@ -1,12 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   buildYoutubeMarkdown,
+  canonicalWatchUrl,
   isYoutubeWatchUrl,
   parseOembed,
   parsePlayerResponse,
   parseVideoId,
   timedtextToText,
+  youtubeWatchUrlVariants,
 } from "../../../src/modules/extractor/youtube";
+
+describe("youtubeWatchUrlVariants", () => {
+  it("includes the canonical watch URL plus the known noncanonical forms", () => {
+    const variants = youtubeWatchUrlVariants("YtTWNzOtkxU");
+    expect(variants).toContain(canonicalWatchUrl("YtTWNzOtkxU"));
+    expect(variants).toContain("https://youtu.be/YtTWNzOtkxU");
+    expect(variants).toContain("https://www.youtube.com/shorts/YtTWNzOtkxU");
+    expect(variants).toContain("https://www.youtube.com/live/YtTWNzOtkxU");
+    expect(variants).toContain("https://www.youtube.com/embed/YtTWNzOtkxU");
+  });
+
+  it("every variant round-trips to the same video id", () => {
+    for (const url of youtubeWatchUrlVariants("YtTWNzOtkxU")) {
+      expect(parseVideoId(url)).toBe("YtTWNzOtkxU");
+    }
+  });
+
+  it("has no duplicates", () => {
+    const variants = youtubeWatchUrlVariants("YtTWNzOtkxU");
+    expect(new Set(variants).size).toBe(variants.length);
+  });
+});
 
 describe("isYoutubeWatchUrl / parseVideoId", () => {
   const watch: [string, string][] = [

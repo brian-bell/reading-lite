@@ -32,10 +32,11 @@ import {
   oembedUrl,
   parseVideoId,
   timedtextToText,
+  youtubeWatchUrlVariants,
 } from "../src/modules/extractor/youtube";
 import { buildYoutubeImport } from "./youtube-import-lib/parse";
 import { resolveApiTarget } from "./corpus-lib/config";
-import { importMarkdown } from "./corpus-lib/api";
+import { importMarkdown, lookupReading, type ApiDeps } from "./corpus-lib/api";
 
 const BROWSER_HEADERS = {
   "user-agent":
@@ -140,6 +141,37 @@ function fetchTranscriptViaYtDlp(watchUrl: string): string | undefined {
   }
 }
 
+// We always import under the *canonical* watch URL, but a pre-existing thin
+// worker reading may have been submitted under a different URL form (youtu.be,
+// shorts, live, embed, or the exact link the user passed). by-url ownership
+// hashes the stored URL, so this import won't find/upgrade those — it would
+// create a duplicate. Look the variants up and tell the operator to drop any
+// stale one (we don't auto-drop: that's a destructive R2/Vectorize operation
+// that belongs to the corpus-drop tool).
+async function warnNoncanonicalOwners(
+  videoId: string,
+  canonicalUrl: string,
+  passedUrl: string,
+  deps: ApiDeps,
+): Promise<void> {
+  const candidates = new Set<string>([...youtubeWatchUrlVariants(videoId), passedUrl]);
+  candidates.delete(canonicalUrl); // the canonical owner is handled by the import itself
+
+  const found: { url: string; id?: string }[] = [];
+  for (const candidate of candidates) {
+    const hit = await lookupReading(candidate, deps);
+    if (hit.found) found.push({ url: candidate, id: hit.id });
+  }
+  if (found.length === 0) return;
+
+  process.stderr.write(
+    `\nnote: found ${found.length} existing reading(s) under a noncanonical URL for this video.\n` +
+      `This import claims the canonical ${canonicalUrl}, so those will NOT be replaced —\n` +
+      `drop the stale variant(s) to avoid a duplicate:\n` +
+      found.map((f) => `  npm run corpus-drop -- "${f.url}" --execute   # ${f.id ?? "?"}\n`).join(""),
+  );
+}
+
 async function main(): Promise<void> {
   const args = parseCliArgs();
 
@@ -184,8 +216,11 @@ async function main(): Promise<void> {
     process.exit(2);
     return;
   }
+  const deps: ApiDeps = { ...target, fetch: globalThis.fetch };
 
-  const res = await importMarkdown(body, { ...target, fetch: globalThis.fetch });
+  await warnNoncanonicalOwners(videoId, body.source_url, args.url, deps);
+
+  const res = await importMarkdown(body, deps);
   if (res.outcome === "error") {
     process.stderr.write(`import failed: ${res.error}\n`);
     process.exit(1);
