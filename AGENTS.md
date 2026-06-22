@@ -46,8 +46,18 @@ agent context: current commands, module map, conventions, and gotchas.
   (`stalenessOf`): a `running` attempt or `pending` record past TTL surfaces as
   `failed` without a write. `router.ts`'s `annotateStale` /
   `annotateStaleIndexItem` are thin adapters over it.
-- `src/modules/stores/reading-store.ts` wraps R2 manifests, raw/extracted
-  content, by-id/by-url pointers, attempts, diagnostics, and the list index.
+- `src/modules/stores/reading-store.ts` wraps the thin R2 codecs — manifests,
+  raw/extracted content, by-id/by-url pointers, attempts, and diagnostics. It
+  composes a `ListIndexStore` and delegates its public list-index methods to it,
+  so existing `reader.appendOrReplaceListIndexItem(...)` / `findManifestByUrl`
+  / `listManifests` call sites are unchanged.
+- `src/modules/stores/list-index.ts` owns `ListIndexStore`, the `index/list.json`
+  subsystem: the optimistic-concurrency CAS mutate loop (jittered backoff), the
+  q/tag filter+sort+paginate read path, URL-ownership resolution (the
+  ready>pending>failed `OWNERSHIP_RANK` then recency), the full-bucket `rebuild`
+  fallback, and `manifestToIndexItem`. It reads manifests directly (no back-edge
+  to `ReadingStore`); reading-store.ts imports the shared R2-layout constants
+  (`MANIFEST_FILE`, `READINGS_PREFIX`) from here to keep the layout single-homed.
 - `src/modules/stores/similarity-store.ts` wraps Vectorize query/upsert/delete.
 - `src/modules/extractor`, `embeddings`, `anthropic`, `email`, and
   `http-retry` isolate upstream integrations.
