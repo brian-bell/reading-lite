@@ -2,39 +2,17 @@ import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { ContentStatus } from "../../schemas/manifest";
+import { fetchWithRetry, parseRetryAfterMs, RateLimitedError, type RetryDeps } from "../http-retry";
+import { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
+import { isRedditThreadUrl } from "./reddit";
 
-export class FetchTimeoutError extends Error {
-  constructor(public readonly url: string, public readonly timeoutMs: number) {
-    super(`fetch timed out after ${timeoutMs}ms: ${url}`);
-    this.name = "FetchTimeoutError";
-  }
-}
-
-export class OversizedResponseError extends Error {
-  constructor(public readonly url: string, public readonly maxBytes: number) {
-    super(`response exceeded maxBytes=${maxBytes}: ${url}`);
-    this.name = "OversizedResponseError";
-  }
-}
-
-export class BadStatusError extends Error {
-  constructor(public readonly url: string, public readonly status: number) {
-    super(`bad response status ${status}: ${url}`);
-    this.name = "BadStatusError";
-  }
-}
-
-export class BlockedHostError extends Error {
-  constructor(public readonly url: string, public readonly reason: string) {
-    super(`blocked host (${reason}): ${url}`);
-    this.name = "BlockedHostError";
-  }
-}
+export { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
   timeoutMs: number;
   maxBytes: number;
+  retry?: RetryDeps;
 }
 
 export interface ExtractedContent {
@@ -51,6 +29,11 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   assertSafeUrl(url);
+  // Reddit thread JSON can't be fetched from datacenter egress (bot-challenge),
+  // so fail with guidance toward the local reddit-import skill instead of
+  // burning a generic fetch that would only capture the challenge page.
+  if (isRedditThreadUrl(url)) throw new RedditManualImportError(url);
+
   const { raw, contentType } = await fetchBounded(url, deps);
   const content_sha256 = await sha256Hex(raw);
   const base = {
@@ -92,12 +75,35 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
 async function fetchBounded(
   url: string,
   deps: ExtractorDeps,
+  init: RequestInit = {},
 ): Promise<{ raw: Uint8Array; contentType: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let response: Response;
   try {
-    response = await deps.fetch(url, { signal: controller.signal });
+    const requestInit: RequestInit = { ...init, signal: controller.signal };
+    response = deps.retry
+      ? await fetchWithRetry(deps.fetch, url, requestInit, deps.retry)
+      : await deps.fetch(url, requestInit);
+
+    if (response.status === 429) {
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now);
+      response.body?.cancel().catch(() => {});
+      throw new RateLimitedError(429, retryAfterMs, url);
+    }
+    if (!response.ok) throw new BadStatusError(url, response.status);
+
+    const contentType = response.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE;
+    const contentLengthHeader = response.headers.get("content-length");
+    if (contentLengthHeader) {
+      const declared = Number(contentLengthHeader);
+      if (Number.isFinite(declared) && declared > deps.maxBytes) {
+        throw new OversizedResponseError(url, deps.maxBytes);
+      }
+    }
+
+    const raw = await readBoundedBody(response, deps.maxBytes, url);
+    return { raw, contentType };
   } catch (e) {
     if (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")) {
       throw new FetchTimeoutError(url, deps.timeoutMs);
@@ -106,20 +112,6 @@ async function fetchBounded(
   } finally {
     clearTimeout(timer);
   }
-
-  if (!response.ok) throw new BadStatusError(url, response.status);
-
-  const contentType = response.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE;
-  const contentLengthHeader = response.headers.get("content-length");
-  if (contentLengthHeader) {
-    const declared = Number(contentLengthHeader);
-    if (Number.isFinite(declared) && declared > deps.maxBytes) {
-      throw new OversizedResponseError(url, deps.maxBytes);
-    }
-  }
-
-  const raw = await readBoundedBody(response, deps.maxBytes, url);
-  return { raw, contentType };
 }
 
 async function readBoundedBody(response: Response, maxBytes: number, url: string): Promise<Uint8Array> {

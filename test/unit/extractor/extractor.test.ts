@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError } from "../../../src/modules/extractor";
+import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError, RedditManualImportError } from "../../../src/modules/extractor";
 
-function fakeFetch(responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>) {
-  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+function fakeFetch(
+  responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>,
+  onRequest?: (url: string, init?: RequestInit) => void,
+) {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    onRequest?.(url, init);
     const res = responses[url];
     if (!res) throw new Error(`unexpected fetch: ${url}`);
     return new Response(res.body, { status: res.status ?? 200, headers: res.headers ?? {} });
@@ -184,6 +188,48 @@ describe("extractFromUrl", () => {
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toContain('"a": 1');
+  });
+
+  it("fails Reddit thread URLs with RedditManualImportError instead of fetching", async () => {
+    const calls: Array<{ url: string }> = [];
+    const fetchFn = fakeFetch({}, (url) => calls.push({ url }));
+
+    await expect(
+      extractFromUrl("https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      }),
+    ).rejects.toBeInstanceOf(RedditManualImportError);
+
+    // The worker must not burn a fetch on Reddit — datacenter egress only gets
+    // the bot-challenge; the local reddit-import skill handles these.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails redd.it shortlinks with RedditManualImportError", async () => {
+    const fetchFn = fakeFetch({});
+    await expect(
+      extractFromUrl("https://redd.it/d0zpsh", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      }),
+    ).rejects.toBeInstanceOf(RedditManualImportError);
+  });
+
+  it("fails Reddit /s/ share-redirect links with RedditManualImportError (no fetch)", async () => {
+    const calls: Array<{ url: string }> = [];
+    const fetchFn = fakeFetch({}, (url) => calls.push({ url }));
+    await expect(
+      extractFromUrl("https://www.reddit.com/r/golang/s/AbC123xyz", {
+        fetch: fetchFn,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      }),
+    ).rejects.toBeInstanceOf(RedditManualImportError);
+    // Must not follow the share redirect and capture the bot-challenge page.
+    expect(calls).toHaveLength(0);
   });
 
   it("throws BadStatusError on non-2xx responses", async () => {

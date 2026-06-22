@@ -3695,6 +3695,26 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     expect(body.readings[0]!.error?.code).toBe("BadStatusError");
   });
 
+  it("Reddit URLs fail with RedditManualImportError (worker can't fetch; use the local skill)", async () => {
+    // The default source stub is never hit: the extractor throws on the Reddit
+    // URL before any fetch, so the reading lands failed with a guiding error
+    // rather than capturing a bot-challenge page.
+    const fetchFn = makeStubFetch();
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    await postOne(app, "https://www.reddit.com/r/golang/comments/d0zpsh/title/", services);
+
+    const list = await app.request(
+      "/readings",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const body = (await list.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
+    expect(body.readings).toHaveLength(1);
+    expect(body.readings[0]!.status).toBe("failed");
+    expect(body.readings[0]!.error?.code).toBe("RedditManualImportError");
+  });
+
   it("?q= filters across title, tldr, url (case-insensitive substring)", async () => {
     const idCounter = { n: 0 };
     const services = makeServices(

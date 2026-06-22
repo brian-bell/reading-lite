@@ -169,6 +169,16 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - `Readability`/Turndown can throw on pathological HTML. The extractor has a
   raw-DOM salvage path for throws, but deliberate "no article" verdicts still
   degrade to `raw_only`.
+- Reddit thread/comment URLs can't be fetched from the worker — datacenter
+  egress gets an HTML bot-challenge from `www.reddit.com/*.json`. The extractor
+  detects Reddit URLs (`isRedditThreadUrl`) and throws `RedditManualImportError`
+  so the reading lands `failed` with guidance instead of capturing the challenge
+  page. Add Reddit threads with the **`reddit-import`** skill, which drives a
+  logged-in Chrome session (via `chrome-devtools-mcp`) to fetch the public
+  `<thread>.json`, renders it with the shared `redditListingToMarkdown` parser,
+  and imports the markdown (`scripts/reddit-import.ts` → `/readings/import-markdown`).
+  No Reddit app / OAuth credentials are involved. corpus-recover routes Reddit
+  rows to `skip` for the same reason — recover them with the skill.
 - Turndown's internal DOMParser needs a `document`, absent in Workers; pass
   linkedom's parsed body directly.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.

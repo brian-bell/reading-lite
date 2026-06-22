@@ -294,6 +294,18 @@ new/existing responses move every file for that source URL into a `processed/`
 subdirectory under the import directory. Emails are off by default; pass
 `--email` to request email notifications for imported readings.
 
+### Reddit threads
+
+Reddit serves a bot-challenge to datacenter egress, so the Worker can't fetch
+thread JSON directly — a `POST /readings` with a `reddit.com` / `redd.it` URL
+deliberately lands `failed`. Add Reddit threads with the **`reddit-import`**
+skill instead: it drives a logged-in Chrome session to fetch the public
+`<thread>.json`, renders the post + top comments to Markdown with the same
+parser the Worker uses, and imports it via `POST /readings/import-markdown`. No
+Reddit app or OAuth credentials are needed. The skill wraps
+`scripts/reddit-import.ts <redditUrl> --json <saved.json>` (which also has a
+`--dry-run` to preview the Markdown).
+
 ## Repo layout
 
 ```
