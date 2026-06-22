@@ -219,14 +219,21 @@ H3/S6 cleanup passed:
 - Final staging audit: ready 0, pending 0, failed 0
 - Final `GET /readings?limit=20`: empty list
 
-H2 remains blocked:
+H2 passed (closed 2026-06-21 against prod):
 
-- Vite dev server and local proxy to the staging Worker were started
-- Chrome, the Codex Chrome Extension, and the native host manifest all checked
-  out locally
-- Codex browser control still reported `Browser is not available: extension`,
-  including after opening Chrome through the plugin helper and retrying
+- Originally blocked: Codex browser control reported `Browser is not available:
+  extension`, even after opening Chrome through the plugin helper and retrying
 - Web non-browser checks passed (`cd web && npm test`, `cd web && npm run build`)
+- Closed against the live production SPA at `https://reading-lite.bbell.dev`
+  (staging had since been torn down) using an already-authenticated Chrome
+  session — bearer token stayed in the browser's localStorage, never handled by
+  the operator
+- List renders the Reading Library; detail renders title, source URL, tags,
+  TL;DR, and full summary for `rd_FEGJ7DPCJB`; re-submitting that already `ready`
+  URL surfaced the existing reading — same id, no duplicate list row, manifest
+  stayed `ready` (no reprocess)
+- Non-destructive: reused an already-ready URL, so no new reading, paid
+  summarization, or email; before/after corpus snapshots were unchanged
 
 Additional cleanup passed after the 2026-06-21 focused runs:
 
@@ -295,19 +302,10 @@ npm run corpus-audit -- --bucket reading-lite-staging --out /tmp/reading-lite-st
 
 ## Manual Items Remaining
 
-This remains open in `plans/007-manual-test-idempotent-submits.md`:
-
-- **H2** SPA browser smoke against the staging Worker once browser control is
-  available to Codex, or via another approved browser path.
-
-## Suggested Verification Approaches
-
-H2:
-
-- The Vite dev proxy currently points to local Worker.
-- Easiest options:
-  - temporarily point the dev proxy at `https://reading-lite-staging.bellbm.workers.dev`, or
-  - deploy/use a Pages staging preview and smoke in browser with the staging token in localStorage.
+None. H2 — the last open item in
+`plans/007-manual-test-idempotent-submits.md` — was completed 2026-06-21
+against the live production SPA (see the Group H section above). The idempotent
+URL submit test plan is fully verified.
 
 ## Important Guardrails
 

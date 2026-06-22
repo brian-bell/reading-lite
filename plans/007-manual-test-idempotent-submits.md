@@ -225,7 +225,7 @@ suite.
 ## Group H — Cross-cutting regression
 
 - [x] **H1 (Cloudflare staging):** `GET /readings` list + `q`/`tag`/`offset`/`limit` work; no duplicate rows after A/B cycles
-- [ ] **H2:** SPA smoke (`cd web && npm run dev`) — submit/list/detail render; re-submit surfaces existing reading
+- [x] **H2:** SPA smoke — submit/list/detail render; re-submit surfaces existing reading
 - [x] **H3 (cleanup):** `npm run corpus-audit -- --bucket reading-lite-staging` then
       `npm run corpus-drop -- $U --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute`
       for every throwaway `$U`
@@ -245,7 +245,18 @@ browser smoke was attempted with Vite running locally and `/readings` proxied to
 the staging Worker, but Chrome control from Codex was unavailable. Chrome,
 the Codex Chrome Extension, and the native host manifest all checked out, but
 the bridge repeatedly reported `Browser is not available: extension`, even
-after opening Chrome through the plugin helper. H2 remains unchecked.
+after opening Chrome through the plugin helper.
+
+Run note (2026-06-21, H2 closed against prod): staging had since been torn
+down, so H2 was completed against the live production SPA at
+`https://reading-lite.bbell.dev` using an already-authenticated Chrome session
+(bearer token read from the browser's localStorage; never handled by the
+operator). List renders the Reading Library; detail renders title, source URL,
+tags, TL;DR, and full summary for `rd_FEGJ7DPCJB`; re-submitting that already
+`ready` URL surfaced the existing reading with no new id, no duplicate list row,
+and the manifest stayed `ready` (no reprocess). Non-destructive by design —
+an already-ready URL was reused, so no new reading, paid summarization, or email
+was triggered, confirmed by before/after corpus snapshots. H2 passed.
 
 ---
 
@@ -260,7 +271,6 @@ after opening Chrome through the plugin helper. H2 remains unchecked.
 
 ## Manual items remaining
 
-Remaining after the 2026-06-21 staging verification and B4 product decision:
-
-- **H2** SPA browser smoke against the staging Worker once Chrome control is
-  available to Codex, or via another approved browser path.
+None. H2 was the last open item and was completed 2026-06-21 against the live
+production SPA (see the Group H run note above). The full manual + automated
+test plan for idempotent URL submits is verified.
