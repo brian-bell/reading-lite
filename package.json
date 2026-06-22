@@ -12,6 +12,7 @@
     "staging:teardown": "tsx scripts/staging-teardown.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:quiet": "node scripts/test-quiet.mjs",
     "test:watch": "vitest",
     "read": "tsx scripts/read-url.ts",
     "import-bookmarks": "tsx scripts/import-bookmarks.ts",

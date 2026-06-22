@@ -154,6 +154,12 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   `cloudflare:test` typing.
 - Full root verification is `npm test` and `npm run typecheck`. SPA
   verification is `cd web && npm test` and `cd web && npm run build`.
+- The Workers pool emits high-volume stderr/stdout noise (`CODE_MOVED`, the
+  `MF-Vitest-Source` non-ASCII byte dumps, `[vpw:debug]`/`[vpw:info]` logs).
+  Prefer `npm run test:quiet` over `npm test` to keep logs small — it wraps
+  vitest (`scripts/test-quiet.mjs`), strips only those known-noise lines, and
+  preserves vitest's exit code and all real failure output. Pass filters with
+  `npm run test:quiet -- <path>`. CI still runs the canonical `npm test`.
 
 ## Operational Gotchas
 
