@@ -185,6 +185,17 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   and imports the markdown (`scripts/reddit-import.ts` → `/readings/import-markdown`).
   No Reddit app / OAuth credentials are involved. corpus-recover routes Reddit
   rows to `skip` for the same reason — recover them with the skill.
+- YouTube watch pages are JS shells with no article body, so the extractor
+  special-cases them in-worker (`src/modules/extractor/youtube.ts`). It detects
+  watch/`youtu.be`/`shorts`/`live`/`embed` URLs (`isYoutubeWatchUrl`) and builds
+  markdown in tiers: the public oEmbed endpoint is the required floor (title +
+  author; a 429 here surfaces `RateLimitedError` so the queue retries), while the
+  watch-page description (scraped from `ytInitialPlayerResponse`) and the
+  timedtext transcript are best-effort enrichment that degrade to the floor on
+  any error rather than fail the reading. Transcript fetches are host-checked to
+  YouTube origins. Unlike Reddit, no manual-import skill is needed — a YouTube
+  URL reprocesses to `ready` in-worker, so corpus-recover routes failed YouTube
+  rows by their actual error (no longer a hard `skip`).
 - Turndown's internal DOMParser needs a `document`, absent in Workers; pass
   linkedom's parsed body directly.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.

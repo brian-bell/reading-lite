@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { planByAction, recoveryAction } from "../../../scripts/corpus-lib/policy";
+import { reasonForFailure } from "../../../scripts/corpus-lib/reason";
 import type { AuditRow } from "../../../scripts/corpus-lib/types";
 
 const row = (o: Partial<AuditRow>): AuditRow => ({
@@ -40,6 +41,27 @@ describe("recoveryAction", () => {
 
   it("reason overrides win over status (PDF skips even on a 403)", () => {
     expect(recoveryAction(row({ code: "BadStatusError", message: "status 403", reason: "Not an article — PDF" })).action).toBe("skip");
+  });
+
+  it("recovers a re-audited YouTube reading instead of skipping it (issue #17)", () => {
+    // The override that hard-labeled YouTube "not an article" is gone, so a
+    // re-audited YouTube reading derives a status-based reason and routes to a
+    // real recovery action (here a 5xx → reprocess) rather than skip.
+    const reason = reasonForFailure("BadStatusError", "status 503", "https://www.youtube.com/watch?v=YtTWNzOtkxU");
+    expect(reason).not.toMatch(/not an article|youtube/i);
+    expect(recoveryAction(row({ code: "BadStatusError", message: "status 503", reason })).action).toBe(
+      "reprocess",
+    );
+  });
+
+  it("does not skip a reason merely because it mentions YouTube (issue #17)", () => {
+    // YouTube is no longer a hard-skip class, so a reason string containing
+    // "YouTube" must route by its actual error rather than skip.
+    expect(
+      recoveryAction(
+        row({ code: "BadStatusError", message: "status 503", reason: "Stuck on a YouTube watch page" }),
+      ).action,
+    ).toBe("reprocess");
   });
 
   it("routes reddit reasons to skip (import via the local skill), overriding status", () => {

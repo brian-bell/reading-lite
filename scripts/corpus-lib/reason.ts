@@ -5,7 +5,6 @@
 export const FAILURE_OVERRIDES: Record<string, string> = {
   "https://www.thebestideasforkids.com/wp-content/uploads/2024/11/Thanksgiving-Bingo-Cards-The-Best-Ideas-for-Kids.pdf":
     "Not an article — PDF (printable bingo cards)",
-  "https://www.youtube.com/watch?v=YtTWNzOtkxU": "Not an article — YouTube video page",
   "https://saewitz.com/agentic-coding-is-a-fundamental-shift": "Dead link — 404 Not Found",
   "https://medium.com/@niall.mcnulty/the-complete-guide-to-model-context-protocol-148dca58f148":
     "Dead link — 410 Gone (removed)",

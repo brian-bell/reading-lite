@@ -26,8 +26,22 @@ describe("reasonForFailure", () => {
   });
 
   it("honors the per-url override map and reddit special-case", () => {
-    expect(reasonForFailure("BadStatusError", "status 403", "https://www.youtube.com/watch?v=YtTWNzOtkxU")).toMatch(/Not an article/);
+    expect(
+      reasonForFailure(
+        "BadStatusError",
+        "status 403",
+        "https://www.thebestideasforkids.com/wp-content/uploads/2024/11/Thanksgiving-Bingo-Cards-The-Best-Ideas-for-Kids.pdf",
+      ),
+    ).toMatch(/Not an article/);
     expect(reasonForFailure("BadStatusError", "status 403", "https://www.reddit.com/r/x/comments/1")).toMatch(/Reddit/);
     expect(reasonForFailure("BadStatusError", "status 403", "https://redd.it/d0zpsh")).toMatch(/Reddit/);
+  });
+
+  it("no longer overrides YouTube watch URLs (now supported by the extractor)", () => {
+    // Issue #17: YouTube watch pages are extractable, so a failed YouTube reading
+    // derives its reason from the manifest error and stays recoverable.
+    expect(
+      reasonForFailure("BadStatusError", "status 503", "https://www.youtube.com/watch?v=YtTWNzOtkxU"),
+    ).toMatch(/HTTP 503/);
   });
 });

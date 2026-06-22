@@ -29,7 +29,9 @@ export function recoveryAction(row: AuditRow): ActionDecision {
 
   // failed
   const reason = row.reason ?? "";
-  if (/not an article|PDF|YouTube/i.test(reason)) return { action: "skip", why: "not an article (PDF/video)" };
+  // YouTube watch pages are now extractable (issue #17), so they're no longer a
+  // hard-skip class — a failed YouTube reading routes by its actual error below.
+  if (/not an article|PDF/i.test(reason)) return { action: "skip", why: "not an article (PDF)" };
   // Reddit can't be re-fetched from a Node script — Reddit serves a bot-challenge
   // to non-browser clients. Skip it here; the reading is recovered by running the
   // reddit-import skill, which drives a logged-in Chrome session.
