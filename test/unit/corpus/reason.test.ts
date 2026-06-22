@@ -28,5 +28,6 @@ describe("reasonForFailure", () => {
   it("honors the per-url override map and reddit special-case", () => {
     expect(reasonForFailure("BadStatusError", "status 403", "https://www.youtube.com/watch?v=YtTWNzOtkxU")).toMatch(/Not an article/);
     expect(reasonForFailure("BadStatusError", "status 403", "https://www.reddit.com/r/x/comments/1")).toMatch(/Reddit/);
+    expect(reasonForFailure("BadStatusError", "status 403", "https://redd.it/d0zpsh")).toMatch(/Reddit/);
   });
 });
