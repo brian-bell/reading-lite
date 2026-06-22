@@ -101,7 +101,13 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
   return { report, dropped, resumed: false, batchId: sidecar.batchId };
 }
 
-async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {
+// Shared poll→write tail, reused by the markdown-ingest orchestration. It never
+// reads deps.extract, so an extract-free deps shape (the fresh-markdown path) is
+// accepted.
+export async function pollAndWrite(
+  sidecar: Sidecar,
+  deps: Omit<BatchRunDeps, "extract">,
+): Promise<WriteReportRow[]> {
   const ended = await pollUntilEnded(sidecar.batchId, {
     batch: deps.batch,
     sleep: deps.sleep,

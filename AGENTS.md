@@ -64,7 +64,20 @@ agent context: current commands, module map, conventions, and gotchas.
 - `src/schemas` contains zod API and manifest contracts. `web/src/types.ts`
   hand-mirrors the Worker manifest/list/diagnostics types.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
-  audit/recovery/drop, imports, and manual smoke tests.
+  audit/recovery/drop/ingest, imports, and manual smoke tests.
+- `scripts/corpus-lib/batch/` is the Node-side Anthropic Message Batch pipeline
+  (similar → submit → poll → write, with a resume sidecar). It has two
+  front-ends: `prepare.ts`/`extract-phase.ts` resolve *existing* audit rows
+  (the `corpus-recover --batch` recovery path), and
+  `prepare-fresh-markdown.ts`/`run-fresh-markdown.ts` build `ExtractedTarget[]`
+  straight from markdown in hand (the `corpus-ingest` bulk-import path). The
+  fresh-markdown prepare does the client-side idempotency check the worker's
+  eager `ReadingClaim` does online — ready/pending owners skip, failed owners
+  re-ingest in place, unclaimed URLs mint a fresh id — then carries the markdown
+  as a synthetic captured `ExtractedContent` so `submit-phase` persists
+  `raw.md` + `extracted.md` and `write-phase` produces a `source_type: "markdown"`
+  ready manifest with no path change. `run-fresh-markdown.ts` reuses the shared
+  `pollAndWrite` tail exported from `run.ts`.
 - `web/` is the React/Vite SPA. It stores the bearer token in localStorage,
   lists/searches readings, submits URLs, shows details/diagnostics, opens
   authed content blobs, and can start reprocesses.
@@ -127,6 +140,8 @@ npm run import-markdown -- --dir ~/Documents/articles --dry-run
 npm run corpus-audit -- --bucket reading-lite-staging
 npm run corpus-drop -- "$URL" --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute
 npm run corpus-recover -- --index ./index.json --execute --monitor
+npm run corpus-ingest -- --dir ~/Documents/tweets
+npm run corpus-ingest -- --dir ~/Documents/tweets --execute
 ```
 
 ## Environments
@@ -241,5 +256,19 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - `corpus-recover --batch` is a Node-side bulk recovery path using Anthropic
   Message Batches plus R2/Vectorize clients. It resumes from
   `<index>.batch.json` and reuses the Worker terminal-write contract.
+- `corpus-ingest` (`scripts/corpus-ingest.ts`) is the bulk-*import* sibling of
+  `corpus-recover --batch`: it loads a directory of fresh markdown files into the
+  corpus via the same Message Batch pipeline instead of fanning out realtime
+  `/readings` summarize calls. It lives in the R2/Vectorize + `CORPUS_R2_*`
+  credential world (not the HTTP bearer-token world), is dry-run by default
+  (`--execute` to write), and resumes an in-flight batch from
+  `<dir>/.corpus-ingest.batch.json`. It does the idempotency check the worker's
+  eager `ReadingClaim` does online (ready/pending owners skip, failed owners
+  re-ingest in place). CAVEAT: `write-phase` only writes the `by-url` pointer on
+  success, so the URL stays unclaimed during the in-flight batch window — a
+  concurrent realtime submit of the same URL could create a duplicate. Run it as
+  the sole writer for those URLs. Source URLs still come from a `**Source:**`
+  line; stage exports that use `**URL:**`/`**Link:**` first (the
+  `import-markdown-dir` skill's `normalize-source.sh`).
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.
