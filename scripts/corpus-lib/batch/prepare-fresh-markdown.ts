@@ -34,13 +34,13 @@ export interface PrepareFreshDeps {
   readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null>;
   // Reads the manifest at a key prefix (R2 via S3), or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
-  // Resolves a synthetic by-url pointer for a URL from index/list.json — the best
-  // (ready>pending>failed, then recency) candidate's {id, key_prefix} — so the
-  // worker's cold-legacy adoption is mirrored: a pointerless legacy reading is
-  // not duplicated. The pointer is NOT trusted blindly; prepareFreshMarkdown
-  // re-reads and verifies the manifest behind it (the index row can be stale).
-  // Optional: when omitted, only the real by-url pointer is consulted.
-  findListPointer?(url: string): Promise<ByUrlPointer | null>;
+  // Resolves the index/list.json candidate pointers for a URL, ranked best-first
+  // (ready>pending>failed, then recency) — the worker's cold-legacy adoption, so a
+  // pointerless legacy reading is not duplicated. Candidates are NOT trusted
+  // blindly; prepareFreshMarkdown re-reads and verifies the manifest behind each
+  // until one matches (the index rows can be stale). Optional: when omitted, only
+  // the real by-url pointer is consulted.
+  findListCandidates?(url: string): Promise<ByUrlPointer[]>;
   // Mints a fresh reading id (mirrors services.newId).
   mintId(): string;
   now(): string;
@@ -81,26 +81,33 @@ export async function prepareFreshMarkdown(
   for (const article of articles) {
     const urlHash = await deps.sha256(article.sourceUrl);
     // The real by-url pointer is authoritative. When there isn't one, fall back to
-    // a synthetic pointer resolved from index/list.json — the worker's cold-legacy
-    // adoption, so a pointerless legacy reading for this URL is not duplicated.
+    // the ranked index/list.json candidates — the worker's cold-legacy adoption,
+    // so a pointerless legacy reading for this URL is not duplicated.
     const byUrlPointer = await deps.readByUrlPointer(urlHash);
-    const pointer =
-      byUrlPointer ?? (deps.findListPointer ? await deps.findListPointer(article.sourceUrl) : null);
+    const candidates: ByUrlPointer[] = byUrlPointer
+      ? [byUrlPointer]
+      : deps.findListCandidates
+        ? await deps.findListCandidates(article.sourceUrl)
+        : [];
 
-    // Always verify the manifest behind whichever pointer we have, and trust it
-    // only on the same id/url/url_hash match the worker's ReadingClaim requires
-    // (ownedManifestMatches). This guards both a damaged by-url pointer AND a stale
-    // index row whose manifest was deleted or now points at a different URL — in
-    // either case `owner` is null and we mint/repair rather than skip or clobber.
-    const existing = pointer ? await deps.readManifest(pointer.key_prefix) : null;
-    const owner =
-      pointer &&
-      existing &&
-      existing.id === pointer.id &&
-      existing.url === article.sourceUrl &&
-      existing.url_hash === urlHash
-        ? existing
-        : null;
+    // Verify the manifest behind each candidate and trust the FIRST that genuinely
+    // owns this URL — the same id/url/url_hash match the worker's ReadingClaim
+    // (ownedManifestMatches) requires. Iterating (not just the top candidate)
+    // mirrors ListIndexStore.findManifestByUrl, so a stale/deleted/mismatched best
+    // row can't mask a valid lower-ranked owner. A damaged by-url pointer (its
+    // manifest missing) is remembered for the grace-window check below.
+    let owner: Manifest | null = null;
+    let ownerPointer: ByUrlPointer | null = null;
+    let byUrlManifestMissing = false;
+    for (const cand of candidates) {
+      const m = await deps.readManifest(cand.key_prefix);
+      if (cand === byUrlPointer && m === null) byUrlManifestMissing = true;
+      if (m && m.id === cand.id && m.url === article.sourceUrl && m.url_hash === urlHash) {
+        owner = m;
+        ownerPointer = cand;
+        break;
+      }
+    }
 
     let id: string;
     let keyPrefix: string;
@@ -122,9 +129,9 @@ export async function prepareFreshMarkdown(
       // A failed or stale-pending owner is re-ingested in place: reuse its slot so
       // we don't strand the old key prefix.
       id = owner.id;
-      keyPrefix = pointer!.key_prefix;
+      keyPrefix = ownerPointer!.key_prefix;
       createdAt = owner.created_at;
-    } else if (byUrlPointer && !existing && isFreshMissingManifestPointer(byUrlPointer, deps.now())) {
+    } else if (byUrlPointer && byUrlManifestMissing && isFreshMissingManifestPointer(byUrlPointer, deps.now())) {
       // A real by-url pointer written just before its pending manifest (the worker
       // claims by-url first) is a legitimately-initializing owner inside the grace
       // window, NOT a damaged pointer — skip it as in-flight rather than mint a

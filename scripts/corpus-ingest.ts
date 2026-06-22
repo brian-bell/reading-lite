@@ -116,7 +116,7 @@ function idempotencyDeps(r2: R2Client) {
       const raw = await r2.get(`${keyPrefix}/manifest.json`);
       return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
     },
-    findListPointer: makeListPointerResolver(r2),
+    findListCandidates: makeListCandidatesResolver(r2),
     mintId: mintReadingId,
     now: () => new Date().toISOString(),
     sha256: sha256Hex,
@@ -126,15 +126,15 @@ function idempotencyDeps(r2: R2Client) {
 const OWNERSHIP_RANK: Record<ManifestStatus, number> = { ready: 3, pending: 2, failed: 1 };
 
 // Lazily index index/list.json by URL (the master list, which includes legacy
-// readings with no by-url pointer) and return the best candidate's pointer per
-// URL — ready > pending > failed, then most recent (updated_at ?? created_at,
-// matching ListIndexStore). The returned pointer is only a candidate;
-// prepareFreshMarkdown re-reads and verifies the manifest behind it. Read once
-// and cached across articles.
-function makeListPointerResolver(r2: R2Client): (url: string) => Promise<ByUrlPointer | null> {
-  let byUrl: Map<string, ListIndexItem> | null = null;
-  const load = async (): Promise<Map<string, ListIndexItem>> => {
-    const map = new Map<string, ListIndexItem>();
+// readings with no by-url pointer) and return ALL candidate pointers for a URL,
+// ranked best-first — ready > pending > failed, then most recent (updated_at ??
+// created_at, matching ListIndexStore). prepareFreshMarkdown re-reads and verifies
+// each candidate's manifest until one matches, so a stale top row can't mask a
+// valid lower one. Read once and cached across articles.
+function makeListCandidatesResolver(r2: R2Client): (url: string) => Promise<ByUrlPointer[]> {
+  let byUrl: Map<string, ListIndexItem[]> | null = null;
+  const load = async (): Promise<Map<string, ListIndexItem[]>> => {
+    const map = new Map<string, ListIndexItem[]>();
     const raw = await r2.get("index/list.json");
     if (!raw) return map;
     let items: unknown[] = [];
@@ -147,24 +147,26 @@ function makeListPointerResolver(r2: R2Client): (url: string) => Promise<ByUrlPo
     for (const candidate of items) {
       const item = ListIndexItemSchema.safeParse(candidate);
       if (!item.success) continue;
-      const prev = map.get(item.data.url);
-      if (!prev || beats(item.data, prev)) map.set(item.data.url, item.data);
+      const group = map.get(item.data.url) ?? [];
+      group.push(item.data);
+      map.set(item.data.url, group);
     }
+    for (const group of map.values()) group.sort(byOwnershipThenRecency);
     return map;
   };
-  return async (url: string): Promise<ByUrlPointer | null> => {
+  return async (url: string): Promise<ByUrlPointer[]> => {
     if (!byUrl) byUrl = await load();
-    const item = byUrl.get(url);
-    return item ? { id: item.id, key_prefix: item.key_prefix } : null;
+    return (byUrl.get(url) ?? []).map((item) => ({ id: item.id, key_prefix: item.key_prefix }));
   };
 }
 
-function beats(a: ListIndexItem, b: ListIndexItem): boolean {
+// Best owner first: ready > pending > failed, then most recent. Mirrors
+// ListIndexStore's recency tie-break on updated_at ?? created_at.
+function byOwnershipThenRecency(a: ListIndexItem, b: ListIndexItem): number {
   const ra = OWNERSHIP_RANK[a.status] ?? 0;
   const rb = OWNERSHIP_RANK[b.status] ?? 0;
-  if (ra !== rb) return ra > rb;
-  // Mirror ListIndexStore: recency tie-break on updated_at ?? created_at.
-  return Date.parse(a.updated_at ?? a.created_at) > Date.parse(b.updated_at ?? b.created_at);
+  if (ra !== rb) return rb - ra;
+  return Date.parse(b.updated_at ?? b.created_at) - Date.parse(a.updated_at ?? a.created_at);
 }
 
 async function main(): Promise<void> {

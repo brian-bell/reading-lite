@@ -228,7 +228,7 @@ describe("prepareFreshMarkdown", () => {
     // and its manifest verifies (id/url/url_hash match), so we skip it.
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_legacy", key_prefix: "readings/kp-legacy" }]),
       readManifest: vi.fn(async () => manifest({ id: "rd_legacy", status: "ready" })),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
@@ -239,7 +239,7 @@ describe("prepareFreshMarkdown", () => {
   it("re-ingests a pointerless legacy FAILED reading in place (adopts, no duplicate)", async () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_legacy", key_prefix: "readings/kp-legacy" }]),
       readManifest: vi.fn(async () => manifest({ id: "rd_legacy", status: "failed" })),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
@@ -251,10 +251,10 @@ describe("prepareFreshMarkdown", () => {
 
   it("mints fresh (does NOT skip) when a list.json row is stale — manifest deleted", async () => {
     // Finding: a stale index row whose manifest is gone must not silently drop the
-    // import. The candidate pointer resolves but its manifest read is null → mint.
+    // import. The candidate's manifest read is null → no owner → mint.
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_legacy", key_prefix: "readings/kp-legacy" }]),
       readManifest: vi.fn(async () => null),
     });
     const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
@@ -266,7 +266,7 @@ describe("prepareFreshMarkdown", () => {
   it("mints fresh when a list.json row's manifest now points at a DIFFERENT url", async () => {
     const deps = makeDeps({
       readByUrlPointer: vi.fn(async () => null),
-      findListPointer: vi.fn(async () => ({ id: "rd_legacy", key_prefix: "readings/kp-legacy" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_legacy", key_prefix: "readings/kp-legacy" }]),
       readManifest: vi.fn(async () =>
         manifest({ id: "rd_legacy", status: "ready", url: "https://example.com/OTHER" }),
       ),
@@ -275,6 +275,27 @@ describe("prepareFreshMarkdown", () => {
     expect(skipped).toHaveLength(0);
     expect(targets).toHaveLength(1);
     expect(targets[0]!.target.readingId).toBe("rd_new0");
+  });
+
+  it("does not let a stale top candidate mask a valid lower-ranked owner", async () => {
+    // Two list rows for the URL: the best-ranked (rd_stale) has a deleted manifest;
+    // a lower-ranked (rd_valid) is a genuine ready owner. We must verify down the
+    // list and skip on rd_valid rather than mint a duplicate.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListCandidates: vi.fn(async () => [
+        { id: "rd_stale", key_prefix: "readings/kp-stale" },
+        { id: "rd_valid", key_prefix: "readings/kp-valid" },
+      ]),
+      readManifest: vi.fn(async (kp: string) =>
+        kp === "readings/kp-valid/manifest.json" || kp === "readings/kp-valid"
+          ? manifest({ id: "rd_valid", status: "ready" })
+          : null,
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
   });
 
   it("produces a target whose synthetic manifest is schema-valid", async () => {
