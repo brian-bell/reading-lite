@@ -298,6 +298,42 @@ describe("prepareFreshMarkdown", () => {
     expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
   });
 
+  it("adopts a valid list owner when the by-url pointer is damaged (different url)", async () => {
+    // index/by-url/{hash(A)} is damaged (points at URL B's manifest), but
+    // index/list.json still has a genuine ready owner for A. The worker's repair
+    // path deep-scans and adopts that legacy owner rather than minting a duplicate;
+    // we must do the same — skip A as already-ready, never re-summarize.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_B", key_prefix: "readings/kp-B" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_valid", key_prefix: "readings/kp-valid" }]),
+      readManifest: vi.fn(async (kp: string) =>
+        kp === "readings/kp-valid"
+          ? manifest({ id: "rd_valid", status: "ready" })
+          : manifest({ id: "rd_B", url: "https://example.com/OTHER", url_hash: "d".repeat(64), status: "ready" }),
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
+  });
+
+  it("re-ingests in place at a valid list owner's slot when the by-url pointer's manifest is missing", async () => {
+    // Dangling by-url pointer (manifest gone), but list.json resolves a real failed
+    // owner for the URL. Adopt that slot in place rather than mint a duplicate.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_gone", key_prefix: "readings/2026/06/22T100000Z-rd_gone" })),
+      findListCandidates: vi.fn(async () => [{ id: "rd_legacy", key_prefix: "readings/kp-legacy" }]),
+      readManifest: vi.fn(async (kp: string) =>
+        kp === "readings/kp-legacy" ? manifest({ id: "rd_legacy", status: "failed" }) : null,
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(skipped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.target.readingId).toBe("rd_legacy");
+    expect(targets[0]!.target.keyPrefix).toBe("readings/kp-legacy");
+  });
+
   it("produces a target whose synthetic manifest is schema-valid", async () => {
     const deps = makeDeps();
     const { targets } = await prepareFreshMarkdown([article()], deps);

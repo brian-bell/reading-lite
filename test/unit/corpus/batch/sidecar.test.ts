@@ -48,6 +48,16 @@ describe("sidecar load/save/clear", () => {
     await expect(loadSidecar(file)).rejects.toThrow(/unreadable\/malformed/i);
   });
 
+  it("fails closed on valid JSON that is not a sidecar object (null/primitive/array/missing fields)", async () => {
+    // A file that parses but is not a real Sidecar must NOT be treated as absent —
+    // `null` in particular would slip past `if (existing)` and resubmit a second,
+    // double-billed batch. Fail closed for any non-Sidecar JSON.
+    for (const bad of ["null", "123", '"x"', "[]", "{}", '{"batchId":"msgbatch_1"}']) {
+      await fs.writeFile(file, bad);
+      await expect(loadSidecar(file)).rejects.toThrow(/unreadable\/malformed/i);
+    }
+  });
+
   it("clear removes the file (idempotent)", async () => {
     await saveSidecar(file, sample);
     await clearSidecar(file);

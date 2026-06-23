@@ -80,15 +80,22 @@ export async function prepareFreshMarkdown(
 
   for (const article of articles) {
     const urlHash = await deps.sha256(article.sourceUrl);
-    // The real by-url pointer is authoritative. When there isn't one, fall back to
-    // the ranked index/list.json candidates — the worker's cold-legacy adoption,
-    // so a pointerless legacy reading for this URL is not duplicated.
+    // The real by-url pointer is authoritative and is verified first. The ranked
+    // index/list.json candidates follow as a fallback — consulted both when there
+    // is no pointer at all (cold-legacy adoption) AND when the pointer is present
+    // but damaged (its manifest missing or mismatched). The worker's write-path
+    // repair deep-scans for a valid legacy owner before minting, so a damaged
+    // by-url pointer must not mask a still-valid ready/failed owner and duplicate
+    // it. findListCandidates is cached (one list.json read across all articles), so
+    // appending it on the happy path is just a Map lookup — and the verify loop
+    // breaks on the by-url pointer before reading any list candidate's manifest.
     const byUrlPointer = await deps.readByUrlPointer(urlHash);
+    const listCandidates = deps.findListCandidates
+      ? await deps.findListCandidates(article.sourceUrl)
+      : [];
     const candidates: ByUrlPointer[] = byUrlPointer
-      ? [byUrlPointer]
-      : deps.findListCandidates
-        ? await deps.findListCandidates(article.sourceUrl)
-        : [];
+      ? [byUrlPointer, ...listCandidates]
+      : listCandidates;
 
     // Verify the manifest behind each candidate and trust the FIRST that genuinely
     // owns this URL — the same id/url/url_hash match the worker's ReadingClaim
