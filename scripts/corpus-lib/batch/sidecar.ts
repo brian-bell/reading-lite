@@ -1,5 +1,37 @@
 import { promises as fs } from "node:fs";
+import { z } from "zod";
+import { ManifestSchema } from "../../../src/schemas/manifest";
 import type { Sidecar } from "./types";
+
+// The sidecar is a crash-recovery marker read from disk, so it crosses a trust
+// seam: validate the full shape (per repo convention) before honoring it as a
+// resumable batch. `targets` must be non-empty — a real in-flight batch always
+// carries at least one target (submit is skipped when there are zero), so an
+// empty/under-specified sidecar is corruption that must not be resumed-then-cleared.
+const SidecarTargetSchema = z.object({
+  customId: z.string(),
+  keyPrefix: z.string(),
+  id: z.string(),
+  url: z.string(),
+  urlHash: z.string(),
+  createdAt: z.string(),
+  sourceType: z.enum(["url", "markdown"]),
+  contentType: z.string(),
+  contentStatus: z.string(),
+  contentBytes: z.number(),
+  contentSha256: z.string(),
+  extractedBytes: z.number().optional(),
+  queryEmbedTokens: z.number(),
+  preserveReadyManifest: ManifestSchema.optional(),
+});
+
+const SidecarSchema = z.object({
+  batchId: z.string(),
+  model: z.string(),
+  processingStatus: z.string(),
+  resultsUrl: z.string().nullable(),
+  targets: z.array(SidecarTargetSchema).nonempty(),
+});
 
 // The sidecar lives next to the audit index: ./index.json -> ./index.batch.json.
 // It records the in-flight batch so a crashed/interrupted poll resumes without
@@ -28,21 +60,15 @@ export async function loadSidecar(path: string): Promise<Sidecar | null> {
     throw malformedSidecarError(path);
   }
   // A syntactically-valid file that isn't a real Sidecar (e.g. `null`, a primitive,
-  // an array, or an object missing batchId/targets) must NOT be mistaken for absent:
-  // `null` in particular would slip past callers' `if (existing)` guard and resubmit
-  // a second, double-billed batch. Validate the shape and fail closed otherwise.
-  if (!isSidecarShape(parsed)) throw malformedSidecarError(path);
-  return parsed;
-}
-
-function isSidecarShape(value: unknown): value is Sidecar {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    typeof (value as Sidecar).batchId === "string" &&
-    Array.isArray((value as Sidecar).targets)
-  );
+  // an array, an object missing/empty targets, or targets missing identity fields)
+  // must NOT be mistaken for absent or honored as resumable: `null` would slip past
+  // callers' `if (existing)` guard and resubmit a second, double-billed batch, while
+  // a malformed-but-truthy sidecar could be polled, mis-written, then cleared —
+  // losing the only recovery marker for a billed batch. Validate the full shape and
+  // fail closed otherwise.
+  const result = SidecarSchema.safeParse(parsed);
+  if (!result.success) throw malformedSidecarError(path);
+  return result.data;
 }
 
 function malformedSidecarError(path: string): Error {

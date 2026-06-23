@@ -136,13 +136,31 @@ function makeListCandidatesResolver(r2: R2Client): (url: string) => Promise<ByUr
   const load = async (): Promise<Map<string, ListIndexItem[]>> => {
     const map = new Map<string, ListIndexItem[]>();
     const raw = await r2.get("index/list.json");
+    // Absent list.json: a genuinely cold/empty corpus. Every terminal write keeps
+    // it in sync (and the worker rebuilds+persists it on first read), so a missing
+    // index means there are no pointerless legacy readings to adopt — proceed with
+    // an empty map, exactly as a first-ever ingest must.
     if (!raw) return map;
-    let items: unknown[] = [];
+    // Present-but-corrupt is different: silently treating an unparseable index as
+    // empty would disable ALL cold-legacy adoption and mass-duplicate an
+    // already-ingested corpus on --execute. Fail closed (mirroring the sidecar's
+    // fail-closed posture) so the operator reconciles instead of double-spending.
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw) as { items?: unknown[] };
-      items = Array.isArray(parsed.items) ? parsed.items : [];
+      parsed = JSON.parse(raw);
     } catch {
-      return map;
+      throw new Error(
+        `index/list.json exists but is unparseable — refusing to ingest. Treating it as ` +
+          `empty would disable cold-legacy adoption and duplicate already-ingested URLs. ` +
+          `Inspect/repair the list index before retrying.`,
+      );
+    }
+    const items = (parsed as { items?: unknown }).items;
+    if (!Array.isArray(items)) {
+      throw new Error(
+        `index/list.json is missing its "items" array — refusing to ingest, since treating ` +
+          `it as empty would disable cold-legacy adoption and duplicate already-ingested URLs.`,
+      );
     }
     for (const candidate of items) {
       const item = ListIndexItemSchema.safeParse(candidate);
