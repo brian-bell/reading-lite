@@ -132,6 +132,33 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.vectorize.upsert).toHaveBeenCalled();
   });
 
+  it("writes a by-id pointer (but no by-url) for a fresh ingest whose batch result fails", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    // the batch errors this item rather than emitting a reading (deps.batch and
+    // h.batch are the same object, so this override is seen by the pipeline)
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+
+    const result = await runFreshMarkdownBatch([a], h.deps);
+    expect(result.report.filter((r) => r.status === "failed")).toHaveLength(1);
+
+    const kp = "readings/2026/06/22T120000Z-rd_FRESH0";
+    const m = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(m.status).toBe("failed");
+    // by-id MUST exist so detail/diagnostics/reprocess resolve (no dangling row)
+    expect(h.store.has("index/by-id/rd_FRESH0")).toBe(true);
+    // by-url MUST NOT exist so the failed URL stays re-submittable
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    // the list still carries the failed reading
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
+  });
+
   it("saves a sidecar before creating the batch (crash-window safety)", async () => {
     const h = harness();
     const calls: string[] = [];

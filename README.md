@@ -320,15 +320,19 @@ npm run corpus-ingest -- --dir ~/Documents/articles --execute --bucket reading-l
 
 Idempotency is resolved client-side from `index/by-url/{sha256(url)}` by the same
 rules as the Worker's `ReadingClaim`: a pointer only counts as the owner when its
-manifest actually matches (id + url + url_hash), so ready/pending owners are
-skipped and failed owners re-ingest in place; a fresh pointer whose manifest
-hasn't landed yet is treated as still-initializing and skipped (a realtime submit
-may be in flight); and unclaimed or damaged pointers mint a brand-new reading
+manifest actually matches (id + url + url_hash), so ready owners and pending
+owners are skipped while failed owners re-ingest in place; a fresh pointer whose
+manifest hasn't landed yet is treated as still-initializing and skipped (a
+realtime submit may be in flight); and unclaimed or damaged pointers mint a
+brand-new reading
 (never reusing a damaged id, so a cross-wired pointer can't overwrite an unrelated
-reading). Because the by-url pointer is only written on success, the slot stays
-unclaimed during the in-flight batch window — a concurrent realtime submit of
-the same URL could duplicate it, so this is intended for an operator backfill
-where the script is the sole writer. The in-flight batch is recorded in a
+reading). Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
+offline path can't safely supersede a queue worker that may still be running, so
+a stranded pending is left to heal via the realtime API or `corpus-recover`
+rather than risk racing the worker. Because the by-url pointer is only written on
+success, the slot stays unclaimed during the in-flight batch window — a
+concurrent realtime submit of the same URL could duplicate it, so this is
+intended for an operator backfill where the script is the sole writer. The in-flight batch is recorded in a
 sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
 instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
 `CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`

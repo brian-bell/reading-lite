@@ -121,11 +121,19 @@ describe("prepareFreshMarkdown — existing owner", () => {
     ]);
   });
 
-  it("skips a pending owner (a realtime submit may be in flight)", async () => {
+  it("skips a pending owner, even a past-TTL one, to avoid racing an in-flight worker", async () => {
     const a = article();
+    // A long-stale pending: still skipped — this offline path can't safely
+    // supersede a queue worker that may still be running/redelivering.
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-owner" } },
-      manifests: { "readings/kp-owner": manifest({ status: "pending" }) },
+      manifests: {
+        "readings/kp-owner": manifest({
+          status: "pending",
+          created_at: "2025-12-01T00:00:00.000Z",
+          updated_at: "2026-01-02T00:00:00.000Z",
+        }),
+      },
     });
     const plan = await prepareFreshMarkdown([a], d);
 

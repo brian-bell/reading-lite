@@ -79,6 +79,14 @@ export async function prepareFreshMarkdown(
           dispositions.push({ kind: "skip-ready", url, id: owner.id, article });
           continue;
         }
+        // A pending owner means a realtime submit/import may be in flight — skip
+        // it. We deliberately do NOT re-ingest even a past-TTL ("stale") pending:
+        // the TTL is a read-time heuristic, the original queue worker may still be
+        // running/redelivering, and this offline path can't claim/supersede that
+        // attempt the way the Worker does. Re-ingesting could race the worker and
+        // (on a batch failure, which carries no preserved-ready snapshot) clobber
+        // a just-ready manifest down to failed. A stranded pending is benign and
+        // recoverable — heal it via the realtime API or `corpus-recover`.
         if (manifest.status === "pending") {
           dispositions.push({ kind: "skip-pending", url, id: owner.id, article });
           continue;

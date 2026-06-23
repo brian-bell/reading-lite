@@ -109,12 +109,23 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests (no by-url pointer).
+  // 3. Write the failure manifests. No by-url pointer (failed URLs stay
+  //    re-submittable), but DO write the by-id pointer: a freshly-minted ingest
+  //    has no pre-existing pointer (unlike the recover path, where the reading is
+  //    already in the corpus), so without it the failed reading would be a
+  //    dangling list row — its detail/diagnostics/reprocess routes resolve
+  //    through by-id and would 404, and a resubmit could mint a duplicate. The
+  //    write is idempotent for the recover path (same id → same key_prefix).
   for (const { target, error } of failures) {
     const manifest = target.preserveReadyManifest
       ? rolledForward(target.preserveReadyManifest, deps.now())
       : buildFailedManifest(target, error, deps.now());
     await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
+    await deps.r2.put(
+      `index/by-id/${target.id}`,
+      JSON.stringify({ id: target.id, key_prefix: target.keyPrefix }),
+      { contentType: "application/json" },
+    );
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
     report.push({ id: target.id, status: "failed", reason: error.message });
   }

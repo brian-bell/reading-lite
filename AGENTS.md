@@ -255,10 +255,17 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   match; like the recover-batch path it omits the `last_attempt` attempt log). It
   resolves by-url ownership client-side by `ReadingClaim`'s own rules (reusing its
   exported `ownedManifestMatches` / `isFreshMissingManifestPointer`): a pointer
-  owns the URL only when its manifest matches (id + url + url_hash), so ready/pending
-  owners skip and failed owners re-ingest in place; a fresh missing-manifest
-  pointer is still-initializing and skipped; unclaimed or damaged pointers mint a
-  new id (never reusing a damaged id). Because `write-phase` only writes the by-url pointer on
+  owns the URL only when its manifest matches (id + url + url_hash), so ready and
+  pending owners skip while failed owners re-ingest in place; a fresh
+  missing-manifest pointer is still-initializing and skipped; unclaimed or damaged
+  pointers mint a new id (never reusing a damaged id). Pending owners are skipped
+  even past PENDING_TTL_SECONDS — unlike the Worker, this offline path can't
+  claim/supersede an in-flight queue attempt, so re-ingesting a stale pending could
+  race the worker and (on a batch failure, which carries no preserved-ready
+  snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
+  corpus-recover. `write-phase` writes the by-id pointer on both the success and
+  failure branches (a fresh-ingest failure must still be reachable via
+  detail/reprocess), but only writes by-url on success. Because by-url is only written on
   success, the URL stays unclaimed during the in-flight batch window — a
   concurrent realtime submit of the same URL could create a duplicate, so it is
   intended for an operator backfill where the script is the sole writer.
