@@ -1,0 +1,209 @@
+import { createHash } from "node:crypto";
+import type { Manifest } from "../../../src/schemas/manifest";
+import type { ExtractedContent } from "../../../src/modules/extractor";
+import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
+import {
+  isFreshMissingManifestPointer,
+  ownedManifestMatches,
+} from "../../../src/modules/reading-claim";
+import { urlHash as hashUrl } from "../url-hash";
+import type { MarkdownArticle } from "../../import-markdown-lib/parse";
+import type { ExtractedTarget } from "./types";
+
+const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
+
+export interface ByUrlPointer {
+  id: string;
+  key_prefix: string;
+}
+
+// The bulk fresh-markdown front-end's view of the corpus: it replaces the
+// worker's eager ReadingClaim (which we can't run offline) with client-side
+// by-url ownership reads.
+export interface FreshMarkdownDeps {
+  // index/by-url/{sha256(url)} pointer for a URL, or null if unclaimed.
+  getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
+  // The manifest behind a pointer, or null if absent.
+  readManifest(keyPrefix: string): Promise<Manifest | null>;
+  // Mint a fresh reading id (rd_...) for an unclaimed URL.
+  newId(): string;
+  now(): string;
+}
+
+// Per-article verdict, retained so the CLI can print a complete plan.
+export type FreshDisposition =
+  | { kind: "ingest-new"; url: string; id: string; article: MarkdownArticle; target: ExtractedTarget }
+  | { kind: "ingest-failed"; url: string; id: string; article: MarkdownArticle; target: ExtractedTarget }
+  | { kind: "skip-ready"; url: string; id: string; article: MarkdownArticle }
+  | { kind: "skip-pending"; url: string; id: string; article: MarkdownArticle }
+  // A by-url pointer whose manifest hasn't landed yet, inside the grace window —
+  // a realtime submit/import is in flight; do not touch it (mirrors ReadingClaim's
+  // `initializing`).
+  | { kind: "skip-initializing"; url: string; id: string; article: MarkdownArticle }
+  | { kind: "skip-no-source"; url: null; id: null; article: MarkdownArticle };
+
+export interface FreshMarkdownPlan {
+  dispositions: FreshDisposition[];
+  // new + reingest-failed targets, ready to feed similar → submit → write.
+  toIngest: ExtractedTarget[];
+}
+
+// Resolve a directory of fresh markdown articles into bulk-summarize targets,
+// honoring by-url ownership: ready owners are skipped (don't re-summarize),
+// pending owners are skipped (a realtime submit may be in flight), failed owners
+// re-ingest in place (same id/key_prefix), and unclaimed URLs mint a new id.
+export async function prepareFreshMarkdown(
+  articles: MarkdownArticle[],
+  deps: FreshMarkdownDeps,
+): Promise<FreshMarkdownPlan> {
+  const dispositions: FreshDisposition[] = [];
+  const toIngest: ExtractedTarget[] = [];
+
+  for (const article of articles) {
+    const url = article.sourceUrl;
+    if (!url) {
+      dispositions.push({ kind: "skip-no-source", url: null, id: null, article });
+      continue;
+    }
+
+    const urlHash = hashUrl(url);
+    const owner = await deps.getByUrl(urlHash);
+    if (owner) {
+      const manifest = await deps.readManifest(owner.key_prefix);
+      // Only a manifest that genuinely owns this URL (id + url + url_hash all
+      // match the pointer) counts as the owner — exactly ReadingClaim's rule.
+      // A pointer cross-wired to an unrelated manifest must NOT make this URL
+      // skip, nor re-ingest atop that other reading.
+      if (manifest && ownedManifestMatches(owner, manifest, url, urlHash)) {
+        if (manifest.status === "ready") {
+          dispositions.push({ kind: "skip-ready", url, id: owner.id, article });
+          continue;
+        }
+        if (manifest.status === "pending") {
+          dispositions.push({ kind: "skip-pending", url, id: owner.id, article });
+          continue;
+        }
+        // failed owner → re-ingest in place: reuse the claimed id, its key_prefix,
+        // and its original created_at (the key_prefix encodes that timestamp).
+        const target = buildExtractedTarget(
+          article,
+          url,
+          urlHash,
+          owner.id,
+          owner.key_prefix,
+          manifest.created_at,
+          deps.now(),
+        );
+        toIngest.push(target);
+        dispositions.push({ kind: "ingest-failed", url, id: owner.id, article, target });
+        continue;
+      }
+      // A fresh pointer whose manifest hasn't landed is a still-initializing
+      // owner (a realtime submit wrote by-url before its pending manifest) — skip
+      // it so the backfill never clobbers an in-flight claim.
+      if (!manifest && isFreshMissingManifestPointer(owner, deps.now())) {
+        dispositions.push({ kind: "skip-initializing", url, id: owner.id, article });
+        continue;
+      }
+      // Otherwise the pointer is damaged (mismatched manifest, or stale-missing):
+      // fall through to mint a brand-new reading. write-phase overwrites the
+      // damaged by-url pointer on success — a safe repair-by-replacement for a
+      // sole-writer backfill (it never reuses the damaged id/key_prefix, so it
+      // can't overwrite an unrelated reading).
+    }
+
+    const id = deps.newId();
+    const createdAt = deps.now();
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const target = buildExtractedTarget(article, url, urlHash, id, keyPrefix, createdAt, createdAt);
+    toIngest.push(target);
+    dispositions.push({ kind: "ingest-new", url, id, article, target });
+  }
+
+  return { dispositions, toIngest };
+}
+
+export interface DispositionTally {
+  ingestNew: number;
+  ingestFailed: number;
+  skipReady: number;
+  skipPending: number;
+  skipInitializing: number;
+  skipNoSource: number;
+  // ingestNew + ingestFailed — the readings that would actually be submitted.
+  toIngest: number;
+}
+
+// Count dispositions by kind for the CLI plan summary.
+export function tallyDispositions(dispositions: FreshDisposition[]): DispositionTally {
+  const t: DispositionTally = {
+    ingestNew: 0,
+    ingestFailed: 0,
+    skipReady: 0,
+    skipPending: 0,
+    skipInitializing: 0,
+    skipNoSource: 0,
+    toIngest: 0,
+  };
+  for (const d of dispositions) {
+    if (d.kind === "ingest-new") t.ingestNew++;
+    else if (d.kind === "ingest-failed") t.ingestFailed++;
+    else if (d.kind === "skip-ready") t.skipReady++;
+    else if (d.kind === "skip-pending") t.skipPending++;
+    else if (d.kind === "skip-initializing") t.skipInitializing++;
+    else if (d.kind === "skip-no-source") t.skipNoSource++;
+  }
+  t.toIngest = t.ingestNew + t.ingestFailed;
+  return t;
+}
+
+function buildExtractedTarget(
+  article: MarkdownArticle,
+  url: string,
+  urlHash: string,
+  id: string,
+  keyPrefix: string,
+  createdAt: string,
+  now: string,
+): ExtractedTarget {
+  const markdown = article.markdown;
+  const bytes = article.bytes;
+  const sha256 = createHash("sha256").update(markdown, "utf8").digest("hex");
+
+  // The synthetic pending manifest only needs to carry source_type (read by the
+  // submit phase) and a non-ready status (so no ready-snapshot is preserved); the
+  // content_* descriptors below come from `fresh`.
+  const manifest: Manifest = {
+    id,
+    url,
+    url_hash: urlHash,
+    source_type: "markdown",
+    status: "pending",
+    ...(article.title === undefined ? {} : { title: article.title }),
+    content_type: MARKDOWN_CONTENT_TYPE,
+    content_status: "captured",
+    content_bytes: bytes,
+    content_sha256: sha256,
+    created_at: createdAt,
+    updated_at: now,
+  };
+
+  // The markdown is both the article text and the raw object to persist, mirroring
+  // the realtime import endpoint (raw.md + extracted.md are the same bytes).
+  const fresh: ExtractedContent = {
+    raw: new TextEncoder().encode(markdown),
+    content_type: MARKDOWN_CONTENT_TYPE,
+    content_status: "captured",
+    content_bytes: bytes,
+    content_sha256: sha256,
+    markdown,
+    ...(article.title === undefined ? {} : { title: article.title }),
+  };
+
+  return {
+    target: { readingId: id, url, urlHash, keyPrefix, createdAt, manifest },
+    markdown,
+    ...(article.title === undefined ? {} : { title: article.title }),
+    fresh,
+  };
+}

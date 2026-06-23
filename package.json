@@ -21,6 +21,7 @@
     "youtube-import": "tsx scripts/youtube-import.ts",
     "corpus-audit": "tsx scripts/corpus-audit.ts",
     "corpus-recover": "tsx scripts/corpus-recover.ts",
+    "corpus-ingest": "tsx scripts/corpus-ingest.ts",
     "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
     "corpus-drop": "tsx scripts/corpus-drop.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",

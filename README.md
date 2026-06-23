@@ -212,7 +212,9 @@ every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
 through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
-Both default to a dry run; pass `--execute` to act.
+Both default to a dry run; pass `--execute` to act. To bulk-import a *fresh*
+markdown directory (not yet in the corpus) through the same Message Batch path,
+use `npm run corpus-ingest -- --dir <path>` (see Bulk markdown ingest above).
 
 ## Web SPA
 
@@ -294,6 +296,44 @@ new/existing responses move every file for that source URL into a `processed/`
 subdirectory under the import directory. Emails are off by default; pass
 `--email` to request email notifications for imported readings.
 
+#### Bulk markdown ingest via the Message Batch API
+
+`import-markdown` summarizes every file **realtime** through the Worker queue.
+For large backfills, `corpus-ingest` ingests the same directory but summarizes
+through the **Anthropic Message Batch API** (~50% cheaper, async, no rate-limit
+retries). It is the markdown-in-hand sibling of `corpus-recover --batch`: it
+talks to R2/Vectorize directly with `CORPUS_R2_*` credentials rather than the
+HTTP `/readings` API. The resulting `ready` manifests are contract-compatible
+with the realtime import path (`source_type: "markdown"`, captured content,
+correct `content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`,
+by-url + by-id pointers, a Vectorize vector, and an `index/list.json` entry);
+like `corpus-recover --batch`, the bulk path omits the realtime attempt-log
+fields (`last_attempt` and the per-attempt objects under the key prefix).
+
+```sh
+# dry-run (default): print the plan; with creds it also shows ownership skips
+npm run corpus-ingest -- --dir ~/Documents/articles
+
+# ingest for real (writes manifests, pointers, vectors, list index)
+npm run corpus-ingest -- --dir ~/Documents/articles --execute --bucket reading-lite
+```
+
+Idempotency is resolved client-side from `index/by-url/{sha256(url)}` by the same
+rules as the Worker's `ReadingClaim`: a pointer only counts as the owner when its
+manifest actually matches (id + url + url_hash), so ready/pending owners are
+skipped and failed owners re-ingest in place; a fresh pointer whose manifest
+hasn't landed yet is treated as still-initializing and skipped (a realtime submit
+may be in flight); and unclaimed or damaged pointers mint a brand-new reading
+(never reusing a damaged id, so a cross-wired pointer can't overwrite an unrelated
+reading). Because the by-url pointer is only written on success, the slot stays
+unclaimed during the in-flight batch window — a concurrent realtime submit of
+the same URL could duplicate it, so this is intended for an operator backfill
+where the script is the sole writer. The in-flight batch is recorded in a
+sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
+instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
+`CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`
+requires them, dry-run degrades to the local plan without them.
+
 ### Reddit threads
 
 Reddit serves a bot-challenge to datacenter egress, so the Worker can't fetch
@@ -351,10 +391,11 @@ scripts/
   read-url.ts                   # CLI: POST a single URL
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
   corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = bulk Message Batch path)
+  corpus-ingest.ts              # CLI: bulk-ingest a fresh .md dir via the Message Batch path (markdown-in-hand sibling of corpus-recover --batch)
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
   corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
-  corpus-lib/batch/{...}        # bulk path: Anthropic Message Batch + OpenAI array embed, phase pipeline, resume sidecar
-  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch)
+  corpus-lib/batch/{...}        # bulk path: Anthropic Message Batch + OpenAI array embed, phase pipeline, resume sidecar; prepare-fresh-markdown + run-fresh-markdown front-end for corpus-ingest
+  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch / corpus-ingest)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings

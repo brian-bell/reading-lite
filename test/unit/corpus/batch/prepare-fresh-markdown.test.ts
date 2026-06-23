@@ -1,0 +1,251 @@
+import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import {
+  prepareFreshMarkdown,
+  tallyDispositions,
+  type FreshDisposition,
+  type FreshMarkdownDeps,
+} from "../../../../scripts/corpus-lib/batch/prepare-fresh-markdown";
+import type { MarkdownArticle } from "../../../../scripts/import-markdown-lib/parse";
+import type { Manifest } from "../../../../src/schemas/manifest";
+
+function article(over: Partial<MarkdownArticle> = {}): MarkdownArticle {
+  const markdown = over.markdown ?? "# Title\n\n**Source:** https://example.com/a\n\nbody";
+  return {
+    filePath: `/tmp/${over.fileName ?? "a.md"}`,
+    fileName: over.fileName ?? "a.md",
+    markdown,
+    bytes: Buffer.byteLength(markdown, "utf8"),
+    title: "Title",
+    sourceUrl: "https://example.com/a",
+    ...over,
+  };
+}
+
+function hex(url: string): string {
+  return createHash("sha256").update(url, "utf8").digest("hex");
+}
+
+// In-memory deps: by-url pointers + manifests keyed the way R2 stores them.
+function deps(
+  seed: { byUrl?: Record<string, { id: string; key_prefix: string }>; manifests?: Record<string, Manifest> } = {},
+): FreshMarkdownDeps & { ids: string[] } {
+  const byUrl = seed.byUrl ?? {};
+  const manifests = seed.manifests ?? {};
+  let n = 0;
+  const ids: string[] = [];
+  return {
+    ids,
+    async getByUrl(urlHash) {
+      return byUrl[urlHash] ?? null;
+    },
+    async readManifest(keyPrefix) {
+      return manifests[keyPrefix] ?? null;
+    },
+    newId() {
+      const id = `rd_NEW${n++}`;
+      ids.push(id);
+      return id;
+    },
+    now() {
+      return "2026-06-22T00:00:00.000Z";
+    },
+  };
+}
+
+describe("prepareFreshMarkdown — unclaimed URL", () => {
+  it("mints a new markdown ingest target with captured content descriptors", async () => {
+    const a = article();
+    const plan = await prepareFreshMarkdown([a], deps());
+
+    expect(plan.toIngest).toHaveLength(1);
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_NEW0");
+    expect(t.target.url).toBe("https://example.com/a");
+    expect(t.target.urlHash).toBe(hex("https://example.com/a"));
+    expect(t.target.createdAt).toBe("2026-06-22T00:00:00.000Z");
+    // key_prefix is the compact-timestamp layout the worker mints.
+    expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
+
+    // The synthetic manifest the submit phase reads for source_type.
+    expect(t.target.manifest.source_type).toBe("markdown");
+    expect(t.target.manifest.status).not.toBe("ready"); // no roll-forward snapshot
+
+    // Markdown is both the article text and the raw object to persist.
+    expect(t.markdown).toBe(a.markdown);
+    expect(t.title).toBe("Title");
+    expect(t.fresh).toBeDefined();
+    expect(t.fresh!.content_type).toBe("text/markdown; charset=utf-8");
+    expect(t.fresh!.content_status).toBe("captured");
+    expect(t.fresh!.content_bytes).toBe(a.bytes);
+    expect(t.fresh!.content_sha256).toBe(
+      createHash("sha256").update(a.markdown, "utf8").digest("hex"),
+    );
+    expect(new TextDecoder().decode(t.fresh!.raw)).toBe(a.markdown);
+
+    expect(plan.dispositions).toHaveLength(1);
+    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+  });
+});
+
+function manifest(over: Partial<Manifest> = {}): Manifest {
+  return {
+    id: "rd_OWNER",
+    url: "https://example.com/a",
+    url_hash: hex("https://example.com/a"),
+    source_type: "markdown",
+    status: "ready",
+    content_type: "text/markdown; charset=utf-8",
+    content_status: "captured",
+    content_bytes: 10,
+    content_sha256: "b".repeat(64),
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-02T00:00:00.000Z",
+    ...over,
+  } as Manifest;
+}
+
+describe("prepareFreshMarkdown — existing owner", () => {
+  it("skips a ready owner without re-summarizing", async () => {
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-owner" } },
+      manifests: { "readings/kp-owner": manifest({ status: "ready" }) },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0); // no new id minted
+    expect(plan.dispositions).toEqual([
+      { kind: "skip-ready", url: a.sourceUrl, id: "rd_OWNER", article: a },
+    ]);
+  });
+
+  it("skips a pending owner (a realtime submit may be in flight)", async () => {
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-owner" } },
+      manifests: { "readings/kp-owner": manifest({ status: "pending" }) },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-pending");
+  });
+
+  it("re-ingests a failed owner in place, preserving its id/key_prefix/created_at", async () => {
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-owner" } },
+      manifests: {
+        "readings/kp-owner": manifest({
+          id: "rd_OWNER",
+          status: "failed",
+          created_at: "2025-12-01T00:00:00.000Z",
+        }),
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.ids).toHaveLength(0); // reuse the claimed id, don't mint
+    expect(plan.toIngest).toHaveLength(1);
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_OWNER");
+    expect(t.target.keyPrefix).toBe("readings/kp-owner");
+    expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+  });
+
+  it("skips a fresh pointer whose manifest hasn't landed yet (initializing window)", async () => {
+    const a = article();
+    const d = deps({
+      // pointer written seconds ago (same now()), manifest not yet written: a
+      // realtime submit is in flight.
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/2026/06/22T000000Z-rd_OWNER" } },
+      manifests: {},
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0); // don't touch the in-flight claim
+    expect(plan.dispositions[0]!.kind).toBe("skip-initializing");
+  });
+
+  it("mints a brand-new reading for a stale pointer whose manifest is gone (damaged)", async () => {
+    const a = article();
+    const d = deps({
+      // pointer from years ago, manifest gone: a genuinely damaged pointer.
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
+      manifests: {},
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.ids).toEqual(["rd_NEW0"]); // never reuse the damaged id
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_NEW0");
+    expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+  });
+
+  it("mints a brand-new reading when the pointer is cross-wired to another reading's manifest", async () => {
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
+      manifests: {
+        // the manifest behind the pointer belongs to a DIFFERENT url/id.
+        "readings/kp-other": manifest({
+          id: "rd_OTHER",
+          url: "https://example.com/other",
+          url_hash: hex("https://example.com/other"),
+          status: "ready",
+        }),
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    // must NOT skip (the ready manifest isn't this URL's) and must NOT reuse the
+    // other reading's key_prefix — mint a fresh reading instead.
+    expect(d.ids).toEqual(["rd_NEW0"]);
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_NEW0");
+    expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+  });
+});
+
+describe("prepareFreshMarkdown — missing source", () => {
+  it("skips an article with no source URL rather than minting", async () => {
+    const a = article({ sourceUrl: undefined });
+    const d = deps();
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0);
+    expect(plan.dispositions).toEqual([{ kind: "skip-no-source", url: null, id: null, article: a }]);
+  });
+});
+
+describe("tallyDispositions", () => {
+  it("counts each disposition kind for plan reporting", () => {
+    const a = article();
+    const ds: FreshDisposition[] = [
+      { kind: "ingest-new", url: "u", id: "1", article: a, target: {} as any },
+      { kind: "ingest-new", url: "u", id: "2", article: a, target: {} as any },
+      { kind: "ingest-failed", url: "u", id: "3", article: a, target: {} as any },
+      { kind: "skip-ready", url: "u", id: "4", article: a },
+      { kind: "skip-pending", url: "u", id: "5", article: a },
+      { kind: "skip-initializing", url: "u", id: "6", article: a },
+      { kind: "skip-no-source", url: null, id: null, article: a },
+    ];
+    expect(tallyDispositions(ds)).toEqual({
+      ingestNew: 2,
+      ingestFailed: 1,
+      skipReady: 1,
+      skipPending: 1,
+      skipInitializing: 1,
+      skipNoSource: 1,
+      toIngest: 3,
+    });
+  });
+});
