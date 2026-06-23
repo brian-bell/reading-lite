@@ -246,6 +246,56 @@ describe("runFreshMarkdownBatch — idempotency", () => {
     expect(JSON.parse(h.store.get(`index/by-url/${hex(a.sourceUrl!)}`)!).id).toBe("rd_OWNER");
   });
 
+  it("re-ingests a prior failed fresh ingest in place on rerun instead of duplicating it", async () => {
+    // The retry-after-failure flow: a failed fresh ingest leaves a by-id pointer
+    // + list row but NO by-url pointer, so a rerun's getByUrl is null. Without
+    // the list-index cold lookup the rerun would mint a SECOND reading.
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    const kp = "readings/2026/06/22T120000Z-rd_FRESH0";
+
+    // First run: force the batch to error this item → failed manifest, by-id, no by-url.
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+    await runFreshMarkdownBatch([a], h.deps);
+    expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("failed");
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+
+    // Second run on the same markdown, with a succeeding batch this time.
+    h.setSidecar(null);
+    (h.deps.newId as any).mockClear();
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: {
+          type: "succeeded" as const,
+          message: {
+            content: [{ type: "tool_use", id: "x", name: EMIT_READING_TOOL_NAME, input: { ...reading, title: "t" } }],
+            usage: { input_tokens: 5, output_tokens: 2 },
+          },
+        },
+      })),
+    ) as any;
+
+    const result = await runFreshMarkdownBatch([a], h.deps);
+
+    // Re-ingested in place: no new id minted, same key_prefix flipped to ready.
+    expect(h.deps.newId).not.toHaveBeenCalled();
+    expect(result.dispositions.filter((d) => d.kind === "ingest-failed")).toHaveLength(1);
+    const m = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(m.id).toBe("rd_FRESH0");
+    expect(m.status).toBe("ready");
+    // exactly one list row for this URL — no duplicate
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    expect(index.items.filter((i: any) => i.url === a.sourceUrl)).toHaveLength(1);
+    // by-url is (re)written on the successful re-ingest
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(true);
+  });
+
   it("caps submitted readings by --limit after the ownership check", async () => {
     const h = harness();
     const arts = [

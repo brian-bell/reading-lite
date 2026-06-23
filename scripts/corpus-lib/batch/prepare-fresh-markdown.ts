@@ -25,6 +25,16 @@ export interface FreshMarkdownDeps {
   getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
   // The manifest behind a pointer, or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
+  // The cold-legacy lookup: resolve a URL's owner through index/list.json when
+  // no live by-url pointer exists, mirroring the Worker's findManifestByUrl.
+  // Returns the ranked owner (ready > pending > failed, then recency) or null.
+  // Load-bearing for retry-after-failure: a failed fresh ingest leaves a by-id
+  // pointer + list row but NO by-url pointer, so a rerun finds the failed
+  // reading here and re-ingests it in place instead of minting a duplicate.
+  findByUrlInList(
+    url: string,
+    urlHash: string,
+  ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
   // Mint a fresh reading id (rd_...) for an unclaimed URL.
   newId(): string;
   now(): string;
@@ -118,6 +128,40 @@ export async function prepareFreshMarkdown(
       // damaged by-url pointer on success — a safe repair-by-replacement for a
       // sole-writer backfill (it never reuses the damaged id/key_prefix, so it
       // can't overwrite an unrelated reading).
+    } else {
+      // No live by-url pointer. Before minting, run the cold-legacy lookup
+      // (mirrors the Worker's resolveOwner cold path): a prior failed fresh
+      // ingest writes a by-id pointer + list row but deliberately no by-url
+      // pointer, so a retry must re-ingest THAT failed reading in place rather
+      // than mint a second one. Resolve through index/list.json by the same
+      // ready>pending>failed ownership rank the Worker uses.
+      const cold = await deps.findByUrlInList(url, urlHash);
+      if (cold) {
+        if (cold.manifest.status === "ready") {
+          dispositions.push({ kind: "skip-ready", url, id: cold.id, article });
+          continue;
+        }
+        // A pending owner found this way is left alone for the same reason a
+        // pending by-url owner is (can't safely supersede an in-flight worker).
+        if (cold.manifest.status === "pending") {
+          dispositions.push({ kind: "skip-pending", url, id: cold.id, article });
+          continue;
+        }
+        // failed owner → re-ingest in place: reuse its id, key_prefix, and
+        // original created_at exactly as the by-url failed-owner branch does.
+        const target = buildExtractedTarget(
+          article,
+          url,
+          urlHash,
+          cold.id,
+          cold.key_prefix,
+          cold.manifest.created_at,
+          deps.now(),
+        );
+        toIngest.push(target);
+        dispositions.push({ kind: "ingest-failed", url, id: cold.id, article, target });
+        continue;
+      }
     }
 
     const id = deps.newId();

@@ -27,11 +27,18 @@ function hex(url: string): string {
 }
 
 // In-memory deps: by-url pointers + manifests keyed the way R2 stores them.
+// `cold` seeds the list-index cold lookup (the owner resolvable by URL when no
+// live by-url pointer exists — e.g. a prior failed fresh ingest).
 function deps(
-  seed: { byUrl?: Record<string, { id: string; key_prefix: string }>; manifests?: Record<string, Manifest> } = {},
+  seed: {
+    byUrl?: Record<string, { id: string; key_prefix: string }>;
+    manifests?: Record<string, Manifest>;
+    cold?: Record<string, { id: string; key_prefix: string; manifest: Manifest }>;
+  } = {},
 ): FreshMarkdownDeps & { ids: string[] } {
   const byUrl = seed.byUrl ?? {};
   const manifests = seed.manifests ?? {};
+  const cold = seed.cold ?? {};
   let n = 0;
   const ids: string[] = [];
   return {
@@ -41,6 +48,9 @@ function deps(
     },
     async readManifest(keyPrefix) {
       return manifests[keyPrefix] ?? null;
+    },
+    async findByUrlInList(url) {
+      return cold[url] ?? null;
     },
     newId() {
       const id = `rd_NEW${n++}`;
@@ -218,6 +228,60 @@ describe("prepareFreshMarkdown — existing owner", () => {
     const t = plan.toIngest[0]!;
     expect(t.target.readingId).toBe("rd_NEW0");
     expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+  });
+});
+
+describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", () => {
+  it("re-ingests a failed reading found only via the list index in place, not a duplicate", async () => {
+    // A prior failed fresh ingest leaves a by-id pointer + list row but NO
+    // by-url pointer (failed URLs stay re-submittable). A rerun therefore sees
+    // getByUrl=null; without the cold lookup it would mint a SECOND reading.
+    const a = article();
+    const d = deps({
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
+        },
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.ids).toHaveLength(0); // reuse the failed reading's id, don't mint
+    expect(plan.toIngest).toHaveLength(1);
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_OWNER");
+    expect(t.target.keyPrefix).toBe("readings/kp-owner");
+    expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+  });
+
+  it("skips a ready reading found via the list index even without a by-url pointer", async () => {
+    const a = article();
+    const d = deps({
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: "ready" }),
+        },
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-ready");
+  });
+
+  it("mints a new reading when the cold lookup finds nothing", async () => {
+    const a = article();
+    const d = deps(); // findByUrlInList returns null
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.ids).toEqual(["rd_NEW0"]);
     expect(plan.dispositions[0]!.kind).toBe("ingest-new");
   });
 });

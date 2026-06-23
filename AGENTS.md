@@ -258,7 +258,13 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   owns the URL only when its manifest matches (id + url + url_hash), so ready and
   pending owners skip while failed owners re-ingest in place; a fresh
   missing-manifest pointer is still-initializing and skipped; unclaimed or damaged
-  pointers mint a new id (never reusing a damaged id). Pending owners are skipped
+  pointers mint a new id (never reusing a damaged id). When there is no live
+  by-url pointer it first runs the cold-legacy lookup (`findByUrlInList` in
+  `r2-reads.ts`, mirroring the Worker's `findManifestByUrl`): a prior failed
+  fresh ingest writes a by-id pointer + list row but no by-url pointer, so a
+  rerun resolves that failed reading through `index/list.json` (ready>pending>failed
+  rank then recency) and re-ingests it in place rather than minting a duplicate.
+  Pending owners are skipped
   even past PENDING_TTL_SECONDS — unlike the Worker, this offline path can't
   claim/supersede an in-flight queue attempt, so re-ingesting a stale pending could
   race the worker and (on a batch failure, which carries no preserved-ready

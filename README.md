@@ -326,7 +326,11 @@ manifest hasn't landed yet is treated as still-initializing and skipped (a
 realtime submit may be in flight); and unclaimed or damaged pointers mint a
 brand-new reading
 (never reusing a damaged id, so a cross-wired pointer can't overwrite an unrelated
-reading). Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
+reading). When no by-url pointer exists, it first runs the same cold-legacy
+lookup the Worker does (`findManifestByUrl` over `index/list.json`): a prior
+failed fresh ingest leaves a by-id pointer + list row but no by-url pointer, so a
+rerun finds that failed reading there and re-ingests it in place instead of
+minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
 rather than risk racing the worker. Because the by-url pointer is only written on
