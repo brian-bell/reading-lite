@@ -96,51 +96,61 @@ export async function prepareFreshMarkdown(
     // it. findListCandidates is cached (one list.json read across all articles), so
     // appending it on the happy path is just a Map lookup — and the verify loop
     // breaks on the by-url pointer before reading any list candidate's manifest.
-    const byUrlPointer = await deps.readByUrlPointer(urlHash);
-    const listCandidates = deps.findListCandidates
-      ? await deps.findListCandidates(article.sourceUrl)
-      : [];
-    const candidates: ByUrlPointer[] = byUrlPointer
-      ? [byUrlPointer, ...listCandidates]
-      : listCandidates;
-
-    // Verify the manifest behind each candidate and trust the FIRST that genuinely
-    // owns this URL — the same id/url/url_hash match the worker's ReadingClaim
-    // (ownedManifestMatches) requires. Iterating (not just the top candidate)
-    // mirrors ListIndexStore.findManifestByUrl, so a stale/deleted/mismatched best
-    // row can't mask a valid lower-ranked owner. A damaged by-url pointer (its
-    // manifest missing) is remembered for the grace-window check below.
     let owner: Manifest | null = null;
     let ownerPointer: ByUrlPointer | null = null;
     let byUrlManifestMissing = false;
-    for (const cand of candidates) {
-      const m = await deps.readManifest(cand.key_prefix);
-      if (cand === byUrlPointer && m === null) byUrlManifestMissing = true;
-      if (m && m.id === cand.id && m.url === article.sourceUrl && m.url_hash === urlHash) {
+
+    // The by-url pointer is authoritative and is verified FIRST. When it owns the
+    // URL, ownership resolves here without ever reading index/list.json — mirroring
+    // the worker, where a corrupt/stale list index can never block a valid by-url
+    // owner (the list and deep-scan paths are fallbacks only). The match is the same
+    // id/url/url_hash check the worker's ReadingClaim (ownedManifestMatches) requires.
+    const byUrlPointer = await deps.readByUrlPointer(urlHash);
+    if (byUrlPointer) {
+      const m = await deps.readManifest(byUrlPointer.key_prefix);
+      if (m && ownsUrl(m, byUrlPointer, article.sourceUrl, urlHash)) {
         owner = m;
-        ownerPointer = cand;
-        break;
+        ownerPointer = byUrlPointer;
+      } else if (m === null) {
+        byUrlManifestMissing = true;
       }
     }
 
-    // Damaged by-url pointer repair (mirrors the worker's deepScan): the pointer
-    // exists but neither it nor the (possibly stale/incomplete) list index produced
-    // an owner. Unless it's a fresh still-initializing pointer (handled as in-flight
-    // below), scan manifests for a valid legacy owner before minting — and
-    // overwriting the pointer with — a duplicate. Lazy: only a damaged pointer pays
-    // the scan, so a healthy run never does.
-    if (
+    // A by-url pointer written just before its pending manifest (the worker claims
+    // by-url first) is a legitimately-initializing owner inside the grace window —
+    // NOT damaged. Skip it as in-flight WITHOUT consulting the list/deep-scan
+    // fallback, mirroring the worker's `initializing` short-circuit.
+    const freshInitializing =
       !owner &&
-      byUrlPointer &&
-      deps.deepScanCandidates &&
-      !(byUrlManifestMissing && isFreshMissingManifestPointer(byUrlPointer, deps.now()))
-    ) {
-      for (const cand of await deps.deepScanCandidates(article.sourceUrl)) {
+      byUrlPointer !== null &&
+      byUrlManifestMissing &&
+      isFreshMissingManifestPointer(byUrlPointer, deps.now());
+
+    // No valid by-url owner and not a fresh initializing pointer: fall back to the
+    // ranked list-index candidates (cold-legacy adoption), then — only for a damaged
+    // by-url pointer — a manifest deep scan that mirrors the worker's deepScan repair
+    // when a stale/incomplete index missed the owner. Both are lazy and verified the
+    // same way, so a healthy by-url owner never triggers (or fails on) a list read.
+    if (!owner && !freshInitializing) {
+      const listCandidates = deps.findListCandidates
+        ? await deps.findListCandidates(article.sourceUrl)
+        : [];
+      for (const cand of listCandidates) {
         const m = await deps.readManifest(cand.key_prefix);
-        if (m && m.id === cand.id && m.url === article.sourceUrl && m.url_hash === urlHash) {
+        if (m && ownsUrl(m, cand, article.sourceUrl, urlHash)) {
           owner = m;
           ownerPointer = cand;
           break;
+        }
+      }
+      if (!owner && byUrlPointer && deps.deepScanCandidates) {
+        for (const cand of await deps.deepScanCandidates(article.sourceUrl)) {
+          const m = await deps.readManifest(cand.key_prefix);
+          if (m && ownsUrl(m, cand, article.sourceUrl, urlHash)) {
+            owner = m;
+            ownerPointer = cand;
+            break;
+          }
         }
       }
     }
@@ -167,12 +177,10 @@ export async function prepareFreshMarkdown(
       id = owner.id;
       keyPrefix = ownerPointer!.key_prefix;
       createdAt = owner.created_at;
-    } else if (byUrlPointer && byUrlManifestMissing && isFreshMissingManifestPointer(byUrlPointer, deps.now())) {
-      // A real by-url pointer written just before its pending manifest (the worker
-      // claims by-url first) is a legitimately-initializing owner inside the grace
-      // window, NOT a damaged pointer — skip it as in-flight rather than mint a
-      // fresh slot that would clobber the activation. Only the real pointer gets
-      // this grace; a list.json row is written after the manifest, not before.
+    } else if (freshInitializing) {
+      // A by-url pointer inside the grace window (claimed just before its pending
+      // manifest) is a legitimately-initializing owner — skip it as in-flight rather
+      // than mint a fresh slot that would clobber the activation.
       skipped.push({ url: article.sourceUrl, reason: "pending-in-flight" });
       continue;
     } else {
@@ -231,6 +239,12 @@ export async function prepareFreshMarkdown(
   }
 
   return { targets, skipped, dropped };
+}
+
+// The same id/url/url_hash match the worker's ReadingClaim (ownedManifestMatches)
+// requires before trusting a manifest as the genuine owner behind a pointer/row.
+function ownsUrl(m: Manifest, ptr: ByUrlPointer, url: string, urlHash: string): boolean {
+  return m.id === ptr.id && m.url === url && m.url_hash === urlHash;
 }
 
 // A pending record counts as stale (treat as failed → re-ingest) when its active

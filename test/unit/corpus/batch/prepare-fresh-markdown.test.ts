@@ -334,6 +334,28 @@ describe("prepareFreshMarkdown", () => {
     expect(targets[0]!.target.keyPrefix).toBe("readings/kp-legacy");
   });
 
+  it("honors a valid by-url owner without consulting the list index (corrupt index can't block it)", async () => {
+    // The by-url pointer is authoritative: a valid owner resolves before any list
+    // read, so a corrupt index (findListCandidates throws) must not block a safe skip.
+    const findListCandidates = vi.fn(async () => {
+      throw new Error("index/list.json corrupt");
+    });
+    const deepScanCandidates = vi.fn(async () => {
+      throw new Error("deep scan");
+    });
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_existing", key_prefix: "readings/kp-existing" })),
+      readManifest: vi.fn(async () => manifest({ status: "ready", content_status: "captured" })),
+      findListCandidates,
+      deepScanCandidates,
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
+    expect(findListCandidates).not.toHaveBeenCalled();
+    expect(deepScanCandidates).not.toHaveBeenCalled();
+  });
+
   it("deep-scans manifests when a damaged pointer + STALE index miss the owner (worker repair)", async () => {
     // by-url pointer is damaged (points at URL B), the list index is stale and has no
     // row for A, but a deep manifest scan finds A's real ready owner. Mirror the
