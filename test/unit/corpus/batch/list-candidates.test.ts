@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { makeListCandidatesResolver } from "../../../../scripts/corpus-lib/batch/list-candidates";
+import { makeListCandidatesResolver, makeManifestScanResolver } from "../../../../scripts/corpus-lib/batch/list-candidates";
 import type { Manifest } from "../../../../src/schemas/manifest";
 
 // Minimal R2 reader stub: a key->value map for get(), keys() for listKeys().
@@ -122,5 +122,32 @@ describe("makeListCandidatesResolver", () => {
     await resolve(URL_A);
     await resolve("https://example.com/b");
     expect(r2.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("makeManifestScanResolver", () => {
+  it("always rebuilds candidates from manifests, ignoring any present index", async () => {
+    // A present (even healthy) index is bypassed: the deep scan reads manifests
+    // directly, mirroring the worker's deepScan repair.
+    const r2 = fakeR2({
+      "index/list.json": listIndex([]), // present but does not mention the URL
+      "readings/2026/01/01T000000Z-rd_scan/manifest.json": JSON.stringify(
+        manifest({ id: "rd_scan", url: URL_A, status: "ready" }),
+      ),
+    });
+    const resolve = makeManifestScanResolver(r2);
+    expect(await resolve(URL_A)).toEqual([
+      { id: "rd_scan", key_prefix: "readings/2026/01/01T000000Z-rd_scan" },
+    ]);
+  });
+
+  it("scans once and caches across calls", async () => {
+    const r2 = fakeR2({
+      "readings/2026/01/01T000000Z-rd_scan/manifest.json": JSON.stringify(manifest({ id: "rd_scan", url: URL_A })),
+    });
+    const resolve = makeManifestScanResolver(r2);
+    await resolve(URL_A);
+    await resolve("https://example.com/b");
+    expect(r2.listKeys).toHaveBeenCalledTimes(1);
   });
 });

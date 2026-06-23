@@ -6,7 +6,7 @@ import { mintReadingId, sha256Hex } from "../src/services";
 import { resolveBatchConfig } from "./corpus-lib/config";
 import { MARKDOWN_IMPORT_MAX_BYTES, readMarkdownDir } from "./import-markdown-lib/parse";
 import { planFreshMarkdownIngest, type IngestPlan } from "./corpus-lib/batch/ingest-plan";
-import { makeListCandidatesResolver } from "./corpus-lib/batch/list-candidates";
+import { makeListCandidatesResolver, makeManifestScanResolver } from "./corpus-lib/batch/list-candidates";
 import { runFreshMarkdownBatch } from "./corpus-lib/batch/run-fresh-markdown";
 import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidecar";
 import { makeR2Client, makeVectorizeClient, type R2Client } from "./lib/cf-clients";
@@ -117,6 +117,7 @@ function idempotencyDeps(r2: R2Client) {
       return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
     },
     findListCandidates: makeListCandidatesResolver(r2),
+    deepScanCandidates: makeManifestScanResolver(r2),
     mintId: mintReadingId,
     now: () => new Date().toISOString(),
     sha256: sha256Hex,

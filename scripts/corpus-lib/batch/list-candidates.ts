@@ -35,19 +35,19 @@ function byOwnershipThenRecency(a: ListIndexItem, b: ListIndexItem): number {
 //   - present but corrupt      -> FAIL CLOSED (the worker throws in readListIndex). A
 //                                silent "treat as empty" would disable cold-legacy
 //                                adoption and duplicate already-ingested URLs.
+function indexByUrl(items: ListIndexItem[]): Map<string, ListIndexItem[]> {
+  const map = new Map<string, ListIndexItem[]>();
+  for (const item of items) {
+    const group = map.get(item.url) ?? [];
+    group.push(item);
+    map.set(item.url, group);
+  }
+  for (const group of map.values()) group.sort(byOwnershipThenRecency);
+  return map;
+}
+
 export function makeListCandidatesResolver(r2: R2Reader): (url: string) => Promise<ByUrlPointer[]> {
   let byUrl: Map<string, ListIndexItem[]> | null = null;
-
-  const indexByUrl = (items: ListIndexItem[]): Map<string, ListIndexItem[]> => {
-    const map = new Map<string, ListIndexItem[]>();
-    for (const item of items) {
-      const group = map.get(item.url) ?? [];
-      group.push(item);
-      map.set(item.url, group);
-    }
-    for (const group of map.values()) group.sort(byOwnershipThenRecency);
-    return map;
-  };
 
   const load = async (): Promise<Map<string, ListIndexItem[]>> => {
     const raw = await r2.get(LIST_INDEX_KEY);
@@ -95,6 +95,21 @@ export function makeListCandidatesResolver(r2: R2Reader): (url: string) => Promi
 
   return async (url: string): Promise<ByUrlPointer[]> => {
     if (!byUrl) byUrl = await load();
+    return (byUrl.get(url) ?? []).map((item) => ({ id: item.id, key_prefix: item.key_prefix }));
+  };
+}
+
+// A deep-scan owner resolver that ALWAYS rebuilds candidates from a readings/ manifest
+// scan, ignoring index/list.json. Mirrors the worker's damaged-pointer repair, which
+// calls findManifestByUrl(url, { deepScan: true }) so it adopts a valid legacy owner
+// even when the list index is stale/incomplete and missing that row. prepareFreshMarkdown
+// invokes this ONLY when a by-url pointer is damaged (the index path already covers the
+// healthy and cold cases), so the full scan is lazy — it never runs when no pointer is
+// damaged — and cached across the (rare) damaged URLs in a run.
+export function makeManifestScanResolver(r2: R2Reader): (url: string) => Promise<ByUrlPointer[]> {
+  let byUrl: Map<string, ListIndexItem[]> | null = null;
+  return async (url: string): Promise<ByUrlPointer[]> => {
+    if (!byUrl) byUrl = indexByUrl(await rebuildFromManifests(r2));
     return (byUrl.get(url) ?? []).map((item) => ({ id: item.id, key_prefix: item.key_prefix }));
   };
 }

@@ -41,6 +41,13 @@ export interface PrepareFreshDeps {
   // until one matches (the index rows can be stale). Optional: when omitted, only
   // the real by-url pointer is consulted.
   findListCandidates?(url: string): Promise<ByUrlPointer[]>;
+  // Deep-scan owner resolver: rebuilds candidates from a full readings/ manifest scan,
+  // ignoring index/list.json. Consulted ONLY when a by-url pointer is damaged and
+  // neither it nor the (possibly stale) list index yielded an owner — the worker's
+  // damaged-pointer repair does the same (findManifestByUrl with deepScan), so a
+  // stale/incomplete index can't mask a valid legacy owner and duplicate it. Optional:
+  // when omitted, a damaged pointer falls straight through to minting (as before).
+  deepScanCandidates?(url: string): Promise<ByUrlPointer[]>;
   // Mints a fresh reading id (mirrors services.newId).
   mintId(): string;
   now(): string;
@@ -113,6 +120,28 @@ export async function prepareFreshMarkdown(
         owner = m;
         ownerPointer = cand;
         break;
+      }
+    }
+
+    // Damaged by-url pointer repair (mirrors the worker's deepScan): the pointer
+    // exists but neither it nor the (possibly stale/incomplete) list index produced
+    // an owner. Unless it's a fresh still-initializing pointer (handled as in-flight
+    // below), scan manifests for a valid legacy owner before minting — and
+    // overwriting the pointer with — a duplicate. Lazy: only a damaged pointer pays
+    // the scan, so a healthy run never does.
+    if (
+      !owner &&
+      byUrlPointer &&
+      deps.deepScanCandidates &&
+      !(byUrlManifestMissing && isFreshMissingManifestPointer(byUrlPointer, deps.now()))
+    ) {
+      for (const cand of await deps.deepScanCandidates(article.sourceUrl)) {
+        const m = await deps.readManifest(cand.key_prefix);
+        if (m && m.id === cand.id && m.url === article.sourceUrl && m.url_hash === urlHash) {
+          owner = m;
+          ownerPointer = cand;
+          break;
+        }
       }
     }
 

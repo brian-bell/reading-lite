@@ -334,6 +334,54 @@ describe("prepareFreshMarkdown", () => {
     expect(targets[0]!.target.keyPrefix).toBe("readings/kp-legacy");
   });
 
+  it("deep-scans manifests when a damaged pointer + STALE index miss the owner (worker repair)", async () => {
+    // by-url pointer is damaged (points at URL B), the list index is stale and has no
+    // row for A, but a deep manifest scan finds A's real ready owner. Mirror the
+    // worker's deepScan repair: adopt it (skip ready) rather than mint a duplicate.
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_B", key_prefix: "readings/kp-B" })),
+      findListCandidates: vi.fn(async () => []), // stale/incomplete index: no row for A
+      deepScanCandidates: vi.fn(async () => [{ id: "rd_scan", key_prefix: "readings/kp-scan" }]),
+      readManifest: vi.fn(async (kp: string) =>
+        kp === "readings/kp-scan"
+          ? manifest({ id: "rd_scan", status: "ready" })
+          : manifest({ id: "rd_B", url: "https://example.com/OTHER", url_hash: "d".repeat(64), status: "ready" }),
+      ),
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "already-ready" }]);
+  });
+
+  it("does NOT deep-scan a fresh still-initializing pointer (grace window wins)", async () => {
+    // A fresh pointer-without-manifest is an in-flight owner, not damaged — skip it as
+    // in-flight without paying a manifest scan.
+    const deepScanCandidates = vi.fn(async () => [{ id: "rd_scan", key_prefix: "readings/kp-scan" }]);
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => ({ id: "rd_init", key_prefix: "readings/2026/06/22T115900Z-rd_init" })),
+      readManifest: vi.fn(async () => null),
+      deepScanCandidates,
+    });
+    const { targets, skipped } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(0);
+    expect(skipped).toEqual([{ url: "https://example.com/a", reason: "pending-in-flight" }]);
+    expect(deepScanCandidates).not.toHaveBeenCalled();
+  });
+
+  it("does NOT deep-scan when there is no by-url pointer (cold path matches the worker)", async () => {
+    // The worker's cold path does not deepScan; an unclaimed URL with a present index
+    // simply mints fresh. The deep scan is reserved for damaged pointers.
+    const deepScanCandidates = vi.fn(async () => []);
+    const deps = makeDeps({
+      readByUrlPointer: vi.fn(async () => null),
+      findListCandidates: vi.fn(async () => []),
+      deepScanCandidates,
+    });
+    const { targets } = await prepareFreshMarkdown([article()], deps);
+    expect(targets).toHaveLength(1);
+    expect(deepScanCandidates).not.toHaveBeenCalled();
+  });
+
   it("produces a target whose synthetic manifest is schema-valid", async () => {
     const deps = makeDeps();
     const { targets } = await prepareFreshMarkdown([article()], deps);
