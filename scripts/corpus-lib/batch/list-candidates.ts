@@ -73,10 +73,22 @@ export function makeListCandidatesResolver(r2: R2Reader): (url: string) => Promi
           `it as empty would disable cold-legacy adoption and duplicate already-ingested URLs.`,
       );
     }
+    // Fail closed on a malformed row, mirroring the worker's readListIndex (which
+    // parses the full ListIndexSchema and throws on any invalid item). Silently
+    // dropping a bad row could hide a legacy owner and duplicate an already-ingested
+    // URL. NB: the rebuild-from-manifests path below intentionally SKIPS invalid
+    // manifests — the worker is asymmetric here too (rebuild safeParses + continues).
     const items: ListIndexItem[] = [];
     for (const candidate of rawItems) {
       const item = ListIndexItemSchema.safeParse(candidate);
-      if (item.success) items.push(item.data);
+      if (!item.success) {
+        throw new Error(
+          `index/list.json contains a malformed row — refusing to ingest, since dropping it ` +
+            `could hide a legacy owner and duplicate an already-ingested URL. ` +
+            `Inspect/repair the list index before retrying.`,
+        );
+      }
+      items.push(item.data);
     }
     return indexByUrl(items);
   };

@@ -89,6 +89,21 @@ describe("makeListCandidatesResolver", () => {
     expect(await resolve(URL_A)).toEqual([{ id: "rd_ok", key_prefix: "readings/2026/01/01T000000Z-rd_ok" }]);
   });
 
+  it("fails closed on a present index containing a malformed row (mirrors ListIndexSchema.parse)", async () => {
+    // The worker's readListIndex parses the full ListIndexSchema and throws on any
+    // invalid item — silently dropping a malformed row could hide a legacy owner and
+    // duplicate an already-ingested URL. (Rebuild from manifests intentionally skips
+    // bad manifests; a present index does not.)
+    const r2 = fakeR2({
+      "index/list.json": listIndex([
+        { id: "rd_ok", key_prefix: "readings/kp-ok", url: URL_A, status: "ready", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" },
+        { id: "rd_bad", key_prefix: "readings/kp-bad", url: URL_A, status: "not-a-status" },
+      ]),
+    });
+    const resolve = makeListCandidatesResolver(r2);
+    await expect(resolve(URL_A)).rejects.toThrow(/malformed row/i);
+  });
+
   it("fails closed on a present-but-unparseable index (does NOT silently treat as empty)", async () => {
     const r2 = fakeR2({ "index/list.json": "{ corrupt" });
     const resolve = makeListCandidatesResolver(r2);
