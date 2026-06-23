@@ -172,16 +172,21 @@ function byOwnershipThenRecency(a: ListIndexItem, b: ListIndexItem): number {
 async function main(): Promise<void> {
   const args = parseCliArgs();
 
-  const articles = await readMarkdownDir(args.dir);
+  // Load the sidecar FIRST. A live sidecar means an already-created (and billed)
+  // batch; honoring it before any fresh directory read or idempotency planning is
+  // what keeps resume crash-safe — a changed/removed source tree or a transient R2
+  // error during planning must not strand a billed batch. runFreshMarkdownBatch
+  // resumes straight from the sidecar (it carries the targets pollAndWrite needs)
+  // without consulting this run's plan.
+  const existing = await loadSidecar(args.sidecar);
 
-  // Resolve config + idempotency. Both modes want the ready/pending-skip preview;
-  // it just needs the R2 read creds (the full config also carries the LLM keys).
+  // Corpus creds are required by BOTH paths (a resume polls/writes; a fresh run
+  // also submits), so resolve them independently of the directory read. A failure
+  // is fatal on --execute (we can't reach R2/Anthropic at all); a dry run just
+  // downgrades to skipping the idempotency preview.
   let cfg: ReturnType<typeof resolveBatchConfig> | null = null;
-  let plan: IngestPlan | null = null;
   try {
     cfg = resolveBatchConfig({ ...(args.bucket === undefined ? {} : { bucket: args.bucket }) });
-    const r2 = makeR2Client(cfg.r2, globalThis.fetch);
-    plan = await planFreshMarkdownIngest(articles, args.limit, idempotencyDeps(r2));
   } catch (e) {
     if (args.execute) {
       console.error(e instanceof Error ? e.message : String(e));
@@ -193,7 +198,28 @@ async function main(): Promise<void> {
     );
   }
 
-  const existing = await loadSidecar(args.sidecar);
+  // The fresh ingest plan (directory read + idempotency check) only feeds the
+  // preview and a fresh submit; a resume ignores it entirely. So a dir/R2 failure
+  // here is fatal only for a fresh --execute (no sidecar to fall back on) — never
+  // for a resume, whose batch is already created and billed.
+  let plan: IngestPlan | null = null;
+  if (cfg) {
+    try {
+      const articles = await readMarkdownDir(args.dir);
+      const r2 = makeR2Client(cfg.r2, globalThis.fetch);
+      plan = await planFreshMarkdownIngest(articles, args.limit, idempotencyDeps(r2));
+    } catch (e) {
+      if (args.execute && !existing) {
+        console.error(e instanceof Error ? e.message : String(e));
+        process.exit(2);
+      }
+      process.stderr.write(
+        `  ! could not build the ingest plan — skipping the ready/pending idempotency preview\n` +
+          `    (${e instanceof Error ? e.message : String(e)})\n`,
+      );
+    }
+  }
+
   logPlan(args, plan, existing !== null);
 
   if (!args.execute) {
@@ -208,15 +234,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  // execute: the catch above already exits on a resolve failure, so cfg + plan
-  // are set here — but narrow it explicitly so the compiler enforces the
-  // invariant rather than trusting a comment past a distant branch.
-  if (!cfg || !plan) {
+  // execute: creds are always required (the cfg catch exits on --execute). A fresh
+  // submit also needs the plan; a resume does not — runFreshMarkdownBatch honors
+  // the sidecar before ever touching the targets we pass.
+  if (!cfg || (!existing && !plan)) {
     console.error("internal: missing resolved config/plan on the execute path");
     process.exit(2);
   }
   const fetchFn = globalThis.fetch;
-  const result = await runFreshMarkdownBatch(plan.prep.targets, {
+  const result = await runFreshMarkdownBatch(plan?.prep.targets ?? [], {
     r2: makeR2Client(cfg.r2, fetchFn),
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
     batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
@@ -244,8 +270,8 @@ async function main(): Promise<void> {
         failed,
         // On a resume the work came from the old sidecar, not this run's plan, so
         // the freshly-computed skip count would be misleading — report it only for
-        // a fresh run.
-        skipped: result.resumed ? 0 : plan.prep.skipped.length,
+        // a fresh run (where the plan is guaranteed present).
+        skipped: result.resumed ? 0 : (plan?.prep.skipped.length ?? 0),
       },
       null,
       2,
