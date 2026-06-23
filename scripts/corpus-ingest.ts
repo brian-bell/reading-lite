@@ -1,12 +1,12 @@
 #!/usr/bin/env -S npx tsx
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { ManifestSchema, ByUrlPointerSchema, type Manifest, type ByUrlPointer, type ManifestStatus } from "../src/schemas/manifest";
-import { ListIndexItemSchema, type ListIndexItem } from "../src/schemas/api";
+import { ManifestSchema, ByUrlPointerSchema, type Manifest, type ByUrlPointer } from "../src/schemas/manifest";
 import { mintReadingId, sha256Hex } from "../src/services";
 import { resolveBatchConfig } from "./corpus-lib/config";
 import { MARKDOWN_IMPORT_MAX_BYTES, readMarkdownDir } from "./import-markdown-lib/parse";
 import { planFreshMarkdownIngest, type IngestPlan } from "./corpus-lib/batch/ingest-plan";
+import { makeListCandidatesResolver } from "./corpus-lib/batch/list-candidates";
 import { runFreshMarkdownBatch } from "./corpus-lib/batch/run-fresh-markdown";
 import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidecar";
 import { makeR2Client, makeVectorizeClient, type R2Client } from "./lib/cf-clients";
@@ -121,70 +121,6 @@ function idempotencyDeps(r2: R2Client) {
     now: () => new Date().toISOString(),
     sha256: sha256Hex,
   };
-}
-
-const OWNERSHIP_RANK: Record<ManifestStatus, number> = { ready: 3, pending: 2, failed: 1 };
-
-// Lazily index index/list.json by URL (the master list, which includes legacy
-// readings with no by-url pointer) and return ALL candidate pointers for a URL,
-// ranked best-first — ready > pending > failed, then most recent (updated_at ??
-// created_at, matching ListIndexStore). prepareFreshMarkdown re-reads and verifies
-// each candidate's manifest until one matches, so a stale top row can't mask a
-// valid lower one. Read once and cached across articles.
-function makeListCandidatesResolver(r2: R2Client): (url: string) => Promise<ByUrlPointer[]> {
-  let byUrl: Map<string, ListIndexItem[]> | null = null;
-  const load = async (): Promise<Map<string, ListIndexItem[]>> => {
-    const map = new Map<string, ListIndexItem[]>();
-    const raw = await r2.get("index/list.json");
-    // Absent list.json: a genuinely cold/empty corpus. Every terminal write keeps
-    // it in sync (and the worker rebuilds+persists it on first read), so a missing
-    // index means there are no pointerless legacy readings to adopt — proceed with
-    // an empty map, exactly as a first-ever ingest must.
-    if (!raw) return map;
-    // Present-but-corrupt is different: silently treating an unparseable index as
-    // empty would disable ALL cold-legacy adoption and mass-duplicate an
-    // already-ingested corpus on --execute. Fail closed (mirroring the sidecar's
-    // fail-closed posture) so the operator reconciles instead of double-spending.
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error(
-        `index/list.json exists but is unparseable — refusing to ingest. Treating it as ` +
-          `empty would disable cold-legacy adoption and duplicate already-ingested URLs. ` +
-          `Inspect/repair the list index before retrying.`,
-      );
-    }
-    const items = (parsed as { items?: unknown }).items;
-    if (!Array.isArray(items)) {
-      throw new Error(
-        `index/list.json is missing its "items" array — refusing to ingest, since treating ` +
-          `it as empty would disable cold-legacy adoption and duplicate already-ingested URLs.`,
-      );
-    }
-    for (const candidate of items) {
-      const item = ListIndexItemSchema.safeParse(candidate);
-      if (!item.success) continue;
-      const group = map.get(item.data.url) ?? [];
-      group.push(item.data);
-      map.set(item.data.url, group);
-    }
-    for (const group of map.values()) group.sort(byOwnershipThenRecency);
-    return map;
-  };
-  return async (url: string): Promise<ByUrlPointer[]> => {
-    if (!byUrl) byUrl = await load();
-    return (byUrl.get(url) ?? []).map((item) => ({ id: item.id, key_prefix: item.key_prefix }));
-  };
-}
-
-// Best owner first: ready > pending > failed, then most recent. Mirrors
-// ListIndexStore's recency tie-break on updated_at ?? created_at.
-function byOwnershipThenRecency(a: ListIndexItem, b: ListIndexItem): number {
-  const ra = OWNERSHIP_RANK[a.status] ?? 0;
-  const rb = OWNERSHIP_RANK[b.status] ?? 0;
-  if (ra !== rb) return rb - ra;
-  return Date.parse(b.updated_at ?? b.created_at) - Date.parse(a.updated_at ?? a.created_at);
 }
 
 async function main(): Promise<void> {
