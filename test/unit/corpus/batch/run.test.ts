@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { runBatch, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
+import { runBatch, runFreshBatch, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
-import type { Sidecar } from "../../../../scripts/corpus-lib/batch/types";
+import type { ExtractedTarget, Sidecar } from "../../../../scripts/corpus-lib/batch/types";
 
 const NOW = "2026-06-18T12:00:00.000Z";
 
@@ -164,6 +164,93 @@ describe("runBatch — fresh run", () => {
     expect(dropLine).toBeDefined();
     expect(dropLine).toMatch(/drop/i);
     expect(dropLine).toMatch(/manifest/i); // the reason from prepare
+  });
+});
+
+function freshTarget(id: string): ExtractedTarget {
+  const markdown = `# ${id}\n\nfresh markdown body`;
+  const bytes = new TextEncoder().encode(markdown);
+  return {
+    target: {
+      readingId: id,
+      url: `https://example.com/${id}`,
+      urlHash: id.padEnd(64, "0").slice(0, 64).replace(/[^0-9a-f]/g, "0"),
+      keyPrefix: `readings/kp-${id}`,
+      createdAt: "2026-06-22T00:00:00.000Z",
+      manifest: manifest(id, { status: "pending", source_type: "markdown" }),
+    },
+    markdown,
+    title: id,
+    fresh: {
+      raw: bytes,
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: bytes.byteLength,
+      content_sha256: "d".repeat(64),
+      markdown,
+      title: id,
+    },
+  };
+}
+
+describe("runFreshBatch — fresh markdown ingest", () => {
+  it("summarizes already-extracted markdown targets end-to-end into ready markdown readings", async () => {
+    const h = harness({});
+    const result = await runFreshBatch([freshTarget("rd_a"), freshTarget("rd_b")], h.deps);
+
+    expect(result.resumed).toBe(false);
+    expect(result.report.filter((r) => r.status === "ready")).toHaveLength(2);
+    // The fresh path never re-extracts (markdown is in hand).
+    expect(h.extract).not.toHaveBeenCalled();
+
+    const mA = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!));
+    expect(mA.status).toBe("ready");
+    expect(mA.source_type).toBe("markdown");
+    expect(mA.content_type).toBe("text/markdown; charset=utf-8");
+
+    // raw.md + extracted.md persisted from the markdown in hand.
+    expect(h.store.get("readings/kp-rd_a/raw.md")).toBe("# rd_a\n\nfresh markdown body");
+    expect(h.store.get("readings/kp-rd_a/extracted.md")).toBe("# rd_a\n\nfresh markdown body");
+
+    // by-url + by-id pointers and the list index entry.
+    expect(h.store.has(`index/by-url/${mA.url_hash}`)).toBe(true);
+    expect(h.store.has("index/by-id/rd_a")).toBe(true);
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    expect(index.items.map((i: any) => i.id).sort()).toEqual(["rd_a", "rd_b"]);
+  });
+
+  it("resumes an in-flight sidecar without creating a second batch", async () => {
+    const h = harness({});
+    const sc: Sidecar = {
+      batchId: "msgbatch_run",
+      model: "claude-opus-4-8",
+      processingStatus: "in_progress",
+      resultsUrl: null,
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: "readings/kp-rd_a",
+          id: "rd_a",
+          url: "https://example.com/rd_a",
+          urlHash: "a".repeat(64),
+          createdAt: "2026-06-22T00:00:00.000Z",
+          sourceType: "markdown",
+          contentType: "text/markdown; charset=utf-8",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "d".repeat(64),
+          queryEmbedTokens: 3,
+        },
+      ],
+    };
+    h.setSidecar(sc);
+    h.deps.loadSidecar = vi.fn(async () => sc);
+
+    const result = await runFreshBatch([freshTarget("rd_a")], h.deps);
+    expect(result.resumed).toBe(true);
+    expect(h.batch.create).not.toHaveBeenCalled();
+    const m = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!));
+    expect(m.status).toBe("ready");
   });
 });
 

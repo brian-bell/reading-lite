@@ -64,7 +64,14 @@ agent context: current commands, module map, conventions, and gotchas.
 - `src/schemas` contains zod API and manifest contracts. `web/src/types.ts`
   hand-mirrors the Worker manifest/list/diagnostics types.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
-  audit/recovery/drop, imports, and manual smoke tests.
+  audit/recovery/drop, imports, and manual smoke tests. `corpus-ingest.ts`
+  bulk-ingests a markdown directory through the Message Batch pipeline; its
+  fresh-markdown front-end lives in `scripts/corpus-lib/batch/fresh-markdown.ts`
+  (client-side idempotency + `ExtractedTarget` synthesis) and
+  `scripts/corpus-lib/batch/ingest-plan.ts` (dedup/oversize/missing-source +
+  idempotency → one plan). Both feed `runFreshBatch` in
+  `scripts/corpus-lib/batch/run.ts`, which shares the resume + similar→submit→
+  poll→write tail with the recovery path's `runBatch`.
 - `web/` is the React/Vite SPA. It stores the bearer token in localStorage,
   lists/searches readings, submits URLs, shows details/diagnostics, opens
   authed content blobs, and can start reprocesses.
@@ -127,6 +134,8 @@ npm run import-markdown -- --dir ~/Documents/articles --dry-run
 npm run corpus-audit -- --bucket reading-lite-staging
 npm run corpus-drop -- "$URL" --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute
 npm run corpus-recover -- --index ./index.json --execute --monitor
+npm run corpus-ingest -- --dir ~/Documents/tweets --bucket reading-lite-staging
+npm run corpus-ingest -- --dir ~/Documents/tweets --execute
 ```
 
 ## Environments
@@ -241,5 +250,19 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - `corpus-recover --batch` is a Node-side bulk recovery path using Anthropic
   Message Batches plus R2/Vectorize clients. It resumes from
   `<index>.batch.json` and reuses the Worker terminal-write contract.
+- `corpus-ingest --dir <path>` is the bulk *fresh-markdown* sibling of
+  `corpus-recover --batch`: it summarizes a directory of new markdown files via
+  the Message Batch API (~50% cheaper, async) instead of fanning out realtime
+  `/readings/import-markdown` calls. It reuses the realtime markdown-import write
+  shape (`source_type: "markdown"`, `content_status: "captured"`,
+  byte-compatible content fields). Idempotency is resolved client-side from
+  `index/by-url` pointers (ready→skip, failed→re-ingest in place, pending→skip)
+  since the worker's eager `ReadingClaim` can't run offline. Trade-off:
+  `write-phase` only writes `by-url` on success, so the slot stays unclaimed
+  during the in-flight batch window — a concurrent realtime submit of the same
+  URL could create a duplicate. Safe for an operator backfill where the script
+  is the sole writer. Dry-run by default; `--execute` submits. Crash-safe via
+  the sidecar (default `./corpus-ingest.batch.json`): a re-run resumes the
+  in-flight batch rather than creating a second, double-billed one.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

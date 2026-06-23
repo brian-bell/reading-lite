@@ -9,7 +9,7 @@ import { resolveSimilar } from "./similar-phase";
 import { submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
-import type { DroppedTarget, Sidecar } from "./types";
+import type { DroppedTarget, ExtractedTarget, Sidecar } from "./types";
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -29,6 +29,11 @@ export interface BatchRunDeps {
   poll?: { intervalMs?: number; maxPolls?: number };
 }
 
+// The fresh-markdown ingest path has its article text in hand and never
+// re-extracts, so it doesn't need `extract`. Typing it out (rather than passing
+// a throwing stub) lets the type system document that runFreshBatch can't fetch.
+export type FreshBatchDeps = Omit<BatchRunDeps, "extract">;
+
 export interface BatchRunResult {
   report: WriteReportRow[];
   dropped: DroppedTarget[];
@@ -44,22 +49,8 @@ export interface BatchRunResult {
 export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
   const log = deps.log ?? (() => {});
 
-  const existing = await deps.loadSidecar();
-  if (existing) {
-    if (!existing.batchId) {
-      // A pending sidecar with no batch id means a prior run crashed in the
-      // create window: a batch MAY have been created and billed. Abort rather
-      // than risk a second, double-billed batch.
-      throw new Error(
-        "found a pending batch sidecar with no batch id — a previous --batch run " +
-          "may have created (and been billed for) a batch without recording its id. " +
-          "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
-      );
-    }
-    log(`Resuming batch ${existing.batchId} (${existing.targets.length} readings)`);
-    const report = await pollAndWrite(existing, deps);
-    return { report, dropped: [], resumed: true, batchId: existing.batchId };
-  }
+  const resumed = await resumeIfInFlight(deps);
+  if (resumed) return resumed;
 
   const readManifest = async (keyPrefix: string): Promise<Manifest | null> => {
     const raw = await deps.r2.get(`${keyPrefix}/manifest.json`);
@@ -78,7 +69,54 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
     log(`  dropped ${d.readingId}: ${d.reason}`);
   }
 
-  const summarizeTargets = await resolveSimilar(extracted.extracted, {
+  return summarizeAndWrite(extracted.extracted, dropped, deps);
+}
+
+// Fresh-markdown ingest: the targets already carry their article text (markdown
+// in hand, no manifest to read or URL to fetch), so this skips prepare/extract
+// and runs the shared similar -> submit -> poll -> write tail. A live sidecar
+// still means "resume" (cost-safe), identical to runBatch.
+export async function runFreshBatch(
+  extracted: ExtractedTarget[],
+  deps: FreshBatchDeps,
+): Promise<BatchRunResult> {
+  const resumed = await resumeIfInFlight(deps);
+  if (resumed) return resumed;
+  return summarizeAndWrite(extracted, [], deps);
+}
+
+// A live sidecar always means "resume" — we never recreate a batch, so a re-run
+// after a crash can't double-bill the summarize step. Returns null when there's
+// no batch in flight (the caller proceeds to build a fresh one).
+async function resumeIfInFlight(deps: FreshBatchDeps): Promise<BatchRunResult | null> {
+  const log = deps.log ?? (() => {});
+  const existing = await deps.loadSidecar();
+  if (!existing) return null;
+  if (!existing.batchId) {
+    // A pending sidecar with no batch id means a prior run crashed in the
+    // create window: a batch MAY have been created and billed. Abort rather
+    // than risk a second, double-billed batch.
+    throw new Error(
+      "found a pending batch sidecar with no batch id — a previous --batch run " +
+        "may have created (and been billed for) a batch without recording its id. " +
+        "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
+    );
+  }
+  log(`Resuming batch ${existing.batchId} (${existing.targets.length} readings)`);
+  const report = await pollAndWrite(existing, deps);
+  return { report, dropped: [], resumed: true, batchId: existing.batchId };
+}
+
+// The shared tail both entry points run once their extracted targets are in
+// hand: resolve similar readings, submit one Message Batch, then poll + write.
+async function summarizeAndWrite(
+  extracted: ExtractedTarget[],
+  dropped: DroppedTarget[],
+  deps: FreshBatchDeps,
+): Promise<BatchRunResult> {
+  const log = deps.log ?? (() => {});
+
+  const summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     query: (vector, opts) => deps.vectorize.query(vector, opts),
   });
@@ -101,7 +139,7 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
   return { report, dropped, resumed: false, batchId: sidecar.batchId };
 }
 
-async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {
+async function pollAndWrite(sidecar: Sidecar, deps: FreshBatchDeps): Promise<WriteReportRow[]> {
   const ended = await pollUntilEnded(sidecar.batchId, {
     batch: deps.batch,
     sleep: deps.sleep,

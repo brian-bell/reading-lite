@@ -214,6 +214,22 @@ through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
 Both default to a dry run; pass `--execute` to act.
 
+To bulk-ingest a directory of *fresh* markdown files (e.g. an export of tweet
+dumps) without fanning out realtime summarize calls, use `npm run corpus-ingest
+-- --dir <path>`. It summarizes the whole directory in one Anthropic Message
+Batch (~50% cheaper, async), writing readings byte-compatible with the realtime
+markdown import (`source_type: "markdown"`, captured content, by-url/by-id
+pointers, Vectorize vector, `index/list.json` entry). Each file needs a
+`**Source:**` line with its URL. Idempotency is resolved client-side from
+`index/by-url` pointers: ready owners are skipped, failed owners re-ingested in
+place, pending owners skipped. Because the by-url slot is only claimed on
+success, a concurrent realtime submit of the same URL during the in-flight batch
+window could create a duplicate — so this is meant for operator backfills where
+the script is the sole writer. Dry-run by default (prints the plan: would-submit
+/ skipped / duplicates / oversized / missing-source); pass `--execute` to submit.
+A re-run resumes the in-flight batch from `./corpus-ingest.batch.json` rather
+than creating a second, double-billed one.
+
 ## Web SPA
 
 A small React SPA lives in `web/` and points at the Worker via Vite's dev proxy. It renders the list (with search + tag chips), submission form, detail page (TL;DR, summary markdown, entities, connections, content links), and persists the bearer token in `localStorage`.
@@ -351,10 +367,11 @@ scripts/
   read-url.ts                   # CLI: POST a single URL
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
   corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = bulk Message Batch path)
+  corpus-ingest.ts              # CLI: bulk-ingest a fresh markdown dir via the Message Batch pipeline (dry-run by default)
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
   corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
-  corpus-lib/batch/{...}        # bulk path: Anthropic Message Batch + OpenAI array embed, phase pipeline, resume sidecar
-  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch)
+  corpus-lib/batch/{...}        # bulk path: Message Batch + OpenAI array embed, phase pipeline, resume sidecar; fresh-markdown.ts + ingest-plan.ts front the corpus-ingest path
+  lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch / corpus-ingest)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
   import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
