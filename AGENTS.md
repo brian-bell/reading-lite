@@ -67,11 +67,20 @@ agent context: current commands, module map, conventions, and gotchas.
   audit/recovery/drop, imports, and manual smoke tests.
 - `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
   `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → similar →
-  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover
-  --batch` resolves audit rows via `prepare.ts` + `extract-phase.ts`, while
-  `corpus-ingest` resolves a fresh markdown directory via
+  claim → submit+sidecar → poll(+heartbeat) → write) that both front-ends feed:
+  `corpus-recover --batch` resolves audit rows via `prepare.ts` +
+  `extract-phase.ts`, while `corpus-ingest` resolves a fresh markdown directory via
   `prepare-fresh-markdown.ts` (client-side by-url ownership + minted ids,
   bypassing extract-phase since the markdown is in hand) and `run-fresh-markdown.ts`.
+  `claim-phase.ts` eagerly claims the by-url slot (pending manifest + by-url +
+  by-id + list row) before `batch.create` so an online submit defers instead of
+  racing (issue #66); `heartbeat-phase.ts` re-stamps those pendings on the poll
+  loop so they don't go stale mid-batch; `list-index-merge.ts` is the shared
+  `index/list.json` compare-and-set merge (etag `If-Match` loop, mirroring the
+  Worker's `ListIndexStore`) used by both the claim and write phases, so a backfill
+  running alongside live traffic can't clobber an unrelated online row.
+  by-url conditional creates ride on `cf-clients.ts`'s `ifNoneMatch` PUT
+  (`PointerExistsError` on 412), mirroring the Worker's `ifNotExists` claim.
 - `web/` is the React/Vite SPA. It stores the bearer token in localStorage,
   lists/searches readings, submits URLs, shows details/diagnostics, opens
   authed content blobs, and can start reprocesses.
@@ -271,11 +280,43 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
   corpus-recover. `write-phase` writes the by-id pointer on both the success and
   failure branches (a fresh-ingest failure must still be reachable via
-  detail/reprocess), but only writes by-url on success. Because by-url is only written on
-  success, the URL stays unclaimed during the in-flight batch window — a
-  concurrent realtime submit of the same URL could create a duplicate, so it is
-  intended for an operator backfill where the script is the sole writer.
-  Dry-run-by-default + `--execute`; resumes its in-flight batch from
-  `./corpus-ingest.batch.json` (override with `--sidecar`).
+  detail/reprocess). Dry-run-by-default + `--execute`; resumes its in-flight batch
+  from `./corpus-ingest.batch.json` (override with `--sidecar`).
+- Both batch front-ends (`corpus-ingest` and `corpus-recover --batch`) **eagerly
+  claim the by-url slot at submit** (`claim-phase.ts`, the offline mirror of the
+  online `activateAttempt`): before creating the minutes-to-hours Message Batch
+  they conditional-create `index/by-url/{hash}` (`If-None-Match: *`,
+  byte-compatible with the Worker's `ByUrlPointer` JSON + `ownedManifestMatches`)
+  and write the fresh content artifacts (`raw.*`, `extracted.md`) **then** a
+  `pending` manifest + by-id pointer + list row — artifacts-before-manifest,
+  mirroring `activateAttempt`, so a captured-`pending` manifest is never published
+  without its content (which the API reprocess path can't recover for markdown).
+  An online submit for the same URL during the in-flight window then resolves an
+  owned `pending` reading and **defers** instead of starting a competing
+  pending/job — closing the issue #66 duplicate-compute/email/pointer-thrash race
+  so backfills can run concurrently with live traffic. A slot owned by a
+  *different* reading (or a structurally **damaged** pointer) is **deferred** — the
+  target is dropped (surfaced in the result's `dropped` list, not just logged) and
+  never summarized; the offline path never CAS-overwrites a slot it doesn't own
+  (that would be the very race), so repairing a corrupt by-url pointer stays the
+  online resolver's job. A slot already ours (a failed reading re-ingesting in
+  place, or resume) is overwritten to pending, except a `ready` owner — including a
+  legacy/cold ready reading that merely lacked a by-url pointer — is left untouched
+  (its summary preserved; already defended). An oversize batch is rejected by the
+  payload size cap **before** any claim mutates R2, so a `--limit` rerun isn't
+  stranded by half-written pending owners. On batch
+  failure the eager by-url pointer is **left** pointing at the now-failed manifest
+  (mirroring the online failure path — an owned `failed` reading reprocesses in
+  place, still re-submittable). Because the online staleness rule
+  (`PENDING_TTL_SECONDS`, 900s) would otherwise flip a long-running batch's pending
+  to `failed` and let an online submit reprocess it, `heartbeat-phase.ts` re-stamps
+  the pending manifests' `updated_at` on the poll loop (≈ every 5 min, gated under
+  the TTL) so they stay fresh for the whole batch; if the batch process dies the
+  pendings age out and the online path recovers them. Caveat: a crash *between* the
+  eager claim and the sidecar write (a seconds-wide window, before `batch.create`)
+  can leave a stranded pending that a corpus-ingest rerun then skips — benign and
+  recoverable via the API / `corpus-recover`, consistent with existing
+  stranded-pending semantics. Resume goes straight to poll+write and inherits the
+  already-claimed slots, so no re-claim is needed.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

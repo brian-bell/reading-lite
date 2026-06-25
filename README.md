@@ -333,10 +333,18 @@ rerun finds that failed reading there and re-ingests it in place instead of
 minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
-rather than risk racing the worker. Because the by-url pointer is only written on
-success, the slot stays unclaimed during the in-flight batch window — a
-concurrent realtime submit of the same URL could duplicate it, so this is
-intended for an operator backfill where the script is the sole writer. The in-flight batch is recorded in a
+rather than risk racing the worker. To make a backfill safe to run *alongside*
+live traffic, both batch front-ends eagerly claim the by-url slot at submit —
+before creating the (minutes-to-hours) Message Batch they conditional-create the
+`index/by-url/{hash}` pointer (byte-compatible with the Worker's claim) and write
+a `pending` manifest, so an online submit for the same URL during the in-flight
+window resolves an owned pending reading and defers instead of starting a
+competing summarize/embed (the issue #66 race). A poll-loop heartbeat re-stamps
+those pendings so they don't age past `PENDING_TTL_SECONDS` and get reprocessed
+mid-batch; if the batch process dies they age out and the online path recovers
+them. A slot already owned by a different reading is deferred (dropped, never
+summarized), and on failure the by-url pointer is left pointing at the failed
+manifest (still re-submittable). The in-flight batch is recorded in a
 sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
 instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
 `CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`
