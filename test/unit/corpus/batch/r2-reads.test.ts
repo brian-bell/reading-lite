@@ -82,6 +82,44 @@ describe("findByUrlInList", () => {
     expect(found?.id).toBe("rd_F");
   });
 
+  it("forceScan finds the owner when a parseable index lost its row", async () => {
+    // The damaged-pointer repair case: index/list.json exists and parses but no
+    // longer lists the reading; without forceScan the URL reads as unclaimed and
+    // the ingest would mint a duplicate. forceScan mirrors the Worker's deepScan.
+    const kp = "readings/kp-failed";
+    const seed = {
+      // index has only an unrelated row — the owner's row was dropped/stale
+      "index/list.json": listIndex([
+        { id: "rd_O", key_prefix: "readings/kp-o", url: "https://example.com/other", status: "ready", created_at: "2026-01-01T00:00:00.000Z" },
+      ]),
+      [`${kp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_F", status: "failed" })),
+    };
+    // Without forceScan the stale index hides it.
+    expect(await findByUrlInList(r2(seed), URL, hex(URL))).toBeNull();
+    // With forceScan the manifest scan recovers the real owner.
+    const found = await findByUrlInList(r2(seed), URL, hex(URL), { forceScan: true });
+    expect(found?.id).toBe("rd_F");
+    expect(found?.key_prefix).toBe(kp);
+  });
+
+  it("forceScan still prefers a ready index owner over a failed scanned duplicate", async () => {
+    // Merge semantics: the index row (ready) and a scanned failed duplicate for
+    // the same URL both surface; ownership rank keeps the ready owner.
+    const readyKp = "readings/kp-ready";
+    const failedKp = "readings/kp-failed";
+    const seed = {
+      "index/list.json": listIndex([
+        { id: "rd_READY", key_prefix: readyKp, url: URL, status: "ready", created_at: "2026-01-01T00:00:00.000Z" },
+      ]),
+      [`${readyKp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_READY", status: "ready" })),
+      [`${failedKp}/manifest.json`]: JSON.stringify(
+        manifest({ id: "rd_FAIL", status: "failed", updated_at: "2026-09-01T00:00:00.000Z" }),
+      ),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL), { forceScan: true });
+    expect(found?.id).toBe("rd_READY");
+  });
+
   it("resolves a failed reading by URL through the list index (the no-by-url-pointer case)", async () => {
     const kp = "readings/kp-failed";
     const seed = {

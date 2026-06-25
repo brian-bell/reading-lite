@@ -65,13 +65,21 @@ export async function readManifest(r2: R2Getter, keyPrefix: string): Promise<Man
 // rebuild(). Returning null here instead would treat an already-owned URL as
 // unclaimed on a corpus whose index was deleted/corrupted (manifests intact),
 // minting a duplicate reading and repointing by-url at it on success.
+//
+// `forceScan` mirrors the Worker's `deepScan: true` repair policy for a damaged
+// by-url pointer: scan the bucket even when the index parses, then merge the scan
+// with the index rows. A stale index that lost the owner's row would otherwise
+// let a damaged-pointer re-ingest mint a duplicate and overwrite by-url, orphaning
+// the real owner. Plain cold (no pointer) lookups leave forceScan off so a
+// first-time URL submit doesn't pay for a full bucket scan (matching the Worker).
 export async function findByUrlInList(
   r2: R2Lister,
   url: string,
   urlHash: string,
+  opts: { forceScan?: boolean } = {},
 ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null> {
   const indexed = await readListIndexRows(r2);
-  const rows = indexed ?? (await rebuildRowsFromManifests(r2));
+  const rows = await resolveOwnerRows(r2, indexed, opts.forceScan === true);
 
   const matches = rows.filter(
     (i) => i.url === url && typeof i.key_prefix === "string" && typeof i.id === "string",
@@ -92,6 +100,24 @@ export async function findByUrlInList(
     }
   }
   return null;
+}
+
+// Decide the candidate owner rows to rank. Without forceScan: trust the index
+// when it parses, else rebuild from a scan. With forceScan (damaged-pointer
+// repair): always scan and merge with the index rows so a stale index that
+// dropped the owner's row still surfaces it. Scanned rows win per key_prefix —
+// they carry the freshly read manifest.
+async function resolveOwnerRows(
+  r2: R2Lister,
+  indexed: OwnerRow[] | null,
+  forceScan: boolean,
+): Promise<OwnerRow[]> {
+  if (!forceScan) return indexed ?? (await rebuildRowsFromManifests(r2));
+  const scanned = await rebuildRowsFromManifests(r2);
+  const byPrefix = new Map<string, OwnerRow>();
+  for (const row of indexed ?? []) byPrefix.set(row.key_prefix, row);
+  for (const row of scanned) byPrefix.set(row.key_prefix, row);
+  return [...byPrefix.values()];
 }
 
 // Parse index/list.json into owner rows, or null when it is absent/unparseable
@@ -146,11 +172,12 @@ export function r2ReadDeps(r2: R2Lister): {
   findByUrlInList(
     url: string,
     urlHash: string,
+    opts?: { forceScan?: boolean },
   ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
 } {
   return {
     getByUrl: (urlHash) => getByUrl(r2, urlHash),
     readManifest: (keyPrefix) => readManifest(r2, keyPrefix),
-    findByUrlInList: (url, urlHash) => findByUrlInList(r2, url, urlHash),
+    findByUrlInList: (url, urlHash, opts) => findByUrlInList(r2, url, urlHash, opts),
   };
 }

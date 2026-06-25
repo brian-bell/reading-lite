@@ -31,9 +31,13 @@ export interface FreshMarkdownDeps {
   // Load-bearing for retry-after-failure: a failed fresh ingest leaves a by-id
   // pointer + list row but NO by-url pointer, so a rerun finds the failed
   // reading here and re-ingests it in place instead of minting a duplicate.
+  // `forceScan` mirrors the Worker's `deepScan: true` damaged-pointer repair:
+  // scan the bucket even when the index parses, so a stale index can't hide the
+  // real owner. Left off for plain cold lookups to avoid a per-submit scan.
   findByUrlInList(
     url: string,
     urlHash: string,
+    opts?: { forceScan?: boolean },
   ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
   // Mint a fresh reading id (rd_...) for an unclaimed URL.
   newId(): string;
@@ -137,8 +141,11 @@ export async function prepareFreshMarkdown(
     // pointer + list row but deliberately no by-url pointer, so a retry must
     // re-ingest THAT failed reading in place rather than mint a second one.
     // Resolve through index/list.json by the same ready>pending>failed
-    // ownership rank the Worker uses.
-    const cold = await deps.findByUrlInList(url, urlHash);
+    // ownership rank the Worker uses. A damaged pointer (owner present but
+    // unmatched) forces a deep scan — the Worker's `deepScan: existing ? true`
+    // repair policy — so a stale index that lost the owner's row can't make us
+    // mint a duplicate and overwrite by-url onto it.
+    const cold = await deps.findByUrlInList(url, urlHash, { forceScan: owner !== null });
     if (cold) {
       if (cold.manifest.status === "ready") {
         dispositions.push({ kind: "skip-ready", url, id: cold.id, article });

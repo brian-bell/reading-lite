@@ -35,21 +35,24 @@ function deps(
     manifests?: Record<string, Manifest>;
     cold?: Record<string, { id: string; key_prefix: string; manifest: Manifest }>;
   } = {},
-): FreshMarkdownDeps & { ids: string[] } {
+): FreshMarkdownDeps & { ids: string[]; coldCalls: { url: string; forceScan: boolean }[] } {
   const byUrl = seed.byUrl ?? {};
   const manifests = seed.manifests ?? {};
   const cold = seed.cold ?? {};
   let n = 0;
   const ids: string[] = [];
+  const coldCalls: { url: string; forceScan: boolean }[] = [];
   return {
     ids,
+    coldCalls,
     async getByUrl(urlHash) {
       return byUrl[urlHash] ?? null;
     },
     async readManifest(keyPrefix) {
       return manifests[keyPrefix] ?? null;
     },
-    async findByUrlInList(url) {
+    async findByUrlInList(url, _urlHash, opts) {
+      coldCalls.push({ url, forceScan: opts?.forceScan === true });
       return cold[url] ?? null;
     },
     newId() {
@@ -234,6 +237,18 @@ describe("prepareFreshMarkdown — existing owner", () => {
     expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
   });
 
+  it("forces a deep scan on the cold lookup when repairing a damaged pointer", async () => {
+    // A damaged by-url pointer must trigger the Worker's deepScan repair so a
+    // stale index can't hide the real owner and cause a duplicate mint.
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
+      manifests: {},
+    });
+    await prepareFreshMarkdown([a], d);
+    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
+  });
+
   it("skips a ready cold owner when the by-url pointer is cross-wired to another reading", async () => {
     // Damaged pointer (cross-wired to a different reading) BUT index/list.json
     // still owns this URL with a ready reading. The damaged-pointer branch must
@@ -314,6 +329,9 @@ describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", 
     expect(t.target.keyPrefix).toBe("readings/kp-owner");
     expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
     expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+    // No pointer at all → plain cold lookup, no forced scan (a first-time URL
+    // submit must not pay for a full bucket scan, matching the Worker).
+    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: false }]);
   });
 
   it("skips a ready reading found via the list index even without a by-url pointer", async () => {
