@@ -33,7 +33,11 @@ export async function readManifest(r2: R2Getter, keyPrefix: string): Promise<Man
 // URL's owner through index/list.json when no live by-url pointer exists. A
 // failed fresh ingest leaves a by-id pointer + list row but no by-url pointer,
 // so this is how a rerun finds it. Ranks same-URL rows by ownership then
-// recency and returns the first whose manifest genuinely matches the URL.
+// recency and returns the first whose manifest genuinely matches the URL. The
+// verified manifest is the source of truth for the owner id, not the list row:
+// a stale/cross-wired row can carry a different id than the manifest its
+// key_prefix points at, and re-ingesting under the row id would overwrite that
+// manifest under the wrong reading id.
 export async function findByUrlInList(
   r2: R2Getter,
   url: string,
@@ -63,7 +67,7 @@ export async function findByUrlInList(
   for (const item of matches) {
     const manifest = await readManifest(r2, item.key_prefix);
     if (manifest?.url === url && manifest.url_hash === urlHash) {
-      return { id: item.id, key_prefix: item.key_prefix, manifest };
+      return { id: manifest.id, key_prefix: item.key_prefix, manifest };
     }
   }
   return null;

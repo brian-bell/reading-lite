@@ -68,6 +68,21 @@ describe("findByUrlInList", () => {
     expect(found?.id).toBe("rd_READY");
   });
 
+  it("returns the manifest's id, not the list row's, when the row is cross-wired", async () => {
+    // Stale/cross-wired index: the row's id is wrong, but its key_prefix points
+    // at a real manifest for this URL. The verified manifest is the source of
+    // truth, so re-ingest must target the manifest's own id — not the row id,
+    // which would overwrite the manifest under the wrong reading id.
+    const kp = "readings/kp-crosswired";
+    const seed = {
+      "index/list.json": listIndex([{ id: "rd_STALE", key_prefix: kp, url: URL, status: "failed", created_at: "2026-01-01T00:00:00.000Z" }]),
+      [`${kp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_REAL", status: "failed" })),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_REAL");
+    expect(found?.key_prefix).toBe(kp);
+  });
+
   it("skips a list row whose manifest does not actually match the URL", async () => {
     const kp = "readings/kp-mismatch";
     const seed = {
