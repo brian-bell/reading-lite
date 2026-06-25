@@ -102,6 +102,43 @@ describe("findByUrlInList", () => {
     expect(found?.key_prefix).toBe(kp);
   });
 
+  it("reconciles a stale same-URL index row by scanning, even without forceScan", async () => {
+    // The Worker rebuilds whenever index/list.json has any row for the URL
+    // (indexedMatches.length > 0): the indexed row may point at a missing or
+    // mismatched manifest while the real owner has fallen out of the index. The
+    // cold path must do the same or it returns null and mints a duplicate.
+    const staleKp = "readings/kp-stale";
+    const realKp = "readings/kp-real";
+    const seed = {
+      // index row for URL points at a manifest that belongs to a DIFFERENT url
+      "index/list.json": listIndex([
+        { id: "rd_STALE", key_prefix: staleKp, url: URL, status: "failed", created_at: "2026-01-01T00:00:00.000Z" },
+      ]),
+      [`${staleKp}/manifest.json`]: JSON.stringify(
+        manifest({ id: "rd_STALE", url: "https://example.com/other", url_hash: hex("https://example.com/other") }),
+      ),
+      // the real owner exists on the bucket but is absent from the index
+      [`${realKp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_REAL", status: "ready" })),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_REAL");
+    expect(found?.key_prefix).toBe(realKp);
+  });
+
+  it("does not scan for a brand-new URL with a parseable index and no matching row", async () => {
+    // A first-time submit must not pay for a full bucket scan: with a parseable
+    // index that has no row for the URL, listKeys must not be consulted.
+    let listed = 0;
+    const base = r2({
+      "index/list.json": listIndex([
+        { id: "rd_O", key_prefix: "readings/kp-o", url: "https://example.com/other", status: "ready", created_at: "2026-01-01T00:00:00.000Z" },
+      ]),
+    });
+    const counting = { ...base, listKeys: async () => { listed++; return base.listKeys(); } };
+    expect(await findByUrlInList(counting, URL, hex(URL))).toBeNull();
+    expect(listed).toBe(0);
+  });
+
   it("forceScan still prefers a ready index owner over a failed scanned duplicate", async () => {
     // Merge semantics: the index row (ready) and a scanned failed duplicate for
     // the same URL both surface; ownership rank keeps the ready owner.

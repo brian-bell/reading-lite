@@ -60,18 +60,19 @@ export async function readManifest(r2: R2Getter, keyPrefix: string): Promise<Man
 // key_prefix points at, and re-ingesting under the row id would overwrite that
 // manifest under the wrong reading id.
 //
-// When index/list.json is missing or unparseable we rebuild candidate rows from
-// a full manifest scan, exactly as the Worker's findManifestByUrl falls back to
-// rebuild(). Returning null here instead would treat an already-owned URL as
-// unclaimed on a corpus whose index was deleted/corrupted (manifests intact),
-// minting a duplicate reading and repointing by-url at it on success.
-//
-// `forceScan` mirrors the Worker's `deepScan: true` repair policy for a damaged
-// by-url pointer: scan the bucket even when the index parses, then merge the scan
-// with the index rows. A stale index that lost the owner's row would otherwise
-// let a damaged-pointer re-ingest mint a duplicate and overwrite by-url, orphaning
-// the real owner. Plain cold (no pointer) lookups leave forceScan off so a
-// first-time URL submit doesn't pay for a full bucket scan (matching the Worker).
+// The scan/merge mirrors the Worker's findManifestByUrl exactly. It rebuilds
+// candidate rows from a full manifest scan when ANY of:
+//   - the index is missing/unparseable (a deleted/corrupted index would
+//     otherwise read an owned URL as unclaimed → duplicate mint + by-url
+//     overwrite);
+//   - the parsed index already holds a row for this URL (stale same-URL
+//     reconciliation: the indexed row may point at a missing/mismatched manifest
+//     while the real owner has fallen out of the index);
+//   - `forceScan` is set (the Worker's `deepScan: true` damaged-pointer repair:
+//     a stale index that LOST the owner's row still needs the scan).
+// A brand-new URL with a parseable index and no matching row scans nothing, so a
+// first-time submit never pays for a full bucket scan (matching the Worker).
+// Scanned rows win per key_prefix — they carry the freshly read manifest.
 export async function findByUrlInList(
   r2: R2Lister,
   url: string,
@@ -79,11 +80,19 @@ export async function findByUrlInList(
   opts: { forceScan?: boolean } = {},
 ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null> {
   const indexed = await readListIndexRows(r2);
-  const rows = await resolveOwnerRows(r2, indexed, opts.forceScan === true);
-
-  const matches = rows.filter(
+  const indexedMatches = (indexed ?? []).filter(
     (i) => i.url === url && typeof i.key_prefix === "string" && typeof i.id === "string",
   );
+
+  const byPrefix = new Map<string, OwnerRow>();
+  for (const row of indexedMatches) byPrefix.set(row.key_prefix, row);
+  if (indexed === null || indexedMatches.length > 0 || opts.forceScan === true) {
+    for (const row of await rebuildRowsFromManifests(r2)) {
+      if (row.url === url) byPrefix.set(row.key_prefix, row);
+    }
+  }
+
+  const matches = [...byPrefix.values()];
   matches.sort((a, b) => {
     const rankDiff = (OWNERSHIP_RANK[b.status] ?? 0) - (OWNERSHIP_RANK[a.status] ?? 0);
     if (rankDiff !== 0) return rankDiff;
@@ -100,24 +109,6 @@ export async function findByUrlInList(
     }
   }
   return null;
-}
-
-// Decide the candidate owner rows to rank. Without forceScan: trust the index
-// when it parses, else rebuild from a scan. With forceScan (damaged-pointer
-// repair): always scan and merge with the index rows so a stale index that
-// dropped the owner's row still surfaces it. Scanned rows win per key_prefix —
-// they carry the freshly read manifest.
-async function resolveOwnerRows(
-  r2: R2Lister,
-  indexed: OwnerRow[] | null,
-  forceScan: boolean,
-): Promise<OwnerRow[]> {
-  if (!forceScan) return indexed ?? (await rebuildRowsFromManifests(r2));
-  const scanned = await rebuildRowsFromManifests(r2);
-  const byPrefix = new Map<string, OwnerRow>();
-  for (const row of indexed ?? []) byPrefix.set(row.key_prefix, row);
-  for (const row of scanned) byPrefix.set(row.key_prefix, row);
-  return [...byPrefix.values()];
 }
 
 // Parse index/list.json into owner rows, or null when it is absent/unparseable
