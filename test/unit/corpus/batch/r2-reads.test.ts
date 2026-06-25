@@ -59,6 +59,20 @@ describe("findByUrlInList", () => {
     expect(found?.manifest.status).toBe("failed");
   });
 
+  it("skips a corrupt manifest during the rebuild scan and still finds the owner", async () => {
+    // One malformed/schema-drifted manifest elsewhere in the bucket must not
+    // abort the whole ownership scan (mirroring the Worker's safe-parse rebuild).
+    const goodKp = "readings/kp-good";
+    const seed = {
+      "readings/kp-bad-json/manifest.json": "{ not valid json",
+      "readings/kp-bad-schema/manifest.json": JSON.stringify({ id: "rd_X", url: URL }), // missing fields
+      [`${goodKp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_GOOD", status: "failed" })),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_GOOD");
+    expect(found?.key_prefix).toBe(goodKp);
+  });
+
   it("rebuilds and prefers a ready owner over a failed duplicate when the index is absent", async () => {
     const readyKp = "readings/kp-ready";
     const failedKp = "readings/kp-failed";

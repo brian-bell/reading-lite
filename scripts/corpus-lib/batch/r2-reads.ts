@@ -50,6 +50,22 @@ export async function readManifest(r2: R2Getter, keyPrefix: string): Promise<Man
   return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
 }
 
+// Like readManifest but tolerant: returns null instead of throwing on missing,
+// non-JSON, or schema-drifted manifests. Used only by the full-bucket rebuild
+// scan, where one corrupt object must not abort ownership resolution — mirroring
+// the Worker's rebuild(), which safeParses and skips bad manifests. The targeted
+// by-url owner read stays strict (readManifest) so a damaged claim still surfaces.
+async function safeReadManifest(r2: R2Getter, keyPrefix: string): Promise<Manifest | null> {
+  const raw = await r2.get(`${keyPrefix}${MANIFEST_SUFFIX}`);
+  if (!raw) return null;
+  try {
+    const parsed = ManifestSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 // The cold-legacy lookup, mirroring the Worker's findManifestByUrl: resolve a
 // URL's owner through index/list.json when no live by-url pointer exists. A
 // failed fresh ingest leaves a by-id pointer + list row but no by-url pointer,
@@ -141,7 +157,9 @@ async function rebuildRowsFromManifests(r2: R2Lister): Promise<OwnerRow[]> {
   for (const key of keys) {
     if (!key.startsWith(READINGS_PREFIX) || !key.endsWith(MANIFEST_SUFFIX)) continue;
     const keyPrefix = key.slice(0, -MANIFEST_SUFFIX.length);
-    const manifest = await readManifest(r2, keyPrefix);
+    // Tolerate one corrupt/schema-drifted manifest: skip it rather than abort the
+    // whole scan (and with it the bulk ingest), exactly as the Worker's rebuild().
+    const manifest = await safeReadManifest(r2, keyPrefix);
     if (!manifest) continue;
     rows.push({
       id: manifest.id,
