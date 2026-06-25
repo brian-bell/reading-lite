@@ -26,9 +26,14 @@ function manifest(over: Partial<Manifest> = {}): Manifest {
   } as Manifest;
 }
 
-// Minimal R2 getter backed by an in-memory map.
+// Minimal R2 client backed by an in-memory map. `listKeys` returns every seeded
+// key so the missing-index rebuild scan can find manifests, mirroring the real
+// paging R2 client.
 function r2(seed: Record<string, string>) {
-  return { get: async (k: string) => seed[k] ?? null };
+  return {
+    get: async (k: string) => seed[k] ?? null,
+    listKeys: async () => Object.keys(seed),
+  };
 }
 
 function listIndex(items: object[]): string {
@@ -36,8 +41,45 @@ function listIndex(items: object[]): string {
 }
 
 describe("findByUrlInList", () => {
-  it("returns null when there is no list index", async () => {
+  it("returns null on a truly cold bucket (no index, no manifests)", async () => {
     expect(await findByUrlInList(r2({}), URL, hex(URL))).toBeNull();
+  });
+
+  it("rebuilds from a manifest scan when index/list.json is absent", async () => {
+    // The Worker's findManifestByUrl rebuilds from manifests when the index is
+    // missing; this offline path must too, or a corpus whose index was deleted
+    // (but whose manifests survive) would mint a duplicate over an owned URL.
+    const kp = "readings/kp-failed";
+    const seed = {
+      [`${kp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_F", status: "failed" })),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_F");
+    expect(found?.key_prefix).toBe(kp);
+    expect(found?.manifest.status).toBe("failed");
+  });
+
+  it("rebuilds and prefers a ready owner over a failed duplicate when the index is absent", async () => {
+    const readyKp = "readings/kp-ready";
+    const failedKp = "readings/kp-failed";
+    const seed = {
+      [`${readyKp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_READY", status: "ready" })),
+      [`${failedKp}/manifest.json`]: JSON.stringify(
+        manifest({ id: "rd_FAIL", status: "failed", updated_at: "2026-03-01T00:00:00.000Z" }),
+      ),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_READY");
+  });
+
+  it("rebuilds when index/list.json is present but unparseable", async () => {
+    const kp = "readings/kp-failed";
+    const seed = {
+      "index/list.json": "{ not json",
+      [`${kp}/manifest.json`]: JSON.stringify(manifest({ id: "rd_F", status: "failed" })),
+    };
+    const found = await findByUrlInList(r2(seed), URL, hex(URL));
+    expect(found?.id).toBe("rd_F");
   });
 
   it("resolves a failed reading by URL through the list index (the no-by-url-pointer case)", async () => {

@@ -48,6 +48,7 @@ function harness(seed: Record<string, string> = {}) {
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
     }),
     head: vi.fn(async (k: string) => store.has(k)),
+    listKeys: vi.fn(async () => [...store.keys()]),
   };
   const vectorize = { upsert: vi.fn(async () => {}), query: vi.fn(async () => []) };
   let sidecar: Sidecar | null = null;
