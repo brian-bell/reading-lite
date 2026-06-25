@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { claimByUrlSlots } from "../../../../scripts/corpus-lib/batch/claim-phase";
 import { PointerExistsError } from "../../../../scripts/lib/cf-clients";
-import type { SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
+import type { ExtractedTarget } from "../../../../scripts/corpus-lib/batch/types";
 import { ByUrlPointerSchema, ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { ownedManifestMatches } from "../../../../src/modules/reading-claim";
 
@@ -29,7 +29,7 @@ function fakeR2(seed: Record<string, string> = {}) {
   };
 }
 
-function summarizeTarget(over: { id?: string; url?: string; urlHash?: string; keyPrefix?: string } = {}): SummarizeTarget {
+function extractedTarget(over: { id?: string; url?: string; urlHash?: string; keyPrefix?: string } = {}): ExtractedTarget {
   const id = over.id ?? "rd_a";
   const url = over.url ?? `https://example.com/${id}`;
   const urlHash = over.urlHash ?? "a".repeat(64);
@@ -49,20 +49,16 @@ function summarizeTarget(over: { id?: string; url?: string; urlHash?: string; ke
     updated_at: createdAt,
   } as Manifest;
   return {
-    extracted: {
-      target: { readingId: id, url, urlHash, keyPrefix, createdAt, manifest },
+    target: { readingId: id, url, urlHash, keyPrefix, createdAt, manifest },
+    markdown: "# body",
+    fresh: {
+      raw: new TextEncoder().encode("# body"),
+      content_type: MD,
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "b".repeat(64),
       markdown: "# body",
-      fresh: {
-        raw: new TextEncoder().encode("# body"),
-        content_type: MD,
-        content_status: "captured",
-        content_bytes: 10,
-        content_sha256: "b".repeat(64),
-        markdown: "# body",
-      },
     },
-    similar: [],
-    queryEmbedTokens: 0,
   };
 }
 
@@ -89,7 +85,7 @@ const deps = (r2: ReturnType<typeof fakeR2>) => ({ r2, now: () => "2026-02-02T00
 describe("claimByUrlSlots", () => {
   it("claims an empty slot: byte-compatible by-url pointer + pending manifest + by-id + list row", async () => {
     const r2 = fakeR2();
-    const st = summarizeTarget();
+    const st = extractedTarget();
     const { kept, deferred } = await claimByUrlSlots([st], deps(r2));
 
     expect(kept).toHaveLength(1);
@@ -102,7 +98,7 @@ describe("claimByUrlSlots", () => {
 
     const manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
     expect(manifest.status).toBe("pending");
-    expect(ownedManifestMatches(pointer, manifest, st.extracted.target.url, "a".repeat(64))).toBe(true);
+    expect(ownedManifestMatches(pointer, manifest, st.target.url, "a".repeat(64))).toBe(true);
 
     // by-id pointer present and matching.
     expect(JSON.parse(r2.store.get("index/by-id/rd_a")!)).toEqual(pointer);
@@ -122,7 +118,7 @@ describe("claimByUrlSlots", () => {
       await origPut(key, body, opts);
     });
 
-    await claimByUrlSlots([summarizeTarget()], deps(r2));
+    await claimByUrlSlots([extractedTarget()], deps(r2));
 
     // raw + extracted are both written, and both BEFORE the manifest.
     expect(r2.store.get(`${keyPrefix}/raw.md`)).toBe("# body");
@@ -142,7 +138,7 @@ describe("claimByUrlSlots", () => {
       [`index/by-url/${urlHash}`]: JSON.stringify({ id: "rd_a", key_prefix: keyPrefix }),
       [`${keyPrefix}/manifest.json`]: manifestJson({ status: "failed" }),
     });
-    const { kept, deferred } = await claimByUrlSlots([summarizeTarget()], deps(r2));
+    const { kept, deferred } = await claimByUrlSlots([extractedTarget()], deps(r2));
 
     expect(kept).toHaveLength(1);
     expect(deferred).toHaveLength(0);
@@ -158,7 +154,7 @@ describe("claimByUrlSlots", () => {
       [`index/by-url/${urlHash}`]: JSON.stringify({ id: "rd_a", key_prefix: keyPrefix }),
       [`${keyPrefix}/manifest.json`]: readyJson,
     });
-    const { kept, deferred } = await claimByUrlSlots([summarizeTarget()], deps(r2));
+    const { kept, deferred } = await claimByUrlSlots([extractedTarget()], deps(r2));
 
     // Not summarized (so a batch failure can never overwrite the ready manifest).
     expect(kept).toHaveLength(0);
@@ -175,7 +171,7 @@ describe("claimByUrlSlots", () => {
     const keyPrefix = "readings/2026/01/01T000000Z-rd_a";
     const readyJson = manifestJson({ status: "ready", title: "T", tldr: "x", tags: [], keywords: [], people: [], orgs: [], summary_markdown: "s" });
     const r2 = fakeR2({ [`${keyPrefix}/manifest.json`]: readyJson }); // NOTE: no by-url pointer seeded
-    const { kept, deferred } = await claimByUrlSlots([summarizeTarget()], deps(r2));
+    const { kept, deferred } = await claimByUrlSlots([extractedTarget()], deps(r2));
 
     // Dropped from the batch (not re-summarized), ready manifest preserved.
     expect(kept).toHaveLength(0);
@@ -191,7 +187,7 @@ describe("claimByUrlSlots", () => {
     const r2 = fakeR2({
       [`index/by-url/${urlHash}`]: JSON.stringify({ id: "rd_other", key_prefix: "readings/2026/01/01T000000Z-rd_other" }),
     });
-    const { kept, deferred } = await claimByUrlSlots([summarizeTarget()], deps(r2));
+    const { kept, deferred } = await claimByUrlSlots([extractedTarget()], deps(r2));
 
     expect(kept).toHaveLength(0);
     expect(deferred).toEqual([{ id: "rd_a", url: "https://example.com/rd_a", reason: expect.any(String) }]);
@@ -204,8 +200,8 @@ describe("claimByUrlSlots", () => {
 
   it("merges all kept pending rows into index/list.json in a single write", async () => {
     const r2 = fakeR2();
-    const a = summarizeTarget({ id: "rd_a", url: "https://example.com/a", urlHash: "a".repeat(64), keyPrefix: "readings/2026/01/01T000000Z-rd_a" });
-    const b = summarizeTarget({ id: "rd_b", url: "https://example.com/b", urlHash: "c".repeat(64), keyPrefix: "readings/2026/01/01T000000Z-rd_b" });
+    const a = extractedTarget({ id: "rd_a", url: "https://example.com/a", urlHash: "a".repeat(64), keyPrefix: "readings/2026/01/01T000000Z-rd_a" });
+    const b = extractedTarget({ id: "rd_b", url: "https://example.com/b", urlHash: "c".repeat(64), keyPrefix: "readings/2026/01/01T000000Z-rd_b" });
 
     await claimByUrlSlots([a, b], deps(r2));
 

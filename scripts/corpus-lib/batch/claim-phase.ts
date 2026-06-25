@@ -5,7 +5,7 @@ import { PointerExistsError, type R2Client } from "../../lib/cf-clients";
 import { getByUrl, readManifest } from "./r2-reads";
 import { mergeListIndex } from "./list-index-merge";
 import { extToken } from "./submit-phase";
-import type { SummarizeTarget } from "./types";
+import type { ExtractedTarget } from "./types";
 
 export interface ClaimDeps {
   r2: R2Client;
@@ -25,7 +25,7 @@ export interface DeferredClaim {
 }
 
 export interface ClaimResult {
-  kept: SummarizeTarget[];
+  kept: ExtractedTarget[];
   deferred: DeferredClaim[];
 }
 
@@ -34,6 +34,11 @@ export interface ClaimResult {
 // batch runs for minutes-to-hours; without this claim the URL would sit unclaimed
 // that whole window and an online submit could start a competing pending + job
 // (duplicate paid compute + duplicate email + pointer thrash, issue #66).
+//
+// Runs on ExtractedTarget[] BEFORE the similarity phase (which embeds every target
+// + queries Vectorize — a paid, possibly rate-limited window): claiming first
+// means an online submit during the pre-submit work also sees the owned pending
+// and defers, instead of racing during the embed phase.
 //
 // Per target: conditional-create the `index/by-url/{hash}` pointer
 // (byte-compatible with the Worker's ByUrlPointer JSON and `ownedManifestMatches`)
@@ -53,13 +58,13 @@ export interface ClaimResult {
 // target the existing (failed) manifest is still present at the key_prefix
 // (prepareTargets drops manifest-less rows), so the pointer is never truly
 // dangling — the online resolver sees an owned `failed` reading and reprocesses it.
-export async function claimByUrlSlots(targets: SummarizeTarget[], deps: ClaimDeps): Promise<ClaimResult> {
-  const kept: SummarizeTarget[] = [];
+export async function claimByUrlSlots(targets: ExtractedTarget[], deps: ClaimDeps): Promise<ClaimResult> {
+  const kept: ExtractedTarget[] = [];
   const deferred: DeferredClaim[] = [];
   const touched: ListIndexItem[] = [];
 
-  for (const st of targets) {
-    const { target } = st.extracted;
+  for (const et of targets) {
+    const { target } = et;
     const { readingId: id, url, urlHash, keyPrefix } = target;
     const pointer = { id, key_prefix: keyPrefix };
 
@@ -119,7 +124,7 @@ export async function claimByUrlSlots(targets: SummarizeTarget[], deps: ClaimDep
     // leaves a captured-`pending` manifest whose raw/extracted objects are
     // missing — a state the API reprocess path can't recover for a markdown
     // reading (enqueueReprocess rejects it when extracted.md is absent).
-    const { fresh } = st.extracted;
+    const { fresh } = et;
     if (fresh) {
       await deps.r2.put(`${keyPrefix}/raw.${extToken(fresh.content_type)}`, fresh.raw, {
         contentType: fresh.content_type,
@@ -131,7 +136,7 @@ export async function claimByUrlSlots(targets: SummarizeTarget[], deps: ClaimDep
       }
     }
 
-    const pendingManifest = buildPendingManifest(st, deps.now());
+    const pendingManifest = buildPendingManifest(et, deps.now());
     await deps.r2.put(`${keyPrefix}/manifest.json`, JSON.stringify(pendingManifest), {
       contentType: "application/json",
     });
@@ -139,7 +144,7 @@ export async function claimByUrlSlots(targets: SummarizeTarget[], deps: ClaimDep
       contentType: "application/json",
     });
     touched.push(manifestToIndexItem(pendingManifest, keyPrefix));
-    kept.push(st);
+    kept.push(et);
   }
 
   await mergeListIndex({ r2: deps.r2, ...(deps.log ? { log: deps.log } : {}) }, touched);
@@ -150,8 +155,8 @@ export async function claimByUrlSlots(targets: SummarizeTarget[], deps: ClaimDep
 // status pending. Content descriptors come from the fresh extract when present
 // (fresh-markdown / re-extracted recover) else the existing manifest (recover of
 // a captured reading) — mirroring submit-phase's sidecarTargetFor.
-function buildPendingManifest(st: SummarizeTarget, now: string): Manifest {
-  const { target, title, fresh } = st.extracted;
+function buildPendingManifest(et: ExtractedTarget, now: string): Manifest {
+  const { target, title, fresh } = et;
   const m = target.manifest;
   const manifest: Manifest = {
     id: target.readingId,

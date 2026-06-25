@@ -173,6 +173,30 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
   });
 
+  it("claims the by-url slot BEFORE the similarity/embed phase (closes the pre-submit embed-window race)", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    const order: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string, o?: any) => {
+      if (k === `index/by-url/${hex(a.sourceUrl!)}`) order.push("claim:by-url");
+      await (origPut as any)(k, b, o);
+    });
+    const origEmbed = h.deps.embed.embedMany;
+    h.deps.embed.embedMany = vi.fn(async (inputs: string[]) => {
+      order.push("embed");
+      return (origEmbed as any)(inputs);
+    });
+
+    await runFreshMarkdownBatch([a], h.deps);
+
+    // The slot is claimed before any paid embedding/Vectorize query happens, so an
+    // online submit during the (slow/rate-limited) similarity phase still defers.
+    expect(order.indexOf("claim:by-url")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("embed")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("claim:by-url")).toBeLessThan(order.indexOf("embed"));
+  });
+
   it("eagerly claims the by-url slot (pending manifest) BEFORE creating the batch", async () => {
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");

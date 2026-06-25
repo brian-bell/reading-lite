@@ -85,30 +85,30 @@ export async function runBatchPipeline(
     log(`  dropped ${d.readingId}: ${d.reason}`);
   }
 
-  const summarizeTargets = await resolveSimilar(extracted, {
-    embedMany: (inputs) => deps.embed.embedMany(inputs),
-    query: (vector, opts) => deps.vectorize.query(vector, opts),
-  });
-
   // Validate the batch payload size BEFORE claiming any by-url slots: an oversize
   // batch must abort WITHOUT mutating R2, because an eager pending claim would
   // strand the operator's `--limit` rerun (prepareFreshMarkdown skips pending
-  // owners even past TTL). Conservatively checks the full pre-claim set; the kept
-  // subset can only be smaller.
-  if (summarizeTargets.length > 0) {
+  // owners even past TTL). Checked here on the extracted targets (similar context
+  // isn't resolved yet) with an empty similar block — the extracted markdown
+  // dominates the request body and there is ~56MB of headroom under Anthropic's
+  // 256MB limit, so omitting the small per-reading similar context is safe.
+  if (extracted.length > 0) {
     assertBatchWithinSizeCap(
-      summarizeTargets.map((st) => buildSummarizeRequest(st, deps.model)),
+      extracted.map((et) => buildSummarizeRequest({ extracted: et, similar: [], queryEmbedTokens: 0 }, deps.model)),
       deps.maxBatchBytes,
     );
   }
 
   // Eagerly claim the by-url slot (pending manifest + by-url + by-id + list row)
-  // for every target BEFORE creating the (minutes-to-hours) Message Batch — the
-  // offline mirror of the online activateAttempt. An online submit for one of
-  // these URLs during the in-flight window then sees an owned pending reading and
-  // defers instead of racing (issue #66). Targets whose slot is already owned by
-  // a different reading are deferred (dropped + logged), never summarized.
-  const { kept, deferred } = await claimByUrlSlots(summarizeTargets, {
+  // for every target BEFORE the similarity phase (which embeds every target +
+  // queries Vectorize — a paid, possibly rate-limited pre-submit window) and the
+  // (minutes-to-hours) Message Batch — the offline mirror of the online
+  // activateAttempt. An online submit for one of these URLs during that whole
+  // pre-submit window then sees an owned pending reading and defers instead of
+  // racing (issue #66). Targets whose slot is owned by a different reading (or are
+  // already ready) are deferred (dropped + logged), never summarized — and never
+  // embedded, since we claim first.
+  const { kept, deferred } = await claimByUrlSlots(extracted, {
     r2: deps.r2,
     now: deps.now,
     ...(deps.log ? { log: deps.log } : {}),
@@ -128,8 +128,15 @@ export async function runBatchPipeline(
     return { report: [], dropped: allDropped, resumed: false };
   }
 
+  // Resolve similar-readings context only for the kept (claimed) targets — the
+  // deferred ones are never embedded.
+  const summarizeTargets = await resolveSimilar(kept, {
+    embedMany: (inputs) => deps.embed.embedMany(inputs),
+    query: (vector, opts) => deps.vectorize.query(vector, opts),
+  });
+
   log(`Submitting Message Batch: ${kept.length} readings${deferred.length ? ` (${deferred.length} deferred)` : ""}`);
-  const { info, sidecar } = await submitBatch(kept, {
+  const { info, sidecar } = await submitBatch(summarizeTargets, {
     model: deps.model,
     batch: deps.batch,
     saveSidecar: deps.saveSidecar,

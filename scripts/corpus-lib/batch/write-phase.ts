@@ -59,19 +59,12 @@ export async function writeResults(
       report.push({ id: res.custom_id, status: "skipped", reason: "no sidecar target for custom_id" });
       continue;
     }
-    // If the reading is already `ready`, do NOT overwrite the manifest: the batch
-    // process may have died, its eager pending aged out, and the online path
-    // recovered the reading to ready before this resumed write — a failed result
-    // would lose that recovered summary and a success would stomp it. We DON'T just
-    // skip, though: we re-publish the ready LIST ROW from the current manifest, so
-    // a resume after a partial terminal write (ready manifest written, but the
-    // index/list.json merge hadn't run) can't strand the eager pending list row.
-    // The by-url/by-id pointers carry the status-independent {id, key_prefix} the
-    // claim already wrote, so only the list row needs repair.
-    const currentReady = await readCurrentReadyManifest(deps, target.keyPrefix);
-    if (currentReady) {
-      touchedItems.push(manifestToIndexItem(currentReady, target.keyPrefix));
-      report.push({ id: target.id, status: "skipped", reason: "already ready (recovered externally); list row repaired, manifest preserved" });
+    // Don't overwrite a reading the online path now owns (see externalOwnershipSkip):
+    // it may have recovered the reading to ready, or be mid-reprocess with a live
+    // active attempt, while the batch process was down.
+    const skip = await externalOwnershipSkip(deps, target, touchedItems);
+    if (skip) {
+      report.push(skip);
       continue;
     }
     if (res.result.type === "succeeded") {
@@ -92,12 +85,11 @@ export async function writeResults(
   const seen = new Set(results.map((r) => r.custom_id));
   for (const target of sidecar.targets) {
     if (!seen.has(target.customId)) {
-      // Same externally-recovered guard: never downgrade a now-ready reading to a
-      // BatchResultMissing failure; repair its list row, keep its manifest.
-      const currentReady = await readCurrentReadyManifest(deps, target.keyPrefix);
-      if (currentReady) {
-        touchedItems.push(manifestToIndexItem(currentReady, target.keyPrefix));
-        report.push({ id: target.id, status: "skipped", reason: "already ready (recovered externally); list row repaired, manifest preserved" });
+      // Same external-ownership guard: never downgrade a now-ready / online-owned
+      // reading to a BatchResultMissing failure.
+      const skip = await externalOwnershipSkip(deps, target, touchedItems);
+      if (skip) {
+        report.push(skip);
         continue;
       }
       failures.push({
@@ -164,20 +156,45 @@ export async function writeResults(
   return report;
 }
 
-// The current manifest at key_prefix IF it is a parseable `ready` manifest, else
-// null. Used to avoid overwriting a reading the online path recovered while the
-// batch was down (or an idempotent replay) — while still re-publishing its list
-// row from this returned manifest. A missing/unparseable manifest reads as
-// not-ready, so the batch's terminal write still lands as the recovery.
-async function readCurrentReadyManifest(deps: WriteDeps, keyPrefix: string): Promise<Manifest | null> {
-  const raw = await deps.r2.get(`${keyPrefix}/manifest.json`);
+// Decide whether the batch must NOT write this reading's terminal manifest because
+// the online path now owns it (the batch process may have died and its eager
+// pending aged out). Returns a "skipped" report row to honor, or null to proceed.
+// The batch sets NO active_attempt on its eager pending, so any of these on the
+// CURRENT manifest means an external (online) writer touched it:
+//   - status `ready`        — online recovered it (or an idempotent replay). Keep
+//                             the manifest, but re-publish its LIST ROW: a resume
+//                             after a partial terminal write (ready manifest
+//                             written, index/list.json merge not yet) would else
+//                             strand the eager pending row. Pointers carry the
+//                             status-independent {id,key_prefix} already.
+//   - a live `active_attempt` — an online reprocess is in flight. Leave the reading
+//                             entirely to that worker; overwriting it would make
+//                             its terminal ownership gate drop a valid result.
+// A missing/unparseable/plain-pending manifest (the batch's own claim) returns
+// null, so the batch's terminal write lands.
+async function externalOwnershipSkip(
+  deps: WriteDeps,
+  target: SidecarTarget,
+  touchedItems: ListIndexItem[],
+): Promise<WriteReportRow | null> {
+  const raw = await deps.r2.get(`${target.keyPrefix}/manifest.json`);
   if (!raw) return null;
+  let current: Manifest;
   try {
     const parsed = ManifestSchema.safeParse(JSON.parse(raw));
-    return parsed.success && parsed.data.status === "ready" ? parsed.data : null;
+    if (!parsed.success) return null;
+    current = parsed.data;
   } catch {
     return null;
   }
+  if (current.status === "ready") {
+    touchedItems.push(manifestToIndexItem(current, target.keyPrefix));
+    return { id: target.id, status: "skipped", reason: "already ready (recovered externally); list row repaired, manifest preserved" };
+  }
+  if (current.active_attempt !== undefined) {
+    return { id: target.id, status: "skipped", reason: "online reprocess in flight (foreign active attempt); not overwritten" };
+  }
+  return null;
 }
 
 function buildReadyManifest(

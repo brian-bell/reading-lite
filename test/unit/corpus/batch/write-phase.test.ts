@@ -280,6 +280,44 @@ describe("writeResults — externally-recovered guard (issue #66 resume race)", 
     expect(report).toEqual([{ id: "rd_a", status: "skipped", reason: expect.stringMatching(/already ready/) }]);
   });
 
+  it("does NOT overwrite a manifest with a live foreign active_attempt (online reprocess in flight)", async () => {
+    // Batch died, eager pending aged out, an online submit reprocessed the same id
+    // → a new pending with a running active_attempt the online worker owns. The
+    // resumed batch must leave it alone, or its result would overwrite the active
+    // attempt and the online worker's terminal ownership gate would drop a valid
+    // result.
+    const target = sidecarTarget();
+    const onlinePending = JSON.stringify(
+      ManifestSchema.parse({
+        id: target.id,
+        url: target.url,
+        url_hash: target.urlHash,
+        source_type: "url",
+        status: "pending",
+        active_attempt: {
+          id: "at_online1",
+          trigger: "submit",
+          status: "running",
+          started_at: "2026-06-18T11:59:00.000Z",
+        },
+        content_type: target.contentType,
+        content_status: "captured",
+        content_bytes: target.contentBytes,
+        content_sha256: target.contentSha256,
+        created_at: target.createdAt,
+        updated_at: "2026-06-18T11:59:00.000Z",
+      } as Manifest),
+    );
+    const r2 = fakeR2({ [`${target.keyPrefix}/manifest.json`]: onlinePending });
+    const vectorize = fakeVectorize();
+
+    const report = await writeResults(sidecar([target]), [errored("rd_a")], deps(r2, vectorize));
+
+    // The online pending (with its active attempt) is preserved, not overwritten.
+    expect(r2.store.get(`${target.keyPrefix}/manifest.json`)).toBe(onlinePending);
+    expect(report).toEqual([{ id: "rd_a", status: "skipped", reason: expect.stringMatching(/active attempt/) }]);
+  });
+
   it("repairs a stranded eager-pending list row to ready when the manifest is already ready (partial-write resume)", async () => {
     // Resume after a partial writeResults: the ready manifest was written but the
     // index/list.json merge never ran, so the list still carries the eager pending
