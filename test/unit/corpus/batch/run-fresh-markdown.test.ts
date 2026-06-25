@@ -296,6 +296,53 @@ describe("runFreshMarkdownBatch — idempotency", () => {
     expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(true);
   });
 
+  it("leaves exactly one list row when re-ingesting a cross-wired failed owner", async () => {
+    // The full cross-wired lifecycle: index/list.json carries a stale row whose
+    // id (rd_STALE) disagrees with the manifest its key_prefix points at
+    // (rd_REAL), and there is no by-url pointer. The cold lookup resolves the
+    // owner to the manifest's real id and re-ingests in place under rd_REAL. The
+    // stale rd_STALE row must NOT survive beside the rewritten rd_REAL row —
+    // both point at the same key_prefix, so list/search would show a bogus dup.
+    const a = article("alpha", "https://example.com/alpha");
+    const kp = "readings/2025/12/01T000000Z-rd_REAL";
+    const failed: Manifest = ManifestSchema.parse({
+      id: "rd_REAL",
+      url: a.sourceUrl,
+      url_hash: hex(a.sourceUrl!),
+      source_type: "markdown",
+      status: "failed",
+      error: { code: "X", message: "prior failure" },
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "a".repeat(64),
+      created_at: "2025-12-01T00:00:00.000Z",
+      updated_at: "2025-12-02T00:00:00.000Z",
+    });
+    const h = harness({
+      // stale/cross-wired: row id ≠ manifest id, same key_prefix + URL, no by-url
+      "index/list.json": JSON.stringify({
+        version: 1,
+        items: [{ id: "rd_STALE", key_prefix: kp, url: a.sourceUrl, status: "failed", created_at: "2025-12-01T00:00:00.000Z", updated_at: "2025-12-02T00:00:00.000Z" }],
+      }),
+      [`${kp}/manifest.json`]: JSON.stringify(failed),
+    });
+
+    const result = await runFreshMarkdownBatch([a], h.deps);
+
+    // resolved to the manifest's real id, re-ingested in place (no new id)
+    expect(h.deps.newId).not.toHaveBeenCalled();
+    expect(result.dispositions.filter((d) => d.kind === "ingest-failed")).toHaveLength(1);
+    const m = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(m.id).toBe("rd_REAL");
+    expect(m.status).toBe("ready");
+    // exactly one list row for the URL, and it's the real id — the stale row is gone
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    const rows = index.items.filter((i: any) => i.url === a.sourceUrl);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe("rd_REAL");
+  });
+
   it("caps submitted readings by --limit after the ownership check", async () => {
     const h = harness();
     const arts = [

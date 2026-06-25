@@ -251,8 +251,19 @@ async function mergeListIndex(deps: WriteDeps, touched: ListIndexItem[]): Promis
       deps.log?.(`  ! index/list.json was unparseable; rebuilding from touched items only`);
     }
   }
+  // Drop any existing row that collides with a touched row on EITHER id or
+  // key_prefix. The id filter is the normal replace-in-place; the key_prefix
+  // filter cleans up the cross-wired/stale case where a row's id disagrees with
+  // the manifest its key_prefix points at (the cold lookup re-ingests under the
+  // manifest's real id, so the old row id would otherwise survive as a bogus
+  // duplicate). A key_prefix encodes its reading id (`...-rd_x`), so it is
+  // unique per reading — filtering by it can only ever remove the stale twin.
   const touchedIds = new Set(touched.map((t) => t.id));
-  const merged = [...items.filter((i) => !touchedIds.has(i.id)), ...touched];
+  const touchedKeyPrefixes = new Set(touched.map((t) => t.key_prefix));
+  const merged = [
+    ...items.filter((i) => !touchedIds.has(i.id) && !touchedKeyPrefixes.has(i.key_prefix)),
+    ...touched,
+  ];
   await deps.r2.put(LIST_INDEX_KEY, JSON.stringify({ version: 1, items: merged }), {
     contentType: "application/json",
   });
