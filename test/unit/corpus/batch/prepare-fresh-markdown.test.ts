@@ -206,6 +206,64 @@ describe("prepareFreshMarkdown — existing owner", () => {
     expect(plan.dispositions[0]!.kind).toBe("ingest-new");
   });
 
+  it("re-ingests a failed cold owner in place when the by-url pointer is stale-missing", async () => {
+    // Damaged pointer (manifest gone, years old) BUT index/list.json still owns
+    // this URL via a prior failed ingest. The damaged-pointer branch must run the
+    // cold lookup before minting, or it duplicates an already-owned URL and then
+    // overwrites the by-url pointer on success.
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
+      manifests: {},
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
+        },
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.ids).toHaveLength(0); // reuse the cold owner's id, don't mint
+    expect(plan.toIngest).toHaveLength(1);
+    const t = plan.toIngest[0]!;
+    expect(t.target.readingId).toBe("rd_OWNER");
+    expect(t.target.keyPrefix).toBe("readings/kp-owner");
+    expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+  });
+
+  it("skips a ready cold owner when the by-url pointer is cross-wired to another reading", async () => {
+    // Damaged pointer (cross-wired to a different reading) BUT index/list.json
+    // still owns this URL with a ready reading. The damaged-pointer branch must
+    // honor that cold owner and skip, not mint a duplicate.
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
+      manifests: {
+        "readings/kp-other": manifest({
+          id: "rd_OTHER",
+          url: "https://example.com/other",
+          url_hash: hex("https://example.com/other"),
+          status: "ready",
+        }),
+      },
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: "ready" }),
+        },
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(plan.toIngest).toHaveLength(0);
+    expect(d.ids).toHaveLength(0); // honor the cold owner, don't mint
+    expect(plan.dispositions[0]!.kind).toBe("skip-ready");
+  });
+
   it("mints a brand-new reading when the pointer is cross-wired to another reading's manifest", async () => {
     const a = article();
     const d = deps({
