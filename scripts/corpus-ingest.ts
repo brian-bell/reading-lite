@@ -100,23 +100,33 @@ plan (no ready/pending skips shown) when they're absent.`);
 
 async function main(): Promise<void> {
   const args = parseCliArgs();
-  const articles = await readMarkdownDir(args.dir);
+  const fetchFn = globalThis.fetch;
+
+  // Load the in-flight batch marker BEFORE touching --dir. The sidecar already
+  // carries every target needed to poll + write, so a resume must not depend on
+  // the source markdown directory: a dir moved or cleaned up during the (possibly
+  // multi-hour) batch window would otherwise crash readMarkdownDir and block the
+  // cost-safe resume — tempting the operator into a second, double-billed batch.
+  // (runFreshMarkdownBatch's `produce` closure is skipped on resume, so the empty
+  // `articles`/`eligible` below are never read.)
+  const existing = await loadSidecar(args.sidecar);
+
+  const articles = existing ? [] : await readMarkdownDir(args.dir);
   const { plan, oversized, eligible } = selectEligibleArticles(articles);
 
-  process.stderr.write(
-    `Plan from ${args.dir}:\n` +
-      `  files:          ${articles.length}\n` +
-      `  selected:       ${plan.selected.length} (after de-dup by source URL)\n` +
-      `  duplicate sets: ${plan.duplicateGroups.length}\n` +
-      `  oversized:      ${oversized.length} (>${Math.round(MARKDOWN_IMPORT_MAX_BYTES / 1000)} KB, skipped)\n` +
-      `  missing source: ${plan.missingSource.length} (skipped)\n` +
-      `  eligible:       ${eligible.length}${
-        Number.isFinite(args.limit) ? ` (submit capped to ${args.limit} by --limit)` : ""
-      }\n\n`,
-  );
-
-  const fetchFn = globalThis.fetch;
-  const existing = await loadSidecar(args.sidecar);
+  if (!existing) {
+    process.stderr.write(
+      `Plan from ${args.dir}:\n` +
+        `  files:          ${articles.length}\n` +
+        `  selected:       ${plan.selected.length} (after de-dup by source URL)\n` +
+        `  duplicate sets: ${plan.duplicateGroups.length}\n` +
+        `  oversized:      ${oversized.length} (>${Math.round(MARKDOWN_IMPORT_MAX_BYTES / 1000)} KB, skipped)\n` +
+        `  missing source: ${plan.missingSource.length} (skipped)\n` +
+        `  eligible:       ${eligible.length}${
+          Number.isFinite(args.limit) ? ` (submit capped to ${args.limit} by --limit)` : ""
+        }\n\n`,
+    );
+  }
 
   // Creds are needed to read by-url ownership (dry-run) and to write (execute).
   // In dry-run we degrade gracefully without them so the local plan is still
@@ -130,8 +140,11 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     process.stderr.write(
-      `  [dry-run] ownership check skipped — ${e instanceof Error ? e.message : String(e)}\n` +
-        `  [dry-run] up to ${eligible.length} eligible reading(s) would be checked + submitted with creds\n`,
+      existing
+        ? `  [dry-run] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${args.sidecar}\n` +
+            `  [dry-run] resume needs creds to poll + write — ${e instanceof Error ? e.message : String(e)}\n`
+        : `  [dry-run] ownership check skipped — ${e instanceof Error ? e.message : String(e)}\n` +
+            `  [dry-run] up to ${eligible.length} eligible reading(s) would be checked + submitted with creds\n`,
     );
     printSummary({ executed: false });
     return;
