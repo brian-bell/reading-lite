@@ -1,6 +1,6 @@
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../src/schemas/manifest";
 import type { ListIndexItem } from "../../../src/schemas/api";
-import type { ByUrlPointer } from "./prepare-fresh-markdown";
+import type { ByUrlLookup, ByUrlPointer } from "./prepare-fresh-markdown";
 
 const LIST_INDEX_KEY = "index/list.json";
 
@@ -37,11 +37,22 @@ interface OwnerRow {
   manifest?: Manifest;
 }
 
-export async function getByUrl(r2: R2Getter, urlHash: string): Promise<ByUrlPointer | null> {
+// null = no object (unclaimed). "damaged" = object present but unusable (non-JSON
+// or missing id/key_prefix) — surfaced distinctly so the caller routes it to the
+// forced-scan repair path rather than treating a corrupt claim as unclaimed and
+// risking a duplicate mint. The Worker's strict ByUrlPointerSchema.parse throws
+// on the same input; for an offline bulk run we degrade to "damaged" so one bad
+// pointer repairs in place instead of aborting the whole ingest.
+export async function getByUrl(r2: R2Getter, urlHash: string): Promise<ByUrlLookup | null> {
   const raw = await r2.get(`index/by-url/${urlHash}`);
   if (!raw) return null;
-  const parsed = JSON.parse(raw) as Partial<ByUrlPointer>;
-  if (typeof parsed.id !== "string" || typeof parsed.key_prefix !== "string") return null;
+  let parsed: Partial<ByUrlPointer>;
+  try {
+    parsed = JSON.parse(raw) as Partial<ByUrlPointer>;
+  } catch {
+    return "damaged";
+  }
+  if (typeof parsed.id !== "string" || typeof parsed.key_prefix !== "string") return "damaged";
   return { id: parsed.id, key_prefix: parsed.key_prefix };
 }
 
@@ -176,7 +187,7 @@ async function rebuildRowsFromManifests(r2: R2Lister): Promise<OwnerRow[]> {
 
 // The ownership-read trio prepareFreshMarkdown wants, bound to one R2 client.
 export function r2ReadDeps(r2: R2Lister): {
-  getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
+  getByUrl(urlHash: string): Promise<ByUrlLookup | null>;
   readManifest(keyPrefix: string): Promise<Manifest | null>;
   findByUrlInList(
     url: string,

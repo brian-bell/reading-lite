@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { findByUrlInList } from "../../../../scripts/corpus-lib/batch/r2-reads";
+import { findByUrlInList, getByUrl } from "../../../../scripts/corpus-lib/batch/r2-reads";
 import type { Manifest } from "../../../../src/schemas/manifest";
 
 function hex(s: string): string {
@@ -39,6 +39,30 @@ function r2(seed: Record<string, string>) {
 function listIndex(items: object[]): string {
   return JSON.stringify({ version: 1, items });
 }
+
+describe("getByUrl", () => {
+  const hash = "abc123";
+  const key = `index/by-url/${hash}`;
+
+  it("returns null when the by-url object is absent (unclaimed)", async () => {
+    expect(await getByUrl(r2({}), hash)).toBeNull();
+  });
+
+  it("returns the pointer for a well-formed by-url object", async () => {
+    const seed = { [key]: JSON.stringify({ id: "rd_X", key_prefix: "readings/kp-x" }) };
+    expect(await getByUrl(r2(seed), hash)).toEqual({ id: "rd_X", key_prefix: "readings/kp-x" });
+  });
+
+  it("returns 'damaged' (not null) when the object is missing id/key_prefix", async () => {
+    const seed = { [key]: JSON.stringify({ id: "rd_X" }) }; // no key_prefix
+    expect(await getByUrl(r2(seed), hash)).toBe("damaged");
+  });
+
+  it("returns 'damaged' (not a throw) when the object is non-JSON", async () => {
+    const seed = { [key]: "{ not json" };
+    expect(await getByUrl(r2(seed), hash)).toBe("damaged");
+  });
+});
 
 describe("findByUrlInList", () => {
   it("returns null on a truly cold bucket (no index, no manifests)", async () => {

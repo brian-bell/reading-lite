@@ -31,7 +31,7 @@ function hex(url: string): string {
 // live by-url pointer exists — e.g. a prior failed fresh ingest).
 function deps(
   seed: {
-    byUrl?: Record<string, { id: string; key_prefix: string }>;
+    byUrl?: Record<string, { id: string; key_prefix: string } | "damaged">;
     manifests?: Record<string, Manifest>;
     cold?: Record<string, { id: string; key_prefix: string; manifest: Manifest }>;
   } = {},
@@ -247,6 +247,40 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
     await prepareFreshMarkdown([a], d);
     expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
+  });
+
+  it("treats a structurally-damaged by-url pointer as damaged, not unclaimed (forces a scan)", async () => {
+    // The by-url object exists but is missing id/key_prefix (stale/manual schema
+    // damage). It must NOT read as unclaimed: that would take the no-pointer path
+    // with forceScan:false and, against a stale index, mint a duplicate. It must
+    // route to the forced-scan repair and re-ingest the real cold owner in place.
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: "damaged" },
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
+        },
+      },
+    });
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
+    expect(d.ids).toHaveLength(0); // reuse the cold owner, don't mint
+    expect(plan.toIngest[0]!.target.readingId).toBe("rd_OWNER");
+    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+  });
+
+  it("mints for a structurally-damaged by-url pointer when the forced scan finds nothing", async () => {
+    const a = article();
+    const d = deps({ byUrl: { [hex(a.sourceUrl!)]: "damaged" } }); // no cold owner
+    const plan = await prepareFreshMarkdown([a], d);
+
+    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
+    expect(d.ids).toEqual(["rd_NEW0"]);
+    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
   });
 
   it("skips a ready cold owner when the by-url pointer is cross-wired to another reading", async () => {

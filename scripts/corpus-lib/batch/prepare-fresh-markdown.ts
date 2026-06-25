@@ -17,12 +17,19 @@ export interface ByUrlPointer {
   key_prefix: string;
 }
 
+// A by-url read can be: a usable pointer, `null` (object absent → unclaimed), or
+// "damaged" (object present but non-JSON or missing id/key_prefix). "damaged" is
+// kept distinct from null so the caller can route it to the forced-scan repair
+// path instead of silently treating a corrupt claim as an unclaimed URL — the
+// Worker's strict ByUrlPointerSchema.parse throws rather than read it as absent.
+export type ByUrlLookup = ByUrlPointer | "damaged";
+
 // The bulk fresh-markdown front-end's view of the corpus: it replaces the
 // worker's eager ReadingClaim (which we can't run offline) with client-side
 // by-url ownership reads.
 export interface FreshMarkdownDeps {
-  // index/by-url/{sha256(url)} pointer for a URL, or null if unclaimed.
-  getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
+  // index/by-url/{sha256(url)} read: a pointer, null when absent, or "damaged".
+  getByUrl(urlHash: string): Promise<ByUrlLookup | null>;
   // The manifest behind a pointer, or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
   // The cold-legacy lookup: resolve a URL's owner through index/list.json when
@@ -82,7 +89,11 @@ export async function prepareFreshMarkdown(
 
     const urlHash = hashUrl(url);
     const owner = await deps.getByUrl(urlHash);
-    if (owner) {
+    // A structurally "damaged" pointer (present but non-JSON or missing fields)
+    // has no usable key_prefix, so it skips the owner checks and falls straight
+    // through to the forced-scan repair below — exactly like a mismatched/
+    // stale-missing pointer, never like an absent one.
+    if (owner && owner !== "damaged") {
       const manifest = await deps.readManifest(owner.key_prefix);
       // Only a manifest that genuinely owns this URL (id + url + url_hash all
       // match the pointer) counts as the owner — exactly ReadingClaim's rule.
@@ -142,9 +153,9 @@ export async function prepareFreshMarkdown(
     // re-ingest THAT failed reading in place rather than mint a second one.
     // Resolve through index/list.json by the same ready>pending>failed
     // ownership rank the Worker uses. A damaged pointer (owner present but
-    // unmatched) forces a deep scan — the Worker's `deepScan: existing ? true`
-    // repair policy — so a stale index that lost the owner's row can't make us
-    // mint a duplicate and overwrite by-url onto it.
+    // unmatched, or structurally "damaged") forces a deep scan — the Worker's
+    // `deepScan: existing ? true` repair policy — so a stale index that lost the
+    // owner's row can't make us mint a duplicate and overwrite by-url onto it.
     const cold = await deps.findByUrlInList(url, urlHash, { forceScan: owner !== null });
     if (cold) {
       if (cold.manifest.status === "ready") {
