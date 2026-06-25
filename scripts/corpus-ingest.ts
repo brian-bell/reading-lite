@@ -87,10 +87,12 @@ deduped by source URL (largest wins) and any over ${Math.round(
 
 Idempotency: by-url ownership is read client-side — ready owners are skipped,
 pending owners are skipped (a realtime submit may be in flight), failed owners
-re-ingest in place, and unclaimed URLs mint a new reading. Because by-url is only
-written on success, the slot stays unclaimed during the in-flight batch window, so
-a concurrent realtime submit of the same URL could duplicate it. Intended for an
-operator backfill where this script is the sole writer.
+re-ingest in place, and unclaimed URLs mint a new reading. The by-url slot is
+claimed EAGERLY at submit (a pending manifest is written before batch.create and
+heartbeated so it stays fresh), so a concurrent realtime submit of the same URL
+resolves the owned pending and DEFERS instead of racing — this script can run
+alongside live traffic. Slots owned by another reading (or already ready) are
+deferred and surfaced in the run's "dropped" count.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
 for R2/Vectorize, ANTHROPIC_API_KEY + OPENAI_API_KEY for summarize/embed. --execute
@@ -215,6 +217,7 @@ async function main(): Promise<void> {
     skipped,
     skipped_ready: tally.skipReady,
     skipped_pending: tally.skipPending,
+    dropped: result.dropped.length,
   });
   if (failed > 0) process.exit(1);
 }
@@ -231,6 +234,10 @@ interface Summary {
   skipped: number;
   skipped_ready: number;
   skipped_pending: number;
+  // Targets dropped before/at the eager claim (no manifest, slot owned by another
+  // writer / damaged, or already ready). Surfaced so a successful run that skipped
+  // items at claim time isn't reported as fully accounted for.
+  dropped?: number;
 }
 
 function printSummary(s: Partial<Summary> & { executed: boolean }): void {

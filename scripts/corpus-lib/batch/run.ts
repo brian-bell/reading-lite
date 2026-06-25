@@ -2,11 +2,13 @@ import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { AnthropicBatchClient, OpenAIEmbedClient } from "./clients";
 import type { AuditRow } from "../types";
-import { readManifest } from "./r2-reads";
+import { findByUrlInList, readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { resolveSimilar } from "./similar-phase";
-import { submitBatch } from "./submit-phase";
+import { claimByUrlSlots } from "./claim-phase";
+import { makePendingHeartbeat } from "./heartbeat-phase";
+import { assertBatchWithinSizeCap, buildSummarizeRequest, submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
 import type { DroppedTarget, ExtractedTarget, Sidecar } from "./types";
@@ -26,7 +28,10 @@ export interface BatchRunDeps {
   loadSidecar(): Promise<Sidecar | null>;
   saveSidecar(sidecar: Sidecar): Promise<void>;
   log?(line: string): void;
-  poll?: { intervalMs?: number; maxPolls?: number };
+  poll?: { intervalMs?: number; maxPolls?: number; heartbeatMs?: number };
+  // Anthropic batch payload safety cap in bytes (default MAX_BATCH_BYTES).
+  // Injectable so tests can drive the oversize-abort path without 200MB of data.
+  maxBatchBytes?: number;
 }
 
 export interface BatchRunResult {
@@ -85,22 +90,54 @@ export async function runBatchPipeline(
     query: (vector, opts) => deps.vectorize.query(vector, opts),
   });
 
-  if (summarizeTargets.length === 0) {
-    log("No readings to summarize after extraction.");
-    return { report: [], dropped, resumed: false };
+  // Validate the batch payload size BEFORE claiming any by-url slots: an oversize
+  // batch must abort WITHOUT mutating R2, because an eager pending claim would
+  // strand the operator's `--limit` rerun (prepareFreshMarkdown skips pending
+  // owners even past TTL). Conservatively checks the full pre-claim set; the kept
+  // subset can only be smaller.
+  if (summarizeTargets.length > 0) {
+    assertBatchWithinSizeCap(
+      summarizeTargets.map((st) => buildSummarizeRequest(st, deps.model)),
+      deps.maxBatchBytes,
+    );
   }
 
-  log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
-  const { info, sidecar } = await submitBatch(summarizeTargets, {
+  // Eagerly claim the by-url slot (pending manifest + by-url + by-id + list row)
+  // for every target BEFORE creating the (minutes-to-hours) Message Batch — the
+  // offline mirror of the online activateAttempt. An online submit for one of
+  // these URLs during the in-flight window then sees an owned pending reading and
+  // defers instead of racing (issue #66). Targets whose slot is already owned by
+  // a different reading are deferred (dropped + logged), never summarized.
+  const { kept, deferred } = await claimByUrlSlots(summarizeTargets, {
+    r2: deps.r2,
+    now: deps.now,
+    ...(deps.log ? { log: deps.log } : {}),
+  });
+
+  // Deferred targets (slot owned by another writer / damaged, or already ready)
+  // were never summarized — surface them in the machine-readable `dropped` list,
+  // not just the log, so a CLI/JSON summary can't report them as silently
+  // accounted for. `reason` is already self-describing per target.
+  const allDropped: DroppedTarget[] = [
+    ...dropped,
+    ...deferred.map((d) => ({ readingId: d.id, reason: d.reason })),
+  ];
+
+  if (kept.length === 0) {
+    log("No readings to summarize after extraction and slot claim.");
+    return { report: [], dropped: allDropped, resumed: false };
+  }
+
+  log(`Submitting Message Batch: ${kept.length} readings${deferred.length ? ` (${deferred.length} deferred)` : ""}`);
+  const { info, sidecar } = await submitBatch(kept, {
     model: deps.model,
     batch: deps.batch,
-    putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,
   });
   log(`Batch ${info.id} created; polling for completion...`);
 
   const report = await pollAndWrite(sidecar, deps);
-  return { report, dropped, resumed: false, batchId: sidecar.batchId };
+  return { report, dropped: allDropped, resumed: false, batchId: sidecar.batchId };
 }
 
 // Recover path: resolve audit rows into targets (existing manifest authoritative)
@@ -109,6 +146,7 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
   return runBatchPipeline(async () => {
     const prepared = await prepareTargets(rows, {
       readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+      findByUrlInList: (url, urlHash) => findByUrlInList(deps.r2, url, urlHash),
     });
     const extracted = await extractTargets(prepared.targets, {
       loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
@@ -122,9 +160,18 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
 }
 
 async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {
+  // Keep the eager pending manifests fresh for the whole in-flight window so an
+  // online submit never annotates them stale and reprocesses them (issue #66).
+  const heartbeat = makePendingHeartbeat(sidecar, {
+    r2: deps.r2,
+    now: deps.now,
+    ...(deps.poll?.heartbeatMs === undefined ? {} : { intervalMs: deps.poll.heartbeatMs }),
+    ...(deps.log ? { log: deps.log } : {}),
+  });
   const ended = await pollUntilEnded(sidecar.batchId, {
     batch: deps.batch,
     sleep: deps.sleep,
+    onTick: heartbeat,
     ...(deps.poll?.intervalMs === undefined ? {} : { intervalMs: deps.poll.intervalMs }),
     ...(deps.poll?.maxPolls === undefined ? {} : { maxPolls: deps.poll.maxPolls }),
     ...(deps.log ? { log: deps.log } : {}),
@@ -132,6 +179,14 @@ async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<Write
   if (!ended.results_url) {
     throw new Error(`batch ${sidecar.batchId} ended without a results_url`);
   }
+  // Refresh once more before the terminal write. If the batch was already `ended`
+  // on the FIRST poll (a resume after the process died while the batch finished),
+  // pollUntilEnded returned before any onTick fired, so the eager pendings — by
+  // then possibly aged past PENDING_TTL_SECONDS — were never refreshed. Without
+  // this, an online submit during the results-fetch/embed/write window could
+  // reprocess a stale pending and reopen the issue #66 race. heartbeat() is gated,
+  // so when polling already refreshed them this is a no-op.
+  await heartbeat();
   const results = await deps.batch.results(ended.results_url);
   return writeResults(sidecar, results, {
     r2: deps.r2,

@@ -35,6 +35,15 @@ describe("pollUntilEnded", () => {
     expect(sleep).toHaveBeenCalledWith(5000);
   });
 
+  it("invokes onTick on each non-ended poll (the pending-manifest heartbeat hook), but not after it ends", async () => {
+    const batch = batchReturning(["in_progress", "in_progress", "ended"]);
+    const sleep = vi.fn(async () => {});
+    const onTick = vi.fn(async () => {});
+    await pollUntilEnded("msgbatch_1", { batch: batch as any, sleep, intervalMs: 5000, onTick });
+    // Two non-ended polls → two ticks; the ended poll returns before ticking.
+    expect(onTick).toHaveBeenCalledTimes(2);
+  });
+
   it("throws if the batch never ends within maxPolls", async () => {
     const batch = batchReturning(["in_progress"]);
     const sleep = vi.fn(async () => {});

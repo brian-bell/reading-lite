@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { writeResults } from "../../../../scripts/corpus-lib/batch/write-phase";
+import { PointerExistsError } from "../../../../scripts/lib/cf-clients";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { Sidecar, SidecarTarget } from "../../../../scripts/corpus-lib/batch/types";
@@ -62,11 +63,17 @@ function errored(customId: string): BatchResult {
 // In-memory R2 fake backed by a Map, recording the final state of each key.
 function fakeR2(seed: Record<string, string> = {}) {
   const store = new Map<string, string>(Object.entries(seed));
+  const etags = new Map<string, number>();
+  const etagOf = (key: string) => String(etags.get(key) ?? 0);
   return {
     store,
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    put: vi.fn(async (key: string, body: Uint8Array | string) => {
+    getWithEtag: vi.fn(async (key: string) => (store.has(key) ? { body: store.get(key)!, etag: etagOf(key) } : null)),
+    put: vi.fn(async (key: string, body: Uint8Array | string, opts?: { ifNoneMatch?: "*"; ifMatch?: string }) => {
+      if (opts?.ifNoneMatch === "*" && store.has(key)) throw new PointerExistsError(key);
+      if (opts?.ifMatch !== undefined && (!store.has(key) || opts.ifMatch !== etagOf(key))) throw new PointerExistsError(key);
       store.set(key, typeof body === "string" ? body : new TextDecoder().decode(body));
+      etags.set(key, (etags.get(key) ?? 0) + 1);
     }),
     head: vi.fn(async (key: string) => store.has(key)),
   };
@@ -242,3 +249,97 @@ describe("writeResults — robustness", () => {
     expect(listWrites).toHaveLength(1);
   });
 });
+
+describe("writeResults — externally-recovered guard (issue #66 resume race)", () => {
+  it("does NOT overwrite a now-ready manifest with a failed batch result (online recovered it while the batch was down)", async () => {
+    const target = sidecarTarget();
+    const recovered = JSON.stringify(
+      ManifestSchema.parse({
+        ...sidecarManifestReady(target),
+      }),
+    );
+    const r2 = fakeR2({ [`${target.keyPrefix}/manifest.json`]: recovered });
+    const vectorize = fakeVectorize();
+
+    const report = await writeResults(sidecar([target]), [errored("rd_a")], deps(r2, vectorize));
+
+    // The recovered ready manifest is preserved (NOT overwritten to failed).
+    expect(r2.store.get(`${target.keyPrefix}/manifest.json`)).toBe(recovered);
+    expect(report).toEqual([{ id: "rd_a", status: "skipped", reason: expect.stringMatching(/already ready/) }]);
+  });
+
+  it("does NOT re-summarize / stomp a now-ready manifest on a success result either", async () => {
+    const target = sidecarTarget();
+    const recovered = JSON.stringify(ManifestSchema.parse({ ...sidecarManifestReady(target) }));
+    const r2 = fakeR2({ [`${target.keyPrefix}/manifest.json`]: recovered });
+    const vectorize = fakeVectorize();
+
+    const report = await writeResults(sidecar([target]), [succeeded("rd_a")], deps(r2, vectorize));
+
+    expect(r2.store.get(`${target.keyPrefix}/manifest.json`)).toBe(recovered);
+    expect(report).toEqual([{ id: "rd_a", status: "skipped", reason: expect.stringMatching(/already ready/) }]);
+  });
+
+  it("repairs a stranded eager-pending list row to ready when the manifest is already ready (partial-write resume)", async () => {
+    // Resume after a partial writeResults: the ready manifest was written but the
+    // index/list.json merge never ran, so the list still carries the eager pending
+    // row. The guard must publish the ready list row (not skip it) so list/search
+    // doesn't show the reading as pending forever.
+    const target = sidecarTarget();
+    const ready = ManifestSchema.parse({ ...sidecarManifestReady(target) });
+    const r2 = fakeR2({
+      [`${target.keyPrefix}/manifest.json`]: JSON.stringify(ready),
+      "index/list.json": JSON.stringify({
+        version: 1,
+        items: [
+          { id: target.id, key_prefix: target.keyPrefix, url: target.url, status: "pending", created_at: target.createdAt, updated_at: target.createdAt },
+        ],
+      }),
+    });
+    const vectorize = fakeVectorize();
+
+    await writeResults(sidecar([target]), [], deps(r2, vectorize));
+
+    // Manifest still ready, and the list row was repaired to ready.
+    expect(ManifestSchema.parse(JSON.parse(r2.store.get(`${target.keyPrefix}/manifest.json`)!)).status).toBe("ready");
+    const list = JSON.parse(r2.store.get("index/list.json")!) as { items: Array<{ id: string; status: string }> };
+    expect(list.items.find((i) => i.id === target.id)?.status).toBe("ready");
+  });
+
+  it("does NOT downgrade a now-ready manifest for a MISSING batch result", async () => {
+    const target = sidecarTarget();
+    const recovered = JSON.stringify(ManifestSchema.parse({ ...sidecarManifestReady(target) }));
+    const r2 = fakeR2({ [`${target.keyPrefix}/manifest.json`]: recovered });
+    const vectorize = fakeVectorize();
+
+    const report = await writeResults(sidecar([target]), [], deps(r2, vectorize));
+
+    expect(r2.store.get(`${target.keyPrefix}/manifest.json`)).toBe(recovered);
+    expect(report).toEqual([{ id: "rd_a", status: "skipped", reason: expect.stringMatching(/already ready/) }]);
+  });
+});
+
+function sidecarManifestReady(target: SidecarTarget): Manifest {
+  return {
+    id: target.id,
+    url: target.url,
+    url_hash: target.urlHash,
+    source_type: "url",
+    status: "ready",
+    title: "Online Recovered",
+    tldr: "recovered by the online path",
+    tags: [],
+    keywords: [],
+    people: [],
+    orgs: [],
+    novelty_verdict: "novel",
+    connections: [],
+    summary_markdown: "recovered",
+    content_type: target.contentType,
+    content_status: "captured",
+    content_bytes: target.contentBytes,
+    content_sha256: target.contentSha256,
+    created_at: target.createdAt,
+    updated_at: "2026-06-19T00:00:00.000Z",
+  } as Manifest;
+}

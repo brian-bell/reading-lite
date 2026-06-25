@@ -6,6 +6,7 @@ import {
 } from "../../../../scripts/corpus-lib/batch/run-fresh-markdown";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
+import { PointerExistsError } from "../../../../scripts/lib/cf-clients";
 import type { MarkdownArticle } from "../../../../scripts/import-markdown-lib/parse";
 import type { Sidecar } from "../../../../scripts/corpus-lib/batch/types";
 
@@ -42,10 +43,18 @@ const reading = {
 // run.test.ts's harness but for the fresh-markdown front-end.
 function harness(seed: Record<string, string> = {}) {
   const store = new Map<string, string>(Object.entries(seed));
+  const etags = new Map<string, number>();
+  const etagOf = (k: string) => String(etags.get(k) ?? 0);
   const r2 = {
     get: vi.fn(async (k: string) => store.get(k) ?? null),
-    put: vi.fn(async (k: string, b: Uint8Array | string) => {
+    getWithEtag: vi.fn(async (k: string) => (store.has(k) ? { body: store.get(k)!, etag: etagOf(k) } : null)),
+    put: vi.fn(async (k: string, b: Uint8Array | string, opts?: { ifNoneMatch?: "*"; ifMatch?: string }) => {
+      // Honor conditional create + CAS like the real R2 client so the eager-claim
+      // own-vs-defer path and the list-index CAS merge are exercised faithfully.
+      if (opts?.ifNoneMatch === "*" && store.has(k)) throw new PointerExistsError(k);
+      if (opts?.ifMatch !== undefined && (!store.has(k) || opts.ifMatch !== etagOf(k))) throw new PointerExistsError(k);
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
+      etags.set(k, (etags.get(k) ?? 0) + 1);
     }),
     head: vi.fn(async (k: string) => store.has(k)),
     listKeys: vi.fn(async () => [...store.keys()]),
@@ -133,7 +142,7 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.vectorize.upsert).toHaveBeenCalled();
   });
 
-  it("writes a by-id pointer (but no by-url) for a fresh ingest whose batch result fails", async () => {
+  it("leaves the eager by-url pointer (now → failed manifest) for a fresh ingest whose batch result fails", async () => {
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     // the batch errors this item rather than emitting a reading (deps.batch and
@@ -153,11 +162,81 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(m.status).toBe("failed");
     // by-id MUST exist so detail/diagnostics/reprocess resolve (no dangling row)
     expect(h.store.has("index/by-id/rd_FRESH0")).toBe(true);
-    // by-url MUST NOT exist so the failed URL stays re-submittable
-    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    // The eager by-url claim is LEFT in place, now pointing at the failed
+    // manifest (mirrors the online activateAttempt failure path). The URL stays
+    // re-submittable: an online resolveOwner / corpus re-run see an owned
+    // `failed` reading and reprocess it in place.
+    const pointer = JSON.parse(h.store.get(`index/by-url/${hex(a.sourceUrl!)}`)!);
+    expect(pointer.id).toBe("rd_FRESH0");
     // the list still carries the failed reading
     const index = JSON.parse(h.store.get("index/list.json")!);
     expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
+  });
+
+  it("eagerly claims the by-url slot (pending manifest) BEFORE creating the batch", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    const calls: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string, o?: any) => {
+      if (k === `index/by-url/${hex(a.sourceUrl!)}`) calls.push("claim:by-url");
+      await (origPut as any)(k, b, o);
+    });
+    const origCreate = h.batch.create;
+    h.batch.create = vi.fn(async (...args: any[]) => {
+      calls.push("create");
+      return (origCreate as any)(...args);
+    });
+
+    await runFreshMarkdownBatch([a], h.deps);
+
+    // The slot is claimed before the (minutes-to-hours) batch is created, so an
+    // online submit during the in-flight window sees an owned pending and defers.
+    expect(calls.indexOf("claim:by-url")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("claim:by-url")).toBeLessThan(calls.indexOf("create"));
+
+    // The eager pointer is byte-compatible and a pending manifest sits behind it
+    // at the moment the batch was created (before write-phase flips it to ready).
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(true);
+  });
+
+  it("defers a target whose by-url slot is owned by another reading, submitting only the rest (never bills the deferred one)", async () => {
+    const a = article("alpha", "https://example.com/alpha"); // clean → submitted
+    const b = article("beta", "https://example.com/beta"); // foreign-claimed → deferred
+    // A foreign by-url pointer with no/cross-wired manifest: prepare mints a new id
+    // (ingest-new), but the eager claim then loses the conditional create to the
+    // foreign owner and must drop b before submit.
+    const h = harness({
+      [`index/by-url/${hex(b.sourceUrl!)}`]: JSON.stringify({ id: "rd_FOREIGN", key_prefix: "readings/kp-foreign" }),
+    });
+
+    const result = await runFreshMarkdownBatch([a, b], h.deps);
+
+    // Only the clean target was submitted — the batch request set excludes b.
+    const createCalls = h.batch.create.mock.calls as unknown as Array<[Array<{ custom_id: string }>]>;
+    const requests = createCalls[0]?.[0] ?? [];
+    expect(requests).toHaveLength(1);
+    expect(result.report.filter((r) => r.status === "ready")).toHaveLength(1);
+    // The foreign claim was never overwritten.
+    expect(JSON.parse(h.store.get(`index/by-url/${hex(b.sourceUrl!)}`)!).id).toBe("rd_FOREIGN");
+    // The deferred target is surfaced in machine-readable output, not just logged.
+    const deferredDrops = result.dropped.filter((d) => /owned by another reading/.test(d.reason));
+    expect(deferredDrops).toHaveLength(1);
+  });
+
+  it("aborts an oversize batch BEFORE claiming any by-url slot (no R2 mutation, so a --limit rerun isn't stranded)", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    // A 1-byte cap makes the (real) request set oversize, so the pre-claim size
+    // check throws before claimByUrlSlots writes anything.
+    await expect(runFreshMarkdownBatch([a], { ...h.deps, maxBatchBytes: 1 })).rejects.toThrow(/safety cap/);
+
+    // No by-url pointer, no pending manifest, no batch — the corpus is untouched,
+    // so re-running with --limit re-plans these as ingestable rather than skipping
+    // them as pending owners.
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    expect([...h.store.keys()].some((k) => k.endsWith("/manifest.json"))).toBe(false);
+    expect(h.batch.create).not.toHaveBeenCalled();
   });
 
   it("saves a sidecar before creating the batch (crash-window safety)", async () => {
@@ -248,14 +327,16 @@ describe("runFreshMarkdownBatch — idempotency", () => {
   });
 
   it("re-ingests a prior failed fresh ingest in place on rerun instead of duplicating it", async () => {
-    // The retry-after-failure flow: a failed fresh ingest leaves a by-id pointer
-    // + list row but NO by-url pointer, so a rerun's getByUrl is null. Without
-    // the list-index cold lookup the rerun would mint a SECOND reading.
+    // The retry-after-failure flow: a failed fresh ingest now leaves a by-url
+    // pointer (the eager claim) pointing at the failed manifest, plus a by-id
+    // pointer + list row. A rerun resolves the owned `failed` reading and
+    // re-ingests it in place — no second reading minted.
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     const kp = "readings/2026/06/22T120000Z-rd_FRESH0";
 
-    // First run: force the batch to error this item → failed manifest, by-id, no by-url.
+    // First run: force the batch to error this item → failed manifest, by-id,
+    // and the eager by-url left pointing at the failed reading.
     h.batch.results = vi.fn(async () =>
       (h.getSidecar()?.targets ?? []).map((t) => ({
         custom_id: t.customId,
@@ -264,7 +345,7 @@ describe("runFreshMarkdownBatch — idempotency", () => {
     ) as any;
     await runFreshMarkdownBatch([a], h.deps);
     expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("failed");
-    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    expect(JSON.parse(h.store.get(`index/by-url/${hex(a.sourceUrl!)}`)!).id).toBe("rd_FRESH0");
 
     // Second run on the same markdown, with a succeeding batch this time.
     h.setSidecar(null);
@@ -386,10 +467,21 @@ describe("runFreshMarkdownBatch — resume", () => {
     h.setSidecar(sc);
     h.deps.loadSidecar = vi.fn(async () => sc);
 
+    // Record any conditional (eager-claim) by-url create.
+    const byUrlClaims: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string, opts?: { ifNoneMatch?: "*"; ifMatch?: string }) => {
+      if (opts?.ifNoneMatch === "*" && k.startsWith("index/by-url/")) byUrlClaims.push(k);
+      await (origPut as any)(k, b, opts);
+    }) as any;
+
     const result = await runFreshMarkdownBatch([article("alpha", "https://example.com/alpha")], h.deps);
     expect(result.resumed).toBe(true);
     expect(h.batch.create).not.toHaveBeenCalled();
     expect(h.deps.newId).not.toHaveBeenCalled();
+    // The eager claim is part of the fresh (non-resumed) path only — resume must
+    // inherit the already-claimed slots and never re-claim (no by-url conditional PUT).
+    expect(byUrlClaims).toHaveLength(0);
     const m = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-resume/manifest.json")!));
     expect(m.status).toBe("ready");
     expect(m.source_type).toBe("markdown");

@@ -31,10 +31,13 @@ function row(over: Partial<AuditRow> = {}): AuditRow {
   };
 }
 
+// No same-URL owner by default; tests override to exercise the cold-ownership drop.
+const noColdOwner = vi.fn(async () => null);
+
 describe("prepareTargets", () => {
   it("resolves a target from the existing manifest", async () => {
     const readManifest = vi.fn(async () => manifest());
-    const { targets, dropped } = await prepareTargets([row()], { readManifest });
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList: noColdOwner });
     expect(dropped).toHaveLength(0);
     expect(targets).toHaveLength(1);
     expect(targets[0]).toMatchObject({
@@ -47,16 +50,60 @@ describe("prepareTargets", () => {
     expect(readManifest).toHaveBeenCalledWith("readings/2026/01/01T000000Z-rd_a");
   });
 
+  it("does not drop a row that is its own URL owner (cold lookup resolves to the same id)", async () => {
+    const readManifest = vi.fn(async () => manifest());
+    const findByUrlInList = vi.fn(async () => ({ id: "rd_a", key_prefix: "readings/2026/01/01T000000Z-rd_a", manifest: manifest() }));
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList });
+    expect(dropped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+  });
+
   it("drops a row whose manifest is missing", async () => {
     const readManifest = vi.fn(async () => null);
-    const { targets, dropped } = await prepareTargets([row()], { readManifest });
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList: noColdOwner });
     expect(targets).toHaveLength(0);
     expect(dropped).toEqual([{ readingId: "rd_a", reason: expect.stringMatching(/manifest/i) }]);
   });
 
+  it("drops a failed-duplicate row when a DIFFERENT pointerless ready owner already owns the URL", async () => {
+    const readManifest = vi.fn(async () => manifest({ status: "failed" }));
+    const findByUrlInList = vi.fn(async () => ({
+      id: "rd_READY",
+      key_prefix: "readings/2025/01/01T000000Z-rd_READY",
+      manifest: manifest({ id: "rd_READY", status: "ready" }),
+    }));
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList });
+    expect(targets).toHaveLength(0);
+    expect(dropped).toEqual([{ readingId: "rd_a", reason: expect.stringMatching(/already owned by a ready reading \(rd_READY\)/) }]);
+  });
+
+  it("drops the row when a different pending owner owns the URL (don't supersede an in-flight owner)", async () => {
+    const readManifest = vi.fn(async () => manifest({ status: "failed" }));
+    const findByUrlInList = vi.fn(async () => ({
+      id: "rd_PENDING",
+      key_prefix: "readings/2025/01/01T000000Z-rd_PENDING",
+      manifest: manifest({ id: "rd_PENDING", status: "pending" }),
+    }));
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList });
+    expect(targets).toHaveLength(0);
+    expect(dropped[0]!.reason).toMatch(/already owned by a pending reading/);
+  });
+
+  it("keeps the row when only a different FAILED owner exists (the claim phase de-dupes those off the by-url slot)", async () => {
+    const readManifest = vi.fn(async () => manifest({ status: "failed" }));
+    const findByUrlInList = vi.fn(async () => ({
+      id: "rd_OTHERFAIL",
+      key_prefix: "readings/2025/01/01T000000Z-rd_OTHERFAIL",
+      manifest: manifest({ id: "rd_OTHERFAIL", status: "failed" }),
+    }));
+    const { targets, dropped } = await prepareTargets([row()], { readManifest, findByUrlInList });
+    expect(dropped).toHaveLength(0);
+    expect(targets).toHaveLength(1);
+  });
+
   it("carries the manifest so a ready reading's snapshot can be preserved", async () => {
     const readManifest = vi.fn(async () => manifest({ status: "ready", title: "Kept" }));
-    const { targets } = await prepareTargets([row()], { readManifest });
+    const { targets } = await prepareTargets([row()], { readManifest, findByUrlInList: noColdOwner });
     expect(targets[0]!.manifest.status).toBe("ready");
     expect(targets[0]!.manifest.title).toBe("Kept");
   });

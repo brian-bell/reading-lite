@@ -6,6 +6,10 @@ export interface PollDeps {
   intervalMs?: number;
   maxPolls?: number;
   log?: (line: string) => void;
+  // Called once per non-ended poll (before the sleep). The corpus batch pipeline
+  // passes the pending-manifest heartbeat here so the eager claims stay fresh
+  // while the batch is in flight.
+  onTick?: () => Promise<void>;
 }
 
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -25,6 +29,7 @@ export async function pollUntilEnded(batchId: string, deps: PollDeps): Promise<B
       `  batch ${batchId}: ${info.processing_status}` +
         (info.request_counts ? ` ${JSON.stringify(info.request_counts)}` : ""),
     );
+    await deps.onTick?.();
     await deps.sleep(intervalMs);
   }
   throw new Error(`batch ${batchId} did not end within ${maxPolls} polls`);

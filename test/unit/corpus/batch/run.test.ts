@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runBatch, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
+import { PointerExistsError } from "../../../../scripts/lib/cf-clients";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
@@ -54,12 +55,19 @@ function harness(seedManifests: Record<string, Manifest>) {
     store.set(`readings/kp-${id}/manifest.json`, JSON.stringify(m));
     store.set(`readings/kp-${id}/extracted.md`, `# ${id}\n\nsaved markdown`);
   }
+  const etags = new Map<string, number>();
+  const etagOf = (k: string) => String(etags.get(k) ?? 0);
   const r2 = {
     get: vi.fn(async (k: string) => store.get(k) ?? null),
-    put: vi.fn(async (k: string, b: Uint8Array | string) => {
+    getWithEtag: vi.fn(async (k: string) => (store.has(k) ? { body: store.get(k)!, etag: etagOf(k) } : null)),
+    put: vi.fn(async (k: string, b: Uint8Array | string, opts?: { ifNoneMatch?: "*"; ifMatch?: string }) => {
+      if (opts?.ifNoneMatch === "*" && store.has(k)) throw new PointerExistsError(k);
+      if (opts?.ifMatch !== undefined && (!store.has(k) || opts.ifMatch !== etagOf(k))) throw new PointerExistsError(k);
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
+      etags.set(k, (etags.get(k) ?? 0) + 1);
     }),
     head: vi.fn(async (k: string) => store.has(k)),
+    listKeys: vi.fn(async () => [...store.keys()]),
   };
   const vectorize = {
     upsert: vi.fn(async () => {}),
@@ -142,6 +150,47 @@ describe("runBatch — fresh run", () => {
     expect(h.deps.saveSidecar).toHaveBeenCalled();
   });
 
+  it("heartbeats the eager pending manifest while the batch is in flight (keeps it from going stale)", async () => {
+    const h = harness({ h1: manifest("h1", { status: "failed" }) });
+    // Stay in progress for two polls, then end — so the heartbeat onTick fires.
+    let g = 0;
+    h.batch.get = vi.fn(async () => {
+      g++;
+      const ended = g >= 3;
+      return { id: "msgbatch_run", processing_status: ended ? "ended" : "in_progress", results_url: ended ? "https://results" : null };
+    }) as any;
+    // Advancing clock so the heartbeat gate elapses between polls.
+    let t = Date.parse("2026-06-18T12:00:00.000Z");
+    h.deps.now = () => {
+      const iso = new Date(t).toISOString();
+      t += 600_000;
+      return iso;
+    };
+    h.deps.poll = { intervalMs: 1, maxPolls: 10, heartbeatMs: 1 };
+
+    // Record every pending write to the in-flight manifest.
+    const pendingUpdatedAts: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string) => {
+      if (k === "readings/kp-h1/manifest.json") {
+        try {
+          const m = JSON.parse(typeof b === "string" ? b : new TextDecoder().decode(b));
+          if (m.status === "pending") pendingUpdatedAts.push(m.updated_at);
+        } catch {
+          /* ignore */
+        }
+      }
+      await (origPut as any)(k, b);
+    }) as any;
+
+    await runBatch([row("h1")], h.deps);
+
+    // The eager claim wrote one pending manifest; the heartbeat refreshed it at
+    // least once more with a strictly-later updated_at before the terminal write.
+    expect(pendingUpdatedAts.length).toBeGreaterThanOrEqual(2);
+    expect(Date.parse(pendingUpdatedAts.at(-1)!)).toBeGreaterThan(Date.parse(pendingUpdatedAts[0]!));
+  });
+
   it("reuses saved markdown rather than re-extracting (ready+captured reading)", async () => {
     const h = harness({ rd_a: manifest("rd_a", { status: "ready" }) });
     await runBatch([row("rd_a")], h.deps);
@@ -201,6 +250,161 @@ describe("runBatch — resume", () => {
     expect(h.deps.saveSidecar).not.toHaveBeenCalled();
     const m = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!));
     expect(m.status).toBe("ready");
+  });
+
+  it("heartbeats the eager pending manifests on RESUME, refreshing an already-stale pending on the first poll (issue #66)", async () => {
+    const h = harness({});
+    const kp = "readings/kp-hb";
+    // A pending left stamped by a previous (now-dead) process, long ago / stale.
+    h.store.set(
+      `${kp}/manifest.json`,
+      JSON.stringify(
+        ManifestSchema.parse(
+          manifest("rd_hb", {
+            status: "pending",
+            content_status: "captured",
+            created_at: "2026-06-18T00:00:00.000Z",
+            updated_at: "2026-06-18T00:00:00.000Z",
+          }),
+        ),
+      ),
+    );
+    const sc: Sidecar = {
+      batchId: "msgbatch_run",
+      model: "claude-opus-4-8",
+      processingStatus: "in_progress",
+      resultsUrl: null,
+      targets: [
+        {
+          customId: "rd_hb",
+          keyPrefix: kp,
+          id: "rd_hb",
+          url: "https://example.com/rd_hb",
+          urlHash: "a".repeat(64),
+          createdAt: "2026-06-18T00:00:00.000Z",
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 9,
+        },
+      ],
+    };
+    h.setSidecar(sc);
+    h.deps.loadSidecar = vi.fn(async () => sc);
+
+    // Stay in progress one poll, then end → the heartbeat onTick fires.
+    let g = 0;
+    h.batch.get = vi.fn(async () => {
+      g++;
+      const ended = g >= 2;
+      return { id: "msgbatch_run", processing_status: ended ? "ended" : "in_progress", results_url: ended ? "https://results" : null };
+    }) as any;
+    // Resume happens much later than the stale stamp; advancing clock per call.
+    let t = Date.parse("2026-06-18T12:00:00.000Z");
+    h.deps.now = () => {
+      const iso = new Date(t).toISOString();
+      t += 1_000;
+      return iso;
+    };
+    h.deps.poll = { intervalMs: 1, maxPolls: 10, heartbeatMs: 1 };
+
+    const pendingUpdatedAts: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string) => {
+      if (k === `${kp}/manifest.json`) {
+        try {
+          const m = JSON.parse(typeof b === "string" ? b : new TextDecoder().decode(b));
+          if (m.status === "pending") pendingUpdatedAts.push(m.updated_at);
+        } catch {
+          /* ignore */
+        }
+      }
+      await (origPut as any)(k, b);
+    }) as any;
+
+    const result = await runBatch([row("rd_hb")], h.deps);
+    expect(result.resumed).toBe(true);
+    // The resumed run never re-claimed, but it DID refresh the stale pending on the
+    // first poll tick (resume safety) — with an updated_at far newer than the stale
+    // stamp — before the terminal write.
+    expect(pendingUpdatedAts.length).toBeGreaterThanOrEqual(1);
+    expect(Date.parse(pendingUpdatedAts[0]!)).toBeGreaterThan(Date.parse("2026-06-18T00:00:00.000Z"));
+  });
+
+  it("refreshes a stale eager pending before the terminal write even when the batch is already ended on the first resume poll (issue #66)", async () => {
+    // The narrow resume race: process died, pendings aged past TTL, AND the batch
+    // finished while down — so the first poll returns `ended` and onTick never
+    // fires. The pre-terminal-write refresh must still re-stamp the stale pending
+    // before results-fetch/embed/write, or an online submit could reprocess it.
+    const h = harness({});
+    const kp = "readings/kp-stale";
+    h.store.set(
+      `${kp}/manifest.json`,
+      JSON.stringify(
+        ManifestSchema.parse(
+          manifest("rd_stale", {
+            status: "pending",
+            content_status: "captured",
+            created_at: "2026-06-18T00:00:00.000Z",
+            updated_at: "2026-06-18T00:00:00.000Z",
+          }),
+        ),
+      ),
+    );
+    const sc: Sidecar = {
+      batchId: "msgbatch_run",
+      model: "claude-opus-4-8",
+      processingStatus: "ended",
+      resultsUrl: "https://results",
+      targets: [
+        {
+          customId: "rd_stale",
+          keyPrefix: kp,
+          id: "rd_stale",
+          url: "https://example.com/rd_stale",
+          urlHash: "a".repeat(64),
+          createdAt: "2026-06-18T00:00:00.000Z",
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 9,
+        },
+      ],
+    };
+    h.setSidecar(sc);
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    // Batch is already ended on the very first poll → onTick never fires.
+    h.batch.get = vi.fn(async () => ({ id: "msgbatch_run", processing_status: "ended", results_url: "https://results" })) as any;
+    let t = Date.parse("2026-06-18T12:00:00.000Z");
+    h.deps.now = () => {
+      const iso = new Date(t).toISOString();
+      t += 1_000;
+      return iso;
+    };
+
+    const pendingUpdatedAts: string[] = [];
+    const origPut = h.r2.put;
+    h.r2.put = vi.fn(async (k: string, b: Uint8Array | string) => {
+      if (k === `${kp}/manifest.json`) {
+        try {
+          const m = JSON.parse(typeof b === "string" ? b : new TextDecoder().decode(b));
+          if (m.status === "pending") pendingUpdatedAts.push(m.updated_at);
+        } catch {
+          /* ignore */
+        }
+      }
+      await (origPut as any)(k, b);
+    }) as any;
+
+    await runBatch([row("rd_stale")], h.deps);
+
+    // The stale pending was refreshed (updated_at advanced) before the terminal write.
+    expect(pendingUpdatedAts.length).toBeGreaterThanOrEqual(1);
+    expect(Date.parse(pendingUpdatedAts[0]!)).toBeGreaterThan(Date.parse("2026-06-18T00:00:00.000Z"));
   });
 
   it("aborts (no new batch) when a pending sidecar has no batch id — avoids double-billing", async () => {

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { submitBatch } from "../../../../scripts/corpus-lib/batch/submit-phase";
+import {
+  assertBatchWithinSizeCap,
+  buildSummarizeRequest,
+  submitBatch,
+} from "../../../../scripts/corpus-lib/batch/submit-phase";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
 import type { Manifest } from "../../../../src/schemas/manifest";
@@ -60,7 +64,6 @@ function fakeBatch() {
   };
 }
 
-const noopPut = () => vi.fn(async (_k: string, _b: any, _ct: string) => {});
 const noopSave = () => vi.fn(async (_s: any) => {});
 
 describe("submitBatch", () => {
@@ -69,7 +72,6 @@ describe("submitBatch", () => {
     const { info } = await submitBatch([summarizeTarget()], {
       model: "claude-opus-4-8",
       batch: batch as any,
-      putObject: noopPut(),
       saveSidecar: noopSave(),
     });
     expect(info.id).toBe("msgbatch_99");
@@ -83,27 +85,6 @@ describe("submitBatch", () => {
     expect(userText).toContain("https://example.com/a");
   });
 
-  it("persists freshly-extracted raw + extracted.md to R2 before summarizing", async () => {
-    const batch = fakeBatch();
-    const putObject = noopPut();
-    await submitBatch([summarizeTarget({ fresh: freshContent })], {
-      model: "m",
-      batch: batch as any,
-      putObject,
-      saveSidecar: noopSave(),
-    });
-    const keys = putObject.mock.calls.map((c) => c[0]);
-    expect(keys).toContain("readings/2026/01/01T000000Z-rd_a/raw.html");
-    expect(keys).toContain("readings/2026/01/01T000000Z-rd_a/extracted.md");
-  });
-
-  it("does not write content objects when markdown was reused from R2", async () => {
-    const batch = fakeBatch();
-    const putObject = noopPut();
-    await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject, saveSidecar: noopSave() });
-    expect(putObject).not.toHaveBeenCalled();
-  });
-
   it("persists a pending sidecar (no batchId) BEFORE create, then the real one after", async () => {
     const batch = fakeBatch();
     const order: string[] = [];
@@ -114,7 +95,7 @@ describe("submitBatch", () => {
       order.push("create");
       return { id: "msgbatch_99", processing_status: "in_progress", results_url: null };
     });
-    await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar });
+    await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, saveSidecar });
     expect(order).toEqual(["pending", "create", "final:msgbatch_99"]);
   });
 
@@ -123,7 +104,6 @@ describe("submitBatch", () => {
     const { sidecar } = await submitBatch([summarizeTarget({ manifest: { status: "ready", title: "Old", tldr: "old tldr" } })], {
       model: "claude-opus-4-8",
       batch: batch as any,
-      putObject: noopPut(),
       saveSidecar: noopSave(),
     });
     expect(sidecar.batchId).toBe("msgbatch_99");
@@ -149,7 +129,6 @@ describe("submitBatch", () => {
     const { sidecar } = await submitBatch([summarizeTarget({ fresh: { ...freshContent, content_bytes: 999, content_sha256: "e".repeat(64) } })], {
       model: "m",
       batch: batch as any,
-      putObject: noopPut(),
       saveSidecar: noopSave(),
     });
     expect(sidecar.targets[0]!.contentBytes).toBe(999);
@@ -158,7 +137,20 @@ describe("submitBatch", () => {
 
   it("does not preserve a snapshot for a non-ready reading", async () => {
     const batch = fakeBatch();
-    const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() });
+    const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, saveSidecar: noopSave() });
     expect(sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
+  });
+});
+
+describe("assertBatchWithinSizeCap", () => {
+  it("passes when the request set is within the cap", () => {
+    const requests = [buildSummarizeRequest(summarizeTarget(), "m")];
+    expect(() => assertBatchWithinSizeCap(requests, 10_000_000)).not.toThrow();
+  });
+
+  it("throws with --limit guidance when the request set exceeds the cap", () => {
+    const requests = [buildSummarizeRequest(summarizeTarget(), "m")];
+    // A 1-byte cap is trivially exceeded by any real request.
+    expect(() => assertBatchWithinSizeCap(requests, 1)).toThrow(/exceeds.*safety cap.*--limit/s);
   });
 });

@@ -8,6 +8,7 @@ import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { BatchResult, EmbedResult } from "./clients";
+import { mergeListIndex } from "./list-index-merge";
 import type { Sidecar, SidecarTarget } from "./types";
 
 export interface WriteDeps {
@@ -24,15 +25,19 @@ export interface WriteReportRow {
   reason?: string;
 }
 
-const LIST_INDEX_KEY = "index/list.json";
-
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
-//              ready snapshot) + index item, and NO by-url pointer (failed URLs
-//              stay re-submittable).
+//              ready snapshot) + index item.
+// The by-url slot was already eagerly claimed at submit time (claim-phase, the
+// offline mirror of the online activateAttempt), so the success path here just
+// re-writes the same {id,key_prefix} pointer (idempotent) and the failure path
+// LEAVES that eager pointer in place — it now points at the failed manifest,
+// exactly like the online activateAttempt failure path. The URL stays
+// re-submittable: an online resolveOwner / a corpus re-run both see an owned
+// `failed` reading and reprocess it in place.
 // index/list.json is merged once at the end (read-modify-write). The script is
-// effectively the sole writer during a backfill.
+// effectively the sole writer for the URLs it claimed.
 export async function writeResults(
   sidecar: Sidecar,
   results: BatchResult[],
@@ -54,6 +59,21 @@ export async function writeResults(
       report.push({ id: res.custom_id, status: "skipped", reason: "no sidecar target for custom_id" });
       continue;
     }
+    // If the reading is already `ready`, do NOT overwrite the manifest: the batch
+    // process may have died, its eager pending aged out, and the online path
+    // recovered the reading to ready before this resumed write — a failed result
+    // would lose that recovered summary and a success would stomp it. We DON'T just
+    // skip, though: we re-publish the ready LIST ROW from the current manifest, so
+    // a resume after a partial terminal write (ready manifest written, but the
+    // index/list.json merge hadn't run) can't strand the eager pending list row.
+    // The by-url/by-id pointers carry the status-independent {id, key_prefix} the
+    // claim already wrote, so only the list row needs repair.
+    const currentReady = await readCurrentReadyManifest(deps, target.keyPrefix);
+    if (currentReady) {
+      touchedItems.push(manifestToIndexItem(currentReady, target.keyPrefix));
+      report.push({ id: target.id, status: "skipped", reason: "already ready (recovered externally); list row repaired, manifest preserved" });
+      continue;
+    }
     if (res.result.type === "succeeded") {
       try {
         const reading = parseEmitReadingResult(res.result.message.content, res.result.message.usage);
@@ -72,6 +92,14 @@ export async function writeResults(
   const seen = new Set(results.map((r) => r.custom_id));
   for (const target of sidecar.targets) {
     if (!seen.has(target.customId)) {
+      // Same externally-recovered guard: never downgrade a now-ready reading to a
+      // BatchResultMissing failure; repair its list row, keep its manifest.
+      const currentReady = await readCurrentReadyManifest(deps, target.keyPrefix);
+      if (currentReady) {
+        touchedItems.push(manifestToIndexItem(currentReady, target.keyPrefix));
+        report.push({ id: target.id, status: "skipped", reason: "already ready (recovered externally); list row repaired, manifest preserved" });
+        continue;
+      }
       failures.push({
         target,
         error: errorBlock("BatchResultMissing", "no batch result returned for this reading", deps.now()),
@@ -109,13 +137,13 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests. No by-url pointer (failed URLs stay
-  //    re-submittable), but DO write the by-id pointer: a freshly-minted ingest
-  //    has no pre-existing pointer (unlike the recover path, where the reading is
-  //    already in the corpus), so without it the failed reading would be a
-  //    dangling list row — its detail/diagnostics/reprocess routes resolve
-  //    through by-id and would 404, and a resubmit could mint a duplicate. The
-  //    write is idempotent for the recover path (same id → same key_prefix).
+  // 3. Write the failure manifests. We do NOT touch by-url here: the eager claim
+  //    (claim-phase) already wrote it at submit, and we leave it pointing at this
+  //    now-failed manifest (mirroring the online activateAttempt failure path —
+  //    an owned `failed` reading is reprocessed in place, so the URL stays
+  //    re-submittable). We DO (re)write the by-id pointer: a freshly-minted
+  //    ingest needs it so its detail/diagnostics/reprocess routes (which resolve
+  //    through by-id) don't 404; the write is idempotent (same id → key_prefix).
   for (const { target, error } of failures) {
     const manifest = target.preserveReadyManifest
       ? rolledForward(target.preserveReadyManifest, deps.now())
@@ -131,11 +159,25 @@ export async function writeResults(
   }
 
   // 4. Merge all touched items into index/list.json in a single write.
-  if (touchedItems.length > 0) {
-    await mergeListIndex(deps, touchedItems);
-  }
+  await mergeListIndex({ r2: deps.r2, ...(deps.log ? { log: deps.log } : {}) }, touchedItems);
 
   return report;
+}
+
+// The current manifest at key_prefix IF it is a parseable `ready` manifest, else
+// null. Used to avoid overwriting a reading the online path recovered while the
+// batch was down (or an idempotent replay) — while still re-publishing its list
+// row from this returned manifest. A missing/unparseable manifest reads as
+// not-ready, so the batch's terminal write still lands as the recovery.
+async function readCurrentReadyManifest(deps: WriteDeps, keyPrefix: string): Promise<Manifest | null> {
+  const raw = await deps.r2.get(`${keyPrefix}/manifest.json`);
+  if (!raw) return null;
+  try {
+    const parsed = ManifestSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.status === "ready" ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildReadyManifest(
@@ -238,33 +280,4 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
   if (m.title) out.title = m.title;
   if (m.tags) out.tags = m.tags;
   return out;
-}
-
-async function mergeListIndex(deps: WriteDeps, touched: ListIndexItem[]): Promise<void> {
-  const raw = await deps.r2.get(LIST_INDEX_KEY);
-  let items: ListIndexItem[] = [];
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { items?: ListIndexItem[] };
-      if (Array.isArray(parsed.items)) items = parsed.items;
-    } catch {
-      deps.log?.(`  ! index/list.json was unparseable; rebuilding from touched items only`);
-    }
-  }
-  // Drop any existing row that collides with a touched row on EITHER id or
-  // key_prefix. The id filter is the normal replace-in-place; the key_prefix
-  // filter cleans up the cross-wired/stale case where a row's id disagrees with
-  // the manifest its key_prefix points at (the cold lookup re-ingests under the
-  // manifest's real id, so the old row id would otherwise survive as a bogus
-  // duplicate). A key_prefix encodes its reading id (`...-rd_x`), so it is
-  // unique per reading — filtering by it can only ever remove the stale twin.
-  const touchedIds = new Set(touched.map((t) => t.id));
-  const touchedKeyPrefixes = new Set(touched.map((t) => t.key_prefix));
-  const merged = [
-    ...items.filter((i) => !touchedIds.has(i.id) && !touchedKeyPrefixes.has(i.key_prefix)),
-    ...touched,
-  ];
-  await deps.r2.put(LIST_INDEX_KEY, JSON.stringify({ version: 1, items: merged }), {
-    contentType: "application/json",
-  });
 }

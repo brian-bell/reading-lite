@@ -382,6 +382,66 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs).toHaveLength(1);
   });
 
+  it("defers to an in-flight offline batch's eager by-url claim instead of starting a competing pending (issue #66)", async () => {
+    // Simulate the offline batch (corpus-ingest / corpus-recover --batch) having
+    // eagerly claimed the by-url slot at submit time: a byte-compatible by-url
+    // pointer + a pending manifest + by-id pointer + a pending list row — exactly
+    // what claim-phase.ts writes. The Anthropic Message Batch is still in flight
+    // (minutes-to-hours), so the slot stays pending. An online submit for the same
+    // URL must resolve the owned pending reading and DEFER (return it, 200, no new
+    // job) rather than claim the slot and race the batch.
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/batch-claimed";
+
+    const id = "rd_BATCH01";
+    // A fresh pending (well within PENDING_TTL_SECONDS, 300s in test config) — the
+    // state the batch's poll-loop heartbeat keeps the eager pending in while the
+    // Message Batch is genuinely in flight. services.now() starts at 20:00:00Z.
+    const createdAt = "2026-04-26T19:59:30.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const urlHash = await sha256Hex(url);
+    const pointer = { id, key_prefix: keyPrefix };
+    const pendingManifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "markdown",
+      status: "pending",
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "b".repeat(64),
+      created_at: createdAt,
+      updated_at: "2026-04-26T19:59:45.000Z",
+    } as Manifest;
+
+    await env.READINGS_BUCKET.put(`index/by-url/${urlHash}`, JSON.stringify(pointer));
+    await env.READINGS_BUCKET.put(`${keyPrefix}/manifest.json`, JSON.stringify(pendingManifest));
+    await env.READINGS_BUCKET.put(`index/by-id/${id}`, JSON.stringify(pointer));
+    await env.READINGS_BUCKET.put(
+      "index/list.json",
+      JSON.stringify({ version: 1, items: [manifestToIndexItem(pendingManifest, keyPrefix)] }),
+    );
+
+    const submit = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(submit.status).toBe(200);
+    const body = (await submit.json()) as Manifest;
+    expect(body.id).toBe(id);
+    expect(body.status).toBe("pending");
+    // The online path enqueued NO new job — it deferred to the batch's claim.
+    expect(queuedJobs).toHaveLength(0);
+  });
+
   it("converges simultaneous submits of one URL to one reading and one queued job", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });

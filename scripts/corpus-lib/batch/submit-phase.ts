@@ -5,8 +5,6 @@ import type { Sidecar, SidecarTarget, SummarizeTarget } from "./types";
 export interface SubmitDeps {
   model: string;
   batch: AnthropicBatchClient;
-  // Writes a single object to R2 (raw bytes / extracted markdown) at submit time.
-  putObject(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
   // Persists the sidecar. Called with a "pending" sidecar (no batchId) BEFORE
   // create, then again with the real batchId immediately after — so a crash in
   // the create window leaves a pending marker that aborts a re-run instead of
@@ -23,10 +21,49 @@ export interface SubmitResult {
 // split with --limit rather than hard-failing the create call mid-backlog.
 const MAX_BATCH_BYTES = 200 * 1024 * 1024;
 
-// Persist freshly-extracted content, build one summarize request per target
-// (custom_id = reading id, params = the exact realtime body so the prompt cache
-// is shared), create the batch, and return a sidecar that lets the write phase
-// reconstruct manifests from results without re-extracting.
+// One summarize request for a target (custom_id = reading id, params = the exact
+// realtime body so the prompt cache is shared). Exported so the size cap can be
+// validated BEFORE the eager claim mutates R2 (see assertBatchWithinSizeCap).
+export function buildSummarizeRequest(st: SummarizeTarget, model: string): AnthropicBatchRequest {
+  const { target, markdown, title } = st.extracted;
+  return {
+    custom_id: target.readingId,
+    params: buildSummarizeRequestBody(
+      {
+        url: target.url,
+        extractedText: markdown,
+        ...(title === undefined ? {} : { title }),
+        similarReadings: st.similar,
+      },
+      model,
+    ),
+  };
+}
+
+// Throw (with the --limit guidance) if the request set would exceed the safety
+// cap. Called from runBatchPipeline BEFORE claiming any by-url slots so an
+// oversize batch aborts without mutating R2 (otherwise the eager pendings would
+// strand a --limit rerun, which skips pending owners). `maxBytes` is injectable
+// for tests; production uses the MAX_BATCH_BYTES default.
+export function assertBatchWithinSizeCap(
+  requests: AnthropicBatchRequest[],
+  maxBytes: number = MAX_BATCH_BYTES,
+): void {
+  const totalBytes = requests.reduce((n, r) => n + JSON.stringify(r).length, 0);
+  if (totalBytes > maxBytes) {
+    throw new Error(
+      `batch payload ~${Math.round(totalBytes / 1e6)}MB exceeds the ${Math.round(
+        maxBytes / 1e6,
+      )}MB safety cap; re-run with --limit to split into smaller batches`,
+    );
+  }
+}
+
+// Build one summarize request per target (custom_id = reading id, params = the
+// exact realtime body so the prompt cache is shared), create the batch, and
+// return a sidecar that lets the write phase reconstruct manifests from results
+// without re-extracting. Content artifacts were already persisted by the claim
+// phase (artifacts → manifest), so this phase performs no R2 content writes.
 export async function submitBatch(
   targets: SummarizeTarget[],
   deps: SubmitDeps,
@@ -34,48 +71,19 @@ export async function submitBatch(
   const requests: AnthropicBatchRequest[] = [];
   const sidecarTargets: SidecarTarget[] = [];
 
+  // Fresh content artifacts (raw.*, extracted.md) are written by the claim phase
+  // BEFORE its pending manifest (mirroring activateAttempt: artifacts → manifest),
+  // so a captured-pending manifest is never published without its content. Here we
+  // only build the batch requests + sidecar and create the batch.
   for (const st of targets) {
-    const { target, markdown, title, fresh } = st.extracted;
-
-    if (fresh) {
-      await deps.putObject(
-        `${target.keyPrefix}/raw.${extToken(fresh.content_type)}`,
-        fresh.raw,
-        fresh.content_type,
-      );
-      if (fresh.markdown) {
-        await deps.putObject(
-          `${target.keyPrefix}/extracted.md`,
-          fresh.markdown,
-          "text/markdown; charset=utf-8",
-        );
-      }
-    }
-
-    requests.push({
-      custom_id: target.readingId,
-      params: buildSummarizeRequestBody(
-        {
-          url: target.url,
-          extractedText: markdown,
-          ...(title === undefined ? {} : { title }),
-          similarReadings: st.similar,
-        },
-        deps.model,
-      ),
-    });
-
+    requests.push(buildSummarizeRequest(st, deps.model));
     sidecarTargets.push(sidecarTargetFor(st));
   }
 
-  const totalBytes = requests.reduce((n, r) => n + JSON.stringify(r).length, 0);
-  if (totalBytes > MAX_BATCH_BYTES) {
-    throw new Error(
-      `batch payload ~${Math.round(totalBytes / 1e6)}MB exceeds the ${Math.round(
-        MAX_BATCH_BYTES / 1e6,
-      )}MB safety cap; re-run with --limit to split into smaller batches`,
-    );
-  }
+  // Defense-in-depth: runBatchPipeline already asserts the cap before claiming,
+  // so for the kept set this never fires — but keep it so submitBatch stays safe
+  // if called directly.
+  assertBatchWithinSizeCap(requests);
 
   // Pending marker before create: if the process dies in the create window, the
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
@@ -138,7 +146,9 @@ function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
 }
 
 // Mirror process-reading.ts:extToken so raw object keys match the realtime path.
-function extToken(contentType: string): string {
+// Exported so the claim phase names raw.* objects identically when it persists
+// fresh content before the pending manifest.
+export function extToken(contentType: string): string {
   const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
   if (major === "text/html" || major === "application/xhtml+xml") return "html";
   if (major === "text/markdown") return "md";
