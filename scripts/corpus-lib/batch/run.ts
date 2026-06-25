@@ -1,15 +1,15 @@
-import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { AnthropicBatchClient, OpenAIEmbedClient } from "./clients";
 import type { AuditRow } from "../types";
+import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { resolveSimilar } from "./similar-phase";
 import { submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
-import type { DroppedTarget, Sidecar } from "./types";
+import type { DroppedTarget, ExtractedTarget, Sidecar } from "./types";
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -36,12 +36,24 @@ export interface BatchRunResult {
   batchId?: string;
 }
 
-// Orchestrate the bulk path end-to-end:
+// The front-end half of a bulk run: produce the extracted-and-in-hand targets to
+// summarize (plus any rows dropped along the way). The recover path resolves
+// these from audit rows + R2; the fresh-markdown path builds them from files.
+export type ProduceExtracted = () => Promise<{
+  extracted: ExtractedTarget[];
+  dropped: DroppedTarget[];
+}>;
+
+// Orchestrate the shared bulk tail end-to-end:
 //   resume? -> poll existing batch -> write
-//   fresh  -> prepare -> extract -> similar -> submit (+sidecar) -> poll -> write
+//   fresh  -> produce -> similar -> submit (+sidecar) -> poll -> write
 // A live sidecar always means "resume" — we never recreate a batch, so a re-run
-// after a crash can't double-bill the summarize step.
-export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
+// after a crash can't double-bill the summarize step. `produce` runs only on a
+// fresh run (after the resume check), so resuming never re-does the front-end.
+export async function runBatchPipeline(
+  produce: ProduceExtracted,
+  deps: BatchRunDeps,
+): Promise<BatchRunResult> {
   const log = deps.log ?? (() => {});
 
   const existing = await deps.loadSidecar();
@@ -61,24 +73,14 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
     return { report, dropped: [], resumed: true, batchId: existing.batchId };
   }
 
-  const readManifest = async (keyPrefix: string): Promise<Manifest | null> => {
-    const raw = await deps.r2.get(`${keyPrefix}/manifest.json`);
-    return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
-  };
-
-  const prepared = await prepareTargets(rows, { readManifest });
-  const extracted = await extractTargets(prepared.targets, {
-    loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
-    extract: deps.extract,
-  });
-  const dropped = [...prepared.dropped, ...extracted.dropped];
+  const { extracted, dropped } = await produce();
   // Surface *why* each reading dropped — a bare "dropped: N" count hides dead
   // origins, missing manifests, etc., leaving the operator no thread to pull.
   for (const d of dropped) {
     log(`  dropped ${d.readingId}: ${d.reason}`);
   }
 
-  const summarizeTargets = await resolveSimilar(extracted.extracted, {
+  const summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     query: (vector, opts) => deps.vectorize.query(vector, opts),
   });
@@ -99,6 +101,24 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
 
   const report = await pollAndWrite(sidecar, deps);
   return { report, dropped, resumed: false, batchId: sidecar.batchId };
+}
+
+// Recover path: resolve audit rows into targets (existing manifest authoritative)
+// and re-extract any whose markdown isn't already captured, then run the pipeline.
+export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
+  return runBatchPipeline(async () => {
+    const prepared = await prepareTargets(rows, {
+      readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+    });
+    const extracted = await extractTargets(prepared.targets, {
+      loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
+      extract: deps.extract,
+    });
+    return {
+      extracted: extracted.extracted,
+      dropped: [...prepared.dropped, ...extracted.dropped],
+    };
+  }, deps);
 }
 
 async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {

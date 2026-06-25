@@ -109,12 +109,23 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests (no by-url pointer).
+  // 3. Write the failure manifests. No by-url pointer (failed URLs stay
+  //    re-submittable), but DO write the by-id pointer: a freshly-minted ingest
+  //    has no pre-existing pointer (unlike the recover path, where the reading is
+  //    already in the corpus), so without it the failed reading would be a
+  //    dangling list row — its detail/diagnostics/reprocess routes resolve
+  //    through by-id and would 404, and a resubmit could mint a duplicate. The
+  //    write is idempotent for the recover path (same id → same key_prefix).
   for (const { target, error } of failures) {
     const manifest = target.preserveReadyManifest
       ? rolledForward(target.preserveReadyManifest, deps.now())
       : buildFailedManifest(target, error, deps.now());
     await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
+    await deps.r2.put(
+      `index/by-id/${target.id}`,
+      JSON.stringify({ id: target.id, key_prefix: target.keyPrefix }),
+      { contentType: "application/json" },
+    );
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
     report.push({ id: target.id, status: "failed", reason: error.message });
   }
@@ -240,8 +251,19 @@ async function mergeListIndex(deps: WriteDeps, touched: ListIndexItem[]): Promis
       deps.log?.(`  ! index/list.json was unparseable; rebuilding from touched items only`);
     }
   }
+  // Drop any existing row that collides with a touched row on EITHER id or
+  // key_prefix. The id filter is the normal replace-in-place; the key_prefix
+  // filter cleans up the cross-wired/stale case where a row's id disagrees with
+  // the manifest its key_prefix points at (the cold lookup re-ingests under the
+  // manifest's real id, so the old row id would otherwise survive as a bogus
+  // duplicate). A key_prefix encodes its reading id (`...-rd_x`), so it is
+  // unique per reading — filtering by it can only ever remove the stale twin.
   const touchedIds = new Set(touched.map((t) => t.id));
-  const merged = [...items.filter((i) => !touchedIds.has(i.id)), ...touched];
+  const touchedKeyPrefixes = new Set(touched.map((t) => t.key_prefix));
+  const merged = [
+    ...items.filter((i) => !touchedIds.has(i.id) && !touchedKeyPrefixes.has(i.key_prefix)),
+    ...touched,
+  ];
   await deps.r2.put(LIST_INDEX_KEY, JSON.stringify({ version: 1, items: merged }), {
     contentType: "application/json",
   });

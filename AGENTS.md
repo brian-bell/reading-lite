@@ -65,6 +65,13 @@ agent context: current commands, module map, conventions, and gotchas.
   hand-mirrors the Worker manifest/list/diagnostics types.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
   audit/recovery/drop, imports, and manual smoke tests.
+- `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
+  `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → similar →
+  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover
+  --batch` resolves audit rows via `prepare.ts` + `extract-phase.ts`, while
+  `corpus-ingest` resolves a fresh markdown directory via
+  `prepare-fresh-markdown.ts` (client-side by-url ownership + minted ids,
+  bypassing extract-phase since the markdown is in hand) and `run-fresh-markdown.ts`.
 - `web/` is the React/Vite SPA. It stores the bearer token in localStorage,
   lists/searches readings, submits URLs, shows details/diagnostics, opens
   authed content blobs, and can start reprocesses.
@@ -241,5 +248,34 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - `corpus-recover --batch` is a Node-side bulk recovery path using Anthropic
   Message Batches plus R2/Vectorize clients. It resumes from
   `<index>.batch.json` and reuses the Worker terminal-write contract.
+- `corpus-ingest` (`npm run corpus-ingest -- --dir <path>`) is the markdown-in-hand
+  bulk-import path: it feeds a fresh markdown directory into the same Message
+  Batch pipeline as `corpus-recover --batch`, so resulting manifests are
+  contract-compatible with the realtime `import-markdown` path (terminal fields
+  match; like the recover-batch path it omits the `last_attempt` attempt log). It
+  resolves by-url ownership client-side by `ReadingClaim`'s own rules (reusing its
+  exported `ownedManifestMatches` / `isFreshMissingManifestPointer`): a pointer
+  owns the URL only when its manifest matches (id + url + url_hash), so ready and
+  pending owners skip while failed owners re-ingest in place; a fresh
+  missing-manifest pointer is still-initializing and skipped; unclaimed or damaged
+  pointers mint a new id (never reusing a damaged id). When there is no live
+  by-url pointer it first runs the cold-legacy lookup (`findByUrlInList` in
+  `r2-reads.ts`, mirroring the Worker's `findManifestByUrl`): a prior failed
+  fresh ingest writes a by-id pointer + list row but no by-url pointer, so a
+  rerun resolves that failed reading through `index/list.json` (ready>pending>failed
+  rank then recency) and re-ingests it in place rather than minting a duplicate.
+  Pending owners are skipped
+  even past PENDING_TTL_SECONDS — unlike the Worker, this offline path can't
+  claim/supersede an in-flight queue attempt, so re-ingesting a stale pending could
+  race the worker and (on a batch failure, which carries no preserved-ready
+  snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
+  corpus-recover. `write-phase` writes the by-id pointer on both the success and
+  failure branches (a fresh-ingest failure must still be reachable via
+  detail/reprocess), but only writes by-url on success. Because by-url is only written on
+  success, the URL stays unclaimed during the in-flight batch window — a
+  concurrent realtime submit of the same URL could create a duplicate, so it is
+  intended for an operator backfill where the script is the sole writer.
+  Dry-run-by-default + `--execute`; resumes its in-flight batch from
+  `./corpus-ingest.batch.json` (override with `--sidecar`).
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

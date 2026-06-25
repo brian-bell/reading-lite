@@ -175,7 +175,11 @@ export class ReadingClaim {
   }
 }
 
-function ownedManifestMatches(
+// Exported so offline tooling (the corpus bulk-ingest path) resolves URL
+// ownership by the *same* rules as the Worker — a pointer owns its URL only when
+// the manifest behind it actually matches the pointer/URL, and a fresh
+// pointer-without-manifest is a still-initializing owner, not a damaged one.
+export function ownedManifestMatches(
   pointer: ByUrlPointer,
   manifest: Manifest,
   url: string,
@@ -184,7 +188,7 @@ function ownedManifestMatches(
   return manifest.id === pointer.id && manifest.url === url && manifest.url_hash === urlHash;
 }
 
-function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {
+export function isFreshMissingManifestPointer(pointer: ByUrlPointer, nowIso: string): boolean {
   const createdAtMs = keyPrefixCreatedAtMs(pointer.key_prefix);
   if (createdAtMs === null) return false;
   const ageMs = Date.parse(nowIso) - createdAtMs;
