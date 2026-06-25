@@ -183,4 +183,39 @@ describe("makePendingHeartbeat", () => {
     await beat();
     expect(r2.put).not.toHaveBeenCalled();
   });
+
+  it("skips a pending whose manifest has a live foreign active_attempt (online reprocess in flight)", async () => {
+    // Batch was down long enough for an online submit to start reprocessing this
+    // id → a pending with a running active_attempt the online worker owns + is
+    // CASing. Re-stamping would change the etag under its replaceManifestIfCurrent
+    // and make it drop a good result, so the heartbeat must leave it alone.
+    const kp = "readings/2026/01/01T000000Z-rd_a";
+    const onlinePending = JSON.stringify(
+      ManifestSchema.parse({
+        id: "rd_a",
+        url: "https://example.com/a",
+        url_hash: "a".repeat(64),
+        source_type: "markdown",
+        status: "pending",
+        active_attempt: { id: "at_online1", trigger: "submit", status: "running", started_at: "2026-01-01T00:00:00.000Z" },
+        content_type: MD,
+        content_status: "captured",
+        content_bytes: 10,
+        content_sha256: "b".repeat(64),
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      } as Manifest),
+    );
+    const r2 = fakeR2({ [`${kp}/manifest.json`]: onlinePending });
+    const beat = makePendingHeartbeat(sidecar([target()]), {
+      r2,
+      now: advancingNow("2026-01-01T05:00:00.000Z", 1_000_000),
+      intervalMs: 1,
+    });
+
+    await beat();
+    await beat();
+    expect(r2.put).not.toHaveBeenCalled();
+    expect(r2.store.get(`${kp}/manifest.json`)).toBe(onlinePending);
+  });
 });

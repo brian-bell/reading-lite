@@ -68,6 +68,12 @@ export function makePendingHeartbeat(sidecar: Sidecar, deps: HeartbeatDeps): () 
         continue;
       }
       if (manifest.status !== "pending") continue;
+      // Don't touch a pending the online path is actively reprocessing: the batch's
+      // own eager pending carries NO active_attempt, so any active_attempt here is
+      // a foreign online worker mid-flight. Re-stamping would change the etag under
+      // its readManifestWithEtag → replaceManifestIfCurrent CAS and make it drop a
+      // good result. Leave it; if it's actually stranded it ages out on its own.
+      if (manifest.active_attempt !== undefined) continue;
       const restamped = ManifestSchema.parse({ ...manifest, updated_at: nowIso });
       await deps.r2.put(`${t.keyPrefix}/manifest.json`, JSON.stringify(restamped), {
         contentType: "application/json",

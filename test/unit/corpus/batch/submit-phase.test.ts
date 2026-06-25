@@ -140,6 +140,23 @@ describe("submitBatch", () => {
     const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, saveSidecar: noopSave() });
     expect(sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
   });
+
+  it("post-claim size backstop throws (before create) on a genuinely over-limit payload", async () => {
+    const batch = fakeBatch();
+    await expect(
+      submitBatch([summarizeTarget()], { model: "m", batch: batch as any, saveSidecar: noopSave(), maxBatchBytes: 1 }),
+    ).rejects.toThrow(/safety cap/);
+    // Never billed the batch when the payload is rejected.
+    expect(batch.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a payload within the (default hard) backstop limit", async () => {
+    const batch = fakeBatch();
+    await expect(
+      submitBatch([summarizeTarget()], { model: "m", batch: batch as any, saveSidecar: noopSave() }),
+    ).resolves.toBeDefined();
+    expect(batch.create).toHaveBeenCalledOnce();
+  });
 });
 
 describe("assertBatchWithinSizeCap", () => {

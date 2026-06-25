@@ -10,6 +10,10 @@ export interface SubmitDeps {
   // the create window leaves a pending marker that aborts a re-run instead of
   // silently re-submitting (and re-billing).
   saveSidecar(sidecar: Sidecar): Promise<void>;
+  // Post-claim size backstop, injectable for tests. Defaults to the Anthropic
+  // hard limit (not the conservative pre-claim cap) so the similar context can't
+  // strand just-claimed pendings — see ANTHROPIC_BATCH_HARD_LIMIT_BYTES.
+  maxBatchBytes?: number;
 }
 
 export interface SubmitResult {
@@ -20,6 +24,15 @@ export interface SubmitResult {
 // Anthropic's batch limit is 256MB; refuse well under it and tell the operator to
 // split with --limit rather than hard-failing the create call mid-backlog.
 const MAX_BATCH_BYTES = 200 * 1024 * 1024;
+
+// Anthropic's hard batch limit is 256MB. runBatchPipeline does the operator-
+// facing pre-claim check against the conservative MAX_BATCH_BYTES (on the
+// extracted payload, before mutating R2). submitBatch's own post-claim check runs
+// AFTER the eager claim, so it must allow the headroom the pre-claim check left
+// for the (small) similar context — using the 200MB cap here would throw post-
+// claim and strand the just-written pending owners. This is a last-resort backstop
+// against a genuinely over-limit payload before we bill the batch.create.
+const ANTHROPIC_BATCH_HARD_LIMIT_BYTES = 250 * 1024 * 1024;
 
 // One summarize request for a target (custom_id = reading id, params = the exact
 // realtime body so the prompt cache is shared). Exported so the size cap can be
@@ -80,10 +93,14 @@ export async function submitBatch(
     sidecarTargets.push(sidecarTargetFor(st));
   }
 
-  // Defense-in-depth: runBatchPipeline already asserts the cap before claiming,
-  // so for the kept set this never fires — but keep it so submitBatch stays safe
-  // if called directly.
-  assertBatchWithinSizeCap(requests);
+  // Last-resort backstop against a genuinely over-limit payload before billing
+  // batch.create. runBatchPipeline already did the operator-facing pre-claim check
+  // (conservative MAX_BATCH_BYTES on the extracted payload, before mutating R2);
+  // this runs AFTER the claim, so it uses the Anthropic hard limit to allow the
+  // headroom the pre-claim check left for the similar context — otherwise the
+  // similar titles/URLs could push a near-cap batch over 200MB here and strand the
+  // pending owners we just claimed.
+  assertBatchWithinSizeCap(requests, deps.maxBatchBytes ?? ANTHROPIC_BATCH_HARD_LIMIT_BYTES);
 
   // Pending marker before create: if the process dies in the create window, the
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
