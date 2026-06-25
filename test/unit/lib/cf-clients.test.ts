@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   makeR2Client,
   makeVectorizeClient,
+  PointerExistsError,
 } from "../../../scripts/lib/cf-clients";
 
 const r2Config = {
@@ -92,6 +93,53 @@ describe("makeR2Client", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
     const second = fetchFn.mock.calls[1]![0] as Request;
     expect(second.url).toContain("continuation-token=next+token");
+  });
+
+  it("conditional PUT sends If-None-Match: * and succeeds on 200", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await r2.put("index/by-url/abc", "{}", { contentType: "application/json", ifNoneMatch: "*" });
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("PUT");
+    expect(req.headers.get("if-none-match")).toBe("*");
+  });
+
+  it("conditional PUT throws PointerExistsError on 412 (slot already claimed)", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("precondition failed", { status: 412 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(
+      r2.put("index/by-url/abc", "{}", { ifNoneMatch: "*" }),
+    ).rejects.toBeInstanceOf(PointerExistsError);
+  });
+
+  it("an unconditional PUT does not send If-None-Match", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await r2.put("k", "v");
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.headers.get("if-none-match")).toBeNull();
+  });
+
+  it("conditional CAS PUT sends If-Match and throws PointerExistsError on 412 (etag changed)", async () => {
+    const okFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    const okR2 = makeR2Client(r2Config, okFetch as unknown as typeof fetch);
+    await okR2.put("index/list.json", "{}", { ifMatch: '"abc123"' });
+    expect((okFetch.mock.calls[0]![0] as Request).headers.get("if-match")).toBe('"abc123"');
+
+    const conflictFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("changed", { status: 412 }));
+    const conflictR2 = makeR2Client(r2Config, conflictFetch as unknown as typeof fetch);
+    await expect(conflictR2.put("index/list.json", "{}", { ifMatch: '"abc123"' })).rejects.toBeInstanceOf(PointerExistsError);
+  });
+
+  it("getWithEtag returns the body and etag on 200, null on 404", async () => {
+    const okFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response("the body", { status: 200, headers: { etag: '"v1etag"' } }),
+    );
+    const r2 = makeR2Client(r2Config, okFetch as unknown as typeof fetch);
+    await expect(r2.getWithEtag("index/list.json")).resolves.toEqual({ body: "the body", etag: '"v1etag"' });
+
+    const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("no", { status: 404 }));
+    expect(await makeR2Client(r2Config, missFetch as unknown as typeof fetch).getWithEtag("missing")).toBeNull();
   });
 
   it("deletes object keys", async () => {

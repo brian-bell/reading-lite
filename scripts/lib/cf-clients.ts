@@ -7,11 +7,42 @@ import { AwsClient } from "aws4fetch";
 
 export interface R2PutOptions {
   contentType?: string;
+  // Conditional create: send `If-None-Match: *` so the PUT only succeeds when no
+  // object exists at the key. R2's S3 API returns 412 if the slot is taken, which
+  // `put` maps to a PreconditionFailedError. Mirrors the Worker ReadingStore's
+  // `ifNotExists` by-url claim so online and offline contend for the slot the
+  // same way.
+  ifNoneMatch?: "*";
+  // Conditional update (compare-and-set): send `If-Match: <etag>` so the PUT only
+  // succeeds when the object still has the etag we read. R2 returns 412 when a
+  // concurrent writer changed it, mapped to a PreconditionFailedError. Mirrors the
+  // Worker ListIndexStore's `onlyIf: { etagMatches }` so the offline list-index
+  // merge is CAS-safe alongside live online writes.
+  ifMatch?: string;
+}
+
+// Thrown when a conditional PUT's precondition fails (R2 412 Precondition Failed):
+// either `If-None-Match: *` lost because the object already exists, or
+// `If-Match: <etag>` lost because a concurrent writer changed it. Callers
+// interpret it per their condition (eager claim → slot taken; CAS merge → retry).
+// Kept the name `PointerExistsError` for back-compat with the eager-claim sites.
+export class PointerExistsError extends Error {
+  constructor(key: string) {
+    super(`R2 PUT ${key} failed: conditional precondition (412)`);
+    this.name = "PointerExistsError";
+  }
+}
+
+export interface R2ObjectWithEtag {
+  body: string;
+  etag: string;
 }
 
 export interface R2Client {
   put(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<void>;
   get(key: string): Promise<string | null>;
+  // Like get, but also returns the object's etag for compare-and-set updates.
+  getWithEtag(key: string): Promise<R2ObjectWithEtag | null>;
   head(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   listKeys(): Promise<string[]>;
@@ -74,7 +105,12 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Cl
     async put(key, body, opts) {
       const headers: Record<string, string> = {};
       if (opts?.contentType) headers["content-type"] = opts.contentType;
+      if (opts?.ifNoneMatch) headers["if-none-match"] = opts.ifNoneMatch;
+      if (opts?.ifMatch) headers["if-match"] = opts.ifMatch;
       const res = await signedFetch(key, { method: "PUT", body, headers });
+      if ((opts?.ifNoneMatch || opts?.ifMatch) && res.status === 412) {
+        throw new PointerExistsError(key);
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
@@ -88,6 +124,16 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Cl
         throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
       }
       return res.text();
+    },
+    async getWithEtag(key) {
+      const res = await signedFetch(key, { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
+      }
+      const etag = res.headers.get("etag") ?? "";
+      return { body: await res.text(), etag };
     },
     async head(key) {
       const res = await signedFetch(key, { method: "HEAD" });
@@ -190,6 +236,9 @@ export function dryRunR2(log: (line: string) => void = (l) => process.stderr.wri
       log(`[dry-run] R2 PUT ${key}`);
     },
     async get() {
+      return null;
+    },
+    async getWithEtag() {
       return null;
     },
     async head() {
