@@ -7,13 +7,14 @@ describe("soleWriterGuard", () => {
     expect(v.proceed).toBe(false);
     expect(v.message).toMatch(/--sole-writer/);
     expect(v.message).toMatch(/corpus-ingest/);
+    expect(v.message).not.toMatch(/by-url slot unclaimed/);
   });
 
   it("proceeds with a loud banner once sole-writer is acknowledged", () => {
     const v = soleWriterGuard({ execute: true, acknowledged: true, tool: "corpus-recover --batch" });
     expect(v.proceed).toBe(true);
-    // The banner names the tool and warns about the unclaimed-window race so the
-    // operator sees the consequence of the assertion before any submit work.
+    // The banner names the tool and warns that sole-writer mode is still required
+    // while the batch paths have incomplete race-proofing.
     expect(v.message).toMatch(/SOLE-WRITER/);
     expect(v.message).toMatch(/corpus-recover --batch/);
   });

@@ -8,7 +8,7 @@ import {
 } from "../../../src/modules/reading-claim";
 import { urlHash as hashUrl } from "../url-hash";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
-import type { ExtractedTarget } from "./types";
+import type { BatchActivationPolicy, ExtractedTarget, ExpectedExistingFailed } from "./types";
 
 const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
 
@@ -19,9 +19,9 @@ export interface ByUrlPointer {
 
 // A by-url read can be: a usable pointer, `null` (object absent → unclaimed), or
 // "damaged" (object present but non-JSON or missing id/key_prefix). "damaged" is
-// kept distinct from null so the caller can route it to the forced-scan repair
-// path instead of silently treating a corrupt claim as an unclaimed URL — the
-// Worker's strict ByUrlPointerSchema.parse throws rather than read it as absent.
+// kept distinct from null so this fresh-ingest slice can skip occupied slots
+// instead of silently treating a corrupt claim as unclaimed. The Worker's strict
+// ByUrlPointerSchema.parse throws rather than read it as absent.
 export type ByUrlLookup = ByUrlPointer | "damaged";
 
 // The bulk fresh-markdown front-end's view of the corpus: it replaces the
@@ -35,12 +35,12 @@ export interface FreshMarkdownDeps {
   // The cold-legacy lookup: resolve a URL's owner through index/list.json when
   // no live by-url pointer exists, mirroring the Worker's findManifestByUrl.
   // Returns the ranked owner (ready > pending > failed, then recency) or null.
-  // Load-bearing for retry-after-failure: a failed fresh ingest leaves a by-id
-  // pointer + list row but NO by-url pointer, so a rerun finds the failed
-  // reading here and re-ingests it in place instead of minting a duplicate.
-  // `forceScan` mirrors the Worker's `deepScan: true` damaged-pointer repair:
-  // scan the bucket even when the index parses, so a stale index can't hide the
-  // real owner. Left off for plain cold lookups to avoid a per-submit scan.
+  // Load-bearing for legacy retry-after-failure: a prior failed ingest may have
+  // left a by-id pointer + list row but no by-url pointer, so a rerun finds the
+  // failed reading here and re-ingests it in place instead of minting a duplicate.
+  // `forceScan` remains in the lower-level helper for Worker-parity repair
+  // callers, but this fresh-ingest slice calls the cold lookup only for absent
+  // by-url pointers and skips occupied/damaged slots for later reconciliation.
   findByUrlInList(
     url: string,
     urlHash: string,
@@ -57,6 +57,7 @@ export type FreshDisposition =
   | { kind: "ingest-failed"; url: string; id: string; article: MarkdownArticle; target: ExtractedTarget }
   | { kind: "skip-ready"; url: string; id: string; article: MarkdownArticle }
   | { kind: "skip-pending"; url: string; id: string; article: MarkdownArticle }
+  | { kind: "skip-occupied-needs-repair"; url: string; id: string | null; article: MarkdownArticle; reason: string }
   // A by-url pointer whose manifest hasn't landed yet, inside the grace window —
   // a realtime submit/import is in flight; do not touch it (mirrors ReadingClaim's
   // `initializing`).
@@ -89,10 +90,6 @@ export async function prepareFreshMarkdown(
 
     const urlHash = hashUrl(url);
     const owner = await deps.getByUrl(urlHash);
-    // A structurally "damaged" pointer (present but non-JSON or missing fields)
-    // has no usable key_prefix, so it skips the owner checks and falls straight
-    // through to the forced-scan repair below — exactly like a mismatched/
-    // stale-missing pointer, never like an absent one.
     if (owner && owner !== "damaged") {
       const manifest = await deps.readManifest(owner.key_prefix);
       // Only a manifest that genuinely owns this URL (id + url + url_hash all
@@ -118,6 +115,7 @@ export async function prepareFreshMarkdown(
         }
         // failed owner → re-ingest in place: reuse the claimed id, its key_prefix,
         // and its original created_at (the key_prefix encodes that timestamp).
+        const expected = expectedExisting(owner.id, owner.key_prefix, url, urlHash, manifest.created_at);
         const target = buildExtractedTarget(
           article,
           url,
@@ -126,6 +124,7 @@ export async function prepareFreshMarkdown(
           owner.key_prefix,
           manifest.created_at,
           deps.now(),
+          { kind: "verify-existing-failed", expected },
         );
         toIngest.push(target);
         dispositions.push({ kind: "ingest-failed", url, id: owner.id, article, target });
@@ -138,25 +137,35 @@ export async function prepareFreshMarkdown(
         dispositions.push({ kind: "skip-initializing", url, id: owner.id, article });
         continue;
       }
-      // Otherwise the by-url pointer is damaged (mismatched manifest, or
-      // stale-missing). Do NOT mint blindly — fall through to the cold-legacy
-      // lookup below, exactly as the no-pointer path does. index/list.json may
-      // still hold the real owner for this URL (the same row the Worker repairs
-      // through findManifestByUrl); minting here would duplicate an
-      // already-owned URL and then overwrite the by-url pointer on success.
+      dispositions.push({
+        kind: "skip-occupied-needs-repair",
+        url,
+        id: owner.id,
+        article,
+        reason: "by-url slot is occupied but does not match a retryable failed owner",
+      });
+      continue;
     }
 
-    // No usable live by-url owner (absent, or damaged and falling through).
+    if (owner === "damaged") {
+      dispositions.push({
+        kind: "skip-occupied-needs-repair",
+        url,
+        id: null,
+        article,
+        reason: "by-url slot contains a damaged pointer",
+      });
+      continue;
+    }
+
+    // No live by-url owner.
     // Run the cold-legacy lookup before minting (mirrors the Worker's
-    // resolveOwner cold path): a prior failed fresh ingest writes a by-id
-    // pointer + list row but deliberately no by-url pointer, so a retry must
-    // re-ingest THAT failed reading in place rather than mint a second one.
+    // resolveOwner cold path): a prior legacy failed ingest may have a by-id
+    // pointer + list row but no by-url pointer, so a retry must re-ingest THAT
+    // failed reading in place rather than mint a second one.
     // Resolve through index/list.json by the same ready>pending>failed
-    // ownership rank the Worker uses. A damaged pointer (owner present but
-    // unmatched, or structurally "damaged") forces a deep scan — the Worker's
-    // `deepScan: existing ? true` repair policy — so a stale index that lost the
-    // owner's row can't make us mint a duplicate and overwrite by-url onto it.
-    const cold = await deps.findByUrlInList(url, urlHash, { forceScan: owner !== null });
+    // ownership rank the Worker uses.
+    const cold = await deps.findByUrlInList(url, urlHash, { forceScan: false });
     if (cold) {
       if (cold.manifest.status === "ready") {
         dispositions.push({ kind: "skip-ready", url, id: cold.id, article });
@@ -170,6 +179,7 @@ export async function prepareFreshMarkdown(
       }
       // failed owner → re-ingest in place: reuse its id, key_prefix, and
       // original created_at exactly as the by-url failed-owner branch does.
+      const expected = expectedExisting(cold.id, cold.key_prefix, url, urlHash, cold.manifest.created_at);
       const target = buildExtractedTarget(
         article,
         url,
@@ -178,6 +188,7 @@ export async function prepareFreshMarkdown(
         cold.key_prefix,
         cold.manifest.created_at,
         deps.now(),
+        { kind: "create-existing-failed", expected },
       );
       toIngest.push(target);
       dispositions.push({ kind: "ingest-failed", url, id: cold.id, article, target });
@@ -187,7 +198,9 @@ export async function prepareFreshMarkdown(
     const id = deps.newId();
     const createdAt = deps.now();
     const keyPrefix = buildKeyPrefix(id, createdAt);
-    const target = buildExtractedTarget(article, url, urlHash, id, keyPrefix, createdAt, createdAt);
+    const target = buildExtractedTarget(article, url, urlHash, id, keyPrefix, createdAt, createdAt, {
+      kind: "create-new",
+    });
     toIngest.push(target);
     dispositions.push({ kind: "ingest-new", url, id, article, target });
   }
@@ -201,6 +214,7 @@ export interface DispositionTally {
   skipReady: number;
   skipPending: number;
   skipInitializing: number;
+  skipOccupiedNeedsRepair: number;
   skipNoSource: number;
   // ingestNew + ingestFailed — the readings that would actually be submitted.
   toIngest: number;
@@ -214,6 +228,7 @@ export function tallyDispositions(dispositions: FreshDisposition[]): Disposition
     skipReady: 0,
     skipPending: 0,
     skipInitializing: 0,
+    skipOccupiedNeedsRepair: 0,
     skipNoSource: 0,
     toIngest: 0,
   };
@@ -223,6 +238,7 @@ export function tallyDispositions(dispositions: FreshDisposition[]): Disposition
     else if (d.kind === "skip-ready") t.skipReady++;
     else if (d.kind === "skip-pending") t.skipPending++;
     else if (d.kind === "skip-initializing") t.skipInitializing++;
+    else if (d.kind === "skip-occupied-needs-repair") t.skipOccupiedNeedsRepair++;
     else if (d.kind === "skip-no-source") t.skipNoSource++;
   }
   t.toIngest = t.ingestNew + t.ingestFailed;
@@ -237,6 +253,7 @@ function buildExtractedTarget(
   keyPrefix: string,
   createdAt: string,
   now: string,
+  freshActivation: BatchActivationPolicy,
 ): ExtractedTarget {
   const markdown = article.markdown;
   const bytes = article.bytes;
@@ -277,5 +294,16 @@ function buildExtractedTarget(
     markdown,
     ...(article.title === undefined ? {} : { title: article.title }),
     fresh,
+    freshActivation,
   };
+}
+
+function expectedExisting(
+  id: string,
+  keyPrefix: string,
+  url: string,
+  urlHash: string,
+  createdAt: string,
+): ExpectedExistingFailed {
+  return { id, keyPrefix, url, urlHash, createdAt };
 }

@@ -11,6 +11,7 @@ export interface R2PutOptions {
 
 export interface R2Client {
   put(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<void>;
+  putIfAbsent(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<boolean>;
   get(key: string): Promise<string | null>;
   head(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
@@ -79,6 +80,15 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Cl
         const text = await res.text().catch(() => "");
         throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
       }
+    },
+    async putIfAbsent(key, body, opts) {
+      const headers: Record<string, string> = { "if-none-match": "*" };
+      if (opts?.contentType) headers["content-type"] = opts.contentType;
+      const res = await signedFetch(key, { method: "PUT", body, headers });
+      if (res.ok) return true;
+      if (res.status === 412 || res.status === 409) return false;
+      const text = await res.text().catch(() => "");
+      throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
     },
     async get(key) {
       const res = await signedFetch(key, { method: "GET" });
@@ -188,6 +198,10 @@ export function dryRunR2(log: (line: string) => void = (l) => process.stderr.wri
   return {
     async put(key) {
       log(`[dry-run] R2 PUT ${key}`);
+    },
+    async putIfAbsent(key) {
+      log(`[dry-run] R2 PUT if absent ${key}`);
+      return true;
     },
     async get() {
       return null;

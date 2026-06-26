@@ -66,9 +66,10 @@ agent context: current commands, module map, conventions, and gotchas.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
   audit/recovery/drop, imports, and manual smoke tests.
 - `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
-  `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → similar →
-  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover
-  --batch` resolves audit rows via `prepare.ts` + `extract-phase.ts`, while
+  `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → optional
+  fresh payload preflight → similar → final payload validation + activation →
+  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover --batch` resolves audit rows via
+  `prepare.ts` + `extract-phase.ts`, while
   `corpus-ingest` resolves a fresh markdown directory via
   `prepare-fresh-markdown.ts` (client-side by-url ownership + minted ids,
   bypassing extract-phase since the markdown is in hand) and `run-fresh-markdown.ts`.
@@ -257,11 +258,12 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   exported `ownedManifestMatches` / `isFreshMissingManifestPointer`): a pointer
   owns the URL only when its manifest matches (id + url + url_hash), so ready and
   pending owners skip while failed owners re-ingest in place; a fresh
-  missing-manifest pointer is still-initializing and skipped; unclaimed or damaged
-  pointers mint a new id (never reusing a damaged id). When there is no live
+  missing-manifest pointer is still-initializing and skipped; unclaimed URLs mint
+  a new id; damaged or mismatched by-url pointers are skipped for operator repair
+  rather than claimed over. When there is no live
   by-url pointer it first runs the cold-legacy lookup (`findByUrlInList` in
-  `r2-reads.ts`, mirroring the Worker's `findManifestByUrl`): a prior failed
-  fresh ingest writes a by-id pointer + list row but no by-url pointer, so a
+  `r2-reads.ts`, mirroring the Worker's `findManifestByUrl`): a prior legacy
+  failed ingest may have a by-id pointer + list row but no by-url pointer, so a
   rerun resolves that failed reading through `index/list.json` (ready>pending>failed
   rank then recency) and re-ingests it in place rather than minting a duplicate.
   Pending owners are skipped
@@ -269,12 +271,17 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   claim/supersede an in-flight queue attempt, so re-ingesting a stale pending could
   race the worker and (on a batch failure, which carries no preserved-ready
   snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
-  corpus-recover. `write-phase` writes the by-id pointer on both the success and
-  failure branches (a fresh-ingest failure must still be reachable via
-  detail/reprocess), but only writes by-url on success. Because by-url is only written on
-  success, the URL stays unclaimed during the in-flight batch window — a
-  concurrent realtime submit of the same URL could create a duplicate, so it is
-  intended for an operator backfill where the script is the sole writer.
+  corpus-recover. Before fresh eager activation writes, `runBatchPipeline`
+  preflights the extracted-only summarization payload, resolves similar-reading
+  context, then validates the final request payload against `submit-phase.ts`'s
+  200 MB safety cap so an oversized run fails with the `--limit` guidance
+  without leaving pending owners behind. Fresh ingest then eagerly writes a
+  pending manifest, by-id pointer, by-url pointer, and list row before Message
+  Batch creation.
+  `write-phase` writes the by-id pointer on both the success and failure branches
+  (a fresh-ingest failure must still be reachable via detail/reprocess) and
+  tolerates a pre-existing eager by-url pointer; releasing that pointer on batch
+  failure is a follow-up slice.
   Dry-run-by-default + `--execute`; resumes its in-flight batch from
   `./corpus-ingest.batch.json` (override with `--sidecar`).
 - The sole-writer requirement is enforced, not just documented (issue #68). Both
@@ -284,7 +291,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   before any submit. Dry-runs submit nothing and so never require it. The shared
   pure guard is `soleWriterGuard` in `scripts/corpus-lib/sole-writer.ts` (the
   unit-tested decision; the CLIs only do the stderr-print + `exit(2)` I/O). This
-  closes the operational hole for option (a) of #66; an eager-claim fix (option
-  (b)) would make it belt-and-suspenders rather than the sole mitigation.
+  remains required while recover parity and failure-release slices are incomplete,
+  even though fresh ingest now has the first eager-claim slice.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

@@ -21,7 +21,23 @@ export interface ExtractedTarget {
   markdown: string;
   title?: string;
   fresh?: ExtractedContent;
+  freshActivation?: BatchActivationPolicy;
+  contentAlreadyWritten?: true;
 }
+
+export interface ExpectedExistingFailed {
+  id: string;
+  keyPrefix: string;
+  url: string;
+  urlHash: string;
+  createdAt: string;
+}
+
+export type BatchActivationPolicy =
+  | { kind: "create-new" }
+  | { kind: "create-existing-failed"; expected: ExpectedExistingFailed }
+  | { kind: "verify-existing-failed"; expected: ExpectedExistingFailed }
+  | { kind: "occupied-needs-repair"; reason: string };
 
 // An extracted target with its similar-readings context resolved — ready to
 // build a summarize request.
@@ -71,3 +87,20 @@ export interface Sidecar {
   resultsUrl: string | null;
   targets: SidecarTarget[];
 }
+
+export interface ActivatingSidecar {
+  batchId: "";
+  model: string;
+  processingStatus: "activating";
+  resultsUrl: null;
+  targets: Array<{
+    id: string;
+    customId: string;
+    keyPrefix: string;
+    url: string;
+    urlHash: string;
+    createdAt: string;
+  }>;
+}
+
+export type PersistedSidecar = Sidecar | ActivatingSidecar;

@@ -98,6 +98,7 @@ describe("prepareFreshMarkdown — unclaimed URL", () => {
 
     expect(plan.dispositions).toHaveLength(1);
     expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+    expect(t.freshActivation).toEqual({ kind: "create-new" });
   });
 });
 
@@ -176,6 +177,15 @@ describe("prepareFreshMarkdown — existing owner", () => {
     expect(t.target.keyPrefix).toBe("readings/kp-owner");
     expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
     expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+    expect(t.freshActivation).toMatchObject({
+      kind: "verify-existing-failed",
+      expected: {
+        id: "rd_OWNER",
+        keyPrefix: "readings/kp-owner",
+        url: a.sourceUrl,
+        urlHash: hex(a.sourceUrl!),
+      },
+    });
   });
 
   it("skips a fresh pointer whose manifest hasn't landed yet (initializing window)", async () => {
@@ -193,7 +203,7 @@ describe("prepareFreshMarkdown — existing owner", () => {
     expect(plan.dispositions[0]!.kind).toBe("skip-initializing");
   });
 
-  it("mints a brand-new reading for a stale pointer whose manifest is gone (damaged)", async () => {
+  it("skips a stale pointer whose manifest is gone as occupied-needs-repair", async () => {
     const a = article();
     const d = deps({
       // pointer from years ago, manifest gone: a genuinely damaged pointer.
@@ -202,14 +212,12 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
     const plan = await prepareFreshMarkdown([a], d);
 
-    expect(d.ids).toEqual(["rd_NEW0"]); // never reuse the damaged id
-    const t = plan.toIngest[0]!;
-    expect(t.target.readingId).toBe("rd_NEW0");
-    expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
-    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+    expect(d.ids).toEqual([]);
+    expect(plan.toIngest).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 
-  it("re-ingests a failed cold owner in place when the by-url pointer is stale-missing", async () => {
+  it("skips a stale-missing by-url pointer even when a failed cold owner exists", async () => {
     // Damaged pointer (manifest gone, years old) BUT index/list.json still owns
     // this URL via a prior failed ingest. The damaged-pointer branch must run the
     // cold lookup before minting, or it duplicates an already-owned URL and then
@@ -228,32 +236,28 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
     const plan = await prepareFreshMarkdown([a], d);
 
-    expect(d.ids).toHaveLength(0); // reuse the cold owner's id, don't mint
-    expect(plan.toIngest).toHaveLength(1);
-    const t = plan.toIngest[0]!;
-    expect(t.target.readingId).toBe("rd_OWNER");
-    expect(t.target.keyPrefix).toBe("readings/kp-owner");
-    expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
-    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+    expect(d.ids).toHaveLength(0);
+    expect(plan.toIngest).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 
-  it("forces a deep scan on the cold lookup when repairing a damaged pointer", async () => {
-    // A damaged by-url pointer must trigger the Worker's deepScan repair so a
-    // stale index can't hide the real owner and cause a duplicate mint.
+  it("does not run a cold repair scan for an occupied damaged pointer in this slice", async () => {
+    // A damaged by-url pointer stays occupied for this slice. Fresh ingest must
+    // skip it instead of scanning for a repair target and claiming over it.
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
       manifests: {},
     });
     await prepareFreshMarkdown([a], d);
-    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
+    expect(d.coldCalls).toEqual([]);
   });
 
-  it("treats a structurally-damaged by-url pointer as damaged, not unclaimed (forces a scan)", async () => {
+  it("skips a structurally-damaged by-url pointer instead of claiming over it", async () => {
     // The by-url object exists but is missing id/key_prefix (stale/manual schema
     // damage). It must NOT read as unclaimed: that would take the no-pointer path
-    // with forceScan:false and, against a stale index, mint a duplicate. It must
-    // route to the forced-scan repair and re-ingest the real cold owner in place.
+    // with forceScan:false and, against a stale index, mint a duplicate. This
+    // slice reports it as occupied-needs-repair instead of claiming over it.
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: "damaged" },
@@ -267,26 +271,23 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
     const plan = await prepareFreshMarkdown([a], d);
 
-    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
-    expect(d.ids).toHaveLength(0); // reuse the cold owner, don't mint
-    expect(plan.toIngest[0]!.target.readingId).toBe("rd_OWNER");
-    expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+    expect(d.coldCalls).toEqual([]);
+    expect(d.ids).toHaveLength(0);
+    expect(plan.toIngest).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 
-  it("mints for a structurally-damaged by-url pointer when the forced scan finds nothing", async () => {
+  it("skips a structurally-damaged by-url pointer when the forced scan would find nothing", async () => {
     const a = article();
     const d = deps({ byUrl: { [hex(a.sourceUrl!)]: "damaged" } }); // no cold owner
     const plan = await prepareFreshMarkdown([a], d);
 
-    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: true }]);
-    expect(d.ids).toEqual(["rd_NEW0"]);
-    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+    expect(d.coldCalls).toEqual([]);
+    expect(d.ids).toEqual([]);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 
-  it("skips a ready cold owner when the by-url pointer is cross-wired to another reading", async () => {
-    // Damaged pointer (cross-wired to a different reading) BUT index/list.json
-    // still owns this URL with a ready reading. The damaged-pointer branch must
-    // honor that cold owner and skip, not mint a duplicate.
+  it("skips an occupied cross-wired by-url pointer before cold repair", async () => {
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
@@ -309,11 +310,12 @@ describe("prepareFreshMarkdown — existing owner", () => {
     const plan = await prepareFreshMarkdown([a], d);
 
     expect(plan.toIngest).toHaveLength(0);
-    expect(d.ids).toHaveLength(0); // honor the cold owner, don't mint
-    expect(plan.dispositions[0]!.kind).toBe("skip-ready");
+    expect(d.ids).toHaveLength(0);
+    expect(d.coldCalls).toEqual([]);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 
-  it("mints a brand-new reading when the pointer is cross-wired to another reading's manifest", async () => {
+  it("skips when the pointer is cross-wired to another reading's manifest", async () => {
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
@@ -329,21 +331,17 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
     const plan = await prepareFreshMarkdown([a], d);
 
-    // must NOT skip (the ready manifest isn't this URL's) and must NOT reuse the
-    // other reading's key_prefix — mint a fresh reading instead.
-    expect(d.ids).toEqual(["rd_NEW0"]);
-    const t = plan.toIngest[0]!;
-    expect(t.target.readingId).toBe("rd_NEW0");
-    expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
-    expect(plan.dispositions[0]!.kind).toBe("ingest-new");
+    expect(d.ids).toEqual([]);
+    expect(plan.toIngest).toHaveLength(0);
+    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
   });
 });
 
 describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", () => {
   it("re-ingests a failed reading found only via the list index in place, not a duplicate", async () => {
-    // A prior failed fresh ingest leaves a by-id pointer + list row but NO
-    // by-url pointer (failed URLs stay re-submittable). A rerun therefore sees
-    // getByUrl=null; without the cold lookup it would mint a SECOND reading.
+    // A prior legacy failed ingest may have a by-id pointer + list row but no
+    // by-url pointer. A rerun therefore sees getByUrl=null; without the cold
+    // lookup it would mint a SECOND reading.
     const a = article();
     const d = deps({
       cold: {
@@ -363,6 +361,15 @@ describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", 
     expect(t.target.keyPrefix).toBe("readings/kp-owner");
     expect(t.target.createdAt).toBe("2025-12-01T00:00:00.000Z");
     expect(plan.dispositions[0]!.kind).toBe("ingest-failed");
+    expect(t.freshActivation).toMatchObject({
+      kind: "create-existing-failed",
+      expected: {
+        id: "rd_OWNER",
+        keyPrefix: "readings/kp-owner",
+        url: a.sourceUrl,
+        urlHash: hex(a.sourceUrl!),
+      },
+    });
     // No pointer at all → plain cold lookup, no forced scan (a first-time URL
     // submit must not pay for a full bucket scan, matching the Worker).
     expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: false }]);
@@ -418,6 +425,7 @@ describe("tallyDispositions", () => {
       { kind: "skip-ready", url: "u", id: "4", article: a },
       { kind: "skip-pending", url: "u", id: "5", article: a },
       { kind: "skip-initializing", url: "u", id: "6", article: a },
+      { kind: "skip-occupied-needs-repair", url: "u", id: "7", article: a, reason: "occupied" },
       { kind: "skip-no-source", url: null, id: null, article: a },
     ];
     expect(tallyDispositions(ds)).toEqual({
@@ -426,6 +434,7 @@ describe("tallyDispositions", () => {
       skipReady: 1,
       skipPending: 1,
       skipInitializing: 1,
+      skipOccupiedNeedsRepair: 1,
       skipNoSource: 1,
       toIngest: 3,
     });

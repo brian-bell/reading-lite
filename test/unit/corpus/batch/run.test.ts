@@ -116,6 +116,9 @@ function harness(seedManifests: Record<string, Manifest>) {
     saveSidecar: vi.fn(async (s: Sidecar) => {
       sidecar = s;
     }),
+    clearSidecar: vi.fn(async () => {
+      sidecar = null;
+    }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
   return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: Sidecar | null) => (sidecar = s) };
@@ -212,7 +215,7 @@ describe("runBatch — resume", () => {
       resultsUrl: null,
       targets: [],
     }));
-    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/pending batch sidecar/i);
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar with no batch id/i);
     expect(h.batch.create).not.toHaveBeenCalled();
   });
 

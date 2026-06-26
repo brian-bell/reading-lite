@@ -154,7 +154,7 @@ describe("writeResults — success path", () => {
 });
 
 describe("writeResults — failure path", () => {
-  it("writes a retryable failed manifest and NO by-url pointer when there is no prior ready snapshot", async () => {
+  it("does not create a by-url pointer for a non-eager failed batch result", async () => {
     const r2 = fakeR2();
     await writeResults(sidecar([sidecarTarget()]), [errored("rd_a")], deps(r2, fakeVectorize()));
     const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
@@ -163,6 +163,20 @@ describe("writeResults — failure path", () => {
     expect(m.error?.stage).toBe("summarize");
     // Failed URLs must stay re-submittable: no by-url pointer.
     expect(r2.store.has(`index/by-url/${"a".repeat(64)}`)).toBe(false);
+  });
+
+  it("retains an eager by-url pointer that already exists when a batch result fails", async () => {
+    const existingPointer = JSON.stringify({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    const r2 = fakeR2({ [`index/by-url/${"a".repeat(64)}`]: existingPointer });
+
+    await writeResults(sidecar([sidecarTarget()]), [errored("rd_a")], deps(r2, fakeVectorize()));
+
+    const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
+    expect(m.status).toBe("failed");
+    expect(r2.store.get(`index/by-url/${"a".repeat(64)}`)).toBe(existingPointer);
   });
 
   it("does not upsert a vector for a failed reading", async () => {

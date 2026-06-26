@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  dryRunR2,
   makeR2Client,
   makeVectorizeClient,
 } from "../../../scripts/lib/cf-clients";
@@ -28,6 +29,39 @@ describe("makeR2Client", () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 500 }));
     const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
     await expect(r2.put("k", "v")).rejects.toThrow(/R2 PUT/);
+  });
+
+  it("putIfAbsent sends If-None-Match and returns true on success", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+
+    await expect(r2.putIfAbsent("index/by-url/a", "{}", { contentType: "application/json" })).resolves.toBe(true);
+
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("PUT");
+    expect(req.headers.get("if-none-match")).toBe("*");
+    expect(req.headers.get("content-type")).toBe("application/json");
+  });
+
+  it("putIfAbsent returns false when R2 reports an existing object", async () => {
+    for (const status of [409, 412]) {
+      const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("exists", { status }));
+      const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+      await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(false);
+    }
+  });
+
+  it("putIfAbsent throws on non-conditional failures", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 500 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(r2.putIfAbsent("k", "v")).rejects.toThrow(/R2 PUT k failed: 500 boom/);
+  });
+
+  it("dry-run putIfAbsent logs and returns true", async () => {
+    const lines: string[] = [];
+    const r2 = dryRunR2((line) => lines.push(line));
+    await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(true);
+    expect(lines).toEqual(["[dry-run] R2 PUT if absent index/by-url/a"]);
   });
 
   it("GET returns the body text on 200", async () => {
