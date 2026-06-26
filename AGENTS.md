@@ -280,8 +280,8 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   Batch creation.
   `write-phase` writes the by-id pointer on both the success and failure branches
   (a fresh-ingest failure must still be reachable via detail/reprocess) and
-  tolerates a pre-existing eager by-url pointer; releasing that pointer on batch
-  failure is a follow-up slice.
+  releases a pre-existing eager by-url pointer on terminal batch failure only
+  when the pointer still exactly matches the failed target.
   Dry-run-by-default + `--execute`; resumes its in-flight batch from
   `./corpus-ingest.batch.json` (override with `--sidecar`).
 - The sole-writer requirement is enforced, not just documented (issue #68). Both
@@ -291,7 +291,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   before any submit. Dry-runs submit nothing and so never require it. The shared
   pure guard is `soleWriterGuard` in `scripts/corpus-lib/sole-writer.ts` (the
   unit-tested decision; the CLIs only do the stderr-print + `exit(2)` I/O). This
-  remains required while recover parity and failure-release slices are incomplete,
-  even though fresh ingest now has the first eager-claim slice.
+  remains required while recover parity is incomplete, even though fresh ingest
+  now eagerly claims activated slots and releases its own failed eager claims.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

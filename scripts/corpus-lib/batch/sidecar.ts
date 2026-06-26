@@ -25,6 +25,7 @@ const SidecarTargetSchema = z
     contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
     extractedBytes: z.number().int().nonnegative().optional(),
     queryEmbedTokens: z.number().int().nonnegative(),
+    releaseByUrlOnFailure: z.literal(true).optional(),
     preserveReadyManifest: z.unknown().optional(),
   })
   .strip();

@@ -1,8 +1,8 @@
 // Issue #68: the offline batch tools still require an operational sole-writer
 // window. Fresh ingest now eagerly claims activated by-url slots, but
-// corpus-recover parity and fresh-ingest failure-release are separate slices; a
-// live realtime writer can still race incomplete batch ownership states. This
-// guard makes the pause/drain discipline enforceable instead of tribal knowledge
+// corpus-recover parity is still a separate slice; a live realtime writer can
+// still race incomplete recover-batch ownership states. This guard makes the
+// pause/drain discipline enforceable instead of tribal knowledge
 // — a real (--execute) batch submit is refused unless the operator explicitly
 // asserts sole-writer status with --sole-writer.
 export interface SoleWriterVerdict {
@@ -29,7 +29,7 @@ export function soleWriterGuard(opts: {
         `REFUSED: ${opts.tool} --execute requires --sole-writer.\n` +
         `  Offline batch ownership is not fully race-proof across all paths yet,\n` +
         `  so a live realtime writer can still duplicate compute/emails or thrash\n` +
-        `  pointers during incomplete batch slices.\n` +
+        `  pointers during incomplete recover-batch slices.\n` +
         `  Pause/drain the realtime writer, then re-run with --sole-writer to confirm\n` +
         `  this script is the only writer.`,
     };
@@ -40,7 +40,7 @@ export function soleWriterGuard(opts: {
       `${RULE}\n` +
       `  SOLE-WRITER MODE: ${opts.tool}\n` +
       `  You asserted the realtime writer is paused/drained. Offline batch ownership\n` +
-      `  still has incomplete parity/failure-release slices, so a concurrent live\n` +
+      `  still has incomplete recover-batch parity, so a concurrent live\n` +
       `  writer could duplicate compute + emails or thrash pointers.\n` +
       `${RULE}`,
   };

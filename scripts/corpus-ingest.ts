@@ -85,8 +85,8 @@ deduped by source URL (largest wins) and any over ${Math.round(
   --execute        Actually submit + write (otherwise prints the plan).
   --sole-writer    Required with --execute: assert the realtime writer is
                    paused/drained. Fresh ingest eagerly claims activated by-url
-                   slots, but recover parity and failure-release slices are not
-                   done yet. Run refuses without it.
+                   slots and releases its own failed eager claims, but recover
+                   parity is not done yet. Run refuses without it.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
@@ -96,8 +96,8 @@ deduped by source URL (largest wins) and any over ${Math.round(
 Idempotency: by-url ownership is read client-side — ready owners are skipped,
 pending owners are skipped (a realtime submit may be in flight), failed owners
 re-ingest in place, and unclaimed URLs mint a new reading. Fresh ingest eagerly
-claims activated by-url slots before batch creation; --sole-writer remains
-required because recover parity and failure-release follow-ups are still
+claims activated by-url slots before batch creation and releases its own failed
+eager claims; --sole-writer remains required because recover parity is still
 outstanding.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
@@ -113,7 +113,8 @@ async function main(): Promise<void> {
   // asserts the realtime writer is paused/drained. Runs before any dir/cred/batch
   // work so an unacknowledged --execute fails loudly and immediately. A resume
   // (live sidecar) is gated too. Fresh ingest now eagerly claims activated slots,
-  // but recover parity and failure-release follow-ups are still outstanding.
+  // and releases its own failed eager claims, but recover parity is still
+  // outstanding.
   enforceSoleWriter(
     { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-ingest" },
     { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
