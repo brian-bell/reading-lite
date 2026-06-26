@@ -66,9 +66,10 @@ agent context: current commands, module map, conventions, and gotchas.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
   audit/recovery/drop, imports, and manual smoke tests.
 - `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
-  `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → similar →
-  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover
-  --batch` resolves audit rows via `prepare.ts` + `extract-phase.ts`, while
+  `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → optional
+  fresh payload preflight + activation → similar → submit+sidecar → poll →
+  write) that both front-ends feed: `corpus-recover --batch` resolves audit rows via
+  `prepare.ts` + `extract-phase.ts`, while
   `corpus-ingest` resolves a fresh markdown directory via
   `prepare-fresh-markdown.ts` (client-side by-url ownership + minted ids,
   bypassing extract-phase since the markdown is in hand) and `run-fresh-markdown.ts`.
@@ -270,12 +271,15 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   claim/supersede an in-flight queue attempt, so re-ingesting a stale pending could
   race the worker and (on a batch failure, which carries no preserved-ready
   snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
-  corpus-recover. Fresh ingest eagerly writes a pending manifest, by-id pointer,
-  by-url pointer, and list row before Message Batch creation. `write-phase` writes
-  the by-id pointer on both the success and failure branches (a fresh-ingest
-  failure must still be reachable via detail/reprocess) and tolerates a
-  pre-existing eager by-url pointer; releasing that pointer on batch failure is a
-  follow-up slice.
+  corpus-recover. Before fresh eager activation writes, `runBatchPipeline`
+  preflights the summarization payload against `submit-phase.ts`'s 200 MB safety
+  cap so an oversized run fails with the `--limit` guidance without leaving
+  pending owners behind. Fresh ingest then eagerly writes a pending manifest,
+  by-id pointer, by-url pointer, and list row before Message Batch creation.
+  `write-phase` writes the by-id pointer on both the success and failure branches
+  (a fresh-ingest failure must still be reachable via detail/reprocess) and
+  tolerates a pre-existing eager by-url pointer; releasing that pointer on batch
+  failure is a follow-up slice.
   Dry-run-by-default + `--execute`; resumes its in-flight batch from
   `./corpus-ingest.batch.json` (override with `--sidecar`).
 - The sole-writer requirement is enforced, not just documented (issue #68). Both
