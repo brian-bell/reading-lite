@@ -5,6 +5,7 @@ import type { AuditRow } from "../types";
 import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
+import { activateRecoverTargets } from "./activation-phase";
 import { resolveSimilar } from "./similar-phase";
 import {
   assertExtractedBatchPayloadWithinLimit,
@@ -146,20 +147,38 @@ export async function runBatchPipeline(
 
 // Recover path: resolve audit rows into targets (existing manifest authoritative)
 // and re-extract any whose markdown isn't already captured, then run the pipeline.
+// Eager by-url claim parity with fresh ingest: activateRecoverTargets flips each
+// owner's slot to pending before batch submit (a failed→pending flip for an
+// already-held slot), closing the in-flight race window (#71).
 export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
-  return runBatchPipeline(async () => {
-    const prepared = await prepareTargets(rows, {
-      readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
-    });
-    const extracted = await extractTargets(prepared.targets, {
-      loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
-      extract: deps.extract,
-    });
-    return {
-      extracted: extracted.extracted,
-      dropped: [...prepared.dropped, ...extracted.dropped],
-    };
-  }, deps);
+  return runBatchPipeline(
+    async () => {
+      const prepared = await prepareTargets(rows, {
+        readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+      });
+      const extracted = await extractTargets(prepared.targets, {
+        loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
+        extract: deps.extract,
+      });
+      return {
+        extracted: extracted.extracted,
+        dropped: [...prepared.dropped, ...extracted.dropped],
+      };
+    },
+    {
+      ...deps,
+      activateExtracted:
+        deps.activateExtracted ??
+        ((targets) =>
+          activateRecoverTargets(targets, {
+            r2: deps.r2,
+            model: deps.model,
+            now: deps.now,
+            saveSidecar: deps.saveSidecar,
+            ...(deps.log ? { log: deps.log } : {}),
+          })),
+    },
+  );
 }
 
 function extractedTargetKey(target: ExtractedTarget): string {

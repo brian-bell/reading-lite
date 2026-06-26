@@ -77,10 +77,13 @@ export interface SidecarTarget {
   // Persisted so the write phase records the full embedding cost even on a
   // resumed run (the similar phase, which computes it, doesn't re-run on resume).
   queryEmbedTokens: number;
-  // Fresh-ingest activation eagerly claimed by-url ownership before batch
-  // submit; if the terminal batch result fails, write-phase may release that
-  // exact claim. Recover-batch targets leave this unset because any matching
-  // by-url pointer is pre-existing corpus ownership, not this run's claim.
+  // Only fresh ingest sets this. Both batch paths now eagerly claim by-url before
+  // submit, but they differ on terminal failure: a fresh ingest *created* the
+  // slot, so write-phase releases that exact claim (set true for create-new /
+  // create-existing-failed). A recover target's slot is a failed→pending flip of
+  // pre-existing corpus ownership — left unset so the claim survives a failure and
+  // the failed recover URL stays re-submittable by both recover and the online
+  // reprocess path.
   releaseByUrlOnFailure?: true;
   preserveReadyManifest?: Manifest;
 }

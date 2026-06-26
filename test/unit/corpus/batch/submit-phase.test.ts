@@ -203,4 +203,27 @@ describe("submitBatch", () => {
 
     expect(sidecar.targets[0]!.releaseByUrlOnFailure).toBe(expectedRelease);
   });
+
+  it("leaves a recover target (no activation policy) re-submittable: no release, preserve only when ready", async () => {
+    const batch = fakeBatch();
+    // recover-shaped: no freshActivation. Failed source → no release, no snapshot.
+    const failed = await submitBatch([summarizeTarget()], {
+      model: "m",
+      batch: batch as any,
+      putObject: noopPut(),
+      saveSidecar: noopSave(),
+    });
+    expect(failed.sidecar.targets[0]!.releaseByUrlOnFailure).toBeUndefined();
+    expect(failed.sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
+
+    // a ready recover source still rolls forward on failure but never releases by-url
+    const ready = await submitBatch([summarizeTarget({ manifest: { status: "ready", tldr: "keep" } })], {
+      model: "m",
+      batch: batch as any,
+      putObject: noopPut(),
+      saveSidecar: noopSave(),
+    });
+    expect(ready.sidecar.targets[0]!.releaseByUrlOnFailure).toBeUndefined();
+    expect(ready.sidecar.targets[0]!.preserveReadyManifest?.status).toBe("ready");
+  });
 });

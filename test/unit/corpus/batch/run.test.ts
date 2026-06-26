@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { runBatch, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
+import { runBatch, runBatchPipeline, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
+import { activateRecoverTargets } from "../../../../scripts/corpus-lib/batch/activation-phase";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
-import type { Sidecar } from "../../../../scripts/corpus-lib/batch/types";
+import type { ExtractedTarget, Sidecar } from "../../../../scripts/corpus-lib/batch/types";
 
 const NOW = "2026-06-18T12:00:00.000Z";
 
@@ -59,7 +60,16 @@ function harness(seedManifests: Record<string, Manifest>) {
     put: vi.fn(async (k: string, b: Uint8Array | string) => {
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
     }),
+    putIfAbsent: vi.fn(async (k: string, b: Uint8Array | string) => {
+      if (store.has(k)) return false;
+      store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
+      return true;
+    }),
     head: vi.fn(async (k: string) => store.has(k)),
+    delete: vi.fn(async (k: string) => {
+      store.delete(k);
+    }),
+    listKeys: vi.fn(async () => [...store.keys()]),
   };
   const vectorize = {
     upsert: vi.fn(async () => {}),
@@ -234,5 +244,252 @@ describe("runBatch — resume", () => {
     });
     await runBatch([row("rd_a")], h.deps);
     expect(calls.indexOf("save:pending")).toBeLessThan(calls.indexOf("create"));
+  });
+});
+
+describe("runBatch — eager recover claim", () => {
+  it("claims by-url and writes the pending manifest before creating the batch", async () => {
+    const h = harness({ rd_a: manifest("rd_a") }); // failed, no by-url
+    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
+
+    let atCreate: { byUrl?: string; manifest?: string } = {};
+    const origCreate = h.batch.create;
+    h.batch.create = vi.fn(async (r: any) => {
+      atCreate = {
+        byUrl: h.store.get(byUrlKey),
+        manifest: h.store.get("readings/kp-rd_a/manifest.json"),
+      };
+      return origCreate(r);
+    });
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    // by-url claimed == {id, key_prefix} and the pending manifest exists BEFORE create
+    expect(atCreate.byUrl).toBeDefined();
+    expect(JSON.parse(atCreate.byUrl!)).toEqual({ id: "rd_a", key_prefix: "readings/kp-rd_a" });
+    expect(JSON.parse(atCreate.manifest!).status).toBe("pending");
+
+    // final manifest lands ready
+    expect(result.report.filter((r) => r.status === "ready")).toHaveLength(1);
+    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!)).status).toBe("ready");
+  });
+
+  it("keeps the by-url claim on batch failure so the failed recover URL stays re-submittable", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+
+    const result = await runBatch([row("rd_a")], h.deps);
+    expect(result.report.filter((r) => r.status === "failed")).toHaveLength(1);
+
+    const final = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!));
+    expect(final.status).toBe("failed");
+    // by-id present (no dangling row); by-url kept (contrast fresh ingest's release)
+    expect(h.store.has("index/by-id/rd_a")).toBe(true);
+    expect(h.store.has(byUrlKey)).toBe(true);
+    expect(h.r2.delete).not.toHaveBeenCalledWith(byUrlKey);
+    // the kept pointer still resolves the failed reading as owner
+    expect(JSON.parse(h.store.get(byUrlKey)!)).toEqual({ id: "rd_a", key_prefix: "readings/kp-rd_a" });
+    // failed list row present
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("failed");
+  });
+
+  it("rolls a ready reading forward on failure (defensive: stale in-memory manifest invariant)", async () => {
+    // corpus-audit never routes ready rows into recover, so this injects a ready
+    // target.manifest straight at the runBatch/activateRecoverTargets seam. The
+    // invariant: activation must flip only the live R2 manifest, never the
+    // in-memory snapshot submit-phase reads to compute preserveReadyManifest.
+    const h = harness({});
+    const kp = "readings/kp-rd_a";
+    const ready = manifest("rd_a", { status: "ready", title: "Ready", tldr: "keep me" });
+    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
+    h.store.set(`index/by-url/${ready.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
+
+    const injected: ExtractedTarget = {
+      target: {
+        readingId: "rd_a",
+        url: ready.url,
+        urlHash: ready.url_hash,
+        keyPrefix: kp,
+        createdAt: ready.created_at,
+        manifest: ready,
+      },
+      markdown: "# rd_a\n\nbody",
+    };
+
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+
+    await runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
+      ...h.deps,
+      activateExtracted: (targets) =>
+        activateRecoverTargets(targets, {
+          r2: h.deps.r2,
+          model: h.deps.model,
+          now: h.deps.now,
+          saveSidecar: h.deps.saveSidecar,
+        }),
+    });
+
+    // rolled FORWARD to ready (preserveReadyManifest), not down to failed
+    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(final.status).toBe("ready");
+    expect(final.tldr).toBe("keep me");
+    expect(final.active_attempt).toBeUndefined();
+  });
+
+  it("activates one target and skips another (foreign-owned) in the same run", async () => {
+    const h = harness({ rd_a: manifest("rd_a"), rd_b: manifest("rd_b") });
+    // rd_b's by-url slot is owned by a different reading → activation skips it,
+    // and only rd_a is summarized + flipped to ready.
+    h.store.set(`index/by-url/${manifest("rd_b").url_hash}`, JSON.stringify({ id: "rd_other", key_prefix: "readings/kp-other" }));
+
+    const result = await runBatch([row("rd_a"), row("rd_b")], h.deps);
+
+    expect(result.report.find((r) => r.id === "rd_b")).toMatchObject({
+      status: "skipped",
+      reason: "by-url owned by a different reading",
+    });
+    expect(result.report.filter((r) => r.status === "ready").map((r) => r.id)).toEqual(["rd_a"]);
+    // only the activated target was submitted, and rd_b stays untouched (still failed)
+    expect(h.batch.create.mock.calls[0]![0]).toHaveLength(1);
+    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!)).status).toBe("ready");
+    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_b/manifest.json")!)).status).toBe("failed");
+    // rd_b never clobbered rd_other's by-url slot
+    expect(JSON.parse(h.store.get(`index/by-url/${manifest("rd_b").url_hash}`)!).id).toBe("rd_other");
+  });
+
+  it("rejects an oversized payload before any by-url claim or batch create", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
+
+    await expect(runBatch([row("rd_a")], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(/re-run with --limit/);
+
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.store.has(byUrlKey)).toBe(false);
+    expect(h.batch.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("runBatch — recover resume", () => {
+  it("resumes a post-create sidecar and flips its eager-claim pending to ready (no re-create)", async () => {
+    const h = harness({});
+    const kp = "readings/kp-rd_a";
+    const urlHash = "a".repeat(64);
+    const pending: Manifest = ManifestSchema.parse({
+      id: "rd_a",
+      url: "https://example.com/rd_a",
+      url_hash: urlHash,
+      source_type: "url",
+      status: "pending",
+      active_attempt: { id: "batch_rd_a", trigger: "reprocess", status: "running", stage: "summarize", started_at: NOW },
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "b".repeat(64),
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: NOW,
+    });
+    h.store.set(`${kp}/manifest.json`, JSON.stringify(pending));
+    h.store.set(`index/by-url/${urlHash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
+    h.store.set("index/by-id/rd_a", JSON.stringify({ id: "rd_a", key_prefix: kp }));
+
+    // A second eager-claim pending that is NOT in this batch's sidecar. Resume must
+    // key off the sidecar's targets, not blindly sweep every pending manifest — so
+    // this one must be left untouched (proves the rd_a flip is sidecar-driven).
+    const otherKp = "readings/kp-rd_other";
+    const otherPending: Manifest = ManifestSchema.parse({
+      ...pending,
+      id: "rd_other",
+      url: "https://example.com/rd_other",
+      url_hash: "c".repeat(64),
+      active_attempt: { id: "batch_rd_other", trigger: "reprocess", status: "running", stage: "summarize", started_at: NOW },
+    });
+    h.store.set(`${otherKp}/manifest.json`, JSON.stringify(otherPending));
+    h.store.set(
+      "index/list.json",
+      JSON.stringify({
+        version: 1,
+        items: [
+          { id: "rd_a", key_prefix: kp, url: pending.url, status: "pending", created_at: pending.created_at, updated_at: NOW },
+          { id: "rd_other", key_prefix: otherKp, url: otherPending.url, status: "pending", created_at: pending.created_at, updated_at: NOW },
+        ],
+      }),
+    );
+
+    const sc: Sidecar = {
+      batchId: "msgbatch_run",
+      model: "claude-opus-4-8",
+      processingStatus: "in_progress",
+      resultsUrl: null,
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: kp,
+          id: "rd_a",
+          url: pending.url,
+          urlHash,
+          createdAt: pending.created_at,
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 7,
+        },
+      ],
+    };
+    h.setSidecar(sc);
+    h.deps.loadSidecar = vi.fn(async () => sc);
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(result.resumed).toBe(true);
+    expect(h.batch.create).not.toHaveBeenCalled();
+    // the sidecar's specific eager-claim pending (rd_a, batch_rd_a) flips to ready
+    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(final.status).toBe("ready");
+    // the unrelated pending NOT in the sidecar is left untouched (no blind sweep)
+    const other = ManifestSchema.parse(JSON.parse(h.store.get(`${otherKp}/manifest.json`)!));
+    expect(other.status).toBe("pending");
+    expect(other.active_attempt?.id).toBe("batch_rd_other");
+    // by-url / by-id stay consistent for the flipped reading
+    expect(JSON.parse(h.store.get(`index/by-url/${urlHash}`)!)).toEqual({ id: "rd_a", key_prefix: kp });
+    expect(JSON.parse(h.store.get("index/by-id/rd_a")!)).toEqual({ id: "rd_a", key_prefix: kp });
+  });
+
+  it("aborts on an activating-window sidecar, then re-runs cleanly to a single claim", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
+
+    // activating-window crash: a sidecar with no batch id
+    h.deps.loadSidecar = vi.fn(async () => ({
+      batchId: "",
+      model: "m",
+      processingStatus: "activating",
+      resultsUrl: null,
+      targets: [],
+    }));
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar with no batch id/i);
+    expect(h.batch.create).not.toHaveBeenCalled();
+
+    // operator clears the sidecar and re-runs — idempotent, single claim + list row
+    h.deps.loadSidecar = vi.fn(async () => null);
+    await runBatch([row("rd_a")], h.deps);
+
+    expect([...h.store.keys()].filter((k) => k.startsWith("index/by-url/"))).toHaveLength(1);
+    expect(h.store.has(byUrlKey)).toBe(true);
+    const index = JSON.parse(h.store.get("index/list.json")!);
+    expect(index.items.filter((i: any) => i.id === "rd_a")).toHaveLength(1);
   });
 });

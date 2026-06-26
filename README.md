@@ -212,10 +212,12 @@ every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
 through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
-Both default to a dry run; pass `--execute` to act. The recover `--batch` path
-also requires `--sole-writer` to execute because recover batch parity with fresh
-eager claims is not implemented yet, so confirm the realtime writer is
-paused/drained first (`npm run corpus-recover -- --batch --execute --sole-writer`). To bulk-import a
+Both default to a dry run; pass `--execute` to act. The recover `--batch` path now
+eagerly claims each by-url slot before submit (a failed→pending flip), matching
+fresh ingest, but still requires `--sole-writer` to execute: the eager claim is
+defense-in-depth, not a full replacement for pausing the realtime writer, so
+confirm it is paused/drained first
+(`npm run corpus-recover -- --batch --execute --sole-writer`). To bulk-import a
 *fresh* markdown directory (not yet in the corpus) through the same Message Batch
 path, use `npm run corpus-ingest -- --dir <path>` (see Bulk markdown ingest above).
 
@@ -346,8 +348,10 @@ releases that eager claim only when the by-url pointer still exactly matches the
 failed target. The "sole writer" condition is enforced, not just assumed:
 `corpus-ingest --execute` (and likewise `corpus-recover --batch --execute`)
 **refuses to submit unless you also pass `--sole-writer`**, confirming the
-realtime writer is paused/drained while recover parity remains incomplete; an
-acknowledged run prints a loud banner before any submit,
+realtime writer is paused/drained; both batch paths now eagerly claim by-url slots
+(recover via a failed→pending flip that keeps its claim on failure so the URL
+stays re-submittable), but that claim is defense-in-depth, so the flag stays
+required; an acknowledged run prints a loud banner before any submit,
 and dry-runs (which submit nothing) never require it. The in-flight batch is recorded in a
 sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
 instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
