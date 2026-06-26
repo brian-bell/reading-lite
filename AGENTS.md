@@ -321,7 +321,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   batch paths now eagerly claim activated by-url slots (fresh releases its own
   failed claims; recover keeps a failed claim so it stays re-submittable), but the
   eager claim is defense-in-depth, not a replacement: `--sole-writer` remains
-  required pending the `reconcilePending` mechanism (#72) that would let an offline
-  run safely supersede an in-flight realtime attempt.
+  required whenever offline batch tools may overlap the realtime writer. The old
+  home-server migration plan was dropped in favor of a home-server rewrite.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

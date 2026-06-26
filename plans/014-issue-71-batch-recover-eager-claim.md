@@ -20,9 +20,9 @@ claim must be **idempotent for already-owned readings**, and resume must leave
 
 ## Non-goals (STOP conditions)
 
-- Do **not** drop/relax the `--sole-writer` requirement (depends on #72 + a
-  deliberate decision; eager claim is defense-in-depth).
-- Do **not** implement #72 `reconcilePending` or touch `plans/home-server-migration.md`.
+- Do **not** drop/relax the `--sole-writer` requirement (eager claim is
+  defense-in-depth; overlapping writers remain out of scope).
+- Do **not** implement the old migration-only `reconcilePending` mechanism.
 - Do **not** change the fresh path's observable behavior.
 - Eager claims happen only under `--execute` (inside `runBatch`); the dry-run still
   writes nothing.
@@ -152,8 +152,8 @@ filtering, and all-skipped early-return. No change to
 - `CLAUDE.md` `corpus-recover --batch` gotcha: eager claim now applies to recover
   (really a failed→pending flip; idempotent for already-owned; failed recover URLs
   keep their claim and stay re-submittable by both recover and online reprocess;
-  `--sole-writer` still required pending #72; transient pending visibility
-  mid-batch).
+  `--sole-writer` still required while batch and realtime writers can overlap;
+  transient pending visibility mid-batch).
 - Refine the `types.ts:80-85` `releaseByUrlOnFailure` comment; update `README.md` if
   it documents the race.
 
@@ -232,7 +232,7 @@ and resolves as owner.
   tested.
 - Re-claim of an own `batch_<id>` pending is safe **only** under `--sole-writer` —
   stated; the one place correctness rests on operator discipline, deliberately out
-  of scope (depends on #72).
+  of scope.
 
 ## Review record
 
@@ -245,4 +245,4 @@ and resolves as owner.
   reframed as a seam-level defensive guard; skip `reason` strings pinned.
 - Residual gap (the −1): activating-window re-claim safety rests on `--sole-writer`
   being held (operator discipline, not a code mechanism) — within the documented
-  contract; the mechanical fix is #72, out of scope here.
+  contract; the old migration-only mechanical fix is out of scope here.
