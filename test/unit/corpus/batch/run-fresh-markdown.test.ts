@@ -274,14 +274,15 @@ describe("runFreshMarkdownBatch — idempotency", () => {
   });
 
   it("re-ingests a prior failed fresh ingest in place on rerun instead of duplicating it", async () => {
-    // The retry-after-failure flow: a failed fresh ingest leaves a by-id pointer
-    // + list row but NO by-url pointer, so a rerun's getByUrl is null. Without
-    // the list-index cold lookup the rerun would mint a SECOND reading.
+    // The retry-after-failure flow after eager activation: a failed fresh ingest
+    // leaves a failed manifest plus the eager by-url claim. A rerun must reuse
+    // that failed owner in place instead of minting a second reading.
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     const kp = "readings/2026/06/22T120000Z-rd_FRESH0";
 
-    // First run: force the batch to error this item → failed manifest, by-id, no by-url.
+    // First run: force the batch to error this item → failed manifest while the
+    // eager by-url claim remains for a later release slice.
     h.batch.results = vi.fn(async () =>
       ((h.getSidecar() as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,

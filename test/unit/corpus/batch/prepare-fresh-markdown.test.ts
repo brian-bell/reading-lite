@@ -242,8 +242,8 @@ describe("prepareFreshMarkdown — existing owner", () => {
   });
 
   it("does not run a cold repair scan for an occupied damaged pointer in this slice", async () => {
-    // A damaged by-url pointer must trigger the Worker's deepScan repair so a
-    // stale index can't hide the real owner and cause a duplicate mint.
+    // A damaged by-url pointer stays occupied for this slice. Fresh ingest must
+    // skip it instead of scanning for a repair target and claiming over it.
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
@@ -256,8 +256,8 @@ describe("prepareFreshMarkdown — existing owner", () => {
   it("skips a structurally-damaged by-url pointer instead of claiming over it", async () => {
     // The by-url object exists but is missing id/key_prefix (stale/manual schema
     // damage). It must NOT read as unclaimed: that would take the no-pointer path
-    // with forceScan:false and, against a stale index, mint a duplicate. It must
-    // route to the forced-scan repair and re-ingest the real cold owner in place.
+    // with forceScan:false and, against a stale index, mint a duplicate. This
+    // slice reports it as occupied-needs-repair instead of claiming over it.
     const a = article();
     const d = deps({
       byUrl: { [hex(a.sourceUrl!)]: "damaged" },
@@ -339,9 +339,9 @@ describe("prepareFreshMarkdown — existing owner", () => {
 
 describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", () => {
   it("re-ingests a failed reading found only via the list index in place, not a duplicate", async () => {
-    // A prior failed fresh ingest leaves a by-id pointer + list row but NO
-    // by-url pointer (failed URLs stay re-submittable). A rerun therefore sees
-    // getByUrl=null; without the cold lookup it would mint a SECOND reading.
+    // A prior legacy failed ingest may have a by-id pointer + list row but no
+    // by-url pointer. A rerun therefore sees getByUrl=null; without the cold
+    // lookup it would mint a SECOND reading.
     const a = article();
     const d = deps({
       cold: {

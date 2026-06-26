@@ -212,10 +212,10 @@ every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
 through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
-Both default to a dry run; pass `--execute` to act. The `--batch` path also
-requires `--sole-writer` to execute — it leaves each by-url slot unclaimed for
-the in-flight window, so confirm the realtime writer is paused/drained first
-(`npm run corpus-recover -- --batch --execute --sole-writer`). To bulk-import a
+Both default to a dry run; pass `--execute` to act. The recover `--batch` path
+also requires `--sole-writer` to execute because recover batch parity with fresh
+eager claims is not implemented yet, so confirm the realtime writer is
+paused/drained first (`npm run corpus-recover -- --batch --execute --sole-writer`). To bulk-import a
 *fresh* markdown directory (not yet in the corpus) through the same Message Batch
 path, use `npm run corpus-ingest -- --dir <path>` (see Bulk markdown ingest above).
 
@@ -327,25 +327,24 @@ rules as the Worker's `ReadingClaim`: a pointer only counts as the owner when it
 manifest actually matches (id + url + url_hash), so ready owners and pending
 owners are skipped while failed owners re-ingest in place; a fresh pointer whose
 manifest hasn't landed yet is treated as still-initializing and skipped (a
-realtime submit may be in flight); and unclaimed or damaged pointers mint a
-brand-new reading
-(never reusing a damaged id, so a cross-wired pointer can't overwrite an unrelated
-reading). When no by-url pointer exists, it first runs the same cold-legacy
+realtime submit may be in flight); unclaimed URLs mint a brand-new reading; and
+damaged or mismatched by-url pointers are skipped for operator repair rather than
+claimed over. When no by-url pointer exists, it first runs the same cold-legacy
 lookup the Worker does (`findManifestByUrl` over `index/list.json`): a prior
-failed fresh ingest leaves a by-id pointer + list row but no by-url pointer, so a
-rerun finds that failed reading there and re-ingests it in place instead of
+legacy failed ingest may have a by-id pointer + list row but no by-url pointer, so
+a rerun finds that failed reading there and re-ingests it in place instead of
 minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
-rather than risk racing the worker. Because the by-url pointer is only written on
-success, the slot stays unclaimed during the in-flight batch window — a
-concurrent realtime submit of the same URL could duplicate it, so this is
-intended for an operator backfill where the script is the sole writer. That
-"sole writer" condition is enforced, not just assumed: `corpus-ingest --execute`
-(and likewise `corpus-recover --batch --execute`) **refuses to submit unless you
-also pass `--sole-writer`**, confirming the realtime writer is paused/drained; an
-acknowledged run prints a loud banner before any submit, and dry-runs (which
-submit nothing) never require it. The in-flight batch is recorded in a
+rather than risk racing the worker. Fresh ingest eagerly claims activated by-url
+slots before creating the Message Batch; if the batch later fails, releasing that
+eager claim is still a follow-up slice. The "sole writer" condition is enforced,
+not just assumed: `corpus-ingest --execute` (and likewise
+`corpus-recover --batch --execute`) **refuses to submit unless you also pass
+`--sole-writer`**, confirming the realtime writer is paused/drained while recover
+parity and failure-release work remain incomplete; an acknowledged run prints a
+loud banner before any submit, and dry-runs (which submit nothing) never require
+it. The in-flight batch is recorded in a
 sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
 instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
 `CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`

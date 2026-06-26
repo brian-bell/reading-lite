@@ -38,11 +38,11 @@ interface OwnerRow {
 }
 
 // null = no object (unclaimed). "damaged" = object present but unusable (non-JSON
-// or missing id/key_prefix) — surfaced distinctly so the caller routes it to the
-// forced-scan repair path rather than treating a corrupt claim as unclaimed and
-// risking a duplicate mint. The Worker's strict ByUrlPointerSchema.parse throws
-// on the same input; for an offline bulk run we degrade to "damaged" so one bad
-// pointer repairs in place instead of aborting the whole ingest.
+// or missing id/key_prefix) — surfaced distinctly so fresh ingest can skip the
+// occupied slot rather than treating a corrupt claim as unclaimed and risking a
+// duplicate mint. The Worker's strict ByUrlPointerSchema.parse throws on the same
+// input; for an offline bulk run we degrade to "damaged" so one bad pointer can
+// be reported without aborting the whole ingest.
 export async function getByUrl(r2: R2Getter, urlHash: string): Promise<ByUrlLookup | null> {
   const raw = await r2.get(`index/by-url/${urlHash}`);
   if (!raw) return null;
@@ -79,24 +79,25 @@ async function safeReadManifest(r2: R2Getter, keyPrefix: string): Promise<Manife
 
 // The cold-legacy lookup, mirroring the Worker's findManifestByUrl: resolve a
 // URL's owner through index/list.json when no live by-url pointer exists. A
-// failed fresh ingest leaves a by-id pointer + list row but no by-url pointer,
-// so this is how a rerun finds it. Ranks same-URL rows by ownership then
+// prior legacy failed ingest may have a by-id pointer + list row but no by-url
+// pointer, so this is how a rerun finds it. Ranks same-URL rows by ownership then
 // recency and returns the first whose manifest genuinely matches the URL. The
 // verified manifest is the source of truth for the owner id, not the list row:
 // a stale/cross-wired row can carry a different id than the manifest its
 // key_prefix points at, and re-ingesting under the row id would overwrite that
 // manifest under the wrong reading id.
 //
-// The scan/merge mirrors the Worker's findManifestByUrl exactly. It rebuilds
-// candidate rows from a full manifest scan when ANY of:
+// The scan/merge helper remains available for callers that need Worker-parity
+// repair behavior. It rebuilds candidate rows from a full manifest scan when ANY
+// of:
 //   - the index is missing/unparseable (a deleted/corrupted index would
 //     otherwise read an owned URL as unclaimed → duplicate mint + by-url
 //     overwrite);
 //   - the parsed index already holds a row for this URL (stale same-URL
 //     reconciliation: the indexed row may point at a missing/mismatched manifest
 //     while the real owner has fallen out of the index);
-//   - `forceScan` is set (the Worker's `deepScan: true` damaged-pointer repair:
-//     a stale index that LOST the owner's row still needs the scan).
+//   - `forceScan` is set by a repair caller that needs a full scan even when the
+//     index looks parseable.
 // A brand-new URL with a parseable index and no matching row scans nothing, so a
 // first-time submit never pays for a full bucket scan (matching the Worker).
 // Scanned rows win per key_prefix — they carry the freshly read manifest.

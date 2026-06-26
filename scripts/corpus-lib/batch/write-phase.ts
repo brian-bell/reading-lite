@@ -29,8 +29,9 @@ export interface WriteReportRow {
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
-//              ready snapshot) + index item, and NO by-url pointer (failed URLs
-//              stay re-submittable).
+//              ready snapshot) + index item. This phase does not create a
+//              by-url pointer for failures, but it also does not release an
+//              eager claim that fresh activation already wrote.
 // index/list.json is merged once at the end (read-modify-write). The script is
 // effectively the sole writer during a backfill.
 export async function writeResults(

@@ -84,9 +84,9 @@ deduped by source URL (largest wins) and any over ${Math.round(
   --dir <path>     Directory of .md files to ingest (required).
   --execute        Actually submit + write (otherwise prints the plan).
   --sole-writer    Required with --execute: assert the realtime writer is
-                   paused/drained. This batch leaves each by-url slot unclaimed
-                   for the in-flight window, so a live writer would race it
-                   (duplicate compute/emails, pointer thrash). Run refuses without it.
+                   paused/drained. Fresh ingest eagerly claims activated by-url
+                   slots, but recover parity and failure-release slices are not
+                   done yet. Run refuses without it.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.

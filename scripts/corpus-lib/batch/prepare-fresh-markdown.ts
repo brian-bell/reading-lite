@@ -19,9 +19,9 @@ export interface ByUrlPointer {
 
 // A by-url read can be: a usable pointer, `null` (object absent → unclaimed), or
 // "damaged" (object present but non-JSON or missing id/key_prefix). "damaged" is
-// kept distinct from null so the caller can route it to the forced-scan repair
-// path instead of silently treating a corrupt claim as an unclaimed URL — the
-// Worker's strict ByUrlPointerSchema.parse throws rather than read it as absent.
+// kept distinct from null so this fresh-ingest slice can skip occupied slots
+// instead of silently treating a corrupt claim as unclaimed. The Worker's strict
+// ByUrlPointerSchema.parse throws rather than read it as absent.
 export type ByUrlLookup = ByUrlPointer | "damaged";
 
 // The bulk fresh-markdown front-end's view of the corpus: it replaces the
@@ -35,12 +35,12 @@ export interface FreshMarkdownDeps {
   // The cold-legacy lookup: resolve a URL's owner through index/list.json when
   // no live by-url pointer exists, mirroring the Worker's findManifestByUrl.
   // Returns the ranked owner (ready > pending > failed, then recency) or null.
-  // Load-bearing for retry-after-failure: a failed fresh ingest leaves a by-id
-  // pointer + list row but NO by-url pointer, so a rerun finds the failed
-  // reading here and re-ingests it in place instead of minting a duplicate.
-  // `forceScan` mirrors the Worker's `deepScan: true` damaged-pointer repair:
-  // scan the bucket even when the index parses, so a stale index can't hide the
-  // real owner. Left off for plain cold lookups to avoid a per-submit scan.
+  // Load-bearing for legacy retry-after-failure: a prior failed ingest may have
+  // left a by-id pointer + list row but no by-url pointer, so a rerun finds the
+  // failed reading here and re-ingests it in place instead of minting a duplicate.
+  // `forceScan` remains in the lower-level helper for Worker-parity repair
+  // callers, but this fresh-ingest slice calls the cold lookup only for absent
+  // by-url pointers and skips occupied/damaged slots for later reconciliation.
   findByUrlInList(
     url: string,
     urlHash: string,
@@ -160,9 +160,9 @@ export async function prepareFreshMarkdown(
 
     // No live by-url owner.
     // Run the cold-legacy lookup before minting (mirrors the Worker's
-    // resolveOwner cold path): a prior failed fresh ingest writes a by-id
-    // pointer + list row but deliberately no by-url pointer, so a retry must
-    // re-ingest THAT failed reading in place rather than mint a second one.
+    // resolveOwner cold path): a prior legacy failed ingest may have a by-id
+    // pointer + list row but no by-url pointer, so a retry must re-ingest THAT
+    // failed reading in place rather than mint a second one.
     // Resolve through index/list.json by the same ready>pending>failed
     // ownership rank the Worker uses.
     const cold = await deps.findByUrlInList(url, urlHash, { forceScan: false });

@@ -154,7 +154,7 @@ describe("writeResults — success path", () => {
 });
 
 describe("writeResults — failure path", () => {
-  it("writes a retryable failed manifest and NO by-url pointer when there is no prior ready snapshot", async () => {
+  it("does not create a by-url pointer for a non-eager failed batch result", async () => {
     const r2 = fakeR2();
     await writeResults(sidecar([sidecarTarget()]), [errored("rd_a")], deps(r2, fakeVectorize()));
     const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
