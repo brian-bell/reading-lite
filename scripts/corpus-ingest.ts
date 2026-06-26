@@ -9,6 +9,7 @@ import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidec
 import { prepareFreshMarkdown, tallyDispositions } from "./corpus-lib/batch/prepare-fresh-markdown";
 import { r2ReadDeps } from "./corpus-lib/batch/r2-reads";
 import { runFreshMarkdownBatch } from "./corpus-lib/batch/run-fresh-markdown";
+import { enforceSoleWriter } from "./corpus-lib/sole-writer";
 import { mintReadingId } from "../src/services";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -18,6 +19,7 @@ const DEFAULT_SIDECAR = "./corpus-ingest.batch.json";
 interface Args {
   dir: string;
   execute: boolean;
+  soleWriter: boolean;
   limit: number;
   bucket?: string;
   sidecar: string;
@@ -28,6 +30,7 @@ function parseCliArgs(): Args {
     options: {
       dir: { type: "string" },
       execute: { type: "boolean", default: false },
+      "sole-writer": { type: "boolean", default: false },
       limit: { type: "string" },
       bucket: { type: "string" },
       sidecar: { type: "string" },
@@ -46,6 +49,7 @@ function parseCliArgs(): Args {
   return {
     dir: values.dir,
     execute: values.execute === true,
+    soleWriter: values["sole-writer"] === true,
     limit: parsePositiveInt(values.limit),
     ...(values.bucket === undefined ? {} : { bucket: values.bucket }),
     sidecar: values.sidecar ?? DEFAULT_SIDECAR,
@@ -79,6 +83,10 @@ deduped by source URL (largest wins) and any over ${Math.round(
 
   --dir <path>     Directory of .md files to ingest (required).
   --execute        Actually submit + write (otherwise prints the plan).
+  --sole-writer    Required with --execute: assert the realtime writer is
+                   paused/drained. This batch leaves each by-url slot unclaimed
+                   for the in-flight window, so a live writer would race it
+                   (duplicate compute/emails, pointer thrash). Run refuses without it.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
@@ -100,6 +108,17 @@ plan (no ready/pending skips shown) when they're absent.`);
 
 async function main(): Promise<void> {
   const args = parseCliArgs();
+
+  // Sole-writer preflight (issue #68): refuse a real submit unless the operator
+  // asserts the realtime writer is paused/drained. Runs before any dir/cred/batch
+  // work so an unacknowledged --execute fails loudly and immediately. A resume
+  // (live sidecar) is gated too — by-url is only claimed on the final success
+  // write, so the slot stays unclaimed through the resume and the race is live.
+  enforceSoleWriter(
+    { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-ingest" },
+    { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
+  );
+
   const fetchFn = globalThis.fetch;
 
   // Load the in-flight batch marker BEFORE touching --dir. The sidecar already
