@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { submitBatch } from "../../../../scripts/corpus-lib/batch/submit-phase";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
-import type { SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
+import type { BatchActivationPolicy, SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
 import type { Manifest } from "../../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
 
@@ -21,7 +21,14 @@ function manifest(over: Partial<Manifest> = {}): Manifest {
   } as Manifest;
 }
 
-function summarizeTarget(over: { manifest?: Partial<Manifest>; fresh?: ExtractedContent; similar?: any[] } = {}): SummarizeTarget {
+function summarizeTarget(
+  over: {
+    manifest?: Partial<Manifest>;
+    fresh?: ExtractedContent;
+    freshActivation?: BatchActivationPolicy;
+    similar?: any[];
+  } = {},
+): SummarizeTarget {
   const m = manifest(over.manifest);
   return {
     extracted: {
@@ -36,6 +43,7 @@ function summarizeTarget(over: { manifest?: Partial<Manifest>; fresh?: Extracted
       markdown: "# Article\n\nbody",
       title: "Article",
       ...(over.fresh ? { fresh: over.fresh } : {}),
+      ...(over.freshActivation ? { freshActivation: over.freshActivation } : {}),
     },
     similar: over.similar ?? [],
     queryEmbedTokens: 12,
@@ -160,5 +168,39 @@ describe("submitBatch", () => {
     const batch = fakeBatch();
     const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() });
     expect(sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
+  });
+
+  it.each([
+    { kind: "create-new" as const, expectedRelease: true },
+    {
+      kind: "create-existing-failed" as const,
+      expectedRelease: true,
+      expected: {
+        id: "rd_a",
+        keyPrefix: "readings/2026/01/01T000000Z-rd_a",
+        url: "https://example.com/a",
+        urlHash: "a".repeat(64),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+    {
+      kind: "verify-existing-failed" as const,
+      expectedRelease: undefined,
+      expected: {
+        id: "rd_a",
+        keyPrefix: "readings/2026/01/01T000000Z-rd_a",
+        url: "https://example.com/a",
+        urlHash: "a".repeat(64),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+  ])("marks by-url release on failure only when activation creates the claim: $kind", async ({ expectedRelease, ...policy }) => {
+    const batch = fakeBatch();
+    const { sidecar } = await submitBatch(
+      [summarizeTarget({ freshActivation: policy as BatchActivationPolicy })],
+      { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() },
+    );
+
+    expect(sidecar.targets[0]!.releaseByUrlOnFailure).toBe(expectedRelease);
   });
 });
