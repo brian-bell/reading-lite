@@ -108,9 +108,14 @@ deleting and delete only when the parsed pointer equals:
 { id: target.id, key_prefix: target.keyPrefix }
 ```
 
-If the pointer is absent, malformed, unreadable, or points elsewhere, do not
-delete it. A malformed or unreadable pointer is an operator-repair case; deleting
-it blindly risks releasing or damaging a concurrent owner.
+If the pointer is absent, malformed, missing `id` / `key_prefix`, or points
+elsewhere, do not delete it. A damaged pointer is an operator-repair case;
+deleting it blindly risks releasing or damaging a concurrent owner.
+
+Do not swallow R2 read failures. `R2Client.get` returns `null` only for 404 and
+throws for non-OK reads; a transient permission/network/service error should
+abort `writeResults` so the operator can retry rather than silently leaving the
+by-url slot pinned after a reported-successful write phase.
 
 This is a best-effort race reduction, not a perfect CAS delete. The residual
 race is acceptable under the repo's existing last-writer-wins stance: a pointer
@@ -150,10 +155,10 @@ Suggested behavior:
    `index/by-url/${target.urlHash}` key.
 5. Otherwise return.
 
-Parsing should be intentionally conservative. A malformed pointer should not
-crash the whole write phase unless the existing project pattern strongly favors
-surfacing damaged stored state. For this slice, prefer "do not delete when you
-cannot prove ownership" and optionally log a line through `deps.log`.
+Parsing should be intentionally conservative. Catch JSON parse failures and
+structural pointer failures, do not delete, and optionally log a line through
+`deps.log`. Do not catch `deps.r2.get(...)` failures; those should bubble so the
+write phase fails loudly and can be retried.
 
 Use the existing serialized pointer shape from `pointers.ts`; do not invent a
 new by-url schema or write tombstones.
@@ -253,12 +258,18 @@ npm run test:quiet -- test/unit/corpus/batch/write-phase.test.ts
 
 RED:
 
-- Add `does not release a by-url pointer that no longer points at the failed
-  batch target`.
-- Seed the by-url pointer with `{ id: "rd_other", key_prefix: "readings/other" }`.
-- Fail `rd_a`.
+- Add `does not release a by-url pointer that no longer points exactly at the
+  failed batch target`.
+- Make this table-driven, because both fields are part of ownership. Cover:
+  - same `id`, different `key_prefix`;
+  - different `id`, same `key_prefix`;
+  - different `id`, different `key_prefix`.
+- Fail `rd_a` for each case.
 - Assert the foreign pointer is unchanged and the failed manifest/by-id/list
-  writes still happened.
+  writes still happened. The same-id/different-key-prefix case is especially
+  important: a newer online reprocess may reuse the reading id while moving
+  ownership to a new key prefix, and a stale batch failure must not delete that
+  newer owner.
 
 GREEN:
 
@@ -270,7 +281,35 @@ VERIFY:
 npm run test:quiet -- test/unit/corpus/batch/write-phase.test.ts
 ```
 
-### Cycle 4: preserved-ready rollback keeps URL ownership
+### Cycle 4: damaged pointers are not released, read errors fail loudly
+
+RED:
+
+- Add `does not release a malformed by-url pointer when a batch result fails`.
+- Seed `index/by-url/{hash}` with malformed JSON, or with valid JSON missing
+  `id` / `key_prefix`.
+- Fail `rd_a`.
+- Assert:
+  - failed manifest is written;
+  - by-id pointer is written;
+  - list row is written;
+  - the damaged by-url object is still present;
+  - `r2.delete` was not called.
+- Add a narrow subcase or separate test for an R2 read error on the by-url key:
+  fake `r2.get("index/by-url/...")` rejects, then assert `writeResults` rejects.
+
+GREEN:
+
+- Catch only parse/schema failures inside `releaseByUrlIfOwned`.
+- Let `deps.r2.get(...)` errors bubble.
+
+VERIFY:
+
+```sh
+npm run test:quiet -- test/unit/corpus/batch/write-phase.test.ts
+```
+
+### Cycle 5: preserved-ready rollback keeps URL ownership
 
 RED:
 
@@ -294,18 +333,26 @@ VERIFY:
 npm run test:quiet -- test/unit/corpus/batch/write-phase.test.ts
 ```
 
-### Cycle 5: end-to-end batch failure then online resubmit
+### Cycle 6: batch write failure then online resubmit
 
 RED:
 
 - Add an integration test in `test/integration/readings.test.ts` near the
   failed-owner/reprocess cases:
   `reprocesses in place after a failed fresh batch releases its by-url claim`.
-- Arrange R2 state as if issue #69 activation had happened and issue #70 write
-  phase completed:
+- Arrange the initial R2 state as if issue #69 activation had happened:
+  - eager by-url pointer for the target;
+  - pending manifest for `id` at `keyPrefix`;
+  - by-id pointer for `id`;
+  - pending list row.
+- In the test, run `writeResults(...)` with an errored result against the same
+  Miniflare R2 bucket through a tiny test-only `R2Client` adapter (`get` returns
+  object text, `put` writes strings, `delete` deletes keys). This makes the
+  batch write phase produce the post-failure state instead of hand-seeding it.
+- Assert the batch write produced:
   - failed manifest for `id`;
   - by-id pointer for `id`;
-  - `index/list.json` row via `manifestToIndexItem`;
+  - failed `index/list.json` row;
   - no by-url pointer for the URL.
 - Submit the same URL to `POST /readings`.
 - Assert:
@@ -317,10 +364,10 @@ RED:
 
 GREEN:
 
-- This may already pass with existing router behavior, because there is already
-  coverage for "legacy failed no by-url pointer." Keep the test if it documents
-  issue #70's exact batch-origin scenario; otherwise update the existing test
-  name/comment to explicitly cover batch failure release.
+- Reuse the existing router behavior for no-pointer failed owners; do not treat
+  renaming the legacy failed-owner test as sufficient acceptance. This cycle's
+  value is proving that `writeResults` creates the exact state the router then
+  accepts for online reprocess.
 
 VERIFY:
 
@@ -328,7 +375,7 @@ VERIFY:
 npm run test:quiet -- test/integration/readings.test.ts -t "failed fresh batch"
 ```
 
-### Cycle 6: refactor and full targeted verification
+### Cycle 7: refactor and full targeted verification
 
 Refactor only after all tests are green:
 
@@ -356,19 +403,31 @@ npm run typecheck
 
 Use staging only after the unit and integration tests pass.
 
-1. Prepare a tiny fresh-markdown ingest whose Message Batch result can be forced
-   or simulated to fail before terminal write.
-2. Confirm activation writes `index/by-url/{hash}` and a pending manifest before
-   batch creation.
-3. Let the write phase process a failed result.
-4. Inspect R2:
+1. Add a committed operator smoke helper for this slice, for example
+   `scripts/smoke-batch-failure-release.ts`, or document an equivalent
+   `tsx` one-off in the PR notes. The helper should:
+   - load Cloudflare staging R2 credentials the same way the corpus scripts do;
+   - write a tiny sidecar target plus the eager activation state
+     (by-url pointer, pending manifest, by-id pointer, pending list row) for a
+     throwaway URL;
+   - call `writeResults` with a fabricated `BatchResult` of
+     `{ type: "errored", error: { message: "manual smoke failure" } }`;
+   - print the URL, id, key prefix, and object keys it touched so cleanup is
+     deterministic.
+2. Run that helper against staging only after unit/integration tests pass.
+3. Confirm activation-state preconditions before the fabricated failure write:
+   `index/by-url/{hash}` exists and the manifest is pending.
+4. Let the helper process the failed result through `writeResults`.
+5. Inspect R2:
    - failed manifest exists;
    - by-id pointer exists;
    - by-url pointer is absent, unless a newer owner claimed it;
    - list row is failed.
-5. Submit the same URL through the Worker.
-6. Confirm the response reuses the failed reading id, writes a new pending
+6. Submit the same URL through the Worker.
+7. Confirm the response reuses the failed reading id, writes a new pending
    attempt, and enqueues a reprocess.
+8. Clean up the throwaway reading objects, list row, and pointers using the
+   existing corpus-drop/delete tooling or the helper's printed keys.
 
 ## 8. Risks and mitigations
 
@@ -380,15 +439,19 @@ Use staging only after the unit and integration tests pass.
   `manifest.status === "failed"`.
 - **Damaged pointer handling:** do not delete malformed pointers. Log and leave
   them for existing operator repair paths.
+- **Read-error handling:** do not convert R2 read failures into "not owned" or
+  "damaged" results. Let them abort the write phase so the operator can rerun
+  after the transient failure clears.
 - **Over-broad integration test:** the router already covers legacy failed
-  no-pointer reprocess. Keep the new integration assertion narrowly framed
-  around the batch failure state so it does not duplicate unrelated setup.
+  no-pointer reprocess. The new integration assertion must run `writeResults`
+  first so it proves the batch writer creates the state that the router accepts.
 
 ## 9. Completion checklist
 
 - [ ] Unit failure-release tests added one at a time and passing.
+- [ ] Damaged-pointer and by-url read-error tests added.
 - [ ] Integration resubmit-after-batch-failure test added or existing coverage
-      explicitly amended for this acceptance.
+      explicitly runs `writeResults` before the online submit.
 - [ ] `write-phase.ts` comments updated to remove "follow-up slice" wording.
 - [ ] No success-path behavior changed.
 - [ ] Targeted tests, full quiet tests, and typecheck pass.
