@@ -248,7 +248,34 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.
 - `corpus-recover --batch` is a Node-side bulk recovery path using Anthropic
   Message Batches plus R2/Vectorize clients. It resumes from
-  `<index>.batch.json` and reuses the Worker terminal-write contract.
+  `<index>.batch.json` and reuses the Worker terminal-write contract. Like fresh
+  ingest it now eagerly claims by-url ownership before batch submit
+  (`activateRecoverTargets` in `activation-phase.ts`, wired in `runBatch`), but
+  for a recover target the slot is usually already held (realtime-failed readings
+  own by-url; batch-failed ones don't), so the "claim" is really a **failed→pending
+  flip**: it `putIfAbsent`s an unclaimed slot, proceeds idempotently without a
+  write when the live pointer already equals `{id, key_prefix}`, and skips a
+  damaged or foreign-owned pointer for operator repair rather than clobbering it.
+  It then revalidates the live manifest is still this reading (id/url/url_hash,
+  status-agnostic) and writes a pending manifest via `buildRecoverPendingManifest`
+  — content descriptors from the fresh re-extract (else the live manifest), forced
+  `content_status:"captured"` so a `markFailed`-zeroed manifest's descriptors never
+  leak in. Unlike fresh ingest, recover sets **no** `releaseByUrlOnFailure`: a
+  failed recover URL keeps its claim and stays re-submittable by both recover
+  (resolves via `row.key_prefix`, pointer-independent) and the online reprocess
+  path (`ownedManifestMatches` is status-agnostic). Mid-batch the slot is
+  transiently `ready→pending` with a pending list row — benign under
+  `--sole-writer`; `preserveReadyManifest` rolls a ready reading forward on
+  failure. Recover activation does not mutate the original target object, but the
+  activated target returned to submit carries the just-written pending manifest;
+  submit-phase reads that manifest so same-run and crash-rerun failures can both
+  see its nested `preserve_ready_manifest` snapshot. A post-create crash resumes
+  `pollAndWrite` over the
+  eager-claim pendings with no orphan, and an activating-window crash aborts (no
+  batch id) for the operator to clear and re-run idempotently. On that rerun
+  `extract-phase` reuses the `batch_<id>` activation pending's captured
+  `extracted.md` rather than re-fetching, so a transiently-down source can't drop
+  the reading and strand its eager claim.
 - `corpus-ingest` (`npm run corpus-ingest -- --dir <path>`) is the markdown-in-hand
   bulk-import path: it feeds a fresh markdown directory into the same Message
   Batch pipeline as `corpus-recover --batch`, so resulting manifests are
@@ -290,8 +317,11 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   the realtime writer is paused/drained; an acknowledged run prints a loud banner
   before any submit. Dry-runs submit nothing and so never require it. The shared
   pure guard is `soleWriterGuard` in `scripts/corpus-lib/sole-writer.ts` (the
-  unit-tested decision; the CLIs only do the stderr-print + `exit(2)` I/O). This
-  remains required while recover parity is incomplete, even though fresh ingest
-  now eagerly claims activated slots and releases its own failed eager claims.
+  unit-tested decision; the CLIs only do the stderr-print + `exit(2)` I/O). Both
+  batch paths now eagerly claim activated by-url slots (fresh releases its own
+  failed claims; recover keeps a failed claim so it stays re-submittable), but the
+  eager claim is defense-in-depth, not a replacement: `--sole-writer` remains
+  required pending the `reconcilePending` mechanism (#72) that would let an offline
+  run safely supersede an in-flight realtime attempt.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

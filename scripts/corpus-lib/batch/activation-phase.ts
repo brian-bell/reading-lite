@@ -1,13 +1,15 @@
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
+import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client } from "../../lib/cf-clients";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
+import { getByUrl } from "./r2-reads";
 import type { ActivatingSidecar, ExtractedTarget, PersistedSidecar } from "./types";
 import type { WriteReportRow } from "./write-phase";
 
 export interface ActivationDeps {
-  r2: Pick<R2Client, "get" | "put" | "putIfAbsent">;
+  r2: Pick<R2Client, "get" | "put" | "putIfAbsent" | "delete">;
   model: string;
   now(): string;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
@@ -101,19 +103,111 @@ export async function activateFreshTargets(
       }
     }
 
-    await writeFreshContent(target, deps.r2);
-    const manifest = buildPendingManifest(target, deps.now());
-    await deps.r2.put(`${target.target.keyPrefix}/manifest.json`, JSON.stringify(manifest), {
-      contentType: "application/json",
-    });
-    await deps.r2.put(`index/by-id/${target.target.readingId}`, pointer, { contentType: "application/json" });
-    touched.push(manifestToIndexItem(manifest, target.target.keyPrefix));
+    const item = await commitPendingActivation(target, buildPendingManifest(target, deps.now()), deps.r2);
+    touched.push(item);
     activated.push({ ...target, contentAlreadyWritten: true });
   }
 
   if (touched.length > 0) await mergeListIndex({ r2: deps.r2, log: deps.log }, touched);
 
   return { activated, skipped };
+}
+
+// The recover-batch sibling of activateFreshTargets. For a recover target the
+// by-url slot is usually *already held* (realtime-failed readings own by-url;
+// batch-failed ones don't), so the eager "claim" is really a failed→pending flip.
+// Recover carries no create-* policy: every target is treated uniformly, the
+// claim is idempotent for an already-owned reading, and write-phase leaves the
+// claim on failure (no releaseByUrlOnFailure) so a failed recover URL stays
+// re-submittable by both recover (resolves via row.key_prefix) and the online
+// reprocess path (ownedManifestMatches is status-agnostic).
+export async function activateRecoverTargets(
+  targets: ExtractedTarget[],
+  deps: ActivationDeps,
+): Promise<ActivationResult> {
+  if (targets.length === 0) return { activated: [], skipped: [] };
+
+  await deps.saveSidecar(activatingSidecar(targets, deps.model));
+
+  const activated: ExtractedTarget[] = [];
+  const skipped: WriteReportRow[] = [];
+  const touched = [];
+
+  for (const target of targets) {
+    const { readingId: id, keyPrefix, url, urlHash } = target.target;
+    const pointerKey = `index/by-url/${urlHash}`;
+    const pointer = serializeReadingPointer(id, keyPrefix);
+
+    const lookup = await getByUrl(deps.r2, urlHash);
+    if (lookup === "damaged") {
+      skipped.push({ id, status: "skipped", reason: "by-url pointer is damaged" });
+      continue;
+    }
+    // Track whether *this run* created the by-url claim, so a later revalidation
+    // skip can release exactly the pointer it wrote (and only that one).
+    let createdClaim = false;
+    if (lookup === null) {
+      const claimed = await deps.r2.putIfAbsent(pointerKey, pointer, { contentType: "application/json" });
+      if (claimed) {
+        createdClaim = true;
+      } else {
+        const after = await getByUrl(deps.r2, urlHash);
+        if (!(after && after !== "damaged" && after.id === id && after.key_prefix === keyPrefix)) {
+          skipped.push({ id, status: "skipped", reason: "by-url claimed by another writer" });
+          continue;
+        }
+        // Lost the race but the winner wrote our identical pointer — not ours to
+        // release (another writer owns it), so leave createdClaim false.
+      }
+    } else if (lookup.id !== id || lookup.key_prefix !== keyPrefix) {
+      // A live pointer to a *different* reading — never clobber another owner.
+      skipped.push({ id, status: "skipped", reason: "by-url owned by a different reading" });
+      continue;
+    }
+    // else: the pointer already equals ours — idempotent owns-slot branch, proceed
+    // without a claim write (both writers serialize identically).
+
+    // Revalidate the live manifest is still this reading, regardless of status:
+    // a ready force-reprocess, a failed reading, or our own batch_<id> pending on
+    // a re-run all pass. Re-flip safety of our own pending rests on --sole-writer.
+    const m = await readManifest(deps.r2, keyPrefix);
+    if (!(m && m.id === id && m.url === url && m.url_hash === urlHash)) {
+      // Release a claim *this run* just created so a never-activated reading
+      // doesn't strand a stale by-url pointer (when every target skips, the
+      // sidecar is cleared and no later write phase repairs it).
+      if (createdClaim) await releaseClaimIfOwned(deps.r2, urlHash, id, keyPrefix);
+      skipped.push({ id, status: "skipped", reason: "reading changed before activation" });
+      continue;
+    }
+
+    const pendingManifest = buildRecoverPendingManifest(target, m, deps.now());
+    const item = await commitPendingActivation(target, pendingManifest, deps.r2);
+    touched.push(item);
+    activated.push({
+      ...target,
+      target: { ...target.target, manifest: pendingManifest },
+      contentAlreadyWritten: true,
+    });
+  }
+
+  if (touched.length > 0) await mergeListIndex({ r2: deps.r2, log: deps.log }, touched);
+
+  return { activated, skipped };
+}
+
+// The per-target write tail both activation paths share once they decide to
+// activate: persist fresh content (no-op when reused), write the pending
+// manifest, write the by-id pointer, and return the list-index row to merge.
+async function commitPendingActivation(
+  target: ExtractedTarget,
+  manifest: Manifest,
+  r2: Pick<R2Client, "put">,
+): Promise<ListIndexItem> {
+  const { readingId: id, keyPrefix } = target.target;
+  await writeFreshContent(target, r2);
+  await r2.put(`${keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
+  await r2.put(`index/by-id/${id}`, serializeReadingPointer(id, keyPrefix), { contentType: "application/json" });
+  return manifestToIndexItem(manifest, keyPrefix);
 }
 
 function activatingSidecar(targets: ExtractedTarget[], model: string): ActivatingSidecar {
@@ -153,6 +247,84 @@ function buildPendingManifest(target: ExtractedTarget, now: string): Manifest {
     extracted_bytes: markdownBytes,
     updated_at: now,
   });
+}
+
+// Build the recover pending manifest from the LIVE manifest `m` (not the
+// possibly-zeroed in-memory snapshot). A markFailed manifest zeros
+// content_bytes/sha and sets content_status "failed", so descriptors are pulled
+// from the fresh re-extract when present, else from `m`, and content_status is
+// forced "captured" (we hold summarizable markdown — mirror submit-phase's
+// sidecarTargetFor). Built fresh rather than spread from `m` so stale summary and
+// error fields never leak into the pending; the terminal write rebuilds the full
+// ready manifest, and on failure preserveReadyManifest rolls a ready reading
+// forward. created_at is preserved from `m`.
+function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: string): Manifest {
+  const fresh = target.fresh;
+  const markdownBytes = new TextEncoder().encode(target.markdown).byteLength;
+  return ManifestSchema.parse({
+    id: target.target.readingId,
+    url: target.target.url,
+    url_hash: target.target.urlHash,
+    source_type: m.source_type ?? "url",
+    status: "pending",
+    active_attempt: {
+      id: `batch_${target.target.readingId}`,
+      trigger: "reprocess",
+      status: "running",
+      stage: "summarize",
+      started_at: now,
+    },
+    content_type: fresh?.content_type ?? m.content_type,
+    content_status: "captured",
+    content_bytes: fresh?.content_bytes ?? m.content_bytes,
+    content_sha256: fresh?.content_sha256 ?? m.content_sha256,
+    extracted_bytes: markdownBytes,
+    ...preservedReadySnapshotField(m, target.target.readingId),
+    created_at: m.created_at,
+    updated_at: now,
+  });
+}
+
+function preservedReadySnapshotField(m: Manifest, readingId: string): Partial<Manifest> {
+  const snapshot = readySnapshotForActivation(m, readingId);
+  return snapshot ? { preserve_ready_manifest: snapshot } : {};
+}
+
+function readySnapshotForActivation(m: Manifest, readingId: string): Manifest | undefined {
+  if (m.status === "ready") return withoutNestedReadySnapshot(m);
+  if (
+    m.status !== "pending" ||
+    m.active_attempt?.id !== `batch_${readingId}` ||
+    m.active_attempt.trigger !== "reprocess"
+  ) {
+    return undefined;
+  }
+  const preserved = parsePreservedReadySnapshot(m.preserve_ready_manifest);
+  return preserved ? withoutNestedReadySnapshot(preserved) : undefined;
+}
+
+function parsePreservedReadySnapshot(value: unknown): Manifest | undefined {
+  const parsed = ManifestSchema.safeParse(value);
+  return parsed.success && parsed.data.status === "ready" ? parsed.data : undefined;
+}
+
+function withoutNestedReadySnapshot(m: Manifest): Manifest {
+  return ManifestSchema.parse({ ...m, preserve_ready_manifest: undefined });
+}
+
+// Delete a by-url pointer only when it still exactly matches the claim this run
+// wrote (mirrors write-phase.releaseByUrlIfOwned): a concurrent owner change must
+// not be clobbered by our rollback.
+async function releaseClaimIfOwned(
+  r2: Pick<R2Client, "get" | "delete">,
+  urlHash: string,
+  id: string,
+  keyPrefix: string,
+): Promise<void> {
+  const current = await getByUrl(r2, urlHash);
+  if (current && current !== "damaged" && current.id === id && current.key_prefix === keyPrefix) {
+    await r2.delete(`index/by-url/${urlHash}`);
+  }
 }
 
 async function writeFreshContent(

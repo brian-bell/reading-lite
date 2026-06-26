@@ -89,6 +89,42 @@ describe("extractTargets", () => {
     expect(dropped[0]).toMatchObject({ readingId: "rd_a", reason: expect.stringMatching(/network down/) });
   });
 
+  it("reuses extracted.md for our own batch_<id> activation pending (crash-rerun reattach, no re-fetch)", async () => {
+    // An activating-window crash leaves a batch_<id> pending with captured
+    // descriptors and a written extracted.md. A rerun must reattach to that
+    // markdown rather than re-fetch (and risk dropping a transiently-down source,
+    // stranding the eager claim).
+    const loadExtracted = vi.fn(async () => "# Captured\n\nbody");
+    const extract = vi.fn(async () => freshContent);
+    const pending = target({
+      status: "pending",
+      content_status: "captured",
+      active_attempt: { id: "batch_rd_a", trigger: "reprocess", status: "running", stage: "summarize", started_at: "2026-01-02T00:00:00.000Z" },
+    });
+
+    const { extracted, dropped } = await extractTargets([pending], { loadExtracted, extract });
+
+    expect(dropped).toHaveLength(0);
+    expect(extracted[0]!.markdown).toBe("# Captured\n\nbody");
+    expect(extracted[0]!.fresh).toBeUndefined();
+    expect(extract).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse extracted.md for a non-batch (realtime) pending — re-fetches", async () => {
+    const loadExtracted = vi.fn(async () => "# Saved\n\nbody");
+    const extract = vi.fn(async () => freshContent);
+    const realtimePending = target({
+      status: "pending",
+      content_status: "captured",
+      active_attempt: { id: "at_rd_a", trigger: "reprocess", status: "running", stage: "summarize", started_at: "2026-01-02T00:00:00.000Z" },
+    });
+
+    const { extracted } = await extractTargets([realtimePending], { loadExtracted, extract });
+
+    expect(extract).toHaveBeenCalledWith("https://example.com/a");
+    expect(extracted[0]!.fresh).toBe(freshContent);
+  });
+
   it("treats blank R2 markdown as absent and re-extracts (ready reading)", async () => {
     const loadExtracted = vi.fn(async () => "   \n  ");
     const extract = vi.fn(async () => freshContent);
