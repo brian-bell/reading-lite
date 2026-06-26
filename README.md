@@ -337,11 +337,13 @@ minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECO
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
 rather than risk racing the worker. Before any fresh eager activation writes, the
-batch path preflights the Anthropic payload against a 200 MB safety cap; if it is
-too large, rerun with `--limit` to split it without leaving pending owners behind.
-Fresh ingest then eagerly claims activated by-url slots before creating the
-Message Batch; if the batch later fails, releasing that eager claim is still a
-follow-up slice. The "sole writer" condition is enforced, not just assumed:
+batch path preflights the Anthropic payload against a 200 MB safety cap, resolves
+similar-reading context, then validates the final request payload against the
+same cap; if it is too large, rerun with `--limit` to split it without leaving
+pending owners behind. Fresh ingest then eagerly claims activated by-url slots
+before creating the Message Batch; if the batch later fails, releasing that eager
+claim is still a follow-up slice. The "sole writer" condition is enforced, not
+just assumed:
 `corpus-ingest --execute` (and likewise `corpus-recover --batch --execute`)
 **refuses to submit unless you also pass `--sole-writer`**, confirming the
 realtime writer is paused/drained while recover parity and failure-release work

@@ -189,7 +189,7 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(calls.indexOf("save:pending")).toBeLessThan(calls.indexOf("create"));
   });
 
-  it("skips all activation losers without embedding or creating a batch", async () => {
+  it("skips all activation losers without creating a batch", async () => {
     const h = harness();
     h.r2.putIfAbsent = vi.fn(async () => false);
 
@@ -199,7 +199,7 @@ describe("runFreshMarkdownBatch — fresh run", () => {
       { id: "rd_FRESH0", status: "skipped", reason: "by-url slot already owned at batch submit" },
     ]);
     expect(h.deps.clearSidecar).toHaveBeenCalledOnce();
-    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.deps.embed.embedMany).toHaveBeenCalledOnce();
     expect(h.batch.create).not.toHaveBeenCalled();
   });
 
@@ -215,6 +215,31 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.batch.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized final payload before activating by-url owners", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+    h.vectorize.query = vi.fn(async () => [
+      {
+        id: "rd_RELATED",
+        score: 0.9,
+        metadata: {
+          url: "https://example.com/related",
+          title: "related ".repeat(20_000),
+        },
+      },
+    ]) as any;
+
+    await expect(runFreshMarkdownBatch([a], { ...h.deps, maxBatchBytes: 50_000 })).rejects.toThrow(
+      /re-run with --limit/,
+    );
+
+    expect(h.deps.embed.embedMany).toHaveBeenCalledOnce();
+    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
     expect(h.batch.create).not.toHaveBeenCalled();
   });
 });

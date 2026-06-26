@@ -6,7 +6,11 @@ import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { resolveSimilar } from "./similar-phase";
-import { assertExtractedBatchPayloadWithinLimit, submitBatch } from "./submit-phase";
+import {
+  assertExtractedBatchPayloadWithinLimit,
+  assertSummarizeBatchPayloadWithinLimit,
+  submitBatch,
+} from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
 import type { DroppedTarget, ExtractedTarget, PersistedSidecar, Sidecar } from "./types";
@@ -88,23 +92,38 @@ export async function runBatchPipeline(
   let activationSkipped: WriteReportRow[] = [];
   if (deps.activateExtracted) {
     assertExtractedBatchPayloadWithinLimit(extracted, deps.model, deps.maxBatchBytes);
+  }
+
+  let summarizeTargets = await resolveSimilar(extracted, {
+    embedMany: (inputs) => deps.embed.embedMany(inputs),
+    query: (vector, opts) => deps.vectorize.query(vector, opts),
+  });
+
+  if (deps.activateExtracted) {
+    assertSummarizeBatchPayloadWithinLimit(summarizeTargets, deps.model, deps.maxBatchBytes);
     const activated = await deps.activateExtracted(extracted);
     extracted = activated.activated;
     activationSkipped = activated.skipped;
     for (const row of activationSkipped) {
       log(`  skipped ${row.id}: ${row.reason ?? "batch activation skipped"}`);
     }
+
+    const activatedByKey = new Map(
+      extracted.map((target) => [extractedTargetKey(target), target]),
+    );
+    summarizeTargets = summarizeTargets
+      .filter((target) => activatedByKey.has(extractedTargetKey(target.extracted)))
+      .map((target) => ({
+        ...target,
+        extracted: activatedByKey.get(extractedTargetKey(target.extracted))!,
+      }));
+
     if (extracted.length === 0) {
       await deps.clearSidecar();
       log("No readings to summarize after batch activation.");
       return { report: activationSkipped, dropped, resumed: false };
     }
   }
-
-  const summarizeTargets = await resolveSimilar(extracted, {
-    embedMany: (inputs) => deps.embed.embedMany(inputs),
-    query: (vector, opts) => deps.vectorize.query(vector, opts),
-  });
 
   if (summarizeTargets.length === 0) {
     log("No readings to summarize after extraction.");
@@ -141,6 +160,10 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
       dropped: [...prepared.dropped, ...extracted.dropped],
     };
   }, deps);
+}
+
+function extractedTargetKey(target: ExtractedTarget): string {
+  return `${target.target.readingId}\0${target.target.keyPrefix}`;
 }
 
 async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {

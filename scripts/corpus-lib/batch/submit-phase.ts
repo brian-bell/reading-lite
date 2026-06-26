@@ -94,6 +94,15 @@ export function assertExtractedBatchPayloadWithinLimit(
   assertBatchPayloadWithinLimit(requests, maxBytes);
 }
 
+export function assertSummarizeBatchPayloadWithinLimit(
+  targets: SummarizeTarget[],
+  model: string,
+  maxBytes = MAX_BATCH_BYTES,
+): void {
+  const requests = targets.map((target) => requestForSummarizeTarget(target, model));
+  assertBatchPayloadWithinLimit(requests, maxBytes);
+}
+
 function assertBatchPayloadWithinLimit(
   requests: AnthropicBatchRequest[],
   maxBytes = MAX_BATCH_BYTES,

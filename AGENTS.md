@@ -67,8 +67,8 @@ agent context: current commands, module map, conventions, and gotchas.
   audit/recovery/drop, imports, and manual smoke tests.
 - `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
   `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → optional
-  fresh payload preflight + activation → similar → submit+sidecar → poll →
-  write) that both front-ends feed: `corpus-recover --batch` resolves audit rows via
+  fresh payload preflight → similar → final payload validation + activation →
+  submit+sidecar → poll → write) that both front-ends feed: `corpus-recover --batch` resolves audit rows via
   `prepare.ts` + `extract-phase.ts`, while
   `corpus-ingest` resolves a fresh markdown directory via
   `prepare-fresh-markdown.ts` (client-side by-url ownership + minted ids,
@@ -272,10 +272,12 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   race the worker and (on a batch failure, which carries no preserved-ready
   snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
   corpus-recover. Before fresh eager activation writes, `runBatchPipeline`
-  preflights the summarization payload against `submit-phase.ts`'s 200 MB safety
-  cap so an oversized run fails with the `--limit` guidance without leaving
-  pending owners behind. Fresh ingest then eagerly writes a pending manifest,
-  by-id pointer, by-url pointer, and list row before Message Batch creation.
+  preflights the extracted-only summarization payload, resolves similar-reading
+  context, then validates the final request payload against `submit-phase.ts`'s
+  200 MB safety cap so an oversized run fails with the `--limit` guidance
+  without leaving pending owners behind. Fresh ingest then eagerly writes a
+  pending manifest, by-id pointer, by-url pointer, and list row before Message
+  Batch creation.
   `write-phase` writes the by-id pointer on both the success and failure branches
   (a fresh-ingest failure must still be reachable via detail/reprocess) and
   tolerates a pre-existing eager by-url pointer; releasing that pointer on batch
