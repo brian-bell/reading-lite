@@ -270,7 +270,10 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   (submit-phase reads it pre-activation to compute `preserveReadyManifest` /
   `releaseByUrlOnFailure`); a post-create crash resumes `pollAndWrite` over the
   eager-claim pendings with no orphan, and an activating-window crash aborts (no
-  batch id) for the operator to clear and re-run idempotently.
+  batch id) for the operator to clear and re-run idempotently. On that rerun
+  `extract-phase` reuses the `batch_<id>` activation pending's captured
+  `extracted.md` rather than re-fetching, so a transiently-down source can't drop
+  the reading and strand its eager claim.
 - `corpus-ingest` (`npm run corpus-ingest -- --dir <path>`) is the markdown-in-hand
   bulk-import path: it feeds a fresh markdown directory into the same Message
   Batch pipeline as `corpus-recover --batch`, so resulting manifests are
