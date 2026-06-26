@@ -266,9 +266,11 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   path (`ownedManifestMatches` is status-agnostic). Mid-batch the slot is
   transiently `ready→pending` with a pending list row — benign under
   `--sole-writer`; `preserveReadyManifest` rolls a ready reading forward on
-  failure. Activation must never mutate the in-memory `target.target.manifest`
-  (submit-phase reads it pre-activation to compute `preserveReadyManifest` /
-  `releaseByUrlOnFailure`); a post-create crash resumes `pollAndWrite` over the
+  failure. Recover activation does not mutate the original target object, but the
+  activated target returned to submit carries the just-written pending manifest;
+  submit-phase reads that manifest so same-run and crash-rerun failures can both
+  see its nested `preserve_ready_manifest` snapshot. A post-create crash resumes
+  `pollAndWrite` over the
   eager-claim pendings with no orphan, and an activating-window crash aborts (no
   batch id) for the operator to clear and re-run idempotently. On that rerun
   `extract-phase` reuses the `batch_<id>` activation pending's captured

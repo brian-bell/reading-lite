@@ -180,9 +180,14 @@ export async function activateRecoverTargets(
       continue;
     }
 
-    const item = await commitPendingActivation(target, buildRecoverPendingManifest(target, m, deps.now()), deps.r2);
+    const pendingManifest = buildRecoverPendingManifest(target, m, deps.now());
+    const item = await commitPendingActivation(target, pendingManifest, deps.r2);
     touched.push(item);
-    activated.push({ ...target, contentAlreadyWritten: true });
+    activated.push({
+      ...target,
+      target: { ...target.target, manifest: pendingManifest },
+      contentAlreadyWritten: true,
+    });
   }
 
   if (touched.length > 0) await mergeListIndex({ r2: deps.r2, log: deps.log }, touched);

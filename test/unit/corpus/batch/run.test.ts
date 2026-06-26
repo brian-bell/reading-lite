@@ -356,6 +356,63 @@ describe("runBatch — eager recover claim", () => {
     expect(final.active_attempt).toBeUndefined();
   });
 
+  it("rolls forward when the live manifest becomes ready before activation", async () => {
+    const h = harness({});
+    const kp = "readings/kp-rd_a";
+    const failedAtPrepare = manifest("rd_a", { status: "failed" });
+    const liveReady = manifest("rd_a", {
+      status: "ready",
+      title: "Ready before activation",
+      tldr: "keep live ready",
+      tags: ["saved"],
+      keywords: ["live"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "live summary",
+    });
+    h.store.set(`${kp}/manifest.json`, JSON.stringify(liveReady));
+    h.store.set(`${kp}/extracted.md`, "# rd_a\n\nsaved markdown");
+    h.store.set(`index/by-url/${liveReady.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
+
+    const injected: ExtractedTarget = {
+      target: {
+        readingId: "rd_a",
+        url: failedAtPrepare.url,
+        urlHash: failedAtPrepare.url_hash,
+        keyPrefix: kp,
+        createdAt: failedAtPrepare.created_at,
+        manifest: failedAtPrepare,
+      },
+      markdown: "# rd_a\n\nbody",
+    };
+
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+
+    await runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
+      ...h.deps,
+      activateExtracted: (targets) =>
+        activateRecoverTargets(targets, {
+          r2: h.deps.r2,
+          model: h.deps.model,
+          now: h.deps.now,
+          saveSidecar: h.deps.saveSidecar,
+        }),
+    });
+
+    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(final.status).toBe("ready");
+    expect(final.tldr).toBe("keep live ready");
+    expect(final.title).toBe("Ready before activation");
+    expect(final.active_attempt).toBeUndefined();
+  });
+
   it("preserves a ready snapshot across an activation-window crash and rerun", async () => {
     const h = harness({});
     const kp = "readings/kp-rd_a";
