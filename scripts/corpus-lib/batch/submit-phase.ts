@@ -1,6 +1,6 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
 import type { AnthropicBatchClient, AnthropicBatchRequest, BatchInfo } from "./clients";
-import type { Sidecar, SidecarTarget, SummarizeTarget } from "./types";
+import type { ExtractedTarget, Sidecar, SidecarTarget, SummarizeTarget } from "./types";
 
 export interface SubmitDeps {
   model: string;
@@ -12,6 +12,7 @@ export interface SubmitDeps {
   // the create window leaves a pending marker that aborts a re-run instead of
   // silently re-submitting (and re-billing).
   saveSidecar(sidecar: Sidecar): Promise<void>;
+  maxBatchBytes?: number;
 }
 
 export interface SubmitResult {
@@ -21,7 +22,7 @@ export interface SubmitResult {
 
 // Anthropic's batch limit is 256MB; refuse well under it and tell the operator to
 // split with --limit rather than hard-failing the create call mid-backlog.
-const MAX_BATCH_BYTES = 200 * 1024 * 1024;
+export const MAX_BATCH_BYTES = 200 * 1024 * 1024;
 
 // Persist freshly-extracted content, build one summarize request per target
 // (custom_id = reading id, params = the exact realtime body so the prompt cache
@@ -35,7 +36,7 @@ export async function submitBatch(
   const sidecarTargets: SidecarTarget[] = [];
 
   for (const st of targets) {
-    const { target, markdown, title, fresh } = st.extracted;
+    const { target, fresh } = st.extracted;
 
     if (fresh && !st.extracted.contentAlreadyWritten) {
       await deps.putObject(
@@ -52,30 +53,12 @@ export async function submitBatch(
       }
     }
 
-    requests.push({
-      custom_id: target.readingId,
-      params: buildSummarizeRequestBody(
-        {
-          url: target.url,
-          extractedText: markdown,
-          ...(title === undefined ? {} : { title }),
-          similarReadings: st.similar,
-        },
-        deps.model,
-      ),
-    });
+    requests.push(requestForSummarizeTarget(st, deps.model));
 
     sidecarTargets.push(sidecarTargetFor(st));
   }
 
-  const totalBytes = requests.reduce((n, r) => n + JSON.stringify(r).length, 0);
-  if (totalBytes > MAX_BATCH_BYTES) {
-    throw new Error(
-      `batch payload ~${Math.round(totalBytes / 1e6)}MB exceeds the ${Math.round(
-        MAX_BATCH_BYTES / 1e6,
-      )}MB safety cap; re-run with --limit to split into smaller batches`,
-    );
-  }
+  assertBatchPayloadWithinLimit(requests, deps.maxBatchBytes);
 
   // Pending marker before create: if the process dies in the create window, the
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
@@ -98,6 +81,47 @@ export async function submitBatch(
   };
   await deps.saveSidecar(sidecar);
   return { info, sidecar };
+}
+
+export function assertExtractedBatchPayloadWithinLimit(
+  targets: ExtractedTarget[],
+  model: string,
+  maxBytes = MAX_BATCH_BYTES,
+): void {
+  const requests = targets.map((extracted) =>
+    requestForSummarizeTarget({ extracted, similar: [], queryEmbedTokens: 0 }, model),
+  );
+  assertBatchPayloadWithinLimit(requests, maxBytes);
+}
+
+function assertBatchPayloadWithinLimit(
+  requests: AnthropicBatchRequest[],
+  maxBytes = MAX_BATCH_BYTES,
+): void {
+  const totalBytes = requests.reduce((n, r) => n + JSON.stringify(r).length, 0);
+  if (totalBytes > maxBytes) {
+    throw new Error(
+      `batch payload ~${Math.round(totalBytes / 1e6)}MB exceeds the ${Math.round(
+        maxBytes / 1e6,
+      )}MB safety cap; re-run with --limit to split into smaller batches`,
+    );
+  }
+}
+
+function requestForSummarizeTarget(st: SummarizeTarget, model: string): AnthropicBatchRequest {
+  const { target, markdown, title } = st.extracted;
+  return {
+    custom_id: target.readingId,
+    params: buildSummarizeRequestBody(
+      {
+        url: target.url,
+        extractedText: markdown,
+        ...(title === undefined ? {} : { title }),
+        similarReadings: st.similar,
+      },
+      model,
+    ),
+  };
 }
 
 function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {

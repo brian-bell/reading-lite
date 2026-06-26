@@ -202,6 +202,21 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
     expect(h.batch.create).not.toHaveBeenCalled();
   });
+
+  it("rejects an oversized batch before activating by-url owners", async () => {
+    const h = harness();
+    const a = article("alpha", "https://example.com/alpha");
+
+    await expect(runFreshMarkdownBatch([a], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(
+      /re-run with --limit/,
+    );
+
+    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.batch.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("runFreshMarkdownBatch — idempotency", () => {

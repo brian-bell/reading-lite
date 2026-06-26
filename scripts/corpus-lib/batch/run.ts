@@ -6,7 +6,7 @@ import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { resolveSimilar } from "./similar-phase";
-import { submitBatch } from "./submit-phase";
+import { assertExtractedBatchPayloadWithinLimit, submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
 import type { DroppedTarget, ExtractedTarget, PersistedSidecar, Sidecar } from "./types";
@@ -28,6 +28,7 @@ export interface BatchRunDeps {
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   clearSidecar(): Promise<void>;
   activateExtracted?(targets: ExtractedTarget[]): Promise<ActivationResult>;
+  maxBatchBytes?: number;
   log?(line: string): void;
   poll?: { intervalMs?: number; maxPolls?: number };
 }
@@ -86,6 +87,7 @@ export async function runBatchPipeline(
 
   let activationSkipped: WriteReportRow[] = [];
   if (deps.activateExtracted) {
+    assertExtractedBatchPayloadWithinLimit(extracted, deps.model, deps.maxBatchBytes);
     const activated = await deps.activateExtracted(extracted);
     extracted = activated.activated;
     activationSkipped = activated.skipped;
@@ -115,6 +117,7 @@ export async function runBatchPipeline(
     batch: deps.batch,
     putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,
+    ...(deps.maxBatchBytes === undefined ? {} : { maxBatchBytes: deps.maxBatchBytes }),
   });
   log(`Batch ${info.id} created; polling for completion...`);
 
