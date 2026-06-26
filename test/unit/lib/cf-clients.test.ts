@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   makeR2Client,
   makeVectorizeClient,
+  R2ConditionalPutError,
 } from "../../../scripts/lib/cf-clients";
 
 const r2Config = {
@@ -28,6 +29,18 @@ describe("makeR2Client", () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 500 }));
     const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
     await expect(r2.put("k", "v")).rejects.toThrow(/R2 PUT/);
+  });
+
+  it("sends if-none-match for conditional PUTs and maps precondition failures", async () => {
+    const okFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
+    await makeR2Client(r2Config, okFetch as unknown as typeof fetch).put("k", "v", { ifNotExists: true });
+    const req = okFetch.mock.calls[0]![0] as Request;
+    expect(req.headers.get("if-none-match")).toBe("*");
+
+    const conflictFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 412 }));
+    await expect(
+      makeR2Client(r2Config, conflictFetch as unknown as typeof fetch).put("k", "v", { ifNotExists: true }),
+    ).rejects.toBeInstanceOf(R2ConditionalPutError);
   });
 
   it("GET returns the body text on 200", async () => {

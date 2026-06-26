@@ -67,6 +67,7 @@ export function manifestToIndexItem(
   if (m.error !== undefined) item.error = m.error;
   if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
   if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;
+  if (m.batch_claim !== undefined) item.batch_claim = m.batch_claim;
   return item;
 }
 

@@ -319,6 +319,7 @@ async function runBatchMode(
     sleep: (ms: number) => sleep(ms).then(() => undefined),
     loadSidecar: () => loadSidecar(scPath),
     saveSidecar: (s) => saveSidecar(scPath, s),
+    clearSidecar: () => clearSidecar(scPath),
     log: (line) => process.stderr.write(line + "\n"),
   });
 

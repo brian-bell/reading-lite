@@ -84,9 +84,10 @@ deduped by source URL (largest wins) and any over ${Math.round(
   --dir <path>     Directory of .md files to ingest (required).
   --execute        Actually submit + write (otherwise prints the plan).
   --sole-writer    Required with --execute: assert the realtime writer is
-                   paused/drained. This batch leaves each by-url slot unclaimed
-                   for the in-flight window, so a live writer would race it
-                   (duplicate compute/emails, pointer thrash). Run refuses without it.
+                   paused/drained. The fresh ingest path eagerly claims
+                   success-bound URLs before batch create, but remaining batch
+                   parity/failure-release slices still require a sole writer.
+                   Run refuses without it.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
@@ -95,10 +96,11 @@ deduped by source URL (largest wins) and any over ${Math.round(
 
 Idempotency: by-url ownership is read client-side — ready owners are skipped,
 pending owners are skipped (a realtime submit may be in flight), failed owners
-re-ingest in place, and unclaimed URLs mint a new reading. Because by-url is only
-written on success, the slot stays unclaimed during the in-flight batch window, so
-a concurrent realtime submit of the same URL could duplicate it. Intended for an
-operator backfill where this script is the sole writer.
+re-ingest in place, and unclaimed URLs mint a new reading. Before creating the
+Anthropic batch, success-bound targets are written as pending by-url owners so a
+concurrent realtime submit defers to them instead of minting a duplicate. Failed
+batch-result claim release is a later slice, and the shared batch tooling still
+expects an operator backfill where this script is the sole writer.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
 for R2/Vectorize, ANTHROPIC_API_KEY + OPENAI_API_KEY for summarize/embed. --execute
@@ -112,8 +114,9 @@ async function main(): Promise<void> {
   // Sole-writer preflight (issue #68): refuse a real submit unless the operator
   // asserts the realtime writer is paused/drained. Runs before any dir/cred/batch
   // work so an unacknowledged --execute fails loudly and immediately. A resume
-  // (live sidecar) is gated too — by-url is only claimed on the final success
-  // write, so the slot stays unclaimed through the resume and the race is live.
+  // (live sidecar) is gated too — recover-batch parity and failure-path claim
+  // release are separate slices, so the batch tools still expect sole-writer
+  // operation even though fresh ingest now eagerly claims success-bound targets.
   enforceSoleWriter(
     { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-ingest" },
     { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
@@ -121,19 +124,17 @@ async function main(): Promise<void> {
 
   const fetchFn = globalThis.fetch;
 
-  // Load the in-flight batch marker BEFORE touching --dir. The sidecar already
-  // carries every target needed to poll + write, so a resume must not depend on
-  // the source markdown directory: a dir moved or cleaned up during the (possibly
-  // multi-hour) batch window would otherwise crash readMarkdownDir and block the
-  // cost-safe resume — tempting the operator into a second, double-billed batch.
-  // (runFreshMarkdownBatch's `produce` closure is skipped on resume, so the empty
-  // `articles`/`eligible` below are never read.)
+  // Load the sidecar BEFORE touching --dir. Live batch sidecars already carry
+  // every target needed to poll + write; no-batch sidecars may carry rollback
+  // metadata needed to recover eager claims. A dir moved or cleaned up during the
+  // batch window must not block resume/recovery.
   const existing = await loadSidecar(args.sidecar);
 
+  const resumableBatch = existing?.batchId ? existing : null;
   const articles = existing ? [] : await readMarkdownDir(args.dir);
   const { plan, oversized, eligible } = selectEligibleArticles(articles);
 
-  if (!existing) {
+  if (!resumableBatch) {
     process.stderr.write(
       `Plan from ${args.dir}:\n` +
         `  files:          ${articles.length}\n` +
@@ -159,8 +160,8 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     process.stderr.write(
-      existing
-        ? `  [dry-run] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${args.sidecar}\n` +
+      resumableBatch
+        ? `  [dry-run] would RESUME in-flight batch ${resumableBatch.batchId} (${resumableBatch.targets.length} readings) from ${args.sidecar}\n` +
             `  [dry-run] resume needs creds to poll + write — ${e instanceof Error ? e.message : String(e)}\n`
         : `  [dry-run] ownership check skipped — ${e instanceof Error ? e.message : String(e)}\n` +
             `  [dry-run] up to ${eligible.length} eligible reading(s) would be checked + submitted with creds\n`,
@@ -171,9 +172,9 @@ async function main(): Promise<void> {
   const r2 = makeR2Client(cfg.r2, fetchFn);
 
   if (!args.execute) {
-    if (existing) {
+    if (resumableBatch) {
       process.stderr.write(
-        `  [dry-run] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${args.sidecar}\n`,
+        `  [dry-run] would RESUME in-flight batch ${resumableBatch.batchId} (${resumableBatch.targets.length} readings) from ${args.sidecar}\n`,
       );
       printSummary({ executed: false });
       return;
@@ -215,6 +216,7 @@ async function main(): Promise<void> {
     sleep: (ms: number) => sleep(ms).then(() => undefined),
     loadSidecar: () => loadSidecar(args.sidecar),
     saveSidecar: (s) => saveSidecar(args.sidecar, s),
+    clearSidecar: () => clearSidecar(args.sidecar),
     log: (line) => process.stderr.write(line + "\n"),
   });
 

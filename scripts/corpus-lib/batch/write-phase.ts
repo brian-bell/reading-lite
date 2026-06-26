@@ -29,8 +29,9 @@ const LIST_INDEX_KEY = "index/list.json";
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
-//              ready snapshot) + index item, and NO by-url pointer (failed URLs
-//              stay re-submittable).
+//              ready snapshot) + by-id pointer + index item. The fresh
+//              corpus-ingest path may already have claimed by-url at submit
+//              time; failure-path claim release is handled by a later slice.
 // index/list.json is merged once at the end (read-modify-write). The script is
 // effectively the sole writer during a backfill.
 export async function writeResults(
@@ -109,11 +110,10 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests. No by-url pointer (failed URLs stay
-  //    re-submittable), but DO write the by-id pointer: a freshly-minted ingest
-  //    has no pre-existing pointer (unlike the recover path, where the reading is
-  //    already in the corpus), so without it the failed reading would be a
-  //    dangling list row — its detail/diagnostics/reprocess routes resolve
+  // 3. Write the failure manifests. DO write the by-id pointer: a freshly-minted
+  //    ingest has no pre-existing pointer (unlike the recover path, where the
+  //    reading is already in the corpus), so without it the failed reading would
+  //    be a dangling list row — its detail/diagnostics/reprocess routes resolve
   //    through by-id and would 404, and a resubmit could mint a duplicate. The
   //    write is idempotent for the recover path (same id → same key_prefix).
   for (const { target, error } of failures) {
@@ -240,7 +240,10 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
   return out;
 }
 
-async function mergeListIndex(deps: WriteDeps, touched: ListIndexItem[]): Promise<void> {
+export async function mergeListIndex(
+  deps: Pick<WriteDeps, "r2" | "log">,
+  touched: ListIndexItem[],
+): Promise<void> {
   const raw = await deps.r2.get(LIST_INDEX_KEY);
   let items: ListIndexItem[] = [];
   if (raw) {

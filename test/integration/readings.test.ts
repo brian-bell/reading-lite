@@ -382,6 +382,62 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs).toHaveLength(1);
   });
 
+  it("defers to an in-flight corpus-ingest pending claim instead of creating competing work", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const url = "https://example.com/batch-in-flight";
+    const id = "rd_BATCH";
+    const createdAt = "2026-04-26T19:59:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const urlHash = await sha256Hex(url);
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const manifest: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "markdown",
+      status: "pending",
+      batch_claim: true,
+      title: "Batch article",
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 12,
+      content_sha256: "a".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const pointer = { id, key_prefix: keyPrefix };
+    await reader.writeManifest(keyPrefix, manifest);
+    await reader.writeByIdPointer(id, pointer);
+    await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, keyPrefix));
+
+    const res = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Manifest;
+    expect(body.id).toBe(id);
+    expect(body.status).toBe("pending");
+    expect(body.source_type).toBe("markdown");
+    expect(queuedJobs).toHaveLength(0);
+
+    const reprocess = await app.request(
+      `/readings/${id}/reprocess`,
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(reprocess.status).toBe(409);
+    expect(await reprocess.json()).toMatchObject({ error: "batch-owned reading is still in flight" });
+  });
+
   it("converges simultaneous submits of one URL to one reading and one queued job", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });

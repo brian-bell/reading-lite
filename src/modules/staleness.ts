@@ -13,6 +13,7 @@ export interface StaleInput {
   /** Fallback reference for older index entries that predate `updated_at`. */
   created_at?: string;
   active_attempt?: ProcessingAttemptSummary;
+  batch_claim?: boolean;
 }
 
 /**
@@ -40,6 +41,9 @@ export function stalenessOf(input: StaleInput, ttlSeconds: number, nowIso: strin
   }
 
   if (input.status !== "pending") {
+    return { expiredActiveAttempt: null, pendingError: null };
+  }
+  if (input.batch_claim === true) {
     return { expiredActiveAttempt: null, pendingError: null };
   }
 

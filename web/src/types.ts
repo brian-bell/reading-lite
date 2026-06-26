@@ -76,6 +76,7 @@ export interface Manifest {
   error?: ManifestError;
   active_attempt?: ProcessingAttemptSummary;
   last_attempt?: ProcessingAttemptSummary;
+  batch_claim?: boolean;
 
   title?: string;
   tldr?: string;
@@ -119,6 +120,7 @@ export interface ListReading {
   error?: ManifestError;
   active_attempt?: ProcessingAttemptSummary;
   last_attempt?: ProcessingAttemptSummary;
+  batch_claim?: boolean;
 }
 
 export interface ListReadingsResponse {

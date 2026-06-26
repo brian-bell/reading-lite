@@ -78,10 +78,10 @@ async function safeReadManifest(r2: R2Getter, keyPrefix: string): Promise<Manife
 }
 
 // The cold-legacy lookup, mirroring the Worker's findManifestByUrl: resolve a
-// URL's owner through index/list.json when no live by-url pointer exists. A
-// failed fresh ingest leaves a by-id pointer + list row but no by-url pointer,
-// so this is how a rerun finds it. Ranks same-URL rows by ownership then
-// recency and returns the first whose manifest genuinely matches the URL. The
+// URL's owner through index/list.json when no live by-url pointer exists. This
+// still matters for historical/pointerless failed rows and damaged-pointer
+// repair paths. Ranks same-URL rows by ownership then recency and returns the
+// first whose manifest genuinely matches the URL. The
 // verified manifest is the source of truth for the owner id, not the list row:
 // a stale/cross-wired row can carry a different id than the manifest its
 // key_prefix points at, and re-ingesting under the row id would overwrite that

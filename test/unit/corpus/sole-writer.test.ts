@@ -12,8 +12,8 @@ describe("soleWriterGuard", () => {
   it("proceeds with a loud banner once sole-writer is acknowledged", () => {
     const v = soleWriterGuard({ execute: true, acknowledged: true, tool: "corpus-recover --batch" });
     expect(v.proceed).toBe(true);
-    // The banner names the tool and warns about the unclaimed-window race so the
-    // operator sees the consequence of the assertion before any submit work.
+    // The banner names the tool and makes the sole-writer assertion visible
+    // before any submit work.
     expect(v.message).toMatch(/SOLE-WRITER/);
     expect(v.message).toMatch(/corpus-recover --batch/);
   });

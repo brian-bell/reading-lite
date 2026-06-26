@@ -89,6 +89,12 @@ describe("stalenessOf", () => {
       expect(verdict.pendingError).toBeNull();
     });
 
+    it("leaves batch-owned pending claims untouched past TTL", () => {
+      const input: StaleInput = { status: "pending", updated_at: ONE_HOUR_AGO, batch_claim: true };
+      const verdict = stalenessOf(input, TTL, NOW);
+      expect(verdict.pendingError).toBeNull();
+    });
+
     it("treats a non-finite updated_at as not stale", () => {
       const input: StaleInput = { status: "pending", updated_at: "garbage" };
       const verdict = stalenessOf(input, TTL, NOW);

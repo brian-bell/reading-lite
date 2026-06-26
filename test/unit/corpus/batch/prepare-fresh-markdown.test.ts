@@ -341,9 +341,8 @@ describe("prepareFreshMarkdown — existing owner", () => {
 
 describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", () => {
   it("re-ingests a failed reading found only via the list index in place, not a duplicate", async () => {
-    // A prior failed fresh ingest leaves a by-id pointer + list row but NO
-    // by-url pointer (failed URLs stay re-submittable). A rerun therefore sees
-    // getByUrl=null; without the cold lookup it would mint a SECOND reading.
+    // A legacy/pointerless failed row is still re-ingested in place. A rerun
+    // sees getByUrl=null; without the cold lookup it would mint a SECOND reading.
     const a = article();
     const d = deps({
       cold: {

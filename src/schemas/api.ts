@@ -81,6 +81,7 @@ export const ListIndexItemSchema = z.object({
   error: ManifestErrorSchema.optional(),
   active_attempt: ProcessingAttemptSummarySchema.optional(),
   last_attempt: ProcessingAttemptSummarySchema.optional(),
+  batch_claim: z.boolean().optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
 

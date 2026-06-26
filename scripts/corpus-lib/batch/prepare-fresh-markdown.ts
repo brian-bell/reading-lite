@@ -35,9 +35,9 @@ export interface FreshMarkdownDeps {
   // The cold-legacy lookup: resolve a URL's owner through index/list.json when
   // no live by-url pointer exists, mirroring the Worker's findManifestByUrl.
   // Returns the ranked owner (ready > pending > failed, then recency) or null.
-  // Load-bearing for retry-after-failure: a failed fresh ingest leaves a by-id
-  // pointer + list row but NO by-url pointer, so a rerun finds the failed
-  // reading here and re-ingests it in place instead of minting a duplicate.
+  // Load-bearing for retry-after-failure of legacy/pointerless rows: a rerun
+  // finds the failed reading here and re-ingests it in place instead of minting
+  // a duplicate.
   // `forceScan` mirrors the Worker's `deepScan: true` damaged-pointer repair:
   // scan the bucket even when the index parses, so a stale index can't hide the
   // real owner. Left off for plain cold lookups to avoid a per-submit scan.
@@ -148,9 +148,9 @@ export async function prepareFreshMarkdown(
 
     // No usable live by-url owner (absent, or damaged and falling through).
     // Run the cold-legacy lookup before minting (mirrors the Worker's
-    // resolveOwner cold path): a prior failed fresh ingest writes a by-id
-    // pointer + list row but deliberately no by-url pointer, so a retry must
-    // re-ingest THAT failed reading in place rather than mint a second one.
+    // resolveOwner cold path): legacy/pointerless failed rows can still exist,
+    // so a retry must re-ingest THAT failed reading in place rather than mint a
+    // second one.
     // Resolve through index/list.json by the same ready>pending>failed
     // ownership rank the Worker uses. A damaged pointer (owner present but
     // unmatched, or structurally "damaged") forces a deep scan — the Worker's
@@ -251,6 +251,7 @@ function buildExtractedTarget(
     url_hash: urlHash,
     source_type: "markdown",
     status: "pending",
+    batch_claim: true,
     ...(article.title === undefined ? {} : { title: article.title }),
     content_type: MARKDOWN_CONTENT_TYPE,
     content_status: "captured",

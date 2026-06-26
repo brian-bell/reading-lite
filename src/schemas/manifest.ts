@@ -118,6 +118,7 @@ export const ManifestSchema = z
     error: ManifestErrorSchema.optional(),
     active_attempt: ProcessingAttemptSummarySchema.optional(),
     last_attempt: ProcessingAttemptSummarySchema.optional(),
+    batch_claim: z.boolean().optional(),
 
     title: z.string().min(1).optional(),
     tldr: z.string().min(1).optional(),

@@ -1,6 +1,6 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
 import type { AnthropicBatchClient, AnthropicBatchRequest, BatchInfo } from "./clients";
-import type { Sidecar, SidecarTarget, SummarizeTarget } from "./types";
+import type { ClaimRollback, Sidecar, SidecarTarget, SummarizeTarget } from "./types";
 
 export interface SubmitDeps {
   model: string;
@@ -12,11 +12,25 @@ export interface SubmitDeps {
   // the create window leaves a pending marker that aborts a re-run instead of
   // silently re-submitting (and re-billing).
   saveSidecar(sidecar: Sidecar): Promise<void>;
+  claimRollback?: ClaimRollback;
 }
 
 export interface SubmitResult {
   info: BatchInfo;
   sidecar: Sidecar;
+}
+
+export function pendingSidecarForTargets(
+  targets: SummarizeTarget[],
+  model: string,
+): Sidecar {
+  return {
+    batchId: "",
+    model,
+    processingStatus: "pending",
+    resultsUrl: null,
+    targets: targets.map(sidecarTargetFor),
+  };
 }
 
 // Anthropic's batch limit is 256MB; refuse well under it and tell the operator to
@@ -81,11 +95,11 @@ export async function submitBatch(
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
   // than create a second, double-billed batch.
   await deps.saveSidecar({
-    batchId: "",
-    model: deps.model,
-    processingStatus: "pending",
-    resultsUrl: null,
+    ...pendingSidecarForTargets(targets, deps.model),
     targets: sidecarTargets,
+    ...(deps.claimRollback
+      ? { claimRollback: deps.claimRollback, claimRollbackPhase: "create_window" as const }
+      : {}),
   });
 
   const info = await deps.batch.create(requests);

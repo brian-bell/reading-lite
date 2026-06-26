@@ -7,6 +7,7 @@ import { AwsClient } from "aws4fetch";
 
 export interface R2PutOptions {
   contentType?: string;
+  ifNotExists?: boolean;
 }
 
 export interface R2Client {
@@ -15,6 +16,13 @@ export interface R2Client {
   head(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   listKeys(): Promise<string[]>;
+}
+
+export class R2ConditionalPutError extends Error {
+  constructor(readonly key: string) {
+    super(`R2 PUT ${key} failed: object already exists`);
+    this.name = "R2ConditionalPutError";
+  }
 }
 
 export interface VectorizeUpsertVector {
@@ -74,7 +82,11 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Cl
     async put(key, body, opts) {
       const headers: Record<string, string> = {};
       if (opts?.contentType) headers["content-type"] = opts.contentType;
+      if (opts?.ifNotExists) headers["if-none-match"] = "*";
       const res = await signedFetch(key, { method: "PUT", body, headers });
+      if (opts?.ifNotExists && (res.status === 409 || res.status === 412)) {
+        throw new R2ConditionalPutError(key);
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
@@ -186,8 +198,8 @@ export function makeVectorizeClient(
 
 export function dryRunR2(log: (line: string) => void = (l) => process.stderr.write(l + "\n")): R2Client {
   return {
-    async put(key) {
-      log(`[dry-run] R2 PUT ${key}`);
+    async put(key, _body, opts) {
+      log(`[dry-run] R2 PUT ${key}${opts?.ifNotExists ? " if-not-exists" : ""}`);
     },
     async get() {
       return null;

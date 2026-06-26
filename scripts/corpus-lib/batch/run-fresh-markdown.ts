@@ -2,6 +2,8 @@ import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import { runBatchPipeline, type BatchRunDeps, type BatchRunResult } from "./run";
 import { r2ReadDeps } from "./r2-reads";
 import { prepareFreshMarkdown, type FreshDisposition } from "./prepare-fresh-markdown";
+import { claimFreshMarkdownTargets } from "./eager-claim";
+import { pendingSidecarForTargets } from "./submit-phase";
 
 // The fresh-markdown bulk path reuses the whole batch tail (similar → submit →
 // poll → write); it only adds `newId` for minting unclaimed-URL readings (R2 read
@@ -33,17 +35,34 @@ export async function runFreshMarkdownBatch(
   // ownership — dispositions stay empty.
   let dispositions: FreshDisposition[] = [];
 
-  const base = await runBatchPipeline(async () => {
-    const plan = await prepareFreshMarkdown(articles, {
-      ...r2ReadDeps(deps.r2),
-      newId: deps.newId,
-      now: deps.now,
-    });
-    dispositions = plan.dispositions;
-    const toIngest =
-      deps.limit === undefined ? plan.toIngest : plan.toIngest.slice(0, deps.limit);
-    return { extracted: toIngest, dropped: [] };
-  }, deps);
+  const base = await runBatchPipeline(
+    async () => {
+      const plan = await prepareFreshMarkdown(articles, {
+        ...r2ReadDeps(deps.r2),
+        newId: deps.newId,
+        now: deps.now,
+      });
+      dispositions = plan.dispositions;
+      const toIngest =
+        deps.limit === undefined ? plan.toIngest : plan.toIngest.slice(0, deps.limit);
+      return { extracted: toIngest, dropped: [] };
+    },
+    {
+      ...deps,
+      beforeSubmit: (targets) =>
+        claimFreshMarkdownTargets(targets, {
+          r2: deps.r2,
+          now: deps.now,
+          saveClaimRollback: (claimRollback) =>
+            deps.saveSidecar({
+              ...pendingSidecarForTargets(targets, deps.model),
+              claimRollback,
+              claimRollbackPhase: "pre_create",
+            }),
+          ...(deps.log ? { log: deps.log } : {}),
+        }),
+    },
+  );
 
   return { ...base, dispositions };
 }

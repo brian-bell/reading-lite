@@ -1,6 +1,7 @@
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { SimilarContext } from "../../../src/modules/anthropic";
+import type { ListIndexItem } from "../../../src/schemas/api";
 
 // One reading the bulk path will summarize, resolved from an audit row + its
 // existing manifest (the source of created_at, url_hash, content fields, and the
@@ -70,4 +71,11 @@ export interface Sidecar {
   processingStatus: string;
   resultsUrl: string | null;
   targets: SidecarTarget[];
+  claimRollback?: ClaimRollback;
+  claimRollbackPhase?: "pre_create" | "create_window";
+}
+
+export interface ClaimRollback {
+  objects: Array<{ key: string; body: string | null }>;
+  touchedListItems: ListIndexItem[];
 }

@@ -487,6 +487,9 @@ async function enqueueReprocess(
   opts: { force?: boolean; email: boolean },
 ): Promise<SubmitJsonResult> {
   const effectiveManifest = annotateStale(manifest, env, services);
+  if (effectiveManifest.status === "pending" && effectiveManifest.batch_claim === true) {
+    return { body: { error: "batch-owned reading is still in flight" }, status: 409 };
+  }
   if (effectiveManifest.active_attempt?.status === "running" && !opts.force) {
     return { body: { error: "reading already has an active attempt" }, status: 409 };
   }

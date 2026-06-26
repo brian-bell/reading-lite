@@ -1,11 +1,8 @@
-// Issue #68: the offline batch tools (corpus-ingest, corpus-recover --batch) do
-// not claim the by-url slot until a run *succeeds*, so for the whole in-flight
-// window — fetch → embed → the minutes-to-hours Anthropic Message Batch — each
-// target URL sits unclaimed. If the realtime writer is live, an online submit
-// for the same URL wins the empty by-url slot and races the batch: duplicate
-// paid summarization/embedding, duplicate emails, and by-url/by-id/list-row
-// pointer thrash (no corruption — the CAS gates prevent that). The mitigation is
-// operational: run a batch only with the realtime writer paused/drained. This
+// Issue #68: the offline batch tools coordinate ownership outside the Worker.
+// corpus-ingest now eagerly claims success-bound targets before batch creation,
+// but recover-batch parity and failure-path claim release are separate slices.
+// Until all batch paths share the Worker's ownership guarantees, the mitigation
+// is operational: run a batch only with the realtime writer paused/drained. This
 // guard makes that discipline enforceable instead of tribal knowledge — a real
 // (--execute) batch submit is refused unless the operator explicitly asserts
 // sole-writer status with --sole-writer.
@@ -31,9 +28,9 @@ export function soleWriterGuard(opts: {
       proceed: false,
       message:
         `REFUSED: ${opts.tool} --execute requires --sole-writer.\n` +
-        `  This batch path leaves each URL's by-url slot unclaimed for the entire\n` +
-        `  in-flight window, so a live realtime writer can race it (duplicate paid\n` +
-        `  summarization + embedding, duplicate emails, pointer thrash).\n` +
+        `  Offline batch paths still have ownership windows that require the realtime\n` +
+        `  writer to be paused/drained (recover-batch parity and failure-release\n` +
+        `  slices are not complete).\n` +
         `  Pause/drain the realtime writer, then re-run with --sole-writer to confirm\n` +
         `  this script is the only writer.`,
     };
@@ -43,9 +40,8 @@ export function soleWriterGuard(opts: {
     message:
       `${RULE}\n` +
       `  SOLE-WRITER MODE: ${opts.tool}\n` +
-      `  You asserted the realtime writer is paused/drained. This batch submits\n` +
-      `  with each by-url slot left unclaimed for the in-flight window; a concurrent\n` +
-      `  live writer would duplicate compute + emails and thrash pointers.\n` +
+      `  You asserted the realtime writer is paused/drained while this offline\n` +
+      `  batch owns the write path.\n` +
       `${RULE}`,
   };
 }

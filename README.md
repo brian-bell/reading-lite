@@ -327,27 +327,30 @@ rules as the Worker's `ReadingClaim`: a pointer only counts as the owner when it
 manifest actually matches (id + url + url_hash), so ready owners and pending
 owners are skipped while failed owners re-ingest in place; a fresh pointer whose
 manifest hasn't landed yet is treated as still-initializing and skipped (a
-realtime submit may be in flight); and unclaimed or damaged pointers mint a
-brand-new reading
-(never reusing a damaged id, so a cross-wired pointer can't overwrite an unrelated
-reading). When no by-url pointer exists, it first runs the same cold-legacy
-lookup the Worker does (`findManifestByUrl` over `index/list.json`): a prior
-failed fresh ingest leaves a by-id pointer + list row but no by-url pointer, so a
-rerun finds that failed reading there and re-ingests it in place instead of
-minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
+realtime submit may be in flight); unclaimed URLs mint a brand-new reading; and
+damaged pointers force the cold repair scan but are skipped at submit time if the
+damaged by-url object still occupies the slot (the offline S3 client does not
+have the Worker's by-url CAS repair primitive). When no by-url pointer exists, it first runs the same cold-legacy
+lookup the Worker does (`findManifestByUrl` over `index/list.json`), so
+legacy/pointerless failed rows can still be found and re-ingested in place
+instead of minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
-rather than risk racing the worker. Because the by-url pointer is only written on
-success, the slot stays unclaimed during the in-flight batch window — a
-concurrent realtime submit of the same URL could duplicate it, so this is
-intended for an operator backfill where the script is the sole writer. That
-"sole writer" condition is enforced, not just assumed: `corpus-ingest --execute`
-(and likewise `corpus-recover --batch --execute`) **refuses to submit unless you
-also pass `--sole-writer`**, confirming the realtime writer is paused/drained; an
-acknowledged run prints a loud banner before any submit, and dry-runs (which
-submit nothing) never require it. The in-flight batch is recorded in a
-sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
-instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
+rather than risk racing the worker. At submit time, `corpus-ingest` mirrors the
+Worker's eager ownership claim for success-bound targets by writing the pending
+manifest, by-id pointer, conditional by-url pointer, and list row before creating
+the Anthropic batch; if another writer already owns the by-url slot, that target
+is skipped. A realtime submit that arrives while the batch is in flight therefore
+returns the existing pending reading instead of minting a duplicate. Failure-path
+claim release is a later slice, so a failed batch result can leave the eager
+by-url claim pointing at the failed manifest; reruns re-ingest that failed owner
+in place. The "sole writer" condition is still enforced for batch tools:
+`corpus-ingest --execute` and `corpus-recover --batch --execute` **refuse to
+submit unless you also pass `--sole-writer`**, confirming the realtime writer is
+paused/drained; an acknowledged run prints a loud banner before any submit, and
+dry-runs (which submit nothing) never require it. The in-flight batch is recorded
+in a sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that
+batch instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
 `CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`
 requires them, dry-run degrades to the local plan without them.
 

@@ -6,10 +6,11 @@ import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { resolveSimilar } from "./similar-phase";
-import { submitBatch } from "./submit-phase";
+import { pendingSidecarForTargets, submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
-import type { DroppedTarget, ExtractedTarget, Sidecar } from "./types";
+import type { ClaimRollback, DroppedTarget, ExtractedTarget, Sidecar, SummarizeTarget } from "./types";
+import { restoreClaimRollback } from "./eager-claim";
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -25,8 +26,16 @@ export interface BatchRunDeps {
   // resumes without re-summarizing (cost-safe).
   loadSidecar(): Promise<Sidecar | null>;
   saveSidecar(sidecar: Sidecar): Promise<void>;
+  clearSidecar?(): Promise<void>;
+  beforeSubmit?(targets: SummarizeTarget[]): Promise<BeforeSubmitResult>;
   log?(line: string): void;
   poll?: { intervalMs?: number; maxPolls?: number };
+}
+
+export interface BeforeSubmitResult {
+  targets: SummarizeTarget[];
+  claimRollback?: ClaimRollback;
+  rollback?(): Promise<void>;
 }
 
 export interface BatchRunResult {
@@ -59,18 +68,34 @@ export async function runBatchPipeline(
   const existing = await deps.loadSidecar();
   if (existing) {
     if (!existing.batchId) {
-      // A pending sidecar with no batch id means a prior run crashed in the
-      // create window: a batch MAY have been created and billed. Abort rather
-      // than risk a second, double-billed batch.
-      throw new Error(
-        "found a pending batch sidecar with no batch id — a previous --batch run " +
-          "may have created (and been billed for) a batch without recording its id. " +
-          "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
-      );
+      if (existing.claimRollback && existing.claimRollbackPhase === "pre_create") {
+        log(`Recovering pending pre-create claims (${existing.targets.length} readings)`);
+        await restoreClaimRollback({ r2: deps.r2 }, existing.claimRollback);
+        if (!deps.clearSidecar) {
+          throw new Error("found a recoverable pending batch sidecar but no clearSidecar hook is configured");
+        }
+        await deps.clearSidecar();
+        throw new Error("recovered pre-create eager claims; rerun corpus-ingest to replan and submit");
+      } else {
+        // A pending sidecar with no batch id means a prior run crashed in the
+        // create window: a batch MAY have been created and billed. Abort rather
+        // than risk a second, double-billed batch.
+        const claimGuidance = existing.claimRollback
+          ? " This sidecar also records eager R2 ownership claims; do NOT delete it by itself. " +
+            "If Anthropic shows a batch was created, record that batch id in the sidecar and rerun. " +
+            "If no batch exists, restore the sidecar's claimRollback snapshot before clearing it."
+          : " Check the Anthropic console, then delete the .batch.json sidecar before retrying.";
+        throw new Error(
+          "found a pending batch sidecar with no batch id — a previous --batch run " +
+            "may have created (and been billed for) a batch without recording its id." +
+            claimGuidance,
+        );
+      }
+    } else {
+      log(`Resuming batch ${existing.batchId} (${existing.targets.length} readings)`);
+      const report = await pollAndWrite(existing, deps);
+      return { report, dropped: [], resumed: true, batchId: existing.batchId };
     }
-    log(`Resuming batch ${existing.batchId} (${existing.targets.length} readings)`);
-    const report = await pollAndWrite(existing, deps);
-    return { report, dropped: [], resumed: true, batchId: existing.batchId };
   }
 
   const { extracted, dropped } = await produce();
@@ -80,23 +105,76 @@ export async function runBatchPipeline(
     log(`  dropped ${d.readingId}: ${d.reason}`);
   }
 
-  const summarizeTargets = await resolveSimilar(extracted, {
+  let summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     query: (vector, opts) => deps.vectorize.query(vector, opts),
   });
+  let beforeSubmitRollback: (() => Promise<void>) | undefined;
+  let beforeSubmitClaimRollback: ClaimRollback | undefined;
+  if (deps.beforeSubmit) {
+    let beforeSubmit: BeforeSubmitResult;
+    try {
+      beforeSubmit = await deps.beforeSubmit(summarizeTargets);
+    } catch (err) {
+      throw err;
+    }
+    summarizeTargets = beforeSubmit.targets;
+    beforeSubmitRollback = beforeSubmit.rollback;
+    beforeSubmitClaimRollback = beforeSubmit.claimRollback;
+  }
 
   if (summarizeTargets.length === 0) {
+    if (beforeSubmitRollback) await deps.clearSidecar?.();
     log("No readings to summarize after extraction.");
     return { report: [], dropped, resumed: false };
   }
 
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
-  const { info, sidecar } = await submitBatch(summarizeTargets, {
-    model: deps.model,
-    batch: deps.batch,
-    putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
-    saveSidecar: deps.saveSidecar,
-  });
+  let pendingSidecarSaved = false;
+  if (beforeSubmitRollback) {
+    try {
+      await deps.saveSidecar({
+        ...pendingSidecarForTargets(summarizeTargets, deps.model),
+        ...(beforeSubmitClaimRollback
+          ? { claimRollback: beforeSubmitClaimRollback, claimRollbackPhase: "pre_create" as const }
+          : {}),
+      });
+      pendingSidecarSaved = true;
+    } catch (err) {
+      await beforeSubmitRollback();
+      await deps.clearSidecar?.();
+      throw err;
+    }
+  }
+  let info;
+  let sidecar;
+  let createStarted = false;
+  try {
+    const submitted = await submitBatch(summarizeTargets, {
+      model: deps.model,
+      batch: {
+        ...deps.batch,
+        create: async (requests) => {
+          createStarted = true;
+          return deps.batch.create(requests);
+        },
+      },
+      ...(beforeSubmitClaimRollback ? { claimRollback: beforeSubmitClaimRollback } : {}),
+      putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
+      saveSidecar: async (s) => {
+        await deps.saveSidecar(s);
+        if (s.batchId === "") pendingSidecarSaved = true;
+      },
+    });
+    info = submitted.info;
+    sidecar = submitted.sidecar;
+  } catch (err) {
+    if (!createStarted) {
+      await beforeSubmitRollback?.();
+      if (pendingSidecarSaved) await deps.clearSidecar?.();
+    }
+    throw err;
+  }
   log(`Batch ${info.id} created; polling for completion...`);
 
   const report = await pollAndWrite(sidecar, deps);
