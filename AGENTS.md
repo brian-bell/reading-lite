@@ -277,5 +277,14 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   intended for an operator backfill where the script is the sole writer.
   Dry-run-by-default + `--execute`; resumes its in-flight batch from
   `./corpus-ingest.batch.json` (override with `--sidecar`).
+- The sole-writer requirement is enforced, not just documented (issue #68). Both
+  batch tools — `corpus-ingest --execute` and `corpus-recover --batch --execute`
+  — refuse to submit unless the operator also passes `--sole-writer`, asserting
+  the realtime writer is paused/drained; an acknowledged run prints a loud banner
+  before any submit. Dry-runs submit nothing and so never require it. The shared
+  pure guard is `soleWriterGuard` in `scripts/corpus-lib/sole-writer.ts` (the
+  unit-tested decision; the CLIs only do the stderr-print + `exit(2)` I/O). This
+  closes the operational hole for option (a) of #66; an eager-claim fix (option
+  (b)) would make it belt-and-suspenders rather than the sole mitigation.
 - The SPA currently invalidates queries after submit/reprocess but does not
   continuously poll pending manifests.

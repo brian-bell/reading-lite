@@ -15,6 +15,7 @@ import { runBatch } from "./corpus-lib/batch/run";
 import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
 import { makeBrowserFetch } from "./corpus-lib/browser-fetch";
+import { enforceSoleWriter } from "./corpus-lib/sole-writer";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -40,6 +41,7 @@ interface Args {
   wave: number;
   wavePauseMs: number;
   batch: boolean;
+  soleWriter: boolean;
   // Raw --bucket flag (undefined when not passed). The read/monitor path uses
   // the defaulted `bucket`; the batch *write* path must pass this through so
   // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (an alternate bucket)
@@ -61,6 +63,7 @@ function parseCliArgs(): Args {
       wave: { type: "string" },
       "wave-pause": { type: "string" },
       batch: { type: "boolean", default: false },
+      "sole-writer": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
@@ -81,6 +84,7 @@ function parseCliArgs(): Args {
     wave: parsePositive(values.wave, "wave", Infinity),
     wavePauseMs: parsePositive(values["wave-pause"], "wave-pause", 60) * 1000,
     batch: values.batch === true,
+    soleWriter: values["sole-writer"] === true,
   };
 }
 
@@ -118,6 +122,11 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
                     burst) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
                     + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys.
+  --sole-writer     Required with --batch --execute: assert the realtime writer
+                    is paused/drained. The batch path leaves each by-url slot
+                    unclaimed for the in-flight window, so a live writer would
+                    race it (duplicate compute/emails, pointer thrash). Refuses
+                    without it.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
@@ -250,6 +259,16 @@ async function runBatchMode(
   if (Number.isFinite(args.wave)) {
     process.stderr.write("  ! --wave is ignored in --batch mode (no realtime queue to pace)\n");
   }
+
+  // Sole-writer preflight (issue #68): a real batch submit leaves each by-url
+  // slot unclaimed for the in-flight window, so refuse unless the operator
+  // asserts the realtime writer is paused/drained. A resume (live sidecar) is
+  // gated too — by-url is only claimed on the final success write, so the slot
+  // stays unclaimed through the resume and the race is live. No-op for dry-run.
+  enforceSoleWriter(
+    { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-recover --batch" },
+    { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
+  );
 
   // reprocess + local-extract both reduce to extract→summarize→embed→write here.
   const batchRows: AuditRow[] = [];
