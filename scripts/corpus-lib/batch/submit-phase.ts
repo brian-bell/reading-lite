@@ -37,7 +37,7 @@ export async function submitBatch(
   for (const st of targets) {
     const { target, markdown, title, fresh } = st.extracted;
 
-    if (fresh) {
+    if (fresh && !st.extracted.contentAlreadyWritten) {
       await deps.putObject(
         `${target.keyPrefix}/raw.${extToken(fresh.content_type)}`,
         fresh.raw,

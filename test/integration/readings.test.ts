@@ -382,6 +382,58 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs).toHaveLength(1);
   });
 
+  it("returns an old batch-owned pending reading without enqueueing realtime work", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/offline-batch-pending";
+    const urlHash = await sha256Hex(url);
+    const pending: Manifest = {
+      id: "rd_BATCH_PENDING",
+      url,
+      url_hash: urlHash,
+      source_type: "markdown",
+      status: "pending",
+      active_attempt: {
+        id: "batch_rd_BATCH_PENDING",
+        trigger: "import",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-04-26T18:00:00.000Z",
+      },
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "b".repeat(64),
+      created_at: "2026-04-26T18:00:00.000Z",
+      updated_at: "2026-04-26T18:00:00.000Z",
+    };
+    const keyPrefix = buildKeyPrefix(pending.id, pending.created_at);
+    await reader.writeManifest(keyPrefix, pending);
+    await reader.writeByIdPointer(pending.id, { id: pending.id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id: pending.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
+
+    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
+    const response = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      customEnv,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      id: pending.id,
+      status: "pending",
+      active_attempt: { id: "batch_rd_BATCH_PENDING", status: "running" },
+    });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
   it("converges simultaneous submits of one URL to one reading and one queued job", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });

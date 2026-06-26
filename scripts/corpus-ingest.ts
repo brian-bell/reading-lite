@@ -95,10 +95,10 @@ deduped by source URL (largest wins) and any over ${Math.round(
 
 Idempotency: by-url ownership is read client-side — ready owners are skipped,
 pending owners are skipped (a realtime submit may be in flight), failed owners
-re-ingest in place, and unclaimed URLs mint a new reading. Because by-url is only
-written on success, the slot stays unclaimed during the in-flight batch window, so
-a concurrent realtime submit of the same URL could duplicate it. Intended for an
-operator backfill where this script is the sole writer.
+re-ingest in place, and unclaimed URLs mint a new reading. Fresh ingest eagerly
+claims activated by-url slots before batch creation; --sole-writer remains
+required because recover parity and failure-release follow-ups are still
+outstanding.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
 for R2/Vectorize, ANTHROPIC_API_KEY + OPENAI_API_KEY for summarize/embed. --execute
@@ -112,8 +112,8 @@ async function main(): Promise<void> {
   // Sole-writer preflight (issue #68): refuse a real submit unless the operator
   // asserts the realtime writer is paused/drained. Runs before any dir/cred/batch
   // work so an unacknowledged --execute fails loudly and immediately. A resume
-  // (live sidecar) is gated too — by-url is only claimed on the final success
-  // write, so the slot stays unclaimed through the resume and the race is live.
+  // (live sidecar) is gated too. Fresh ingest now eagerly claims activated slots,
+  // but recover parity and failure-release follow-ups are still outstanding.
   enforceSoleWriter(
     { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-ingest" },
     { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
@@ -190,11 +190,17 @@ async function main(): Promise<void> {
         `    already-ready (skip):    ${tally.skipReady}\n` +
         `    pending owner (skip):    ${tally.skipPending}\n` +
         `    initializing (skip):     ${tally.skipInitializing}\n` +
+        `    occupied repair (skip):  ${tally.skipOccupiedNeedsRepair}\n` +
         `    failed owner (reingest): ${tally.ingestFailed}\n` +
         `    new (mint id):           ${tally.ingestNew}\n` +
         `  [dry-run] would submit ${wouldSubmit} reading(s) in one Message Batch\n`,
     );
-    printSummary({ executed: false, skipped_ready: tally.skipReady, skipped_pending: tally.skipPending });
+    printSummary({
+      executed: false,
+      skipped_ready: tally.skipReady,
+      skipped_pending: tally.skipPending,
+      skipped_occupied_repair: tally.skipOccupiedNeedsRepair,
+    });
     return;
   }
 
@@ -215,6 +221,7 @@ async function main(): Promise<void> {
     sleep: (ms: number) => sleep(ms).then(() => undefined),
     loadSidecar: () => loadSidecar(args.sidecar),
     saveSidecar: (s) => saveSidecar(args.sidecar, s),
+    clearSidecar: () => clearSidecar(args.sidecar),
     log: (line) => process.stderr.write(line + "\n"),
   });
 
@@ -234,13 +241,14 @@ async function main(): Promise<void> {
     skipped,
     skipped_ready: tally.skipReady,
     skipped_pending: tally.skipPending,
+    skipped_occupied_repair: tally.skipOccupiedNeedsRepair,
   });
   if (failed > 0) process.exit(1);
 }
 
 // One JSON summary shape across dry-run and execute so the same field names mean
 // the same thing in both. `skipped` = write-phase skips (missing batch result);
-// `skipped_ready`/`skipped_pending` = ownership skips.
+// `skipped_ready`/`skipped_pending`/`skipped_occupied_repair` = ownership skips.
 interface Summary {
   executed: boolean;
   resumed?: boolean;
@@ -250,6 +258,7 @@ interface Summary {
   skipped: number;
   skipped_ready: number;
   skipped_pending: number;
+  skipped_occupied_repair: number;
 }
 
 function printSummary(s: Partial<Summary> & { executed: boolean }): void {
@@ -259,6 +268,7 @@ function printSummary(s: Partial<Summary> & { executed: boolean }): void {
     skipped: 0,
     skipped_ready: 0,
     skipped_pending: 0,
+    skipped_occupied_repair: 0,
     ...s,
   };
   process.stdout.write(JSON.stringify(full, null, 2) + "\n");

@@ -9,6 +9,8 @@ import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { Sidecar, SidecarTarget } from "./types";
+import { mergeListIndex } from "./list-index-write";
+import { serializeReadingPointer } from "./pointers";
 
 export interface WriteDeps {
   r2: R2Client;
@@ -23,8 +25,6 @@ export interface WriteReportRow {
   status: "ready" | "failed" | "skipped";
   reason?: string;
 }
-
-const LIST_INDEX_KEY = "index/list.json";
 
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
@@ -102,15 +102,17 @@ export async function writeResults(
   // 2. Write the success manifests + pointers.
   for (const { target, manifest } of successes) {
     await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
-    const pointer = JSON.stringify({ id: target.id, key_prefix: target.keyPrefix });
+    const pointer = serializeReadingPointer(target.id, target.keyPrefix);
     await deps.r2.put(`index/by-url/${target.urlHash}`, pointer, { contentType: "application/json" });
     await deps.r2.put(`index/by-id/${target.id}`, pointer, { contentType: "application/json" });
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests. No by-url pointer (failed URLs stay
-  //    re-submittable), but DO write the by-id pointer: a freshly-minted ingest
+  // 3. Write the failure manifests. Do not create a by-url pointer here, but do
+  //    tolerate an eager claim already written by fresh activation. Releasing
+  //    that failed eager claim is a follow-up slice. DO write the by-id pointer:
+  //    a freshly-minted ingest
   //    has no pre-existing pointer (unlike the recover path, where the reading is
   //    already in the corpus), so without it the failed reading would be a
   //    dangling list row — its detail/diagnostics/reprocess routes resolve
@@ -123,7 +125,7 @@ export async function writeResults(
     await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
     await deps.r2.put(
       `index/by-id/${target.id}`,
-      JSON.stringify({ id: target.id, key_prefix: target.keyPrefix }),
+      serializeReadingPointer(target.id, target.keyPrefix),
       { contentType: "application/json" },
     );
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
@@ -238,33 +240,4 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
   if (m.title) out.title = m.title;
   if (m.tags) out.tags = m.tags;
   return out;
-}
-
-async function mergeListIndex(deps: WriteDeps, touched: ListIndexItem[]): Promise<void> {
-  const raw = await deps.r2.get(LIST_INDEX_KEY);
-  let items: ListIndexItem[] = [];
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { items?: ListIndexItem[] };
-      if (Array.isArray(parsed.items)) items = parsed.items;
-    } catch {
-      deps.log?.(`  ! index/list.json was unparseable; rebuilding from touched items only`);
-    }
-  }
-  // Drop any existing row that collides with a touched row on EITHER id or
-  // key_prefix. The id filter is the normal replace-in-place; the key_prefix
-  // filter cleans up the cross-wired/stale case where a row's id disagrees with
-  // the manifest its key_prefix points at (the cold lookup re-ingests under the
-  // manifest's real id, so the old row id would otherwise survive as a bogus
-  // duplicate). A key_prefix encodes its reading id (`...-rd_x`), so it is
-  // unique per reading — filtering by it can only ever remove the stale twin.
-  const touchedIds = new Set(touched.map((t) => t.id));
-  const touchedKeyPrefixes = new Set(touched.map((t) => t.key_prefix));
-  const merged = [
-    ...items.filter((i) => !touchedIds.has(i.id) && !touchedKeyPrefixes.has(i.key_prefix)),
-    ...touched,
-  ];
-  await deps.r2.put(LIST_INDEX_KEY, JSON.stringify({ version: 1, items: merged }), {
-    contentType: "application/json",
-  });
 }

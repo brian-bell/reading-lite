@@ -7,7 +7,7 @@ import {
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { MarkdownArticle } from "../../../../scripts/import-markdown-lib/parse";
-import type { Sidecar } from "../../../../scripts/corpus-lib/batch/types";
+import type { PersistedSidecar, Sidecar } from "../../../../scripts/corpus-lib/batch/types";
 
 const NOW = "2026-06-22T12:00:00.000Z";
 
@@ -47,16 +47,21 @@ function harness(seed: Record<string, string> = {}) {
     put: vi.fn(async (k: string, b: Uint8Array | string) => {
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
     }),
+    putIfAbsent: vi.fn(async (k: string, b: Uint8Array | string) => {
+      if (store.has(k)) return false;
+      store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
+      return true;
+    }),
     head: vi.fn(async (k: string) => store.has(k)),
     listKeys: vi.fn(async () => [...store.keys()]),
   };
   const vectorize = { upsert: vi.fn(async () => {}), query: vi.fn(async () => []) };
-  let sidecar: Sidecar | null = null;
+  let sidecar: PersistedSidecar | null = null;
   const batch = {
     create: vi.fn(async () => ({ id: "msgbatch_fresh", processing_status: "in_progress", results_url: null })),
     get: vi.fn(async () => ({ id: "msgbatch_fresh", processing_status: "ended", results_url: "https://results" })),
     results: vi.fn(async () =>
-      (sidecar?.targets ?? []).map((t) => ({
+      ((sidecar as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,
         result: {
           type: "succeeded" as const,
@@ -87,12 +92,15 @@ function harness(seed: Record<string, string> = {}) {
     newId: vi.fn(() => `rd_FRESH${n++}`),
     sleep: vi.fn(async () => {}),
     loadSidecar: vi.fn(async () => null),
-    saveSidecar: vi.fn(async (s: Sidecar) => {
+    saveSidecar: vi.fn(async (s: PersistedSidecar) => {
       sidecar = s;
+    }),
+    clearSidecar: vi.fn(async () => {
+      sidecar = null;
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, batch, deps, getSidecar: () => sidecar, setSidecar: (s: Sidecar | null) => (sidecar = s) };
+  return { store, r2, vectorize, batch, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };
 }
 
 describe("runFreshMarkdownBatch — fresh run", () => {
@@ -133,13 +141,13 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.vectorize.upsert).toHaveBeenCalled();
   });
 
-  it("writes a by-id pointer (but no by-url) for a fresh ingest whose batch result fails", async () => {
+  it("writes a failed manifest while retaining the eager by-url claim for a failed batch result", async () => {
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     // the batch errors this item rather than emitting a reading (deps.batch and
     // h.batch are the same object, so this override is seen by the pipeline)
     h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
+      ((h.getSidecar() as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,
         result: { type: "errored" as const, error: { message: "boom" } },
       })),
@@ -153,8 +161,11 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(m.status).toBe("failed");
     // by-id MUST exist so detail/diagnostics/reprocess resolve (no dangling row)
     expect(h.store.has("index/by-id/rd_FRESH0")).toBe(true);
-    // by-url MUST NOT exist so the failed URL stays re-submittable
-    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    // Issue #69 deliberately does not release eager claims on batch failure.
+    expect(JSON.parse(h.store.get(`index/by-url/${hex(a.sourceUrl!)}`)!)).toEqual({
+      id: "rd_FRESH0",
+      key_prefix: kp,
+    });
     // the list still carries the failed reading
     const index = JSON.parse(h.store.get("index/list.json")!);
     expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
@@ -164,8 +175,8 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     const h = harness();
     const calls: string[] = [];
     const origSave = h.deps.saveSidecar;
-    h.deps.saveSidecar = vi.fn(async (s: Sidecar) => {
-      calls.push(s.batchId === "" ? "save:pending" : "save:final");
+    h.deps.saveSidecar = vi.fn(async (s: PersistedSidecar) => {
+      calls.push(s.processingStatus === "activating" ? "save:activating" : s.batchId === "" ? "save:pending" : "save:final");
       await origSave(s);
     });
     const origCreate = h.batch.create;
@@ -174,7 +185,22 @@ describe("runFreshMarkdownBatch — fresh run", () => {
       return (origCreate as any)(...args);
     });
     await runFreshMarkdownBatch([article("alpha", "https://example.com/alpha")], h.deps);
+    expect(calls.indexOf("save:activating")).toBeLessThan(calls.indexOf("save:pending"));
     expect(calls.indexOf("save:pending")).toBeLessThan(calls.indexOf("create"));
+  });
+
+  it("skips all activation losers without embedding or creating a batch", async () => {
+    const h = harness();
+    h.r2.putIfAbsent = vi.fn(async () => false);
+
+    const result = await runFreshMarkdownBatch([article("alpha", "https://example.com/alpha")], h.deps);
+
+    expect(result.report).toEqual([
+      { id: "rd_FRESH0", status: "skipped", reason: "by-url slot already owned at batch submit" },
+    ]);
+    expect(h.deps.clearSidecar).toHaveBeenCalledOnce();
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.batch.create).not.toHaveBeenCalled();
   });
 });
 
@@ -257,20 +283,20 @@ describe("runFreshMarkdownBatch — idempotency", () => {
 
     // First run: force the batch to error this item → failed manifest, by-id, no by-url.
     h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
+      ((h.getSidecar() as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,
         result: { type: "errored" as const, error: { message: "boom" } },
       })),
     ) as any;
     await runFreshMarkdownBatch([a], h.deps);
     expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("failed");
-    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(true);
 
     // Second run on the same markdown, with a succeeding batch this time.
     h.setSidecar(null);
     (h.deps.newId as any).mockClear();
     h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
+      ((h.getSidecar() as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,
         result: {
           type: "succeeded" as const,

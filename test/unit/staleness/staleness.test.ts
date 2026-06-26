@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stalenessOf, type StaleInput } from "../../../src/modules/staleness";
+import { isBatchOwnedPending, stalenessOf, type StaleInput } from "../../../src/modules/staleness";
 import type { ProcessingAttemptSummary } from "../../../src/schemas/manifest";
 
 const TTL = 300;
@@ -76,6 +76,36 @@ describe("stalenessOf", () => {
   });
 
   describe("pending expiry", () => {
+    it("does not stale a batch-owned pending import marker", () => {
+      const input: StaleInput = {
+        status: "pending",
+        updated_at: ONE_HOUR_AGO,
+        active_attempt: runningAttempt({
+          id: "batch_rd_a",
+          trigger: "import",
+          stage: "summarize",
+          started_at: ONE_HOUR_AGO,
+        }),
+      };
+      expect(isBatchOwnedPending(input)).toBe(true);
+      expect(stalenessOf(input, TTL, NOW)).toEqual({ expiredActiveAttempt: null, pendingError: null });
+    });
+
+    it("does not exempt non-batch import attempts", () => {
+      const input: StaleInput = {
+        status: "pending",
+        updated_at: ONE_HOUR_AGO,
+        active_attempt: runningAttempt({
+          id: "at_rd_a",
+          trigger: "import",
+          stage: "summarize",
+          started_at: ONE_HOUR_AGO,
+        }),
+      };
+      expect(isBatchOwnedPending(input)).toBe(false);
+      expect(stalenessOf(input, TTL, NOW).expiredActiveAttempt?.error?.code).toBe("stale_active_attempt");
+    });
+
     it("flags a pending record past TTL with a stale_pending error", () => {
       const input: StaleInput = { status: "pending", updated_at: ONE_HOUR_AGO };
       const verdict = stalenessOf(input, TTL, NOW);

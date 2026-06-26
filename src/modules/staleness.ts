@@ -34,6 +34,10 @@ export interface StaleVerdict {
  * onto its concrete record type.
  */
 export function stalenessOf(input: StaleInput, ttlSeconds: number, nowIso: string): StaleVerdict {
+  if (isBatchOwnedPending(input)) {
+    return { expiredActiveAttempt: null, pendingError: null };
+  }
+
   const expired = expiredActiveAttempt(input.active_attempt, ttlSeconds, nowIso);
   if (expired) {
     return { expiredActiveAttempt: expired, pendingError: null };
@@ -55,6 +59,18 @@ export function stalenessOf(input: StaleInput, ttlSeconds: number, nowIso: strin
   }
 
   return { expiredActiveAttempt: null, pendingError: null };
+}
+
+export function isBatchOwnedPending(input: StaleInput): boolean {
+  const attempt = input.active_attempt;
+  return (
+    input.status === "pending" &&
+    typeof attempt?.id === "string" &&
+    attempt.id.startsWith("batch_") &&
+    attempt.trigger === "import" &&
+    attempt.status === "running" &&
+    attempt.stage === "summarize"
+  );
 }
 
 /**

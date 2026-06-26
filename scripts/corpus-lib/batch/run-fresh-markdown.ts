@@ -2,6 +2,7 @@ import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import { runBatchPipeline, type BatchRunDeps, type BatchRunResult } from "./run";
 import { r2ReadDeps } from "./r2-reads";
 import { prepareFreshMarkdown, type FreshDisposition } from "./prepare-fresh-markdown";
+import { activateFreshTargets } from "./activation-phase";
 
 // The fresh-markdown bulk path reuses the whole batch tail (similar → submit →
 // poll → write); it only adds `newId` for minting unclaimed-URL readings (R2 read
@@ -43,7 +44,17 @@ export async function runFreshMarkdownBatch(
     const toIngest =
       deps.limit === undefined ? plan.toIngest : plan.toIngest.slice(0, deps.limit);
     return { extracted: toIngest, dropped: [] };
-  }, deps);
+  }, {
+    ...deps,
+    activateExtracted: (targets) =>
+      activateFreshTargets(targets, {
+        r2: deps.r2,
+        model: deps.model,
+        now: deps.now,
+        saveSidecar: deps.saveSidecar,
+        ...(deps.log ? { log: deps.log } : {}),
+      }),
+  });
 
   return { ...base, dispositions };
 }

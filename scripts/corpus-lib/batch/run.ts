@@ -9,7 +9,8 @@ import { resolveSimilar } from "./similar-phase";
 import { submitBatch } from "./submit-phase";
 import { pollUntilEnded } from "./poll-phase";
 import { writeResults, type WriteReportRow } from "./write-phase";
-import type { DroppedTarget, ExtractedTarget, Sidecar } from "./types";
+import type { DroppedTarget, ExtractedTarget, PersistedSidecar, Sidecar } from "./types";
+import type { ActivationResult } from "./activation-phase";
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -23,8 +24,10 @@ export interface BatchRunDeps {
   sleep(ms: number): Promise<void>;
   // Resume support: the sidecar persists the in-flight batch so a crashed poll
   // resumes without re-summarizing (cost-safe).
-  loadSidecar(): Promise<Sidecar | null>;
-  saveSidecar(sidecar: Sidecar): Promise<void>;
+  loadSidecar(): Promise<PersistedSidecar | null>;
+  saveSidecar(sidecar: PersistedSidecar): Promise<void>;
+  clearSidecar(): Promise<void>;
+  activateExtracted?(targets: ExtractedTarget[]): Promise<ActivationResult>;
   log?(line: string): void;
   poll?: { intervalMs?: number; maxPolls?: number };
 }
@@ -59,25 +62,41 @@ export async function runBatchPipeline(
   const existing = await deps.loadSidecar();
   if (existing) {
     if (!existing.batchId) {
-      // A pending sidecar with no batch id means a prior run crashed in the
-      // create window: a batch MAY have been created and billed. Abort rather
-      // than risk a second, double-billed batch.
+      // A sidecar with no batch id means a prior run crashed either while
+      // activating eager owners or in the create window. Abort rather than risk
+      // silently skipping stranded owners or creating a second, double-billed batch.
       throw new Error(
-        "found a pending batch sidecar with no batch id — a previous --batch run " +
-          "may have created (and been billed for) a batch without recording its id. " +
+        "found a batch sidecar with no batch id — a previous --batch run may have " +
+          "activated eager owners or created (and been billed for) a batch without recording its id. " +
           "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
       );
     }
-    log(`Resuming batch ${existing.batchId} (${existing.targets.length} readings)`);
-    const report = await pollAndWrite(existing, deps);
-    return { report, dropped: [], resumed: true, batchId: existing.batchId };
+    const sidecar = existing as Sidecar;
+    log(`Resuming batch ${sidecar.batchId} (${sidecar.targets.length} readings)`);
+    const report = await pollAndWrite(sidecar, deps);
+    return { report, dropped: [], resumed: true, batchId: sidecar.batchId };
   }
 
-  const { extracted, dropped } = await produce();
+  let { extracted, dropped } = await produce();
   // Surface *why* each reading dropped — a bare "dropped: N" count hides dead
   // origins, missing manifests, etc., leaving the operator no thread to pull.
   for (const d of dropped) {
     log(`  dropped ${d.readingId}: ${d.reason}`);
+  }
+
+  let activationSkipped: WriteReportRow[] = [];
+  if (deps.activateExtracted) {
+    const activated = await deps.activateExtracted(extracted);
+    extracted = activated.activated;
+    activationSkipped = activated.skipped;
+    for (const row of activationSkipped) {
+      log(`  skipped ${row.id}: ${row.reason ?? "batch activation skipped"}`);
+    }
+    if (extracted.length === 0) {
+      await deps.clearSidecar();
+      log("No readings to summarize after batch activation.");
+      return { report: activationSkipped, dropped, resumed: false };
+    }
   }
 
   const summarizeTargets = await resolveSimilar(extracted, {
@@ -87,7 +106,7 @@ export async function runBatchPipeline(
 
   if (summarizeTargets.length === 0) {
     log("No readings to summarize after extraction.");
-    return { report: [], dropped, resumed: false };
+    return { report: activationSkipped, dropped, resumed: false };
   }
 
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
@@ -100,7 +119,7 @@ export async function runBatchPipeline(
   log(`Batch ${info.id} created; polling for completion...`);
 
   const report = await pollAndWrite(sidecar, deps);
-  return { report, dropped, resumed: false, batchId: sidecar.batchId };
+  return { report: [...activationSkipped, ...report], dropped, resumed: false, batchId: sidecar.batchId };
 }
 
 // Recover path: resolve audit rows into targets (existing manifest authoritative)
