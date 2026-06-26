@@ -1,4 +1,5 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
+import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import type { AnthropicBatchClient, AnthropicBatchRequest, BatchInfo } from "./clients";
 import type { ExtractedTarget, Sidecar, SidecarTarget, SummarizeTarget } from "./types";
 
@@ -171,9 +172,26 @@ function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   ) {
     out.releaseByUrlOnFailure = true;
   }
-  // Roll-forward snapshot: only a currently-ready reading has good data to keep.
-  if (m.status === "ready") out.preserveReadyManifest = m;
+  const preserveReadyManifest = readySnapshotForBatchFailure(m, target.readingId);
+  if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
   return out;
+}
+
+function readySnapshotForBatchFailure(m: Manifest, readingId: string): Manifest | undefined {
+  if (m.status === "ready") return withoutNestedReadySnapshot(m);
+  if (
+    m.status !== "pending" ||
+    m.active_attempt?.id !== `batch_${readingId}` ||
+    m.active_attempt.trigger !== "reprocess"
+  ) {
+    return undefined;
+  }
+  const parsed = ManifestSchema.safeParse(m.preserve_ready_manifest);
+  return parsed.success && parsed.data.status === "ready" ? withoutNestedReadySnapshot(parsed.data) : undefined;
+}
+
+function withoutNestedReadySnapshot(m: Manifest): Manifest {
+  return ManifestSchema.parse({ ...m, preserve_ready_manifest: undefined });
 }
 
 // Mirror process-reading.ts:extToken so raw object keys match the realtime path.

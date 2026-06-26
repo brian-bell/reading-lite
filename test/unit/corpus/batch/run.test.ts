@@ -321,6 +321,14 @@ describe("runBatch — eager recover claim", () => {
         manifest: ready,
       },
       markdown: "# rd_a\n\nbody",
+      fresh: {
+        raw: new TextEncoder().encode("<html>new body</html>"),
+        content_type: "text/html",
+        content_status: "captured",
+        content_bytes: 999,
+        content_sha256: "c".repeat(64),
+        markdown: "# rd_a\n\nbody",
+      },
     };
 
     h.batch.results = vi.fn(async () =>
@@ -345,6 +353,90 @@ describe("runBatch — eager recover claim", () => {
     const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
     expect(final.status).toBe("ready");
     expect(final.tldr).toBe("keep me");
+    expect(final.active_attempt).toBeUndefined();
+  });
+
+  it("preserves a ready snapshot across an activation-window crash and rerun", async () => {
+    const h = harness({});
+    const kp = "readings/kp-rd_a";
+    const ready = manifest("rd_a", {
+      status: "ready",
+      title: "Ready before batch",
+      tldr: "keep me",
+      tags: ["saved"],
+      keywords: ["snapshot"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "previous summary",
+    });
+    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
+    h.store.set(`${kp}/extracted.md`, "# rd_a\n\nsaved markdown");
+    h.store.set(`index/by-url/${ready.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
+
+    const injected: ExtractedTarget = {
+      target: {
+        readingId: "rd_a",
+        url: ready.url,
+        urlHash: ready.url_hash,
+        keyPrefix: kp,
+        createdAt: ready.created_at,
+        manifest: ready,
+      },
+      markdown: "# rd_a\n\nbody",
+    };
+
+    await expect(
+      runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
+        ...h.deps,
+        activateExtracted: async (targets) => {
+          await activateRecoverTargets(targets, {
+            r2: h.deps.r2,
+            model: h.deps.model,
+            now: h.deps.now,
+            saveSidecar: h.deps.saveSidecar,
+          });
+          throw new Error("simulated crash after activation");
+        },
+      }),
+    ).rejects.toThrow(/simulated crash/);
+
+    expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("pending");
+    h.setSidecar(null);
+
+    await expect(
+      runBatch([row("rd_a")], {
+        ...h.deps,
+        activateExtracted: async (targets) => {
+          await activateRecoverTargets(targets, {
+            r2: h.deps.r2,
+            model: h.deps.model,
+            now: h.deps.now,
+            saveSidecar: h.deps.saveSidecar,
+          });
+          throw new Error("simulated second crash after activation");
+        },
+      }),
+    ).rejects.toThrow(/simulated second crash/);
+
+    expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("pending");
+    h.setSidecar(null);
+    h.batch.results = vi.fn(async () =>
+      (h.getSidecar()?.targets ?? []).map((t) => ({
+        custom_id: t.customId,
+        result: { type: "errored" as const, error: { message: "boom" } },
+      })),
+    ) as any;
+
+    await runBatch([row("rd_a")], h.deps);
+
+    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
+    expect(final.status).toBe("ready");
+    expect(final.tldr).toBe("keep me");
+    expect(final.title).toBe("Ready before batch");
+    expect(final.content_bytes).toBe(ready.content_bytes);
+    expect(final.content_sha256).toBe(ready.content_sha256);
     expect(final.active_attempt).toBeUndefined();
   });
 

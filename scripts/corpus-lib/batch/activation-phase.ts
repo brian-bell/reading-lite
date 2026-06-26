@@ -274,9 +274,37 @@ function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: 
     content_bytes: fresh?.content_bytes ?? m.content_bytes,
     content_sha256: fresh?.content_sha256 ?? m.content_sha256,
     extracted_bytes: markdownBytes,
+    ...preservedReadySnapshotField(m, target.target.readingId),
     created_at: m.created_at,
     updated_at: now,
   });
+}
+
+function preservedReadySnapshotField(m: Manifest, readingId: string): Partial<Manifest> {
+  const snapshot = readySnapshotForActivation(m, readingId);
+  return snapshot ? { preserve_ready_manifest: snapshot } : {};
+}
+
+function readySnapshotForActivation(m: Manifest, readingId: string): Manifest | undefined {
+  if (m.status === "ready") return withoutNestedReadySnapshot(m);
+  if (
+    m.status !== "pending" ||
+    m.active_attempt?.id !== `batch_${readingId}` ||
+    m.active_attempt.trigger !== "reprocess"
+  ) {
+    return undefined;
+  }
+  const preserved = parsePreservedReadySnapshot(m.preserve_ready_manifest);
+  return preserved ? withoutNestedReadySnapshot(preserved) : undefined;
+}
+
+function parsePreservedReadySnapshot(value: unknown): Manifest | undefined {
+  const parsed = ManifestSchema.safeParse(value);
+  return parsed.success && parsed.data.status === "ready" ? parsed.data : undefined;
+}
+
+function withoutNestedReadySnapshot(m: Manifest): Manifest {
+  return ManifestSchema.parse({ ...m, preserve_ready_manifest: undefined });
 }
 
 // Delete a by-url pointer only when it still exactly matches the claim this run

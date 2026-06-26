@@ -76,6 +76,7 @@ export interface Manifest {
   error?: ManifestError;
   active_attempt?: ProcessingAttemptSummary;
   last_attempt?: ProcessingAttemptSummary;
+  preserve_ready_manifest?: unknown;
 
   title?: string;
   tldr?: string;
