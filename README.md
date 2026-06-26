@@ -341,13 +341,13 @@ batch path preflights the Anthropic payload against a 200 MB safety cap, resolve
 similar-reading context, then validates the final request payload against the
 same cap; if it is too large, rerun with `--limit` to split it without leaving
 pending owners behind. Fresh ingest then eagerly claims activated by-url slots
-before creating the Message Batch; if the batch later fails, releasing that eager
-claim is still a follow-up slice. The "sole writer" condition is enforced, not
-just assumed:
+before creating the Message Batch; if the batch later fails, the write phase
+releases that eager claim only when the by-url pointer still exactly matches the
+failed target. The "sole writer" condition is enforced, not just assumed:
 `corpus-ingest --execute` (and likewise `corpus-recover --batch --execute`)
 **refuses to submit unless you also pass `--sole-writer`**, confirming the
-realtime writer is paused/drained while recover parity and failure-release work
-remain incomplete; an acknowledged run prints a loud banner before any submit,
+realtime writer is paused/drained while recover parity remains incomplete; an
+acknowledged run prints a loud banner before any submit,
 and dry-runs (which submit nothing) never require it. The in-flight batch is recorded in a
 sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
 instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +

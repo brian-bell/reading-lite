@@ -165,6 +165,12 @@ function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     // resumed run (the similar phase won't recompute it).
     queryEmbedTokens: st.queryEmbedTokens,
   };
+  if (
+    st.extracted.freshActivation?.kind === "create-new" ||
+    st.extracted.freshActivation?.kind === "create-existing-failed"
+  ) {
+    out.releaseByUrlOnFailure = true;
+  }
   // Roll-forward snapshot: only a currently-ready reading has good data to keep.
   if (m.status === "ready") out.preserveReadyManifest = m;
   return out;

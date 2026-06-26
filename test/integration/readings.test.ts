@@ -15,6 +15,9 @@ import {
   ReadingStore,
 } from "../../src/modules/stores/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
+import { writeResults } from "../../scripts/corpus-lib/batch/write-phase";
+import type { BatchResult } from "../../scripts/corpus-lib/batch/clients";
+import type { Sidecar, SidecarTarget } from "../../scripts/corpus-lib/batch/types";
 
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
 // has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per test.
@@ -178,6 +181,41 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
     fetch: fetchFn,
     now: () => new Date(start + idCounter.n * 1000).toISOString(),
     newId: () => `rd_TEST${String(++idCounter.n).padStart(2, "0")}`,
+  };
+}
+
+function r2ClientForBucket(bucket: R2Bucket) {
+  return {
+    async put(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
+      await bucket.put(key, body, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
+    },
+    async putIfAbsent(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
+      const result = await bucket.put(key, body, {
+        ...(opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : {}),
+        onlyIf: new Headers({ "If-None-Match": "*" }),
+      });
+      return result !== null;
+    },
+    async get(key: string) {
+      const obj = await bucket.get(key);
+      return obj ? obj.text() : null;
+    },
+    async head(key: string) {
+      return (await bucket.head(key)) !== null;
+    },
+    async delete(key: string) {
+      await bucket.delete(key);
+    },
+    async listKeys() {
+      const keys: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const listed = await bucket.list({ cursor });
+        keys.push(...listed.objects.map((obj) => obj.key));
+        cursor = listed.truncated ? listed.cursor : undefined;
+      } while (cursor);
+      return keys;
+    },
   };
 }
 
@@ -626,6 +664,119 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await retry.json()).toMatchObject({ id, status: "pending" });
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
+
+    const lookup = await app.request(
+      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
+  });
+
+  it("reprocesses in place after a failed fresh batch releases its by-url claim", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const url = "https://example.com/failed-fresh-batch-release";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_BATCH_FAILED_RELEASE";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const pending: Manifest = {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "markdown",
+      status: "pending",
+      active_attempt: {
+        id: `batch_${id}`,
+        trigger: "import",
+        status: "running",
+        stage: "summarize",
+        started_at: createdAt,
+      },
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 36,
+      content_sha256: "c".repeat(64),
+      extracted_bytes: 36,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const pointer = { id, key_prefix: keyPrefix };
+    await reader.writeByUrlPointer(urlHash, pointer);
+    await reader.writeManifest(keyPrefix, pending);
+    await reader.writeByIdPointer(id, pointer);
+    await reader.writeExtracted(keyPrefix, "# Batch failed\n\nMarkdown in hand.");
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
+
+    const target: SidecarTarget = {
+      customId: id,
+      keyPrefix,
+      id,
+      url,
+      urlHash,
+      createdAt,
+      sourceType: "markdown",
+      contentType: "text/markdown; charset=utf-8",
+      contentStatus: "captured",
+      contentBytes: 36,
+      contentSha256: "c".repeat(64),
+      extractedBytes: 36,
+      queryEmbedTokens: 12,
+      releaseByUrlOnFailure: true,
+    };
+    const sidecar: Sidecar = {
+      batchId: "msgbatch_failed_release",
+      model: "claude-opus-4-8",
+      processingStatus: "ended",
+      resultsUrl: "https://example.com/results.jsonl",
+      targets: [target],
+    };
+    const results: BatchResult[] = [
+      {
+        custom_id: id,
+        result: { type: "errored", error: { type: "api_error", message: "manual batch failure" } },
+      },
+    ];
+
+    await writeResults(sidecar, results, {
+      r2: r2ClientForBucket(env.READINGS_BUCKET),
+      vectorize: { upsert: vi.fn(), query: vi.fn() },
+      embedMany: vi.fn(async () => ({ embeddings: [], tokensByInput: [] })),
+      now: () => "2026-04-26T19:05:00.000Z",
+    } as any);
+
+    const failed = await reader.readManifest(keyPrefix);
+    expect(failed).toMatchObject({
+      id,
+      status: "failed",
+      error: { message: "manual batch failure", retryable: true },
+    });
+    expect(await reader.readByIdPointer(id)).toEqual(pointer);
+    expect(await reader.readByUrlPointer(urlHash)).toBeNull();
+    const failedIndex = await reader.readListIndex();
+    expect(failedIndex?.items.find((item) => item.id === id)).toMatchObject({
+      id,
+      status: "failed",
+      url,
+    });
+
+    const retry = await app.fetch(
+      new Request("http://t/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
 
     const lookup = await app.request(
       `/readings/lookup?url=${encodeURIComponent(url)}`,

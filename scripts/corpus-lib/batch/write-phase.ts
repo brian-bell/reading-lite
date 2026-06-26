@@ -10,7 +10,7 @@ import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
-import { serializeReadingPointer } from "./pointers";
+import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 
 export interface WriteDeps {
   r2: R2Client;
@@ -29,9 +29,9 @@ export interface WriteReportRow {
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
-//              ready snapshot) + index item. This phase does not create a
-//              by-url pointer for failures, but it also does not release an
-//              eager claim that fresh activation already wrote.
+//              ready snapshot) + by-id pointer + index item. Terminal failed
+//              manifests release their own eager by-url claim when it still
+//              points at this target.
 // index/list.json is merged once at the end (read-modify-write). The script is
 // effectively the sole writer during a backfill.
 export async function writeResults(
@@ -110,9 +110,8 @@ export async function writeResults(
     report.push({ id: target.id, status: "ready" });
   }
 
-  // 3. Write the failure manifests. Do not create a by-url pointer here, but do
-  //    tolerate an eager claim already written by fresh activation. Releasing
-  //    that failed eager claim is a follow-up slice. DO write the by-id pointer:
+  // 3. Write the failure manifests. Do not create a by-url pointer here. DO
+  //    write the by-id pointer:
   //    a freshly-minted ingest
   //    has no pre-existing pointer (unlike the recover path, where the reading is
   //    already in the corpus), so without it the failed reading would be a
@@ -129,6 +128,9 @@ export async function writeResults(
       serializeReadingPointer(target.id, target.keyPrefix),
       { contentType: "application/json" },
     );
+    if (manifest.status === "failed" && target.releaseByUrlOnFailure === true) {
+      await releaseByUrlIfOwned(target, deps);
+    }
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
     report.push({ id: target.id, status: "failed", reason: error.message });
   }
@@ -204,6 +206,37 @@ function buildFailedManifest(target: SidecarTarget, error: ManifestError, now: s
 function rolledForward(preserved: Manifest, now: string): Manifest {
   // Keep the previously-ready data; clear any active attempt and restamp.
   return ManifestSchema.parse({ ...preserved, active_attempt: undefined, updated_at: now });
+}
+
+async function releaseByUrlIfOwned(target: SidecarTarget, deps: WriteDeps): Promise<void> {
+  const key = `index/by-url/${target.urlHash}`;
+  const raw = await deps.r2.get(key);
+  if (raw === null) return;
+
+  let pointer: ReadingPointer | null = null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const candidate = parsed as { id?: unknown; key_prefix?: unknown };
+      if (
+        Object.keys(candidate).length === 2 &&
+        typeof candidate.id === "string" &&
+        typeof candidate.key_prefix === "string"
+      ) {
+        pointer = { id: candidate.id, key_prefix: candidate.key_prefix };
+      }
+    }
+  } catch {
+    // Leave damaged ownership pointers for explicit operator repair.
+  }
+
+  if (!pointer) {
+    deps.log?.(`[write-phase] leaving damaged by-url pointer ${key}`);
+    return;
+  }
+  if (pointer.id === target.id && pointer.key_prefix === target.keyPrefix) {
+    await deps.r2.delete(key);
+  }
 }
 
 function failureReason(res: BatchResult): [string, string] {

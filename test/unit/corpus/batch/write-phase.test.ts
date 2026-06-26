@@ -69,6 +69,9 @@ function fakeR2(seed: Record<string, string> = {}) {
       store.set(key, typeof body === "string" ? body : new TextDecoder().decode(body));
     }),
     head: vi.fn(async (key: string) => store.has(key)),
+    delete: vi.fn(async (key: string) => {
+      store.delete(key);
+    }),
   };
 }
 
@@ -163,20 +166,135 @@ describe("writeResults — failure path", () => {
     expect(m.error?.stage).toBe("summarize");
     // Failed URLs must stay re-submittable: no by-url pointer.
     expect(r2.store.has(`index/by-url/${"a".repeat(64)}`)).toBe(false);
+    expect(r2.delete).not.toHaveBeenCalled();
   });
 
-  it("retains an eager by-url pointer that already exists when a batch result fails", async () => {
+  it("releases its eager by-url claim when a batch result fails", async () => {
     const existingPointer = JSON.stringify({
       id: "rd_a",
       key_prefix: "readings/2026/01/01T000000Z-rd_a",
     });
     const r2 = fakeR2({ [`index/by-url/${"a".repeat(64)}`]: existingPointer });
 
+    const report = await writeResults(
+      sidecar([sidecarTarget({ releaseByUrlOnFailure: true })]),
+      [errored("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+
+    const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
+    expect(m.status).toBe("failed");
+    expect(JSON.parse(r2.store.get("index/by-id/rd_a")!)).toEqual({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    expect(r2.store.has(`index/by-url/${"a".repeat(64)}`)).toBe(false);
+    expect(report).toEqual([{ id: "rd_a", status: "failed", reason: "boom" }]);
+  });
+
+  it("keeps an existing by-url owner on failed recover-style batch targets", async () => {
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const existingPointer = JSON.stringify({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    const r2 = fakeR2({ [pointerKey]: existingPointer });
+
     await writeResults(sidecar([sidecarTarget()]), [errored("rd_a")], deps(r2, fakeVectorize()));
 
     const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
     expect(m.status).toBe("failed");
-    expect(r2.store.get(`index/by-url/${"a".repeat(64)}`)).toBe(existingPointer);
+    expect(r2.store.get(pointerKey)).toBe(existingPointer);
+    expect(r2.delete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "same id but different key_prefix",
+      pointer: { id: "rd_a", key_prefix: "readings/2026/01/02T000000Z-rd_a" },
+    },
+    {
+      name: "different id but same key_prefix",
+      pointer: { id: "rd_b", key_prefix: "readings/2026/01/01T000000Z-rd_a" },
+    },
+    {
+      name: "different id and different key_prefix",
+      pointer: { id: "rd_b", key_prefix: "readings/2026/01/02T000000Z-rd_b" },
+    },
+  ])("does not release a by-url pointer that no longer points exactly at the failed batch target: $name", async ({ pointer }) => {
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const existingPointer = JSON.stringify(pointer);
+    const r2 = fakeR2({ [pointerKey]: existingPointer });
+
+    const report = await writeResults(
+      sidecar([sidecarTarget({ releaseByUrlOnFailure: true })]),
+      [errored("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+
+    const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
+    expect(m.status).toBe("failed");
+    expect(JSON.parse(r2.store.get("index/by-id/rd_a")!)).toEqual({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    expect(r2.store.get(pointerKey)).toBe(existingPointer);
+    expect(r2.delete).not.toHaveBeenCalled();
+    const index = JSON.parse(r2.store.get("index/list.json")!);
+    expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("failed");
+    expect(report).toEqual([{ id: "rd_a", status: "failed", reason: "boom" }]);
+  });
+
+  it.each([
+    { name: "malformed JSON", rawPointer: "{not json" },
+    { name: "missing key_prefix", rawPointer: JSON.stringify({ id: "rd_a" }) },
+    { name: "missing id", rawPointer: JSON.stringify({ key_prefix: "readings/2026/01/01T000000Z-rd_a" }) },
+    {
+      name: "extra fields",
+      rawPointer: JSON.stringify({
+        id: "rd_a",
+        key_prefix: "readings/2026/01/01T000000Z-rd_a",
+        stale: true,
+      }),
+    },
+  ])("does not release a damaged by-url pointer when a batch result fails: $name", async ({ rawPointer }) => {
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const r2 = fakeR2({ [pointerKey]: rawPointer });
+
+    await writeResults(
+      sidecar([sidecarTarget({ releaseByUrlOnFailure: true })]),
+      [errored("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+
+    const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
+    expect(m.status).toBe("failed");
+    expect(JSON.parse(r2.store.get("index/by-id/rd_a")!)).toEqual({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    const index = JSON.parse(r2.store.get("index/list.json")!);
+    expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("failed");
+    expect(r2.store.get(pointerKey)).toBe(rawPointer);
+    expect(r2.delete).not.toHaveBeenCalled();
+  });
+
+  it("fails loudly when the by-url ownership read fails during release", async () => {
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const r2 = fakeR2();
+    r2.get.mockImplementation(async (key: string) => {
+      if (key === pointerKey) throw new Error("R2 read unavailable");
+      return r2.store.get(key) ?? null;
+    });
+
+    await expect(
+      writeResults(
+        sidecar([sidecarTarget({ releaseByUrlOnFailure: true })]),
+        [errored("rd_a")],
+        deps(r2, fakeVectorize()),
+      ),
+    ).rejects.toThrow("R2 read unavailable");
+    expect(r2.delete).not.toHaveBeenCalled();
   });
 
   it("does not upsert a vector for a failed reading", async () => {
@@ -186,7 +304,7 @@ describe("writeResults — failure path", () => {
     expect(vec.upserts).toHaveLength(0);
   });
 
-  it("rolls forward to the preserved ready snapshot instead of nuking good data", async () => {
+  it("keeps by-url ownership when a failed batch result rolls forward to a preserved ready manifest", async () => {
     const ready: Manifest = {
       id: "rd_a",
       url: "https://example.com/a",
@@ -203,9 +321,14 @@ describe("writeResults — failure path", () => {
       created_at: "2026-01-01T00:00:00.000Z",
       updated_at: "2026-01-02T00:00:00.000Z",
     };
-    const r2 = fakeR2();
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const existingPointer = JSON.stringify({
+      id: "rd_a",
+      key_prefix: "readings/2026/01/01T000000Z-rd_a",
+    });
+    const r2 = fakeR2({ [pointerKey]: existingPointer });
     await writeResults(
-      sidecar([sidecarTarget({ preserveReadyManifest: ready })]),
+      sidecar([sidecarTarget({ preserveReadyManifest: ready, releaseByUrlOnFailure: true })]),
       [errored("rd_a")],
       deps(r2, fakeVectorize()),
     );
@@ -215,6 +338,8 @@ describe("writeResults — failure path", () => {
     expect(m.tldr).toBe("kept tldr");
     const index = JSON.parse(r2.store.get("index/list.json")!);
     expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("ready");
+    expect(r2.store.get(pointerKey)).toBe(existingPointer);
+    expect(r2.delete).not.toHaveBeenCalled();
   });
 });
 

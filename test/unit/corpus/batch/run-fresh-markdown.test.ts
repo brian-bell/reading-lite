@@ -53,6 +53,9 @@ function harness(seed: Record<string, string> = {}) {
       return true;
     }),
     head: vi.fn(async (k: string) => store.has(k)),
+    delete: vi.fn(async (k: string) => {
+      store.delete(k);
+    }),
     listKeys: vi.fn(async () => [...store.keys()]),
   };
   const vectorize = { upsert: vi.fn(async () => {}), query: vi.fn(async () => []) };
@@ -141,7 +144,7 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(h.vectorize.upsert).toHaveBeenCalled();
   });
 
-  it("writes a failed manifest while retaining the eager by-url claim for a failed batch result", async () => {
+  it("writes a failed manifest while releasing its eager by-url claim for a failed batch result", async () => {
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     // the batch errors this item rather than emitting a reading (deps.batch and
@@ -161,11 +164,8 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(m.status).toBe("failed");
     // by-id MUST exist so detail/diagnostics/reprocess resolve (no dangling row)
     expect(h.store.has("index/by-id/rd_FRESH0")).toBe(true);
-    // Issue #69 deliberately does not release eager claims on batch failure.
-    expect(JSON.parse(h.store.get(`index/by-url/${hex(a.sourceUrl!)}`)!)).toEqual({
-      id: "rd_FRESH0",
-      key_prefix: kp,
-    });
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
+    expect(h.r2.delete).toHaveBeenCalledWith(`index/by-url/${hex(a.sourceUrl!)}`);
     // the list still carries the failed reading
     const index = JSON.parse(h.store.get("index/list.json")!);
     expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
@@ -315,14 +315,15 @@ describe("runFreshMarkdownBatch — idempotency", () => {
 
   it("re-ingests a prior failed fresh ingest in place on rerun instead of duplicating it", async () => {
     // The retry-after-failure flow after eager activation: a failed fresh ingest
-    // leaves a failed manifest plus the eager by-url claim. A rerun must reuse
-    // that failed owner in place instead of minting a second reading.
+    // leaves a failed manifest, by-id pointer, and list row after releasing its
+    // eager by-url claim. A rerun must find that failed owner through the cold
+    // list-index lookup and reuse it in place instead of minting a second reading.
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
     const kp = "readings/2026/06/22T120000Z-rd_FRESH0";
 
-    // First run: force the batch to error this item → failed manifest while the
-    // eager by-url claim remains for a later release slice.
+    // First run: force the batch to error this item → failed manifest with the
+    // eager by-url claim released.
     h.batch.results = vi.fn(async () =>
       ((h.getSidecar() as Sidecar | null)?.targets ?? []).map((t) => ({
         custom_id: t.customId,
@@ -331,7 +332,7 @@ describe("runFreshMarkdownBatch — idempotency", () => {
     ) as any;
     await runFreshMarkdownBatch([a], h.deps);
     expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("failed");
-    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(true);
+    expect(h.store.has(`index/by-url/${hex(a.sourceUrl!)}`)).toBe(false);
 
     // Second run on the same markdown, with a succeeding batch this time.
     h.setSidecar(null);

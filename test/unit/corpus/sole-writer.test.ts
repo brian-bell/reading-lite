@@ -14,7 +14,7 @@ describe("soleWriterGuard", () => {
     const v = soleWriterGuard({ execute: true, acknowledged: true, tool: "corpus-recover --batch" });
     expect(v.proceed).toBe(true);
     // The banner names the tool and warns that sole-writer mode is still required
-    // while the batch paths have incomplete race-proofing.
+    // while recover-batch parity remains incomplete.
     expect(v.message).toMatch(/SOLE-WRITER/);
     expect(v.message).toMatch(/corpus-recover --batch/);
   });
