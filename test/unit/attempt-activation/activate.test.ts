@@ -118,7 +118,7 @@ describe("activateAttempt", () => {
     const result = await activateAttempt(reader, queue, services(), baseActivation());
 
     expect(result).toEqual({
-      body: { id: ID, status: "pending", poll: `/readings/${ID}`, attempt_id: ATTEMPT_ID },
+      body: { id: ID, status: "pending", poll: `/api/readings/${ID}`, attempt_id: ATTEMPT_ID },
       status: 202,
     });
     await expect(reader.readManifest(KEY_PREFIX)).resolves.toMatchObject({ id: ID, status: "pending" });
@@ -328,7 +328,7 @@ describe("activateAttempt", () => {
     );
 
     expect(result).toEqual({
-      body: { id: ID, status: "ready", poll: `/readings/${ID}`, attempt_id: ATTEMPT_ID },
+      body: { id: ID, status: "ready", poll: `/api/readings/${ID}`, attempt_id: ATTEMPT_ID },
       status: 202,
     });
   });

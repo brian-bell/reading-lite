@@ -235,8 +235,8 @@ describe("App", () => {
   it("renders diagnostics from the diagnostics endpoint", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
-      if (url.pathname === "/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
       return jsonResponse({ error: "unexpected" }, 500);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -253,15 +253,15 @@ describe("App", () => {
   it("posts reprocess from the detail page and refreshes reading data", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (req.method === "POST" && url.pathname === "/readings/rd_ONE/reprocess") {
+      if (req.method === "POST" && url.pathname === "/api/readings/rd_ONE/reprocess") {
         return jsonResponse(
-          { id: "rd_ONE", status: "ready", poll: "/readings/rd_ONE", attempt_id: "at_TWO" },
+          { id: "rd_ONE", status: "ready", poll: "/api/readings/rd_ONE", attempt_id: "at_TWO" },
           202
         );
       }
-      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
-      if (url.pathname === "/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
-      if (url.pathname === "/readings") return jsonResponse(onePage);
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
+      if (url.pathname === "/api/readings") return jsonResponse(onePage);
       return jsonResponse({ error: "unexpected" }, 500);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -274,7 +274,7 @@ describe("App", () => {
     await waitFor(() => {
       const post = fetchMock.mock.calls.find((c) => {
         const req = c[0] as Request;
-        return req.method === "POST" && new URL(req.url).pathname === "/readings/rd_ONE/reprocess";
+        return req.method === "POST" && new URL(req.url).pathname === "/api/readings/rd_ONE/reprocess";
       });
       expect(post).toBeDefined();
     });
@@ -373,12 +373,12 @@ describe("App", () => {
     let pageBody: ListReadingsResponse = emptyPage;
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (req.method === "POST" && url.pathname === "/readings") {
+      if (req.method === "POST" && url.pathname === "/api/readings") {
         pageBody = {
           ...emptyPage,
           readings: [listReading({ status: "pending", title: "New One", tldr: undefined })]
         };
-        return jsonResponse({ id: "rd_NEW", status: "pending", poll: "/readings/rd_NEW" }, 202);
+        return jsonResponse({ id: "rd_NEW", status: "pending", poll: "/api/readings/rd_NEW" }, 202);
       }
       return jsonResponse(pageBody);
     });
@@ -425,8 +425,8 @@ describe("App", () => {
   it("opens extracted markdown via an authed fetch + blob URL (not a raw <a> with no Authorization)", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
-      if (url.pathname === "/readings/rd_ONE/content") {
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE/content") {
         return new Response("# md body", {
           status: 200,
           headers: { "Content-Type": "text/markdown; charset=utf-8" }
@@ -450,7 +450,7 @@ describe("App", () => {
 
     await waitFor(() => {
       const contentCall = fetchMock.mock.calls.find(
-        (c) => new URL((c[0] as Request).url).pathname === "/readings/rd_ONE/content"
+        (c) => new URL((c[0] as Request).url).pathname === "/api/readings/rd_ONE/content"
       );
       expect(contentCall).toBeDefined();
       expect((contentCall![0] as Request).headers.get("Authorization")).toBe("Bearer secret");
@@ -462,8 +462,8 @@ describe("App", () => {
   it("opens raw bytes via an authed fetch + blob URL", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
-      if (url.pathname === "/readings/rd_ONE/content/raw") {
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE/content/raw") {
         return new Response(new Uint8Array([1, 2, 3]), {
           status: 200,
           headers: { "Content-Type": "application/octet-stream" }
@@ -489,7 +489,7 @@ describe("App", () => {
   it("surfaces an inline error when ContentLinks fetch fails (no broken new tab)", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);
-      if (url.pathname === "/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
       return jsonResponse({ error: "extracted markdown not available" }, 404);
     });
     vi.stubGlobal("fetch", fetchMock);

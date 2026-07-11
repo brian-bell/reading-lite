@@ -1,4 +1,4 @@
-// Glue that turns locally-fetched YouTube inputs into a /readings/import-markdown
+// Glue that turns locally-fetched YouTube inputs into a /api/readings/import-markdown
 // request, reusing the same pure parsers the worker uses. Kept network-free so
 // it is trivially unit-tested (the CLI does the fetching / yt-dlp shelling out).
 //
@@ -20,7 +20,7 @@ import { MARKDOWN_IMPORT_MAX_BYTES } from "../import-markdown-lib/parse";
 
 const TRUNCATION_NOTICE = "\n\n_[transcript truncated to fit the import size limit]_";
 
-// /readings/import-markdown enqueues a ProcessReadingArgs message whose body is
+// /api/readings/import-markdown enqueues a ProcessReadingArgs message whose body is
 // the markdown plus an envelope (id, url, urlHash, keyPrefix, attempt metadata,
 // source.kind/title, JSON framing) and ~100 bytes of Cloudflare-internal queue
 // metadata. The 128 KB queue limit applies to that serialized message, not the

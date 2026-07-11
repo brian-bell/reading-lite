@@ -1,13 +1,13 @@
 ---
 name: reddit-import
-description: Import a Reddit thread (post + top comments) into the reading-lite corpus. Reddit serves a bot-challenge to the worker, so this drives a logged-in Chrome session via chrome-devtools-mcp to fetch the public thread `.json`, renders it to markdown with the shared parser, and imports it through POST /readings/import-markdown. Use when the user wants to add, submit, save, or process a reddit.com / redd.it thread or comment URL, or to recover a Reddit reading that corpus-audit marked failed.
+description: Import a Reddit thread (post + top comments) into the reading-lite corpus. Reddit serves a bot-challenge to the worker, so this drives a logged-in Chrome session via chrome-devtools-mcp to fetch the public thread `.json`, renders it to markdown with the shared parser, and imports it through POST /api/readings/import-markdown. Use when the user wants to add, submit, save, or process a reddit.com / redd.it thread or comment URL, or to recover a Reddit reading that corpus-audit marked failed.
 ---
 
 # reddit-import
 
 Add a Reddit thread to reading-lite. The Cloudflare Worker can't fetch Reddit
 directly — datacenter egress gets an HTML bot-challenge instead of JSON — so a
-plain `POST /readings` with a Reddit URL lands `failed` on purpose. This skill is
+plain `POST /api/readings` with a Reddit URL lands `failed` on purpose. This skill is
 the supported path: it uses a **logged-in Chrome session** (which clears the
 challenge) to fetch the public `<thread>.json`, renders it to markdown with the
 same `redditListingToMarkdown` parser the worker uses, and imports the markdown.
@@ -72,7 +72,7 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
 5. **Clean up** the temp file (`rm .reddit-thread.tmp.json`; it's gitignored, but
    it can hold content from your logged-in session so don't leave it around) and
    report the id / poll URL. The reading processes through the normal queue → poll
-   `GET /readings/:id` until `ready`.
+   `GET /api/readings/:id` until `ready`.
 
 ## Notes / gotchas
 

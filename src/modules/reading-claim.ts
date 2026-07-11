@@ -16,7 +16,7 @@ export class OwnerResolutionContentionError extends Error {
 
 // A by-url pointer whose manifest is missing is treated as a still-initializing
 // owner (not damaged) while the pointer's key_prefix timestamp is younger than
-// this grace window. `POST /readings` writes the pointer before the pending
+// this grace window. `POST /api/readings` writes the pointer before the pending
 // manifest, so there is a brief, legitimate window where the pointer exists but
 // the manifest does not yet.
 const MISSING_MANIFEST_OWNER_GRACE_MS = 5 * 60 * 1000;
@@ -51,7 +51,7 @@ export interface ReadingClaimOptions {
 export interface ResolveOwnerOptions {
   // When false, the cold path (no by-url pointer at all) does NOT scan for a
   // pointerless legacy reading or claim a pointer for it — it returns
-  // `unclaimed` immediately. Read-only callers (GET /readings/lookup) pass this
+  // `unclaimed` immediately. Read-only callers (GET /api/readings/lookup) pass this
   // so a lookup never writes to R2 and a URL with no live pointer reports "not
   // found", exactly as before this protocol was extracted. Write callers
   // (submit, import) leave it at the default and adopt the legacy reading.
@@ -59,7 +59,7 @@ export interface ResolveOwnerOptions {
   // When false, a damaged by-url pointer (manifest mismatched, or stale-missing)
   // is NOT repaired: no `deepScan` bucket rebuild and no `replaceByUrlPointer`
   // CAS write — it reports `unclaimed` ("not found"). Read-only callers
-  // (GET /readings/lookup) pass this so a GET stays side-effect-free and O(1):
+  // (GET /api/readings/lookup) pass this so a GET stays side-effect-free and O(1):
   // it neither scans the whole bucket nor mutates R2. Write callers leave it at
   // the default and repair the pointer in place.
   repairDamaged?: boolean;
@@ -99,7 +99,7 @@ export class ReadingClaim {
     // and reuse it — otherwise persistent contention would pay one full bucket
     // rebuild (`deepScan`) per attempt, multiplying an expensive scan by
     // `maxAttempts` (and, via the router's nested claim loop, on every GET
-    // /readings/lookup that hits a damaged pointer). `undefined` = not scanned;
+    // /api/readings/lookup that hits a damaged pointer). `undefined` = not scanned;
     // `null` = scanned, no legacy found.
     let repairLegacy: { keyPrefix: string; manifest: Manifest } | null | undefined;
 

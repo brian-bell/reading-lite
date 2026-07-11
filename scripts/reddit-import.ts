@@ -8,7 +8,7 @@
 // bot-challenge), so the flow is: the skill drives Chrome to fetch the public
 // `<thread>.json`, saves it, and this tool parses it with the shared
 // `redditListingToMarkdown` parser and POSTs the markdown to
-// `/readings/import-markdown`. The reading is keyed by the canonical thread URL
+// `/api/readings/import-markdown`. The reading is keyed by the canonical thread URL
 // the skill resolves (passed as the positional arg).
 //
 // Usage:
@@ -115,9 +115,9 @@ async function main(): Promise<void> {
 
   const id = res.id ?? "(unknown)";
   process.stdout.write(
-    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/readings/${id}` : undefined }, null, 2) + "\n",
+    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2) + "\n",
   );
-  process.stderr.write(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/readings/${id}\n`);
+  process.stderr.write(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/api/readings/${id}\n`);
 }
 
 main().catch((err) => {

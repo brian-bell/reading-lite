@@ -23,7 +23,7 @@ interface Args {
   quick: boolean;
 }
 
-const DEFAULT_DESTINATION_URL = "http://127.0.0.1:8787/readings";
+const DEFAULT_DESTINATION_URL = "http://127.0.0.1:8787/api/readings";
 
 function parseCliArgs(): Args {
   const { values } = parseArgs({

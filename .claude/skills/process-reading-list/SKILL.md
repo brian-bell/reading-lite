@@ -15,7 +15,7 @@ the reading-lite API, then records each outcome back into the file.
 2. Selects entries with `processed !== true` and a usable `http(s)` URL.
    Entries already marked `submitted: true` are skipped (so re-runs resume),
    unless `--resubmit`.
-3. POSTs each selected URL to `POST /readings` (serial, with transport retry),
+3. POSTs each selected URL to `POST /api/readings` (serial, with transport retry),
    asking `Y/n/q` before each unless `--quick`.
 4. Writes outcomes back into the file:
    - **200 / existing** (already in corpus) → `processed: true`, `reading_id`, `submitted_at`.
@@ -45,11 +45,11 @@ npm run process-reading-list -- --file ~/Desktop/chrome-reading-list.json
 npm run process-reading-list -- --file ~/Desktop/chrome-reading-list.json --quick
 
 # Submit to a local dev worker instead of production.
-npm run process-reading-list -- --file in.json --url http://127.0.0.1:8787/readings
+npm run process-reading-list -- --file in.json --url http://127.0.0.1:8787/api/readings
 ```
 
 Flags: `--file` (required, rewritten in place), `--out` (write elsewhere),
-`--url` (default `READER_URL` env, then `https://reading-lite.bbell.dev/readings`),
+`--url` (default `READER_URL` env, then `https://reading-lite.bbell.dev/api/readings`),
 `--token`, `--resubmit`, `--dry-run`, `--quick`.
 
 Prints a JSON summary to stdout (`selected`, `confirmed`, `queued`, `errors`,

@@ -247,9 +247,9 @@ async function main(): Promise<void> {
 
   const id = res.id ?? "(unknown)";
   process.stdout.write(
-    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/readings/${id}` : undefined }, null, 2) + "\n",
+    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2) + "\n",
   );
-  process.stderr.write(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/readings/${id}\n`);
+  process.stderr.write(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/api/readings/${id}\n`);
 }
 
 main().catch((err) => {

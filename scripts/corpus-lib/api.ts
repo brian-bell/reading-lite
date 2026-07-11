@@ -12,19 +12,19 @@ export interface ApiResult {
   error?: string;
 }
 
-// POST /readings/:id/reprocess { force: true } — re-runs the pipeline for an
+// POST /api/readings/:id/reprocess { force: true } — re-runs the pipeline for an
 // existing reading. 202 = a fresh attempt was queued.
 export async function reprocessReading(id: string, deps: ApiDeps): Promise<ApiResult> {
-  return post(`${deps.base}/readings/${id}/reprocess`, { force: true }, deps);
+  return post(`${deps.base}/api/readings/${id}/reprocess`, { force: true }, deps);
 }
 
-// POST /readings/import-markdown — create/update a reading straight from
+// POST /api/readings/import-markdown — create/update a reading straight from
 // markdown (no fetch). 202 new, 200 already-existing.
 export async function importMarkdown(
   body: { source_url: string; markdown: string; title?: string },
   deps: ApiDeps,
 ): Promise<ApiResult> {
-  return post(`${deps.base}/readings/import-markdown`, body, deps);
+  return post(`${deps.base}/api/readings/import-markdown`, body, deps);
 }
 
 export interface LookupResult {
@@ -33,7 +33,7 @@ export interface LookupResult {
   error?: string;
 }
 
-// GET /readings/lookup?url= — read-only resolve of a URL to its owning reading.
+// GET /api/readings/lookup?url= — read-only resolve of a URL to its owning reading.
 // 404 = no owner; 200/202 = an owner exists (ready/pending); 409 = an owner
 // exists but is still initializing (pointer claimed, manifest not yet written).
 // All three owner responses carry the reading id. Used to detect a pre-existing
@@ -42,7 +42,7 @@ export interface LookupResult {
 // a canonical duplicate instead of warning the operator.
 export async function lookupReading(url: string, deps: ApiDeps): Promise<LookupResult> {
   try {
-    const res = await deps.fetch(`${deps.base}/readings/lookup?url=${encodeURIComponent(url)}`, {
+    const res = await deps.fetch(`${deps.base}/api/readings/lookup?url=${encodeURIComponent(url)}`, {
       headers: { authorization: `Bearer ${deps.token}` },
     });
     if (res.status === 404) return { found: false };

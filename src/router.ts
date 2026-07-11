@@ -54,10 +54,10 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/health", (c) => c.text("ok", 200));
 
   // Everything below requires bearer auth.
-  app.use("/readings", requireBearer());
-  app.use("/readings/*", requireBearer());
+  app.use("/api/readings", requireBearer());
+  app.use("/api/readings/*", requireBearer());
 
-  app.post("/readings", async (c) => {
+  app.post("/api/readings", async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -100,7 +100,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.post("/readings/import-markdown", async (c) => {
+  app.post("/api/readings/import-markdown", async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsImportMarkdownBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -150,7 +150,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.get("/readings", async (c) => {
+  app.get("/api/readings", async (c) => {
     const parsed = ListReadingsQuerySchema.safeParse(c.req.query());
     if (!parsed.success) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
@@ -167,7 +167,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.get("/readings/lookup", async (c) => {
+  app.get("/api/readings/lookup", async (c) => {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
@@ -193,7 +193,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.post("/readings/similar", async (c) => {
+  app.post("/api/readings/similar", async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsSimilarBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -210,7 +210,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json({ items });
   });
 
-  app.get("/readings/:id/diagnostics", async (c) => {
+  app.get("/api/readings/:id/diagnostics", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const ptr = await reader.readByIdPointer(id);
@@ -243,7 +243,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.post("/readings/:id/reprocess", async (c) => {
+  app.post("/api/readings/:id/reprocess", async (c) => {
     let json: unknown;
     try {
       const text = await c.req.text();
@@ -271,7 +271,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json(result.body, result.status);
   });
 
-  app.get("/readings/:id", async (c) => {
+  app.get("/api/readings/:id", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
@@ -279,7 +279,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json(annotateStale(found.manifest, c.env, services));
   });
 
-  app.get("/readings/:id/content", async (c) => {
+  app.get("/api/readings/:id/content", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
@@ -295,7 +295,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.get("/readings/:id/content/raw", async (c) => {
+  app.get("/api/readings/:id/content/raw", async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
@@ -448,7 +448,7 @@ function initializingResponse(id: string): SubmitJsonResult {
     body: {
       error: "reading owner is still initializing",
       id,
-      poll: `/readings/${id}`,
+      poll: `/api/readings/${id}`,
     },
     status: 409,
   };

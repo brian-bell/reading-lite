@@ -17,7 +17,7 @@ For each target reading it deletes, under that reading's own id-scoped prefix:
 - `{prefix}/manifest.json` (durability anchor — list rebuilds key off this)
 - `{prefix}/extracted.md`, `{prefix}/raw.{ext}` (best-effort across common exts)
 - `{prefix}/attempts/{id}.json` (attempt ids read live from the manifest)
-- `index/by-id/{id}` (so `GET /readings/:id` 404s instead of resolving)
+- `index/by-id/{id}` (so `GET /api/readings/:id` 404s instead of resolving)
 - `index/by-url/{hash}` — **only when the stored pointer is owned by this
   reading**. by-url pointers are eager URL ownership claims, so a failed/pending
   reading may own its pointer; but an orphan-duplicate's URL hashes to the same

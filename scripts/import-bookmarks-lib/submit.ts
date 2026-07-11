@@ -28,7 +28,7 @@ export interface BeforeSubmitContext {
 export interface SubmitOpts {
   fetch: typeof fetch;
   // Full destination URL of the readings endpoint, e.g.
-  // https://reading-lite.bbell.dev/readings.
+  // https://reading-lite.bbell.dev/api/readings.
   destinationUrl: string;
   token: string;
   onResult: (result: SubmitResult) => Promise<void> | void;

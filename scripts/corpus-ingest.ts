@@ -73,7 +73,7 @@ function printUsage(): void {
 
 Bulk-imports a directory of fresh markdown files into the corpus, summarizing via
 the Anthropic Message Batch API (~50% cheaper, async, no rate-limit retries)
-instead of the realtime /readings queue. Dry-run (plan only) by default.
+instead of the realtime /api/readings queue. Dry-run (plan only) by default.
 
 Each file needs a source URL on a "**Source:** <url>" line (the import-markdown-dir
 skill's normalize-source.sh stages exports that use **URL:**/**Link:**). Files are

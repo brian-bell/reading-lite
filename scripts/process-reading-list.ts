@@ -19,7 +19,7 @@ interface Args {
   quick: boolean;
 }
 
-const DEFAULT_DESTINATION_URL = "https://reading-lite.bbell.dev/readings";
+const DEFAULT_DESTINATION_URL = "https://reading-lite.bbell.dev/api/readings";
 
 function parseCliArgs(): Args {
   const { values } = parseArgs({

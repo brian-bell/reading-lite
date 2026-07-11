@@ -4,7 +4,7 @@ import {
   type MarkdownSubmitResult,
 } from "../../../scripts/import-markdown-lib/submit";
 
-const DEST = "http://localhost:8787/readings/import-markdown";
+const DEST = "http://localhost:8787/api/readings/import-markdown";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {

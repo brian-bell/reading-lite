@@ -75,14 +75,14 @@ async function main(): Promise<void> {
     "content-type": "application/json",
   };
 
-  const postRes = await fetch(`${args.base}/readings`, {
+  const postRes = await fetch(`${args.base}/api/readings`, {
     method: "POST",
     headers,
     body: JSON.stringify({ url: args.url }),
   });
   const postBody = (await postRes.json()) as Record<string, unknown>;
   if (postRes.status !== 202 && postRes.status !== 200) {
-    console.error(`POST /readings -> ${postRes.status}`);
+    console.error(`POST /api/readings -> ${postRes.status}`);
     console.error(JSON.stringify(postBody, null, 2));
     process.exit(1);
   }
@@ -99,13 +99,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error(`pending id=${id}, polling /readings/${id} ...`);
+  console.error(`pending id=${id}, polling /api/readings/${id} ...`);
   const deadline = Date.now() + args.timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, args.pollMs));
-    const r = await fetch(`${args.base}/readings/${id}`, { headers });
+    const r = await fetch(`${args.base}/api/readings/${id}`, { headers });
     if (r.status !== 200) {
-      console.error(`GET /readings/${id} -> ${r.status}`);
+      console.error(`GET /api/readings/${id} -> ${r.status}`);
       continue;
     }
     const m = (await r.json()) as Record<string, unknown>;

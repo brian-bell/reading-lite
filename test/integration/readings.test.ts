@@ -237,16 +237,16 @@ describe("GET /health", () => {
 });
 
 describe("auth", () => {
-  it("rejects /readings without bearer", async () => {
+  it("rejects /api/readings without bearer", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request("/readings", {}, env);
+    const res = await app.request("/api/readings", {}, env);
     expect(res.status).toBe(401);
   });
 
   it("rejects with wrong token", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: "Bearer wrong" } },
       env,
     );
@@ -256,7 +256,7 @@ describe("auth", () => {
   it("accepts with correct token", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -264,7 +264,23 @@ describe("auth", () => {
   });
 });
 
-describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
+describe("route namespace", () => {
+  // The un-prefixed /readings* namespace belongs to the SPA (Pages serves the
+  // detail page there); the Worker must not claim it, even for authed callers.
+  it("does not serve the old /readings paths", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    for (const path of ["/readings", "/readings/rd_SOMEID"]) {
+      const res = await app.request(
+        path,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+        env,
+      );
+      expect(res.status).toBe(404);
+    }
+  });
+});
+
+describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("returns 202 immediately and the manifest reaches ready after the queue drains", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
@@ -272,7 +288,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const ctx = createExecutionContext();
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/article" }),
@@ -289,7 +305,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const get = await app.request(
-      `/readings/${submitJson.id}`,
+      `/api/readings/${submitJson.id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -305,7 +321,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const diagnostics = await app.request(
-      `/readings/${submitJson.id}/diagnostics`,
+      `/api/readings/${submitJson.id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -331,7 +347,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     const ctx1 = createExecutionContext();
     const r1 = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/dup" }),
@@ -347,7 +363,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     const ctx2 = createExecutionContext();
     const r2 = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/dup" }),
@@ -367,7 +383,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/pending-lookup" }),
@@ -379,7 +395,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const submitJson = (await submit.json()) as { id: string };
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent("https://example.com/pending-lookup")}`,
+      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/pending-lookup")}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -393,7 +409,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const url = "https://example.com/pending-duplicate";
 
     const first = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -405,7 +421,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const firstJson = (await first.json()) as { id: string };
 
     const second = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -454,7 +470,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
     const response = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -481,7 +497,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const responses = await Promise.all(
       Array.from({ length: 5 }, () =>
         app.fetch(
-          new Request("http://t/readings", {
+          new Request("http://t/api/readings", {
             method: "POST",
             headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
             body: JSON.stringify({ url }),
@@ -502,7 +518,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -539,7 +555,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
 
     const first = app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -550,7 +566,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await manifestWriteStartedPromise;
 
     const second = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -561,7 +577,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(second.status).toBe(409);
     expect(await second.json()).toMatchObject({
       error: "reading owner is still initializing",
-      poll: expect.stringMatching(/^\/readings\/rd_/),
+      poll: expect.stringMatching(/^\/api\/readings\/rd_/),
     });
     expect(queuedJobs).toHaveLength(0);
 
@@ -583,7 +599,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const url = "https://example.com/retry-failed-submit";
 
     const first = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -597,7 +613,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs).toHaveLength(0);
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -612,7 +628,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -651,7 +667,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -666,7 +682,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -764,7 +780,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -779,7 +795,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -814,7 +830,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -865,7 +881,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(older, olderPrefix));
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -920,7 +936,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -951,7 +967,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -968,7 +984,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id: body.id, trigger: "submit" });
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -976,7 +992,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await lookup.json()).toEqual({ id: body.id });
   });
 
-  it("GET /readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
+  it("GET /api/readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
@@ -991,7 +1007,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -1004,7 +1020,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     putSpy.mockRestore();
   });
 
-  it("GET /readings/lookup returns 409 initializing for a fresh pointer whose manifest is not yet written", async () => {
+  it("GET /api/readings/lookup returns 409 initializing for a fresh pointer whose manifest is not yet written", async () => {
     // Read-only repair is off, but the grace-window path is preserved: a pointer
     // whose manifest hasn't landed yet but is still inside the grace window (the
     // pointer-before-manifest write order) reports the owner as initializing (409),
@@ -1019,7 +1035,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeByUrlPointer(urlHash, fresh);
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -1053,7 +1069,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       }) as typeof env.READINGS_BUCKET.put);
 
     const res = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1113,7 +1129,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
       }) as typeof env.READINGS_BUCKET.put);
 
     const res = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1160,7 +1176,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
 
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1207,7 +1223,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeManifest(keyPrefix, manifest);
 
     const duplicate = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1219,7 +1235,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await duplicate.json()).toMatchObject({ id, status: "ready" });
 
     const get = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -1257,7 +1273,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.writeByUrlPointer(urlHash, { id: otherId, key_prefix: otherPrefix });
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1275,7 +1291,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(await reader.readByUrlPointer(urlHash)).toMatchObject({ id: body.id });
 
     const other = await app.request(
-      `/readings/${otherId}`,
+      `/api/readings/${otherId}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -1295,7 +1311,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -1966,7 +1982,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const first = await app.request(
-      "/readings",
+      "/api/readings",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -1990,7 +2006,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     putSpy.mockRestore();
     consoleErr.mockRestore();
     const retry = await app.request(
-      "/readings",
+      "/api/readings",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -2026,7 +2042,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const ctx = createExecutionContext();
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2051,7 +2067,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     const { id } = (await submit.clone().json()) as { id: string };
     const get = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2071,14 +2087,14 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const content = await app.request(
-      `/readings/${id}/content`,
+      `/api/readings/${id}/content`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
     expect(await content.text()).toBe(markdown);
 
     const diagnostics = await app.request(
-      `/readings/${id}/diagnostics`,
+      `/api/readings/${id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2122,7 +2138,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const first = await app.request(
-      "/readings/import-markdown",
+      "/api/readings/import-markdown",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -2148,7 +2164,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     putSpy.mockRestore();
     consoleErr.mockRestore();
     const retry = await app.request(
-      "/readings/import-markdown",
+      "/api/readings/import-markdown",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -2178,7 +2194,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
 
     const first = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2193,7 +2209,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const firstBody = (await first.json()) as { id: string; status: string };
 
     const second = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2227,7 +2243,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2290,7 +2306,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2318,7 +2334,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await drainQueue(services);
 
     const get = await app.request(
-      `/readings/${failed.id}`,
+      `/api/readings/${failed.id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2332,7 +2348,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const content = await app.request(
-      `/readings/${failed.id}/content`,
+      `/api/readings/${failed.id}/content`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2366,7 +2382,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2424,7 +2440,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2492,7 +2508,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     });
 
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2549,7 +2565,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const importAttempt = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2568,7 +2584,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     installQueueStub();
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: sourceUrl }),
@@ -2642,7 +2658,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
     const submit = await app.fetch(
-      new Request("http://t/readings/import-markdown", {
+      new Request("http://t/api/readings/import-markdown", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -2676,7 +2692,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/missing" }),
@@ -2690,7 +2706,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const get = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2700,7 +2716,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(manifest.error).toMatchObject({ code: "BadStatusError" });
 
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent("https://example.com/missing")}`,
+      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/missing")}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2716,7 +2732,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
   it("rejects an invalid url body", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -2736,7 +2752,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2764,7 +2780,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     // attempt's events list still has both started and succeeded entries per
     // stage so we can reason about timings during failure post-mortems.
     const diag = await app.request(
-      `/readings/${((await submit.json()) as { id: string }).id}/diagnostics`,
+      `/api/readings/${((await submit.json()) as { id: string }).id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2779,7 +2795,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     putSpy.mockRestore();
   });
 
-  it("returns 503 from POST /readings when the queue binding is missing", async () => {
+  it("returns 503 from POST /api/readings when the queue binding is missing", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     (env as unknown as { READING_JOBS?: Queue<ProcessReadingArgs> }).READING_JOBS =
@@ -2787,7 +2803,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2802,7 +2818,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const body = (await submit.json()) as { error: string };
     expect(body.error).toMatch(/queue/i);
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent("https://example.com/no-queue")}`,
+      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/no-queue")}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2818,7 +2834,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2832,14 +2848,14 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     expect(submit.status).toBe(503);
     const lookup = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
     expect(lookup.status).toBe(200);
     const { id } = (await lookup.json()) as { id: string };
     const failed = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2852,7 +2868,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     installQueueStub();
     const retry = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2880,7 +2896,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await failingApp.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2898,7 +2914,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const retryingServices = makeServices(makeStubFetch(), idCounter);
     const retryingApp = createApp({ services: retryingServices });
     const retry = await retryingApp.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2912,7 +2928,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     expect(retry.status).toBe(503);
     const get = await retryingApp.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2933,7 +2949,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2949,7 +2965,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     installRejectingQueueStub();
     const retry = await app.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -2963,7 +2979,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
 
     expect(retry.status).toBe(503);
     const get = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -2982,7 +2998,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -3001,7 +3017,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const retry = await app.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
@@ -3026,7 +3042,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/missing" }),
@@ -3039,7 +3055,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const res = await app.request(
-      `/readings/${id}/diagnostics`,
+      `/api/readings/${id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3066,7 +3082,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const ctx = createExecutionContext();
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/corrupt-pointer" }),
@@ -3088,7 +3104,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     );
 
     const res = await app.request(
-      `/readings/${id}/diagnostics`,
+      `/api/readings/${id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3111,7 +3127,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await failingApp.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/retry-me" }),
@@ -3127,7 +3143,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const succeedingApp = createApp({ services: succeedingServices });
     const ctx2 = createExecutionContext();
     const retry = await succeedingApp.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -3143,7 +3159,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx2);
 
     const get = await succeedingApp.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3161,7 +3177,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const ctx1 = createExecutionContext();
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/stays-ready" }),
@@ -3181,7 +3197,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const ctx2 = createExecutionContext();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const retry = await failingApp.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -3194,7 +3210,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx2);
 
     const get = await failingApp.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3211,7 +3227,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const ctx = createExecutionContext();
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/active" }),
@@ -3224,7 +3240,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     // Deliberately do not drain — the reading must still look pending+running
     // when the reprocess request lands so that the 409 guard fires.
     const retry = await app.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -3241,7 +3257,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
 
     const malformed = await app.request(
-      "/readings/rd_missing/reprocess",
+      "/api/readings/rd_missing/reprocess",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -3252,7 +3268,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     expect(malformed.status).toBe(400);
 
     const nullBody = await app.request(
-      "/readings/rd_missing/reprocess",
+      "/api/readings/rd_missing/reprocess",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -3305,7 +3321,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const app = createApp({ services });
     const ctx = createExecutionContext();
     const retry = await app.fetch(
-      new Request(`http://t/readings/${staleReady.id}/reprocess`, {
+      new Request(`http://t/api/readings/${staleReady.id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({}),
@@ -3328,7 +3344,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     const responses = await Promise.all(
       Array.from({ length: 5 }, (_, i) =>
         app.fetch(
-          new Request("http://t/readings", {
+          new Request("http://t/api/readings", {
             method: "POST",
             headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
             body: JSON.stringify({ url: `https://example.com/burst-${i}` }),
@@ -3345,7 +3361,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3355,7 +3371,7 @@ describe("POST /readings + GET /readings/:id (submit-and-poll)", () => {
   });
 });
 
-describe("POST /readings — email notifications", () => {
+describe("POST /api/readings — email notifications", () => {
   it("fires one Resend email by default after a successful submit", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
@@ -3363,7 +3379,7 @@ describe("POST /readings — email notifications", () => {
     const ctx = createExecutionContext();
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/email-me" }),
@@ -3397,7 +3413,7 @@ describe("POST /readings — email notifications", () => {
     expect(body.text).toContain("A short summary.");
 
     const diagnostics = await app.request(
-      `/readings/${id}/diagnostics`,
+      `/api/readings/${id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3419,7 +3435,7 @@ describe("POST /readings — email notifications", () => {
     const ctx = createExecutionContext();
 
     await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/silent", email: false }),
@@ -3441,7 +3457,7 @@ describe("POST /readings — email notifications", () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/resend-down" }),
@@ -3455,7 +3471,7 @@ describe("POST /readings — email notifications", () => {
 
     // processReading must NOT throw on email failure; the manifest must remain ready.
     const get = await app.request(
-      `/readings/${id}`,
+      `/api/readings/${id}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3463,7 +3479,7 @@ describe("POST /readings — email notifications", () => {
     expect(manifest.status).toBe("ready");
 
     const diagnostics = await app.request(
-      `/readings/${id}/diagnostics`,
+      `/api/readings/${id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3480,7 +3496,7 @@ describe("POST /readings — email notifications", () => {
   });
 });
 
-describe("POST /readings/:id/reprocess — email opt-in", () => {
+describe("POST /api/readings/:id/reprocess — email opt-in", () => {
   async function seedReady(
     services: Services,
     url: string,
@@ -3489,7 +3505,7 @@ describe("POST /readings/:id/reprocess — email opt-in", () => {
     const app = createApp({ services });
     const ctx = createExecutionContext();
     const submit = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url, email: false }),
@@ -3514,7 +3530,7 @@ describe("POST /readings/:id/reprocess — email opt-in", () => {
     for (const body of [{}, { force: true }]) {
       const ctx = createExecutionContext();
       const retry = await app.fetch(
-        new Request(`http://t/readings/${id}/reprocess`, {
+        new Request(`http://t/api/readings/${id}/reprocess`, {
           method: "POST",
           headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -3538,7 +3554,7 @@ describe("POST /readings/:id/reprocess — email opt-in", () => {
     const app = createApp({ services });
     const ctx = createExecutionContext();
     const retry = await app.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ email: true }),
@@ -3565,7 +3581,7 @@ describe("POST /readings/:id/reprocess — email opt-in", () => {
     const app = createApp({ services });
     const ctx = createExecutionContext();
     const retry = await app.fetch(
-      new Request(`http://t/readings/${id}/reprocess`, {
+      new Request(`http://t/api/readings/${id}/reprocess`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ force: true, email: true }),
@@ -3657,14 +3673,14 @@ describe("processReading — backwards-compat for in-flight queue messages witho
   });
 });
 
-describe("GET /readings/lookup", () => {
+describe("GET /api/readings/lookup", () => {
   it("returns the id for a known URL", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
     const app = createApp({ services });
     const ctx = createExecutionContext();
     await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/find-me" }),
@@ -3676,7 +3692,7 @@ describe("GET /readings/lookup", () => {
     await waitOnExecutionContext(ctx);
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent("https://example.com/find-me")}`,
+      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/find-me")}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3688,7 +3704,7 @@ describe("GET /readings/lookup", () => {
   it("returns 404 for an unknown URL", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent("https://example.com/nope")}`,
+      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/nope")}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3706,7 +3722,7 @@ describe("GET /readings/lookup", () => {
     });
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3715,7 +3731,7 @@ describe("GET /readings/lookup", () => {
     expect(await res.json()).toMatchObject({
       error: "reading owner is still initializing",
       id: "rd_LOOKUP_INITIALIZING",
-      poll: "/readings/rd_LOOKUP_INITIALIZING",
+      poll: "/api/readings/rd_LOOKUP_INITIALIZING",
     });
   });
 
@@ -3764,7 +3780,7 @@ describe("GET /readings/lookup", () => {
     const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3798,7 +3814,7 @@ describe("GET /readings/lookup", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, legacyPrefix));
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3820,7 +3836,7 @@ describe("GET /readings/lookup", () => {
     });
 
     const res = await app.request(
-      `/readings/lookup?url=${encodeURIComponent(url)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3829,7 +3845,7 @@ describe("GET /readings/lookup", () => {
   });
 });
 
-describe("POST /readings/similar", () => {
+describe("POST /api/readings/similar", () => {
   it("calls Vectorize and returns mapped items", async () => {
     const stub = installVectorizeStub();
     stub.vectors.set("rd_seed", {
@@ -3838,7 +3854,7 @@ describe("POST /readings/similar", () => {
     });
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings/similar",
+      "/api/readings/similar",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -3858,7 +3874,7 @@ describe("POST /readings/similar", () => {
     delete (env as unknown as { READINGS_INDEX?: VectorizeIndex }).READINGS_INDEX;
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings/similar",
+      "/api/readings/similar",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
@@ -3872,7 +3888,7 @@ describe("POST /readings/similar", () => {
   });
 });
 
-describe("GET /readings — list with q, tag, offset, limit", () => {
+describe("GET /api/readings — list with q, tag, offset, limit", () => {
   async function postOne(
     app: ReturnType<typeof createApp>,
     url: string,
@@ -3880,7 +3896,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   ): Promise<string> {
     const ctx = createExecutionContext();
     const res = await app.fetch(
-      new Request("http://t/readings", {
+      new Request("http://t/api/readings", {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({ url }),
@@ -3898,7 +3914,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   it("returns the new response shape {readings, limit, offset, has_more}", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3907,14 +3923,14 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     expect(body).toEqual({ readings: [], limit: 20, offset: 0, has_more: false });
   });
 
-  it("POST /readings writes a pending index entry; processReading replaces it with ready", async () => {
+  it("POST /api/readings writes a pending index entry; processReading replaces it with ready", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
     const app = createApp({ services });
     const id = await postOne(app, "https://example.com/article-1", services);
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3932,7 +3948,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     await postOne(app, "https://example.com/missing", services);
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -3952,7 +3968,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     await postOne(app, "https://www.reddit.com/r/golang/comments/d0zpsh/title/", services);
 
     const list = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4004,7 +4020,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     await postOne(app2, "https://example.com/go", services2);
 
     const res = await app.request(
-      "/readings?q=rust",
+      "/api/readings?q=rust",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4047,7 +4063,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     await postOne(app2, "https://example.com/ml", services2);
 
     const res = await app1.request(
-      "/readings?tag=ai",
+      "/api/readings?tag=ai",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4084,7 +4100,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
 
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings?q=rust&tag=ai",
+      "/api/readings?q=rust&tag=ai",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4102,7 +4118,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
 
     const page1 = await app.request(
-      "/readings?offset=0&limit=2",
+      "/api/readings?offset=0&limit=2",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4118,7 +4134,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     expect(body1.has_more).toBe(true);
 
     const page2 = await app.request(
-      "/readings?offset=2&limit=2",
+      "/api/readings?offset=2&limit=2",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4130,7 +4146,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
   it("rejects negative offset with 400", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings?offset=-1",
+      "/api/readings?offset=-1",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
@@ -4161,7 +4177,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       customEnv,
     );
@@ -4194,7 +4210,7 @@ describe("GET /readings — list with q, tag, offset, limit", () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       customEnv,
     );
@@ -4223,7 +4239,7 @@ describe("error handling", () => {
     // should be caught by the router's onError and surfaced as a generic 500.
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await app.request(
-      "/readings/rd_DOES_NOT_EXIST",
+      "/api/readings/rd_DOES_NOT_EXIST",
       { headers: { authorization: `Bearer ${TOKEN}` } },
       customEnv,
     );
@@ -4245,7 +4261,7 @@ describe("CORS", () => {
     const allowedEnv = { ...env, CORS_ALLOWED_ORIGINS: "https://allowed.example" } as unknown as typeof env;
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { method: "OPTIONS", headers: { origin: "https://allowed.example" } },
       allowedEnv,
     );
@@ -4257,7 +4273,7 @@ describe("CORS", () => {
     const allowedEnv = { ...env, CORS_ALLOWED_ORIGINS: "https://allowed.example" } as unknown as typeof env;
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const res = await app.request(
-      "/readings",
+      "/api/readings",
       { method: "OPTIONS", headers: { origin: "https://attacker.example" } },
       allowedEnv,
     );
