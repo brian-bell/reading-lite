@@ -104,7 +104,7 @@ export interface Manifest {
 // Alias kept so the SPA's UI code reads naturally.
 export type Reading = Manifest;
 
-// What `GET /readings` actually returns per entry — a denormalized projection
+// What `GET /api/readings` actually returns per entry — a denormalized projection
 // of Manifest. Mirrors ListIndexItemSchema in ../../src/schemas/api.ts.
 export interface ListReading {
   id: string;

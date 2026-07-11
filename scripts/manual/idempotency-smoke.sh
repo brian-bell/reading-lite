@@ -76,17 +76,17 @@ req() {
 poll() {
   local id="$1" i status
   for i in $(seq 1 30); do
-    status="$(curl -sS "${AUTH[@]}" "${BASE}/readings/${id}" | jq -r '.status // "?"')"
+    status="$(curl -sS "${AUTH[@]}" "${BASE}/api/readings/${id}" | jq -r '.status // "?"')"
     echo "    poll ${i}: status=${status}"
     case "$status" in ready|failed) return 0 ;; esac
     sleep 2
   done
 }
 
-submit()  { req POST "/readings" "{\"url\":\"$1\"${2:+,\"email\":$2}}"; }
-import()  { req POST "/readings/import-markdown" "$1"; }
-lookup()  { req GET  "/readings/lookup?url=$(jq -rn --arg u "$1" '$u|@uri')"; }
-reproc()  { req POST "/readings/${1}/reprocess" "${2:-}"; }
+submit()  { req POST "/api/readings" "{\"url\":\"$1\"${2:+,\"email\":$2}}"; }
+import()  { req POST "/api/readings/import-markdown" "$1"; }
+lookup()  { req GET  "/api/readings/lookup?url=$(jq -rn --arg u "$1" '$u|@uri')"; }
+reproc()  { req POST "/api/readings/${1}/reprocess" "${2:-}"; }
 
 hdr() { echo; echo "=== $* ==="; }
 

@@ -87,7 +87,7 @@ export async function activateAttempt(
     body: {
       id: a.manifest.id,
       status: a.manifest.status,
-      poll: `/readings/${a.manifest.id}`,
+      poll: `/api/readings/${a.manifest.id}`,
       attempt_id: a.manifest.active_attempt!.id,
     },
     status: 202,

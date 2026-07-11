@@ -6,7 +6,7 @@ description: Import a YouTube video into the reading-lite corpus with a full loc
 # youtube-import
 
 Add a YouTube video to reading-lite with the **full** text the in-worker path
-can't get. Submitting a YouTube URL to the worker (`POST /readings`) works and
+can't get. Submitting a YouTube URL to the worker (`POST /api/readings`) works and
 lands `ready`, but only on the **oEmbed floor** (title + author): Cloudflare
 datacenter egress is blocked from the watch page (so no description) and YouTube
 gates the transcript (`timedtext`) behind a proof-of-origin token (so a bare
@@ -45,7 +45,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    ```
 
    The tool prints the reading id and a poll URL. The reading processes through
-   the normal queue → poll `GET /readings/:id` until `ready`.
+   the normal queue → poll `GET /api/readings/:id` until `ready`.
 
 3. **Upgrading a thin worker reading.** If the URL already has a worker-made
    floor-only reading, the import returns `existing` and does **not** replace it
@@ -69,7 +69,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
   `https://www.youtube.com/watch?v=<id>` URL (derived from any accepted form), so
   `youtu.be/<id>`, `/shorts/<id>`, and `?t=` variants this tool imports dedupe to
   one reading. A reading **already** stored under a noncanonical form (from a
-  prior `/readings` submission) is a separate by-url owner — the tool detects and
+  prior `/api/readings` submission) is a separate by-url owner — the tool detects and
   warns about those (see step 3) rather than silently duplicating.
 - **Transcript size cap.** Import markdown rides a Cloudflare queue message
   (128 KB). A very long transcript is truncated to fit (with a visible notice)
@@ -77,7 +77,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 - **Transcript is best-effort.** Manually-captioned and many auto-captioned
   videos work via yt-dlp; some return nothing. Description (from the watch page)
   is the reliable win over the worker; transcript is the bonus.
-- **Imported as markdown.** The reading is created via `/readings/import-markdown`
+- **Imported as markdown.** The reading is created via `/api/readings/import-markdown`
   (`source_type: "markdown"`), so it summarizes the supplied text directly — no
   re-fetch — which is why the rich local markdown is what gets summarized.
 - **Local + manual by design.** It can't run inside the worker or the SPA submit

@@ -48,7 +48,7 @@ export async function listReadings(
   token: string,
   params: ListReadingsParams
 ): Promise<ListReadingsResponse> {
-  const url = new URL("/readings", window.location.origin);
+  const url = new URL("/api/readings", window.location.origin);
   url.searchParams.set("limit", String(params.limit));
   url.searchParams.set("offset", String(params.offset));
   if (params.q && params.q !== "") url.searchParams.set("q", params.q);
@@ -62,7 +62,7 @@ export async function listReadings(
 }
 
 export async function getReading(token: string, id: string): Promise<Manifest> {
-  const url = new URL(`/readings/${encodeURIComponent(id)}`, window.location.origin);
+  const url = new URL(`/api/readings/${encodeURIComponent(id)}`, window.location.origin);
   const response = await fetch(new Request(url, { headers: authHeaders(token) }));
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to get reading"));
@@ -74,7 +74,7 @@ export async function getReadingDiagnostics(
   token: string,
   id: string
 ): Promise<ReadingDiagnostics> {
-  const url = new URL(`/readings/${encodeURIComponent(id)}/diagnostics`, window.location.origin);
+  const url = new URL(`/api/readings/${encodeURIComponent(id)}/diagnostics`, window.location.origin);
   const response = await fetch(new Request(url, { headers: authHeaders(token) }));
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to get diagnostics"));
@@ -89,7 +89,7 @@ export async function fetchContentBlob(
   id: string,
   kind: ContentKind
 ): Promise<Blob> {
-  const url = new URL(`/readings/${encodeURIComponent(id)}/${kind}`, window.location.origin);
+  const url = new URL(`/api/readings/${encodeURIComponent(id)}/${kind}`, window.location.origin);
   const response = await fetch(new Request(url, { headers: authHeaders(token) }));
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to fetch content"));
@@ -101,7 +101,7 @@ export async function submitReading(
   token: string,
   url: string
 ): Promise<SubmitReadingResponse | Manifest> {
-  const target = new URL("/readings", window.location.origin);
+  const target = new URL("/api/readings", window.location.origin);
   const response = await fetch(
     new Request(target, {
       method: "POST",
@@ -119,7 +119,7 @@ export async function reprocessReading(
   token: string,
   id: string
 ): Promise<ReprocessReadingResponse> {
-  const target = new URL(`/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
+  const target = new URL(`/api/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
   const response = await fetch(
     new Request(target, {
       method: "POST",

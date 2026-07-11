@@ -15,7 +15,7 @@ agent context: current commands, module map, conventions, and gotchas.
 
 - `src/index.ts` exports the Worker fetch and queue handlers. The main queue
   dispatches to `processReading`; the DLQ dispatches to `markDeadLettered`.
-- `src/router.ts` owns the HTTP API, auth-protected `/readings*` routes,
+- `src/router.ts` owns the HTTP API, auth-protected `/api/readings*` routes,
   idempotent submit/import/reprocess behavior, lookup, diagnostics, and content
   streaming. After claiming the by-url slot it delegates the eager write +
   enqueue to `activateAttempt`.
@@ -150,7 +150,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   bucket through the S3-compatible API, then deletes the bucket.
 - Production uses `[env.production]`, Worker name `reading-lite`, R2 bucket
   `reading-lite`, Vectorize index `reading-lite`, and Worker routes scoped to
-  `reading-lite.bbell.dev/readings*` and `/health`; Cloudflare Pages serves the
+  `reading-lite.bbell.dev/api/*` and `/health`; Cloudflare Pages serves the
   SPA for other paths.
 - Secrets are managed outside deploy scripts with `wrangler secret put --env
   staging|production`. Required Worker secrets: `READER_API_TOKEN`,
@@ -167,7 +167,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Validate only at seams. zod parses request bodies, R2 reads, and upstream API
   responses. Inside the Worker, trust typed values except for manifest reads
   from R2, which are parsed to guard stored-schema drift.
-- Keep by-url ownership eager. `POST /readings` and markdown import claim the
+- Keep by-url ownership eager. `POST /api/readings` and markdown import claim the
   URL slot before queueing work. Ready/pending owners return the existing
   manifest; failed owners reprocess in place. Markdown import over a visible
   pending owner is expected to return `200` with the same pending manifest/id.
@@ -212,7 +212,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Messages that exhaust main-queue retries route to the DLQ, where
   `markDeadLettered` converts the stranded attempt to retryable `failed` and
   acks terminally.
-- Read-only `GET /readings/lookup` must stay side-effect-free. It must not
+- Read-only `GET /api/readings/lookup` must stay side-effect-free. It must not
   claim cold legacy pointers, repair damaged pointers, deep-scan R2, or write.
 - `Readability`/Turndown can throw on pathological HTML. The extractor has a
   raw-DOM salvage path for throws, but deliberate "no article" verdicts still
@@ -224,7 +224,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   page. Add Reddit threads with the **`reddit-import`** skill, which drives a
   logged-in Chrome session (via `chrome-devtools-mcp`) to fetch the public
   `<thread>.json`, renders it with the shared `redditListingToMarkdown` parser,
-  and imports the markdown (`scripts/reddit-import.ts` → `/readings/import-markdown`).
+  and imports the markdown (`scripts/reddit-import.ts` → `/api/readings/import-markdown`).
   No Reddit app / OAuth credentials are involved. corpus-recover routes Reddit
   rows to `skip` for the same reason — recover them with the skill.
 - YouTube watch pages are JS shells with no article body, so the extractor
@@ -242,7 +242,7 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   full extraction — description + transcript — use the **`youtube-import`** skill,
   which fetches the watch page from a residential IP and runs `yt-dlp` for the
   transcript, reusing the same `youtube.ts` parsers and importing via
-  `/readings/import-markdown` (`scripts/youtube-import.ts`).
+  `/api/readings/import-markdown` (`scripts/youtube-import.ts`).
 - Turndown's internal DOMParser needs a `document`, absent in Workers; pass
   linkedom's parsed body directly.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.

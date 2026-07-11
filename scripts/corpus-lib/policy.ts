@@ -10,7 +10,7 @@ export interface ActionDecision {
 // action. Kept here (in the skill) on purpose — it's the editable contract for
 // how corpus-recover treats each failure class.
 //
-//   reprocess      re-run the pipeline via POST /readings/:id/reprocess (force)
+//   reprocess      re-run the pipeline via POST /api/readings/:id/reprocess (force)
 //   local-extract  fetch locally with a browser UA, re-import as markdown
 //   skip           record only — permanently unrecoverable this way
 //   none           no content action needed (cosmetic dup)

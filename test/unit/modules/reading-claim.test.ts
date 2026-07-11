@@ -317,7 +317,7 @@ describe("ReadingClaim.resolveOwner", () => {
   });
 
   it("does not scan or write to repair a damaged pointer when repairDamaged is false", async () => {
-    // The read-only lookup path (GET /readings/lookup) passes repairDamaged:false
+    // The read-only lookup path (GET /api/readings/lookup) passes repairDamaged:false
     // so a GET never deep-scans the bucket or CAS-writes the pointer. A damaged
     // pointer reads as "not found"; the write paths (submit/import) still repair.
     const { store, claim } = newClaim();

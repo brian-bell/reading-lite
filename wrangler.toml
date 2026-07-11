@@ -17,7 +17,7 @@
 #   2. `npm run dev`.
 # Note: `wrangler dev` runs against a local emulated R2 bucket (initially empty)
 # and has no Vectorize binding, so search returns no results locally. POST
-# /readings and /readings/:id/reprocess also fail under `wrangler dev` (no queue
+# /api/readings and /api/readings/:id/reprocess also fail under `wrangler dev` (no queue
 # binding). Read-only list/detail routes work against whatever you write locally.
 # Most submission/search behavior is covered by the integration tests instead.
 #
@@ -200,7 +200,7 @@ index_name = "reading-lite"
 # Worker routes scoped to API paths only; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.
 [[env.production.routes]]
-pattern = "reading-lite.bbell.dev/readings*"
+pattern = "reading-lite.bbell.dev/api/*"
 zone_name = "bbell.dev"
 
 [[env.production.routes]]

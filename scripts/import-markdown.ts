@@ -34,7 +34,7 @@ interface Args {
   email: boolean;
 }
 
-const DEFAULT_DESTINATION_URL = "http://127.0.0.1:8787/readings/import-markdown";
+const DEFAULT_DESTINATION_URL = "http://127.0.0.1:8787/api/readings/import-markdown";
 
 function parseCliArgs(): Args {
   const { values } = parseArgs({

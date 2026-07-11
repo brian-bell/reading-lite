@@ -17,7 +17,7 @@ describe("lookupReading", () => {
     await lookupReading("https://youtu.be/abc?t=30", deps(fetch));
     const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(url).toBe(
-      "https://api.example/readings/lookup?url=https%3A%2F%2Fyoutu.be%2Fabc%3Ft%3D30",
+      "https://api.example/api/readings/lookup?url=https%3A%2F%2Fyoutu.be%2Fabc%3Ft%3D30",
     );
     expect((init as RequestInit).headers).toMatchObject({ authorization: "Bearer t" });
   });
@@ -29,7 +29,7 @@ describe("lookupReading", () => {
 
   it("reports found with the id on a 409 initializing owner", async () => {
     const fetch = vi.fn(async () =>
-      jsonResponse(409, { error: "reading owner is still initializing", id: "rd_2", poll: "/readings/rd_2" }),
+      jsonResponse(409, { error: "reading owner is still initializing", id: "rd_2", poll: "/api/readings/rd_2" }),
     ) as unknown as typeof globalThis.fetch;
     expect(await lookupReading("https://x", deps(fetch))).toEqual({ found: true, id: "rd_2" });
   });

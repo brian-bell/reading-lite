@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { submitAll, type SubmitResult } from "../../../scripts/import-bookmarks-lib/submit";
 
-const DEST = "http://localhost:8787/readings";
+const DEST = "http://localhost:8787/api/readings";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -122,12 +122,12 @@ describe("submitAll", () => {
     );
     await submitAll(["https://x.test/"], {
       fetch: fetchMock,
-      destinationUrl: "https://reading-lite.bbell.dev/readings",
+      destinationUrl: "https://reading-lite.bbell.dev/api/readings",
       token: "tok-abc",
       onResult: async () => {},
     });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://reading-lite.bbell.dev/readings");
+    expect(url).toBe("https://reading-lite.bbell.dev/api/readings");
     expect(init?.method).toBe("POST");
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe("Bearer tok-abc");

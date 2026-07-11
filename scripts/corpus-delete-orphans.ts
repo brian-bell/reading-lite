@@ -8,7 +8,7 @@
 //   {prefix}/extracted.md         (best-effort)
 //   {prefix}/raw.{ext}            (best-effort, common exts)
 //   {prefix}/attempts/{id}.json   (ids read live from the manifest)
-//   index/by-id/{id}              (so GET /readings/:id 404s instead of resolving)
+//   index/by-id/{id}              (so GET /api/readings/:id 404s instead of resolving)
 //   index/by-url/{hash}           (ONLY if the stored pointer is owned by this
 //                                  orphan — under eager URL ownership the slot
 //                                  for this URL usually belongs to the surviving

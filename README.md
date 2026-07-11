@@ -15,11 +15,11 @@ Deployed and in personal use at [`reading-lite.bbell.dev`](https://reading-lite.
 ## Architecture at a glance
 
 ```
-POST /readings { url }
+POST /api/readings { url }
   ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
   └─ else: claim the by-url owner, write a "pending" manifest, enqueue a
            job on the READING_JOBS queue, return 202. Poll GET
-           /readings/:id until ready/failed. Re-submitting a pending URL
+           /api/readings/:id until ready/failed. Re-submitting a pending URL
            returns the owned reading; re-submitting a failed URL reprocesses
            that same id.
 
@@ -69,7 +69,7 @@ npm run typecheck
 
 `wrangler dev` (top-level `wrangler.toml`, worker name `reading-lite-dev`) runs your code locally against a Miniflare-emulated R2 bucket — initially empty, never the deployed one — so no remote resources are needed or touched. The distinct dev name also guards against an accidental bare `wrangler deploy` clobbering prod. Staging resources (`reading-lite-staging` bucket, Queue/DLQ, and Vectorize index) live under `[env.staging]`; production resources (`reading-lite` bucket + Vectorize index, served at `reading-lite.bbell.dev`) live under `[env.production]`.
 
-> **`wrangler dev` has no Vectorize binding and no Queue binding by design.** Search returns no results locally (Vectorize has no local emulator, and a remote binding would point dev at production data), and `POST /readings` / `/readings/:id/reprocess` return 503 without `READING_JOBS`. Read-only list/detail routes work against whatever you write to the local bucket. Most submission/search behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need real bindings.
+> **`wrangler dev` has no Vectorize binding and no Queue binding by design.** Search returns no results locally (Vectorize has no local emulator, and a remote binding would point dev at production data), and `POST /api/readings` / `/api/readings/:id/reprocess` return 503 without `READING_JOBS`. Read-only list/detail routes work against whatever you write to the local bucket. Most submission/search behavior is covered by the integration tests instead (`installQueueStub()` + `drainQueue()`), which don't need real bindings.
 
 ### Deployed environments
 
@@ -154,7 +154,7 @@ deployed Worker:
 | `READER_API_TOKEN` | Bearer token required on every protected route |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
-| `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
+| `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /api/readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 
@@ -179,29 +179,29 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
-| `POST /readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
-| `POST /readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
-| `GET /readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
-| `GET /readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
-| `GET /readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
-| `POST /readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
-| `GET /readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
-| `GET /readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
-| `GET /readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
-| `POST /readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
+| `POST /api/readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
+| `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
+| `GET /api/readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
+| `GET /api/readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
+| `GET /api/readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
+| `POST /api/readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
+| `GET /api/readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
+| `GET /api/readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
+| `GET /api/readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
+| `POST /api/readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
-List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
+List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /api/readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
 
 The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
 
 ### Troubleshooting and reprocessing
 
-Use `GET /readings/:id/diagnostics` when a reading is failed or stuck. The
+Use `GET /api/readings/:id/diagnostics` when a reading is failed or stuck. The
 response shows whether by-id/by-url pointers line up, whether expected R2
 objects exist, and which processing stage failed (`fetch_source`,
 `embed_source`, `summarize`, `upsert_vector`, `write_indexes`, etc.).
 
-Use `POST /readings/:id/reprocess` to retry the exact reading id. For a failed
+Use `POST /api/readings/:id/reprocess` to retry the exact reading id. For a failed
 reading, the manifest becomes `pending` while the new attempt runs. For a ready
 reading, the current ready manifest remains the fallback; if the reprocess
 attempt succeeds it replaces the manifest and vector, and if it fails the ready
@@ -210,7 +210,7 @@ manifest is preserved with `last_attempt.status = "failed"`.
 For bulk retry work, use the corpus tools: `npm run corpus-audit` inventories
 every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
-through `POST /readings/:id/reprocess` (`--wave` paces realtime submissions) or
+through `POST /api/readings/:id/reprocess` (`--wave` paces realtime submissions) or
 the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
 Both default to a dry run; pass `--execute` to act. The recover `--batch` path now
 eagerly claims each by-url slot before submit (a failed→pending flip), matching
@@ -233,7 +233,7 @@ npm run dev                            # wrangler dev on http://127.0.0.1:8787
 cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 ```
 
-The SPA proxies `/readings` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/readings*` and `/health` so Pages handles every other path. Deploy production with `npm run deploy:web -- --execute` or `make deploy-web ENV=prd EXECUTE=1`; deploy a Pages preview for staging with `make deploy-web ENV=stg EXECUTE=1`.
+The SPA proxies `/api` and `/health` to the Worker so requests are same-origin in development. In production the SPA is served from Cloudflare Pages on the same custom domain as the Worker (`reading-lite.bbell.dev`), with Worker routes scoped to `/api/*` and `/health` so Pages handles every other path. Deploy production with `npm run deploy:web -- --execute` or `make deploy-web ENV=prd EXECUTE=1`; deploy a Pages preview for staging with `make deploy-web ENV=stg EXECUTE=1`.
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring `src/schemas/manifest.ts` — keep them in sync if the Worker schema changes.
 
@@ -243,7 +243,7 @@ A node-side script ingests URLs from a Chrome bookmark export. By default it ask
 
 ```sh
 # default: "Computing" (top-level, i.e. under "Other Bookmarks") — interactive,
-# posts to http://127.0.0.1:8787/readings
+# posts to http://127.0.0.1:8787/api/readings
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
 
 # fire everything without prompts (still serial — one POST at a time)
@@ -253,10 +253,10 @@ npm run import-bookmarks -- --file ~/Downloads/bookmarks.html --quick
 npm run import-bookmarks -- \
   --file ~/Downloads/bookmarks.html \
   --folder "Computing/AI/MCP" \
-  --url https://reading-lite.bbell.dev/readings
+  --url https://reading-lite.bbell.dev/api/readings
 ```
 
-`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
+`--url` takes the **full** readings endpoint to POST to (default: `http://127.0.0.1:8787/api/readings`, or `READER_URL` env). `--dry-run` prints the would-submit list without prompting or POSTing. `--quick` skips the per-URL prompt; submission is always serial (one POST at a time) so the local index can't race with itself. Token resolution mirrors `npm run read`: `--token` > `READER_API_TOKEN` env > `.dev.vars`. Transport-level fetch failures are retried twice (250ms / 500ms backoff); errors and statuses are surfaced with their underlying cause (e.g. `fetch failed / ECONNREFUSED ...`). Errors are NOT recorded in the index, so the next run retries them; `new`/`existing` responses are recorded immediately, so an interrupted run picks up where it left off. The worker also dedupes on its side via the by-url pointer, so deleting the local index is safe — it just means re-POSTing every URL once to rebuild it.
 
 ## Importing local Markdown
 
@@ -268,7 +268,7 @@ file must include a source line:
 ```
 
 The importer uses that URL as the canonical reading URL and sends the Markdown
-body to `POST /readings/import-markdown`. Duplicate files with the same source
+body to `POST /api/readings/import-markdown`. Duplicate files with the same source
 URL are collapsed before submit; the largest Markdown file wins. Imported
 readings store the Markdown as both raw content and `extracted.md`, then reuse
 the normal embedding, similarity, Claude summary, Vectorize, manifest, and list
@@ -284,12 +284,12 @@ npm run import-markdown -- --dir ~/Documents/articles
 # submit to staging
 npm run import-markdown -- \
   --dir ~/Documents/articles \
-  --url https://reading-lite-staging.<workers-subdomain>.workers.dev/readings/import-markdown
+  --url https://reading-lite-staging.<workers-subdomain>.workers.dev/api/readings/import-markdown
 
 # submit to production
 npm run import-markdown -- \
   --dir ~/Documents/articles \
-  --url https://reading-lite.bbell.dev/readings/import-markdown
+  --url https://reading-lite.bbell.dev/api/readings/import-markdown
 ```
 
 `--url` is the full import endpoint. Token resolution mirrors the other
@@ -308,7 +308,7 @@ For large backfills, `corpus-ingest` ingests the same directory but summarizes
 through the **Anthropic Message Batch API** (~50% cheaper, async, no rate-limit
 retries). It is the markdown-in-hand sibling of `corpus-recover --batch`: it
 talks to R2/Vectorize directly with `CORPUS_R2_*` credentials rather than the
-HTTP `/readings` API. The resulting `ready` manifests are contract-compatible
+HTTP `/api/readings` API. The resulting `ready` manifests are contract-compatible
 with the realtime import path (`source_type: "markdown"`, captured content,
 correct `content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`,
 by-url + by-id pointers, a Vectorize vector, and an `index/list.json` entry);
@@ -366,11 +366,11 @@ npm run corpus-ingest -- --dir ~/Documents/articles --execute --sole-writer --bu
 ### Reddit threads
 
 Reddit serves a bot-challenge to datacenter egress, so the Worker can't fetch
-thread JSON directly — a `POST /readings` with a `reddit.com` / `redd.it` URL
+thread JSON directly — a `POST /api/readings` with a `reddit.com` / `redd.it` URL
 deliberately lands `failed`. Add Reddit threads with the **`reddit-import`**
 skill instead: it drives a logged-in Chrome session to fetch the public
 `<thread>.json`, renders the post + top comments to Markdown with the same
-parser the Worker uses, and imports it via `POST /readings/import-markdown`. No
+parser the Worker uses, and imports it via `POST /api/readings/import-markdown`. No
 Reddit app or OAuth credentials are needed. The skill wraps
 `scripts/reddit-import.ts <redditUrl> --json <saved.json>` (which also has a
 `--dry-run` to preview the Markdown).
@@ -392,7 +392,7 @@ egress), so it lands the floor only. For a full extraction — description plus
 transcript — run the **`youtube-import`** skill locally:
 `npx tsx scripts/youtube-import.ts "<youtubeUrl>"` (add `--dry-run` to preview).
 It fetches the watch page from your residential IP and uses `yt-dlp` for the
-transcript, then imports the rich markdown via `POST /readings/import-markdown` —
+transcript, then imports the rich markdown via `POST /api/readings/import-markdown` —
 reusing the same parsers the worker uses. Requires `yt-dlp` on PATH.
 
 ## Repo layout
@@ -427,7 +427,7 @@ scripts/
   lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch / corpus-ingest)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries
-  import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /readings
+  import-bookmarks.ts + import-bookmarks-lib/{...}        # Chrome export → POST /api/readings
   import-markdown.ts + import-markdown-lib/{...}          # local .md → import-markdown
   run-with-vars.ts              # helper: overlay a dotenv file onto env, then run a command
 test/
