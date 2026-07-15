@@ -25,7 +25,8 @@
     "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
     "corpus-drop": "tsx scripts/corpus-drop.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",
-    "process-reading-list": "tsx scripts/process-reading-list.ts"
+    "process-reading-list": "tsx scripts/process-reading-list.ts",
+    "extract-agent": "tsx scripts/extract-agent.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",
@@ -45,6 +46,7 @@
     "@vitest/snapshot": "~2.1.8",
     "aws4fetch": "^1.0.20",
     "better-sqlite3": "^11.7.0",
+    "playwright": "^1.61.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "~2.1.8",

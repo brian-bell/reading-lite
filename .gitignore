@@ -4,6 +4,7 @@ dist/
 .dev.vars
 .stg.vars
 .corpus.vars
+.extract-agent.vars
 .import-bookmarks-index.json
 .import-markdown-index.json
 .import-reading-list-index.json

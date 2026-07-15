@@ -53,6 +53,7 @@ export default [
         "test/unit/youtube-import/**/*.test.ts",
         "test/unit/check-corpus/**/*.test.ts",
         "test/unit/process-reading-list/**/*.test.ts",
+        "test/unit/extract-agent/**/*.test.ts",
       ],
       environment: "node",
     },
