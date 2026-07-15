@@ -334,7 +334,11 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-function assertSafeUrl(rawUrl: string): void {
+// Exported for the local extraction agent (scripts/extract-agent-lib), whose
+// safe-fetch wrapper re-runs these checks on every redirect hop and resolved
+// IP — the Worker relies on Cloudflare blocking private egress, the home box
+// has no such backstop. Single-homed here so the rules can't drift.
+export function assertSafeUrl(rawUrl: string): void {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -348,12 +352,13 @@ function assertSafeUrl(rawUrl: string): void {
   if (host.startsWith("[") && host.endsWith("]")) {
     host = host.slice(1, -1);
   }
-  if (isBlockedHostname(host)) {
+  if (isBlockedHost(host)) {
     throw new BlockedHostError(rawUrl, `private/loopback/link-local: ${host}`);
   }
 }
 
-function isBlockedHostname(host: string): boolean {
+// Takes a normalized hostname: lowercased, IPv6 brackets stripped.
+export function isBlockedHost(host: string): boolean {
   if (host === "localhost" || host === "localhost.") return true;
   if (host.endsWith(".local") || host.endsWith(".local.")) return true;
 
@@ -387,7 +392,15 @@ function isBlockedV4(host: string): boolean {
 function embeddedIPv4(host: string): string | null {
   // host is bracket-stripped, lowercased. WHATWG URL canonicalizes
   // "[::ffff:127.0.0.1]" to "[::ffff:7f00:1]" so we need to expand "::" and
-  // decode the trailing 32 bits.
+  // decode the trailing 32 bits. The dotted spelling never reaches us from a
+  // parsed URL, but DNS-resolved addresses (the extraction agent's per-hop
+  // lookup checks) do use it — normalize it to the hex form first.
+  const dotted = host.match(/^(.+):(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dotted) {
+    const quad = dotted[2]!.split(".").map(Number);
+    if (quad.some((n) => n > 255)) return null;
+    host = `${dotted[1]}:${((quad[0]! << 8) | quad[1]!).toString(16)}:${((quad[2]! << 8) | quad[3]!).toString(16)}`;
+  }
   let segments: string[];
   if (host.includes("::")) {
     const [left, right] = host.split("::", 2) as [string, string];
