@@ -21,7 +21,7 @@ export async function reprocessReading(id: string, deps: ApiDeps): Promise<ApiRe
 // POST /api/readings/import-markdown — create/update a reading straight from
 // markdown (no fetch). 202 new, 200 already-existing.
 export async function importMarkdown(
-  body: { source_url: string; markdown: string; title?: string },
+  body: { source_url: string; markdown: string; title?: string; email?: boolean },
   deps: ApiDeps,
 ): Promise<ApiResult> {
   return post(`${deps.base}/api/readings/import-markdown`, body, deps);

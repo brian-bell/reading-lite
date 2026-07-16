@@ -28,7 +28,9 @@ const TRUNCATION_NOTICE = "\n\n_[transcript truncated to fit the import size lim
 // can still push the send over the limit *after* the reading is claimed/written.
 // Unlike hand-authored markdown, this cap fills the transcript right up to the
 // ceiling, so reserve generous headroom (the real envelope is well under 1 KB).
-const QUEUE_ENVELOPE_RESERVE = 1024;
+// Exported for the extraction agent's submit gate, which reserves the same
+// headroom on every markdown import (single-homed — no copies).
+export const QUEUE_ENVELOPE_RESERVE = 1024;
 const MARKDOWN_MESSAGE_BUDGET = MARKDOWN_IMPORT_MAX_BYTES - QUEUE_ENVELOPE_RESERVE;
 
 // Slice `text` to at most `maxBytes` UTF-8 bytes without leaving a split
