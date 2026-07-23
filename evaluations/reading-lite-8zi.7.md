@@ -6,26 +6,28 @@ Beads: `reading-lite-8zi.7`
 
 Branch: `feature/openai-summarization`
 
-Status: **live verification complete — operator credential repair and human approval required**
+Status: **approved — ready for production rollout**
 
 ## Decision gate
 
-Do not deploy this provider change to production until a human approves the
-model/default decision.
+On 2026-07-23, the operator explicitly approved `gpt-5.6-terra` at `low`
+reasoning effort as the production default. This preserves the checked-in
+configuration:
+
+- `SUMMARIZER_PROVIDER=openai`
+- `OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra`
+- `OPENAI_SUMMARIZATION_REASONING_EFFORT=low`
 
 Both providers passed their full executable staging matrix: realtime submit,
 import, reprocess, and failure behavior; fresh and recovery batches; and
-provider-pinned resume after the environment selected the other provider. The
-supported offline operator path still needs replacement long-lived R2
-credentials; the OAuth remote-binding harness used below proves the live
-behavior but is not a supported replacement for those CLI credentials. Staging
-was restored to the checked-in OpenAI configuration after the Anthropic run. No
-production deployment was attempted.
+provider-pinned resume after the environment selected the other provider.
+Replacement long-lived R2 credentials now pass a signed read through the
+supported corpus client, and the production Anthropic key authenticates
+successfully. Staging was restored to the approved OpenAI configuration after
+the Anthropic run. No production deployment was attempted.
 
-Keep `gpt-5.6-terra` at `low` as the checked-in provisional default until a
-human approves a final model. The automatic rubric favored Luna/low on this
-small corpus, so Luna deserves explicit human comparison; the current evidence
-is not sufficient by itself to change the default.
+The automatic rubric favored Luna/low on this small corpus, but that result did
+not override the human-approved Terra/low default.
 
 ## Fixed non-secret corpus
 
@@ -85,21 +87,11 @@ Anthropic Sonnet 4.6 rates came from the official
 [Claude pricing sheet](https://www-cdn.anthropic.com/files/4zrzovbb/website/5678bc2f5978e5bcd4f1fe7c14b2c72284dcf9f8.pdf).
 Batch estimates apply the providers' documented 50% discount.
 
-## Human review worksheet
+## Human decision
 
-Read the OpenAI compact evidence in `.summarizer-eval/full/report.md` and the
-Anthropic compact evidence in `.summarizer-eval/anthropic/report.md`, then score
-each available candidate from 1–5. Do not approve a default based only on the
-automatic table.
-
-| Candidate | Title/TLDR | Fidelity | Retrieval | Novelty/connections | Overall | Notes |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Anthropic Sonnet 4.6 |  |  |  |  |  |  |
-| Terra none |  |  |  |  |  |  |
-| Terra low |  |  |  |  |  |  |
-| Terra medium |  |  |  |  |  |  |
-| Luna low |  |  |  |  |  |  |
-| Sol low |  |  |  |  |  |  |
+The operator reviewed the handoff and accepted Terra/low as the production
+default on 2026-07-23. No per-candidate numeric worksheet scores were supplied;
+the explicit default decision is the approval record.
 
 ## Live staging evidence
 
@@ -147,12 +139,15 @@ Staging was restored from checked-in configuration:
 
 ### Batch verification
 
-The configured long-lived S3 credential remained stale. For verification, a
-gitignored, localhost-only Worker used Wrangler's authenticated remote R2
-binding. The replacement `CORPUS_CF_API_TOKEN` successfully accessed both
-Vectorize indexes and was used by the existing Vectorize REST client. This
-created no persistent R2 credential and exercised the existing batch pipeline
-against the real `reading-lite-staging` R2 bucket and Vectorize index.
+At the time of the live batch matrix, the configured long-lived S3 credential
+was stale. A gitignored, localhost-only Worker therefore used Wrangler's
+authenticated remote R2 binding, while the replacement
+`CORPUS_CF_API_TOKEN` accessed both Vectorize indexes through the existing
+Vectorize REST client. That workaround exercised the existing batch pipeline
+against the real `reading-lite-staging` R2 bucket and Vectorize index without
+creating a persistent R2 credential. After the matrix completed, the operator
+replaced the S3 credentials and a signed read through the supported corpus
+client succeeded; future CLI runs no longer require the workaround.
 
 Both staging queue consumers were removed before execution, verified absent,
 and restored afterward with their original settings:
@@ -209,32 +204,24 @@ Anthropic recovery:
 Together, these runs prove fresh batch, recovery batch, and sidecar-pinned
 resume for both providers and in both environment-change directions.
 
-## Required operator repairs
+## Operator readiness
 
-1. Copy the validated local Anthropic key into `.prd.vars` as well as
-   `.dev.vars`; otherwise the normal offline credential precedence can select
-   the stale `.prd.vars` value.
+The final operator gates were completed on 2026-07-23:
 
-2. Replace the stale R2 S3 credentials used by the supported offline batch
-   CLIs:
-
-   - `CORPUS_R2_ACCESS_KEY`
-   - `CORPUS_R2_SECRET_KEY`
-
-   `CORPUS_R2_ACCOUNT_ID` is already the correct account. The replacement
-   `CORPUS_CF_API_TOKEN` already has working Vectorize access.
-
-3. Complete the human worksheet and approve or reject the provisional default.
+- the Anthropic key in `.prd.vars` authenticated against the Anthropic API;
+- `CORPUS_R2_ACCESS_KEY` and `CORPUS_R2_SECRET_KEY` performed a signed read
+  from `reading-lite-staging` through the repository's supported corpus client;
+- the previously replaced `CORPUS_CF_API_TOKEN` has working Vectorize access;
+- Terra/low was explicitly approved as the production default.
 
 ## Production and rollback
 
-After the operator credential repairs and human approval:
+For a later production rollout:
 
-1. confirm staging is restored to the approved provider;
-2. run all root and SPA gates again;
-3. inspect active sidecars before changing the default;
-4. deploy the Worker to production through the dry-run-first wrapper;
-5. run one production smoke reading and inspect usage/diagnostics.
+1. run all root and SPA gates again;
+2. inspect active sidecars before deployment;
+3. deploy the Worker to production through the dry-run-first wrapper;
+4. run one production smoke reading and inspect usage/diagnostics.
 
 Rollback is an explicit provider change, never automatic fallback. Set
 `SUMMARIZER_PROVIDER=anthropic` only after confirming a valid production
