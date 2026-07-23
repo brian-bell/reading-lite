@@ -142,7 +142,142 @@ function harness(seedManifests: Record<string, Manifest>) {
   return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };
 }
 
+function installCompletedOpenAIBatch(
+  h: ReturnType<typeof harness>,
+  options: {
+    onUpload?: (jsonl: string, runId: string) => void | Promise<void>;
+  } = {},
+) {
+  h.deps.configuredProvider = "openai";
+  h.deps.model = "gpt-5.6-terra";
+  h.deps.reasoningEffort = "low";
+  h.deps.newRunId = vi.fn(() => "run_recovery");
+  const upload = vi.fn(async (jsonl: string, runId: string) => {
+    await options.onUpload?.(jsonl, runId);
+    return {
+      id: "file_input",
+      filename: `reading-lite-${runId}.jsonl`,
+      purpose: "batch",
+      bytes: new TextEncoder().encode(jsonl).byteLength,
+    };
+  });
+  const create = vi.fn(async (inputFileId: string) => ({
+    id: "batch_openai",
+    input_file_id: inputFileId,
+    status: "validating",
+    output_file_id: null,
+    error_file_id: null,
+    request_counts: { total: 1, completed: 0, failed: 0 },
+  }));
+  h.deps.openaiBatch = {
+    upload,
+    create,
+    get: vi.fn(async () => ({
+      id: "batch_openai",
+      input_file_id: "file_input",
+      status: "completed",
+      output_file_id: "file_output",
+      error_file_id: null,
+      request_counts: { total: 1, completed: 1, failed: 0 },
+    })),
+    content: vi.fn(async () => {
+      const customId = h.getSidecar()!.targets[0]!.customId;
+      return (
+        JSON.stringify({
+          custom_id: customId,
+          response: {
+            status_code: 200,
+            body: {
+              id: "resp_recovery",
+              object: "response",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: JSON.stringify({
+                        ...reading,
+                        title: `Title ${customId}`,
+                      }),
+                    },
+                  ],
+                },
+              ],
+              usage: { input_tokens: 5, output_tokens: 2 },
+            },
+          },
+          error: null,
+        }) + "\n"
+      );
+    }),
+  };
+  return { upload, create };
+}
+
 describe("runBatch — fresh run", () => {
+  it("fresh-extracts a failed recovery target before OpenAI upload and publishes it at the same owner", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.store.delete("readings/kp-rd_a/extracted.md");
+    const ownerKey = `index/by-url/${manifest("rd_a").url_hash}`;
+    let stateAtUpload: {
+      owner: string | undefined;
+      raw: string | undefined;
+      extracted: string | undefined;
+      manifest: Manifest;
+    } | undefined;
+    installCompletedOpenAIBatch(h, {
+      onUpload: () => {
+        stateAtUpload = {
+          owner: h.store.get(ownerKey),
+          raw: h.store.get("readings/kp-rd_a/raw.html"),
+          extracted: h.store.get("readings/kp-rd_a/extracted.md"),
+          manifest: ManifestSchema.parse(
+            JSON.parse(
+              h.store.get("readings/kp-rd_a/manifest.json")!,
+            ),
+          ),
+        };
+      },
+    });
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(h.extract).toHaveBeenCalledOnce();
+    expect(stateAtUpload).toMatchObject({
+      owner: JSON.stringify({
+        id: "rd_a",
+        key_prefix: "readings/kp-rd_a",
+      }),
+      raw: "x",
+      extracted: "fresh https://example.com/rd_a",
+      manifest: { status: "pending", content_status: "captured" },
+    });
+    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    const final = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    expect(final).toMatchObject({
+      id: "rd_a",
+      status: "ready",
+      content_bytes: 1,
+      content_sha256: "c".repeat(64),
+      usage: {
+        summarization: {
+          provider: "openai",
+          model: "gpt-5.6-terra",
+        },
+      },
+    });
+    expect(JSON.parse(h.store.get(ownerKey)!)).toEqual({
+      id: "rd_a",
+      key_prefix: "readings/kp-rd_a",
+    });
+    expect(h.vectorize.upsert).toHaveBeenCalledOnce();
+  });
+
   it("runs an OpenAI batch to ready with one stable run id and the realtime response parser", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     h.deps.configuredProvider = "openai";
@@ -358,13 +493,12 @@ describe("runBatch — resume", () => {
         }) + "\n",
       ),
     };
-    const produce = vi.fn(async () => ({ extracted: [], dropped: [] }));
-
-    const result = await runBatchPipeline(produce, h.deps);
+    const result = await runBatch([row("rd_a")], h.deps);
 
     expect(result.resumed).toBe(true);
-    expect(produce).not.toHaveBeenCalled();
+    expect(h.extract).not.toHaveBeenCalled();
     expect(upload).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch.create).not.toHaveBeenCalled();
     expect(h.deps.openaiBatch.get).toHaveBeenCalledWith("batch_pinned");
     const final = ManifestSchema.parse(
       JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
@@ -618,6 +752,86 @@ describe("runBatch — resume", () => {
 });
 
 describe("runBatch — eager recover claim", () => {
+  it("keeps a ready recovery owner and preserved snapshot through a successful OpenAI replacement", async () => {
+    const h = harness({});
+    const kp = "readings/kp-rd_a";
+    const ready = manifest("rd_a", {
+      status: "ready",
+      title: "Prior ready title",
+      tldr: "prior ready summary",
+      tags: ["prior"],
+      keywords: ["prior ready state", "recovery ownership", "batch replacement"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "familiar",
+      connections: [],
+      summary_markdown: "Prior body.",
+    });
+    const ownerKey = `index/by-url/${ready.url_hash}`;
+    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
+    h.store.set(`${kp}/extracted.md`, "# Saved\n\nrecovery markdown");
+    h.store.set(
+      ownerKey,
+      JSON.stringify({ id: "rd_a", key_prefix: kp }),
+    );
+    installCompletedOpenAIBatch(h);
+    const injected: ExtractedTarget = {
+      target: {
+        readingId: "rd_a",
+        url: ready.url,
+        urlHash: ready.url_hash,
+        keyPrefix: kp,
+        createdAt: ready.created_at,
+        manifest: ready,
+      },
+      markdown: "# Saved\n\nrecovery markdown",
+    };
+
+    const result = await runBatchPipeline(
+      async () => ({ extracted: [injected], dropped: [] }),
+      {
+        ...h.deps,
+        activateExtracted: (targets, identity) =>
+          activateRecoverTargets(targets, {
+            r2: h.deps.r2,
+            identity,
+            now: h.deps.now,
+            saveSidecar: h.deps.saveSidecar,
+          }),
+      },
+    );
+
+    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    const submitted = h.getSidecar();
+    expect(submitted).toMatchObject({
+      provider: "openai",
+      phase: "submitted",
+      targets: [
+        {
+          id: "rd_a",
+          keyPrefix: kp,
+          preserveReadyManifest: {
+            status: "ready",
+            title: "Prior ready title",
+          },
+        },
+      ],
+    });
+    expect(JSON.parse(h.store.get(ownerKey)!)).toEqual({
+      id: "rd_a",
+      key_prefix: kp,
+    });
+    expect(h.r2.delete).not.toHaveBeenCalledWith(ownerKey);
+    const final = ManifestSchema.parse(
+      JSON.parse(h.store.get(`${kp}/manifest.json`)!),
+    );
+    expect(final.status).toBe("ready");
+    expect(final.title).toBe("Title rd_a");
+    expect(final.usage).toMatchObject({
+      summarization: { provider: "openai", model: "gpt-5.6-terra" },
+    });
+  });
+
   it("claims by-url and writes the pending manifest before creating the batch", async () => {
     const h = harness({ rd_a: manifest("rd_a") }); // failed, no by-url
     const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
@@ -901,6 +1115,61 @@ describe("runBatch — eager recover claim", () => {
 });
 
 describe("runBatch — recover resume", () => {
+  it("reconciles an OpenAI upload crash, then reuses activated markdown without refetching", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.store.delete("readings/kp-rd_a/extracted.md");
+    installCompletedOpenAIBatch(h, {
+      onUpload: () => {
+        expect(h.getSidecar()).toMatchObject({
+          provider: "openai",
+          phase: "uploading",
+          runId: "run_recovery",
+        });
+        throw new Error("simulated upload crash");
+      },
+    });
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /simulated upload crash/,
+    );
+    expect(h.extract).toHaveBeenCalledOnce();
+    expect(h.getSidecar()).toMatchObject({
+      provider: "openai",
+      phase: "uploading",
+      batchId: "",
+    });
+    const activated = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    expect(activated).toMatchObject({
+      status: "pending",
+      active_attempt: { id: "batch_rd_a", trigger: "reprocess" },
+    });
+    expect(h.store.get("readings/kp-rd_a/extracted.md")).toBe(
+      "fresh https://example.com/rd_a",
+    );
+
+    h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /input file may have been uploaded/i,
+    );
+    expect(h.extract).toHaveBeenCalledOnce();
+
+    // Simulate the documented operator reconciliation/sidecar removal. The
+    // next run must attach to the exact batch_<reading-id> activation markdown.
+    h.setSidecar(null);
+    installCompletedOpenAIBatch(h);
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(h.extract).toHaveBeenCalledOnce();
+    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    expect(
+      [...h.store.keys()].filter((key) =>
+        key.startsWith("index/by-url/"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("resumes a post-create sidecar and flips its eager-claim pending to ready (no re-create)", async () => {
     const h = harness({});
     const kp = "readings/kp-rd_a";
