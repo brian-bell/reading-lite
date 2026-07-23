@@ -13,10 +13,12 @@ describe("soleWriterGuard", () => {
   it("proceeds with a loud banner once sole-writer is acknowledged", () => {
     const v = soleWriterGuard({ execute: true, acknowledged: true, tool: "corpus-recover --batch" });
     expect(v.proceed).toBe(true);
-    // The banner names the tool and warns that sole-writer mode is still required
-    // while recover-batch parity remains incomplete.
+    // The banner names the tool and explains why eager claims do not replace
+    // the operational sole-writer window.
     expect(v.message).toMatch(/SOLE-WRITER/);
     expect(v.message).toMatch(/corpus-recover --batch/);
+    expect(v.message).toMatch(/defense-in-depth/);
+    expect(v.message).not.toMatch(/incomplete recover/);
   });
 
   it("never blocks a dry-run — it submits nothing, so there is no race to guard", () => {
