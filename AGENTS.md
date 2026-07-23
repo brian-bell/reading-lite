@@ -5,8 +5,10 @@ Submitting a URL writes an eager by-url ownership claim, stores a pending
 manifest in R2, sends a `READING_JOBS` queue message, and returns a pollable
 reading id. The queue consumer runs `processReading`, extracts source content,
 embeds it with OpenAI, queries Vectorize for similar readings, summarizes once
-with Anthropic forced tool use (`emit_reading`), writes the terminal manifest
-and `index/list.json`, and optionally sends a Resend email.
+through the configured provider (OpenAI structured output by default; Anthropic
+forced tool use when selected), writes the terminal manifest and
+`index/list.json`, and optionally sends a Resend email. Provider selection never
+falls back silently.
 
 `README.md` is the user-facing architecture and operations guide. This file is
 agent context: current commands, module map, conventions, and gotchas.
@@ -59,13 +61,16 @@ agent context: current commands, module map, conventions, and gotchas.
   to `ReadingStore`); reading-store.ts imports the shared R2-layout constants
   (`MANIFEST_FILE`, `READINGS_PREFIX`) from here to keep the layout single-homed.
 - `src/modules/stores/similarity-store.ts` wraps Vectorize query/upsert/delete.
-- `src/modules/extractor`, `embeddings`, `anthropic`, `email`, and
-  `http-retry` isolate upstream integrations.
+- `src/modules/summarizer` owns provider selection, configuration parsing, and
+  the normalized result/usage contract. `src/modules/openai-summarizer` owns the
+  OpenAI Responses structured-output path; `src/modules/anthropic` owns the
+  forced-tool Anthropic path. `extractor`, `embeddings`, `email`, and
+  `http-retry` isolate the other upstream integrations.
 - `src/schemas` contains zod API and manifest contracts. `web/src/types.ts`
   hand-mirrors the Worker manifest/list/diagnostics types.
 - `scripts/` contains operator CLIs for deploys, staging lifecycle, corpus
   audit/recovery/drop, imports, and manual smoke tests.
-- `scripts/corpus-lib/batch/` is the Node-side bulk Message Batch pipeline.
+- `scripts/corpus-lib/batch/` is the Node-side provider Batch API pipeline.
   `run.ts`'s `runBatchPipeline` is the shared tail (resume-guard → optional
   fresh payload preflight → similar → final payload validation + activation →
   submit+sidecar → poll → write) that both front-ends feed: `corpus-recover --batch` resolves audit rows via
@@ -153,8 +158,10 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   `reading-lite.bbell.dev/api/*` and `/health`; Cloudflare Pages serves the
   SPA for other paths.
 - Secrets are managed outside deploy scripts with `wrangler secret put --env
-  staging|production`. Required Worker secrets: `READER_API_TOKEN`,
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and optionally `RESEND_API_KEY`.
+  staging|production`. `READER_API_TOKEN` and `OPENAI_API_KEY` are always
+  required; `ANTHROPIC_API_KEY` is required only when
+  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` is optional. Checked-in
+  defaults select OpenAI with `gpt-5.6-terra` at `low` reasoning effort.
 - Staging teardown R2 emptying additionally needs `CORPUS_R2_ACCOUNT_ID`,
   `CORPUS_R2_ACCESS_KEY`, and `CORPUS_R2_SECRET_KEY` in env or `.corpus.vars`.
 
@@ -177,8 +184,11 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Keep manifest contracts synchronized. Update `src/schemas/manifest.ts`,
   `src/schemas/api.ts`, tests, and `web/src/types.ts` together when fields
   change.
+- Keep summarizer configuration fail-closed. OpenAI is always required for
+  embeddings; require the selected summarizer's credential, reject invalid
+  provider/effort values, and do not add implicit provider fallback.
 - Preserve the Anthropic prompt-cache prefix. `buildSummarizeRequestBody` in
-  `src/modules/anthropic` is shared by realtime processing and the batch path;
+  `src/modules/anthropic` is shared by the Anthropic realtime and batch paths;
   snapshot tests guard the cacheable prefix.
 - Keep embedding vectors at 1536 dimensions unless you are intentionally
   planning a full re-embed and fresh Vectorize index.
@@ -246,10 +256,15 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Turndown's internal DOMParser needs a `document`, absent in Workers; pass
   linkedom's parsed body directly.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.
-- `corpus-recover --batch` is a Node-side bulk recovery path using Anthropic
-  Message Batches plus R2/Vectorize clients. It resumes from
-  `<index>.batch.json` and reuses the Worker terminal-write contract. Like fresh
-  ingest it now eagerly claims by-url ownership before batch submit
+- `corpus-recover --batch` is a Node-side bulk recovery path using the selected
+  provider's Batch API (OpenAI by default, Anthropic optional) plus
+  R2/Vectorize clients. It resumes from `<index>.batch.json` and reuses the
+  Worker terminal-write contract. Version-2 sidecars pin provider, model,
+  OpenAI reasoning effort, and a stable run id, so resume is independent of
+  later environment changes and never falls back across providers. OpenAI
+  upload/create phases are persisted and reconciled before creating another
+  remote object after a crash. Like fresh ingest it eagerly claims by-url
+  ownership before batch submit
   (`activateRecoverTargets` in `activation-phase.ts`, wired in `runBatch`), but
   for a recover target the slot is usually already held (realtime-failed readings
   own by-url; batch-failed ones don't), so the "claim" is really a **failed→pending
@@ -300,9 +315,10 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   snapshot) clobber a just-ready manifest; stranded pendings heal via the API or
   corpus-recover. Before fresh eager activation writes, `runBatchPipeline`
   preflights the extracted-only summarization payload, resolves similar-reading
-  context, then validates the final request payload against `submit-phase.ts`'s
-  200 MB safety cap so an oversized run fails with the `--limit` guidance
-  without leaving pending owners behind. Fresh ingest then eagerly writes a
+  context, then validates the final provider request. OpenAI JSONL is measured
+  as exact UTF-8 bytes and capped at 50,000 requests and 190 MB; Anthropic uses
+  the existing 200 MB safety cap. An oversized run fails with `--limit`
+  guidance without leaving pending owners behind. Fresh ingest then eagerly writes a
   pending manifest, by-id pointer, by-url pointer, and list row before Message
   Batch creation.
   `write-phase` writes the by-id pointer on both the success and failure branches
@@ -310,7 +326,9 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   releases a pre-existing eager by-url pointer on terminal batch failure only
   when the pointer still exactly matches the failed target.
   Dry-run-by-default + `--execute`; resumes its in-flight batch from
-  `./corpus-ingest.batch.json` (override with `--sidecar`).
+  `./corpus-ingest.batch.json` (override with `--sidecar`). Both tools always
+  require `OPENAI_API_KEY` for embeddings and require `ANTHROPIC_API_KEY` only
+  for an Anthropic start or resume.
 - The sole-writer requirement is enforced, not just documented (issue #68). Both
   batch tools — `corpus-ingest --execute` and `corpus-recover --batch --execute`
   — refuse to submit unless the operator also passes `--sole-writer`, asserting

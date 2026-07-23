@@ -1,6 +1,6 @@
 # reading-lite
 
-Personal reading service on Cloudflare Workers. Submit a URL → Claude summarizes it once via forced tool use → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the embedding → poll for the result.
+Personal reading service on Cloudflare Workers. Submit a URL → the configured provider summarizes it once (OpenAI by default, Anthropic optional) → R2 stores the manifest + raw + extracted markdown → Vectorize indexes the embedding → poll for the result.
 
 Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single Worker plus managed Cloudflare services (R2, Vectorize, Queues) and a Pages-hosted SPA.
 
@@ -28,7 +28,8 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → linkedom + readability + turndown → markdown
       → OpenAI text-embedding-3-small over the extracted text
       → Vectorize.query(top-K) for similar context
-      → Anthropic messages.create with forced tool use (`emit_reading`)
+      → selected summarizer with structured output (OpenAI Responses by
+        default; Anthropic forced tool use when configured; no fallback)
       → OpenAI embed the final TL;DR
       → Vectorize.upsert(id, tldr_embedding, metadata)
       → R2 write final manifest + confirm by-url pointer
@@ -46,12 +47,14 @@ Each background run also writes a staged attempt record under
 details so failed readings can be inspected without relying only on `wrangler
 tail`.
 
-The Worker is composed of six deeply-isolated modules (each unit-tested with stubbed `fetch` / bindings):
+The Worker is composed of deeply isolated modules (each unit-tested with stubbed `fetch` / bindings):
 
 | Module | Responsibility |
 |---|---|
 | `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown; special-cases YouTube watch pages (oEmbed + transcript) |
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
+| `summarizer` | provider selection and normalized result/usage contract; defaults to OpenAI and never silently falls back |
+| `openai-summarizer` | one-shot OpenAI Responses request with strict JSON-schema output |
 | `anthropic` | one-shot `messages.create` with `tool_choice: {type: "tool", name: "emit_reading"}`; system + tool def cached via `cache_control` |
 | `stores` | `ReadingStore` over R2 (manifest, raw, extracted, by-url + by-id pointers) and `SimilarityStore` over Vectorize |
 | `http-retry` | `fetchWithRetry`: 5xx + network retry with exponential backoff + jitter; 429 → `RateLimitedError` so the queue reschedules instead of burning a slot |
@@ -91,8 +94,10 @@ Set staging Worker secrets separately from production:
 
 ```sh
 wrangler secret put READER_API_TOKEN --env staging
-wrangler secret put ANTHROPIC_API_KEY --env staging
 wrangler secret put OPENAI_API_KEY --env staging
+# Only when SUMMARIZER_PROVIDER=anthropic:
+wrangler secret put ANTHROPIC_API_KEY --env staging
+# Optional notifications:
 wrangler secret put RESEND_API_KEY --env staging
 ```
 
@@ -152,8 +157,8 @@ deployed Worker:
 | Secret | What |
 |---|---|
 | `READER_API_TOKEN` | Bearer token required on every protected route |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key (text-embedding-3-small) |
+| `OPENAI_API_KEY` | Always required for `text-embedding-3-small` and the default OpenAI summarizer |
+| `ANTHROPIC_API_KEY` | Required only when `SUMMARIZER_PROVIDER=anthropic` |
 | `RESEND_API_KEY` | Resend API key for per-reading email notifications. **`POST /api/readings` requests notifications by default** (`email: true`), so without this — and the `EMAIL_*` / `WEB_BASE_URL` vars below — every submission still produces a `ready` manifest but logs a failed `send_email` event. Leave unset to skip email; the reading itself is unaffected. |
 
 Vars in `wrangler.toml` (non-secret, can be edited per-environment):
@@ -164,7 +169,10 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create`. |
+| `SUMMARIZER_PROVIDER` | `openai` | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
+| `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
+| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
 | `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
@@ -192,7 +200,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 
 List filtering is server-side against a denormalized `index/list.json` in R2 that is maintained on every `POST /api/readings` (pending) and every terminal write in `processReading` (ready/failed). When the index is missing (e.g. a freshly provisioned bucket), the list endpoint falls back to scan-and-rebuild.
 
-The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, `usage?` (anthropic + openai token counts).
+The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields: `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`, `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`, `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`, `summary_markdown?`, `content_type`, `content_status`, `content_bytes`, `extracted_bytes?`, `content_sha256`, and `usage?`, which records embedding tokens plus a provider-discriminated summarization usage object.
 
 ### Troubleshooting and reprocessing
 
@@ -211,14 +219,14 @@ For bulk retry work, use the corpus tools: `npm run corpus-audit` inventories
 every non-ready reading and classifies each failure by reason (read-only), and
 `npm run corpus-recover` acts on that audit — reprocessing recoverable readings
 through `POST /api/readings/:id/reprocess` (`--wave` paces realtime submissions) or
-the cheaper bulk Message Batch path (`--batch`), per a per-reason policy table.
+the asynchronous provider Batch API path (`--batch`), per a per-reason policy table.
 Both default to a dry run; pass `--execute` to act. The recover `--batch` path now
 eagerly claims each by-url slot before submit (a failed→pending flip), matching
 fresh ingest, but still requires `--sole-writer` to execute: the eager claim is
 defense-in-depth, not a full replacement for pausing the realtime writer, so
 confirm it is paused/drained first
 (`npm run corpus-recover -- --batch --execute --sole-writer`). To bulk-import a
-*fresh* markdown directory (not yet in the corpus) through the same Message Batch
+*fresh* markdown directory (not yet in the corpus) through the same provider batch
 path, use `npm run corpus-ingest -- --dir <path>` (see Bulk markdown ingest above).
 
 ## Web SPA
@@ -271,7 +279,7 @@ The importer uses that URL as the canonical reading URL and sends the Markdown
 body to `POST /api/readings/import-markdown`. Duplicate files with the same source
 URL are collapsed before submit; the largest Markdown file wins. Imported
 readings store the Markdown as both raw content and `extracted.md`, then reuse
-the normal embedding, similarity, Claude summary, Vectorize, manifest, and list
+the normal embedding, similarity, configured-provider summary, Vectorize, manifest, and list
 index pipeline.
 
 ```sh
@@ -301,12 +309,12 @@ new/existing responses move every file for that source URL into a `processed/`
 subdirectory under the import directory. Emails are off by default; pass
 `--email` to request email notifications for imported readings.
 
-#### Bulk markdown ingest via the Message Batch API
+#### Bulk markdown ingest via provider Batch APIs
 
 `import-markdown` summarizes every file **realtime** through the Worker queue.
-For large backfills, `corpus-ingest` ingests the same directory but summarizes
-through the **Anthropic Message Batch API** (~50% cheaper, async, no rate-limit
-retries). It is the markdown-in-hand sibling of `corpus-recover --batch`: it
+For large backfills, `corpus-ingest` ingests the same directory through the
+configured provider's **Batch API** (OpenAI by default, Anthropic optional).
+It is the markdown-in-hand sibling of `corpus-recover --batch`: it
 talks to R2/Vectorize directly with `CORPUS_R2_*` credentials rather than the
 HTTP `/api/readings` API. The resulting `ready` manifests are contract-compatible
 with the realtime import path (`source_type: "markdown"`, captured content,
@@ -338,12 +346,13 @@ a rerun finds that failed reading there and re-ingests it in place instead of
 minting a duplicate. Pending owners are skipped even when past `PENDING_TTL_SECONDS`: this
 offline path can't safely supersede a queue worker that may still be running, so
 a stranded pending is left to heal via the realtime API or `corpus-recover`
-rather than risk racing the worker. Before any fresh eager activation writes, the
-batch path preflights the Anthropic payload against a 200 MB safety cap, resolves
-similar-reading context, then validates the final request payload against the
-same cap; if it is too large, rerun with `--limit` to split it without leaving
-pending owners behind. Fresh ingest then eagerly claims activated by-url slots
-before creating the Message Batch; if the batch later fails, the write phase
+rather than risk racing the worker. Before any fresh eager activation writes,
+the batch path preflights the provider payload, resolves similar-reading context,
+then validates the final request payload. OpenAI JSONL is measured as exact
+UTF-8 bytes and capped at 50,000 requests and 190 MB; Anthropic payloads use the
+existing 200 MB safety cap. If a run is too large, rerun with `--limit` to split
+it without leaving pending owners behind. Fresh ingest then eagerly claims activated by-url slots
+before creating the provider batch; if the batch later fails, the write phase
 releases that eager claim only when the by-url pointer still exactly matches the
 failed target. The "sole writer" condition is enforced, not just assumed:
 `corpus-ingest --execute` (and likewise `corpus-recover --batch --execute`)
@@ -352,11 +361,17 @@ realtime writer is paused/drained; both batch paths now eagerly claim by-url slo
 (recover via a failed→pending flip that keeps its claim on failure so the URL
 stays re-submittable), but that claim is defense-in-depth, so the flag stays
 required; an acknowledged run prints a loud banner before any submit,
-and dry-runs (which submit nothing) never require it. The in-flight batch is recorded in a
-sidecar (`./corpus-ingest.batch.json` by default); re-running resumes that batch
-instead of creating a second (double-billed) one. Needs `CORPUS_R2_*` +
-`CORPUS_CF_API_TOKEN` and `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `--execute`
-requires them, dry-run degrades to the local plan without them.
+and dry-runs (which submit nothing) never require it. The in-flight batch is
+recorded in a versioned sidecar (`./corpus-ingest.batch.json` by default);
+re-running resumes that batch instead of creating a second (double-billed) one.
+The sidecar pins provider, model, OpenAI reasoning effort, and a stable run id,
+so an environment change cannot switch a resume to another provider. OpenAI's
+pre-submit upload/create phases are also persisted and reconciled after a crash
+before any new remote object is created. There is no cross-provider fallback.
+The tools always need `CORPUS_R2_*`, `CORPUS_CF_API_TOKEN`, and
+`OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is needed only for an
+Anthropic start or resume. `--execute` requires the applicable credentials,
+while dry-run degrades to the local plan without them.
 
 ```sh
 # refuses without acknowledgment; pass --sole-writer once the realtime writer is paused
@@ -408,6 +423,8 @@ src/
   modules/
     extractor/                  # HTML→Markdown pipeline + bounded fetch; youtube.ts in-worker path
     embeddings/                 # OpenAI client
+    summarizer/                 # provider selection + normalized usage/result contract
+    openai-summarizer/          # Responses API + strict structured output
     anthropic/                  # forced tool use + prompt caching
     http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
     email.ts                    # Resend per-reading notification
@@ -419,11 +436,11 @@ scripts/
   deploy.ts, deploy-web.ts      # wrangler deploy wrappers (dry-run by default)
   read-url.ts                   # CLI: POST a single URL
   corpus-audit.ts               # CLI: inventory non-ready readings (read-only)
-  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = bulk Message Batch path)
-  corpus-ingest.ts              # CLI: bulk-ingest a fresh .md dir via the Message Batch path (markdown-in-hand sibling of corpus-recover --batch)
+  corpus-recover.ts             # CLI: reprocess / re-extract non-ready readings (--wave paces realtime; --batch = provider Batch API path)
+  corpus-ingest.ts              # CLI: bulk-ingest a fresh .md dir via a provider Batch API (markdown-in-hand sibling of corpus-recover --batch)
   corpus-delete-orphans.ts      # CLI: remove orphan-dup pending readings, consistently
   corpus-lib/{...}              # shared corpus audit/recover/throttle logic + R2 reads
-  corpus-lib/batch/{...}        # bulk path: Message Batch + OpenAI array embed, payload preflight, fresh activation, resume sidecar; prepare-fresh-markdown + run-fresh-markdown front-end for corpus-ingest
+  corpus-lib/batch/{...}        # bulk path: provider batch + OpenAI array embed, payload preflight, fresh activation, resume sidecar; prepare-fresh-markdown + run-fresh-markdown front-end for corpus-ingest
   lib/cf-clients.ts             # shared R2 (S3/SigV4) + Vectorize REST clients (corpus-recover --batch / corpus-ingest)
   check-corpus.ts               # CLI: mark a reading-list export against the corpus
   process-reading-list.ts       # CLI: submit unprocessed reading-list entries

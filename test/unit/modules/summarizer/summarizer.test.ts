@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   summarizeReading,
   SummarizerConfigError,
+  validateProcessingCredentials,
 } from "../../../../src/modules/summarizer";
 import { OpenAIError } from "../../../../src/modules/openai-summarizer";
 
@@ -123,6 +124,56 @@ describe("summarizeReading provider selection", () => {
     });
   });
 
+  it("requires the selected provider key before calling its API", async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+
+    await expect(
+      summarizeReading(input, {
+        fetch: fetchFn,
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "",
+        anthropicModel: "claude-sonnet-4-6",
+      }),
+    ).rejects.toMatchObject({
+      name: "SummarizerConfigError",
+      message: expect.stringMatching(/missing ANTHROPIC_API_KEY/i),
+    });
+    await expect(
+      summarizeReading(input, {
+        fetch: fetchFn,
+        provider: "openai",
+        openaiApiKey: "",
+        anthropicApiKey: "",
+        anthropicModel: "claude-sonnet-4-6",
+      }),
+    ).rejects.toMatchObject({
+      name: "SummarizerConfigError",
+      message: expect.stringMatching(/missing OPENAI_API_KEY/i),
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("does not require or validate OpenAI-only settings when Anthropic is selected", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(anthropicResponse()), { status: 200 }),
+    );
+
+    await expect(
+      summarizeReading(input, {
+        fetch: fetchFn,
+        provider: "anthropic",
+        openaiApiKey: "",
+        openaiReasoningEffort: "irrelevant-invalid-value",
+        anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-4-6",
+      }),
+    ).resolves.toMatchObject({
+      usage: { provider: "anthropic" },
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
   it("rejects an invalid provider before calling an API", async () => {
     const fetchFn = vi.fn<typeof fetch>();
 
@@ -179,5 +230,29 @@ describe("summarizeReading provider selection", () => {
     expect(fetchFn.mock.calls[0]![0]).toBe(
       "https://api.openai.com/v1/responses",
     );
+  });
+});
+
+describe("validateProcessingCredentials", () => {
+  it("always requires OpenAI for embeddings but only requires Anthropic when selected", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "",
+        anthropicApiKey: "sk-anthropic",
+      }),
+    ).toThrow(/missing OPENAI_API_KEY.*embedding/i);
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+      }),
+    ).toThrow(/missing ANTHROPIC_API_KEY/i);
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "openai",
+        openaiApiKey: "sk-openai",
+      }),
+    ).not.toThrow();
   });
 });

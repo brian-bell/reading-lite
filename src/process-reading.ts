@@ -10,6 +10,7 @@ import { embed } from "./modules/embeddings";
 import {
   summarizeReading,
   type SimilarContext,
+  validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
@@ -46,6 +47,11 @@ export async function processReading(
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+    validateProcessingCredentials({
+      provider: env.SUMMARIZER_PROVIDER,
+      openaiApiKey: env.OPENAI_API_KEY,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+    });
 
     const extracted = await extractSource(args, env, services, reader, attempt);
 

@@ -64,6 +64,109 @@ describe("resolveBatchConfig", () => {
     ).toThrow(/invalid SUMMARIZER_PROVIDER: other/);
   });
 
+  it("requires only credentials relevant to a new run while always keeping the embedding key", () => {
+    const { ANTHROPIC_API_KEY, ...openAIOnly } = full;
+    void ANTHROPIC_API_KEY;
+    expect(
+      resolveBatchConfig({}, { vars: openAIOnly }),
+    ).toMatchObject({
+      summarizerProvider: "openai",
+      anthropicApiKey: "",
+      openaiApiKey: "sk-oa",
+    });
+
+    const { ANTHROPIC_API_KEY: missingAnthropic, ...anthropicMissing } = {
+      ...full,
+      SUMMARIZER_PROVIDER: "anthropic",
+    };
+    void missingAnthropic;
+    expect(() =>
+      resolveBatchConfig({}, { vars: anthropicMissing }),
+    ).toThrow(/ANTHROPIC_API_KEY/);
+
+    const { OPENAI_API_KEY, ...missingEmbedding } = {
+      ...full,
+      SUMMARIZER_PROVIDER: "anthropic",
+    };
+    void OPENAI_API_KEY;
+    expect(() =>
+      resolveBatchConfig({}, { vars: missingEmbedding }),
+    ).toThrow(/OPENAI_API_KEY/);
+  });
+
+  it("uses the pinned resume provider for credentials and provider-specific settings", () => {
+    const { ANTHROPIC_API_KEY, ...withoutAnthropic } = {
+      ...full,
+      SUMMARIZER_PROVIDER: "anthropic",
+      OPENAI_SUMMARIZATION_REASONING_EFFORT: "low",
+    };
+    void ANTHROPIC_API_KEY;
+    expect(
+      resolveBatchConfig(
+        { resumeProvider: "openai" },
+        { vars: withoutAnthropic },
+      ),
+    ).toMatchObject({
+      summarizerProvider: "anthropic",
+      anthropicApiKey: "",
+      openaiReasoningEffort: "low",
+    });
+
+    expect(() =>
+      resolveBatchConfig(
+        { resumeProvider: "anthropic" },
+        {
+          vars: {
+            ...withoutAnthropic,
+            SUMMARIZER_PROVIDER: "openai",
+            OPENAI_SUMMARIZATION_REASONING_EFFORT: "irrelevant",
+          },
+        },
+      ),
+    ).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it("ignores an irrelevant OpenAI effort for Anthropic but validates it for OpenAI", () => {
+    expect(
+      resolveBatchConfig(
+        {},
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "anthropic",
+            OPENAI_SUMMARIZATION_REASONING_EFFORT: "irrelevant",
+          },
+        },
+      ).openaiReasoningEffort,
+    ).toBe("low");
+    expect(() =>
+      resolveBatchConfig(
+        {},
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "openai",
+            OPENAI_SUMMARIZATION_REASONING_EFFORT: "irrelevant",
+          },
+        },
+      ),
+    ).toThrow(/OPENAI_SUMMARIZATION_REASONING_EFFORT/);
+  });
+
+  it("does not validate the current effort when an OpenAI resume pins its own effort", () => {
+    expect(
+      resolveBatchConfig(
+        { resumeProvider: "openai" },
+        {
+          vars: {
+            ...full,
+            OPENAI_SUMMARIZATION_REASONING_EFFORT: "stale-invalid-value",
+          },
+        },
+      ).openaiReasoningEffort,
+    ).toBe("low");
+  });
+
   it("lets --bucket override the configured bucket and defaults the index to it", () => {
     const { CORPUS_VECTORIZE_INDEX, ...noIndex } = full;
     void CORPUS_VECTORIZE_INDEX;

@@ -11,6 +11,7 @@ endif
 # Mutating scripts are dry-run by default. Use EXECUTE=1 to deploy.
 EXECUTE ?= 0
 SKIP_BUILD ?= 0
+PROVIDER ?= openai
 
 truthy = $(filter 1 true TRUE yes YES y Y on ON,$(strip $(1)))
 
@@ -32,7 +33,7 @@ help:
 		'  make deploy-worker ENV=prd EXECUTE=1' \
 		'  make deploy-web ENV=stg EXECUTE=1 [SKIP_BUILD=1]' \
 		'  make deploy-web ENV=prd EXECUTE=1 [SKIP_BUILD=1]' \
-		'  make staging-setup [EXECUTE=1]' \
+		'  make staging-setup [PROVIDER=openai|anthropic] [EXECUTE=1]' \
 		'  make staging-teardown [EXECUTE=1]' \
 		'' \
 		'Defaults:' \
@@ -54,7 +55,7 @@ deploy-web:
 	@$(RUN_WITH_VARS) npm run deploy:web -- $(DEPLOY_WEB_FLAGS)
 
 staging-setup:
-	@npm run staging:setup -- $(EXECUTE_FLAG)
+	@npm run staging:setup -- --provider $(PROVIDER) $(EXECUTE_FLAG)
 
 staging-teardown:
 	@npm run staging:teardown -- $(EXECUTE_FLAG)

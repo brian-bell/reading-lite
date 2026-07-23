@@ -6,6 +6,7 @@ import {
 } from "../../src/modules/summarizer/config";
 import {
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT,
   parseReasoningEffort,
 } from "../../src/modules/summarizer";
 import type { OpenAIReasoningEffort } from "../../src/modules/summarizer/types";
@@ -50,11 +51,12 @@ export interface BatchConfig {
 }
 
 // Credentials for the bulk batch path. R2 (S3) + Vectorize come from .corpus.vars
-// (CORPUS_*); the Anthropic/OpenAI keys and model come from .dev.vars/.prd.vars
-// (the same names the worker uses). A flat var map is injected so this is
-// testable; production reads env + the dot files.
+// (CORPUS_*); provider keys/models come from .dev.vars/.prd.vars (the same
+// names the worker uses). OpenAI is always required for embeddings. Anthropic
+// is required only for a new Anthropic run or a sidecar-pinned Anthropic resume.
+// A flat var map is injected so this is testable; production reads env + files.
 export function resolveBatchConfig(
-  flags: { bucket?: string },
+  flags: { bucket?: string; resumeProvider?: SummarizerProvider },
   deps?: { vars?: Record<string, string | undefined> },
 ): BatchConfig {
   const vars =
@@ -73,13 +75,20 @@ export function resolveBatchConfig(
     return v ?? "";
   };
 
+  const summarizerProvider = parseSummarizerProvider(
+    vars.SUMMARIZER_PROVIDER,
+  );
+  const effectiveProvider = flags.resumeProvider ?? summarizerProvider;
   const accountId = need("CORPUS_R2_ACCOUNT_ID");
   const accessKeyId = need("CORPUS_R2_ACCESS_KEY");
   const secretAccessKey = need("CORPUS_R2_SECRET_KEY");
   const bucket =
     flags.bucket ?? vars.CORPUS_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
   const cfApiToken = need("CORPUS_CF_API_TOKEN");
-  const anthropicApiKey = need("ANTHROPIC_API_KEY");
+  const anthropicApiKey = vars.ANTHROPIC_API_KEY ?? "";
+  if (effectiveProvider === "anthropic" && !anthropicApiKey) {
+    missing.push("ANTHROPIC_API_KEY");
+  }
   const openaiApiKey = need("OPENAI_API_KEY");
 
   if (missing.length > 0) {
@@ -100,9 +109,12 @@ export function resolveBatchConfig(
     openaiApiKey,
     openaiModel:
       vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL,
-    openaiReasoningEffort: parseReasoningEffort(
-      vars.OPENAI_SUMMARIZATION_REASONING_EFFORT,
-    ),
-    summarizerProvider: parseSummarizerProvider(vars.SUMMARIZER_PROVIDER),
+    openaiReasoningEffort:
+      effectiveProvider === "openai" && flags.resumeProvider === undefined
+        ? parseReasoningEffort(
+            vars.OPENAI_SUMMARIZATION_REASONING_EFFORT,
+          )
+        : DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT,
+    summarizerProvider,
   };
 }

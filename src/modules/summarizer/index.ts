@@ -47,7 +47,7 @@ export interface SummarizerDeps {
   openaiApiKey: string;
   openaiModel?: string;
   openaiReasoningEffort?: string;
-  anthropicApiKey: string;
+  anthropicApiKey?: string;
   anthropicModel: string;
   retry?: RetryDeps;
 }
@@ -57,12 +57,35 @@ export interface SummarizeReadingResult {
   usage: SummarizationUsage;
 }
 
+export function validateProcessingCredentials(config: {
+  provider?: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+}): void {
+  const provider = parseSummarizerProvider(config.provider);
+  if (!config.openaiApiKey) {
+    throw new SummarizerConfigError(
+      "missing OPENAI_API_KEY; it is required for embeddings under every summarizer provider",
+    );
+  }
+  if (provider === "anthropic" && !config.anthropicApiKey) {
+    throw new SummarizerConfigError(
+      "missing ANTHROPIC_API_KEY for SUMMARIZER_PROVIDER=anthropic",
+    );
+  }
+}
+
 export async function summarizeReading(
   input: SummarizeReadingInput,
   deps: SummarizerDeps,
 ): Promise<SummarizeReadingResult> {
   const provider = parseSummarizerProvider(deps.provider);
   if (provider === "anthropic") {
+    if (!deps.anthropicApiKey) {
+      throw new SummarizerConfigError(
+        "missing ANTHROPIC_API_KEY for SUMMARIZER_PROVIDER=anthropic",
+      );
+    }
     const result = await summarizeWithAnthropic(input, {
       fetch: deps.fetch,
       apiKey: deps.anthropicApiKey,
@@ -81,6 +104,11 @@ export async function summarizeReading(
         cache_read_input_tokens: result.usage.cache_read_input_tokens ?? 0,
       },
     };
+  }
+  if (!deps.openaiApiKey) {
+    throw new SummarizerConfigError(
+      "missing OPENAI_API_KEY for SUMMARIZER_PROVIDER=openai",
+    );
   }
   const model = deps.openaiModel ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL;
   const reasoningEffort = parseReasoningEffort(deps.openaiReasoningEffort);

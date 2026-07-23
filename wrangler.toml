@@ -27,8 +27,8 @@
 #   `npx wrangler queues create reading-lite-staging`
 #   `npx wrangler queues create reading-lite-staging-dlq`  (dead-letter queue; not auto-created)
 #   `wrangler secret put READER_API_TOKEN --env staging`
-#   `wrangler secret put ANTHROPIC_API_KEY --env staging`
 #   `wrangler secret put OPENAI_API_KEY --env staging`
+#   `wrangler secret put ANTHROPIC_API_KEY --env staging`  (only for SUMMARIZER_PROVIDER=anthropic)
 #
 # Production setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite`
@@ -36,8 +36,8 @@
 #   `npx wrangler queues create reading-lite`
 #   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
 #   `wrangler secret put READER_API_TOKEN --env production`
-#   `wrangler secret put ANTHROPIC_API_KEY --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
+#   `wrangler secret put ANTHROPIC_API_KEY --env production`  (only for SUMMARIZER_PROVIDER=anthropic)
 
 name = "reading-lite-dev"
 main = "src/index.ts"
@@ -47,8 +47,8 @@ compatibility_flags = ["nodejs_compat"]
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
 #   READER_API_TOKEN     — bearer token required on every protected route
-#   ANTHROPIC_API_KEY    — Anthropic API key
-#   OPENAI_API_KEY       — OpenAI API key (text-embedding-3-small)
+#   OPENAI_API_KEY       — always required: embeddings + default summarizer
+#   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
 #   RESEND_API_KEY       — Resend API key (per-reading email notifications)
 
 [vars]
@@ -58,6 +58,9 @@ PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+SUMMARIZER_PROVIDER = "openai"
+OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
+OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
 WEB_BASE_URL = ""
@@ -91,6 +94,9 @@ PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+SUMMARIZER_PROVIDER = "openai"
+OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
+OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
 WEB_BASE_URL = ""
@@ -138,6 +144,9 @@ PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+SUMMARIZER_PROVIDER = "openai"
+OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
+OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 # Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
 # `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.

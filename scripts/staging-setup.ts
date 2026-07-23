@@ -2,6 +2,10 @@
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
+  parseSummarizerProvider,
+  type SummarizerProvider,
+} from "../src/modules/summarizer/config";
+import {
   DEFAULT_STAGING_RESOURCES,
   buildSecretCommands,
   buildStagingSetupCommands,
@@ -11,12 +15,14 @@ import {
 
 interface Args {
   execute: boolean;
+  provider: SummarizerProvider;
 }
 
 function parseCliArgs(): Args {
   const { values } = parseArgs({
     options: {
       execute: { type: "boolean", default: false },
+      provider: { type: "string", default: "openai" },
       help: { type: "boolean", default: false },
     },
   });
@@ -26,11 +32,14 @@ function parseCliArgs(): Args {
     process.exit(0);
   }
 
-  return { execute: values.execute === true };
+  return {
+    execute: values.execute === true,
+    provider: parseSummarizerProvider(values.provider),
+  };
 }
 
 function printUsage(): void {
-  process.stderr.write(`Usage: tsx scripts/staging-setup.ts [--execute] [--help]
+  process.stderr.write(`Usage: tsx scripts/staging-setup.ts [--provider openai|anthropic] [--execute] [--help]
 
 Creates the one-time Cloudflare staging resources for reading-lite:
 R2 bucket, Vectorize index, Queue, and DLQ. Dry-run by default - pass
@@ -38,7 +47,10 @@ R2 bucket, Vectorize index, Queue, and DLQ. Dry-run by default - pass
 
 Secrets are not written by this script because wrangler secret put is
 interactive. After setup, set them with:
-${buildSecretCommands().map((cmd) => `  ${cmd}`).join("\n")}
+${buildSecretCommands("openai").map((cmd) => `  ${cmd}`).join("\n")}
+
+OpenAI is the default. Pass --provider anthropic to include the conditional
+ANTHROPIC_API_KEY command. RESEND_API_KEY is optional.
 `);
 }
 
@@ -50,7 +62,7 @@ async function main(): Promise<void> {
   if (!args.execute) {
     process.stderr.write("\n[DRY RUN] not creating resources. Pass --execute to apply.\n");
     process.stderr.write("\nSet staging secrets separately:\n");
-    for (const command of buildSecretCommands()) {
+    for (const command of buildSecretCommands(args.provider)) {
       process.stderr.write(`  ${command}\n`);
     }
     return;
@@ -61,7 +73,7 @@ async function main(): Promise<void> {
 
   process.stderr.write("\n[EXECUTE] staging resources created or confirmed.\n");
   process.stderr.write("\nSet staging secrets separately:\n");
-  for (const command of buildSecretCommands()) {
+  for (const command of buildSecretCommands(args.provider)) {
     process.stderr.write(`  ${command}\n`);
   }
 }

@@ -92,8 +92,13 @@ describe("staging environment scripts", () => {
   it("prints the staging secrets that must be set manually", () => {
     expect(buildSecretCommands()).toEqual([
       "wrangler secret put READER_API_TOKEN --env staging",
-      "wrangler secret put ANTHROPIC_API_KEY --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
+      "wrangler secret put RESEND_API_KEY --env staging",
+    ]);
+    expect(buildSecretCommands("anthropic")).toEqual([
+      "wrangler secret put READER_API_TOKEN --env staging",
+      "wrangler secret put OPENAI_API_KEY --env staging",
+      "wrangler secret put ANTHROPIC_API_KEY --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",
     ]);
   });
