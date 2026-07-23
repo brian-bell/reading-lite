@@ -99,11 +99,24 @@ export async function writeResults(
 
 export async function writeOpenAIResults(
   sidecar: OpenAISubmittedSidecar,
-  outputJsonl: string,
+  files:
+    | string
+    | {
+        outputJsonl?: string;
+        errorJsonl?: string;
+        batchStatus: string;
+      },
   deps: WriteDeps,
 ): Promise<WriteReportRow[]> {
-  const normalized: NormalizedBatchResult[] = [];
-  for (const line of outputJsonl.split("\n")) {
+  const input =
+    typeof files === "string"
+      ? { outputJsonl: files, batchStatus: sidecar.processingStatus }
+      : files;
+  const byCustomId = new Map<string, NormalizedBatchResult>();
+
+  for (const line of `${input.outputJsonl ?? ""}\n${input.errorJsonl ?? ""}`.split(
+    "\n",
+  )) {
     if (!line.trim()) continue;
     let value: unknown;
     try {
@@ -118,6 +131,7 @@ export async function writeOpenAIResults(
       error?: unknown;
     };
     if (typeof row.custom_id !== "string") continue;
+    let outcome: NormalizedBatchResult;
     if (
       row.response &&
       typeof row.response.status_code === "number" &&
@@ -126,7 +140,7 @@ export async function writeOpenAIResults(
     ) {
       try {
         const parsed = parseSummarizeResponse(row.response.body);
-        normalized.push({
+        outcome = {
           customId: row.custom_id,
           result: {
             type: "succeeded",
@@ -141,29 +155,106 @@ export async function writeOpenAIResults(
               cache_write_tokens: parsed.usage.cache_write_tokens,
             },
           },
-        });
+        };
       } catch (error) {
-        normalized.push({
+        outcome = {
           customId: row.custom_id,
           result: {
             type: "failed",
-            code: "BadStructuredOutputError",
+            code: openAIParseErrorCode(error),
             message: error instanceof Error ? error.message : String(error),
           },
-        });
+        };
       }
     } else {
-      normalized.push({
+      outcome = {
         customId: row.custom_id,
         result: {
           type: "failed",
-          code: "BatchRequestError",
-          message: batchErrorMessage(row.error),
+          code:
+            row.error !== null && row.error !== undefined
+              ? "OpenAIBatchRequestError"
+              : typeof row.response?.status_code === "number"
+                ? "OpenAIBatchRequestError"
+                : "OpenAIBatchResultMalformed",
+          message:
+            row.error === null || row.error === undefined
+              ? malformedOpenAIBatchLineMessage(row.response)
+              : batchErrorMessage(row.error),
         },
-      });
+      };
+    }
+    mergeOpenAIOutcome(byCustomId, outcome);
+  }
+
+  for (const target of sidecar.targets) {
+    if (byCustomId.has(target.customId)) continue;
+    byCustomId.set(target.customId, {
+      customId: target.customId,
+      result:
+        input.batchStatus === "completed"
+          ? {
+              type: "failed",
+              code: "OpenAIBatchResultMissing",
+              message:
+                "OpenAI batch completed without a result for this reading",
+            }
+          : {
+              type: "failed",
+              code: `OpenAIBatch${capitalize(input.batchStatus)}`,
+              message: `OpenAI batch ended with status ${input.batchStatus} before returning a result for this reading`,
+            },
+    });
+  }
+  return writeNormalizedResults(
+    sidecar.targets,
+    [...byCustomId.values()],
+    deps,
+  );
+}
+
+function mergeOpenAIOutcome(
+  outcomes: Map<string, NormalizedBatchResult>,
+  candidate: NormalizedBatchResult,
+): void {
+  const existing = outcomes.get(candidate.customId);
+  if (!existing || openAIOutcomeRank(candidate) > openAIOutcomeRank(existing)) {
+    outcomes.set(candidate.customId, candidate);
+  }
+}
+
+function openAIOutcomeRank(outcome: NormalizedBatchResult): number {
+  if (outcome.result.type === "succeeded") return 3;
+  return outcome.result.code === "OpenAIBatchRequestError" ? 2 : 1;
+}
+
+function openAIParseErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    switch (error.name) {
+      case "OpenAIRefusalError":
+      case "OpenAIIncompleteResponseError":
+      case "OpenAIOutputError":
+      case "OpenAIResponseError":
+        return error.name;
     }
   }
-  return writeNormalizedResults(sidecar.targets, normalized, deps);
+  return "OpenAIBatchStructuredOutputError";
+}
+
+function malformedOpenAIBatchLineMessage(
+  response: { status_code?: unknown; body?: unknown } | null | undefined,
+): string {
+  if (typeof response?.status_code === "number") {
+    const bodyMessage = batchErrorMessage(response.body);
+    return `OpenAI batch request returned HTTP ${response.status_code}: ${bodyMessage}`;
+  }
+  return "OpenAI batch result line had neither a valid response nor an error";
+}
+
+function capitalize(value: string): string {
+  return value.length === 0
+    ? "Unknown"
+    : `${value[0]!.toUpperCase()}${value.slice(1)}`;
 }
 
 async function writeNormalizedResults(

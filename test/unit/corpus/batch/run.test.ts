@@ -420,6 +420,292 @@ describe("runBatch — fresh run", () => {
 });
 
 describe("runBatch — resume", () => {
+  it("terminal-writes a completed OpenAI batch whose only results are in the error file", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const urlHash = manifest("rd_a").url_hash;
+    h.store.set(
+      `index/by-url/${urlHash}`,
+      JSON.stringify({ id: "rd_a", key_prefix: "readings/kp-rd_a" }),
+    );
+    const sc: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "submitted",
+      runId: "run_error_only",
+      batchId: "batch_error_only",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-pinned",
+      reasoningEffort: "low",
+      processingStatus: "in_progress",
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: "readings/kp-rd_a",
+          id: "rd_a",
+          url: "https://example.com/rd_a",
+          urlHash,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 0,
+          releaseByUrlOnFailure: true,
+        },
+      ],
+    };
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    const content = vi.fn(async (fileId: string) => {
+      expect(fileId).toBe("file_errors");
+      return (
+        JSON.stringify({
+          custom_id: "rd_a",
+          response: null,
+          error: { code: "invalid_request", message: "bad request" },
+        }) + "\n"
+      );
+    });
+    h.deps.openaiBatch = {
+      upload: vi.fn(),
+      create: vi.fn(),
+      get: vi.fn(async () => ({
+        id: "batch_error_only",
+        input_file_id: "file_input",
+        status: "completed",
+        output_file_id: null,
+        error_file_id: "file_errors",
+        request_counts: { total: 1, completed: 0, failed: 1 },
+      })),
+      content,
+    };
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(content).toHaveBeenCalledOnce();
+    expect(result.report).toEqual([
+      { id: "rd_a", status: "failed", reason: "bad request" },
+    ]);
+    const failed = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    expect(failed.error?.code).toBe("OpenAIBatchRequestError");
+    expect(h.store.has(`index/by-url/${urlHash}`)).toBe(false);
+    expect(h.store.has("index/by-id/rd_a")).toBe(true);
+  });
+
+  it.each(["failed", "expired", "cancelled"] as const)(
+    "terminal-writes every unresolved target when an OpenAI batch is %s",
+    async (status) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      const urlHash = manifest("rd_a").url_hash;
+      const ownerKey = `index/by-url/${urlHash}`;
+      h.store.set(
+        ownerKey,
+        JSON.stringify({ id: "rd_a", key_prefix: "readings/kp-rd_a" }),
+      );
+      const sc: PersistedSidecar = {
+        version: 2,
+        provider: "openai",
+        phase: "submitted",
+        runId: "run_terminal",
+        batchId: "batch_terminal",
+        inputFileId: "file_input",
+        outputFileId: null,
+        errorFileId: null,
+        model: "gpt-pinned",
+        reasoningEffort: "low",
+        processingStatus: "in_progress",
+        targets: [
+          {
+            customId: "rd_a",
+            keyPrefix: "readings/kp-rd_a",
+            id: "rd_a",
+            url: "https://example.com/rd_a",
+            urlHash,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            sourceType: "url",
+            contentType: "text/html",
+            contentStatus: "captured",
+            contentBytes: 10,
+            contentSha256: "b".repeat(64),
+            queryEmbedTokens: 0,
+          },
+        ],
+      };
+      h.deps.loadSidecar = vi.fn(async () => sc);
+      h.deps.openaiBatch = {
+        upload: vi.fn(),
+        create: vi.fn(),
+        get: vi.fn(async () => ({
+          id: "batch_terminal",
+          input_file_id: "file_input",
+          status,
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 1 },
+        })),
+        content: vi.fn(),
+      };
+
+      const result = await runBatch([row("rd_a")], h.deps);
+
+      expect(h.deps.sleep).not.toHaveBeenCalled();
+      expect(result.report).toEqual([
+        {
+          id: "rd_a",
+          status: "failed",
+          reason: `OpenAI batch ended with status ${status} before returning a result for this reading`,
+        },
+      ]);
+      const failed = ManifestSchema.parse(
+        JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+      );
+      expect(failed.error?.code).toBe(
+        `OpenAIBatch${status[0]!.toUpperCase()}${status.slice(1)}`,
+      );
+      expect(h.store.has("index/by-id/rd_a")).toBe(true);
+      // Recover targets retain their existing owner on failure.
+      expect(h.store.has(ownerKey)).toBe(true);
+    },
+  );
+
+  it("continues polling every documented nonterminal OpenAI batch state", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const sc: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "submitted",
+      runId: "run_polling",
+      batchId: "batch_polling",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-pinned",
+      reasoningEffort: "low",
+      processingStatus: "validating",
+      targets: [],
+    };
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    const statuses = [
+      "validating",
+      "in_progress",
+      "finalizing",
+      "cancelling",
+      "completed",
+    ];
+    h.deps.openaiBatch = {
+      upload: vi.fn(),
+      create: vi.fn(),
+      get: vi.fn(async () => ({
+        id: "batch_polling",
+        input_file_id: "file_input",
+        status: statuses.shift()!,
+        output_file_id: null,
+        error_file_id: null,
+        request_counts: { total: 0, completed: 0, failed: 0 },
+      })),
+      content: vi.fn(),
+    };
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(h.deps.openaiBatch.get).toHaveBeenCalledTimes(5);
+    expect(h.deps.sleep).toHaveBeenCalledTimes(4);
+    expect(result.report).toEqual([]);
+  });
+
+  it("does not terminal-write a partial result set when one OpenAI file download fails", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const sc: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "submitted",
+      runId: "run_download",
+      batchId: "batch_download",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-pinned",
+      reasoningEffort: "low",
+      processingStatus: "in_progress",
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: "readings/kp-rd_a",
+          id: "rd_a",
+          url: "https://example.com/rd_a",
+          urlHash: manifest("rd_a").url_hash,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 0,
+        },
+      ],
+    };
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    const content = vi.fn(async (fileId: string) => {
+      if (fileId === "file_errors") throw new Error("download unavailable");
+      return (
+        JSON.stringify({
+          custom_id: "rd_a",
+          response: {
+            status_code: 200,
+            body: {
+              id: "resp_partial",
+              object: "response",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: JSON.stringify(reading),
+                    },
+                  ],
+                },
+              ],
+              usage: { input_tokens: 5, output_tokens: 2 },
+            },
+          },
+          error: null,
+        }) + "\n"
+      );
+    });
+    h.deps.openaiBatch = {
+      upload: vi.fn(),
+      create: vi.fn(),
+      get: vi.fn(async () => ({
+        id: "batch_download",
+        input_file_id: "file_input",
+        status: "completed",
+        output_file_id: "file_output",
+        error_file_id: "file_errors",
+        request_counts: { total: 1, completed: 1, failed: 0 },
+      })),
+      content,
+    };
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /download unavailable/,
+    );
+
+    expect(content.mock.calls.map(([fileId]) => fileId)).toEqual([
+      "file_output",
+      "file_errors",
+    ]);
+    expect(h.r2.put).not.toHaveBeenCalled();
+    expect(h.vectorize.upsert).not.toHaveBeenCalled();
+    expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+  });
+
   it("resumes the provider pinned by an OpenAI submitted sidecar without producing or uploading again", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     const sc: PersistedSidecar = {

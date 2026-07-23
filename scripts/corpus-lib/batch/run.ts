@@ -372,7 +372,13 @@ async function pollAndWriteOpenAI(
   deps: BatchRunDeps,
   batch: OpenAIBatchClient,
 ): Promise<WriteReportRow[]> {
-  const terminal = new Set(["completed", "failed", "expired", "cancelled"]);
+  const terminal = new Set([
+    "completed",
+    "failed",
+    "expired",
+    "cancelled",
+    "canceled",
+  ]);
   const intervalMs = deps.poll?.intervalMs ?? 15_000;
   const maxPolls = deps.poll?.maxPolls ?? 10_000;
   let info: OpenAIBatchInfo | undefined;
@@ -391,17 +397,15 @@ async function pollAndWriteOpenAI(
       `OpenAI batch ${sidecar.batchId} did not reach a terminal state before the poll limit`,
     );
   }
-  if (info.status !== "completed") {
-    throw new Error(
-      `OpenAI batch ${sidecar.batchId} ended with status ${info.status}; reconcile the sidecar before retrying`,
-    );
-  }
-  if (!info.output_file_id) {
-    throw new Error(
-      `OpenAI batch ${sidecar.batchId} completed without an output_file_id`,
-    );
-  }
-  const output = await batch.content(info.output_file_id);
+  // Fetch every available terminal file before writing anything. If either
+  // download fails, the submitted sidecar remains intact for a clean resume and
+  // no subset of the corpus has been terminal-written.
+  const output = info.output_file_id
+    ? await batch.content(info.output_file_id)
+    : undefined;
+  const errors = info.error_file_id
+    ? await batch.content(info.error_file_id)
+    : undefined;
   return writeOpenAIResults(
     {
       ...sidecar,
@@ -409,7 +413,11 @@ async function pollAndWriteOpenAI(
       outputFileId: info.output_file_id,
       errorFileId: info.error_file_id,
     },
-    output,
+    {
+      ...(output === undefined ? {} : { outputJsonl: output }),
+      ...(errors === undefined ? {} : { errorJsonl: errors }),
+      batchStatus: info.status,
+    },
     {
       r2: deps.r2,
       vectorize: deps.vectorize,
