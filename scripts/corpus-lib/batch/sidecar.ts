@@ -41,7 +41,46 @@ const ActivatingTargetSchema = z
   })
   .strip();
 
-const PersistedSidecarSchema = z.union([
+const V2SidecarSchema = z.union([
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("anthropic"),
+      phase: z.literal("activating"),
+      batchId: z.literal(""),
+      model: z.string().min(1),
+      processingStatus: z.literal("activating"),
+      resultsUrl: z.null(),
+      targets: z.array(ActivatingTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("anthropic"),
+      phase: z.literal("creating"),
+      batchId: z.literal(""),
+      model: z.string().min(1),
+      processingStatus: z.literal("pending"),
+      resultsUrl: z.null(),
+      targets: z.array(SidecarTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("anthropic"),
+      phase: z.literal("submitted"),
+      batchId: z.string().min(1),
+      model: z.string().min(1),
+      processingStatus: z.string().min(1),
+      resultsUrl: z.string().url().nullable(),
+      targets: z.array(SidecarTargetSchema),
+    })
+    .strict(),
+]);
+
+const LegacySidecarSchema = z.union([
   z
     .object({
       batchId: z.literal(""),
@@ -73,8 +112,27 @@ const PersistedSidecarSchema = z.union([
 
 export async function loadSidecar(path: string): Promise<PersistedSidecar | null> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path, "utf8"));
-    return PersistedSidecarSchema.parse(parsed) as PersistedSidecar;
+    const value = JSON.parse(await fs.readFile(path, "utf8"));
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "version" in value
+    ) {
+      return V2SidecarSchema.parse(value) as PersistedSidecar;
+    }
+
+    const parsed = LegacySidecarSchema.parse(value);
+    const phase = parsed.batchId
+      ? "submitted"
+      : parsed.processingStatus === "activating"
+        ? "activating"
+        : "creating";
+    return {
+      version: 2,
+      provider: "anthropic",
+      phase,
+      ...parsed,
+    } as PersistedSidecar;
   } catch (e) {
     if (typeof e === "object" && e && "code" in e && (e as { code?: string }).code === "ENOENT") {
       return null;
@@ -88,8 +146,9 @@ export async function loadSidecar(path: string): Promise<PersistedSidecar | null
 }
 
 export async function saveSidecar(path: string, sidecar: PersistedSidecar): Promise<void> {
+  const parsed = V2SidecarSchema.parse(sidecar);
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, JSON.stringify(sidecar, null, 2) + "\n");
+  await fs.writeFile(tmp, JSON.stringify(parsed, null, 2) + "\n");
   await fs.rename(tmp, path);
 }
 

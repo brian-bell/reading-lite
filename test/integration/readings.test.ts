@@ -889,6 +889,9 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       releaseByUrlOnFailure: true,
     };
     const sidecar: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
       batchId: "msgbatch_failed_release",
       model: "claude-opus-4-8",
       processingStatus: "ended",

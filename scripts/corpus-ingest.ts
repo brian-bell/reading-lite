@@ -216,6 +216,7 @@ async function main(): Promise<void> {
     extract: () => {
       throw new Error("corpus-ingest must not fetch URLs — markdown is in hand");
     },
+    configuredProvider: cfg.summarizerProvider,
     model: cfg.anthropicModel,
     newId: mintReadingId,
     now: () => new Date().toISOString(),

@@ -20,10 +20,11 @@ import type { ActivationResult } from "./activation-phase";
 export interface BatchRunDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
-  batch: AnthropicBatchClient;
+  batch?: AnthropicBatchClient;
   embed: OpenAIEmbedClient;
   // Fresh extraction (browser UA) for readings without saved markdown.
   extract(url: string): Promise<ExtractedContent>;
+  configuredProvider?: "openai" | "anthropic";
   model: string;
   now(): string;
   sleep(ms: number): Promise<void>;
@@ -77,11 +78,19 @@ export async function runBatchPipeline(
           "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
       );
     }
+    const batch = requireAnthropicBatchClient(deps, "resume pinned sidecar");
     const sidecar = existing as Sidecar;
     log(`Resuming batch ${sidecar.batchId} (${sidecar.targets.length} readings)`);
-    const report = await pollAndWrite(sidecar, deps);
+    const report = await pollAndWrite(sidecar, deps, batch);
     return { report, dropped: [], resumed: true, batchId: sidecar.batchId };
   }
+
+  if (deps.configuredProvider === "openai") {
+    throw new Error(
+      "OpenAI batch is not supported by this Anthropic-only batch path",
+    );
+  }
+  const batch = requireAnthropicBatchClient(deps, "start new batch");
 
   let { extracted, dropped } = await produce();
   // Surface *why* each reading dropped — a bare "dropped: N" count hides dead
@@ -134,14 +143,14 @@ export async function runBatchPipeline(
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
   const { info, sidecar } = await submitBatch(summarizeTargets, {
     model: deps.model,
-    batch: deps.batch,
+    batch,
     putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,
     ...(deps.maxBatchBytes === undefined ? {} : { maxBatchBytes: deps.maxBatchBytes }),
   });
   log(`Batch ${info.id} created; polling for completion...`);
 
-  const report = await pollAndWrite(sidecar, deps);
+  const report = await pollAndWrite(sidecar, deps, batch);
   return { report: [...activationSkipped, ...report], dropped, resumed: false, batchId: sidecar.batchId };
 }
 
@@ -185,9 +194,23 @@ function extractedTargetKey(target: ExtractedTarget): string {
   return `${target.target.readingId}\0${target.target.keyPrefix}`;
 }
 
-async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<WriteReportRow[]> {
+function requireAnthropicBatchClient(
+  deps: BatchRunDeps,
+  action: string,
+): AnthropicBatchClient {
+  if (deps.batch) return deps.batch;
+  throw new Error(
+    `cannot ${action}: missing Anthropic batch credentials (ANTHROPIC_API_KEY)`,
+  );
+}
+
+async function pollAndWrite(
+  sidecar: Sidecar,
+  deps: BatchRunDeps,
+  batch: AnthropicBatchClient,
+): Promise<WriteReportRow[]> {
   const ended = await pollUntilEnded(sidecar.batchId, {
-    batch: deps.batch,
+    batch,
     sleep: deps.sleep,
     ...(deps.poll?.intervalMs === undefined ? {} : { intervalMs: deps.poll.intervalMs }),
     ...(deps.poll?.maxPolls === undefined ? {} : { maxPolls: deps.poll.maxPolls }),
@@ -196,7 +219,7 @@ async function pollAndWrite(sidecar: Sidecar, deps: BatchRunDeps): Promise<Write
   if (!ended.results_url) {
     throw new Error(`batch ${sidecar.batchId} ended without a results_url`);
   }
-  const results = await deps.batch.results(ended.results_url);
+  const results = await batch.results(ended.results_url);
   return writeResults(sidecar, results, {
     r2: deps.r2,
     vectorize: deps.vectorize,

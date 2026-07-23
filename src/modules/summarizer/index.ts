@@ -9,6 +9,10 @@ import type {
   OpenAIReasoningEffort,
   SummarizeReadingInput,
 } from "./types";
+import {
+  parseSummarizerProvider,
+  SummarizerConfigError,
+} from "./config";
 
 export {
   ReadingSummarySchema,
@@ -20,6 +24,11 @@ export type {
   SimilarContext,
   SummarizeReadingInput,
 } from "./types";
+export {
+  parseSummarizerProvider,
+  SummarizerConfigError,
+  type SummarizerProvider,
+} from "./config";
 
 export const DEFAULT_OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra";
 export const DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT = "low";
@@ -31,13 +40,6 @@ const OPENAI_REASONING_EFFORTS = [
   "xhigh",
   "max",
 ] as const satisfies readonly OpenAIReasoningEffort[];
-
-export class SummarizerConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SummarizerConfigError";
-  }
-}
 
 export interface SummarizerDeps {
   fetch: typeof fetch;
@@ -59,7 +61,7 @@ export async function summarizeReading(
   input: SummarizeReadingInput,
   deps: SummarizerDeps,
 ): Promise<SummarizeReadingResult> {
-  const provider = parseProvider(deps.provider);
+  const provider = parseSummarizerProvider(deps.provider);
   if (provider === "anthropic") {
     const result = await summarizeWithAnthropic(input, {
       fetch: deps.fetch,
@@ -97,12 +99,6 @@ export async function summarizeReading(
       ...result.usage,
     },
   };
-}
-
-function parseProvider(value: string | undefined): "openai" | "anthropic" {
-  const provider = value ?? "openai";
-  if (provider === "openai" || provider === "anthropic") return provider;
-  throw new SummarizerConfigError(`invalid SUMMARIZER_PROVIDER: ${provider}`);
 }
 
 function parseReasoningEffort(value: string | undefined): OpenAIReasoningEffort {

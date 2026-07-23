@@ -115,7 +115,9 @@ describe("submitBatch", () => {
   it("persists a pending sidecar (no batchId) BEFORE create, then the real one after", async () => {
     const batch = fakeBatch();
     const order: string[] = [];
+    const saved: any[] = [];
     const saveSidecar = vi.fn(async (s: any) => {
+      saved.push(s);
       order.push(s.batchId === "" ? "pending" : `final:${s.batchId}`);
     });
     batch.create = vi.fn(async (_r: any[]) => {
@@ -124,6 +126,23 @@ describe("submitBatch", () => {
     });
     await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar });
     expect(order).toEqual(["pending", "create", "final:msgbatch_99"]);
+    expect(saved).toMatchObject([
+      {
+        version: 2,
+        provider: "anthropic",
+        phase: "creating",
+        batchId: "",
+        model: "m",
+      },
+      {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_99",
+        model: "m",
+      },
+    ]);
+    expect(saved[1].targets).toEqual(saved[0].targets);
   });
 
   it("builds a sidecar carrying content fields, extracted_bytes, and the ready snapshot", async () => {

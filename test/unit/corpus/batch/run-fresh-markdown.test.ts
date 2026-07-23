@@ -430,6 +430,9 @@ describe("runFreshMarkdownBatch — resume", () => {
   it("resumes an in-flight sidecar without re-planning or creating a new batch", async () => {
     const h = harness();
     const sc: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
       batchId: "msgbatch_fresh",
       model: "claude-opus-4-8",
       processingStatus: "in_progress",

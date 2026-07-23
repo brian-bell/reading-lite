@@ -29,16 +29,27 @@ describe("batch sidecar I/O", () => {
   it("saves through a valid persisted sidecar and loads it back", async () => {
     const { dir, path } = await tempPath();
     try {
-      const sidecar: Sidecar = {
+      const sidecar = {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
         batchId: "msgbatch_1",
         model: "m",
         processingStatus: "in_progress",
         resultsUrl: null,
         targets: [target],
-      };
+      } as Sidecar;
       await saveSidecar(path, sidecar);
-      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ batchId: "msgbatch_1" });
-      await expect(loadSidecar(path)).resolves.toMatchObject({ batchId: "msgbatch_1" });
+      const expected = {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_1",
+        model: "m",
+        targets: [target],
+      };
+      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject(expected);
+      await expect(loadSidecar(path)).resolves.toMatchObject(expected);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -48,6 +59,9 @@ describe("batch sidecar I/O", () => {
     const { dir, path } = await tempPath();
     try {
       const sidecar: ActivatingSidecar = {
+        version: 2,
+        provider: "anthropic",
+        phase: "activating",
         batchId: "",
         model: "m",
         processingStatus: "activating",
@@ -70,9 +84,131 @@ describe("batch sidecar I/O", () => {
     }
   });
 
+  it("infers an unversioned submitted sidecar as Anthropic V2", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await writeFile(
+        path,
+        JSON.stringify({
+          batchId: "msgbatch_legacy",
+          model: "legacy-model",
+          processingStatus: "pending",
+          resultsUrl: null,
+          targets: [target],
+        }),
+      );
+
+      await expect(loadSidecar(path)).resolves.toMatchObject({
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_legacy",
+        model: "legacy-model",
+        targets: [target],
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("infers unversioned no-id checkpoints without changing their crash phase", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const activatingTarget = {
+        id: "rd_a",
+        customId: "rd_a",
+        keyPrefix: "readings/kp",
+        url: "https://example.com/a",
+        urlHash: "a".repeat(64),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      for (const checkpoint of [
+        {
+          processingStatus: "activating",
+          expectedPhase: "activating",
+          targets: [activatingTarget],
+        },
+        {
+          processingStatus: "pending",
+          expectedPhase: "creating",
+          targets: [target],
+        },
+      ]) {
+        await writeFile(
+          path,
+          JSON.stringify({
+            batchId: "",
+            model: "legacy-model",
+            processingStatus: checkpoint.processingStatus,
+            resultsUrl: null,
+            targets: checkpoint.targets,
+          }),
+        );
+
+        await expect(loadSidecar(path)).resolves.toMatchObject({
+          version: 2,
+          provider: "anthropic",
+          phase: checkpoint.expectedPhase,
+          batchId: "",
+          model: "legacy-model",
+        });
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns null only when the sidecar is absent", async () => {
     const { dir, path } = await tempPath();
     try {
+      await expect(loadSidecar(path)).resolves.toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed instead of reinterpreting an unsupported V2 provider", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await writeFile(
+        path,
+        JSON.stringify({
+          version: 2,
+          provider: "openai",
+          phase: "submitted",
+          batchId: "batch_wrong_provider",
+          model: "m",
+          processingStatus: "completed",
+          resultsUrl: null,
+          targets: [target],
+        }),
+      );
+
+      await expect(loadSidecar(path)).rejects.toThrow(
+        /manual reconciliation required/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to persist a sidecar with invalid V2 identity", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const invalid = {
+        version: 2,
+        provider: "openai",
+        phase: "submitted",
+        batchId: "batch_wrong_provider",
+        model: "m",
+        processingStatus: "completed",
+        resultsUrl: null,
+        targets: [target],
+      };
+
+      await expect(
+        saveSidecar(path, invalid as unknown as Sidecar),
+      ).rejects.toThrow();
       await expect(loadSidecar(path)).resolves.toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });

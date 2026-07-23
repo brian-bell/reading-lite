@@ -314,6 +314,7 @@ async function runBatchMode(
     batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
     extract: (url: string): Promise<ExtractedContent> => extractFromUrl(url, extractorDeps),
+    configuredProvider: cfg.summarizerProvider,
     model: cfg.anthropicModel,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),

@@ -12,6 +12,7 @@ const full = {
   ANTHROPIC_API_KEY: "sk-ant",
   OPENAI_API_KEY: "sk-oa",
   ANTHROPIC_MODEL: "claude-opus-4-8",
+  SUMMARIZER_PROVIDER: "openai",
 };
 
 describe("resolveBatchConfig", () => {
@@ -22,12 +23,31 @@ describe("resolveBatchConfig", () => {
     expect(cfg.anthropicApiKey).toBe("sk-ant");
     expect(cfg.openaiApiKey).toBe("sk-oa");
     expect(cfg.anthropicModel).toBe("claude-opus-4-8");
+    expect(cfg.summarizerProvider).toBe("openai");
   });
 
   it("defaults the model when unset", () => {
-    const { ANTHROPIC_MODEL, ...noModel } = full;
+    const { ANTHROPIC_MODEL, SUMMARIZER_PROVIDER, ...noModel } = full;
     void ANTHROPIC_MODEL;
-    expect(resolveBatchConfig({}, { vars: noModel }).anthropicModel).toBe("claude-sonnet-4-6");
+    void SUMMARIZER_PROVIDER;
+    const cfg = resolveBatchConfig({}, { vars: noModel });
+    expect(cfg.anthropicModel).toBe("claude-sonnet-4-6");
+    expect(cfg.summarizerProvider).toBe("openai");
+  });
+
+  it("accepts explicit Anthropic and rejects an invalid provider", () => {
+    expect(
+      resolveBatchConfig(
+        {},
+        { vars: { ...full, SUMMARIZER_PROVIDER: "anthropic" } },
+      ).summarizerProvider,
+    ).toBe("anthropic");
+    expect(() =>
+      resolveBatchConfig(
+        {},
+        { vars: { ...full, SUMMARIZER_PROVIDER: "other" } },
+      ),
+    ).toThrow(/invalid SUMMARIZER_PROVIDER: other/);
   });
 
   it("lets --bucket override the configured bucket and defaults the index to it", () => {

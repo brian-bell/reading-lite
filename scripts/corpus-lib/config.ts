@@ -1,5 +1,9 @@
 import { loadDotVars } from "../lib/dotvars";
 import type { R2Config, VectorizeConfig } from "../lib/cf-clients";
+import {
+  parseSummarizerProvider,
+  type SummarizerProvider,
+} from "../../src/modules/summarizer/config";
 
 export const DEFAULT_BUCKET = "reading-lite";
 export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
@@ -35,6 +39,7 @@ export interface BatchConfig {
   anthropicApiKey: string;
   anthropicModel: string;
   openaiApiKey: string;
+  summarizerProvider: SummarizerProvider;
 }
 
 // Credentials for the bulk batch path. R2 (S3) + Vectorize come from .corpus.vars
@@ -86,5 +91,6 @@ export function resolveBatchConfig(
     anthropicApiKey,
     anthropicModel: vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
     openaiApiKey,
+    summarizerProvider: parseSummarizerProvider(vars.SUMMARIZER_PROVIDER),
   };
 }

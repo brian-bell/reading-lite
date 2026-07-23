@@ -27,7 +27,16 @@ function sidecarTarget(over: Partial<SidecarTarget> = {}): SidecarTarget {
 }
 
 function sidecar(targets: SidecarTarget[]): Sidecar {
-  return { batchId: "msgbatch_1", model: "claude-opus-4-8", processingStatus: "ended", resultsUrl: "https://r", targets };
+  return {
+    version: 2,
+    provider: "anthropic",
+    phase: "submitted",
+    batchId: "msgbatch_1",
+    model: "claude-opus-4-8",
+    processingStatus: "ended",
+    resultsUrl: "https://r",
+    targets,
+  };
 }
 
 const validReading = {
@@ -49,7 +58,12 @@ function succeeded(customId: string, input: unknown = validReading): BatchResult
       type: "succeeded",
       message: {
         content: [{ type: "tool_use", id: "t", name: EMIT_READING_TOOL_NAME, input }],
-        usage: { input_tokens: 1000, output_tokens: 200 },
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 200,
+          cache_creation_input_tokens: 300,
+          cache_read_input_tokens: 400,
+        },
       },
     },
   };
@@ -113,7 +127,16 @@ describe("writeResults — success path", () => {
     expect(m.updated_at).toBe(NOW);
     // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).
     expect(m.usage?.openai_embedding_tokens).toBe(58);
-    expect(m.usage).toMatchObject({ anthropic_input_tokens: 1000 });
+    expect(m.usage).toMatchObject({
+      summarization: {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_creation_input_tokens: 300,
+        cache_read_input_tokens: 400,
+      },
+    });
   });
 
   it("writes the by-url and by-id pointers on success", async () => {

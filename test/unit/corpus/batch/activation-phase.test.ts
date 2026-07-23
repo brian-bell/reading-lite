@@ -111,6 +111,9 @@ describe("activateFreshTargets", () => {
     ]);
 
     expect(sidecars[0]).toMatchObject({
+      version: 2,
+      provider: "anthropic",
+      phase: "activating",
       batchId: "",
       processingStatus: "activating",
       targets: [{ id: "rd_a", customId: "rd_a", keyPrefix: KEY_PREFIX }],

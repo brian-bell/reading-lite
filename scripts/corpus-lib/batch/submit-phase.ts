@@ -1,7 +1,13 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import type { AnthropicBatchClient, AnthropicBatchRequest, BatchInfo } from "./clients";
-import type { ExtractedTarget, Sidecar, SidecarTarget, SummarizeTarget } from "./types";
+import type {
+  ExtractedTarget,
+  PersistedSidecar,
+  Sidecar,
+  SidecarTarget,
+  SummarizeTarget,
+} from "./types";
 
 export interface SubmitDeps {
   model: string;
@@ -12,7 +18,7 @@ export interface SubmitDeps {
   // create, then again with the real batchId immediately after — so a crash in
   // the create window leaves a pending marker that aborts a re-run instead of
   // silently re-submitting (and re-billing).
-  saveSidecar(sidecar: Sidecar): Promise<void>;
+  saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   maxBatchBytes?: number;
 }
 
@@ -65,6 +71,9 @@ export async function submitBatch(
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
   // than create a second, double-billed batch.
   await deps.saveSidecar({
+    version: 2,
+    provider: "anthropic",
+    phase: "creating",
     batchId: "",
     model: deps.model,
     processingStatus: "pending",
@@ -74,6 +83,9 @@ export async function submitBatch(
 
   const info = await deps.batch.create(requests);
   const sidecar: Sidecar = {
+    version: 2,
+    provider: "anthropic",
+    phase: "submitted",
     batchId: info.id,
     model: deps.model,
     processingStatus: info.processing_status,

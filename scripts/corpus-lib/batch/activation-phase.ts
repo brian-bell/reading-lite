@@ -212,6 +212,9 @@ async function commitPendingActivation(
 
 function activatingSidecar(targets: ExtractedTarget[], model: string): ActivatingSidecar {
   return {
+    version: 2,
+    provider: "anthropic",
+    phase: "activating",
     batchId: "",
     model,
     processingStatus: "activating",

@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runBatch, runBatchPipeline, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
 import { activateRecoverTargets } from "../../../../scripts/corpus-lib/batch/activation-phase";
+import { loadSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
-import type { ExtractedTarget, Sidecar } from "../../../../scripts/corpus-lib/batch/types";
+import type {
+  ExtractedTarget,
+  PersistedSidecar,
+  Sidecar,
+} from "../../../../scripts/corpus-lib/batch/types";
 
 const NOW = "2026-06-18T12:00:00.000Z";
 
@@ -135,6 +143,22 @@ function harness(seedManifests: Record<string, Manifest>) {
 }
 
 describe("runBatch — fresh run", () => {
+  it("rejects a new OpenAI batch before planning or activation in the Anthropic-only path", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.configuredProvider = "openai";
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /OpenAI batch.*not supported/i,
+    );
+
+    expect(h.extract).not.toHaveBeenCalled();
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
+    expect(h.r2.put).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.batch.create).not.toHaveBeenCalled();
+  });
+
   it("processes a backlog end-to-end and writes ready manifests + index", async () => {
     const h = harness({ rd_a: manifest("rd_a"), rd_b: manifest("rd_b") });
     const result = await runBatch([row("rd_a"), row("rd_b")], h.deps);
@@ -181,9 +205,77 @@ describe("runBatch — fresh run", () => {
 });
 
 describe("runBatch — resume", () => {
+  it("loads a legacy sidecar and resumes its pinned Anthropic model under an OpenAI default", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "reading-lite-run-legacy-"));
+    try {
+      const path = join(dir, "index.batch.json");
+      const legacy = {
+        batchId: "msgbatch_legacy",
+        model: "claude-legacy-pinned",
+        processingStatus: "in_progress",
+        resultsUrl: null,
+        targets: [
+          {
+            customId: "rd_a",
+            keyPrefix: "readings/kp-rd_a",
+            id: "rd_a",
+            url: "https://example.com/rd_a",
+            urlHash: "a".repeat(64),
+            createdAt: "2026-01-01T00:00:00.000Z",
+            sourceType: "url",
+            contentType: "text/html",
+            contentStatus: "captured",
+            contentBytes: 10,
+            contentSha256: "b".repeat(64),
+            queryEmbedTokens: 9,
+          },
+        ],
+      };
+      await writeFile(path, JSON.stringify(legacy));
+      const loaded = await loadSidecar(path);
+      expect(loaded).toMatchObject({
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+      });
+
+      const h = harness({ rd_a: manifest("rd_a") });
+      h.setSidecar(loaded as Sidecar);
+      h.deps.loadSidecar = vi.fn(async () => loaded);
+      h.deps.configuredProvider = "openai";
+      h.deps.model = "gpt-current-default";
+
+      const result = await runBatch([row("rd_a")], h.deps);
+
+      expect(result.resumed).toBe(true);
+      expect(h.batch.create).not.toHaveBeenCalled();
+      expect(h.batch.get).toHaveBeenCalledWith("msgbatch_legacy");
+      expect(h.batch.results).toHaveBeenCalled();
+      const ready = ManifestSchema.parse(
+        JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+      );
+      expect(ready.usage).toEqual({
+        summarization: {
+          provider: "anthropic",
+          model: "claude-legacy-pinned",
+          input_tokens: 5,
+          output_tokens: 2,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        openai_embedding_tokens: 13,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resumes an existing sidecar without creating a new batch", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     const sc: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
       batchId: "msgbatch_run",
       model: "claude-opus-4-8",
       processingStatus: "in_progress",
@@ -218,7 +310,10 @@ describe("runBatch — resume", () => {
 
   it("aborts (no new batch) when a pending sidecar has no batch id — avoids double-billing", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
-    h.deps.loadSidecar = vi.fn(async () => ({
+    h.deps.loadSidecar = vi.fn(async (): Promise<PersistedSidecar> => ({
+      version: 2,
+      provider: "anthropic",
+      phase: "creating",
       batchId: "",
       model: "m",
       processingStatus: "pending",
@@ -227,6 +322,34 @@ describe("runBatch — resume", () => {
     }));
     await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar with no batch id/i);
     expect(h.batch.create).not.toHaveBeenCalled();
+    expect(h.r2.put).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+  });
+
+  it("fails clearly before mutation when a submitted Anthropic sidecar has no client credentials", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const sc: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
+      batchId: "msgbatch_pinned",
+      model: "claude-pinned",
+      processingStatus: "in_progress",
+      resultsUrl: null,
+      targets: [],
+    };
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    h.deps.batch = undefined as any;
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /Anthropic.*credentials/i,
+    );
+
+    expect(h.batch.create).not.toHaveBeenCalled();
+    expect(h.r2.put).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.vectorize.upsert).not.toHaveBeenCalled();
   });
 
   it("persists a sidecar before creating the batch (crash-window safety)", async () => {
@@ -577,6 +700,9 @@ describe("runBatch — recover resume", () => {
     );
 
     const sc: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
       batchId: "msgbatch_run",
       model: "claude-opus-4-8",
       processingStatus: "in_progress",
@@ -622,7 +748,10 @@ describe("runBatch — recover resume", () => {
     const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
 
     // activating-window crash: a sidecar with no batch id
-    h.deps.loadSidecar = vi.fn(async () => ({
+    h.deps.loadSidecar = vi.fn(async (): Promise<PersistedSidecar> => ({
+      version: 2,
+      provider: "anthropic",
+      phase: "activating",
       batchId: "",
       model: "m",
       processingStatus: "activating",

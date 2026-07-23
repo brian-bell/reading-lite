@@ -90,7 +90,14 @@ export async function writeResults(
     const embedding = embeddings[i]!;
     // Mirror process-reading.ts: openai_embedding_tokens = query + tldr embed.
     const embeddingTokens = target.queryEmbedTokens + (tldrTokens[i] ?? 0);
-    const manifest = buildReadyManifest(target, reading.reading, reading.usage, embeddingTokens, deps.now());
+    const manifest = buildReadyManifest(
+      target,
+      reading.reading,
+      reading.usage,
+      sidecar.model,
+      embeddingTokens,
+      deps.now(),
+    );
     successes.push({ target, manifest });
     vectors.push({
       id: target.id,
@@ -147,6 +154,7 @@ function buildReadyManifest(
   target: SidecarTarget,
   reading: ReturnType<typeof parseEmitReadingResult>["reading"],
   usage: ReturnType<typeof parseEmitReadingResult>["usage"],
+  model: string,
   embeddingTokens: number,
   now: string,
 ): Manifest {
@@ -174,8 +182,14 @@ function buildReadyManifest(
     created_at: target.createdAt,
     updated_at: now,
     usage: {
-      anthropic_input_tokens: usage.input_tokens ?? 0,
-      anthropic_output_tokens: usage.output_tokens ?? 0,
+      summarization: {
+        provider: "anthropic",
+        model,
+        input_tokens: usage.input_tokens ?? 0,
+        output_tokens: usage.output_tokens ?? 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+      },
       // Query (similar-phase) + tldr (here) embedding tokens, attributed
       // per-reading from the coalesced OpenAI calls. Mirrors process-reading.ts.
       openai_embedding_tokens: embeddingTokens,
