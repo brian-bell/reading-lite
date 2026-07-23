@@ -83,7 +83,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     upsert: vi.fn(async () => {}),
     query: vi.fn(async () => []),
   };
-  let sidecar: Sidecar | null = null;
+  let sidecar: PersistedSidecar | null = null;
   const batch = {
     create: vi.fn(async (requests: Array<{ custom_id: string }>) => ({
       id: "msgbatch_run",
@@ -131,7 +131,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     now: () => NOW,
     sleep: vi.fn(async () => {}),
     loadSidecar: vi.fn(async () => null),
-    saveSidecar: vi.fn(async (s: Sidecar) => {
+    saveSidecar: vi.fn(async (s: PersistedSidecar) => {
       sidecar = s;
     }),
     clearSidecar: vi.fn(async () => {
@@ -139,24 +139,104 @@ function harness(seedManifests: Record<string, Manifest>) {
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: Sidecar | null) => (sidecar = s) };
+  return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };
 }
 
 describe("runBatch — fresh run", () => {
-  it("rejects a new OpenAI batch before planning or activation in the Anthropic-only path", async () => {
+  it("runs an OpenAI batch to ready with one stable run id and the realtime response parser", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     h.deps.configuredProvider = "openai";
+    h.deps.model = "gpt-5.6-terra";
+    h.deps.reasoningEffort = "low";
+    h.deps.newRunId = vi.fn(() => "run_stable");
+    const upload = vi.fn(async (jsonl: string, runId: string) => ({
+      id: "file_input",
+      filename: `reading-lite-${runId}.jsonl`,
+      purpose: "batch",
+      bytes: new TextEncoder().encode(jsonl).byteLength,
+    }));
+    h.deps.openaiBatch = {
+      upload,
+      create: vi.fn(async (inputFileId: string, runId: string) => ({
+        id: "batch_openai",
+        input_file_id: inputFileId,
+        status: "validating",
+        output_file_id: null,
+        error_file_id: null,
+        request_counts: { total: 1, completed: 0, failed: 0 },
+        _runId: runId,
+      })),
+      get: vi.fn(async () => ({
+        id: "batch_openai",
+        input_file_id: "file_input",
+        status: "completed",
+        output_file_id: "file_output",
+        error_file_id: null,
+        request_counts: { total: 1, completed: 1, failed: 0 },
+      })),
+      content: vi.fn(async () =>
+        JSON.stringify({
+          custom_id: "rd_a",
+          response: {
+            status_code: 200,
+            body: {
+              id: "resp_1",
+              object: "response",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: JSON.stringify(reading),
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 5,
+                output_tokens: 2,
+                input_tokens_details: { cached_tokens: 1 },
+                output_tokens_details: { reasoning_tokens: 1 },
+              },
+            },
+          },
+          error: null,
+        }) + "\n",
+      ),
+    };
 
-    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
-      /OpenAI batch.*not supported/i,
-    );
+    const result = await runBatch([row("rd_a")], h.deps);
 
-    expect(h.extract).not.toHaveBeenCalled();
-    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
-    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
-    expect(h.r2.put).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    expect(h.deps.newRunId).toHaveBeenCalledOnce();
     expect(h.batch.create).not.toHaveBeenCalled();
+    expect(upload).toHaveBeenCalledWith(expect.any(String), "run_stable");
+    const requests = upload.mock.calls[0]![0]
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(requests[0]).toMatchObject({
+      custom_id: "rd_a",
+      method: "POST",
+      url: "/v1/responses",
+      body: {
+        model: "gpt-5.6-terra",
+        reasoning: { effort: "low" },
+      },
+    });
+    const final = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    expect(final.usage).toMatchObject({
+      summarization: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        reasoning_tokens: 1,
+      },
+    });
   });
 
   it("processes a backlog end-to-end and writes ready manifests + index", async () => {
@@ -205,6 +285,173 @@ describe("runBatch — fresh run", () => {
 });
 
 describe("runBatch — resume", () => {
+  it("resumes the provider pinned by an OpenAI submitted sidecar without producing or uploading again", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const sc: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "submitted",
+      runId: "run_pinned",
+      batchId: "batch_pinned",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-pinned",
+      reasoningEffort: "medium",
+      processingStatus: "in_progress",
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: "readings/kp-rd_a",
+          id: "rd_a",
+          url: "https://example.com/rd_a",
+          urlHash: manifest("rd_a").url_hash,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          sourceType: "url",
+          contentType: "text/html",
+          contentStatus: "captured",
+          contentBytes: 10,
+          contentSha256: "b".repeat(64),
+          queryEmbedTokens: 9,
+        },
+      ],
+    };
+    h.deps.loadSidecar = vi.fn(async () => sc);
+    h.deps.configuredProvider = "anthropic";
+    const upload = vi.fn();
+    h.deps.openaiBatch = {
+      upload,
+      create: vi.fn(),
+      get: vi.fn(async () => ({
+        id: "batch_pinned",
+        input_file_id: "file_input",
+        status: "completed",
+        output_file_id: "file_output",
+        error_file_id: null,
+        request_counts: { total: 1, completed: 1, failed: 0 },
+      })),
+      content: vi.fn(async () =>
+        JSON.stringify({
+          custom_id: "rd_a",
+          response: {
+            status_code: 200,
+            body: {
+              id: "resp_1",
+              object: "response",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: JSON.stringify(reading),
+                    },
+                  ],
+                },
+              ],
+              usage: { input_tokens: 5, output_tokens: 2 },
+            },
+          },
+          error: null,
+        }) + "\n",
+      ),
+    };
+    const produce = vi.fn(async () => ({ extracted: [], dropped: [] }));
+
+    const result = await runBatchPipeline(produce, h.deps);
+
+    expect(result.resumed).toBe(true);
+    expect(produce).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch.get).toHaveBeenCalledWith("batch_pinned");
+    const final = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    expect(final.usage).toMatchObject({
+      summarization: { provider: "openai", model: "gpt-pinned" },
+    });
+  });
+
+  it.each([
+    {
+      phase: "activating" as const,
+      processingStatus: "activating" as const,
+      inputFileId: null,
+      targetKind: "activating" as const,
+      expected: /ownership activation/i,
+    },
+    {
+      phase: "uploading" as const,
+      processingStatus: "uploading" as const,
+      inputFileId: null,
+      targetKind: "full" as const,
+      expected: /input file may have been uploaded/i,
+    },
+    {
+      phase: "creating" as const,
+      processingStatus: "creating" as const,
+      inputFileId: "file_input",
+      targetKind: "full" as const,
+      expected: /batch may have been created/i,
+    },
+  ])(
+    "requires phase-specific reconciliation for OpenAI $phase before checking credentials",
+    async ({ phase, processingStatus, inputFileId, targetKind, expected }) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      const fullTarget = {
+        customId: "rd_a",
+        keyPrefix: "readings/kp-rd_a",
+        id: "rd_a",
+        url: "https://example.com/rd_a",
+        urlHash: manifest("rd_a").url_hash,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        sourceType: "url" as const,
+        contentType: "text/html",
+        contentStatus: "captured",
+        contentBytes: 10,
+        contentSha256: "b".repeat(64),
+        queryEmbedTokens: 0,
+      };
+      const targets =
+        targetKind === "full"
+          ? [fullTarget]
+          : [
+              {
+                id: fullTarget.id,
+                customId: fullTarget.customId,
+                keyPrefix: fullTarget.keyPrefix,
+                url: fullTarget.url,
+                urlHash: fullTarget.urlHash,
+                createdAt: fullTarget.createdAt,
+              },
+            ];
+      h.deps.loadSidecar = vi.fn(
+        async () =>
+          ({
+            version: 2,
+            provider: "openai",
+            phase,
+            runId: "run_1",
+            batchId: "",
+            inputFileId,
+            outputFileId: null,
+            errorFileId: null,
+            model: "gpt-pinned",
+            reasoningEffort: "low",
+            processingStatus,
+            targets,
+          }) as PersistedSidecar,
+      );
+      h.deps.openaiBatch = undefined;
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(expected);
+      expect(h.r2.put).not.toHaveBeenCalled();
+      expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    },
+  );
+
   it("loads a legacy sidecar and resumes its pinned Anthropic model under an OpenAI default", async () => {
     const dir = await mkdtemp(join(tmpdir(), "reading-lite-run-legacy-"));
     try {

@@ -1,10 +1,15 @@
 #!/usr/bin/env -S npx tsx
 import { parseArgs } from "node:util";
+import { randomUUID } from "node:crypto";
 import { resolveBatchConfig } from "./corpus-lib/config";
 import { MARKDOWN_IMPORT_MAX_BYTES, readMarkdownDir } from "./import-markdown-lib/parse";
 import { selectEligibleArticles } from "./corpus-lib/ingest-eligible";
 import { makeR2Client, makeVectorizeClient } from "./lib/cf-clients";
-import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/batch/clients";
+import {
+  makeAnthropicBatchClient,
+  makeOpenAIBatchClient,
+  makeOpenAIEmbedClient,
+} from "./corpus-lib/batch/clients";
 import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidecar";
 import { prepareFreshMarkdown, tallyDispositions } from "./corpus-lib/batch/prepare-fresh-markdown";
 import { r2ReadDeps } from "./corpus-lib/batch/r2-reads";
@@ -72,7 +77,8 @@ function printUsage(): void {
   console.log(`Usage: npm run corpus-ingest -- --dir <path> [options]
 
 Bulk-imports a directory of fresh markdown files into the corpus, summarizing via
-the Anthropic Message Batch API (~50% cheaper, async, no rate-limit retries)
+the configured provider's Batch API (OpenAI by default; Anthropic remains
+selectable, async, no realtime rate-limit retries)
 instead of the realtime /api/readings queue. Dry-run (plan only) by default.
 
 Each file needs a source URL on a "**Source:** <url>" line (the import-markdown-dir
@@ -101,8 +107,9 @@ eager claims; --sole-writer remains required because recover parity is still
 outstanding.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
-for R2/Vectorize, ANTHROPIC_API_KEY + OPENAI_API_KEY for summarize/embed. --execute
-needs all of them; dry-run uses them to resolve ownership but degrades to the local
+for R2/Vectorize plus ANTHROPIC_API_KEY and OPENAI_API_KEY (the current shared
+bulk config loads both; provider-conditional validation is a later rollout step).
+Dry-run uses them to resolve ownership but degrades to the local
 plan (no ready/pending skips shown) when they're absent.`);
 }
 
@@ -210,6 +217,10 @@ async function main(): Promise<void> {
     r2,
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
     batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
+    openaiBatch: makeOpenAIBatchClient({
+      fetch: fetchFn,
+      apiKey: cfg.openaiApiKey,
+    }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
     // The fresh-markdown path never fetches a URL; this is only here to satisfy
     // the shared BatchRunDeps shape and must never be called.
@@ -217,7 +228,12 @@ async function main(): Promise<void> {
       throw new Error("corpus-ingest must not fetch URLs — markdown is in hand");
     },
     configuredProvider: cfg.summarizerProvider,
-    model: cfg.anthropicModel,
+    model:
+      cfg.summarizerProvider === "openai"
+        ? cfg.openaiModel
+        : cfg.anthropicModel,
+    reasoningEffort: cfg.openaiReasoningEffort,
+    newRunId: randomUUID,
     newId: mintReadingId,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),

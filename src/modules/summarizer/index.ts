@@ -101,7 +101,7 @@ export async function summarizeReading(
   };
 }
 
-function parseReasoningEffort(value: string | undefined): OpenAIReasoningEffort {
+export function parseReasoningEffort(value: string | undefined): OpenAIReasoningEffort {
   const effort = value ?? DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT;
   if (
     OPENAI_REASONING_EFFORTS.includes(

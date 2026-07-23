@@ -46,10 +46,10 @@ export async function runFreshMarkdownBatch(
     return { extracted: toIngest, dropped: [] };
   }, {
     ...deps,
-    activateExtracted: (targets) =>
+    activateExtracted: (targets, identity) =>
       activateFreshTargets(targets, {
         r2: deps.r2,
-        model: deps.model,
+        identity,
         now: deps.now,
         saveSidecar: deps.saveSidecar,
         ...(deps.log ? { log: deps.log } : {}),

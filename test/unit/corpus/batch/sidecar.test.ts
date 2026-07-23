@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { loadSidecar, saveSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
-import type { ActivatingSidecar, Sidecar } from "../../../../scripts/corpus-lib/batch/types";
+import type {
+  ActivatingSidecar,
+  OpenAISubmittedSidecar,
+  PersistedSidecar,
+  Sidecar,
+} from "../../../../scripts/corpus-lib/batch/types";
 
 const target = {
   customId: "rd_a",
@@ -50,6 +55,85 @@ describe("batch sidecar I/O", () => {
       };
       expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject(expected);
       await expect(loadSidecar(path)).resolves.toMatchObject(expected);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("saves and loads a submitted OpenAI sidecar with pinned provider state", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const sidecar: OpenAISubmittedSidecar = {
+        version: 2,
+        provider: "openai",
+        phase: "submitted",
+        runId: "run_1",
+        batchId: "batch_1",
+        inputFileId: "file_input",
+        outputFileId: "file_output",
+        errorFileId: null,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        processingStatus: "completed",
+        targets: [target],
+      };
+
+      await saveSidecar(path, sidecar);
+      await expect(loadSidecar(path)).resolves.toEqual(sidecar);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts only phase-consistent OpenAI pre-submit checkpoints", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const identity = {
+        version: 2 as const,
+        provider: "openai" as const,
+        runId: "run_1",
+        batchId: "" as const,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low" as const,
+        outputFileId: null,
+        errorFileId: null,
+      };
+      const activatingTarget = {
+        id: "rd_a",
+        customId: "rd_a",
+        keyPrefix: "readings/kp",
+        url: "https://example.com/a",
+        urlHash: "a".repeat(64),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      const checkpoints = [
+        {
+          ...identity,
+          phase: "activating",
+          inputFileId: null,
+          processingStatus: "activating",
+          targets: [activatingTarget],
+        },
+        {
+          ...identity,
+          phase: "uploading",
+          inputFileId: null,
+          processingStatus: "uploading",
+          targets: [target],
+        },
+        {
+          ...identity,
+          phase: "creating",
+          inputFileId: "file_input",
+          processingStatus: "creating",
+          targets: [target],
+        },
+      ] as unknown as PersistedSidecar[];
+
+      for (const checkpoint of checkpoints) {
+        await saveSidecar(path, checkpoint);
+        await expect(loadSidecar(path)).resolves.toEqual(checkpoint);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

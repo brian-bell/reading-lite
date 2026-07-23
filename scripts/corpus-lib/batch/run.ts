@@ -1,6 +1,11 @@
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
-import type { AnthropicBatchClient, OpenAIEmbedClient } from "./clients";
+import type {
+  AnthropicBatchClient,
+  OpenAIBatchClient,
+  OpenAIEmbedClient,
+  OpenAIBatchInfo,
+} from "./clients";
 import type { AuditRow } from "../types";
 import { readManifest } from "./r2-reads";
 import { prepareTargets } from "./prepare";
@@ -11,21 +16,37 @@ import {
   assertExtractedBatchPayloadWithinLimit,
   assertSummarizeBatchPayloadWithinLimit,
   submitBatch,
+  submitOpenAIBatch,
 } from "./submit-phase";
+import { prepareOpenAIBatchPayload } from "./openai-payload";
 import { pollUntilEnded } from "./poll-phase";
-import { writeResults, type WriteReportRow } from "./write-phase";
-import type { DroppedTarget, ExtractedTarget, PersistedSidecar, Sidecar } from "./types";
+import {
+  writeOpenAIResults,
+  writeResults,
+  type WriteReportRow,
+} from "./write-phase";
+import type {
+  DroppedTarget,
+  ExtractedTarget,
+  OpenAISubmittedSidecar,
+  PersistedSidecar,
+  Sidecar,
+} from "./types";
 import type { ActivationResult } from "./activation-phase";
+import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 
 export interface BatchRunDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
   batch?: AnthropicBatchClient;
+  openaiBatch?: OpenAIBatchClient;
   embed: OpenAIEmbedClient;
   // Fresh extraction (browser UA) for readings without saved markdown.
   extract(url: string): Promise<ExtractedContent>;
   configuredProvider?: "openai" | "anthropic";
   model: string;
+  reasoningEffort?: OpenAIReasoningEffort;
+  newRunId?(): string;
   now(): string;
   sleep(ms: number): Promise<void>;
   // Resume support: the sidecar persists the in-flight batch so a crashed poll
@@ -33,11 +54,23 @@ export interface BatchRunDeps {
   loadSidecar(): Promise<PersistedSidecar | null>;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   clearSidecar(): Promise<void>;
-  activateExtracted?(targets: ExtractedTarget[]): Promise<ActivationResult>;
+  activateExtracted?(
+    targets: ExtractedTarget[],
+    identity: BatchIdentity,
+  ): Promise<ActivationResult>;
   maxBatchBytes?: number;
   log?(line: string): void;
   poll?: { intervalMs?: number; maxPolls?: number };
 }
+
+export type BatchIdentity =
+  | { provider: "anthropic"; model: string }
+  | {
+      provider: "openai";
+      model: string;
+      reasoningEffort: OpenAIReasoningEffort;
+      runId: string;
+    };
 
 export interface BatchRunResult {
   report: WriteReportRow[];
@@ -72,11 +105,21 @@ export async function runBatchPipeline(
       // A sidecar with no batch id means a prior run crashed either while
       // activating eager owners or in the create window. Abort rather than risk
       // silently skipping stranded owners or creating a second, double-billed batch.
-      throw new Error(
-        "found a batch sidecar with no batch id — a previous --batch run may have " +
-          "activated eager owners or created (and been billed for) a batch without recording its id. " +
-          "Check the Anthropic console, then delete the .batch.json sidecar before retrying.",
-      );
+      throw noIdReconciliationError(existing);
+    }
+    if (existing.provider === "openai") {
+      if (existing.phase !== "submitted") {
+        throw noIdReconciliationError(existing);
+      }
+      const batch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
+      log(`Resuming OpenAI batch ${existing.batchId} (${existing.targets.length} readings)`);
+      const report = await pollAndWriteOpenAI(existing, deps, batch);
+      return {
+        report,
+        dropped: [],
+        resumed: true,
+        batchId: existing.batchId,
+      };
     }
     const batch = requireAnthropicBatchClient(deps, "resume pinned sidecar");
     const sidecar = existing as Sidecar;
@@ -85,12 +128,29 @@ export async function runBatchPipeline(
     return { report, dropped: [], resumed: true, batchId: sidecar.batchId };
   }
 
-  if (deps.configuredProvider === "openai") {
-    throw new Error(
-      "OpenAI batch is not supported by this Anthropic-only batch path",
-    );
-  }
-  const batch = requireAnthropicBatchClient(deps, "start new batch");
+  const provider = deps.configuredProvider ?? "anthropic";
+  const batch =
+    provider === "anthropic"
+      ? requireAnthropicBatchClient(deps, "start new batch")
+      : undefined;
+  const openaiBatch =
+    provider === "openai"
+      ? requireOpenAIBatchClient(deps, "start new batch")
+      : undefined;
+  const reasoningEffort = deps.reasoningEffort ?? "low";
+  const runId =
+    provider === "openai"
+      ? (deps.newRunId?.() ?? `run_${Date.now()}`)
+      : undefined;
+  const identity: BatchIdentity =
+    provider === "openai"
+      ? {
+          provider,
+          model: deps.model,
+          reasoningEffort,
+          runId: runId!,
+        }
+      : { provider, model: deps.model };
 
   let { extracted, dropped } = await produce();
   // Surface *why* each reading dropped — a bare "dropped: N" count hides dead
@@ -101,7 +161,13 @@ export async function runBatchPipeline(
 
   let activationSkipped: WriteReportRow[] = [];
   if (deps.activateExtracted) {
-    assertExtractedBatchPayloadWithinLimit(extracted, deps.model, deps.maxBatchBytes);
+    if (provider === "anthropic") {
+      assertExtractedBatchPayloadWithinLimit(
+        extracted,
+        deps.model,
+        deps.maxBatchBytes,
+      );
+    }
   }
 
   let summarizeTargets = await resolveSimilar(extracted, {
@@ -110,8 +176,23 @@ export async function runBatchPipeline(
   });
 
   if (deps.activateExtracted) {
-    assertSummarizeBatchPayloadWithinLimit(summarizeTargets, deps.model, deps.maxBatchBytes);
-    const activated = await deps.activateExtracted(extracted);
+    if (provider === "anthropic") {
+      assertSummarizeBatchPayloadWithinLimit(
+        summarizeTargets,
+        deps.model,
+        deps.maxBatchBytes,
+      );
+    } else {
+      prepareOpenAIBatchPayload(
+        summarizeTargets,
+        deps.model,
+        reasoningEffort,
+        deps.maxBatchBytes === undefined
+          ? undefined
+          : { maxBytes: deps.maxBatchBytes },
+      );
+    }
+    const activated = await deps.activateExtracted(extracted, identity);
     extracted = activated.activated;
     activationSkipped = activated.skipped;
     for (const row of activationSkipped) {
@@ -140,17 +221,50 @@ export async function runBatchPipeline(
     return { report: activationSkipped, dropped, resumed: false };
   }
 
+  if (provider === "openai") {
+    const prepared = prepareOpenAIBatchPayload(
+      summarizeTargets,
+      deps.model,
+      reasoningEffort,
+      deps.maxBatchBytes === undefined
+        ? undefined
+        : { maxBytes: deps.maxBatchBytes },
+    );
+    log(`Submitting OpenAI Batch: ${summarizeTargets.length} readings`);
+    const { info, sidecar } = await submitOpenAIBatch(
+      summarizeTargets,
+      prepared,
+      {
+        model: deps.model,
+        reasoningEffort,
+        runId: runId!,
+        batch: openaiBatch!,
+        putObject: (key, body, contentType) =>
+          deps.r2.put(key, body, { contentType }),
+        saveSidecar: deps.saveSidecar,
+      },
+    );
+    log(`Batch ${info.id} created; polling for completion...`);
+    const report = await pollAndWriteOpenAI(sidecar, deps, openaiBatch!);
+    return {
+      report: [...activationSkipped, ...report],
+      dropped,
+      resumed: false,
+      batchId: sidecar.batchId,
+    };
+  }
+
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
   const { info, sidecar } = await submitBatch(summarizeTargets, {
     model: deps.model,
-    batch,
+    batch: batch!,
     putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,
     ...(deps.maxBatchBytes === undefined ? {} : { maxBatchBytes: deps.maxBatchBytes }),
   });
   log(`Batch ${info.id} created; polling for completion...`);
 
-  const report = await pollAndWrite(sidecar, deps, batch);
+  const report = await pollAndWrite(sidecar, deps, batch!);
   return { report: [...activationSkipped, ...report], dropped, resumed: false, batchId: sidecar.batchId };
 }
 
@@ -178,15 +292,29 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
       ...deps,
       activateExtracted:
         deps.activateExtracted ??
-        ((targets) =>
+        ((targets, identity) =>
           activateRecoverTargets(targets, {
             r2: deps.r2,
-            model: deps.model,
+            identity,
             now: deps.now,
             saveSidecar: deps.saveSidecar,
             ...(deps.log ? { log: deps.log } : {}),
           })),
     },
+  );
+}
+
+function noIdReconciliationError(existing: PersistedSidecar): Error {
+  const provider = existing.provider === "openai" ? "OpenAI" : "Anthropic";
+  const detail =
+    existing.phase === "activating"
+      ? "eager ownership activation may be incomplete"
+      : existing.phase === "uploading"
+        ? "an input file may have been uploaded without its id being recorded"
+        : "a batch may have been created and billed without its id being recorded";
+  return new Error(
+    `found a ${provider} ${existing.phase} sidecar with no batch id; ${detail}. ` +
+      `Reconcile that provider's console, then delete the .batch.json sidecar before retrying.`,
   );
 }
 
@@ -201,6 +329,16 @@ function requireAnthropicBatchClient(
   if (deps.batch) return deps.batch;
   throw new Error(
     `cannot ${action}: missing Anthropic batch credentials (ANTHROPIC_API_KEY)`,
+  );
+}
+
+function requireOpenAIBatchClient(
+  deps: BatchRunDeps,
+  action: string,
+): OpenAIBatchClient {
+  if (deps.openaiBatch) return deps.openaiBatch;
+  throw new Error(
+    `cannot ${action}: missing OpenAI batch credentials (OPENAI_API_KEY)`,
   );
 }
 
@@ -227,4 +365,57 @@ async function pollAndWrite(
     now: deps.now,
     ...(deps.log ? { log: deps.log } : {}),
   });
+}
+
+async function pollAndWriteOpenAI(
+  sidecar: OpenAISubmittedSidecar,
+  deps: BatchRunDeps,
+  batch: OpenAIBatchClient,
+): Promise<WriteReportRow[]> {
+  const terminal = new Set(["completed", "failed", "expired", "cancelled"]);
+  const intervalMs = deps.poll?.intervalMs ?? 15_000;
+  const maxPolls = deps.poll?.maxPolls ?? 10_000;
+  let info: OpenAIBatchInfo | undefined;
+  for (let poll = 0; poll < maxPolls; poll++) {
+    info = await batch.get(sidecar.batchId);
+    deps.log?.(
+      `Batch ${sidecar.batchId}: ${info.status} ` +
+        `(${info.request_counts.completed}/${info.request_counts.total} completed, ` +
+        `${info.request_counts.failed} failed)`,
+    );
+    if (terminal.has(info.status)) break;
+    await deps.sleep(intervalMs);
+  }
+  if (!info || !terminal.has(info.status)) {
+    throw new Error(
+      `OpenAI batch ${sidecar.batchId} did not reach a terminal state before the poll limit`,
+    );
+  }
+  if (info.status !== "completed") {
+    throw new Error(
+      `OpenAI batch ${sidecar.batchId} ended with status ${info.status}; reconcile the sidecar before retrying`,
+    );
+  }
+  if (!info.output_file_id) {
+    throw new Error(
+      `OpenAI batch ${sidecar.batchId} completed without an output_file_id`,
+    );
+  }
+  const output = await batch.content(info.output_file_id);
+  return writeOpenAIResults(
+    {
+      ...sidecar,
+      processingStatus: info.status,
+      outputFileId: info.output_file_id,
+      errorFileId: info.error_file_id,
+    },
+    output,
+    {
+      r2: deps.r2,
+      vectorize: deps.vectorize,
+      embedMany: (inputs) => deps.embed.embedMany(inputs),
+      now: deps.now,
+      ...(deps.log ? { log: deps.log } : {}),
+    },
+  );
 }

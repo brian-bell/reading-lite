@@ -4,6 +4,11 @@ import {
   parseSummarizerProvider,
   type SummarizerProvider,
 } from "../../src/modules/summarizer/config";
+import {
+  DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  parseReasoningEffort,
+} from "../../src/modules/summarizer";
+import type { OpenAIReasoningEffort } from "../../src/modules/summarizer/types";
 
 export const DEFAULT_BUCKET = "reading-lite";
 export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
@@ -39,6 +44,8 @@ export interface BatchConfig {
   anthropicApiKey: string;
   anthropicModel: string;
   openaiApiKey: string;
+  openaiModel: string;
+  openaiReasoningEffort: OpenAIReasoningEffort;
   summarizerProvider: SummarizerProvider;
 }
 
@@ -91,6 +98,11 @@ export function resolveBatchConfig(
     anthropicApiKey,
     anthropicModel: vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
     openaiApiKey,
+    openaiModel:
+      vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+    openaiReasoningEffort: parseReasoningEffort(
+      vars.OPENAI_SUMMARIZATION_REASONING_EFFORT,
+    ),
     summarizerProvider: parseSummarizerProvider(vars.SUMMARIZER_PROVIDER),
   };
 }

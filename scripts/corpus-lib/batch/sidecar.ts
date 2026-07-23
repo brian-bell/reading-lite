@@ -41,6 +41,15 @@ const ActivatingTargetSchema = z
   })
   .strip();
 
+const OpenAIReasoningEffortSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
 const V2SidecarSchema = z.union([
   z
     .object({
@@ -75,6 +84,70 @@ const V2SidecarSchema = z.union([
       model: z.string().min(1),
       processingStatus: z.string().min(1),
       resultsUrl: z.string().url().nullable(),
+      targets: z.array(SidecarTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("openai"),
+      phase: z.literal("activating"),
+      runId: z.string().min(1),
+      batchId: z.literal(""),
+      inputFileId: z.null(),
+      outputFileId: z.null(),
+      errorFileId: z.null(),
+      model: z.string().min(1),
+      reasoningEffort: OpenAIReasoningEffortSchema,
+      processingStatus: z.literal("activating"),
+      targets: z.array(ActivatingTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("openai"),
+      phase: z.literal("uploading"),
+      runId: z.string().min(1),
+      batchId: z.literal(""),
+      inputFileId: z.null(),
+      outputFileId: z.null(),
+      errorFileId: z.null(),
+      model: z.string().min(1),
+      reasoningEffort: OpenAIReasoningEffortSchema,
+      processingStatus: z.literal("uploading"),
+      targets: z.array(SidecarTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("openai"),
+      phase: z.literal("creating"),
+      runId: z.string().min(1),
+      batchId: z.literal(""),
+      inputFileId: z.string().min(1),
+      outputFileId: z.null(),
+      errorFileId: z.null(),
+      model: z.string().min(1),
+      reasoningEffort: OpenAIReasoningEffortSchema,
+      processingStatus: z.literal("creating"),
+      targets: z.array(SidecarTargetSchema),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(2),
+      provider: z.literal("openai"),
+      phase: z.literal("submitted"),
+      runId: z.string().min(1),
+      batchId: z.string().min(1),
+      inputFileId: z.string().min(1),
+      outputFileId: z.string().min(1).nullable(),
+      errorFileId: z.string().min(1).nullable(),
+      model: z.string().min(1),
+      reasoningEffort: OpenAIReasoningEffortSchema,
+      processingStatus: z.string().min(1),
       targets: z.array(SidecarTargetSchema),
     })
     .strict(),

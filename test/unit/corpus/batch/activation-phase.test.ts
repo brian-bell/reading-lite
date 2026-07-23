@@ -141,6 +141,35 @@ describe("activateFreshTargets", () => {
     });
   });
 
+  it("pins the OpenAI run identity before the first eager ownership write", async () => {
+    const fakeR2 = r2();
+    const sidecars: any[] = [];
+
+    await activateFreshTargets([target()], {
+      r2: fakeR2 as any,
+      identity: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        runId: "run_stable",
+      },
+      now: () => NOW,
+      saveSidecar: vi.fn(async (sidecar) => {
+        sidecars.push(sidecar);
+      }),
+    });
+
+    expect(sidecars[0]).toMatchObject({
+      provider: "openai",
+      phase: "activating",
+      runId: "run_stable",
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      inputFileId: null,
+    });
+    expect(fakeR2.calls[0]).toBe(`putIfAbsent:index/by-url/${URL_HASH}`);
+  });
+
   it("skips a new target if the by-url conditional claim loses", async () => {
     const fakeR2 = r2({ [`index/by-url/${URL_HASH}`]: JSON.stringify({ id: "rd_other", key_prefix: "kp" }) });
 

@@ -12,6 +12,8 @@ const full = {
   ANTHROPIC_API_KEY: "sk-ant",
   OPENAI_API_KEY: "sk-oa",
   ANTHROPIC_MODEL: "claude-opus-4-8",
+  OPENAI_SUMMARIZATION_MODEL: "gpt-batch",
+  OPENAI_SUMMARIZATION_REASONING_EFFORT: "high",
   SUMMARIZER_PROVIDER: "openai",
 };
 
@@ -23,15 +25,27 @@ describe("resolveBatchConfig", () => {
     expect(cfg.anthropicApiKey).toBe("sk-ant");
     expect(cfg.openaiApiKey).toBe("sk-oa");
     expect(cfg.anthropicModel).toBe("claude-opus-4-8");
+    expect(cfg.openaiModel).toBe("gpt-batch");
+    expect(cfg.openaiReasoningEffort).toBe("high");
     expect(cfg.summarizerProvider).toBe("openai");
   });
 
   it("defaults the model when unset", () => {
-    const { ANTHROPIC_MODEL, SUMMARIZER_PROVIDER, ...noModel } = full;
+    const {
+      ANTHROPIC_MODEL,
+      OPENAI_SUMMARIZATION_MODEL,
+      OPENAI_SUMMARIZATION_REASONING_EFFORT,
+      SUMMARIZER_PROVIDER,
+      ...noModel
+    } = full;
     void ANTHROPIC_MODEL;
+    void OPENAI_SUMMARIZATION_MODEL;
+    void OPENAI_SUMMARIZATION_REASONING_EFFORT;
     void SUMMARIZER_PROVIDER;
     const cfg = resolveBatchConfig({}, { vars: noModel });
     expect(cfg.anthropicModel).toBe("claude-sonnet-4-6");
+    expect(cfg.openaiModel).toBe("gpt-5.6-terra");
+    expect(cfg.openaiReasoningEffort).toBe("low");
     expect(cfg.summarizerProvider).toBe("openai");
   });
 

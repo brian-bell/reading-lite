@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { writeResults } from "../../../../scripts/corpus-lib/batch/write-phase";
+import {
+  writeOpenAIResults,
+  writeResults,
+} from "../../../../scripts/corpus-lib/batch/write-phase";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
-import type { Sidecar, SidecarTarget } from "../../../../scripts/corpus-lib/batch/types";
+import type {
+  OpenAISubmittedSidecar,
+  Sidecar,
+  SidecarTarget,
+} from "../../../../scripts/corpus-lib/batch/types";
 import type { BatchResult } from "../../../../scripts/corpus-lib/batch/clients";
 
 const NOW = "2026-06-18T12:00:00.000Z";
@@ -176,6 +183,82 @@ describe("writeResults — success path", () => {
     const item = index.items.find((i: any) => i.id === "rd_a");
     expect(item.status).toBe("ready");
     expect(item.title).toBe("Resolved Title");
+  });
+});
+
+describe("writeOpenAIResults — success path", () => {
+  it("matches JSONL by custom_id and persists provider-normalized OpenAI usage", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    const sc: OpenAISubmittedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "submitted",
+      runId: "run_1",
+      batchId: "batch_1",
+      inputFileId: "file_input",
+      outputFileId: "file_output",
+      errorFileId: null,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      processingStatus: "completed",
+      targets: [sidecarTarget()],
+    };
+    const responseBody = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: JSON.stringify(validReading),
+            },
+          ],
+        },
+      ],
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 200,
+        input_tokens_details: {
+          cached_tokens: 400,
+          cache_write_tokens: 300,
+        },
+        output_tokens_details: { reasoning_tokens: 50 },
+      },
+    };
+    const jsonl =
+      JSON.stringify({
+        id: "batch_req_1",
+        custom_id: "rd_a",
+        response: { status_code: 200, request_id: "req_1", body: responseBody },
+        error: null,
+      }) + "\n";
+
+    await writeOpenAIResults(sc, jsonl, deps(r2, vec));
+
+    const ready = ManifestSchema.parse(
+      JSON.parse(
+        r2.store.get(
+          "readings/2026/01/01T000000Z-rd_a/manifest.json",
+        )!,
+      ),
+    );
+    expect(ready.status).toBe("ready");
+    expect(ready.usage).toMatchObject({
+      summarization: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        input_tokens: 1000,
+        output_tokens: 200,
+        reasoning_tokens: 50,
+        cached_input_tokens: 400,
+        cache_write_tokens: 300,
+      },
+    });
   });
 });
 

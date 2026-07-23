@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import type { ExtractedContent, ExtractorDeps } from "../src/modules/extractor/index";
 import { extractFromUrl } from "../src/modules/extractor/index";
@@ -10,7 +11,11 @@ import { shouldPauseAfter } from "./corpus-lib/throttle";
 import { tallyByIds } from "./corpus-lib/audit";
 import { readListIndex } from "./corpus-lib/wrangler-r2";
 import { makeR2Client, makeVectorizeClient } from "./lib/cf-clients";
-import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/batch/clients";
+import {
+  makeAnthropicBatchClient,
+  makeOpenAIBatchClient,
+  makeOpenAIEmbedClient,
+} from "./corpus-lib/batch/clients";
 import { runBatch } from "./corpus-lib/batch/run";
 import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
@@ -118,10 +123,10 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
                     (prevents swamping upstream rate limits). Default: unbounded.
   --wave-pause <s>  Seconds to pause at each wave boundary. Default: 60.
   --batch           Bulk path: summarize reprocess+local-extract rows via the
-                    Anthropic Message Batch API (~50% cheaper, no rate-limit
-                    burst) instead of the realtime queue. --wave is ignored.
+                    configured provider's Batch API (OpenAI by default, or
+                    Anthropic) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
-                    + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys.
+                    + Vectorize creds and, currently, both provider API keys.
   --sole-writer     Required with --batch --execute: assert the realtime writer
                     is paused/drained. The batch path leaves each by-url slot
                     unclaimed for the in-flight window, so a live writer would
@@ -312,10 +317,19 @@ async function runBatchMode(
     r2: makeR2Client(cfg.r2, fetchFn),
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
     batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
+    openaiBatch: makeOpenAIBatchClient({
+      fetch: fetchFn,
+      apiKey: cfg.openaiApiKey,
+    }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
     extract: (url: string): Promise<ExtractedContent> => extractFromUrl(url, extractorDeps),
     configuredProvider: cfg.summarizerProvider,
-    model: cfg.anthropicModel,
+    model:
+      cfg.summarizerProvider === "openai"
+        ? cfg.openaiModel
+        : cfg.anthropicModel,
+    reasoningEffort: cfg.openaiReasoningEffort,
+    newRunId: randomUUID,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),
     loadSidecar: () => loadSidecar(scPath),

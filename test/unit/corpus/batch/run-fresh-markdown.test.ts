@@ -107,6 +107,102 @@ function harness(seed: Record<string, string> = {}) {
 }
 
 describe("runFreshMarkdownBatch — fresh run", () => {
+  it("uses one pinned OpenAI run identity across fresh activation, upload, and create", async () => {
+    const h = harness();
+    const checkpoints: PersistedSidecar[] = [];
+    h.deps.configuredProvider = "openai";
+    h.deps.model = "gpt-5.6-terra";
+    h.deps.reasoningEffort = "low";
+    h.deps.newRunId = vi.fn(() => "run_stable");
+    h.deps.saveSidecar = vi.fn(async (sidecar) => {
+      checkpoints.push(sidecar);
+      h.setSidecar(sidecar);
+    });
+    const upload = vi.fn(async (jsonl: string, runId: string) => ({
+      id: "file_input",
+      filename: `reading-lite-${runId}.jsonl`,
+      purpose: "batch",
+      bytes: new TextEncoder().encode(jsonl).byteLength,
+    }));
+    const create = vi.fn(async (inputFileId: string, runId: string) => ({
+      id: "batch_openai",
+      input_file_id: inputFileId,
+      status: "validating",
+      output_file_id: null,
+      error_file_id: null,
+      request_counts: { total: 1, completed: 0, failed: 0 },
+      _runId: runId,
+    }));
+    h.deps.openaiBatch = {
+      upload,
+      create,
+      get: vi.fn(async () => ({
+        id: "batch_openai",
+        input_file_id: "file_input",
+        status: "completed",
+        output_file_id: "file_output",
+        error_file_id: null,
+        request_counts: { total: 1, completed: 1, failed: 0 },
+      })),
+      content: vi.fn(async () => {
+        const customId = h.getSidecar()!.targets[0]!.customId;
+        return (
+          JSON.stringify({
+            custom_id: customId,
+            response: {
+              status_code: 200,
+              body: {
+                id: "resp_1",
+                object: "response",
+                status: "completed",
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    content: [
+                      {
+                        type: "output_text",
+                        text: JSON.stringify({ ...reading, title: "Alpha" }),
+                      },
+                    ],
+                  },
+                ],
+                usage: { input_tokens: 5, output_tokens: 2 },
+              },
+            },
+            error: null,
+          }) + "\n"
+        );
+      }),
+    };
+
+    const result = await runFreshMarkdownBatch(
+      [article("alpha", "https://example.com/alpha")],
+      h.deps,
+    );
+
+    expect(result.report).toContainEqual({
+      id: "rd_FRESH0",
+      status: "ready",
+    });
+    expect(h.deps.newRunId).toHaveBeenCalledOnce();
+    expect(
+      checkpoints.map((checkpoint) => ({
+        phase: checkpoint.phase,
+        provider: checkpoint.provider,
+        runId:
+          checkpoint.provider === "openai" ? checkpoint.runId : undefined,
+      })),
+    ).toEqual([
+      { phase: "activating", provider: "openai", runId: "run_stable" },
+      { phase: "uploading", provider: "openai", runId: "run_stable" },
+      { phase: "creating", provider: "openai", runId: "run_stable" },
+      { phase: "submitted", provider: "openai", runId: "run_stable" },
+    ]);
+    expect(upload).toHaveBeenCalledWith(expect.any(String), "run_stable");
+    expect(create).toHaveBeenCalledWith("file_input", "run_stable");
+  });
+
   it("ingests a markdown directory into ready markdown readings via the batch API", async () => {
     const h = harness();
     const a = article("alpha", "https://example.com/alpha");
