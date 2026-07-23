@@ -1,29 +1,27 @@
 import { z } from "zod";
+import {
+  ConnectionSchema,
+  NoveltyVerdictSchema,
+  ReadingSummarySchema,
+  type ReadingSummary,
+} from "./reading-summary";
+
+export {
+  ConnectionSchema,
+  NoveltyVerdictSchema,
+  ReadingSummarySchema,
+} from "./reading-summary";
+export type {
+  Connection,
+  NoveltyVerdict,
+  ReadingSummary,
+} from "./reading-summary";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const sha256Hex = () => z.string().regex(SHA256_HEX, "must be 64 lowercase hex chars");
 
-export const NoveltyVerdictSchema = z.enum(["novel", "familiar", "duplicate"]);
-export type NoveltyVerdict = z.infer<typeof NoveltyVerdictSchema>;
-
-export const ConnectionSchema = z.object({
-  id: z.string().min(1),
-  reason: z.string().min(1),
-});
-export type Connection = z.infer<typeof ConnectionSchema>;
-
-export const EmitReadingToolInputSchema = z.object({
-  title: z.string().min(1),
-  tldr: z.string().min(1),
-  tags: z.array(z.string().min(1)),
-  keywords: z.array(z.string().min(1)),
-  people: z.array(z.string().min(1)),
-  orgs: z.array(z.string().min(1)),
-  novelty_verdict: NoveltyVerdictSchema,
-  connections: z.array(ConnectionSchema),
-  summary_markdown: z.string().min(1),
-});
-export type EmitReadingToolInput = z.infer<typeof EmitReadingToolInputSchema>;
+export const EmitReadingToolInputSchema = ReadingSummarySchema;
+export type EmitReadingToolInput = ReadingSummary;
 
 export const ManifestStatusSchema = z.enum(["pending", "ready", "failed"]);
 export type ManifestStatus = z.infer<typeof ManifestStatusSchema>;
@@ -59,11 +57,43 @@ export const ProcessingStageSchema = z.enum([
 ]);
 export type ProcessingStage = z.infer<typeof ProcessingStageSchema>;
 
-export const UsageSchema = z.object({
+const LegacyUsageSchema = z.object({
   anthropic_input_tokens: z.number().int().nonnegative(),
   anthropic_output_tokens: z.number().int().nonnegative(),
   openai_embedding_tokens: z.number().int().nonnegative(),
 });
+
+const OpenAISummarizationUsageSchema = z.object({
+  provider: z.literal("openai"),
+  model: z.string().min(1),
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  reasoning_tokens: z.number().int().nonnegative(),
+  cached_input_tokens: z.number().int().nonnegative(),
+  cache_write_tokens: z.number().int().nonnegative(),
+});
+
+const AnthropicSummarizationUsageSchema = z.object({
+  provider: z.literal("anthropic"),
+  model: z.string().min(1),
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  cache_creation_input_tokens: z.number().int().nonnegative(),
+  cache_read_input_tokens: z.number().int().nonnegative(),
+});
+
+export const SummarizationUsageSchema = z.discriminatedUnion("provider", [
+  OpenAISummarizationUsageSchema,
+  AnthropicSummarizationUsageSchema,
+]);
+export type SummarizationUsage = z.infer<typeof SummarizationUsageSchema>;
+
+const UsageV2Schema = z.object({
+  summarization: SummarizationUsageSchema,
+  openai_embedding_tokens: z.number().int().nonnegative(),
+});
+
+export const UsageSchema = z.union([LegacyUsageSchema, UsageV2Schema]);
 export type Usage = z.infer<typeof UsageSchema>;
 
 export const ManifestErrorSchema = z.object({

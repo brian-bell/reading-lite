@@ -1,8 +1,14 @@
 import {
-  EmitReadingToolInputSchema,
-  type EmitReadingToolInput,
-} from "../../schemas/manifest";
+  ReadingSummarySchema,
+  type ReadingSummary,
+} from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import type { SummarizeReadingInput } from "../summarizer/types";
+
+export type {
+  SimilarContext,
+  SummarizeReadingInput,
+} from "../summarizer/types";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -37,22 +43,8 @@ export interface AnthropicDeps {
   retry?: RetryDeps;
 }
 
-export interface SimilarContext {
-  id: string;
-  url: string;
-  title?: string;
-  tldr?: string;
-}
-
-export interface SummarizeReadingInput {
-  url: string;
-  extractedText: string;
-  title?: string;
-  similarReadings: SimilarContext[];
-}
-
 export interface SummarizeReadingResult {
-  reading: EmitReadingToolInput;
+  reading: ReadingSummary;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -198,7 +190,7 @@ export function parseEmitReadingResult(
     );
   }
 
-  const parsed = EmitReadingToolInputSchema.safeParse(toolUse.input);
+  const parsed = ReadingSummarySchema.safeParse(toolUse.input);
   if (!parsed.success) {
     throw new BadToolInputError(
       `tool_use input failed validation: ${parsed.error.message}`,

@@ -30,7 +30,7 @@ function article(name: string, url: string): MarkdownArticle {
 const reading = {
   tldr: "Tldr.",
   tags: ["t"],
-  keywords: ["k"],
+  keywords: ["keyword one", "keyword two", "keyword three"],
   people: [],
   orgs: [],
   novelty_verdict: "novel" as const,
@@ -256,7 +256,7 @@ describe("runFreshMarkdownBatch — idempotency", () => {
       title: "Owner",
       tldr: "x",
       tags: [],
-      keywords: [],
+      keywords: ["failed ingest", "markdown batch", "retry state"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",

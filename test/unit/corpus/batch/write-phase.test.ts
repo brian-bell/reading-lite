@@ -113,7 +113,7 @@ describe("writeResults — success path", () => {
     expect(m.updated_at).toBe(NOW);
     // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).
     expect(m.usage?.openai_embedding_tokens).toBe(58);
-    expect(m.usage?.anthropic_input_tokens).toBe(1000);
+    expect(m.usage).toMatchObject({ anthropic_input_tokens: 1000 });
   });
 
   it("writes the by-url and by-id pointers on success", async () => {

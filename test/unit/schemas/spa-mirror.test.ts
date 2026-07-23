@@ -23,6 +23,7 @@ import type {
   Manifest as SpaManifest,
   ListReading as SpaListReading,
   ListReadingsResponse as SpaListReadingsResponse,
+  Usage as SpaUsage,
 } from "../../../web/src/types";
 
 describe("SPA type mirror — Manifest", () => {
@@ -67,7 +68,57 @@ describe("SPA type mirror — Manifest", () => {
     };
     expect(() => ManifestSchema.parse(m)).not.toThrow();
   });
+
+  it("SPA usage accepts legacy and both V2 provider shapes", () => {
+    const usages: SpaUsage[] = [
+      {
+        anthropic_input_tokens: 10,
+        anthropic_output_tokens: 5,
+        openai_embedding_tokens: 3,
+      },
+      {
+        summarization: {
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          input_tokens: 10,
+          output_tokens: 5,
+          reasoning_tokens: 2,
+          cached_input_tokens: 1,
+          cache_write_tokens: 0,
+        },
+        openai_embedding_tokens: 3,
+      },
+      {
+        summarization: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 2,
+          cache_read_input_tokens: 1,
+        },
+        openai_embedding_tokens: 3,
+      },
+    ];
+
+    for (const usage of usages) {
+      expect(() => ManifestSchema.parse({ ...mWithUsageBase, usage })).not.toThrow();
+    }
+  });
 });
+
+const mWithUsageBase: SpaManifest = {
+  id: "rd_USAGE",
+  url: "https://example.com/usage",
+  url_hash: "a".repeat(64),
+  status: "ready",
+  content_type: "text/html",
+  content_status: "captured",
+  content_bytes: 1,
+  content_sha256: "0".repeat(64),
+  created_at: "2026-04-26T20:00:00.000Z",
+  updated_at: "2026-04-26T20:00:00.000Z",
+};
 
 describe("SPA type mirror — ListReadingsResponse", () => {
   it("an instance shaped per SpaListReadingsResponse parses through the response schema", () => {

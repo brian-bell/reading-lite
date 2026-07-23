@@ -27,7 +27,7 @@ const validToolInput = {
   title: "Sample title",
   tldr: "Short tldr.",
   tags: ["t1"],
-  keywords: ["k1"],
+  keywords: ["keyword one", "keyword two", "keyword three"],
   people: [],
   orgs: [],
   novelty_verdict: "novel" as const,

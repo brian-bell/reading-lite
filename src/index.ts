@@ -21,6 +21,9 @@ export interface Env {
   FETCH_TIMEOUT_MS: string;
   FETCH_MAX_BYTES: string;
   ANTHROPIC_MODEL: string;
+  SUMMARIZER_PROVIDER?: string;
+  OPENAI_SUMMARIZATION_MODEL?: string;
+  OPENAI_SUMMARIZATION_REASONING_EFFORT?: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;
   RETRY_MAX_DELAY_MS?: string;
