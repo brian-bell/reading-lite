@@ -161,11 +161,26 @@ export async function runBatchPipeline(
 
   let activationSkipped: WriteReportRow[] = [];
   if (deps.activateExtracted) {
+    // Extracted-only preflight: an oversized run must fail here, before
+    // resolveSimilar spends embedding quota and before any eager by-url claim.
     if (provider === "anthropic") {
       assertExtractedBatchPayloadWithinLimit(
         extracted,
         deps.model,
         deps.maxBatchBytes,
+      );
+    } else {
+      prepareOpenAIBatchPayload(
+        extracted.map((target) => ({
+          extracted: target,
+          similar: [],
+          queryEmbedTokens: 0,
+        })),
+        deps.model,
+        reasoningEffort,
+        deps.maxBatchBytes === undefined
+          ? undefined
+          : { maxBytes: deps.maxBatchBytes },
       );
     }
   }

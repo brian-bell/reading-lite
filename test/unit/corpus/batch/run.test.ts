@@ -1398,6 +1398,22 @@ describe("runBatch — eager recover claim", () => {
     expect(h.store.has(byUrlKey)).toBe(false);
     expect(h.batch.create).not.toHaveBeenCalled();
   });
+
+  it("rejects an oversized OpenAI payload before embedding or any by-url claim", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    installCompletedOpenAIBatch(h);
+    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
+
+    await expect(runBatch([row("rd_a")], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(/re-run with --limit/);
+
+    // The extracted-only preflight must fire before similarity resolution spends
+    // embedding quota, and before any eager by-url claim or remote object.
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
+    expect(h.store.has(byUrlKey)).toBe(false);
+    expect(h.deps.openaiBatch!.upload).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch!.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("runBatch — recover resume", () => {
