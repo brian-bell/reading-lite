@@ -8,6 +8,7 @@ import {
   BadToolInputError,
   EMIT_READING_TOOL_NAME,
 } from "../../../src/modules/anthropic";
+import { READING_SUMMARY_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
 
 function ok(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -259,6 +260,31 @@ describe("buildSummarizeRequestBody", () => {
     await summarizeReading(input, { fetch: fetchFn, apiKey: "sk", model: "claude-opus-4-8" });
     const sent = fetchFn.mock.calls[0]![1]!.body as string;
     expect(JSON.stringify(buildSummarizeRequestBody(input, "claude-opus-4-8"))).toBe(sent);
+  });
+
+  it("advertises a tool schema exactly as strict as the parser's contract", () => {
+    const body = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-opus-4-8",
+    ) as Record<string, any>;
+    // The parser validates with the strict ReadingSummarySchema; the advertised
+    // JSON schema must carry the same constraints (additionalProperties, bounds)
+    // so a tool call that is valid per the tool contract can never fail parsing.
+    // Descriptions are the only allowed addition.
+    const stripDescriptions = (node: unknown): unknown => {
+      if (Array.isArray(node)) return node.map(stripDescriptions);
+      if (node && typeof node === "object") {
+        return Object.fromEntries(
+          Object.entries(node)
+            .filter(([key]) => key !== "description")
+            .map(([key, value]) => [key, stripDescriptions(value)]),
+        );
+      }
+      return node;
+    };
+    expect(stripDescriptions(body.tools[0].input_schema)).toEqual(
+      READING_SUMMARY_JSON_SCHEMA,
+    );
   });
 
   it("keeps the cacheable prefix (tools + system) stable", () => {

@@ -33,16 +33,20 @@ Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "
     {
       "description": "Emit the structured reading record. Call exactly once.",
       "input_schema": {
+        "additionalProperties": false,
         "properties": {
           "connections": {
             "items": {
+              "additionalProperties": false,
               "properties": {
                 "id": {
                   "description": "Reading id from the prior library.",
+                  "minLength": 1,
                   "type": "string",
                 },
                 "reason": {
                   "description": "One-clause reason for the connection.",
+                  "minLength": 1,
                   "type": "string",
                 },
               },
@@ -57,8 +61,11 @@ Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "
           "keywords": {
             "description": "Specific noun phrases.",
             "items": {
+              "minLength": 1,
               "type": "string",
             },
+            "maxItems": 15,
+            "minItems": 3,
             "type": "array",
           },
           "novelty_verdict": {
@@ -72,33 +79,42 @@ Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "
           },
           "orgs": {
             "items": {
+              "minLength": 1,
               "type": "string",
             },
             "type": "array",
           },
           "people": {
             "items": {
+              "minLength": 1,
               "type": "string",
             },
             "type": "array",
           },
           "summary_markdown": {
             "description": "2-6 short paragraphs in markdown.",
+            "minLength": 1,
             "type": "string",
           },
           "tags": {
             "description": "Broad topical buckets.",
             "items": {
+              "minLength": 1,
               "type": "string",
             },
+            "maxItems": 6,
+            "minItems": 1,
             "type": "array",
           },
           "title": {
             "description": "Article title (5-120 chars).",
+            "maxLength": 120,
+            "minLength": 1,
             "type": "string",
           },
           "tldr": {
             "description": "1-3 sentence summary.",
+            "minLength": 1,
             "type": "string",
           },
         },
