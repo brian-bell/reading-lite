@@ -75,10 +75,10 @@ export function resolveBatchConfig(
     return v ?? "";
   };
 
-  const summarizerProvider = parseSummarizerProvider(
-    vars.SUMMARIZER_PROVIDER,
-  );
-  const effectiveProvider = flags.resumeProvider ?? summarizerProvider;
+  // A sidecar-pinned resume must stay independent of later env changes, so the
+  // current SUMMARIZER_PROVIDER is not even parsed when a resume pins its own.
+  const summarizerProvider =
+    flags.resumeProvider ?? parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   const accountId = need("CORPUS_R2_ACCOUNT_ID");
   const accessKeyId = need("CORPUS_R2_ACCESS_KEY");
   const secretAccessKey = need("CORPUS_R2_SECRET_KEY");
@@ -86,7 +86,7 @@ export function resolveBatchConfig(
     flags.bucket ?? vars.CORPUS_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
   const cfApiToken = need("CORPUS_CF_API_TOKEN");
   const anthropicApiKey = vars.ANTHROPIC_API_KEY ?? "";
-  if (effectiveProvider === "anthropic" && !anthropicApiKey) {
+  if (summarizerProvider === "anthropic" && !anthropicApiKey) {
     missing.push("ANTHROPIC_API_KEY");
   }
   const openaiApiKey = need("OPENAI_API_KEY");
@@ -110,7 +110,7 @@ export function resolveBatchConfig(
     openaiModel:
       vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL,
     openaiReasoningEffort:
-      effectiveProvider === "openai" && flags.resumeProvider === undefined
+      summarizerProvider === "openai" && flags.resumeProvider === undefined
         ? parseReasoningEffort(
             vars.OPENAI_SUMMARIZATION_REASONING_EFFORT,
           )

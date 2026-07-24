@@ -107,7 +107,7 @@ describe("resolveBatchConfig", () => {
         { vars: withoutAnthropic },
       ),
     ).toMatchObject({
-      summarizerProvider: "anthropic",
+      summarizerProvider: "openai",
       anthropicApiKey: "",
       openaiReasoningEffort: "low",
     });
@@ -151,6 +151,15 @@ describe("resolveBatchConfig", () => {
         },
       ),
     ).toThrow(/OPENAI_SUMMARIZATION_REASONING_EFFORT/);
+  });
+
+  it("does not parse the current provider when a resume pins its own", () => {
+    expect(
+      resolveBatchConfig(
+        { resumeProvider: "openai" },
+        { vars: { ...full, SUMMARIZER_PROVIDER: "anthorpic" } },
+      ).summarizerProvider,
+    ).toBe("openai");
   });
 
   it("does not validate the current effort when an OpenAI resume pins its own effort", () => {
