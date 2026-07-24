@@ -2,13 +2,16 @@ import {
   ManifestSchema,
   type Manifest,
   type ManifestError,
+  type SummarizationUsage,
 } from "../../../src/schemas/manifest";
+import type { ReadingSummary } from "../../../src/schemas/reading-summary";
 import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
+import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { BatchResult, EmbedResult } from "./clients";
-import type { Sidecar, SidecarTarget } from "./types";
+import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 
@@ -26,6 +29,20 @@ export interface WriteReportRow {
   reason?: string;
 }
 
+type NormalizedBatchResult =
+  | {
+      customId: string;
+      result: {
+        type: "succeeded";
+        reading: ReadingSummary;
+        usage: SummarizationUsage;
+      };
+    }
+  | {
+      customId: string;
+      result: { type: "failed"; code: string; message: string };
+    };
+
 // Apply batch results to the corpus, honoring the terminal-write contract:
 //   success -> ready manifest + by-url + by-id pointers + vector + index item
 //   failure -> failed (retryable) manifest (or roll forward to the preserved
@@ -39,7 +56,213 @@ export async function writeResults(
   results: BatchResult[],
   deps: WriteDeps,
 ): Promise<WriteReportRow[]> {
-  const byId = new Map(sidecar.targets.map((t) => [t.customId, t]));
+  const normalized: NormalizedBatchResult[] = results.map((res) => {
+    if (res.result.type !== "succeeded") {
+      const [code, message] = failureReason(res);
+      return { customId: res.custom_id, result: { type: "failed", code, message } };
+    }
+    try {
+      const parsed = parseEmitReadingResult(
+        res.result.message.content,
+        res.result.message.usage,
+      );
+      return {
+        customId: res.custom_id,
+        result: {
+          type: "succeeded",
+          reading: parsed.reading,
+          usage: {
+            provider: "anthropic",
+            model: sidecar.model,
+            input_tokens: parsed.usage.input_tokens ?? 0,
+            output_tokens: parsed.usage.output_tokens ?? 0,
+            cache_creation_input_tokens:
+              parsed.usage.cache_creation_input_tokens ?? 0,
+            cache_read_input_tokens:
+              parsed.usage.cache_read_input_tokens ?? 0,
+          },
+        },
+      };
+    } catch (error) {
+      return {
+        customId: res.custom_id,
+        result: {
+          type: "failed",
+          code: "BadToolInputError",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  });
+  return writeNormalizedResults(sidecar.targets, normalized, deps);
+}
+
+export async function writeOpenAIResults(
+  sidecar: OpenAISubmittedSidecar,
+  files:
+    | string
+    | {
+        outputJsonl?: string;
+        errorJsonl?: string;
+        batchStatus: string;
+      },
+  deps: WriteDeps,
+): Promise<WriteReportRow[]> {
+  const input =
+    typeof files === "string"
+      ? { outputJsonl: files, batchStatus: sidecar.processingStatus }
+      : files;
+  const byCustomId = new Map<string, NormalizedBatchResult>();
+
+  for (const line of `${input.outputJsonl ?? ""}\n${input.errorJsonl ?? ""}`.split(
+    "\n",
+  )) {
+    if (!line.trim()) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    const row = value as {
+      custom_id?: unknown;
+      response?: { status_code?: unknown; body?: unknown } | null;
+      error?: unknown;
+    };
+    if (typeof row.custom_id !== "string") continue;
+    let outcome: NormalizedBatchResult;
+    if (
+      row.response &&
+      typeof row.response.status_code === "number" &&
+      row.response.status_code >= 200 &&
+      row.response.status_code < 300
+    ) {
+      try {
+        const parsed = parseSummarizeResponse(row.response.body);
+        outcome = {
+          customId: row.custom_id,
+          result: {
+            type: "succeeded",
+            reading: parsed.reading,
+            usage: {
+              provider: "openai",
+              model: sidecar.model,
+              input_tokens: parsed.usage.input_tokens,
+              output_tokens: parsed.usage.output_tokens,
+              reasoning_tokens: parsed.usage.reasoning_tokens,
+              cached_input_tokens: parsed.usage.cached_input_tokens,
+              cache_write_tokens: parsed.usage.cache_write_tokens,
+            },
+          },
+        };
+      } catch (error) {
+        outcome = {
+          customId: row.custom_id,
+          result: {
+            type: "failed",
+            code: openAIParseErrorCode(error),
+            message: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+    } else {
+      outcome = {
+        customId: row.custom_id,
+        result: {
+          type: "failed",
+          code:
+            row.error !== null && row.error !== undefined
+              ? "OpenAIBatchRequestError"
+              : typeof row.response?.status_code === "number"
+                ? "OpenAIBatchRequestError"
+                : "OpenAIBatchResultMalformed",
+          message:
+            row.error === null || row.error === undefined
+              ? malformedOpenAIBatchLineMessage(row.response)
+              : batchErrorMessage(row.error),
+        },
+      };
+    }
+    mergeOpenAIOutcome(byCustomId, outcome);
+  }
+
+  for (const target of sidecar.targets) {
+    if (byCustomId.has(target.customId)) continue;
+    byCustomId.set(target.customId, {
+      customId: target.customId,
+      result:
+        input.batchStatus === "completed"
+          ? {
+              type: "failed",
+              code: "OpenAIBatchResultMissing",
+              message:
+                "OpenAI batch completed without a result for this reading",
+            }
+          : {
+              type: "failed",
+              code: `OpenAIBatch${capitalize(input.batchStatus)}`,
+              message: `OpenAI batch ended with status ${input.batchStatus} before returning a result for this reading`,
+            },
+    });
+  }
+  return writeNormalizedResults(
+    sidecar.targets,
+    [...byCustomId.values()],
+    deps,
+  );
+}
+
+function mergeOpenAIOutcome(
+  outcomes: Map<string, NormalizedBatchResult>,
+  candidate: NormalizedBatchResult,
+): void {
+  const existing = outcomes.get(candidate.customId);
+  if (!existing || openAIOutcomeRank(candidate) > openAIOutcomeRank(existing)) {
+    outcomes.set(candidate.customId, candidate);
+  }
+}
+
+function openAIOutcomeRank(outcome: NormalizedBatchResult): number {
+  if (outcome.result.type === "succeeded") return 3;
+  return outcome.result.code === "OpenAIBatchRequestError" ? 2 : 1;
+}
+
+function openAIParseErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    switch (error.name) {
+      case "OpenAIRefusalError":
+      case "OpenAIIncompleteResponseError":
+      case "OpenAIOutputError":
+      case "OpenAIResponseError":
+        return error.name;
+    }
+  }
+  return "OpenAIBatchStructuredOutputError";
+}
+
+function malformedOpenAIBatchLineMessage(
+  response: { status_code?: unknown; body?: unknown } | null | undefined,
+): string {
+  if (typeof response?.status_code === "number") {
+    const bodyMessage = batchErrorMessage(response.body);
+    return `OpenAI batch request returned HTTP ${response.status_code}: ${bodyMessage}`;
+  }
+  return "OpenAI batch result line had neither a valid response nor an error";
+}
+
+function capitalize(value: string): string {
+  return value.length === 0
+    ? "Unknown"
+    : `${value[0]!.toUpperCase()}${value.slice(1)}`;
+}
+
+async function writeNormalizedResults(
+  targets: SidecarTarget[],
+  results: NormalizedBatchResult[],
+  deps: WriteDeps,
+): Promise<WriteReportRow[]> {
+  const byId = new Map(targets.map((t) => [t.customId, t]));
   const report: WriteReportRow[] = [];
   const touchedItems: ListIndexItem[] = [];
 
@@ -48,30 +271,40 @@ export async function writeResults(
   const successes: Array<{ target: SidecarTarget; manifest: Manifest }> = [];
   const failures: Array<{ target: SidecarTarget; error: ManifestError }> = [];
 
-  const resolvedSuccess: Array<{ target: SidecarTarget; reading: ReturnType<typeof parseEmitReadingResult> }> = [];
+  const resolvedSuccess: Array<{
+    target: SidecarTarget;
+    reading: ReadingSummary;
+    usage: SummarizationUsage;
+  }> = [];
   for (const res of results) {
-    const target = byId.get(res.custom_id);
+    const target = byId.get(res.customId);
     if (!target) {
-      report.push({ id: res.custom_id, status: "skipped", reason: "no sidecar target for custom_id" });
+      report.push({ id: res.customId, status: "skipped", reason: "no sidecar target for custom_id" });
       continue;
     }
     if (res.result.type === "succeeded") {
-      try {
-        const reading = parseEmitReadingResult(res.result.message.content, res.result.message.usage);
-        resolvedSuccess.push({ target, reading });
-      } catch (e) {
-        failures.push({ target, error: errorBlock("BadToolInputError", e instanceof Error ? e.message : String(e), deps.now()) });
-      }
+      resolvedSuccess.push({
+        target,
+        reading: res.result.reading,
+        usage: res.result.usage,
+      });
     } else {
-      failures.push({ target, error: errorBlock(...failureReason(res), deps.now()) });
+      failures.push({
+        target,
+        error: errorBlock(
+          res.result.code,
+          res.result.message,
+          deps.now(),
+        ),
+      });
     }
   }
 
   // Any sidecar target with no corresponding result (truncated/partial results
   // download, a dropped JSONL line) must not vanish — mark it retryable failed so
   // the strand stays visible and re-submittable.
-  const seen = new Set(results.map((r) => r.custom_id));
-  for (const target of sidecar.targets) {
+  const seen = new Set(results.map((r) => r.customId));
+  for (const target of targets) {
     if (!seen.has(target.customId)) {
       failures.push({
         target,
@@ -81,16 +314,22 @@ export async function writeResults(
   }
 
   // Embed TL;DRs for the persistent vectors (one coalesced call).
-  const tldrs = resolvedSuccess.map((s) => s.reading.reading.tldr);
+  const tldrs = resolvedSuccess.map((s) => s.reading.tldr);
   const { embeddings, tokensByInput: tldrTokens } =
     tldrs.length > 0 ? await deps.embedMany(tldrs) : { embeddings: [], tokensByInput: [] };
   const vectors = [];
   for (let i = 0; i < resolvedSuccess.length; i++) {
-    const { target, reading } = resolvedSuccess[i]!;
+    const { target, reading, usage } = resolvedSuccess[i]!;
     const embedding = embeddings[i]!;
     // Mirror process-reading.ts: openai_embedding_tokens = query + tldr embed.
     const embeddingTokens = target.queryEmbedTokens + (tldrTokens[i] ?? 0);
-    const manifest = buildReadyManifest(target, reading.reading, reading.usage, embeddingTokens, deps.now());
+    const manifest = buildReadyManifest(
+      target,
+      reading,
+      usage,
+      embeddingTokens,
+      deps.now(),
+    );
     successes.push({ target, manifest });
     vectors.push({
       id: target.id,
@@ -145,8 +384,8 @@ export async function writeResults(
 
 function buildReadyManifest(
   target: SidecarTarget,
-  reading: ReturnType<typeof parseEmitReadingResult>["reading"],
-  usage: ReturnType<typeof parseEmitReadingResult>["usage"],
+  reading: ReadingSummary,
+  usage: SummarizationUsage,
   embeddingTokens: number,
   now: string,
 ): Manifest {
@@ -174,8 +413,7 @@ function buildReadyManifest(
     created_at: target.createdAt,
     updated_at: now,
     usage: {
-      anthropic_input_tokens: usage.input_tokens ?? 0,
-      anthropic_output_tokens: usage.output_tokens ?? 0,
+      summarization: usage,
       // Query (similar-phase) + tldr (here) embedding tokens, attributed
       // per-reading from the coalesced OpenAI calls. Mirrors process-reading.ts.
       openai_embedding_tokens: embeddingTokens,

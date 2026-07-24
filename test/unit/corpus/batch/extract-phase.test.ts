@@ -110,6 +110,31 @@ describe("extractTargets", () => {
     expect(extract).not.toHaveBeenCalled();
   });
 
+  it("does not reuse markdown from a batch activation that belongs to another reading", async () => {
+    const loadExtracted = vi.fn(async () => "# Wrong activation\n\nbody");
+    const extract = vi.fn(async () => freshContent);
+    const foreignPending = target({
+      status: "pending",
+      content_status: "captured",
+      active_attempt: {
+        id: "batch_rd_other",
+        trigger: "reprocess",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-01-02T00:00:00.000Z",
+      },
+    });
+
+    const { extracted } = await extractTargets([foreignPending], {
+      loadExtracted,
+      extract,
+    });
+
+    expect(loadExtracted).not.toHaveBeenCalled();
+    expect(extract).toHaveBeenCalledWith("https://example.com/a");
+    expect(extracted[0]!.fresh).toBe(freshContent);
+  });
+
   it("does not reuse extracted.md for a non-batch (realtime) pending — re-fetches", async () => {
     const loadExtracted = vi.fn(async () => "# Saved\n\nbody");
     const extract = vi.fn(async () => freshContent);

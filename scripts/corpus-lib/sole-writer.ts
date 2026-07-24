@@ -1,10 +1,9 @@
 // Issue #68: the offline batch tools still require an operational sole-writer
-// window. Fresh ingest now eagerly claims activated by-url slots, but
-// corpus-recover parity is still a separate slice; a live realtime writer can
-// still race incomplete recover-batch ownership states. This guard makes the
-// pause/drain discipline enforceable instead of tribal knowledge
-// — a real (--execute) batch submit is refused unless the operator explicitly
-// asserts sole-writer status with --sole-writer.
+// window. Both paths eagerly claim activated by-url slots, but those claims are
+// defense-in-depth rather than permission to overlap the realtime writer. This
+// guard makes the pause/drain discipline enforceable instead of tribal
+// knowledge — a real (--execute) batch submit is refused unless the operator
+// explicitly asserts sole-writer status with --sole-writer.
 export interface SoleWriterVerdict {
   proceed: boolean;
   // Text to print to stderr: the refusal when blocked, the loud banner when
@@ -27,9 +26,9 @@ export function soleWriterGuard(opts: {
       proceed: false,
       message:
         `REFUSED: ${opts.tool} --execute requires --sole-writer.\n` +
-        `  Offline batch ownership is not fully race-proof across all paths yet,\n` +
-        `  so a live realtime writer can still duplicate compute/emails or thrash\n` +
-        `  pointers during incomplete recover-batch slices.\n` +
+        `  Eager by-url claims are defense-in-depth, not permission to overlap\n` +
+        `  the realtime writer; concurrent writes can still duplicate compute or\n` +
+        `  make terminal ownership harder to reason about.\n` +
         `  Pause/drain the realtime writer, then re-run with --sole-writer to confirm\n` +
         `  this script is the only writer.`,
     };
@@ -39,9 +38,8 @@ export function soleWriterGuard(opts: {
     message:
       `${RULE}\n` +
       `  SOLE-WRITER MODE: ${opts.tool}\n` +
-      `  You asserted the realtime writer is paused/drained. Offline batch ownership\n` +
-      `  still has incomplete recover-batch parity, so a concurrent live\n` +
-      `  writer could duplicate compute + emails or thrash pointers.\n` +
+      `  You asserted the realtime writer is paused/drained. Eager by-url claims\n` +
+      `  are defense-in-depth; this run still excludes concurrent live writers.\n` +
       `${RULE}`,
   };
 }

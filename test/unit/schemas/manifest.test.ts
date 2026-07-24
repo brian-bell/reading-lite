@@ -6,6 +6,7 @@ import {
   ProcessingAttemptSchema,
   type Manifest,
 } from "../../../src/schemas/manifest";
+import { READING_SUMMARY_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
 
 const baseReady: Manifest = {
   id: "rd_01ABCXYZ",
@@ -40,6 +41,39 @@ const baseReady: Manifest = {
 describe("ManifestSchema", () => {
   it("accepts a fully populated ready manifest", () => {
     expect(ManifestSchema.parse(baseReady)).toEqual(baseReady);
+  });
+
+  it("accepts OpenAI V2 usage on a ready manifest", () => {
+    const usage = {
+      summarization: {
+        provider: "openai" as const,
+        model: "gpt-5.6-terra",
+        input_tokens: 1_000,
+        output_tokens: 200,
+        reasoning_tokens: 75,
+        cached_input_tokens: 50,
+        cache_write_tokens: 25,
+      },
+      openai_embedding_tokens: 50,
+    };
+
+    expect(ManifestSchema.parse({ ...baseReady, usage }).usage).toEqual(usage);
+  });
+
+  it("accepts Anthropic V2 usage on a ready manifest", () => {
+    const usage = {
+      summarization: {
+        provider: "anthropic" as const,
+        model: "claude-sonnet-4-6",
+        input_tokens: 1_000,
+        output_tokens: 200,
+        cache_creation_input_tokens: 80,
+        cache_read_input_tokens: 640,
+      },
+      openai_embedding_tokens: 50,
+    };
+
+    expect(ManifestSchema.parse({ ...baseReady, usage }).usage).toEqual(usage);
   });
 
   it("accepts a pending manifest with no enriched fields", () => {
@@ -196,7 +230,7 @@ describe("EmitReadingToolInputSchema", () => {
     title: "T",
     tldr: "summary",
     tags: ["a"],
-    keywords: ["b"],
+    keywords: ["one", "two", "three"],
     people: [],
     orgs: [],
     novelty_verdict: "familiar" as const,
@@ -216,6 +250,12 @@ describe("EmitReadingToolInputSchema", () => {
     expect(() => EmitReadingToolInputSchema.parse({ ...valid, title: "" })).toThrow();
   });
 
+  it("rejects titles longer than 120 characters", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, title: "x".repeat(121) }),
+    ).toThrow();
+  });
+
   it("rejects empty tldr", () => {
     expect(() => EmitReadingToolInputSchema.parse({ ...valid, tldr: "" })).toThrow();
   });
@@ -229,10 +269,85 @@ describe("EmitReadingToolInputSchema", () => {
     ).toThrow();
   });
 
+  it("requires at least one tag", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, tags: [] }),
+    ).toThrow();
+  });
+
+  it("accepts no more than six tags", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({
+        ...valid,
+        tags: ["one", "two", "three", "four", "five", "six", "seven"],
+      }),
+    ).toThrow();
+  });
+
+  it("requires at least three keywords", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, keywords: ["one", "two"] }),
+    ).toThrow();
+  });
+
+  it("accepts no more than fifteen keywords", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({
+        ...valid,
+        keywords: Array.from({ length: 16 }, (_, index) => `keyword-${index}`),
+      }),
+    ).toThrow();
+  });
+
   it("requires all enrichment arrays even if empty", () => {
     const { tags: _tags, ...without } = valid;
     void _tags;
     expect(() => EmitReadingToolInputSchema.parse(without)).toThrow();
+  });
+
+  it("rejects unknown summary and connection fields", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, unexpected: true }),
+    ).toThrow();
+    expect(() =>
+      EmitReadingToolInputSchema.parse({
+        ...valid,
+        connections: [{ id: "rd_01XYZ", reason: "same topic", unexpected: true }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("READING_SUMMARY_JSON_SCHEMA", () => {
+  it("requires the strict nine-field reading contract", () => {
+    expect(READING_SUMMARY_JSON_SCHEMA).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "title",
+        "tldr",
+        "tags",
+        "keywords",
+        "people",
+        "orgs",
+        "novelty_verdict",
+        "connections",
+        "summary_markdown",
+      ],
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 120 },
+        tags: { type: "array", minItems: 1, maxItems: 6 },
+        keywords: { type: "array", minItems: 3, maxItems: 15 },
+        connections: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "reason"],
+          },
+        },
+      },
+    });
   });
 });
 

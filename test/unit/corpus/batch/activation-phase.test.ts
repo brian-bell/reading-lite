@@ -111,6 +111,9 @@ describe("activateFreshTargets", () => {
     ]);
 
     expect(sidecars[0]).toMatchObject({
+      version: 2,
+      provider: "anthropic",
+      phase: "activating",
       batchId: "",
       processingStatus: "activating",
       targets: [{ id: "rd_a", customId: "rd_a", keyPrefix: KEY_PREFIX }],
@@ -136,6 +139,35 @@ describe("activateFreshTargets", () => {
       status: "pending",
       active_attempt: pending.active_attempt,
     });
+  });
+
+  it("pins the OpenAI run identity before the first eager ownership write", async () => {
+    const fakeR2 = r2();
+    const sidecars: any[] = [];
+
+    await activateFreshTargets([target()], {
+      r2: fakeR2 as any,
+      identity: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        runId: "run_stable",
+      },
+      now: () => NOW,
+      saveSidecar: vi.fn(async (sidecar) => {
+        sidecars.push(sidecar);
+      }),
+    });
+
+    expect(sidecars[0]).toMatchObject({
+      provider: "openai",
+      phase: "activating",
+      runId: "run_stable",
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      inputFileId: null,
+    });
+    expect(fakeR2.calls[0]).toBe(`putIfAbsent:index/by-url/${URL_HASH}`);
   });
 
   it("skips a new target if the by-url conditional claim loses", async () => {

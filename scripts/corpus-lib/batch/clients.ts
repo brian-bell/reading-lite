@@ -8,6 +8,8 @@ import { EMBEDDING_DIM } from "../../../src/schemas/api";
 
 const ANTHROPIC_BATCHES_URL = "https://api.anthropic.com/v1/messages/batches";
 const ANTHROPIC_VERSION = "2023-06-01";
+const OPENAI_FILES_URL = "https://api.openai.com/v1/files";
+const OPENAI_BATCHES_URL = "https://api.openai.com/v1/batches";
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
 const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 
@@ -105,6 +107,172 @@ export function makeAnthropicBatchClient(deps: AnthropicBatchDeps): AnthropicBat
         }
       }
       return out;
+    },
+  };
+}
+
+export interface OpenAIBatchDeps {
+  fetch: typeof fetch;
+  apiKey: string;
+}
+
+export interface OpenAIFile {
+  id: string;
+  filename: string;
+  purpose: string;
+  bytes: number;
+}
+
+export interface OpenAIBatchClient {
+  upload(jsonl: string, runId: string): Promise<OpenAIFile>;
+  create(inputFileId: string, runId: string): Promise<OpenAIBatchInfo>;
+  get(batchId: string): Promise<OpenAIBatchInfo>;
+  content(fileId: string): Promise<string>;
+}
+
+export class OpenAIBatchError extends Error {
+  constructor(
+    public readonly operation: string,
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OpenAIBatchError";
+  }
+}
+
+const OpenAIFileSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("file"),
+    bytes: z.number().int().nonnegative(),
+    filename: z.string().min(1),
+    purpose: z.string().min(1),
+  })
+  .passthrough();
+
+export interface OpenAIBatchInfo {
+  id: string;
+  input_file_id: string;
+  status: string;
+  output_file_id: string | null;
+  error_file_id: string | null;
+  request_counts: {
+    total: number;
+    completed: number;
+    failed: number;
+  };
+}
+
+const OpenAIBatchInfoSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("batch"),
+    endpoint: z.literal("/v1/responses"),
+    input_file_id: z.string().min(1),
+    completion_window: z.literal("24h"),
+    status: z.string().min(1),
+    // The Batch object may omit these while validating/in progress; default
+    // them so a parse failure can't strand a batch that already exists remotely.
+    output_file_id: z.string().min(1).nullable().default(null),
+    error_file_id: z.string().min(1).nullable().default(null),
+    request_counts: z
+      .object({
+        total: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+      })
+      .default({ total: 0, completed: 0, failed: 0 }),
+  })
+  .passthrough();
+
+export function makeOpenAIBatchClient(
+  deps: OpenAIBatchDeps,
+): OpenAIBatchClient {
+  const authorization = `Bearer ${deps.apiKey}`;
+  return {
+    async upload(jsonl, runId) {
+      const form = new FormData();
+      form.set("purpose", "batch");
+      form.set(
+        "file",
+        new Blob([jsonl], { type: "application/jsonl" }),
+        `reading-lite-${runId}.jsonl`,
+      );
+      const response = await deps.fetch(OPENAI_FILES_URL, {
+        method: "POST",
+        headers: { authorization },
+        body: form,
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "file upload",
+          response.status,
+          text || `OpenAI file upload returned ${response.status}`,
+        );
+      }
+      return OpenAIFileSchema.parse(await response.json());
+    },
+    async create(inputFileId, runId) {
+      const response = await deps.fetch(OPENAI_BATCHES_URL, {
+        method: "POST",
+        headers: {
+          authorization,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          input_file_id: inputFileId,
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          metadata: { run_id: runId },
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "batch create",
+          response.status,
+          text || `OpenAI batch create returned ${response.status}`,
+        );
+      }
+      return OpenAIBatchInfoSchema.parse(await response.json());
+    },
+    async get(batchId) {
+      const response = await deps.fetch(
+        `${OPENAI_BATCHES_URL}/${encodeURIComponent(batchId)}`,
+        {
+          method: "GET",
+          headers: { authorization },
+        },
+      );
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "batch get",
+          response.status,
+          text || `OpenAI batch get returned ${response.status}`,
+        );
+      }
+      return OpenAIBatchInfoSchema.parse(await response.json());
+    },
+    async content(fileId) {
+      const response = await deps.fetch(
+        `${OPENAI_FILES_URL}/${encodeURIComponent(fileId)}/content`,
+        {
+          method: "GET",
+          headers: { authorization },
+        },
+      );
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "file content",
+          response.status,
+          text || `OpenAI file content returned ${response.status}`,
+        );
+      }
+      return response.text();
     },
   };
 }

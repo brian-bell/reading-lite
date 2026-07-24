@@ -61,11 +61,38 @@ export interface ProcessingAttempt extends ProcessingAttemptSummary {
   events: ProcessingAttemptEvent[];
 }
 
-export interface Usage {
+export interface LegacyUsage {
   anthropic_input_tokens: number;
   anthropic_output_tokens: number;
   openai_embedding_tokens: number;
 }
+
+export interface OpenAIUsage {
+  summarization: {
+    provider: "openai";
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    reasoning_tokens: number;
+    cached_input_tokens: number;
+    cache_write_tokens: number;
+  };
+  openai_embedding_tokens: number;
+}
+
+export interface AnthropicUsage {
+  summarization: {
+    provider: "anthropic";
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+  };
+  openai_embedding_tokens: number;
+}
+
+export type Usage = LegacyUsage | OpenAIUsage | AnthropicUsage;
 
 export interface Manifest {
   id: string;

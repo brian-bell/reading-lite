@@ -41,7 +41,7 @@ export async function extractTargets(
       const isOwnBatchActivationPending =
         m.status === "pending" &&
         m.content_status === "captured" &&
-        m.active_attempt?.id?.startsWith("batch_") === true;
+        m.active_attempt?.id === `batch_${target.readingId}`;
       const canReuse =
         (m.status === "ready" && m.content_status === "captured") || isOwnBatchActivationPending;
       const saved = canReuse ? await deps.loadExtracted(target.keyPrefix) : null;

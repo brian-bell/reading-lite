@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { submitBatch } from "../../../../scripts/corpus-lib/batch/submit-phase";
+import {
+  submitBatch,
+  submitOpenAIBatch,
+} from "../../../../scripts/corpus-lib/batch/submit-phase";
+import { prepareOpenAIBatchPayload } from "../../../../scripts/corpus-lib/batch/openai-payload";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
-import type { BatchActivationPolicy, SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
+import type {
+  BatchActivationPolicy,
+  PersistedSidecar,
+  SummarizeTarget,
+} from "../../../../scripts/corpus-lib/batch/types";
 import type { Manifest } from "../../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
 
@@ -115,7 +123,9 @@ describe("submitBatch", () => {
   it("persists a pending sidecar (no batchId) BEFORE create, then the real one after", async () => {
     const batch = fakeBatch();
     const order: string[] = [];
+    const saved: any[] = [];
     const saveSidecar = vi.fn(async (s: any) => {
+      saved.push(s);
       order.push(s.batchId === "" ? "pending" : `final:${s.batchId}`);
     });
     batch.create = vi.fn(async (_r: any[]) => {
@@ -124,6 +134,23 @@ describe("submitBatch", () => {
     });
     await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar });
     expect(order).toEqual(["pending", "create", "final:msgbatch_99"]);
+    expect(saved).toMatchObject([
+      {
+        version: 2,
+        provider: "anthropic",
+        phase: "creating",
+        batchId: "",
+        model: "m",
+      },
+      {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_99",
+        model: "m",
+      },
+    ]);
+    expect(saved[1].targets).toEqual(saved[0].targets);
   });
 
   it("builds a sidecar carrying content fields, extracted_bytes, and the ready snapshot", async () => {
@@ -225,5 +252,85 @@ describe("submitBatch", () => {
     });
     expect(ready.sidecar.targets[0]!.releaseByUrlOnFailure).toBeUndefined();
     expect(ready.sidecar.targets[0]!.preserveReadyManifest?.status).toBe("ready");
+  });
+});
+
+describe("submitOpenAIBatch", () => {
+  it("uploads the exact preflighted bytes and checkpoints each non-idempotent boundary", async () => {
+    const target = summarizeTarget();
+    const prepared = prepareOpenAIBatchPayload(
+      [target],
+      "gpt-5.6-terra",
+      "low",
+    );
+    const order: string[] = [];
+    const saved: PersistedSidecar[] = [];
+    const client = {
+      upload: vi.fn(async (jsonl: string, runId: string) => {
+        order.push(`upload:${runId}`);
+        expect(jsonl).toBe(prepared.jsonl);
+        return {
+          id: "file_input",
+          filename: `reading-lite-${runId}.jsonl`,
+          purpose: "batch",
+          bytes: prepared.byteCount,
+        };
+      }),
+      create: vi.fn(async (inputFileId: string, runId: string) => {
+        order.push(`create:${inputFileId}:${runId}`);
+        return {
+          id: "batch_1",
+          input_file_id: inputFileId,
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+        };
+      }),
+      get: vi.fn(),
+      content: vi.fn(),
+    };
+
+    const result = await submitOpenAIBatch([target], prepared, {
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      runId: "run_stable",
+      batch: client,
+      putObject: noopPut(),
+      saveSidecar: vi.fn(async (sidecar: PersistedSidecar) => {
+        saved.push(sidecar);
+        order.push(`save:${sidecar.phase}`);
+      }),
+    });
+
+    expect(order).toEqual([
+      "save:uploading",
+      "upload:run_stable",
+      "save:creating",
+      "create:file_input:run_stable",
+      "save:submitted",
+    ]);
+    expect(saved).toMatchObject([
+      {
+        provider: "openai",
+        phase: "uploading",
+        runId: "run_stable",
+        inputFileId: null,
+      },
+      {
+        provider: "openai",
+        phase: "creating",
+        runId: "run_stable",
+        inputFileId: "file_input",
+      },
+      {
+        provider: "openai",
+        phase: "submitted",
+        runId: "run_stable",
+        batchId: "batch_1",
+        inputFileId: "file_input",
+      },
+    ]);
+    expect(result.sidecar.targets).toEqual(saved[0]!.targets);
   });
 });

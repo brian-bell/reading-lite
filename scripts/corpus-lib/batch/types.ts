@@ -1,6 +1,9 @@
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
-import type { SimilarContext } from "../../../src/modules/anthropic";
+import type {
+  OpenAIReasoningEffort,
+  SimilarContext,
+} from "../../../src/modules/summarizer/types";
 
 // One reading the bulk path will summarize, resolved from an audit row + its
 // existing manifest (the source of created_at, url_hash, content fields, and the
@@ -88,17 +91,31 @@ export interface SidecarTarget {
   preserveReadyManifest?: Manifest;
 }
 
-export interface Sidecar {
-  batchId: string;
+interface AnthropicSidecarV2 {
+  version: 2;
+  provider: "anthropic";
   model: string;
+}
+
+export interface Sidecar extends AnthropicSidecarV2 {
+  phase: "submitted";
+  batchId: string;
   processingStatus: string;
   resultsUrl: string | null;
   targets: SidecarTarget[];
 }
 
-export interface ActivatingSidecar {
+export interface CreatingSidecar extends AnthropicSidecarV2 {
+  phase: "creating";
   batchId: "";
-  model: string;
+  processingStatus: "pending";
+  resultsUrl: null;
+  targets: SidecarTarget[];
+}
+
+export interface ActivatingSidecar extends AnthropicSidecarV2 {
+  phase: "activating";
+  batchId: "";
   processingStatus: "activating";
   resultsUrl: null;
   targets: Array<{
@@ -111,4 +128,59 @@ export interface ActivatingSidecar {
   }>;
 }
 
-export type PersistedSidecar = Sidecar | ActivatingSidecar;
+interface OpenAISidecarV2 {
+  version: 2;
+  provider: "openai";
+  runId: string;
+  model: string;
+  reasoningEffort: OpenAIReasoningEffort;
+}
+
+export interface OpenAIActivatingSidecar extends OpenAISidecarV2 {
+  phase: "activating";
+  batchId: "";
+  inputFileId: null;
+  outputFileId: null;
+  errorFileId: null;
+  processingStatus: "activating";
+  targets: ActivatingSidecar["targets"];
+}
+
+export interface OpenAIUploadingSidecar extends OpenAISidecarV2 {
+  phase: "uploading";
+  batchId: "";
+  inputFileId: null;
+  outputFileId: null;
+  errorFileId: null;
+  processingStatus: "uploading";
+  targets: SidecarTarget[];
+}
+
+export interface OpenAICreatingSidecar extends OpenAISidecarV2 {
+  phase: "creating";
+  batchId: "";
+  inputFileId: string;
+  outputFileId: null;
+  errorFileId: null;
+  processingStatus: "creating";
+  targets: SidecarTarget[];
+}
+
+export interface OpenAISubmittedSidecar extends OpenAISidecarV2 {
+  phase: "submitted";
+  batchId: string;
+  inputFileId: string;
+  outputFileId: string | null;
+  errorFileId: string | null;
+  processingStatus: string;
+  targets: SidecarTarget[];
+}
+
+export type PersistedSidecar =
+  | Sidecar
+  | CreatingSidecar
+  | ActivatingSidecar
+  | OpenAIActivatingSidecar
+  | OpenAIUploadingSidecar
+  | OpenAICreatingSidecar
+  | OpenAISubmittedSidecar;

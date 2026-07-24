@@ -1,10 +1,15 @@
 #!/usr/bin/env -S npx tsx
 import { parseArgs } from "node:util";
+import { randomUUID } from "node:crypto";
 import { resolveBatchConfig } from "./corpus-lib/config";
 import { MARKDOWN_IMPORT_MAX_BYTES, readMarkdownDir } from "./import-markdown-lib/parse";
 import { selectEligibleArticles } from "./corpus-lib/ingest-eligible";
 import { makeR2Client, makeVectorizeClient } from "./lib/cf-clients";
-import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/batch/clients";
+import {
+  makeAnthropicBatchClient,
+  makeOpenAIBatchClient,
+  makeOpenAIEmbedClient,
+} from "./corpus-lib/batch/clients";
 import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidecar";
 import { prepareFreshMarkdown, tallyDispositions } from "./corpus-lib/batch/prepare-fresh-markdown";
 import { r2ReadDeps } from "./corpus-lib/batch/r2-reads";
@@ -72,7 +77,8 @@ function printUsage(): void {
   console.log(`Usage: npm run corpus-ingest -- --dir <path> [options]
 
 Bulk-imports a directory of fresh markdown files into the corpus, summarizing via
-the Anthropic Message Batch API (~50% cheaper, async, no rate-limit retries)
+the configured provider's Batch API (OpenAI by default; Anthropic remains
+selectable, async, no realtime rate-limit retries)
 instead of the realtime /api/readings queue. Dry-run (plan only) by default.
 
 Each file needs a source URL on a "**Source:** <url>" line (the import-markdown-dir
@@ -85,8 +91,8 @@ deduped by source URL (largest wins) and any over ${Math.round(
   --execute        Actually submit + write (otherwise prints the plan).
   --sole-writer    Required with --execute: assert the realtime writer is
                    paused/drained. Fresh ingest eagerly claims activated by-url
-                   slots and releases its own failed eager claims, but recover
-                   parity is not done yet. Run refuses without it.
+                   slots and releases its own failed eager claims. Run refuses
+                   without the acknowledgment.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
@@ -97,12 +103,15 @@ Idempotency: by-url ownership is read client-side — ready owners are skipped,
 pending owners are skipped (a realtime submit may be in flight), failed owners
 re-ingest in place, and unclaimed URLs mint a new reading. Fresh ingest eagerly
 claims activated by-url slots before batch creation and releases its own failed
-eager claims; --sole-writer remains required because recover parity is still
-outstanding.
+eager claims; --sole-writer remains required because that claim is
+defense-in-depth, not a replacement for pausing/draining the realtime writer.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* + CORPUS_CF_API_TOKEN
-for R2/Vectorize, ANTHROPIC_API_KEY + OPENAI_API_KEY for summarize/embed. --execute
-needs all of them; dry-run uses them to resolve ownership but degrades to the local
+for R2/Vectorize and OPENAI_API_KEY for embeddings/default OpenAI batches.
+ANTHROPIC_API_KEY is required only when starting or resuming an Anthropic batch.
+An existing sidecar pins its provider/model/effort regardless of current
+SUMMARIZER_PROVIDER, and there is no automatic provider fallback.
+Dry-run uses credentials to resolve ownership but degrades to the local
 plan (no ready/pending skips shown) when they're absent.`);
 }
 
@@ -153,7 +162,12 @@ async function main(): Promise<void> {
   // previewable offline; execute requires them.
   let cfg;
   try {
-    cfg = resolveBatchConfig(args.bucket === undefined ? {} : { bucket: args.bucket });
+    cfg = resolveBatchConfig({
+      ...(args.bucket === undefined ? {} : { bucket: args.bucket }),
+      ...(existing === null
+        ? {}
+        : { resumeProvider: existing.provider }),
+    });
   } catch (e) {
     if (args.execute) {
       console.error(e instanceof Error ? e.message : String(e));
@@ -194,7 +208,7 @@ async function main(): Promise<void> {
         `    occupied repair (skip):  ${tally.skipOccupiedNeedsRepair}\n` +
         `    failed owner (reingest): ${tally.ingestFailed}\n` +
         `    new (mint id):           ${tally.ingestNew}\n` +
-        `  [dry-run] would submit ${wouldSubmit} reading(s) in one Message Batch\n`,
+        `  [dry-run] would submit ${wouldSubmit} reading(s) through one provider batch\n`,
     );
     printSummary({
       executed: false,
@@ -209,14 +223,31 @@ async function main(): Promise<void> {
     ...(Number.isFinite(args.limit) ? { limit: args.limit } : {}),
     r2,
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
-    batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
+    ...(cfg.anthropicApiKey
+      ? {
+          batch: makeAnthropicBatchClient({
+            fetch: fetchFn,
+            apiKey: cfg.anthropicApiKey,
+          }),
+        }
+      : {}),
+    openaiBatch: makeOpenAIBatchClient({
+      fetch: fetchFn,
+      apiKey: cfg.openaiApiKey,
+    }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
     // The fresh-markdown path never fetches a URL; this is only here to satisfy
     // the shared BatchRunDeps shape and must never be called.
     extract: () => {
       throw new Error("corpus-ingest must not fetch URLs — markdown is in hand");
     },
-    model: cfg.anthropicModel,
+    configuredProvider: cfg.summarizerProvider,
+    model:
+      cfg.summarizerProvider === "openai"
+        ? cfg.openaiModel
+        : cfg.anthropicModel,
+    reasoningEffort: cfg.openaiReasoningEffort,
+    newRunId: randomUUID,
     newId: mintReadingId,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),

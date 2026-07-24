@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Cloudflare Worker reading service: fetch URL, summarize via Claude, persist to R2 + Vectorize.",
+  "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist to R2 + Vectorize.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "tsx scripts/deploy.ts",
@@ -24,6 +24,7 @@
     "corpus-ingest": "tsx scripts/corpus-ingest.ts",
     "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
     "corpus-drop": "tsx scripts/corpus-drop.ts",
+    "summarizer-eval": "tsx scripts/summarizer-eval.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",
     "process-reading-list": "tsx scripts/process-reading-list.ts",
     "extract-agent": "tsx scripts/extract-agent.ts"

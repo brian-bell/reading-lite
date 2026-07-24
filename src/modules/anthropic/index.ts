@@ -1,8 +1,14 @@
 import {
-  EmitReadingToolInputSchema,
-  type EmitReadingToolInput,
-} from "../../schemas/manifest";
+  ReadingSummarySchema,
+  type ReadingSummary,
+} from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import type { SummarizeReadingInput } from "../summarizer/types";
+
+export type {
+  SimilarContext,
+  SummarizeReadingInput,
+} from "../summarizer/types";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -37,22 +43,8 @@ export interface AnthropicDeps {
   retry?: RetryDeps;
 }
 
-export interface SimilarContext {
-  id: string;
-  url: string;
-  title?: string;
-  tldr?: string;
-}
-
-export interface SummarizeReadingInput {
-  url: string;
-  extractedText: string;
-  title?: string;
-  similarReadings: SimilarContext[];
-}
-
 export interface SummarizeReadingResult {
-  reading: EmitReadingToolInput;
+  reading: ReadingSummary;
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -81,15 +73,37 @@ Required fields:
 
 Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "duplicate" only when the prior reading is essentially the same piece.`;
 
+// Must advertise exactly the constraints ReadingSummarySchema enforces at parse
+// time (strictness + bounds); a tool call valid per this contract must never
+// fail parseEmitReadingResult. Guarded by an alignment test against
+// READING_SUMMARY_JSON_SCHEMA — descriptions are the only allowed addition.
 const EMIT_READING_INPUT_SCHEMA = {
   type: "object",
+  additionalProperties: false,
   properties: {
-    title: { type: "string", description: "Article title (5-120 chars)." },
-    tldr: { type: "string", description: "1-3 sentence summary." },
-    tags: { type: "array", items: { type: "string" }, description: "Broad topical buckets." },
-    keywords: { type: "array", items: { type: "string" }, description: "Specific noun phrases." },
-    people: { type: "array", items: { type: "string" } },
-    orgs: { type: "array", items: { type: "string" } },
+    title: {
+      type: "string",
+      minLength: 1,
+      maxLength: 120,
+      description: "Article title (5-120 chars).",
+    },
+    tldr: { type: "string", minLength: 1, description: "1-3 sentence summary." },
+    tags: {
+      type: "array",
+      minItems: 1,
+      maxItems: 6,
+      items: { type: "string", minLength: 1 },
+      description: "Broad topical buckets.",
+    },
+    keywords: {
+      type: "array",
+      minItems: 3,
+      maxItems: 15,
+      items: { type: "string", minLength: 1 },
+      description: "Specific noun phrases.",
+    },
+    people: { type: "array", items: { type: "string", minLength: 1 } },
+    orgs: { type: "array", items: { type: "string", minLength: 1 } },
     novelty_verdict: {
       type: "string",
       enum: ["novel", "familiar", "duplicate"],
@@ -99,15 +113,25 @@ const EMIT_READING_INPUT_SCHEMA = {
       type: "array",
       items: {
         type: "object",
+        additionalProperties: false,
         properties: {
-          id: { type: "string", description: "Reading id from the prior library." },
-          reason: { type: "string", description: "One-clause reason for the connection." },
+          id: {
+            type: "string",
+            minLength: 1,
+            description: "Reading id from the prior library.",
+          },
+          reason: {
+            type: "string",
+            minLength: 1,
+            description: "One-clause reason for the connection.",
+          },
         },
         required: ["id", "reason"],
       },
     },
     summary_markdown: {
       type: "string",
+      minLength: 1,
       description: "2-6 short paragraphs in markdown.",
     },
   },
@@ -198,7 +222,7 @@ export function parseEmitReadingResult(
     );
   }
 
-  const parsed = EmitReadingToolInputSchema.safeParse(toolUse.input);
+  const parsed = ReadingSummarySchema.safeParse(toolUse.input);
   if (!parsed.success) {
     throw new BadToolInputError(
       `tool_use input failed validation: ${parsed.error.message}`,

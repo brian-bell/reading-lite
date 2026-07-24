@@ -7,15 +7,22 @@
 #
 # Secrets still need to be set in Cloudflare with:
 #   wrangler secret put READER_API_TOKEN --env staging
-#   wrangler secret put ANTHROPIC_API_KEY --env staging
 #   wrangler secret put OPENAI_API_KEY --env staging
+# When SUMMARIZER_PROVIDER=anthropic:
+#   wrangler secret put ANTHROPIC_API_KEY --env staging
 #
 # Keep this token different from production.
 
 READER_API_TOKEN=
-ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
+# Required only when SUMMARIZER_PROVIDER=anthropic.
+ANTHROPIC_API_KEY=
 RESEND_API_KEY=
+
+# Informational overrides; the deployed staging defaults live in wrangler.toml.
+SUMMARIZER_PROVIDER=openai
+OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra
+OPENAI_SUMMARIZATION_REASONING_EFFORT=low
 
 # Optional: used only for scripts/manual smoke and docs examples.
 READER_URL=https://reading-lite-staging.<workers-subdomain>.workers.dev/readings

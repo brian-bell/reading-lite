@@ -117,7 +117,7 @@ function makeStubFetch(opts: {
     title: "Test Article",
     tldr: "A short summary.",
     tags: ["test"],
-    keywords: ["test", "article"],
+    keywords: ["test", "article", "integration"],
     people: [],
     orgs: [],
     novelty_verdict: "novel",
@@ -131,6 +131,41 @@ function makeStubFetch(opts: {
         JSON.stringify({
           data: [{ embedding }],
           usage: { prompt_tokens: 10, total_tokens: 10 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.startsWith("https://api.openai.com/v1/responses")) {
+      return new Response(
+        JSON.stringify({
+          id: "resp_01",
+          object: "response",
+          status: "completed",
+          output: [
+            {
+              id: "msg_01",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: JSON.stringify(toolInput),
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            input_tokens_details: {
+              cached_tokens: 20,
+              cache_write_tokens: 10,
+            },
+            output_tokens_details: { reasoning_tokens: 30 },
+            total_tokens: 150,
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -227,6 +262,109 @@ beforeEach(() => {
 });
 afterEach(clearBucket);
 
+describe.each([
+  ["openai", "gpt-5.6-terra"],
+  ["anthropic", "claude-sonnet-4-6"],
+] as const)("realtime summarizer provider %s", (provider, model) => {
+  it("completes submit, markdown import, and reprocess through the selected provider", async () => {
+    const workerEnv = env as unknown as Env;
+    const previousProvider = workerEnv.SUMMARIZER_PROVIDER;
+    workerEnv.SUMMARIZER_PROVIDER = provider;
+    try {
+      const services = makeServices(makeStubFetch());
+      const app = createApp({ services });
+
+      const submitContext = createExecutionContext();
+      const submit = await app.fetch(
+        new Request("http://t/api/readings", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            url: `https://example.com/provider-${provider}`,
+          }),
+        }),
+        env,
+        submitContext,
+      );
+      expect(submit.status).toBe(202);
+      const submitted = (await submit.json()) as { id: string };
+      await drainQueue(services);
+      await waitOnExecutionContext(submitContext);
+
+      const importedContext = createExecutionContext();
+      const importedResponse = await app.fetch(
+        new Request("http://t/api/readings/import-markdown", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            source_url: `https://example.com/provider-${provider}-markdown`,
+            markdown: "# Provider import\n\nCaptured markdown content.",
+          }),
+        }),
+        env,
+        importedContext,
+      );
+      expect(importedResponse.status).toBe(202);
+      const imported = (await importedResponse.json()) as { id: string };
+      await drainQueue(services);
+      await waitOnExecutionContext(importedContext);
+
+      const reprocessContext = createExecutionContext();
+      const reprocess = await app.fetch(
+        new Request(
+          `http://t/api/readings/${submitted.id}/reprocess`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${TOKEN}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ force: true }),
+          },
+        ),
+        env,
+        reprocessContext,
+      );
+      expect(reprocess.status).toBe(202);
+      await drainQueue(services);
+      await waitOnExecutionContext(reprocessContext);
+
+      for (const [id, trigger] of [
+        [submitted.id, "reprocess"],
+        [imported.id, "import"],
+      ] as const) {
+        const response = await app.request(
+          `/api/readings/${id}`,
+          { headers: { authorization: `Bearer ${TOKEN}` } },
+          env,
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          status: "ready",
+          last_attempt: { trigger, status: "succeeded" },
+          usage: {
+            summarization: { provider, model },
+            openai_embedding_tokens: 20,
+          },
+        });
+      }
+    } finally {
+      if (previousProvider === undefined) {
+        delete (workerEnv as { SUMMARIZER_PROVIDER?: string })
+          .SUMMARIZER_PROVIDER;
+      } else {
+        workerEnv.SUMMARIZER_PROVIDER = previousProvider;
+      }
+    }
+  });
+});
+
 describe("GET /health", () => {
   it("returns 200 ok without auth", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
@@ -315,8 +453,15 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(manifest.title).toBe("Test Article");
     expect(manifest.tldr).toBe("A short summary.");
     expect(manifest.usage).toMatchObject({
-      anthropic_input_tokens: 100,
-      anthropic_output_tokens: 50,
+      summarization: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        input_tokens: 100,
+        output_tokens: 50,
+        reasoning_tokens: 30,
+        cached_input_tokens: 20,
+        cache_write_tokens: 10,
+      },
       openai_embedding_tokens: 20,
     });
 
@@ -744,6 +889,9 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       releaseByUrlOnFailure: true,
     };
     const sidecar: Sidecar = {
+      version: 2,
+      provider: "anthropic",
+      phase: "submitted",
       batchId: "msgbatch_failed_release",
       model: "claude-opus-4-8",
       processingStatus: "ended",
@@ -1605,7 +1753,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         title: "Stale Title",
         tldr: "A stale summary.",
         tags: ["stale"],
-        keywords: ["stale"],
+        keywords: ["stale attempt", "manifest ownership", "visibility cleanup"],
         people: [],
         orgs: [],
         novelty_verdict: "novel",
@@ -1649,7 +1797,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       title: "Winning Title",
       tldr: "The newer attempt already won.",
       tags: ["winner"],
-      keywords: ["winner"],
+      keywords: ["winning attempt", "manifest ownership", "visibility cleanup"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",
@@ -1819,7 +1967,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       title: "Failure Winner",
       tldr: "The newer successful attempt won.",
       tags: ["winner"],
-      keywords: ["winner"],
+      keywords: ["winning attempt", "manifest ownership", "visibility cleanup"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",
@@ -2029,7 +2177,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         title: "Imported Markdown",
         tldr: "A local Markdown article was imported.",
         tags: ["markdown"],
-        keywords: ["local markdown"],
+        keywords: ["local markdown", "manual import", "captured content"],
         people: [],
         orgs: [],
         novelty_verdict: "novel",
@@ -2273,7 +2421,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         title: "Imported Recovery",
         tldr: "A failed URL was recovered with markdown.",
         tags: ["markdown"],
-        keywords: ["recovery"],
+        keywords: ["markdown recovery", "failed reading", "manual import"],
         people: [],
         orgs: [],
         novelty_verdict: "novel",
@@ -2612,7 +2760,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         title: "Imported Stale Pending",
         tldr: "A stale pending URL was recovered with markdown.",
         tags: ["markdown"],
-        keywords: ["recovery"],
+        keywords: ["markdown recovery", "failed reading", "manual import"],
         people: [],
         orgs: [],
         novelty_verdict: "novel",
@@ -3291,7 +3439,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       title: "Existing Ready",
       tldr: "Existing summary.",
       tags: ["ops"],
-      keywords: [],
+      keywords: ["existing summary", "ready reading", "reprocess flow"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",
@@ -3986,7 +4134,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
           title: "Rust async story",
           tldr: "How async works in Rust",
           tags: ["rust", "async"],
-          keywords: [],
+          keywords: ["rust async", "async programming", "systems language"],
           people: [],
           orgs: [],
           novelty_verdict: "novel",
@@ -4006,7 +4154,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
           title: "Go concurrency",
           tldr: "Goroutines",
           tags: ["go"],
-          keywords: [],
+          keywords: ["go concurrency", "goroutines", "systems language"],
           people: [],
           orgs: [],
           novelty_verdict: "novel",
@@ -4038,7 +4186,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
       title: "AI piece",
       tldr: "About AI",
       tags: ["AI", "infra"],
-      keywords: [],
+      keywords: ["artificial intelligence", "infrastructure", "AI systems"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",
@@ -4052,7 +4200,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
       title: "ML piece",
       tldr: "About ML",
       tags: ["ml"],
-      keywords: [],
+      keywords: ["machine learning", "ML systems", "model training"],
       people: [],
       orgs: [],
       novelty_verdict: "novel",
@@ -4087,7 +4235,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
         title: a.title,
         tldr: "x",
         tags: a.tags,
-        keywords: [],
+        keywords: ["language topic", "software systems", "tag filtering"],
         people: [],
         orgs: [],
         novelty_verdict: "novel",

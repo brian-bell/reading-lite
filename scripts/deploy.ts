@@ -45,8 +45,11 @@ Idempotent: re-running with the same source produces the same Worker version.
 
 Secrets are NOT managed here. Set them once with:
   wrangler secret put READER_API_TOKEN
-  wrangler secret put ANTHROPIC_API_KEY
   wrangler secret put OPENAI_API_KEY
+
+OPENAI_API_KEY is always required for embeddings and for the default OpenAI
+summarizer. If SUMMARIZER_PROVIDER=anthropic, also set:
+  wrangler secret put ANTHROPIC_API_KEY
 `);
 }
 

@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { writeResults } from "../../../../scripts/corpus-lib/batch/write-phase";
+import {
+  writeOpenAIResults,
+  writeResults,
+} from "../../../../scripts/corpus-lib/batch/write-phase";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
-import type { Sidecar, SidecarTarget } from "../../../../scripts/corpus-lib/batch/types";
+import type {
+  OpenAISubmittedSidecar,
+  Sidecar,
+  SidecarTarget,
+} from "../../../../scripts/corpus-lib/batch/types";
 import type { BatchResult } from "../../../../scripts/corpus-lib/batch/clients";
 
 const NOW = "2026-06-18T12:00:00.000Z";
@@ -27,7 +34,16 @@ function sidecarTarget(over: Partial<SidecarTarget> = {}): SidecarTarget {
 }
 
 function sidecar(targets: SidecarTarget[]): Sidecar {
-  return { batchId: "msgbatch_1", model: "claude-opus-4-8", processingStatus: "ended", resultsUrl: "https://r", targets };
+  return {
+    version: 2,
+    provider: "anthropic",
+    phase: "submitted",
+    batchId: "msgbatch_1",
+    model: "claude-opus-4-8",
+    processingStatus: "ended",
+    resultsUrl: "https://r",
+    targets,
+  };
 }
 
 const validReading = {
@@ -49,7 +65,12 @@ function succeeded(customId: string, input: unknown = validReading): BatchResult
       type: "succeeded",
       message: {
         content: [{ type: "tool_use", id: "t", name: EMIT_READING_TOOL_NAME, input }],
-        usage: { input_tokens: 1000, output_tokens: 200 },
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 200,
+          cache_creation_input_tokens: 300,
+          cache_read_input_tokens: 400,
+        },
       },
     },
   };
@@ -57,6 +78,50 @@ function succeeded(customId: string, input: unknown = validReading): BatchResult
 
 function errored(customId: string): BatchResult {
   return { custom_id: customId, result: { type: "errored", error: { type: "api_error", message: "boom" } } };
+}
+
+function openAIResponseBody(reading = validReading) {
+  return {
+    id: "resp_1",
+    object: "response",
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: JSON.stringify(reading) },
+        ],
+      },
+    ],
+    usage: {
+      input_tokens: 1000,
+      output_tokens: 200,
+      input_tokens_details: { cached_tokens: 400, cache_write_tokens: 300 },
+      output_tokens_details: { reasoning_tokens: 50 },
+    },
+  };
+}
+
+function openAISidecar(
+  targets: SidecarTarget[],
+  over: Partial<OpenAISubmittedSidecar> = {},
+): OpenAISubmittedSidecar {
+  return {
+    version: 2,
+    provider: "openai",
+    phase: "submitted",
+    runId: "run_1",
+    batchId: "batch_1",
+    inputFileId: "file_input",
+    outputFileId: "file_output",
+    errorFileId: null,
+    model: "gpt-5.6-terra",
+    reasoningEffort: "low",
+    processingStatus: "completed",
+    targets,
+    ...over,
+  };
 }
 
 // In-memory R2 fake backed by a Map, recording the final state of each key.
@@ -113,7 +178,16 @@ describe("writeResults — success path", () => {
     expect(m.updated_at).toBe(NOW);
     // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).
     expect(m.usage?.openai_embedding_tokens).toBe(58);
-    expect(m.usage?.anthropic_input_tokens).toBe(1000);
+    expect(m.usage).toMatchObject({
+      summarization: {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_creation_input_tokens: 300,
+        cache_read_input_tokens: 400,
+      },
+    });
   });
 
   it("writes the by-url and by-id pointers on success", async () => {
@@ -153,6 +227,289 @@ describe("writeResults — success path", () => {
     const item = index.items.find((i: any) => i.id === "rd_a");
     expect(item.status).toBe("ready");
     expect(item.title).toBe("Resolved Title");
+  });
+});
+
+describe("writeOpenAIResults — success path", () => {
+  it("matches JSONL by custom_id and persists provider-normalized OpenAI usage", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    const sc = openAISidecar([sidecarTarget()]);
+    const jsonl =
+      JSON.stringify({
+        id: "batch_req_1",
+        custom_id: "rd_a",
+        response: {
+          status_code: 200,
+          request_id: "req_1",
+          body: openAIResponseBody(),
+        },
+        error: null,
+      }) + "\n";
+
+    await writeOpenAIResults(sc, jsonl, deps(r2, vec));
+
+    const ready = ManifestSchema.parse(
+      JSON.parse(
+        r2.store.get(
+          "readings/2026/01/01T000000Z-rd_a/manifest.json",
+        )!,
+      ),
+    );
+    expect(ready.status).toBe("ready");
+    expect(ready.usage).toMatchObject({
+      summarization: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        input_tokens: 1000,
+        output_tokens: 200,
+        reasoning_tokens: 50,
+        cached_input_tokens: 400,
+        cache_write_tokens: 300,
+      },
+    });
+  });
+
+  it("merges output and error files by custom_id and writes every target once", async () => {
+    const a = sidecarTarget({ releaseByUrlOnFailure: true });
+    const b = sidecarTarget({
+      customId: "rd_b",
+      id: "rd_b",
+      keyPrefix: "readings/kp-b",
+      url: "https://example.com/b",
+      urlHash: "c".repeat(64),
+    });
+    const pointerKey = `index/by-url/${a.urlHash}`;
+    const r2 = fakeR2({
+      [pointerKey]: JSON.stringify({
+        id: a.id,
+        key_prefix: a.keyPrefix,
+      }),
+    });
+    const outputJsonl =
+      JSON.stringify({
+        custom_id: "rd_b",
+        response: {
+          status_code: 200,
+          body: openAIResponseBody({ ...validReading, title: "B" }),
+        },
+        error: null,
+      }) + "\n";
+    const errorJsonl =
+      JSON.stringify({
+        custom_id: "rd_a",
+        response: null,
+        error: { code: "rate_limit_exceeded", message: "rate limited" },
+      }) + "\n";
+
+    const report = await writeOpenAIResults(
+      openAISidecar([a, b]),
+      { outputJsonl, errorJsonl, batchStatus: "completed" },
+      deps(r2, fakeVectorize()),
+    );
+
+    expect(report).toEqual([
+      { id: "rd_b", status: "ready" },
+      { id: "rd_a", status: "failed", reason: "rate limited" },
+    ]);
+    const failed = ManifestSchema.parse(
+      JSON.parse(r2.store.get(`${a.keyPrefix}/manifest.json`)!),
+    );
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: {
+        code: "OpenAIBatchRequestError",
+        message: "rate limited",
+        retryable: true,
+      },
+    });
+    expect(r2.store.has("index/by-id/rd_a")).toBe(true);
+    expect(r2.store.has(pointerKey)).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "non-2xx response",
+      line: {
+        custom_id: "rd_a",
+        response: {
+          status_code: 429,
+          body: { error: { message: "retry after quota reset" } },
+        },
+        error: null,
+      },
+      code: "OpenAIBatchRequestError",
+      message: /429.*retry after quota reset/i,
+    },
+    {
+      name: "refusal",
+      line: {
+        custom_id: "rd_a",
+        response: {
+          status_code: 200,
+          body: {
+            ...openAIResponseBody(),
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  { type: "refusal", refusal: "cannot summarize" },
+                ],
+              },
+            ],
+          },
+        },
+        error: null,
+      },
+      code: "OpenAIRefusalError",
+      message: /cannot summarize/i,
+    },
+    {
+      name: "incomplete response",
+      line: {
+        custom_id: "rd_a",
+        response: {
+          status_code: 200,
+          body: {
+            ...openAIResponseBody(),
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+            output: [],
+          },
+        },
+        error: null,
+      },
+      code: "OpenAIIncompleteResponseError",
+      message: /incomplete.*max_output_tokens/i,
+    },
+    {
+      name: "known malformed line",
+      line: {
+        custom_id: "rd_a",
+        response: null,
+        error: null,
+      },
+      code: "OpenAIBatchResultMalformed",
+      message: /neither a valid response nor an error/i,
+    },
+  ])(
+    "turns a $name into an actionable retryable provider failure",
+    async ({ line, code, message }) => {
+      const r2 = fakeR2();
+      await writeOpenAIResults(
+        openAISidecar([sidecarTarget()]),
+        {
+          outputJsonl: JSON.stringify(line) + "\n",
+          batchStatus: "completed",
+        },
+        deps(r2, fakeVectorize()),
+      );
+
+      const failed = ManifestSchema.parse(
+        JSON.parse(
+          r2.store.get(
+            "readings/2026/01/01T000000Z-rd_a/manifest.json",
+          )!,
+        ),
+      );
+      expect(failed).toMatchObject({
+        status: "failed",
+        error: { code, retryable: true },
+      });
+      expect(failed.error?.message).toMatch(message);
+    },
+  );
+
+  it("marks a target missing when malformed JSON cannot identify a custom_id", async () => {
+    const r2 = fakeR2();
+    const report = await writeOpenAIResults(
+      openAISidecar([sidecarTarget()]),
+      {
+        outputJsonl: "{not-json}\n",
+        batchStatus: "completed",
+      },
+      deps(r2, fakeVectorize()),
+    );
+
+    const failed = ManifestSchema.parse(
+      JSON.parse(
+        r2.store.get(
+          "readings/2026/01/01T000000Z-rd_a/manifest.json",
+        )!,
+      ),
+    );
+    expect(failed.error?.code).toBe("OpenAIBatchResultMissing");
+    expect(report).toEqual([
+      {
+        id: "rd_a",
+        status: "failed",
+        reason: "OpenAI batch completed without a result for this reading",
+      },
+    ]);
+  });
+
+  it("lets a valid success win over a duplicate error for the same custom_id", async () => {
+    const r2 = fakeR2();
+    const error = JSON.stringify({
+      custom_id: "rd_a",
+      response: null,
+      error: { message: "stale duplicate error" },
+    });
+    const success = JSON.stringify({
+      custom_id: "rd_a",
+      response: { status_code: 200, body: openAIResponseBody() },
+      error: null,
+    });
+
+    const report = await writeOpenAIResults(
+      openAISidecar([sidecarTarget()]),
+      {
+        outputJsonl: `${error}\n${success}\n`,
+        batchStatus: "completed",
+      },
+      deps(r2, fakeVectorize()),
+    );
+
+    expect(report).toEqual([{ id: "rd_a", status: "ready" }]);
+  });
+
+  it("prefers an explicit error-file diagnostic over a malformed output duplicate", async () => {
+    const r2 = fakeR2();
+    await writeOpenAIResults(
+      openAISidecar([sidecarTarget()]),
+      {
+        outputJsonl:
+          JSON.stringify({
+            custom_id: "rd_a",
+            response: { status_code: 200, body: {} },
+            error: null,
+          }) + "\n",
+        errorJsonl:
+          JSON.stringify({
+            custom_id: "rd_a",
+            response: null,
+            error: {
+              code: "server_error",
+              message: "provider request failed",
+            },
+          }) + "\n",
+        batchStatus: "completed",
+      },
+      deps(r2, fakeVectorize()),
+    );
+
+    const failed = ManifestSchema.parse(
+      JSON.parse(
+        r2.store.get(
+          "readings/2026/01/01T000000Z-rd_a/manifest.json",
+        )!,
+      ),
+    );
+    expect(failed.error).toMatchObject({
+      code: "OpenAIBatchRequestError",
+      message: "provider request failed",
+    });
   });
 });
 
@@ -340,6 +697,70 @@ describe("writeResults — failure path", () => {
     expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("ready");
     expect(r2.store.get(pointerKey)).toBe(existingPointer);
     expect(r2.delete).not.toHaveBeenCalled();
+  });
+
+  it("rolls an OpenAI error forward without touching vectors or a newer owner", async () => {
+    const ready: Manifest = {
+      id: "rd_a",
+      url: "https://example.com/a",
+      url_hash: "a".repeat(64),
+      source_type: "url",
+      status: "ready",
+      title: "Previously Good",
+      tldr: "kept tldr",
+      tags: ["keep"],
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 42,
+      content_sha256: "b".repeat(64),
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-02T00:00:00.000Z",
+    };
+    const pointerKey = `index/by-url/${"a".repeat(64)}`;
+    const newerOwner = JSON.stringify({
+      id: "rd_newer",
+      key_prefix: "readings/kp-newer",
+    });
+    const r2 = fakeR2({ [pointerKey]: newerOwner });
+    const vectorize = fakeVectorize();
+
+    const report = await writeOpenAIResults(
+      openAISidecar([
+        sidecarTarget({
+          preserveReadyManifest: ready,
+          releaseByUrlOnFailure: true,
+        }),
+      ]),
+      {
+        errorJsonl:
+          JSON.stringify({
+            custom_id: "rd_a",
+            response: null,
+            error: { message: "provider failed" },
+          }) + "\n",
+        batchStatus: "completed",
+      },
+      deps(r2, vectorize),
+    );
+
+    const final = ManifestSchema.parse(
+      JSON.parse(
+        r2.store.get(
+          "readings/2026/01/01T000000Z-rd_a/manifest.json",
+        )!,
+      ),
+    );
+    expect(final.status).toBe("ready");
+    expect(final.tldr).toBe("kept tldr");
+    expect(r2.store.get(pointerKey)).toBe(newerOwner);
+    expect(r2.delete).not.toHaveBeenCalled();
+    expect(vectorize.upsert).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(r2.store.get("index/list.json")!).items[0].status,
+    ).toBe("ready");
+    expect(report).toEqual([
+      { id: "rd_a", status: "failed", reason: "provider failed" },
+    ]);
   });
 });
 

@@ -5,12 +5,26 @@ import type { R2Client } from "../../lib/cf-clients";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 import { getByUrl } from "./r2-reads";
-import type { ActivatingSidecar, ExtractedTarget, PersistedSidecar } from "./types";
+import type {
+  ActivatingSidecar,
+  ExtractedTarget,
+  OpenAIActivatingSidecar,
+  PersistedSidecar,
+} from "./types";
+import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 import type { WriteReportRow } from "./write-phase";
 
 export interface ActivationDeps {
   r2: Pick<R2Client, "get" | "put" | "putIfAbsent" | "delete">;
-  model: string;
+  model?: string;
+  identity?:
+    | { provider: "anthropic"; model: string }
+    | {
+        provider: "openai";
+        model: string;
+        reasoningEffort: OpenAIReasoningEffort;
+        runId: string;
+      };
   now(): string;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   log?: (line: string) => void;
@@ -28,7 +42,7 @@ export async function activateFreshTargets(
   const freshTargets = targets.filter((t) => t.freshActivation);
   if (freshTargets.length === 0) return { activated: targets, skipped: [] };
 
-  await deps.saveSidecar(activatingSidecar(freshTargets, deps.model));
+  await deps.saveSidecar(activatingSidecar(freshTargets, activationIdentity(deps)));
 
   const activated: ExtractedTarget[] = [];
   const skipped: WriteReportRow[] = [];
@@ -127,7 +141,7 @@ export async function activateRecoverTargets(
 ): Promise<ActivationResult> {
   if (targets.length === 0) return { activated: [], skipped: [] };
 
-  await deps.saveSidecar(activatingSidecar(targets, deps.model));
+  await deps.saveSidecar(activatingSidecar(targets, activationIdentity(deps)));
 
   const activated: ExtractedTarget[] = [];
   const skipped: WriteReportRow[] = [];
@@ -210,20 +224,51 @@ async function commitPendingActivation(
   return manifestToIndexItem(manifest, keyPrefix);
 }
 
-function activatingSidecar(targets: ExtractedTarget[], model: string): ActivatingSidecar {
+type ActivationIdentity = NonNullable<ActivationDeps["identity"]>;
+
+function activationIdentity(deps: ActivationDeps): ActivationIdentity {
+  if (deps.identity) return deps.identity;
+  if (deps.model) return { provider: "anthropic", model: deps.model };
+  throw new Error("batch activation requires a provider identity");
+}
+
+function activatingSidecar(
+  targets: ExtractedTarget[],
+  identity: ActivationIdentity,
+): ActivatingSidecar | OpenAIActivatingSidecar {
+  const sidecarTargets = targets.map(({ target }) => ({
+    id: target.readingId,
+    customId: target.readingId,
+    keyPrefix: target.keyPrefix,
+    url: target.url,
+    urlHash: target.urlHash,
+    createdAt: target.createdAt,
+  }));
+  if (identity.provider === "openai") {
+    return {
+      version: 2,
+      provider: "openai",
+      phase: "activating",
+      runId: identity.runId,
+      batchId: "",
+      inputFileId: null,
+      outputFileId: null,
+      errorFileId: null,
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      processingStatus: "activating",
+      targets: sidecarTargets,
+    };
+  }
   return {
+    version: 2,
+    provider: "anthropic",
+    phase: "activating",
     batchId: "",
-    model,
+    model: identity.model,
     processingStatus: "activating",
     resultsUrl: null,
-    targets: targets.map(({ target }) => ({
-      id: target.readingId,
-      customId: target.readingId,
-      keyPrefix: target.keyPrefix,
-      url: target.url,
-      urlHash: target.urlHash,
-      createdAt: target.createdAt,
-    })),
+    targets: sidecarTargets,
   };
 }
 

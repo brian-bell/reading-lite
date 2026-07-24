@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   makeAnthropicBatchClient,
+  makeOpenAIBatchClient,
   makeOpenAIEmbedClient,
 } from "../../../../scripts/corpus-lib/batch/clients";
 
@@ -58,6 +59,155 @@ describe("makeAnthropicBatchClient", () => {
     expect(results[0]!.custom_id).toBe("rd_a");
     expect(results[0]!.result.type).toBe("succeeded");
     expect(results[1]!.result.type).toBe("errored");
+  });
+});
+
+describe("makeOpenAIBatchClient", () => {
+  it("uploads the exact JSONL as a purpose=batch multipart file", async () => {
+    const fetchFn: FetchMock = vi.fn(async () =>
+      json({
+        id: "file_input",
+        object: "file",
+        bytes: 42,
+        created_at: 1,
+        filename: "reading-lite-run_1.jsonl",
+        purpose: "batch",
+      }),
+    );
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+    const jsonl = '{"custom_id":"rd_a"}\n';
+
+    await expect(client.upload(jsonl, "run_1")).resolves.toMatchObject({
+      id: "file_input",
+    });
+
+    const [url, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/files");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-oa");
+    expect(new Headers(init.headers).has("content-type")).toBe(false);
+    const form = init.body as FormData;
+    expect(form.get("purpose")).toBe("batch");
+    const file = form.get("file") as File;
+    expect(file.name).toBe("reading-lite-run_1.jsonl");
+    expect(await file.text()).toBe(jsonl);
+  });
+
+  it("creates a /v1/responses batch with a 24h window and stable run metadata", async () => {
+    const fetchFn: FetchMock = vi.fn(async () =>
+      json({
+        id: "batch_1",
+        object: "batch",
+        endpoint: "/v1/responses",
+        errors: null,
+        input_file_id: "file_input",
+        completion_window: "24h",
+        status: "validating",
+        output_file_id: null,
+        error_file_id: null,
+        request_counts: { total: 0, completed: 0, failed: 0 },
+      }),
+    );
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    await expect(client.create("file_input", "run_1")).resolves.toMatchObject({
+      id: "batch_1",
+      status: "validating",
+    });
+
+    const [url, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/batches");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-oa");
+    expect(new Headers(init.headers).get("content-type")).toBe(
+      "application/json",
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      input_file_id: "file_input",
+      endpoint: "/v1/responses",
+      completion_window: "24h",
+      metadata: { run_id: "run_1" },
+    });
+  });
+
+  it("defaults optional in-flight batch fields the API may omit", async () => {
+    // The Batch object marks output_file_id, error_file_id, and request_counts
+    // optional while validating/in progress; an omitting response must not fail
+    // parsing after the remote batch already exists.
+    const inFlight = {
+      id: "batch_1",
+      object: "batch",
+      endpoint: "/v1/responses",
+      input_file_id: "file_input",
+      completion_window: "24h",
+      status: "validating",
+    };
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(inFlight))
+      .mockResolvedValueOnce(json(inFlight));
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    const expected = {
+      id: "batch_1",
+      status: "validating",
+      output_file_id: null,
+      error_file_id: null,
+      request_counts: { total: 0, completed: 0, failed: 0 },
+    };
+    await expect(client.create("file_input", "run_1")).resolves.toMatchObject(
+      expected,
+    );
+    await expect(client.get("batch_1")).resolves.toMatchObject(expected);
+  });
+
+  it("retrieves batch status and file content by id", async () => {
+    const batch = {
+      id: "batch_1",
+      object: "batch",
+      endpoint: "/v1/responses",
+      errors: null,
+      input_file_id: "file_input",
+      completion_window: "24h",
+      status: "completed",
+      output_file_id: "file_output",
+      error_file_id: null,
+      request_counts: { total: 1, completed: 1, failed: 0 },
+    };
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(batch))
+      .mockResolvedValueOnce(
+        new Response('{"custom_id":"rd_a"}\n', { status: 200 }),
+      );
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    await expect(client.get("batch_1")).resolves.toMatchObject(batch);
+    await expect(client.content("file_output")).resolves.toBe(
+      '{"custom_id":"rd_a"}\n',
+    );
+
+    expect(fetchFn.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.openai.com/v1/batches/batch_1",
+      "https://api.openai.com/v1/files/file_output/content",
+    ]);
+    for (const [, init] of fetchFn.mock.calls) {
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer sk-oa",
+      );
+    }
   });
 });
 

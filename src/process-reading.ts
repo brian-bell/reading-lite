@@ -10,7 +10,8 @@ import { embed } from "./modules/embeddings";
 import {
   summarizeReading,
   type SimilarContext,
-} from "./modules/anthropic";
+  validateProcessingCredentials,
+} from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
@@ -46,6 +47,12 @@ export async function processReading(
   try {
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+    validateProcessingCredentials({
+      provider: env.SUMMARIZER_PROVIDER,
+      openaiApiKey: env.OPENAI_API_KEY,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+      openaiReasoningEffort: env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
+    });
 
     const extracted = await extractSource(args, env, services, reader, attempt);
 
@@ -98,8 +105,13 @@ export async function processReading(
           },
           {
             fetch: services.fetch,
-            apiKey: env.ANTHROPIC_API_KEY,
-            model: env.ANTHROPIC_MODEL,
+            provider: env.SUMMARIZER_PROVIDER,
+            openaiApiKey: env.OPENAI_API_KEY,
+            openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
+            openaiReasoningEffort:
+              env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
+            anthropicApiKey: env.ANTHROPIC_API_KEY,
+            anthropicModel: env.ANTHROPIC_MODEL,
             retry,
           },
         ),
@@ -141,8 +153,7 @@ export async function processReading(
       updated_at: services.now(),
       last_attempt: summarizeAttempt(attempt),
       usage: {
-        anthropic_input_tokens: llm.usage.input_tokens,
-        anthropic_output_tokens: llm.usage.output_tokens,
+        summarization: llm.usage,
         openai_embedding_tokens:
           queryEmbed.usage.total_tokens + tldrEmbed.usage.total_tokens,
       },

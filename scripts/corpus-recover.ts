@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import type { ExtractedContent, ExtractorDeps } from "../src/modules/extractor/index";
 import { extractFromUrl } from "../src/modules/extractor/index";
@@ -10,7 +11,11 @@ import { shouldPauseAfter } from "./corpus-lib/throttle";
 import { tallyByIds } from "./corpus-lib/audit";
 import { readListIndex } from "./corpus-lib/wrangler-r2";
 import { makeR2Client, makeVectorizeClient } from "./lib/cf-clients";
-import { makeAnthropicBatchClient, makeOpenAIEmbedClient } from "./corpus-lib/batch/clients";
+import {
+  makeAnthropicBatchClient,
+  makeOpenAIBatchClient,
+  makeOpenAIEmbedClient,
+} from "./corpus-lib/batch/clients";
 import { runBatch } from "./corpus-lib/batch/run";
 import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
@@ -118,15 +123,16 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
                     (prevents swamping upstream rate limits). Default: unbounded.
   --wave-pause <s>  Seconds to pause at each wave boundary. Default: 60.
   --batch           Bulk path: summarize reprocess+local-extract rows via the
-                    Anthropic Message Batch API (~50% cheaper, no rate-limit
-                    burst) instead of the realtime queue. --wave is ignored.
+                    configured provider's Batch API (OpenAI by default, or
+                    Anthropic) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
-                    + Vectorize creds (.corpus.vars) and ANTHROPIC/OPENAI keys.
+                    + Vectorize creds and OPENAI_API_KEY for embeddings;
+                    ANTHROPIC_API_KEY only for an Anthropic start/resume.
+                    Sidecars pin provider/model/effort; there is no fallback.
   --sole-writer     Required with --batch --execute: assert the realtime writer
-                    is paused/drained. The batch path leaves each by-url slot
-                    unclaimed for the in-flight window, so a live writer would
-                    race it (duplicate compute/emails, pointer thrash). Refuses
-                    without it.
+                    is paused/drained. Eager by-url claims are defense-in-depth,
+                    not a replacement for excluding the realtime writer.
+                    Refuses without the acknowledgment.
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
@@ -249,8 +255,8 @@ async function main(): Promise<void> {
   if (errors > 0) process.exit(1);
 }
 
-// Bulk path: summarize reprocess + local-extract rows through the Anthropic
-// Message Batch API. --wave is irrelevant here (no realtime burst to pace).
+// Bulk path: summarize reprocess + local-extract rows through the configured
+// provider's Batch API. --wave is irrelevant here (no realtime burst to pace).
 async function runBatchMode(
   args: Args,
   plan: Record<RecoveryAction, AuditRow[]>,
@@ -260,11 +266,9 @@ async function runBatchMode(
     process.stderr.write("  ! --wave is ignored in --batch mode (no realtime queue to pace)\n");
   }
 
-  // Sole-writer preflight (issue #68): a real batch submit leaves each by-url
-  // slot unclaimed for the in-flight window, so refuse unless the operator
-  // asserts the realtime writer is paused/drained. A resume (live sidecar) is
-  // gated too — by-url is only claimed on the final success write, so the slot
-  // stays unclaimed through the resume and the race is live. No-op for dry-run.
+  // Sole-writer preflight (issue #68): activated targets eagerly claim by-url
+  // slots, but that is defense-in-depth rather than a replacement for pausing
+  // and draining the realtime writer. Resumes are gated too. No-op for dry-run.
   enforceSoleWriter(
     { execute: args.execute, acknowledged: args.soleWriter, tool: "corpus-recover --batch" },
     { write: (s) => void process.stderr.write(s), exit: (c) => process.exit(c) },
@@ -290,7 +294,7 @@ async function runBatchMode(
       process.stderr.write(`  [dry-run batch] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${scPath}\n`);
     } else {
       for (const r of batchRows) {
-        process.stderr.write(`  [dry-run batch] ${r.short} — summarize via Message Batch (~50% cheaper, async)\n`);
+        process.stderr.write(`  [dry-run batch] ${r.short} — summarize via the configured provider's Batch API (async)\n`);
       }
       process.stderr.write(`  [dry-run batch] would submit ${batchRows.length} reading(s) in one batch\n`);
     }
@@ -300,7 +304,14 @@ async function runBatchMode(
 
   let cfg;
   try {
-    cfg = resolveBatchConfig({ ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }) });
+    cfg = resolveBatchConfig({
+      ...(args.bucketFlag === undefined
+        ? {}
+        : { bucket: args.bucketFlag }),
+      ...(existing === null
+        ? {}
+        : { resumeProvider: existing.provider }),
+    });
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(2);
@@ -311,10 +322,27 @@ async function runBatchMode(
   const result = await runBatch(batchRows, {
     r2: makeR2Client(cfg.r2, fetchFn),
     vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
-    batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }),
+    ...(cfg.anthropicApiKey
+      ? {
+          batch: makeAnthropicBatchClient({
+            fetch: fetchFn,
+            apiKey: cfg.anthropicApiKey,
+          }),
+        }
+      : {}),
+    openaiBatch: makeOpenAIBatchClient({
+      fetch: fetchFn,
+      apiKey: cfg.openaiApiKey,
+    }),
     embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
     extract: (url: string): Promise<ExtractedContent> => extractFromUrl(url, extractorDeps),
-    model: cfg.anthropicModel,
+    configuredProvider: cfg.summarizerProvider,
+    model:
+      cfg.summarizerProvider === "openai"
+        ? cfg.openaiModel
+        : cfg.anthropicModel,
+    reasoningEffort: cfg.openaiReasoningEffort,
+    newRunId: randomUUID,
     now: () => new Date().toISOString(),
     sleep: (ms: number) => sleep(ms).then(() => undefined),
     loadSidecar: () => loadSidecar(scPath),

@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { loadDotVars } from "./lib/dotvars";
 import type { R2Client, R2Config } from "./lib/cf-clients";
+import type { SummarizerProvider } from "../src/modules/summarizer/config";
 
 export interface StagingResources {
   env: "staging";
@@ -39,13 +40,6 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   queue: "reading-lite-staging",
   dlq: "reading-lite-staging-dlq",
 };
-
-const STAGING_SECRET_NAMES = [
-  "READER_API_TOKEN",
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "RESEND_API_KEY",
-];
 
 const ALREADY_EXISTS = [
   /already exists/i,
@@ -159,8 +153,18 @@ export function buildStagingTeardownCommands(
   ];
 }
 
-export function buildSecretCommands(): string[] {
-  return STAGING_SECRET_NAMES.map((name) => `wrangler secret put ${name} --env staging`);
+export function buildSecretCommands(
+  provider: SummarizerProvider = "openai",
+): string[] {
+  const names = [
+    "READER_API_TOKEN",
+    "OPENAI_API_KEY",
+    ...(provider === "anthropic" ? ["ANTHROPIC_API_KEY"] : []),
+    "RESEND_API_KEY",
+  ];
+  return names.map(
+    (name) => `wrangler secret put ${name} --env staging`,
+  );
 }
 
 export function resolveStagingR2Config(

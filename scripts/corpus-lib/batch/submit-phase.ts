@@ -1,7 +1,22 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
-import type { AnthropicBatchClient, AnthropicBatchRequest, BatchInfo } from "./clients";
-import type { ExtractedTarget, Sidecar, SidecarTarget, SummarizeTarget } from "./types";
+import type {
+  AnthropicBatchClient,
+  AnthropicBatchRequest,
+  BatchInfo,
+  OpenAIBatchClient,
+  OpenAIBatchInfo,
+} from "./clients";
+import type { PreparedOpenAIBatchPayload } from "./openai-payload";
+import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
+import type {
+  ExtractedTarget,
+  OpenAISubmittedSidecar,
+  PersistedSidecar,
+  Sidecar,
+  SidecarTarget,
+  SummarizeTarget,
+} from "./types";
 
 export interface SubmitDeps {
   model: string;
@@ -12,13 +27,27 @@ export interface SubmitDeps {
   // create, then again with the real batchId immediately after — so a crash in
   // the create window leaves a pending marker that aborts a re-run instead of
   // silently re-submitting (and re-billing).
-  saveSidecar(sidecar: Sidecar): Promise<void>;
+  saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   maxBatchBytes?: number;
 }
 
 export interface SubmitResult {
   info: BatchInfo;
   sidecar: Sidecar;
+}
+
+export interface OpenAISubmitDeps {
+  model: string;
+  reasoningEffort: OpenAIReasoningEffort;
+  runId: string;
+  batch: OpenAIBatchClient;
+  putObject(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
+  saveSidecar(sidecar: PersistedSidecar): Promise<void>;
+}
+
+export interface OpenAISubmitResult {
+  info: OpenAIBatchInfo;
+  sidecar: OpenAISubmittedSidecar;
 }
 
 // Anthropic's batch limit is 256MB; refuse well under it and tell the operator to
@@ -37,22 +66,7 @@ export async function submitBatch(
   const sidecarTargets: SidecarTarget[] = [];
 
   for (const st of targets) {
-    const { target, fresh } = st.extracted;
-
-    if (fresh && !st.extracted.contentAlreadyWritten) {
-      await deps.putObject(
-        `${target.keyPrefix}/raw.${extToken(fresh.content_type)}`,
-        fresh.raw,
-        fresh.content_type,
-      );
-      if (fresh.markdown) {
-        await deps.putObject(
-          `${target.keyPrefix}/extracted.md`,
-          fresh.markdown,
-          "text/markdown; charset=utf-8",
-        );
-      }
-    }
+    await persistFreshContent(st, deps.putObject);
 
     requests.push(requestForSummarizeTarget(st, deps.model));
 
@@ -65,6 +79,9 @@ export async function submitBatch(
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
   // than create a second, double-billed batch.
   await deps.saveSidecar({
+    version: 2,
+    provider: "anthropic",
+    phase: "creating",
     batchId: "",
     model: deps.model,
     processingStatus: "pending",
@@ -74,11 +91,69 @@ export async function submitBatch(
 
   const info = await deps.batch.create(requests);
   const sidecar: Sidecar = {
+    version: 2,
+    provider: "anthropic",
+    phase: "submitted",
     batchId: info.id,
     model: deps.model,
     processingStatus: info.processing_status,
     resultsUrl: info.results_url,
     targets: sidecarTargets,
+  };
+  await deps.saveSidecar(sidecar);
+  return { info, sidecar };
+}
+
+export async function submitOpenAIBatch(
+  targets: SummarizeTarget[],
+  prepared: PreparedOpenAIBatchPayload,
+  deps: OpenAISubmitDeps,
+): Promise<OpenAISubmitResult> {
+  if (prepared.requestCount !== targets.length) {
+    throw new Error(
+      `prepared OpenAI payload has ${prepared.requestCount} requests for ${targets.length} targets`,
+    );
+  }
+  for (const target of targets) {
+    await persistFreshContent(target, deps.putObject);
+  }
+  const sidecarTargets = targets.map(sidecarTargetFor);
+  const base = {
+    version: 2 as const,
+    provider: "openai" as const,
+    runId: deps.runId,
+    model: deps.model,
+    reasoningEffort: deps.reasoningEffort,
+    outputFileId: null,
+    errorFileId: null,
+    targets: sidecarTargets,
+  };
+
+  await deps.saveSidecar({
+    ...base,
+    phase: "uploading",
+    batchId: "",
+    inputFileId: null,
+    processingStatus: "uploading",
+  });
+  const input = await deps.batch.upload(prepared.jsonl, deps.runId);
+
+  await deps.saveSidecar({
+    ...base,
+    phase: "creating",
+    batchId: "",
+    inputFileId: input.id,
+    processingStatus: "creating",
+  });
+  const info = await deps.batch.create(input.id, deps.runId);
+  const sidecar: OpenAISubmittedSidecar = {
+    ...base,
+    phase: "submitted",
+    batchId: info.id,
+    inputFileId: input.id,
+    outputFileId: info.output_file_id,
+    errorFileId: info.error_file_id,
+    processingStatus: info.status,
   };
   await deps.saveSidecar(sidecar);
   return { info, sidecar };
@@ -134,7 +209,7 @@ function requestForSummarizeTarget(st: SummarizeTarget, model: string): Anthropi
   };
 }
 
-function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
+export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   const { target, markdown, fresh } = st.extracted;
   const m = target.manifest;
   // Raw-object descriptors come from the fresh extract when we re-extracted,
@@ -175,6 +250,26 @@ function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   const preserveReadyManifest = readySnapshotForBatchFailure(m, target.readingId);
   if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
   return out;
+}
+
+async function persistFreshContent(
+  st: SummarizeTarget,
+  putObject: SubmitDeps["putObject"],
+): Promise<void> {
+  const { target, fresh } = st.extracted;
+  if (!fresh || st.extracted.contentAlreadyWritten) return;
+  await putObject(
+    `${target.keyPrefix}/raw.${extToken(fresh.content_type)}`,
+    fresh.raw,
+    fresh.content_type,
+  );
+  if (fresh.markdown) {
+    await putObject(
+      `${target.keyPrefix}/extracted.md`,
+      fresh.markdown,
+      "text/markdown; charset=utf-8",
+    );
+  }
 }
 
 function readySnapshotForBatchFailure(m: Manifest, readingId: string): Manifest | undefined {

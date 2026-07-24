@@ -10,7 +10,7 @@ export interface Env {
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingArgs>;
   READER_API_TOKEN: string;
-  ANTHROPIC_API_KEY: string;
+  ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
@@ -21,6 +21,9 @@ export interface Env {
   FETCH_TIMEOUT_MS: string;
   FETCH_MAX_BYTES: string;
   ANTHROPIC_MODEL: string;
+  SUMMARIZER_PROVIDER?: string;
+  OPENAI_SUMMARIZATION_MODEL?: string;
+  OPENAI_SUMMARIZATION_REASONING_EFFORT?: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;
   RETRY_MAX_DELAY_MS?: string;
