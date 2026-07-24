@@ -172,13 +172,17 @@ const OpenAIBatchInfoSchema = z
     input_file_id: z.string().min(1),
     completion_window: z.literal("24h"),
     status: z.string().min(1),
-    output_file_id: z.string().min(1).nullable(),
-    error_file_id: z.string().min(1).nullable(),
-    request_counts: z.object({
-      total: z.number().int().nonnegative(),
-      completed: z.number().int().nonnegative(),
-      failed: z.number().int().nonnegative(),
-    }),
+    // The Batch object may omit these while validating/in progress; default
+    // them so a parse failure can't strand a batch that already exists remotely.
+    output_file_id: z.string().min(1).nullable().default(null),
+    error_file_id: z.string().min(1).nullable().default(null),
+    request_counts: z
+      .object({
+        total: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+      })
+      .default({ total: 0, completed: 0, failed: 0 }),
   })
   .passthrough();
 

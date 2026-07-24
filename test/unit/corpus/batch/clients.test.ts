@@ -136,6 +136,40 @@ describe("makeOpenAIBatchClient", () => {
     });
   });
 
+  it("defaults optional in-flight batch fields the API may omit", async () => {
+    // The Batch object marks output_file_id, error_file_id, and request_counts
+    // optional while validating/in progress; an omitting response must not fail
+    // parsing after the remote batch already exists.
+    const inFlight = {
+      id: "batch_1",
+      object: "batch",
+      endpoint: "/v1/responses",
+      input_file_id: "file_input",
+      completion_window: "24h",
+      status: "validating",
+    };
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(inFlight))
+      .mockResolvedValueOnce(json(inFlight));
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    const expected = {
+      id: "batch_1",
+      status: "validating",
+      output_file_id: null,
+      error_file_id: null,
+      request_counts: { total: 0, completed: 0, failed: 0 },
+    };
+    await expect(client.create("file_input", "run_1")).resolves.toMatchObject(
+      expected,
+    );
+    await expect(client.get("batch_1")).resolves.toMatchObject(expected);
+  });
+
   it("retrieves batch status and file content by id", async () => {
     const batch = {
       id: "batch_1",
