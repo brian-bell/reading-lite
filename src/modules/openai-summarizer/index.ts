@@ -165,6 +165,11 @@ export function buildSummarizeRequestBody(
         schema: READING_SUMMARY_JSON_SCHEMA,
       },
     },
+    // Deliberate caching opt-out, not a misconfiguration: explicit mode with no
+    // prompt_cache_breakpoint blocks disables prompt caching entirely. Implicit
+    // mode would breakpoint the latest message — the unique per-reading article —
+    // billing 1.25x cache writes with no realistic chance of a later hit, and the
+    // shared prefix (instructions) is too small to cache on its own.
     prompt_cache_options: { mode: "explicit" },
   };
 }
