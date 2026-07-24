@@ -25,6 +25,9 @@ export function resolveAgentConfig({ vars, homedir }: ConfigDeps): AgentConfig {
   }
   return {
     api: { base: vars.READING_API_URL!.replace(/\/$/, ""), token: vars.READER_API_TOKEN! },
+    // Resolved but deliberately unread in Phase 1: the dead-man ping that
+    // consumes it lands in Phase 2 (reading-lite-x1u.3), alongside the run
+    // report and lockfile. Setting it now is inert, not broken.
     healthcheckUrl: vars.HEALTHCHECK_URL || undefined,
     maxPaidActions: positiveInt(vars, "AGENT_MAX_PAID_ACTIONS", 25),
     maxAttempts: positiveInt(vars, "AGENT_MAX_ATTEMPTS", 3),

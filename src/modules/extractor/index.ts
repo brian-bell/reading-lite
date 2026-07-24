@@ -386,6 +386,13 @@ function isBlockedV4(host: string): boolean {
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
+  // Shared address space (RFC 6598). Tailscale and CGNAT both live here, so a
+  // redirect into 100.64/10 reaches overlay/internal services from the home box
+  // exactly like RFC1918 would — no public source is ever hosted on it.
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 192 && b === 0 && Number(v4[3]) === 0) return true; // IETF protocol assignments
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
+  if (a >= 224) return true; // multicast 224/4, reserved 240/4, broadcast
   return false;
 }
 

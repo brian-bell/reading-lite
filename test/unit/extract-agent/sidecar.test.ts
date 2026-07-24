@@ -28,6 +28,17 @@ describe("sidecar load/save", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it("warns when the file exists but cannot be read (a silent empty state re-arms backed-off rows)", async () => {
+    // A directory at the state path fails readFile with EISDIR, not ENOENT —
+    // stands in for EACCES/EIO, which can't be provoked portably.
+    const path = await mkdtemp(join(tmpdir(), "extract-agent-sidecar-"));
+    const warn = vi.fn();
+    const state = await loadSidecar(path, { warn });
+    expect(state).toEqual({ version: 1, readings: {} });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/unreadable/);
+  });
+
   it("treats a corrupted file as empty with a warning (loss-safe invariant)", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "extract-agent-sidecar-")), "state.json");
     await writeFile(path, "{not json", "utf-8");

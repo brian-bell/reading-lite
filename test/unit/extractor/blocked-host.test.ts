@@ -23,6 +23,17 @@ const BLOCKED: Array<[string, string]> = [
   ["fe80::1", "link-local v6"],
   ["::ffff:10.0.0.5", "v4-mapped dotted spelling"],
   ["::ffff:a00:5", "v4-mapped canonical hex spelling (10.0.0.5)"],
+  ["100.64.0.1", "CGNAT/Tailscale 100.64/10 lower bound"],
+  ["100.100.100.100", "CGNAT (Tailscale MagicDNS)"],
+  ["100.127.255.255", "CGNAT/Tailscale 100.64/10 upper bound"],
+  ["::ffff:100.64.0.1", "v4-mapped CGNAT"],
+  ["192.0.0.1", "IETF protocol assignments 192.0.0.0/24"],
+  ["198.18.0.1", "benchmarking 198.18/15"],
+  ["198.19.255.255", "benchmarking 198.19 upper bound"],
+  ["224.0.0.1", "multicast 224/4"],
+  ["239.255.255.255", "multicast upper bound"],
+  ["240.0.0.1", "reserved 240/4"],
+  ["255.255.255.255", "broadcast"],
 ];
 
 const ALLOWED: Array<[string, string]> = [
@@ -33,6 +44,12 @@ const ALLOWED: Array<[string, string]> = [
   ["172.15.255.255", "just below 172.16/12"],
   ["172.32.0.1", "just above 172.16/12"],
   ["192.167.1.1", "just below 192.168/16"],
+  ["100.63.255.255", "just below 100.64/10"],
+  ["100.128.0.1", "just above 100.64/10"],
+  ["192.0.1.1", "just above 192.0.0.0/24"],
+  ["198.17.255.255", "just below 198.18/15"],
+  ["198.20.0.1", "just above 198.18/15"],
+  ["223.255.255.255", "just below multicast 224/4"],
   ["2606:4700::6810:84e5", "public v6"],
   ["::ffff:808:808", "v4-mapped public (8.8.8.8)"],
 ];

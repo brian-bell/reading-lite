@@ -65,52 +65,60 @@ function makeDeps(
 
 describe("markdownGate", () => {
   const cfg = { minArticleChars: 350 };
+  // The gate sizes the whole submit body, so every case names the fields it
+  // sends. `url` is the fixed 12-byte baseline the size cases budget around.
+  const url = "https://e.test";
+  const body = (markdown: string, title?: string) => ({ source_url: url, markdown, ...(title ? { title } : {}) });
+  const bodyBudget = MARKDOWN_SUBMIT_BUDGET_BYTES - url.length;
 
-  it("passes markdown at exactly the submit budget (queue cap minus envelope reserve)", () => {
+  it("passes a body at exactly the submit budget (queue cap minus envelope reserve)", () => {
     expect(MARKDOWN_SUBMIT_BUDGET_BYTES).toBe(MARKDOWN_IMPORT_MAX_BYTES - 1024);
-    expect(markdownGate("x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES), cfg)).toEqual({ ok: true });
+    expect(markdownGate(body("x".repeat(bodyBudget)), cfg)).toEqual({ ok: true });
   });
 
-  it("rejects markdown one byte over the submit budget", () => {
-    expect(markdownGate("x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES + 1), cfg)).toEqual({
-      ok: false,
-      why: "over_ceiling",
-    });
+  it("rejects a body one byte over the submit budget", () => {
+    expect(markdownGate(body("x".repeat(bodyBudget + 1)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
   });
 
   it("rejects markdown of exactly MARKDOWN_IMPORT_MAX_BYTES bytes (envelope headroom)", () => {
-    expect(markdownGate("x".repeat(MARKDOWN_IMPORT_MAX_BYTES), cfg)).toEqual({ ok: false, why: "over_ceiling" });
+    expect(markdownGate(body("x".repeat(MARKDOWN_IMPORT_MAX_BYTES)), cfg)).toEqual({
+      ok: false,
+      why: "over_ceiling",
+    });
   });
 
   it("measures bytes, not chars (multibyte markdown over the budget rejects)", () => {
     // "é" is 2 UTF-8 bytes: budget-in-chars would pass, budget-in-bytes must not.
-    expect(markdownGate("é".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100), cfg)).toEqual({
-      ok: false,
-      why: "over_ceiling",
-    });
+    expect(markdownGate(body("é".repeat(bodyBudget - 100)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
   });
 
   it("rejects short markdown after trimming", () => {
-    expect(markdownGate(`   ${"x".repeat(349)}   `, cfg)).toEqual({ ok: false, why: "too_short" });
+    expect(markdownGate(body(`   ${"x".repeat(349)}   `), cfg)).toEqual({ ok: false, why: "too_short" });
   });
 
   it("counts the title against the ceiling (the submit sends it in the same queue message)", () => {
-    const markdown = "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 10);
-    expect(markdownGate(markdown, cfg, "t".repeat(10))).toEqual({ ok: true });
-    expect(markdownGate(markdown, cfg, "t".repeat(11))).toEqual({ ok: false, why: "over_ceiling" });
+    const markdown = "x".repeat(bodyBudget - 10);
+    expect(markdownGate(body(markdown, "t".repeat(10)), cfg)).toEqual({ ok: true });
+    expect(markdownGate(body(markdown, "t".repeat(11)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
+  });
+
+  it("counts the source url against the ceiling (it rides the same queue message)", () => {
+    const markdown = "x".repeat(bodyBudget);
+    expect(markdownGate({ source_url: url, markdown }, cfg)).toEqual({ ok: true });
+    expect(markdownGate({ source_url: `${url}/x`, markdown }, cfg)).toEqual({ ok: false, why: "over_ceiling" });
   });
 
   it("measures JSON-escaped bytes (the queue caps the serialized message)", () => {
     // Each `"` costs 2 bytes once serialized into ProcessReadingArgs.
-    const half = MARKDOWN_SUBMIT_BUDGET_BYTES / 2;
-    expect(markdownGate('"'.repeat(half), cfg)).toEqual({ ok: true });
-    expect(markdownGate('"'.repeat(half + 1), cfg)).toEqual({ ok: false, why: "over_ceiling" });
+    const half = Math.floor(bodyBudget / 2);
+    expect(markdownGate(body('"'.repeat(half)), cfg)).toEqual({ ok: true });
+    expect(markdownGate(body('"'.repeat(half + 1)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
   });
 
   it("measures title bytes, not chars", () => {
-    const markdown = "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 10);
+    const markdown = "x".repeat(bodyBudget - 10);
     // "é" is 2 UTF-8 bytes: 6 chars is 12 bytes, over the 10 bytes of headroom.
-    expect(markdownGate(markdown, cfg, "é".repeat(6))).toEqual({ ok: false, why: "over_ceiling" });
+    expect(markdownGate(body(markdown, "é".repeat(6)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
   });
 });
 
@@ -171,6 +179,30 @@ describe("runAgent planning", () => {
     });
     const planned = summary.rows.find((r) => r.id === eligible.id);
     expect(planned).toMatchObject({ outcome: "planned", route: "static" });
+  });
+
+  it("dry-run plans only what --limit would actually attempt", async () => {
+    const rows = [blockedRow(), blockedRow(), blockedRow()];
+    const { deps } = makeDeps(rows);
+
+    const summary = await runAgent({ execute: false, limit: 1 }, deps);
+
+    expect(summary).toMatchObject({ eligible: 3, deferred: 2 });
+    expect(summary.rows.filter((r) => r.outcome === "planned")).toHaveLength(1);
+    expect(summary.rows.filter((r) => r.outcome === "deferred")).toHaveLength(2);
+  });
+
+  it("dry-run does not defer on the paid-action cap (non-submitting rows leave the slot)", async () => {
+    // Only submits consume the budget, so an execute run with maxPaidActions=1
+    // whose first row gate-rejects still imports a later one. The plan must not
+    // claim a skip that execute would go on to attempt.
+    const rows = [blockedRow(), blockedRow(), blockedRow()];
+    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 1 }) });
+
+    const summary = await runAgent({ execute: false }, deps);
+
+    expect(summary.rows.filter((r) => r.outcome === "planned")).toHaveLength(3);
+    expect(summary).toMatchObject({ deferred: 0 });
   });
 
   it("dry-run performs zero extractions, submits, or sidecar writes", async () => {

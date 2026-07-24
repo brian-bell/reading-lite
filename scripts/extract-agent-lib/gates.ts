@@ -3,6 +3,7 @@
 
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../import-markdown-lib/parse";
 import { QUEUE_ENVELOPE_RESERVE } from "../youtube-import-lib/parse";
+import type { SubmitBody } from "./submit";
 
 // The size ceiling is a queue constraint, not a summarize one: both submit
 // paths inline the markdown in the ProcessReadingArgs queue message, and
@@ -21,18 +22,18 @@ function serializedBytes(text: string): number {
   return new TextEncoder().encode(JSON.stringify(text)).byteLength - 2;
 }
 
-// `title` is measured alongside the markdown because the submit sends both in
-// the same import body, and the Worker forwards both in the same queue message.
-// A long Readability title on a body sitting at the ceiling would otherwise pass
-// here and 503 the send *after* the eager manifest/list writes, replacing the
-// recoverable failure with a QueueSendError at `queued`.
-export function markdownGate(
-  markdown: string,
-  cfg: { minArticleChars: number },
-  title?: string,
-): GateVerdict {
-  if (markdown.trim().length < cfg.minArticleChars) return { ok: false, why: "too_short" };
-  const bytes = serializedBytes(markdown) + (title ? serializedBytes(title) : 0);
+// Takes the whole submit body rather than the markdown alone: the Worker
+// forwards every variable field of it — markdown, title, source_url — inside
+// one ProcessReadingArgs queue message, so anything the caller sends but the
+// gate doesn't measure can pass here and then 503 at `queue.send` *after* the
+// eager artifact/manifest/list writes, rolling a recoverable failed reading
+// into a QueueSendError at `queued`. Gating the exact object that gets
+// submitted is what keeps that class of gap from reopening field by field.
+export function markdownGate(body: SubmitBody, cfg: { minArticleChars: number }): GateVerdict {
+  if (body.markdown.trim().length < cfg.minArticleChars) return { ok: false, why: "too_short" };
+  const bytes = (Object.values(body) as string[])
+    .filter((value) => typeof value === "string")
+    .reduce((total, value) => total + serializedBytes(value), 0);
   if (bytes > MARKDOWN_SUBMIT_BUDGET_BYTES) {
     return { ok: false, why: "over_ceiling" };
   }

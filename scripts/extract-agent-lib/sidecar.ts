@@ -39,7 +39,14 @@ export async function loadSidecar(path: string, deps: { warn: (message: string) 
   let raw: string;
   try {
     raw = await readFile(path, "utf-8");
-  } catch {
+  } catch (e) {
+    // Only a genuinely absent file is the silent first-run case. EACCES/EIO on
+    // an existing file also starts empty (the loss-safe invariant above), but
+    // it silently re-arms backed-off and given-up rows, so it has to be loud:
+    // repeated scheduled runs would otherwise bypass the attempt ceiling.
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      deps.warn(`sidecar at ${path} is unreadable (${e instanceof Error ? e.message : String(e)}); starting empty`);
+    }
     return emptySidecar();
   }
   try {

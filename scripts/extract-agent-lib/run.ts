@@ -13,7 +13,7 @@ import {
   type SidecarState,
 } from "./sidecar";
 import type { StaticOutcome } from "./static-tier";
-import type { SubmitFn } from "./submit";
+import type { SubmitBody, SubmitFn } from "./submit";
 
 export interface RunArgs {
   execute: boolean;
@@ -168,13 +168,28 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
 
   const budget = makeBudget(config.maxPaidActions);
   const attemptCap = args.limit ?? Number.POSITIVE_INFINITY;
+  // Dry-run rows never reach the budget, so the plan tracks its own count and
+  // applies --limit itself: an operator validating a limited rollout has to see
+  // the same planned/deferred split the execute run would attempt. Only the
+  // attempt cap is honored here, never maxPaidActions — the attempt cap counts
+  // attempts, which a plan knows exactly, while the paid cap counts submits,
+  // which it cannot: a challenge, dead, no_article, error, or gate-rejected row
+  // costs nothing and leaves the slot for a later row. Deferring on the paid cap
+  // would make the plan claim skips that an execute run would go on to import.
+  let planned = 0;
 
   for (const { row, why } of attemptQueue) {
     const entry: PerRowOutcome = { id: row.id, url: row.url, decision: "attempt", route: "static", why };
     summary.rows.push(entry);
 
     if (!args.execute) {
+      if (planned >= attemptCap) {
+        entry.outcome = "deferred";
+        summary.deferred += 1;
+        continue;
+      }
       entry.outcome = "planned";
+      planned += 1;
       continue;
     }
     if (summary.attempted >= attemptCap || budget.consumed >= config.maxPaidActions) {
@@ -233,7 +248,10 @@ async function attemptRow(
       entry.detail = `${outcome.code}: ${outcome.detail}`;
       return { summaryKey: "errors", sidecarOutcome: "error" };
     case "extracted": {
-      const gate = markdownGate(outcome.markdown, deps.config, outcome.title);
+      // Build the body once and gate that exact object — the gate sizes what
+      // actually goes on the queue, so it can't drift from what we submit.
+      const body: SubmitBody = { source_url: row.url, markdown: outcome.markdown, title: outcome.title };
+      const gate = markdownGate(body, deps.config);
       if (!gate.ok) {
         entry.outcome = "gate_rejected";
         entry.detail = gate.why;
@@ -245,7 +263,7 @@ async function attemptRow(
         entry.detail = "paid-action budget exhausted";
         return { summaryKey: "errors", sidecarOutcome: "error" };
       }
-      const result = await deps.submit({ source_url: row.url, markdown: outcome.markdown, title: outcome.title });
+      const result = await deps.submit(body);
       if (result.outcome === "error") {
         entry.outcome = "error";
         entry.detail = result.error;
