@@ -233,7 +233,7 @@ async function attemptRow(
       entry.detail = `${outcome.code}: ${outcome.detail}`;
       return { summaryKey: "errors", sidecarOutcome: "error" };
     case "extracted": {
-      const gate = markdownGate(outcome.markdown, deps.config);
+      const gate = markdownGate(outcome.markdown, deps.config, outcome.title);
       if (!gate.ok) {
         entry.outcome = "gate_rejected";
         entry.detail = gate.why;

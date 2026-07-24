@@ -93,6 +93,25 @@ describe("markdownGate", () => {
   it("rejects short markdown after trimming", () => {
     expect(markdownGate(`   ${"x".repeat(349)}   `, cfg)).toEqual({ ok: false, why: "too_short" });
   });
+
+  it("counts the title against the ceiling (the submit sends it in the same queue message)", () => {
+    const markdown = "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 10);
+    expect(markdownGate(markdown, cfg, "t".repeat(10))).toEqual({ ok: true });
+    expect(markdownGate(markdown, cfg, "t".repeat(11))).toEqual({ ok: false, why: "over_ceiling" });
+  });
+
+  it("measures JSON-escaped bytes (the queue caps the serialized message)", () => {
+    // Each `"` costs 2 bytes once serialized into ProcessReadingArgs.
+    const half = MARKDOWN_SUBMIT_BUDGET_BYTES / 2;
+    expect(markdownGate('"'.repeat(half), cfg)).toEqual({ ok: true });
+    expect(markdownGate('"'.repeat(half + 1), cfg)).toEqual({ ok: false, why: "over_ceiling" });
+  });
+
+  it("measures title bytes, not chars", () => {
+    const markdown = "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 10);
+    // "é" is 2 UTF-8 bytes: 6 chars is 12 bytes, over the 10 bytes of headroom.
+    expect(markdownGate(markdown, cfg, "é".repeat(6))).toEqual({ ok: false, why: "over_ceiling" });
+  });
 });
 
 describe("parseRunArgs", () => {
@@ -242,6 +261,23 @@ describe("runAgent execution", () => {
     expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ source_url: fine.url }));
     expect(summary).toMatchObject({ gate_rejected: 1, imported: 1 });
     expect(saved.at(-1)?.readings[big.id]).toMatchObject({ last_outcome: "gate_rejected", attempts: 1 });
+  });
+
+  it("gate-rejects a body under the ceiling whose title pushes the queue payload over it", async () => {
+    const row = blockedRow();
+    const { deps } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+        kind: "extracted",
+        markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
+        title: "T".repeat(200),
+        extractor: "readability",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
   });
 
   it("gate-rejects short markdown", async () => {

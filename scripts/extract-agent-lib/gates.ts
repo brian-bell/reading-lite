@@ -12,9 +12,28 @@ export const MARKDOWN_SUBMIT_BUDGET_BYTES = MARKDOWN_IMPORT_MAX_BYTES - QUEUE_EN
 
 export type GateVerdict = { ok: true } | { ok: false; why: "too_short" | "over_ceiling" };
 
-export function markdownGate(markdown: string, cfg: { minArticleChars: number }): GateVerdict {
+// Cost of `text` inside the serialized queue message: JSON-escaped UTF-8 bytes,
+// less the two quote delimiters (fixed framing the envelope reserve covers).
+// Escaping is what makes this more than a byte count — a body full of quotes or
+// backslashes serializes to nearly twice its raw size, and the 1 KB reserve only
+// covers fixed envelope overhead, not unbounded per-character expansion.
+function serializedBytes(text: string): number {
+  return new TextEncoder().encode(JSON.stringify(text)).byteLength - 2;
+}
+
+// `title` is measured alongside the markdown because the submit sends both in
+// the same import body, and the Worker forwards both in the same queue message.
+// A long Readability title on a body sitting at the ceiling would otherwise pass
+// here and 503 the send *after* the eager manifest/list writes, replacing the
+// recoverable failure with a QueueSendError at `queued`.
+export function markdownGate(
+  markdown: string,
+  cfg: { minArticleChars: number },
+  title?: string,
+): GateVerdict {
   if (markdown.trim().length < cfg.minArticleChars) return { ok: false, why: "too_short" };
-  if (new TextEncoder().encode(markdown).byteLength > MARKDOWN_SUBMIT_BUDGET_BYTES) {
+  const bytes = serializedBytes(markdown) + (title ? serializedBytes(title) : 0);
+  if (bytes > MARKDOWN_SUBMIT_BUDGET_BYTES) {
     return { ok: false, why: "over_ceiling" };
   }
   return { ok: true };
