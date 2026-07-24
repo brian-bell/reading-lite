@@ -255,4 +255,39 @@ describe("validateProcessingCredentials", () => {
       }),
     ).not.toThrow();
   });
+
+  it("rejects an invalid OpenAI reasoning effort at the preflight seam", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "openai",
+        openaiApiKey: "sk-openai",
+        openaiReasoningEffort: "extreme",
+      }),
+    ).toThrow(/invalid OPENAI_SUMMARIZATION_REASONING_EFFORT: extreme/);
+    // The provider default is OpenAI, so an absent provider validates effort too.
+    expect(() =>
+      validateProcessingCredentials({
+        openaiApiKey: "sk-openai",
+        openaiReasoningEffort: "extreme",
+      }),
+    ).toThrow(/invalid OPENAI_SUMMARIZATION_REASONING_EFFORT/);
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "openai",
+        openaiApiKey: "sk-openai",
+        openaiReasoningEffort: "high",
+      }),
+    ).not.toThrow();
+  });
+
+  it("ignores OpenAI-only effort when Anthropic is selected", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        openaiReasoningEffort: "irrelevant-invalid-value",
+      }),
+    ).not.toThrow();
+  });
 });

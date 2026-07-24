@@ -61,6 +61,7 @@ export function validateProcessingCredentials(config: {
   provider?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  openaiReasoningEffort?: string;
 }): void {
   const provider = parseSummarizerProvider(config.provider);
   if (!config.openaiApiKey) {
@@ -72,6 +73,9 @@ export function validateProcessingCredentials(config: {
     throw new SummarizerConfigError(
       "missing ANTHROPIC_API_KEY for SUMMARIZER_PROVIDER=anthropic",
     );
+  }
+  if (provider === "openai") {
+    parseReasoningEffort(config.openaiReasoningEffort);
   }
 }
 
