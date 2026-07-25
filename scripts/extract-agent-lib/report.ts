@@ -1,0 +1,118 @@
+// Run report: one JSON line per run, appended to a size-rotated JSONL log.
+//
+// The log is the only durable evidence a timer-driven run leaves behind, so the
+// line has to be readable a week later with `jq` and small enough to keep every
+// run: `rows` is therefore filtered (below) while `counts` stays complete, and
+// the line carries the corpus it touched (`api_base`) but never the token.
+//
+// A failed write is not swallowed — the caller fails the run on it. The corpus
+// work may have succeeded, but a paid-action run with no evidence is exactly
+// what the dead-man ping exists to catch; a false-positive page beats silent
+// evidence loss.
+
+import { appendFile, mkdir, rename, stat } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { AgentConfig } from "./config";
+import type { PerRowOutcome, RunArgs, RunSummary } from "./run";
+
+export type RunStatus = "ok" | "crashed";
+
+const ERROR_MESSAGE_MAX = 500;
+
+export interface RunLine {
+  v: 1;
+  run_id: string;
+  status: RunStatus;
+  dry_run: boolean;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  host: string;
+  pid: number;
+  api_base: string;
+  args: RunArgs;
+  caps: { max_paid_actions: number; max_attempts: number };
+  counts?: Record<string, number>;
+  rows?: PerRowOutcome[];
+  error?: { name: string; message: string };
+}
+
+export interface BuildRunLineInput {
+  status: RunStatus;
+  args: RunArgs;
+  config: AgentConfig;
+  summary?: RunSummary;
+  error?: unknown;
+  startedAt: Date;
+  finishedAt: Date;
+  runId: string;
+  host: string;
+  pid: number;
+}
+
+export function buildRunLine(input: BuildRunLineInput): RunLine {
+  const { config, summary } = input;
+  const line: RunLine = {
+    v: 1,
+    run_id: input.runId,
+    status: input.status,
+    dry_run: summary?.dry_run ?? !input.args.execute,
+    started_at: input.startedAt.toISOString(),
+    finished_at: input.finishedAt.toISOString(),
+    duration_ms: input.finishedAt.getTime() - input.startedAt.getTime(),
+    host: input.host,
+    pid: input.pid,
+    api_base: config.api.base,
+    args: { ...input.args },
+    caps: { max_paid_actions: config.maxPaidActions, max_attempts: config.maxAttempts },
+  };
+  if (summary) {
+    // Derived from the summary's own numeric fields rather than a hand-written
+    // list, so a counter added in a later phase shows up in the log the day it
+    // exists.
+    line.counts = Object.fromEntries(
+      Object.entries(summary).filter(([, value]) => typeof value === "number"),
+    ) as Record<string, number>;
+    line.rows = summary.rows.filter(isReportable);
+  }
+  if (input.status === "crashed") line.error = describeError(input.error);
+  return line;
+}
+
+// A dry run against the whole corpus buckets one row per reading, nearly all of
+// them ineligible. Serializing those would make the log unusable and unbounded,
+// so only rows that did something (every `attempt`, including planned/deferred)
+// or need a human (manual, backed_off) reach the line. The counts still tell
+// the whole story.
+function isReportable(row: PerRowOutcome): boolean {
+  return row.decision === "attempt" || row.decision === "manual" || row.decision === "backed_off";
+}
+
+function describeError(error: unknown): { name: string; message: string } {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  return { name, message: message.slice(0, ERROR_MESSAGE_MAX) };
+}
+
+export async function appendRunLine(
+  path: string,
+  line: RunLine,
+  opts: { maxBytes: number },
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await rotateIfNeeded(path, opts.maxBytes);
+  await appendFile(path, `${JSON.stringify(line)}\n`, "utf-8");
+}
+
+// Two files, so the log is bounded at ~2 × maxBytes without needing logrotate.
+async function rotateIfNeeded(path: string, maxBytes: number): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(path)).size;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    throw e;
+  }
+  if (size < maxBytes) return;
+  await rename(path, `${path}.1`);
+}
