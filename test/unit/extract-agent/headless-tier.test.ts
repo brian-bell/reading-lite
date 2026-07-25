@@ -240,6 +240,31 @@ describe("extractHeadless", () => {
     expect(renderPage).not.toHaveBeenCalled();
   });
 
+  it("validates the final URL with a fresh deadline after rendering uses the original one", async () => {
+    const lookup: LookupFn = async (hostname) => {
+      if (hostname === "slow.example") return new Promise(() => {});
+      return [{ address: PUBLIC_ADDRESS }];
+    };
+    const renderPage = vi.fn(async (
+      _url: string,
+      opts: { routeFilter: (url: string) => Promise<boolean> },
+    ) => {
+      // Consume the render deadline through the public route filter. The
+      // completed render is still usable, and final URL validation must get its
+      // own bounded lookup window rather than inherit this expired signal.
+      expect(await opts.routeFilter("https://slow.example/app.js")).toBe(true);
+      return { html: ARTICLE_HTML, finalUrl: "https://public.example/a" };
+    });
+
+    const outcome = await extractHeadless("https://public.example/a", deps({
+      renderPage: renderPage as unknown as RenderPage,
+      lookup,
+      timeoutMs: 20,
+    }));
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "headless" });
+  });
+
   it("maps a render failure to an error outcome instead of throwing", async () => {
     const outcome = await extractHeadless("https://public.example/a", deps({
       renderPage: vi.fn(async () => {

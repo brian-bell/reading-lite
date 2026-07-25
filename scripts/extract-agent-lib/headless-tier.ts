@@ -132,14 +132,13 @@ async function blocksDestination(url: string, lookup: LookupFn, signal?: AbortSi
 
 export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<ExtractOutcome> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  // One deadline for the whole render, DNS included. LookupFn takes no signal of
-  // its own (node's dns.promises.lookup has none), so a hostname whose
-  // authoritative server never answers would otherwise outlive the render
-  // timeout and wedge a run that works one row at a time — the same reason
-  // safe-fetch races its lookups against the request signal.
-  const deadline = AbortSignal.timeout(timeoutMs);
+  // Bound the initial lookup and every routed request during rendering.
+  // LookupFn takes no signal of its own (node's dns.promises.lookup has none),
+  // so a hostname whose authoritative server never answers would otherwise
+  // outlive the render timeout and wedge a run that works one row at a time.
+  const renderDeadline = AbortSignal.timeout(timeoutMs);
   try {
-    await assertSafeDestination(url, deps.lookup, deadline);
+    await assertSafeDestination(url, deps.lookup, renderDeadline);
   } catch (e) {
     return mapExtractorError(e);
   }
@@ -147,7 +146,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   let rendered: RenderResult;
   try {
     rendered = await deps.renderPage(url, {
-      routeFilter: makeRouteFilter(deps.lookup, deadline),
+      routeFilter: makeRouteFilter(deps.lookup, renderDeadline),
       timeoutMs,
       maxBytes: deps.maxBytes,
     });
@@ -159,9 +158,11 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   }
 
   // Safety before anything else touches the bytes: a render that ended up on a
-  // private host is discarded whole, never parsed for "just the text".
+  // private host is discarded whole, never parsed for "just the text". This
+  // lookup gets a fresh deadline because a successful render may consume the
+  // original window while settling.
   try {
-    await assertSafeDestination(rendered.finalUrl, deps.lookup, deadline);
+    await assertSafeDestination(rendered.finalUrl, deps.lookup, AbortSignal.timeout(timeoutMs));
   } catch (e) {
     return mapExtractorError(e);
   }
