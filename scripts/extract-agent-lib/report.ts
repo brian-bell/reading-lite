@@ -24,6 +24,12 @@ import type { PerRowOutcome, RunArgs, RunSummary } from "./run";
 export type RunStatus = "ok" | "crashed";
 
 const ERROR_MESSAGE_MAX = 500;
+// Rotation only bounds the file between lines, so the line itself has to be
+// bounded by construction — a corpus with thousands of manual-route or
+// backed-off rows would otherwise serialize one multi-megabyte line and blow
+// past AGENT_RUN_LOG_MAX_BYTES in a single append. The overflow is counted, not
+// silently dropped, and `counts` stays complete either way.
+const ROWS_PER_LINE_MAX = 200;
 
 export interface RunLine {
   v: 1;
@@ -40,6 +46,7 @@ export interface RunLine {
   caps: { max_paid_actions: number; max_attempts: number };
   counts?: Record<string, number>;
   rows?: PerRowOutcome[];
+  rows_omitted?: number;
   error?: { name: string; message: string };
 }
 
@@ -79,7 +86,9 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
     line.counts = Object.fromEntries(
       Object.entries(summary).filter(([, value]) => typeof value === "number"),
     ) as Record<string, number>;
-    line.rows = summary.rows.filter(isReportable);
+    const reportable = summary.rows.filter(isReportable);
+    line.rows = reportable.slice(0, ROWS_PER_LINE_MAX);
+    if (reportable.length > ROWS_PER_LINE_MAX) line.rows_omitted = reportable.length - ROWS_PER_LINE_MAX;
   }
   if (input.status === "crashed") line.error = describeError(input.error);
   return line;

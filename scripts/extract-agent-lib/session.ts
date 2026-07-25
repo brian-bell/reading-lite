@@ -47,6 +47,10 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
     } catch (e) {
       status = "crashed";
       error = e;
+      // Say it on stderr immediately: the run report may itself fail to write,
+      // and an operator watching a manual run must not have to go read a JSONL
+      // file to learn that their token was rejected.
+      deps.warn(`extract-agent: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const line = buildRunLine({

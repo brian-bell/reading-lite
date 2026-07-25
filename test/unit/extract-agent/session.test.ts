@@ -117,7 +117,7 @@ describe("runSession", () => {
   });
 
   it("reports a crashed run, skips the success ping, and exits 1", async () => {
-    const { deps, fetchMock } = await makeDeps(
+    const { deps, fetchMock, warn } = await makeDeps(
       {
         pageReadings: vi.fn(async () => {
           throw new AgentFatalError("GET /api/readings failed: 401");
@@ -126,6 +126,9 @@ describe("runSession", () => {
       { healthcheckUrl: "https://hc.example/ping" },
     );
     const result = await runSession({ execute: true }, deps);
+
+    // The operator hears about a fatal run on stderr, not only in the JSONL log.
+    expect(warn.mock.calls.map((c) => String(c[0])).join(" ")).toMatch(/GET \/api\/readings failed: 401/);
 
     expect(result).toMatchObject({ status: "crashed", exitCode: 1 });
     expect(result.summary).toBeUndefined();

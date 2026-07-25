@@ -106,6 +106,19 @@ describe("buildRunLine", () => {
     expect(JSON.stringify(line).length).toBeLessThan(8 * 1024);
   });
 
+  it("caps the rows on one line and counts the overflow", () => {
+    const rows = Array.from({ length: 250 }, (_, i) => row({ id: `rd_m${i}`, decision: "manual", outcome: "manual" }));
+    const line = okLine({ summary: summary({ scanned: 250, manual: 250, rows }) });
+    expect(line.rows).toHaveLength(200);
+    expect(line.rows_omitted).toBe(50);
+    expect(line.counts!.manual).toBe(250);
+  });
+
+  it("omits the overflow marker when every reportable row fits", () => {
+    const rows = Array.from({ length: 10 }, (_, i) => row({ id: `rd_m${i}`, decision: "manual" }));
+    expect(okLine({ summary: summary({ rows }) }).rows_omitted).toBeUndefined();
+  });
+
   it("never serializes the API token", () => {
     const config = makeConfig({ api: { base: "https://reading.example", token: "tok_super_secret" } });
     expect(JSON.stringify(okLine({ config }))).not.toContain("tok_super_secret");
