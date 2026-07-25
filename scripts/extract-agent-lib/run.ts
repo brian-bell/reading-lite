@@ -12,7 +12,7 @@ import {
   type AttemptOutcome,
   type SidecarState,
 } from "./sidecar";
-import type { StaticOutcome } from "./static-tier";
+import type { ExtractOutcome } from "./outcome";
 import type { SubmitBody, SubmitFn } from "./submit";
 
 export interface RunArgs {
@@ -64,7 +64,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
 export interface RunDeps {
   config: AgentConfig;
   pageReadings: () => Promise<ListIndexItem[]>;
-  extract: (url: string) => Promise<StaticOutcome>;
+  extract: (url: string) => Promise<ExtractOutcome>;
   submit: SubmitFn;
   loadState: () => Promise<SidecarState>;
   saveState: (state: SidecarState) => Promise<void>;
@@ -227,7 +227,7 @@ async function attemptRow(
   deps: RunDeps,
   budget: Pick<Budget, "tryConsume" | "release">,
 ): Promise<ActResult> {
-  let outcome: StaticOutcome;
+  let outcome: ExtractOutcome;
   try {
     outcome = await deps.extract(row.url);
   } catch (e) {

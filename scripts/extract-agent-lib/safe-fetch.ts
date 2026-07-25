@@ -87,7 +87,12 @@ function stripCredentials(headers: Headers): void {
   for (const name of CREDENTIAL_HEADERS) headers.delete(name);
 }
 
-async function assertSafeDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<void> {
+// Exported for the headless tier, which cannot route its egress through this
+// wrapper (the browser owns its own connections) but must apply the identical
+// rules to the URL it navigates to and the URL it ends up on. Sharing the
+// function is what keeps the hostname rules and the resolved-address rules from
+// drifting apart between the two tiers.
+export async function assertSafeDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   assertSafeUrl(url); // scheme + literal/hostname rules, shared with the Worker
   const hostname = new URL(url).hostname.toLowerCase();

@@ -6,7 +6,7 @@ import {
 } from "../../../scripts/extract-agent-lib/gates";
 import { parseRunArgs, runAgent, type RunDeps } from "../../../scripts/extract-agent-lib/run";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
-import type { StaticOutcome } from "../../../scripts/extract-agent-lib/static-tier";
+import type { ExtractOutcome } from "../../../scripts/extract-agent-lib/outcome";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../../scripts/import-markdown-lib/parse";
 import { makeConfig, makeRow } from "./helpers";
 
@@ -30,11 +30,11 @@ function makeDeps(
     config: makeConfig(),
     pageReadings: vi.fn(async () => rows),
     extract: vi.fn(
-      async (): Promise<StaticOutcome> => ({
+      async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: GOOD_MARKDOWN,
         title: "T",
-        extractor: "readability",
+        tier: "static", salvaged: false,
       }),
     ),
     submit: vi.fn(async () => ({ outcome: "new" as const, id: "rd_x" })),
@@ -265,11 +265,11 @@ describe("runAgent execution", () => {
     const fine = blockedRow();
     const { deps, saved } = makeDeps([big, fine], {
       config: makeConfig({ maxPaidActions: 1 }),
-      extract: vi.fn(async (url: string): Promise<StaticOutcome> => ({
+      extract: vi.fn(async (url: string): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: url === big.url ? "x".repeat(MARKDOWN_IMPORT_MAX_BYTES) : GOOD_MARKDOWN,
         title: "T",
-        extractor: "readability",
+        tier: "static", salvaged: false,
       })),
     });
 
@@ -285,11 +285,11 @@ describe("runAgent execution", () => {
   it("gate-rejects a body under the ceiling whose title pushes the queue payload over it", async () => {
     const row = blockedRow();
     const { deps } = makeDeps([row], {
-      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
         title: "T".repeat(200),
-        extractor: "readability",
+        tier: "static", salvaged: false,
       })),
     });
 
@@ -307,10 +307,10 @@ describe("runAgent execution", () => {
     // gate and fail at queue.send, after the eager writes.
     const row = blockedRow({ title: "T".repeat(200) });
     const { deps } = makeDeps([row], {
-      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
-        extractor: "readability",
+        tier: "static", salvaged: false,
       })),
     });
 
@@ -328,10 +328,10 @@ describe("runAgent execution", () => {
     // the agent only has to size it.
     const row = blockedRow({ title: "   " });
     const { deps } = makeDeps([row], {
-      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: GOOD_MARKDOWN,
-        extractor: "readability",
+        tier: "static", salvaged: false,
       })),
     });
 
@@ -377,11 +377,11 @@ describe("runAgent execution", () => {
   it("gate-rejects short markdown", async () => {
     const row = blockedRow();
     const { deps } = makeDeps([row], {
-      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: "thin",
         title: "T",
-        extractor: "readability",
+        tier: "static", salvaged: false,
       })),
     });
 
@@ -395,7 +395,7 @@ describe("runAgent execution", () => {
     const challenged = blockedRow();
     const gone = blockedRow();
     const { deps, saved } = makeDeps([challenged, gone], {
-      extract: vi.fn(async (url: string): Promise<StaticOutcome> =>
+      extract: vi.fn(async (url: string): Promise<ExtractOutcome> =>
         url === challenged.url ? { kind: "challenge", detail: "403" } : { kind: "dead", detail: "404" },
       ),
     });
@@ -428,9 +428,9 @@ describe("runAgent execution", () => {
     const boom = blockedRow();
     const good = blockedRow();
     const { deps, saved } = makeDeps([boom, good], {
-      extract: vi.fn(async (url: string): Promise<StaticOutcome> => {
+      extract: vi.fn(async (url: string): Promise<ExtractOutcome> => {
         if (url === boom.url) throw new Error("chromium ate it");
-        return { kind: "extracted", markdown: GOOD_MARKDOWN, title: "T", extractor: "readability" };
+        return { kind: "extracted", markdown: GOOD_MARKDOWN, title: "T", tier: "static", salvaged: false };
       }),
     });
 
