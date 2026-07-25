@@ -294,6 +294,23 @@ describe("runSession concurrency", () => {
     expect(raw.startsWith("x".repeat(2000))).toBe(true);
   });
 
+  it("reports a lock that cannot be acquired at all as a crashed run", async () => {
+    // An unwritable lock path (bad mount, wrong owner) must not bypass the run
+    // report and the failure ping on its way to stderr.
+    const { deps, fetchMock } = await makeDeps({}, {
+      lockPath: await unwritableLogPath(),
+      healthcheckUrl: "https://hc.example/ping",
+      healthcheckFailUrl: "https://hc.example/ping/fail",
+    });
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result).toMatchObject({ status: "crashed", exitCode: 1 });
+    expect(deps.pageReadings).not.toHaveBeenCalled();
+    expect((await readLines(deps.config.runLogPath))[0]).toMatchObject({ status: "crashed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://hc.example/ping/fail");
+  });
+
   it("releases the lock even when the run crashes", async () => {
     const { deps } = await makeDeps({
       pageReadings: vi.fn(async () => {

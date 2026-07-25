@@ -172,6 +172,21 @@ describe("acquireLock", () => {
     expect((await readLock(path)).run_id).toBe("run_1");
   });
 
+  it("fails loudly on a lock that is present but unreadable, at any age", async () => {
+    // A directory at the lock path stands in for the unreadable-but-present
+    // cases (a root-written file the service user can't read, EIO). Silently
+    // holding would strand every scheduled run in already_running with nothing
+    // to show; reclaiming it would delete a lock whose holder may be alive. So
+    // it fails the acquire, which the session turns into a reported crash.
+    const path = await freshPath();
+    await mkdir(path, { recursive: true });
+    await expect(acquireLock(path, makeDeps())).rejects.toThrow();
+
+    const stale = new Date(NOW.getTime() - 4 * 60 * 60 * 1000);
+    await utimes(path, stale, stale);
+    await expect(acquireLock(path, makeDeps({ maxAgeSeconds: 3 * 60 * 60 }))).rejects.toThrow();
+  });
+
   it("breaks a corrupt lock once its mtime passes the age ceiling", async () => {
     const path = await freshPath();
     await mkdir(dirname(path), { recursive: true });

@@ -15,8 +15,9 @@
 //   | same host, pid dead                               | break + warn     |
 //   | foreign host, age <= maxAgeSeconds                | held             |
 //   | foreign host, age > maxAgeSeconds                 | break + warn     |
-//   | unparsable, mtime age <= maxAgeSeconds            | held + warn      |
-//   | unparsable, mtime age > maxAgeSeconds             | break + warn     |
+//   | unparsable content, mtime age <= maxAgeSeconds    | held + warn      |
+//   | unparsable content, mtime age > maxAgeSeconds     | break + warn     |
+//   | present but unreadable (EACCES/EISDIR/EIO)        | acquisition error|
 //
 // The contestable row is the first one: a live holder is never broken, at any
 // age. Age-based breaking of a *live* holder trades an observable stall for an
@@ -111,7 +112,9 @@ export async function acquireLock(path: string, deps: AcquireDeps): Promise<Acqu
 // Read-only peek, for a dry run that wants to say "an execute run is in flight"
 // without taking or judging the lock.
 export async function readLockHolder(path: string): Promise<LockFile | undefined> {
-  return (await readLock(path)).lock;
+  // Best-effort by design: this only decorates a dry run's console warning, and
+  // an unreadable lock is not worth failing a plan over.
+  return readLock(path).then((existing) => existing.lock, () => undefined);
 }
 
 function acquired(path: string, deps: AcquireDeps): AcquireResult {
@@ -142,13 +145,34 @@ interface ExistingLock {
 }
 
 async function readLock(path: string): Promise<ExistingLock> {
-  let raw: string;
   let mtime: Date | undefined;
   try {
-    raw = await readFile(path, "utf-8");
     mtime = (await stat(path)).mtime;
-  } catch {
-    return {};
+  } catch (e) {
+    // Absent is the one benign answer — the file vanished between our failed
+    // create and this read. A stat that fails any other way (EIO, EACCES on the
+    // directory) is the same unknowable state as an unreadable file, and takes
+    // the same route: an acquisition error, not a silent hold.
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    throw e;
+  }
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (e) {
+    // The holder released it between the stat and this read — an ordinary
+    // handoff, not a failure.
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    // Present but unreadable (a root-written file this user cannot open, a
+    // directory at the configured path, transient EIO). Two wrong answers to
+    // avoid here: calling it "vanished" makes `judge` hold silently and forever,
+    // so every scheduled run reports already_running with nothing to show; and
+    // handing it to the mtime rule would reclaim — and delete — a lock whose
+    // holder may well be alive, since a file we cannot read tells us nothing
+    // about the process that wrote it. So it is an acquisition error: loud,
+    // reported, and non-destructive. The mtime rule stays for the case it was
+    // written for, content we *could* read and could not parse.
+    throw e;
   }
   try {
     const parsed = JSON.parse(raw) as Partial<LockFile>;
@@ -235,18 +259,30 @@ async function removeIfStillOurs(
     if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return;
     throw e;
   }
-  const moved = await readLock(scratch);
+  // An unreadable scratch file is "not ours" — restore it rather than delete
+  // something we cannot identify.
+  const moved = await readLock(scratch).catch(() => ({}) as ExistingLock);
   if (!isOurs(moved)) {
     onForeign?.(moved);
     try {
       await link(scratch, path);
-    } catch {
-      // Someone claimed the path while we held their file aside. Their lock is
-      // now unreachable by name, so keep the scratch copy rather than deleting
-      // it: a stray `.breaking.*`/`.releasing.*` file an operator can see beats
-      // destroying the only record of a run that still believes it holds the
-      // lock. See the residual-race note in the module header.
-      return;
+    } catch (e) {
+      // EEXIST is the only failure that proves the path is occupied: someone
+      // claimed it while we held their file aside. Their lock is now unreachable
+      // by name, so keep the scratch copy rather than deleting it — a stray
+      // `.breaking.*`/`.releasing.*` file an operator can see beats destroying
+      // the only record of a run that still believes it holds the lock. See the
+      // residual-race note in the module header.
+      if ((e as NodeJS.ErrnoException)?.code === "EEXIST") return;
+      // Anything else (EPERM, EIO, EOPNOTSUPP on a filesystem without hard
+      // links) leaves the file we moved reachable only as `.breaking.*`. There
+      // is no safe way to put it back: `rename` is the only other restore
+      // primitive and it replaces its destination, which would displace a run
+      // that legitimately took the path in the meantime — and a fast-path
+      // acquirer returns straight after its O_EXCL create, so it would never
+      // notice. Not clobbering wins: fail the acquire, leave the scratch file
+      // where an operator can see it, and let the reported crash explain why.
+      throw e;
     }
   }
   await unlink(scratch).catch(() => {});

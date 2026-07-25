@@ -52,25 +52,35 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
   let holder: LockFile | undefined;
 
   let lock: AcquireResult = { acquired: false };
-  if (args.execute) {
-    lock = await acquireLock(config.lockPath, lockDeps(deps));
-    if (!lock.acquired) {
-      // An overlapping run is the lock working, not a failure: report it, exit
-      // 0, and let the next timer tick pick the rows up.
-      status = "already_running";
-      holder = lock.holder;
-    }
-  } else {
-    const inFlight = await readLockHolder(config.lockPath);
-    if (inFlight) {
-      deps.warn(
-        `extract-agent: an --execute run is already in flight (run ${inFlight.run_id}, pid ${inFlight.pid} on ${inFlight.host}) — this plan may not match what it does`,
-      );
-    }
-  }
 
   try {
-    if (status !== "already_running") {
+    if (args.execute) {
+      try {
+        lock = await acquireLock(config.lockPath, lockDeps(deps));
+      } catch (e) {
+        // An unusable lock path (bad mount, wrong owner, a failed reclaim) is a
+        // crashed run, not a silent exit: it has to reach the run log and the
+        // failure ping like any other fatal error, rather than only stderr.
+        status = "crashed";
+        error = e;
+        deps.warn(`extract-agent: could not acquire the run lock: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (status === "ok" && !lock.acquired) {
+        // An overlapping run is the lock working, not a failure: report it, exit
+        // 0, and let the next timer tick pick the rows up.
+        status = "already_running";
+        holder = lock.holder;
+      }
+    } else {
+      const inFlight = await readLockHolder(config.lockPath);
+      if (inFlight) {
+        deps.warn(
+          `extract-agent: an --execute run is already in flight (run ${inFlight.run_id}, pid ${inFlight.pid} on ${inFlight.host}) — this plan may not match what it does`,
+        );
+      }
+    }
+
+    if (status === "ok") {
       try {
         summary = await runAgent(args, deps);
       } catch (e) {
