@@ -167,6 +167,7 @@ describe("appendRunLine", () => {
     await appendRunLine(path, okLine({ runId: "run_2" }), { maxBytes: 1024 * 1024 });
     const lines = (await readFile(path, "utf-8")).trimEnd().split("\n");
     expect(lines).toHaveLength(2);
+    expect((await stat(path)).mode & 0o077).toBe(0); // owner-only: the log holds every URL touched
     expect(lines.map((l) => (JSON.parse(l) as RunLine).run_id)).toEqual(["run_1", "run_2"]);
   });
 
@@ -228,6 +229,8 @@ describe("pingHealthcheck", () => {
     await expect(pingHealthcheck("https://hc.example/ping", d)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(/500/);
+    // The token in a healthchecks.io-style path must not reach stderr.
+    expect(warn.mock.calls[0]![0]).not.toContain("/ping");
   });
 
   it("warns but never throws when the request fails outright", async () => {
@@ -238,5 +241,6 @@ describe("pingHealthcheck", () => {
     await expect(pingHealthcheck("https://hc.example/ping", d)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]![0]).toMatch(/ENOTFOUND/);
+    expect(warn.mock.calls[0]![0]).not.toContain("/ping");
   });
 });

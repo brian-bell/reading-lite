@@ -51,7 +51,9 @@ async function main(): Promise<void> {
   });
 
   if (result.summary) printSummary(result.summary, args);
-  process.exit(result.exitCode);
+  // exitCode, not exit(): process.exit() drops pending stdout writes, which
+  // truncates this summary whenever the timer pipes the agent into a collector.
+  process.exitCode = result.exitCode;
 }
 
 function printSummary(summary: RunSummary, args: RunArgs): void {
@@ -78,5 +80,5 @@ function printSummary(summary: RunSummary, args: RunArgs): void {
 
 main().catch((e) => {
   console.error(`extract-agent: ${e instanceof Error ? e.message : String(e)}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

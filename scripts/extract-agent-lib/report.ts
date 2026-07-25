@@ -114,9 +114,12 @@ export async function appendRunLine(
   line: RunLine,
   opts: { maxBytes: number },
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await rotateIfNeeded(path, opts.maxBytes);
-  await appendFile(path, `${JSON.stringify(line)}\n`, "utf-8");
+  // Owner-only: the log holds every URL the agent touched, which on a shared box
+  // is nobody else's business. The mode applies at creation only — a log that
+  // predates this is the operator's to chmod.
+  await appendFile(path, `${JSON.stringify(line)}\n`, { encoding: "utf-8", mode: 0o600 });
 }
 
 export interface PingDeps {
@@ -137,9 +140,23 @@ export async function pingHealthcheck(url: string | undefined, deps: PingDeps): 
       method: "GET",
       signal: AbortSignal.timeout(deps.timeoutMs ?? PING_TIMEOUT_MS),
     });
-    if (!res.ok) deps.warn(`healthcheck ping to ${url} returned ${res.status}`);
+    if (!res.ok) deps.warn(`healthcheck ping to ${redactPingUrl(url)} returned ${res.status}`);
   } catch (e) {
-    deps.warn(`healthcheck ping to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
+    deps.warn(
+      `healthcheck ping to ${redactPingUrl(url)} failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+// Healthchecks.io-style endpoints put an unguessable token in the path, and a
+// warning goes to stderr — i.e. to journald, where it is readable by principals
+// who cannot read `.extract-agent.vars`. Anyone holding the token can ping it
+// themselves and mask a dead timer, so identify the endpoint by origin only.
+function redactPingUrl(url: string): string {
+  try {
+    return `${new URL(url).origin}/…`;
+  } catch {
+    return "the configured healthcheck url";
   }
 }
 
