@@ -1,6 +1,26 @@
 import type { ListIndexItem, ListReadingsResponse } from "../../../src/schemas/api";
+import type { AgentConfig } from "../../../scripts/extract-agent-lib/config";
 
 let counter = 0;
+
+// Single home for a test config, so a new knob lands here once rather than in
+// every suite that needs an AgentConfig.
+export function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
+  return {
+    api: { base: "https://reading.example", token: "tok" },
+    maxPaidActions: 25,
+    maxAttempts: 3,
+    fetchMaxBytes: 20 * 1024 * 1024,
+    minArticleChars: 350,
+    statePath: "/unused/state.json",
+    runLogPath: "/unused/runs.jsonl",
+    runLogMaxBytes: 5 * 1024 * 1024,
+    lockPath: "/unused/agent.lock",
+    lockMaxAgeSeconds: 3 * 60 * 60,
+    email: false,
+    ...overrides,
+  };
+}
 
 export function makeRow(overrides: Partial<ListIndexItem> = {}): ListIndexItem {
   counter += 1;

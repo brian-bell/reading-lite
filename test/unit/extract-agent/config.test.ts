@@ -17,8 +17,36 @@ describe("resolveAgentConfig", () => {
       fetchMaxBytes: 20 * 1024 * 1024,
       minArticleChars: 350,
       statePath: "/home/agent/.reading-lite/extract-agent.state.json",
+      runLogPath: "/home/agent/.reading-lite/extract-agent.runs.jsonl",
+      runLogMaxBytes: 5 * 1024 * 1024,
+      lockPath: "/home/agent/.reading-lite/extract-agent.lock",
+      lockMaxAgeSeconds: 10800,
+      healthcheckFailUrl: undefined,
       email: false,
     });
+  });
+
+  it("moves the derived run-log and lock paths with the state dir", () => {
+    const config = resolveAgentConfig({
+      vars: { ...REQUIRED, AGENT_STATE_PATH: "/var/lib/agent/state.json" },
+      homedir: "/home/agent",
+    });
+    expect(config.runLogPath).toBe("/var/lib/agent/extract-agent.runs.jsonl");
+    expect(config.lockPath).toBe("/var/lib/agent/extract-agent.lock");
+  });
+
+  it("lets explicit run-log and lock paths win over the derivation", () => {
+    const config = resolveAgentConfig({
+      vars: {
+        ...REQUIRED,
+        AGENT_STATE_PATH: "/var/lib/agent/state.json",
+        AGENT_RUN_LOG_PATH: "/var/log/agent/runs.jsonl",
+        AGENT_LOCK_PATH: "/run/agent.lock",
+      },
+      homedir: "/home/agent",
+    });
+    expect(config.runLogPath).toBe("/var/log/agent/runs.jsonl");
+    expect(config.lockPath).toBe("/run/agent.lock");
   });
 
   it("strips a trailing slash off the API base", () => {
@@ -34,11 +62,16 @@ describe("resolveAgentConfig", () => {
       vars: {
         ...REQUIRED,
         HEALTHCHECK_URL: "https://hc.example/ping",
+        HEALTHCHECK_FAIL_URL: "https://hc.example/ping/fail",
         AGENT_MAX_PAID_ACTIONS: "5",
         AGENT_MAX_ATTEMPTS: "2",
         AGENT_FETCH_MAX_BYTES: "1048576",
         AGENT_MIN_ARTICLE_CHARS: "100",
         AGENT_STATE_PATH: "/var/lib/agent/state.json",
+        AGENT_RUN_LOG_PATH: "/var/log/agent/runs.jsonl",
+        AGENT_RUN_LOG_MAX_BYTES: "1024",
+        AGENT_LOCK_PATH: "/run/agent.lock",
+        AGENT_LOCK_MAX_AGE_SECONDS: "60",
         AGENT_EMAIL: "true",
       },
       homedir: "/home/agent",
@@ -51,6 +84,11 @@ describe("resolveAgentConfig", () => {
       fetchMaxBytes: 1048576,
       minArticleChars: 100,
       statePath: "/var/lib/agent/state.json",
+      runLogPath: "/var/log/agent/runs.jsonl",
+      runLogMaxBytes: 1024,
+      lockPath: "/run/agent.lock",
+      lockMaxAgeSeconds: 60,
+      healthcheckFailUrl: "https://hc.example/ping/fail",
       email: true,
     });
   });
@@ -65,10 +103,12 @@ describe("resolveAgentConfig", () => {
   });
 
   it("rejects non-positive or non-numeric caps", () => {
-    for (const bad of ["nope", "-1", "0"]) {
-      expect(() =>
-        resolveAgentConfig({ vars: { ...REQUIRED, AGENT_MAX_PAID_ACTIONS: bad }, homedir: "/h" }),
-      ).toThrow(/AGENT_MAX_PAID_ACTIONS/);
+    for (const key of ["AGENT_MAX_PAID_ACTIONS", "AGENT_LOCK_MAX_AGE_SECONDS", "AGENT_RUN_LOG_MAX_BYTES"]) {
+      for (const bad of ["nope", "-1", "0"]) {
+        expect(() =>
+          resolveAgentConfig({ vars: { ...REQUIRED, [key]: bad }, homedir: "/h" }),
+        ).toThrow(new RegExp(key));
+      }
     }
   });
 });
