@@ -32,6 +32,16 @@
 // and the operator removes the file. Breaking it automatically would mean
 // breaking live holders on a timer, which is the failure mode with no alarm.
 //
+// Residual race, stated rather than hidden: reclaiming a stale lock cannot be
+// made a single atomic step against a *path*. The removal below is a rename
+// (one winner) plus an identity check, and an acquire re-reads the path before
+// proceeding, which covers every two-contender interleaving. Three contenders
+// racing over one stale lock can still leave a run believing it holds a lock
+// that another has replaced; it finds out at release, which warns. That needs
+// three agent processes overlapping on the same stale file — for a single
+// timer plus the occasional manual run, the alternative (a heartbeat protocol,
+// or a real advisory-lock dependency) buys nothing this deployment can use.
+//
 // There is no signal handler in v1: SIGKILL/SIGTERM deliberately leaves the
 // file behind, and the pid-liveness and boot rules are how it gets reclaimed.
 // A handler would only cover SIGTERM, and the reclaim path has to exist anyway.
@@ -77,8 +87,15 @@ export async function acquireLock(path: string, deps: AcquireDeps): Promise<Acqu
   await breakLock(path, existing, deps);
   // One retry only: losing this race means another run got there first, which
   // is exactly the situation the lock exists to produce.
-  if (await tryCreate(path, deps)) return acquired(path, deps);
-  return { acquired: false, holder: (await readLock(path)).lock };
+  if (!(await tryCreate(path, deps))) return { acquired: false, holder: (await readLock(path)).lock };
+
+  // Confirm the lock we just created is the one at the path. Breaking a stale
+  // lock is the one moment several contenders can be mid-flight at once, and
+  // this read is what stops us proceeding on a lock that a third one has
+  // already replaced.
+  const settled = await readLock(path);
+  if (settled.lock?.run_id !== deps.runId) return { acquired: false, holder: settled.lock };
+  return acquired(path, deps);
 }
 
 // Read-only peek, for a dry run that wants to say "an execute run is in flight"
@@ -211,7 +228,16 @@ async function removeIfStillOurs(
   const moved = await readLock(scratch);
   if (!isOurs(moved)) {
     onForeign?.(moved);
-    await link(scratch, path).catch(() => {});
+    try {
+      await link(scratch, path);
+    } catch {
+      // Someone claimed the path while we held their file aside. Their lock is
+      // now unreachable by name, so keep the scratch copy rather than deleting
+      // it: a stray `.breaking.*`/`.releasing.*` file an operator can see beats
+      // destroying the only record of a run that still believes it holds the
+      // lock. See the residual-race note in the module header.
+      return;
+    }
   }
   await unlink(scratch).catch(() => {});
 }
