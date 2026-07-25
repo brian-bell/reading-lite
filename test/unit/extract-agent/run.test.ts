@@ -114,11 +114,12 @@ describe("parseRunArgs", () => {
     expect(parseRunArgs(["--dry-run"])).toEqual({ execute: false });
   });
 
-  it("parses --execute, --limit, and --only", () => {
-    expect(parseRunArgs(["--execute", "--limit", "5", "--only", "rd_abc"])).toEqual({
+  it("parses --execute, --limit, --only, and --verbose", () => {
+    expect(parseRunArgs(["--execute", "--limit", "5", "--only", "rd_abc", "--verbose"])).toEqual({
       execute: true,
       limit: 5,
       only: "rd_abc",
+      verbose: true,
     });
   });
 
