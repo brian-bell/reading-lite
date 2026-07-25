@@ -54,6 +54,9 @@ describe("extractFromUrl", () => {
     expect(out.markdown).not.toContain("footer");
     expect(out.content_bytes).toBe(new TextEncoder().encode(HTML_ARTICLE).length);
     expect(out.content_sha256).toMatch(/^[0-9a-f]{64}$/);
+    // Which path produced the article. The Worker ignores it; the extraction
+    // agent tiers on it (salvage-only static output is what earns a render).
+    expect(out.salvaged).toBe(false);
   });
 
   // Minimal reduction of the docs.spring.io page from issue #18: content
@@ -82,6 +85,7 @@ describe("extractFromUrl", () => {
     expect(out.markdown).toContain("property value");
     // <script> is stripped, not dumped into the markdown as text.
     expect(out.markdown).not.toContain("var x=1");
+    expect(out.salvaged).toBe(true);
   });
 
   it("keeps <head>/<title> text out of the salvaged markdown (title is metadata)", async () => {
@@ -173,6 +177,9 @@ describe("extractFromUrl", () => {
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toBe("Just some plain text content.");
+    // `salvaged` describes the HTML article path only; a non-HTML capture has no
+    // Readability verdict to report, so it stays absent rather than claiming false.
+    expect(out.salvaged).toBeUndefined();
   });
 
   it("treats application/json as captured (markdown = pretty json)", async () => {
