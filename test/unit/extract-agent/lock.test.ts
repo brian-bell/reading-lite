@@ -141,6 +141,24 @@ describe("acquireLock", () => {
     expect(deps.warn.mock.calls[0]![0]).toMatch(/unreadable|unparsable|corrupt/i);
   });
 
+  it("hands a stale lock to exactly one of two contenders", async () => {
+    // Both judge the same dead holder breakable at the same moment. Breaking has
+    // to be a removal of the file they judged, not of whatever sits at the path
+    // by the time they get there, or both would go on to spend paid actions.
+    const path = await freshPath();
+    await writeLockAt(path, { run_id: "run_dead", pid: 999 });
+    const dead = makeDeps({ isProcessAlive: (pid) => pid !== 999 });
+
+    const results = await Promise.all([
+      acquireLock(path, { ...dead, runId: "run_a", pid: 111 }),
+      acquireLock(path, { ...dead, runId: "run_b", pid: 222 }),
+    ]);
+
+    expect(results.filter((r) => r.acquired)).toHaveLength(1);
+    const winner = results.find((r) => r.acquired);
+    expect((await readLock(path)).run_id).toBe(winner === results[0] ? "run_a" : "run_b");
+  });
+
   it("breaks a corrupt lock once its mtime passes the age ceiling", async () => {
     const path = await freshPath();
     await mkdir(dirname(path), { recursive: true });
