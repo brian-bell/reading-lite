@@ -142,6 +142,55 @@ describe("safeFetch", () => {
     expect(forwarded.redirect).toBe("manual");
   });
 
+  it("strips credential headers when a redirect crosses origins", async () => {
+    const base = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("https://elsewhere.example/landing"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    await wrapped("https://public.example/start", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "session=secret",
+        "user-agent": "reading-agent/1",
+      },
+    });
+
+    const first = new Headers((base.mock.calls[0]![1] as RequestInit).headers);
+    expect(first.get("authorization")).toBe("Bearer secret");
+
+    const second = new Headers((base.mock.calls[1]![1] as RequestInit).headers);
+    expect(second.get("authorization")).toBeNull();
+    expect(second.get("cookie")).toBeNull();
+    expect(second.get("user-agent")).toBe("reading-agent/1"); // non-credential headers survive
+  });
+
+  it("keeps credential headers on a same-origin redirect", async () => {
+    const base = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("/canonical"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    await wrapped("https://public.example/start", { headers: { authorization: "Bearer secret" } });
+
+    expect(new Headers((base.mock.calls[1]![1] as RequestInit).headers).get("authorization")).toBe("Bearer secret");
+  });
+
+  it("keeps credentials stripped when a later hop returns to the original origin", async () => {
+    const base = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("https://elsewhere.example/bounce"))
+      .mockResolvedValueOnce(redirect("https://public.example/back"))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    await wrapped("https://public.example/start", { headers: { authorization: "Bearer secret" } });
+
+    expect(new Headers((base.mock.calls[2]![1] as RequestInit).headers).get("authorization")).toBeNull();
+  });
+
   it("cancels the terminal redirect body when the hop ceiling is hit", async () => {
     const cancelled: number[] = [];
     const base = vi.fn().mockImplementation(async (url: string) => {

@@ -38,31 +38,47 @@ const DEFAULT_MAX_HOPS = 5;
 // re-issued with the caller's metadata unchanged (no 303 method rewriting) and
 // no request body is forwarded. The caller's `input` may be a Request; its
 // headers/method/signal are merged with `init` (init wins) so an authenticated
-// or conditional GET is not silently stripped.
+// or conditional GET is not silently stripped — though credential headers are
+// dropped once the chain leaves the original origin, mirroring native fetch.
 export function safeFetch(base: typeof fetch, deps: SafeFetchDeps): typeof fetch {
   const maxHops = deps.maxHops ?? DEFAULT_MAX_HOPS;
   return async (input, init = {}) => {
     const request = new Request(input, init);
     const signal = request.signal;
-    // Every hop carries the caller's signal so the extraction timeout still
-    // aborts the in-flight fetch, and the DNS step below races against it too.
-    const hopInit: RequestInit = {
-      method: request.method,
-      headers: request.headers,
-      signal,
-      redirect: "manual",
-    };
+    const headers = new Headers(request.headers);
     let url = request.url;
     for (let redirects = 0; ; redirects++) {
       await assertSafeDestination(url, deps.lookup, signal);
-      const response = await base(url, hopInit);
+      // Every hop carries the caller's signal so the extraction timeout still
+      // aborts the in-flight fetch, and the DNS step above races against it
+      // too. Headers are copied per hop so a later strip cannot retroactively
+      // mutate what an earlier hop was handed.
+      const response = await base(url, {
+        method: request.method,
+        headers: new Headers(headers),
+        signal,
+        redirect: "manual",
+      });
       const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
       if (!location) return response;
       response.body?.cancel().catch(() => {});
       if (redirects >= maxHops) throw new TooManyRedirectsError(url, maxHops);
-      url = new URL(location, url).href;
+      const next = new URL(location, url);
+      // Native fetch drops credentials when a redirect leaves the origin;
+      // issuing hops ourselves opts out of that, so re-apply it by hand. The
+      // strip is permanent for the rest of the chain — a hop back to the
+      // original origin must not resurrect what an off-origin hop already saw.
+      if (next.origin !== new URL(url).origin) stripCredentials(headers);
+      url = next.href;
     }
   };
+}
+
+// Per WHATWG fetch's HTTP-redirect step for a cross-origin Location.
+const CREDENTIAL_HEADERS = ["authorization", "cookie", "cookie2", "proxy-authorization", "www-authenticate"];
+
+function stripCredentials(headers: Headers): void {
+  for (const name of CREDENTIAL_HEADERS) headers.delete(name);
 }
 
 async function assertSafeDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<void> {
