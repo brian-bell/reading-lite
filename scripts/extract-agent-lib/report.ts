@@ -11,6 +11,12 @@
 // plausibly points it at a LAN Uptime Kuma — exactly the private-range target
 // safeFetch refuses. Plain injected fetch with a short timeout instead.
 //
+// Appends are single-`write` and O_APPEND, so concurrent runs (a lock loser
+// reporting `already_running` alongside the holder's own line) interleave
+// safely. Rotation is the one racy part and is best-effort: whoever loses the
+// rename just appends to the fresh file. The worst case is an older rotated log
+// being replaced early, which costs history, not a run.
+//
 // A failed write is not swallowed — the caller fails the run on it. The corpus
 // work may have succeeded, but a paid-action run with no evidence is exactly
 // what the dead-man ping exists to catch; a false-positive page beats silent
@@ -227,5 +233,13 @@ async function rotateIfNeeded(path: string, maxBytes: number, pendingBytes: numb
     throw e;
   }
   if (size + pendingBytes <= maxBytes) return;
-  await rename(path, `${path}.1`);
+  try {
+    await rename(path, `${path}.1`);
+  } catch (e) {
+    // A lock loser writes its `already_running` line while the holder is still
+    // running, so two processes can decide to rotate at once. Losing that race
+    // means the log was already rotated — the append below lands in the fresh
+    // file either way, and a run must not fail over housekeeping.
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
+  }
 }
