@@ -211,25 +211,31 @@ async function render(
   });
   const page = await context.newPage();
   // `goto()` only returns its own navigation response. A JS or meta-refresh
-  // can replace that 200 document while we are settling, so retain every
-  // subsequent main-frame navigation response and classify the one whose DOM
-  // we are about to serialize.
-  let finalNavigationResponse: NavigationResponseLike | null = null;
+  // can replace that 200 document while we are settling, so retain main-frame
+  // document responses and later select the one belonging to the snapshot URL.
+  // A 204/205 navigation never commits a document, so it must not displace the
+  // status for the DOM that remains on screen.
+  const navigationResponses: NavigationResponseLike[] = [];
   page.on("response", (response) => {
-    if (response.frame() === page.mainFrame() && response.request().isNavigationRequest()) {
-      finalNavigationResponse = response;
+    if (
+      response.frame() === page.mainFrame() &&
+      response.request().isNavigationRequest() &&
+      response.status() !== 204 &&
+      response.status() !== 205
+    ) {
+      navigationResponses.push(response);
     }
   });
   const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
   // The response event is expected for HTTP navigations, but preserve goto's
   // documented return as a fallback for a minimal/fake Playwright surface.
-  if (!finalNavigationResponse && response) {
-    finalNavigationResponse = {
+  if (navigationResponses.length === 0 && response && response.status() !== 204 && response.status() !== 205) {
+    navigationResponses.push({
       status: () => response.status(),
       url: () => page.url(),
       frame: () => page.mainFrame(),
       request: () => ({ isNavigationRequest: () => true }),
-    };
+    });
   }
   await page.waitForLoadState("networkidle", { timeout: SETTLE_MS }).catch(() => {});
   // Measure the serialized DOM inside the page before pulling it across:
@@ -264,14 +270,15 @@ async function render(
   if (finalUrl !== before) {
     throw new Error(`page navigated while its content was being read (${before} → ${finalUrl})`);
   }
-  // Classify only after the snapshot is bound. A client/meta navigation can
-  // occur while either DOM await is in flight; the response listener above then
-  // advances with the page, and this point is the first one where both its URL
-  // and the serialized bytes are known to describe the same document.
+  // Classify only after the snapshot is bound. The latest non-204/205
+  // main-frame response is the response that committed the current document:
+  // history.pushState/replaceState can subsequently change page.url() without
+  // loading a different document, while 204/205 never commit one at all.
   //
   // `null` is Playwright's documented result for non-HTTP navigations; those
   // have no HTTP status to classify and are still covered by the URL safety
   // checks around this renderer.
+  const finalNavigationResponse = navigationResponses[navigationResponses.length - 1];
   if (finalNavigationResponse) {
     const status = finalNavigationResponse.status();
     if (status < 200 || status >= 300) {

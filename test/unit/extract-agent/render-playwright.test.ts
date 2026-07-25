@@ -48,6 +48,8 @@ function fakePlaywright(opts: {
   navigationStatus?: number;
   settledNavigationStatus?: number;
   settledNavigationUrl?: string;
+  nonCommittingNavigationStatus?: number;
+  nonCommittingNavigationUrl?: string;
   navigationDuringEvaluateStatus?: number;
   navigationDuringEvaluateUrl?: string;
   launchError?: Error;
@@ -113,6 +115,14 @@ function fakePlaywright(opts: {
         const url = opts.settledNavigationUrl ?? "https://public.example/settled";
         navigatedTo = url;
         responseHandler?.(navigationResponse(opts.settledNavigationStatus, url));
+      }
+      if (opts.nonCommittingNavigationStatus !== undefined) {
+        responseHandler?.(
+          navigationResponse(
+            opts.nonCommittingNavigationStatus,
+            opts.nonCommittingNavigationUrl ?? "https://public.example/no-content",
+          ),
+        );
       }
     },
     on(event: "response", handler_: (response: unknown) => void) {
@@ -407,6 +417,22 @@ describe("makePlaywrightRenderPage", () => {
     expect(state.closedBrowsers).toBe(1);
   });
 
+  it("keeps an error response when the page changes its history path", async () => {
+    // pushState/replaceState can change path and query without loading a new
+    // document, so the original HTTP response still describes the captured DOM.
+    const { module, state } = fakePlaywright({
+      navigationStatus: 403,
+      finalUrl: "https://public.example/challenge?retry=1",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 403: https://public.example/challenge?retry=1",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
   it("rejects an error response reached by a client navigation while settling", async () => {
     const { module, state } = fakePlaywright({
       navigationStatus: 200,
@@ -417,6 +443,23 @@ describe("makePlaywrightRenderPage", () => {
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "bad response status 404: https://public.example/missing",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps the captured document's error status after a non-committing navigation", async () => {
+    // A 204 emits a main-frame response but leaves the current document and URL
+    // in place. It must not replace the 403 status of the HTML we capture.
+    const { module, state } = fakePlaywright({
+      navigationStatus: 403,
+      nonCommittingNavigationStatus: 204,
+      nonCommittingNavigationUrl: "https://public.example/no-content",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 403: https://public.example/a",
     );
     expect(state.closedContexts).toBe(1);
     expect(state.closedBrowsers).toBe(1);
