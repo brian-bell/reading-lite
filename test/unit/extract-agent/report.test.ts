@@ -114,6 +114,23 @@ describe("buildRunLine", () => {
     expect(line.counts!.manual).toBe(250);
   });
 
+  it("clamps a row's free-text fields so one line stays inside the log ceiling", () => {
+    const rows = Array.from({ length: 200 }, (_, i) =>
+      row({
+        id: `rd_a${i}`,
+        url: `https://example.com/${"q".repeat(4000)}`,
+        why: "w".repeat(4000),
+        outcome: "error",
+        detail: "d".repeat(4000),
+      }),
+    );
+    const line = okLine({ summary: summary({ rows }) });
+    expect(line.rows![0]!.url).toHaveLength(500);
+    expect(line.rows![0]!.why).toHaveLength(200);
+    expect(line.rows![0]!.detail).toHaveLength(300);
+    expect(JSON.stringify(line).length).toBeLessThan(256 * 1024);
+  });
+
   it("omits the overflow marker when every reportable row fits", () => {
     const rows = Array.from({ length: 10 }, (_, i) => row({ id: `rd_m${i}`, decision: "manual" }));
     expect(okLine({ summary: summary({ rows }) }).rows_omitted).toBeUndefined();

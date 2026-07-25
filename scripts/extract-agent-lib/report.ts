@@ -30,6 +30,9 @@ const ERROR_MESSAGE_MAX = 500;
 // past AGENT_RUN_LOG_MAX_BYTES in a single append. The overflow is counted, not
 // silently dropped, and `counts` stays complete either way.
 const ROWS_PER_LINE_MAX = 200;
+const URL_MAX = 500;
+const WHY_MAX = 200;
+const DETAIL_MAX = 300;
 
 export interface RunLine {
   v: 1;
@@ -87,7 +90,7 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
       Object.entries(summary).filter(([, value]) => typeof value === "number"),
     ) as Record<string, number>;
     const reportable = summary.rows.filter(isReportable);
-    line.rows = reportable.slice(0, ROWS_PER_LINE_MAX);
+    line.rows = reportable.slice(0, ROWS_PER_LINE_MAX).map(clampRow);
     if (reportable.length > ROWS_PER_LINE_MAX) line.rows_omitted = reportable.length - ROWS_PER_LINE_MAX;
   }
   if (input.status === "crashed") line.error = describeError(input.error);
@@ -101,6 +104,17 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
 // the whole story.
 function isReportable(row: PerRowOutcome): boolean {
   return row.decision === "attempt" || row.decision === "manual" || row.decision === "backed_off";
+}
+
+// Row count alone doesn't bound the line: a reading URL has no schema maximum
+// and an error `detail` is whatever an upstream said. Clamping each free-text
+// field is what makes the line's worst case (~200 × ~1 KB) actually fit inside
+// AGENT_RUN_LOG_MAX_BYTES, whose whole job is bounding disk growth. Long values
+// stay identifiable — the prefix is the part an operator greps for.
+function clampRow(row: PerRowOutcome): PerRowOutcome {
+  const clamped: PerRowOutcome = { ...row, url: row.url.slice(0, URL_MAX), why: row.why.slice(0, WHY_MAX) };
+  if (row.detail !== undefined) clamped.detail = row.detail.slice(0, DETAIL_MAX);
+  return clamped;
 }
 
 function describeError(error: unknown): { name: string; message: string } {
