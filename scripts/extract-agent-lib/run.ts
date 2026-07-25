@@ -4,7 +4,7 @@
 
 import type { ListIndexItem } from "../../src/schemas/api";
 import type { AgentConfig } from "./config";
-import { makeBudget, markdownGate } from "./gates";
+import { makeBudget, markdownGate, type Budget } from "./gates";
 import { classify, type Route } from "./policy";
 import {
   recordAttempt,
@@ -218,7 +218,7 @@ async function attemptRow(
   row: ListIndexItem,
   entry: PerRowOutcome,
   deps: RunDeps,
-  budget: { tryConsume(): boolean },
+  budget: Pick<Budget, "tryConsume" | "release">,
 ): Promise<ActResult> {
   let outcome: StaticOutcome;
   try {
@@ -268,6 +268,13 @@ async function attemptRow(
         entry.outcome = "error";
         entry.detail = result.error;
         return { summaryKey: "errors", sidecarOutcome: "error" };
+      }
+      if (result.outcome === "existing") {
+        // 200/existing means a ready or pending owner: the Worker enqueued no
+        // new summarization, so this cost nothing and the slot goes back. Losing
+        // enough of these races would otherwise exhaust the cap and defer rows
+        // the agent could still have recovered.
+        budget.release();
       }
       entry.outcome = "imported";
       entry.detail = result.outcome === "existing" ? "already existing (worker got there first)" : undefined;

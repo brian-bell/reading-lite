@@ -312,6 +312,35 @@ describe("runAgent execution", () => {
     expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
   });
 
+  it("refunds the paid-action slot when the import no-ops on an existing owner", async () => {
+    // A ready/pending owner returns 200/existing: the Worker enqueued nothing,
+    // so the agent initiated no paid work and the slot must go back. Otherwise
+    // a burst of these races exhausts the cap and defers recoverable rows.
+    const rows = [blockedRow(), blockedRow(), blockedRow()];
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce({ outcome: "existing", id: "rd_x" })
+      .mockResolvedValueOnce({ outcome: "existing", id: "rd_y" })
+      .mockResolvedValueOnce({ outcome: "new", id: "rd_z" });
+    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 1 }), submit });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(submit).toHaveBeenCalledTimes(3);
+    expect(summary).toMatchObject({ imported: 3, deferred: 0 });
+  });
+
+  it("still stops at the cap once real paid work is enqueued", async () => {
+    const rows = [blockedRow(), blockedRow(), blockedRow()];
+    const submit = vi.fn().mockResolvedValue({ outcome: "new", id: "rd_z" });
+    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 2 }), submit });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ imported: 2, deferred: 1 });
+  });
+
   it("gate-rejects short markdown", async () => {
     const row = blockedRow();
     const { deps } = makeDeps([row], {

@@ -120,6 +120,20 @@ describe("recordAttempt", () => {
     state = recordAttempt(state, moved, "error", deps);
     expect(state.readings[moved.id]).toMatchObject({ attempts: 1, given_up: false });
   });
+
+  it("counts a legacy row gaining updated_at as manifest movement", () => {
+    // updated_at is optional on a list row. A legacy row records no baseline,
+    // so requiring both timestamps would keep the entry suppressed forever even
+    // after the Worker republishes the manifest and starts stamping one.
+    const legacy = makeRow({ updated_at: undefined });
+    let state = recordAttempt(emptySidecar(), legacy, "error", deps);
+    state = recordAttempt(state, legacy, "error", deps);
+    expect(state.readings[legacy.id]?.attempts).toBe(2);
+
+    const republished = { ...legacy, updated_at: "2026-07-10T00:00:00.000Z" };
+    state = recordAttempt(state, republished, "error", deps);
+    expect(state.readings[republished.id]).toMatchObject({ attempts: 1, given_up: false });
+  });
 });
 
 describe("shouldAttempt", () => {

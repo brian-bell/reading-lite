@@ -34,6 +34,9 @@ const BLOCKED: Array<[string, string]> = [
   ["239.255.255.255", "multicast upper bound"],
   ["240.0.0.1", "reserved 240/4"],
   ["255.255.255.255", "broadcast"],
+  ["febf::1", "link-local v6 upper bound"],
+  ["fec0::1", "site-local v6 (deprecated, still routed on some LANs)"],
+  ["feff::1", "site-local v6 upper bound"],
 ];
 
 const ALLOWED: Array<[string, string]> = [
@@ -51,6 +54,7 @@ const ALLOWED: Array<[string, string]> = [
   ["198.20.0.1", "just above 198.18/15"],
   ["223.255.255.255", "just below multicast 224/4"],
   ["2606:4700::6810:84e5", "public v6"],
+  ["fe7f::1", "just below link-local fe80/10"],
   ["::ffff:808:808", "v4-mapped public (8.8.8.8)"],
 ];
 

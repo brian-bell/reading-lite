@@ -372,7 +372,10 @@ export function isBlockedHost(host: string): boolean {
     if (embedded && isBlockedV4(embedded)) return true;
     const head = host.split(":")[0] ?? "";
     if (head.startsWith("fc") || head.startsWith("fd")) return true;
-    if (/^fe[89ab][0-9a-f]{0,2}$/.test(head)) return true;
+    // fe80::/10 link-local (fe80–febf) and fec0::/10 site-local (fec0–feff).
+    // Site-local is deprecated but some home LANs still route it, and the home
+    // box has no platform egress guard — so the whole fe80–feff span is blocked.
+    if (/^fe[89a-f][0-9a-f]{0,2}$/.test(head)) return true;
   }
   return false;
 }

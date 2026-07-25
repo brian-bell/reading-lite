@@ -122,7 +122,11 @@ export function recordAttempt(
 }
 
 function manifestMovedSince(entry: SidecarEntry, row: ListIndexItem): boolean {
-  return Boolean(
-    row.updated_at && entry.last_manifest_updated_at && row.updated_at > entry.last_manifest_updated_at,
-  );
+  if (!row.updated_at) return false; // nothing to compare against
+  // updated_at is optional on a list row, so a legacy row records no baseline.
+  // Requiring both timestamps would suppress that entry forever: once the Worker
+  // republishes the manifest and starts stamping updated_at, missing-to-present
+  // is exactly the movement signal, so treat it as one.
+  if (!entry.last_manifest_updated_at) return true;
+  return row.updated_at > entry.last_manifest_updated_at;
 }

@@ -21,6 +21,22 @@ describe("pageAllReadings", () => {
     expect(fetch.mock.calls[1]![0]).toBe("https://reading.example/api/readings?offset=2&limit=100");
   });
 
+  it("de-duplicates a row that shifts across pages mid-mutation (keeps the first copy)", async () => {
+    // A concurrent insert shifts `b` from the end of page 1 onto page 2. Without
+    // dedupe the orchestrator plans it twice and can submit the same reading
+    // twice — the second submit enqueues real paid work if the first already
+    // landed failed.
+    const [a, b, c] = [makeRow(), makeRow(), makeRow()];
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(pageResponse([a, b], true)))
+      .mockResolvedValueOnce(jsonResponse(pageResponse([b, c], false, 2)));
+
+    const rows = await pageAllReadings({ ...DEPS, fetch });
+
+    expect(rows.map((r) => r.id)).toEqual([a.id, b.id, c.id]);
+  });
+
   it("sends the bearer header on every page", async () => {
     const fetch = vi
       .fn()

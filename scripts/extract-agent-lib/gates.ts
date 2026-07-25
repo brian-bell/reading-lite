@@ -40,9 +40,12 @@ export function markdownGate(body: SubmitBody, cfg: { minArticleChars: number })
   return { ok: true };
 }
 
-// Hard per-run cap on paid actions; only actual submits consume it.
+// Hard per-run cap on paid actions; only actual submits consume it. The slot is
+// reserved *before* the submit (never overshoot the cap on an in-flight call)
+// and released again when the response proves no paid work was enqueued.
 export interface Budget {
   tryConsume(): boolean;
+  release(): void;
   readonly consumed: number;
 }
 
@@ -53,6 +56,9 @@ export function makeBudget(cap: number): Budget {
       if (consumed >= cap) return false;
       consumed += 1;
       return true;
+    },
+    release() {
+      if (consumed > 0) consumed -= 1;
     },
     get consumed() {
       return consumed;
