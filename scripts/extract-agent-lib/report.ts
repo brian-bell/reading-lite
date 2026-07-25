@@ -128,13 +128,13 @@ export async function appendRunLine(
   line: RunLine,
   opts: { maxBytes: number },
 ): Promise<void> {
-  const serialized = serializeWithinBudget(line, opts.maxBytes);
+  const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await rotateIfNeeded(path, opts.maxBytes);
+  await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
   // Owner-only: the log holds every URL the agent touched, which on a shared box
   // is nobody else's business. The mode applies at creation only — a log that
   // predates this is the operator's to chmod.
-  await appendFile(path, `${serialized}\n`, { encoding: "utf-8", mode: 0o600 });
+  await appendFile(path, record, { encoding: "utf-8", mode: 0o600 });
 }
 
 export interface PingDeps {
@@ -201,7 +201,11 @@ function serializeWithinBudget(line: RunLine, maxBytes: number): string {
 }
 
 // Two files, so the log is bounded at ~2 × maxBytes without needing logrotate.
-async function rotateIfNeeded(path: string, maxBytes: number): Promise<void> {
+// Rotate when the *pending* record would cross the cap, not merely when the
+// file already has: checking only the current size lets a log sitting just
+// under the cap accept a full-size line, so each retained file could reach ~2 ×
+// maxBytes and the pair ~4 ×.
+async function rotateIfNeeded(path: string, maxBytes: number, pendingBytes: number): Promise<void> {
   let size: number;
   try {
     size = (await stat(path)).size;
@@ -209,6 +213,6 @@ async function rotateIfNeeded(path: string, maxBytes: number): Promise<void> {
     if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return;
     throw e;
   }
-  if (size < maxBytes) return;
+  if (size + pendingBytes <= maxBytes) return;
   await rename(path, `${path}.1`);
 }

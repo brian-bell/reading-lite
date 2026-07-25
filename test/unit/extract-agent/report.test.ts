@@ -200,6 +200,16 @@ describe("appendRunLine", () => {
     expect((JSON.parse(current[0]!) as RunLine).run_id).toBe("run_1");
   });
 
+  it("rotates before an append that would cross the ceiling, so neither file exceeds it", async () => {
+    const path = join(await freshDir(), "runs.jsonl");
+    const cap = 700;
+    for (const runId of ["run_1", "run_2", "run_3"]) {
+      await appendRunLine(path, okLine({ runId }), { maxBytes: cap });
+    }
+    expect((await stat(path)).size).toBeLessThanOrEqual(cap);
+    expect((await stat(`${path}.1`)).size).toBeLessThanOrEqual(cap);
+  });
+
   it("does not rotate a log under the ceiling", async () => {
     const path = join(await freshDir(), "runs.jsonl");
     await appendRunLine(path, okLine(), { maxBytes: 1024 * 1024 });
