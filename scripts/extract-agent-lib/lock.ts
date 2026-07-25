@@ -126,7 +126,11 @@ async function readLock(path: string): Promise<ExistingLock> {
   try {
     const parsed = JSON.parse(raw) as Partial<LockFile>;
     if (
-      parsed.v !== 1 || typeof parsed.run_id !== "string" || typeof parsed.pid !== "number"
+      // pid must be a real pid: `process.kill(0, 0)` signals our own process
+      // group and always succeeds, so a `"pid": 0` lock would read as live
+      // forever and stall every scheduled run. A file that says that is corrupt,
+      // and the mtime path is how corrupt files get reclaimed.
+      parsed.v !== 1 || typeof parsed.run_id !== "string" || !isPid(parsed.pid)
       || typeof parsed.host !== "string" || typeof parsed.started_at !== "string"
       || Number.isNaN(Date.parse(parsed.started_at))
     ) {
@@ -136,6 +140,10 @@ async function readLock(path: string): Promise<ExistingLock> {
   } catch {
     return { mtime };
   }
+}
+
+function isPid(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 async function judge(

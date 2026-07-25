@@ -159,6 +159,19 @@ describe("acquireLock", () => {
     expect((await readLock(path)).run_id).toBe(winner === results[0] ? "run_a" : "run_b");
   });
 
+  it("treats a lock with an impossible pid as corrupt rather than eternally live", async () => {
+    // `process.kill(0, 0)` signals our own process group and succeeds, so a
+    // pid-0 lock would otherwise read as held forever.
+    const path = await freshPath();
+    await writeLockAt(path, { pid: 0, started_at: new Date(NOW.getTime() - 4 * 60 * 60 * 1000).toISOString() });
+    const stale = new Date(NOW.getTime() - 4 * 60 * 60 * 1000);
+    await utimes(path, stale, stale);
+
+    const result = await acquireLock(path, makeDeps({ maxAgeSeconds: 3 * 60 * 60 }));
+    expect(result.acquired).toBe(true);
+    expect((await readLock(path)).run_id).toBe("run_1");
+  });
+
   it("breaks a corrupt lock once its mtime passes the age ceiling", async () => {
     const path = await freshPath();
     await mkdir(dirname(path), { recursive: true });
