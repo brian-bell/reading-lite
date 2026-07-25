@@ -33,14 +33,24 @@
 // breaking live holders on a timer, which is the failure mode with no alarm.
 //
 // Residual race, stated rather than hidden: reclaiming a stale lock cannot be
-// made a single atomic step against a *path*. The removal below is a rename
-// (one winner) plus an identity check, and an acquire re-reads the path before
-// proceeding, which covers every two-contender interleaving. Three contenders
-// racing over one stale lock can still leave a run believing it holds a lock
-// that another has replaced; it finds out at release, which warns. That needs
-// three agent processes overlapping on the same stale file — for a single
-// timer plus the occasional manual run, the alternative (a heartbeat protocol,
-// or a real advisory-lock dependency) buys nothing this deployment can use.
+// made a single atomic step against a *path* — POSIX has no compare-and-unlink,
+// so every scheme trades one window for another (rename-and-verify leaves the
+// path briefly empty if the reclaiming process is killed mid-flight;
+// stat-then-unlink is crash-safe but can delete a lock that changed underneath
+// it). This module takes the first trade: the removal below is a rename (one
+// winner) plus an identity check, and an acquire re-reads the path before
+// proceeding, which covers every two-contender interleaving. What remains
+// needs a third contender, or a kill inside a sub-millisecond window during a
+// reclaim, to let two runs believe they hold the lock.
+//
+// That residual is accepted for two reasons. This deployment is one timer plus
+// the occasional manual run, so three simultaneous contenders is not a shape it
+// has. And the lock is not the only thing standing between an overlap and a
+// double charge: the Worker owns each URL, so the second submit of the same row
+// returns an existing manifest, enqueues nothing, and hands its paid-action
+// slot back (see `attemptRow` in run.ts). Closing the last window means a
+// heartbeat protocol or a real advisory-lock dependency — the right move if
+// this ever runs on more than one box, and not before.
 //
 // There is no signal handler in v1: SIGKILL/SIGTERM deliberately leaves the
 // file behind, and the pid-liveness and boot rules are how it gets reclaimed.
