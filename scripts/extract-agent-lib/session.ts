@@ -14,11 +14,11 @@
 // Only an --execute run pings: otherwise an operator's manual dry run would
 // silently satisfy the dead-man window and hide a dead timer.
 //
-// A run takes the lockfile first and releases it in a `finally`, so an
+// A run takes the lockfile first and releases it before it reports completion, so an
 // overlapping run reports `already_running` and touches nothing rather than
-// double-submitting paid work. The ping stays *inside* the lock so it is
-// literally the last statement of a successful run, and a hung ping can't
-// overlap the next run's work. Dry runs never take the lock — they have no side
+// double-submitting paid work. Releasing is part of completion, so a release
+// failure is recorded and pings the failure healthcheck instead of letting a
+// stranded lock masquerade as a healthy run. Dry runs never take the lock — they have no side
 // effects worth serializing against, and an operator's dry run over a large
 // corpus must not make the timer skip its cycle — but they do peek at it, so a
 // plan that looks odd next to an in-flight execute run explains itself.
@@ -52,6 +52,7 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
   let holder: LockFile | undefined;
 
   let lock: AcquireResult = { acquired: false };
+  let lockReleased = false;
 
   try {
     if (args.execute) {
@@ -90,6 +91,20 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
         // and an operator watching a manual run must not have to go read a JSONL
         // file to learn that their token was rejected.
         deps.warn(`extract-agent: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    // Cleanup is part of completion. Do it before recording a successful run
+    // or pinging its healthcheck, otherwise a failed release can strand the
+    // lock while monitoring records a success.
+    if (lock.acquired) {
+      try {
+        await lock.release();
+        lockReleased = true;
+      } catch (e) {
+        status = "crashed";
+        error = e;
+        deps.warn(`extract-agent: failed to release the run lock: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -134,7 +149,15 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
     }
     return { status, exitCode: status === "crashed" ? 1 : 0, summary };
   } finally {
-    if (lock.acquired) await lock.release();
+    // All normal paths release above so release errors can be reported and
+    // pinged as failures. This only protects exceptional paths before then.
+    if (lock.acquired && !lockReleased) {
+      try {
+        await lock.release();
+      } catch (e) {
+        deps.warn(`extract-agent: failed to release the run lock: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
 }
 

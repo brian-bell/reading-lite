@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -329,6 +329,29 @@ describe("runSession concurrency", () => {
 
     expect(result.exitCode).toBe(1);
     expect(await exists(deps.config.lockPath)).toBe(false);
+  });
+
+  it("reports a failed lock release as crashed and pings the failure url", async () => {
+    const { deps, fetchMock, warn } = await makeDeps(
+      {
+        pageReadings: vi.fn(async () => {
+          // Replacing our file with a directory makes the release's safe
+          // rename-and-restore path fail without depending on Unix permissions.
+          await rename(deps.config.lockPath, `${deps.config.lockPath}.held`);
+          await mkdir(deps.config.lockPath);
+          return [];
+        }),
+      },
+      { healthcheckUrl: "https://hc.example/ping", healthcheckFailUrl: "https://hc.example/ping/fail" },
+    );
+
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result).toMatchObject({ status: "crashed", exitCode: 1 });
+    expect((await readLines(deps.config.runLogPath))[0]).toMatchObject({ status: "crashed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://hc.example/ping/fail");
+    expect(warn.mock.calls.map((c) => String(c[0])).join(" ")).toMatch(/release.*lock/i);
   });
 
   it("never takes the lock on a dry run, but warns when an execute run is in flight", async () => {
