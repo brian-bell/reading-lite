@@ -13,9 +13,12 @@
 //
 // Appends are single-`write` and O_APPEND, so concurrent runs (a lock loser
 // reporting `already_running` alongside the holder's own line) interleave
-// safely. Rotation is the one racy part and is best-effort: whoever loses the
-// rename just appends to the fresh file. The worst case is an older rotated log
-// being replaced early, which costs history, not a run.
+// safely. Rotation is the part that cannot interleave — two renames in flight
+// would let the second one replace `.1` with a log the first had just started,
+// discarding the holder's own report. So only the run holding the lock rotates
+// (`rotate`), and a run that did no work simply appends its line, which may
+// carry the log a few hundred bytes past the cap until the next real run
+// rotates it.
 //
 // A failed write is not swallowed — the caller fails the run on it. The corpus
 // work may have succeeded, but a paid-action run with no evidence is exactly
@@ -145,11 +148,11 @@ function describeError(error: unknown): { name: string; message: string } {
 export async function appendRunLine(
   path: string,
   line: RunLine,
-  opts: { maxBytes: number },
+  opts: { maxBytes: number; rotate?: boolean },
 ): Promise<void> {
   const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
+  if (opts.rotate !== false) await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
   // Owner-only: the log holds every URL the agent touched, which on a shared box
   // is nobody else's business. The mode applies at creation only — a log that
   // predates this is the operator's to chmod.
@@ -236,10 +239,7 @@ async function rotateIfNeeded(path: string, maxBytes: number, pendingBytes: numb
   try {
     await rename(path, `${path}.1`);
   } catch (e) {
-    // A lock loser writes its `already_running` line while the holder is still
-    // running, so two processes can decide to rotate at once. Losing that race
-    // means the log was already rotated — the append below lands in the fresh
-    // file either way, and a run must not fail over housekeeping.
+    // Nothing to rotate is not a failure; a run must not fail over housekeeping.
     if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
   }
 }

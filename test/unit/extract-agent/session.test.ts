@@ -282,6 +282,18 @@ describe("runSession concurrency", () => {
     expect(line.counts).toBeUndefined();
   });
 
+  it("does not rotate the log from a run that yielded — the holder's report must survive", async () => {
+    const { deps } = await makeDeps({}, { runLogMaxBytes: 1024 });
+    await writeHeldLock(deps.config.lockPath, { run_id: "run_other", pid: 999 });
+    await writeFile(deps.config.runLogPath, `${"x".repeat(2000)}\n`, "utf-8");
+
+    await runSession({ execute: true }, deps);
+
+    expect(await exists(`${deps.config.runLogPath}.1`)).toBe(false);
+    const raw = await readFile(deps.config.runLogPath, "utf-8");
+    expect(raw.startsWith("x".repeat(2000))).toBe(true);
+  });
+
   it("releases the lock even when the run crashes", async () => {
     const { deps } = await makeDeps({
       pageReadings: vi.fn(async () => {

@@ -98,7 +98,12 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
     });
 
     try {
-      await appendRunLine(config.runLogPath, line, { maxBytes: config.runLogMaxBytes });
+      // Only the lock holder rotates: a run that yielded is writing alongside a
+      // live run, and two concurrent rotations can discard the holder's report.
+      await appendRunLine(config.runLogPath, line, {
+        maxBytes: config.runLogMaxBytes,
+        rotate: lock.acquired,
+      });
     } catch (e) {
       // The corpus work may well have succeeded, but a paid-action run with no
       // evidence is exactly what the dead-man ping exists to catch: stay silent
