@@ -21,6 +21,7 @@ import { homedir, hostname } from "node:os";
 import { resolveAgentConfig } from "./extract-agent-lib/config";
 import { pageAllReadings } from "./extract-agent-lib/poll";
 import { parseRunArgs, type RunArgs, type RunSummary } from "./extract-agent-lib/run";
+import { appendRunLine } from "./extract-agent-lib/report";
 import { runSession } from "./extract-agent-lib/session";
 import { loadSidecar, saveSidecar } from "./extract-agent-lib/sidecar";
 import { extractStatic } from "./extract-agent-lib/static-tier";
@@ -51,6 +52,8 @@ async function main(): Promise<void> {
     pid: process.pid,
     bootId: await linuxBootId(),
     isProcessAlive,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    writeRunLine: appendRunLine,
     warn,
   });
 

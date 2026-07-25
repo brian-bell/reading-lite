@@ -11,14 +11,11 @@
 // plausibly points it at a LAN Uptime Kuma — exactly the private-range target
 // safeFetch refuses. Plain injected fetch with a short timeout instead.
 //
-// Appends are single-`write` and O_APPEND, so concurrent runs (a lock loser
-// reporting `already_running` alongside the holder's own line) interleave
-// safely. Rotation is the part that cannot interleave — two renames in flight
-// would let the second one replace `.1` with a log the first had just started,
-// discarding the holder's own report. So only the run holding the lock rotates
-// (`rotate`), and a run that did no work simply appends its line, which may
-// carry the log a few hundred bytes past the cap until the next real run
-// rotates it.
+// `runSession` holds a dedicated report lock across rotation plus append. The
+// execution lock cannot provide that serialization: dry and yielded runs must
+// report too, and an execute run releases its execution lock before it knows the
+// final status to record. Keeping the serialization at the caller makes every
+// writer eligible to rotate while preserving this module's simple fs contract.
 //
 // A failed write is not swallowed — the caller fails the run on it. The corpus
 // work may have succeeded, but a paid-action run with no evidence is exactly
@@ -148,11 +145,29 @@ function describeError(error: unknown): { name: string; message: string } {
 export async function appendRunLine(
   path: string,
   line: RunLine,
-  opts: { maxBytes: number; rotate?: boolean },
+  opts: { maxBytes: number },
 ): Promise<void> {
   const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  if (opts.rotate !== false) await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
+  await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
+  await appendRecord(path, record);
+}
+
+// Exceptional correction path: if releasing the report lock itself fails, the
+// serialized line already on disk is no longer the terminal outcome. A single
+// O_APPEND correction is safer than attempting an unlocked rotation; the next
+// healthy reporter performs the bounded rotation under a fresh report lock.
+export async function appendRunLineCorrection(
+  path: string,
+  line: RunLine,
+  opts: { maxBytes: number },
+): Promise<void> {
+  const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await appendRecord(path, record);
+}
+
+async function appendRecord(path: string, record: string): Promise<void> {
   // Owner-only: the log holds every URL the agent touched, which on a shared box
   // is nobody else's business. The mode applies at creation only — a log that
   // predates this is the operator's to chmod.

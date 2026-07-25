@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import { AgentFatalError } from "../../../scripts/extract-agent-lib/poll";
-import type { RunLine } from "../../../scripts/extract-agent-lib/report";
+import { appendRunLine, type RunLine } from "../../../scripts/extract-agent-lib/report";
 import { runSession, type SessionDeps } from "../../../scripts/extract-agent-lib/session";
 import type { LockFile } from "../../../scripts/extract-agent-lib/lock";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
@@ -84,6 +84,8 @@ async function makeDeps(
     pid: 4242,
     bootId: "boot_1",
     isProcessAlive: () => true,
+    sleep: async () => {},
+    writeRunLine: appendRunLine,
     warn,
     ...overrides,
   };
@@ -282,16 +284,88 @@ describe("runSession concurrency", () => {
     expect(line.counts).toBeUndefined();
   });
 
-  it("does not rotate the log from a run that yielded — the holder's report must survive", async () => {
+  it("rotates an oversized log from a yielded run under the report lock", async () => {
     const { deps } = await makeDeps({}, { runLogMaxBytes: 1024 });
     await writeHeldLock(deps.config.lockPath, { run_id: "run_other", pid: 999 });
     await writeFile(deps.config.runLogPath, `${"x".repeat(2000)}\n`, "utf-8");
 
     await runSession({ execute: true }, deps);
 
-    expect(await exists(`${deps.config.runLogPath}.1`)).toBe(false);
-    const raw = await readFile(deps.config.runLogPath, "utf-8");
-    expect(raw.startsWith("x".repeat(2000))).toBe(true);
+    expect(await readFile(`${deps.config.runLogPath}.1`, "utf-8")).toBe(`${"x".repeat(2000)}\n`);
+    const lines = await readLines(deps.config.runLogPath);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ status: "already_running" });
+  });
+
+  it("rotates an oversized log for dry runs instead of growing it without bound", async () => {
+    const { deps } = await makeDeps({}, { runLogMaxBytes: 1024 });
+    await writeFile(deps.config.runLogPath, `${"x".repeat(2000)}\n`, "utf-8");
+
+    await runSession({ execute: false }, deps);
+
+    expect(await readFile(`${deps.config.runLogPath}.1`, "utf-8")).toBe(`${"x".repeat(2000)}\n`);
+    const lines = await readLines(deps.config.runLogPath);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ status: "ok", dry_run: true });
+  });
+
+  it("waits for the report lock before an execute run rotates and appends", async () => {
+    const { deps } = await makeDeps({}, { runLogMaxBytes: 1024 });
+    const reportLockPath = `${deps.config.runLogPath}.lock`;
+    await writeHeldLock(reportLockPath, { run_id: "run_other_report", pid: 999 });
+    await writeFile(deps.config.runLogPath, `${"x".repeat(2000)}\n`, "utf-8");
+    const sleep = vi.fn(async () => {
+      expect(await exists(`${deps.config.runLogPath}.1`)).toBe(false);
+      await unlink(reportLockPath);
+    });
+    deps.sleep = sleep;
+
+    await runSession({ execute: true }, deps);
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(await readFile(`${deps.config.runLogPath}.1`, "utf-8")).toBe(`${"x".repeat(2000)}\n`);
+    expect((await readLines(deps.config.runLogPath))[0]).toMatchObject({ status: "ok", dry_run: false });
+  });
+
+  it("reclaims a report lock past its short ceiling even when the pid looks alive", async () => {
+    const { deps, warn } = await makeDeps();
+    const reportLockPath = `${deps.config.runLogPath}.lock`;
+    await writeHeldLock(reportLockPath, {
+      run_id: "run_stale_report",
+      pid: 999,
+      started_at: new Date(NOW.getTime() - 31_000).toISOString(),
+    });
+
+    const result = await runSession({ execute: false }, deps);
+
+    expect(result).toMatchObject({ status: "ok", exitCode: 0 });
+    expect((await readLines(deps.config.runLogPath))[0]).toMatchObject({ status: "ok", dry_run: true });
+    expect(warn.mock.calls.map((call) => String(call[0])).join(" ")).toMatch(/run_stale_report/);
+  });
+
+  it("records and pings a failed execute run when the report lock cannot be released", async () => {
+    let writes = 0;
+    const { deps, fetchMock, warn } = await makeDeps(
+      {
+        writeRunLine: async (path, line, opts) => {
+          await appendRunLine(path, line, opts);
+          writes += 1;
+          if (writes === 1) {
+            await rename(`${path}.lock`, `${path}.lock.held`);
+            await mkdir(`${path}.lock`);
+          }
+        },
+      },
+      { healthcheckUrl: "https://hc.example/ping", healthcheckFailUrl: "https://hc.example/ping/fail" },
+    );
+
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result).toMatchObject({ status: "crashed", exitCode: 1 });
+    expect((await readLines(deps.config.runLogPath)).map((line) => line.status)).toEqual(["ok", "crashed"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://hc.example/ping/fail");
+    expect(warn.mock.calls.map((call) => String(call[0])).join(" ")).toMatch(/release the report lock/);
   });
 
   it("reports a lock that cannot be acquired at all as a crashed run", async () => {

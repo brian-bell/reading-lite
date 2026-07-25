@@ -14,17 +14,24 @@
 // Only an --execute run pings: otherwise an operator's manual dry run would
 // silently satisfy the dead-man window and hide a dead timer.
 //
-// A run takes the lockfile first and releases it before it reports completion, so an
-// overlapping run reports `already_running` and touches nothing rather than
-// double-submitting paid work. Releasing is part of completion, so a release
-// failure is recorded and pings the failure healthcheck instead of letting a
-// stranded lock masquerade as a healthy run. Dry runs never take the lock — they have no side
-// effects worth serializing against, and an operator's dry run over a large
-// corpus must not make the timer skip its cycle — but they do peek at it, so a
-// plan that looks odd next to an in-flight execute run explains itself.
+// A run takes the execution lock first and releases it before it reports
+// completion, so an overlapping run reports `already_running` and touches no
+// corpus state rather than double-submitting paid work. Releasing is part of
+// completion, so a release failure is recorded and pings the failure healthcheck
+// instead of letting a stranded lock masquerade as a healthy run. Dry runs never
+// take that lock — they have no side effects worth serializing against — but
+// every run takes a separate, short-lived report lock around rotate+append. That
+// keeps the shared JSONL bounded without making a dry run block an execute run's
+// corpus work.
 
 import { acquireLock, readLockHolder, type AcquireResult, type LockFile } from "./lock";
-import { appendRunLine, buildRunLine, pingHealthcheck, type RunStatus } from "./report";
+import {
+  appendRunLine,
+  appendRunLineCorrection,
+  buildRunLine,
+  pingHealthcheck,
+  type RunStatus,
+} from "./report";
 import { runAgent, type RunArgs, type RunDeps, type RunSummary } from "./run";
 
 export interface SessionDeps extends RunDeps {
@@ -34,6 +41,8 @@ export interface SessionDeps extends RunDeps {
   pid: number;
   bootId?: string;
   isProcessAlive: (pid: number) => boolean;
+  sleep: (ms: number) => Promise<void>;
+  writeRunLine: typeof appendRunLine;
   warn: (message: string) => void;
 }
 
@@ -53,6 +62,21 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
 
   let lock: AcquireResult = { acquired: false };
   let lockReleased = false;
+  let reportLock: AcquireResult = { acquired: false };
+  let reportLockReleased = false;
+  const makeLine = () => buildRunLine({
+    status,
+    args,
+    config,
+    summary,
+    error,
+    holder,
+    startedAt,
+    finishedAt: deps.now(),
+    runId: deps.runId,
+    host: deps.host,
+    pid: deps.pid,
+  });
 
   try {
     if (args.execute) {
@@ -108,27 +132,25 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
       }
     }
 
-    const line = buildRunLine({
-      status,
-      args,
-      config,
-      summary,
-      error,
-      holder,
-      startedAt,
-      finishedAt: deps.now(),
-      runId: deps.runId,
-      host: deps.host,
-      pid: deps.pid,
-    });
+    // The execution lock protects paid work; this shorter lock protects the
+    // shared log's rotate+append transaction. Every writer takes it, including
+    // dry runs and runs that yielded, so rotation stays bounded without racing
+    // the report from a just-finished execute run.
+    try {
+      reportLock = await acquireReportLock(deps);
+    } catch (e) {
+      deps.warn(
+        `extract-agent: failed to lock the run report at ${config.runLogPath}: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return { status, exitCode: 1, summary };
+    }
+
+    const line = makeLine();
 
     try {
-      // Only the lock holder rotates: a run that yielded is writing alongside a
-      // live run, and two concurrent rotations can discard the holder's report.
-      await appendRunLine(config.runLogPath, line, {
-        maxBytes: config.runLogMaxBytes,
-        rotate: lock.acquired,
-      });
+      await deps.writeRunLine(config.runLogPath, line, { maxBytes: config.runLogMaxBytes });
     } catch (e) {
       // The corpus work may well have succeeded, but a paid-action run with no
       // evidence is exactly what the dead-man ping exists to catch: stay silent
@@ -141,6 +163,32 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
       return { status, exitCode: 1, summary };
     }
 
+    if (reportLock.acquired) {
+      try {
+        await reportLock.release();
+        reportLockReleased = true;
+      } catch (e) {
+        // The first line was serialized correctly, but cleanup is now the
+        // terminal failure. Record a correction with one atomic append (an
+        // unlocked rotation would recreate the race this lock exists to stop),
+        // then route the execute run through failure monitoring.
+        reportLockReleased = true;
+        status = "crashed";
+        error = e;
+        deps.warn(`extract-agent: failed to release the report lock: ${e instanceof Error ? e.message : String(e)}`);
+        try {
+          await appendRunLineCorrection(config.runLogPath, makeLine(), { maxBytes: config.runLogMaxBytes });
+        } catch (correctionError) {
+          deps.warn(
+            `extract-agent: failed to correct the run report at ${config.runLogPath}: ${
+              correctionError instanceof Error ? correctionError.message : String(correctionError)
+            }`,
+          );
+          return { status, exitCode: 1, summary };
+        }
+      }
+    }
+
     // already_running is not a run: it pings neither url. The holder is the run
     // that gets to satisfy (or miss) the dead-man window.
     if (args.execute && status !== "already_running") {
@@ -149,6 +197,13 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
     }
     return { status, exitCode: status === "crashed" ? 1 : 0, summary };
   } finally {
+    if (reportLock.acquired && !reportLockReleased) {
+      try {
+        await reportLock.release();
+      } catch (e) {
+        deps.warn(`extract-agent: failed to release the report lock: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     // All normal paths release above so release errors can be reported and
     // pinged as failures. This only protects exceptional paths before then.
     if (lock.acquired && !lockReleased) {
@@ -159,6 +214,25 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
       }
     }
   }
+}
+
+const REPORT_LOCK_ATTEMPTS = 100;
+const REPORT_LOCK_RETRY_MS = 50;
+const REPORT_LOCK_MAX_AGE_SECONDS = 30;
+
+async function acquireReportLock(deps: SessionDeps): Promise<AcquireResult & { acquired: true }> {
+  const path = `${deps.config.runLogPath}.lock`;
+  for (let attempt = 0; attempt < REPORT_LOCK_ATTEMPTS; attempt += 1) {
+    const lock = await acquireLock(path, {
+      ...lockDeps(deps),
+      runId: `${deps.runId}_report`,
+      maxAgeSeconds: REPORT_LOCK_MAX_AGE_SECONDS,
+      liveMaxAgeSeconds: REPORT_LOCK_MAX_AGE_SECONDS,
+    });
+    if (lock.acquired) return lock;
+    await deps.sleep(REPORT_LOCK_RETRY_MS);
+  }
+  throw new Error(`timed out waiting for the report lock at ${path}`);
 }
 
 function lockDeps(deps: SessionDeps) {

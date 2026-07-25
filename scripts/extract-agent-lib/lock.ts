@@ -6,7 +6,7 @@
 // the rows up); a double-spend cannot be undone. Everything below biases that
 // way.
 //
-// The staleness table, and why:
+// The default staleness table, used by the paid-work execution lock, and why:
 //
 //   | lock state                                       | verdict          |
 //   |--------------------------------------------------|------------------|
@@ -32,6 +32,9 @@
 // the same trade as the first row. The run stops pinging, the dead-man pages,
 // and the operator removes the file. Breaking it automatically would mean
 // breaking live holders on a timer, which is the failure mode with no alarm.
+// Callers protecting lower-stakes, short critical sections may opt into
+// `liveMaxAgeSeconds`; the report lock does this because losing a log generation
+// is preferable to blocking all future run evidence behind a reused pid.
 //
 // Residual race, stated rather than hidden: reclaiming a stale lock cannot be
 // made a single atomic step against a *path* — POSIX has no compare-and-unlink,
@@ -77,6 +80,9 @@ export interface AcquireDeps {
   bootId?: string;
   isProcessAlive: (pid: number) => boolean;
   maxAgeSeconds: number;
+  // Opt-in only. The execution lock deliberately leaves this undefined so a
+  // live paid-work holder is never broken by age.
+  liveMaxAgeSeconds?: number;
   warn: (message: string) => void;
 }
 
@@ -228,7 +234,16 @@ async function judge(
       // when NTP corrects the clock and must not be used to break a live lock.
       return { hold: false, why: `breaking lock from run ${lock.run_id} (pid ${lock.pid}): written during a previous boot` };
     }
-    if (deps.isProcessAlive(lock.pid)) return { hold: true };
+    if (deps.isProcessAlive(lock.pid)) {
+      const ageSeconds = (now - startedAt) / 1000;
+      if (deps.liveMaxAgeSeconds !== undefined && ageSeconds > deps.liveMaxAgeSeconds) {
+        return {
+          hold: false,
+          why: `breaking lock from run ${lock.run_id}: ${Math.round(ageSeconds)}s old, past the ${deps.liveMaxAgeSeconds}s live-lock ceiling`,
+        };
+      }
+      return { hold: true };
+    }
     return { hold: false, why: `breaking lock from run ${lock.run_id}: pid ${lock.pid} is gone` };
   }
 
