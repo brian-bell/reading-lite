@@ -128,12 +128,13 @@ export async function appendRunLine(
   line: RunLine,
   opts: { maxBytes: number },
 ): Promise<void> {
+  const serialized = serializeWithinBudget(line, opts.maxBytes);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await rotateIfNeeded(path, opts.maxBytes);
   // Owner-only: the log holds every URL the agent touched, which on a shared box
   // is nobody else's business. The mode applies at creation only — a log that
   // predates this is the operator's to chmod.
-  await appendFile(path, `${JSON.stringify(line)}\n`, { encoding: "utf-8", mode: 0o600 });
+  await appendFile(path, `${serialized}\n`, { encoding: "utf-8", mode: 0o600 });
 }
 
 export interface PingDeps {
@@ -172,6 +173,29 @@ function redactPingUrl(url: string): string {
   } catch {
     return "the configured healthcheck url";
   }
+}
+
+// Rotation bounds the file between appends; this bounds the append itself, so
+// the two together actually hold the log to ~2 × maxBytes at any configured
+// cap. Rows are the only elastic part of the line, so they are what gives: drop
+// them (counted, never silent) until the record fits. A line whose fixed fields
+// alone exceed the cap is written anyway — status and counts are the record's
+// reason to exist, and an operator who set a 200-byte cap gets one small line
+// per run, not a lost run.
+function serializeWithinBudget(line: RunLine, maxBytes: number): string {
+  let candidate = JSON.stringify(line);
+  if (Buffer.byteLength(candidate, "utf-8") <= maxBytes) return candidate;
+
+  let kept = line.rows ?? [];
+  let omitted = line.rows_omitted ?? 0;
+  while (kept.length > 0) {
+    const drop = Math.ceil(kept.length / 2);
+    kept = kept.slice(0, kept.length - drop);
+    omitted += drop;
+    candidate = JSON.stringify({ ...line, rows: kept, rows_omitted: omitted });
+    if (Buffer.byteLength(candidate, "utf-8") <= maxBytes) return candidate;
+  }
+  return candidate;
 }
 
 // Two files, so the log is bounded at ~2 × maxBytes without needing logrotate.

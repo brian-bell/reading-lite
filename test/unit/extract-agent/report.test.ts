@@ -207,6 +207,28 @@ describe("appendRunLine", () => {
     await expect(stat(`${path}.1`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("drops rows until the record fits the configured cap, counting what it dropped", async () => {
+    const path = join(await freshDir(), "runs.jsonl");
+    const rows = Array.from({ length: 40 }, (_, i) => row({ id: `rd_a${i}`, outcome: "imported" }));
+    await appendRunLine(path, okLine({ summary: summary({ rows }) }), { maxBytes: 1024 });
+
+    const written = (await readFile(path, "utf-8")).trimEnd();
+    expect(Buffer.byteLength(written, "utf-8")).toBeLessThanOrEqual(1024);
+    const line = JSON.parse(written) as RunLine;
+    expect(line.rows!.length + line.rows_omitted!).toBe(40);
+    expect(line.counts).toBeDefined();
+  });
+
+  it("still writes the record when even a row-less line exceeds the cap", async () => {
+    const path = join(await freshDir(), "runs.jsonl");
+    await appendRunLine(path, okLine({ summary: summary({ rows: [row({ outcome: "imported" })] }) }), { maxBytes: 10 });
+
+    const line = JSON.parse((await readFile(path, "utf-8")).trimEnd()) as RunLine;
+    expect(line.status).toBe("ok");
+    expect(line.rows).toEqual([]);
+    expect(line.rows_omitted).toBe(1);
+  });
+
   it("propagates a write failure so the caller can fail the run", async () => {
     const dir = await freshDir();
     await expect(appendRunLine(dir, okLine(), { maxBytes: 1024 })).rejects.toThrow();
