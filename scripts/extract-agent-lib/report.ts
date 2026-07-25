@@ -157,9 +157,11 @@ export async function pingHealthcheck(url: string | undefined, deps: PingDeps): 
     });
     if (!res.ok) deps.warn(`healthcheck ping to ${redactPingUrl(url)} returned ${res.status}`);
   } catch (e) {
-    deps.warn(
-      `healthcheck ping to ${redactPingUrl(url)} failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    // The exception text can quote the URL back at us verbatim ("Failed to
+    // parse URL from …"), so scrub it there too — redacting only the prefix
+    // would leak exactly the malformed-config case.
+    const detail = (e instanceof Error ? e.message : String(e)).split(url).join("<healthcheck url>");
+    deps.warn(`healthcheck ping to ${redactPingUrl(url)} failed: ${detail}`);
   }
 }
 

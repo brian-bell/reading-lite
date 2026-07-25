@@ -253,6 +253,16 @@ describe("pingHealthcheck", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it("scrubs the url out of the exception text too", async () => {
+    const url = "https://hc.example/hc-token-9f3c";
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError(`Failed to parse URL from ${url}`);
+    });
+    const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
+    await pingHealthcheck(url, d);
+    expect(warn.mock.calls[0]![0]).not.toContain("hc-token-9f3c");
+  });
+
   it("does nothing when no url is configured", async () => {
     const fetchMock = vi.fn();
     const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
