@@ -28,6 +28,7 @@ interface FakeState {
   contextOptions: Record<string, unknown> | undefined;
   routePatterns: string[];
   gotoCalls: Array<{ url: string; opts: unknown }>;
+  evaluateExpressions: string[];
   aborted: string[];
   continued: string[];
 }
@@ -42,7 +43,17 @@ function fakePlaywright(opts: {
   websockets?: string[];
   domBytes?: number;
   hangOnEvaluate?: boolean;
+  hangOnNewContext?: boolean;
   gotoError?: Error;
+  navigationStatus?: number;
+  settledNavigationStatus?: number;
+  settledNavigationUrl?: string;
+  redirectNavigationStatus?: number;
+  redirectNavigationUrl?: string;
+  nonCommittingNavigationStatus?: number;
+  nonCommittingNavigationUrl?: string;
+  navigationDuringEvaluateStatus?: number;
+  navigationDuringEvaluateUrl?: string;
   launchError?: Error;
 } = {}): { module: PlaywrightLike; state: FakeState } {
   const state: FakeState = {
@@ -56,11 +67,24 @@ function fakePlaywright(opts: {
     contextOptions: undefined,
     routePatterns: [],
     gotoCalls: [],
+    evaluateExpressions: [],
     aborted: [],
     continued: [],
   };
   let handler: Handler | undefined;
   let navigatedTo: string | undefined;
+  let responseHandler: ((response: unknown) => void) | undefined;
+  let frameNavigatedHandler: ((frame: unknown) => void) | undefined;
+  const mainFrame = {};
+
+  function navigationResponse(status: number, url: string) {
+    return {
+      status: () => status,
+      url: () => url,
+      frame: () => mainFrame,
+      request: () => ({ isNavigationRequest: () => true }),
+    };
+  }
 
   // One request as the browser would present it: a Route whose fetch() answers
   // from the fixture's response table (200 unless the fixture says otherwise).
@@ -85,11 +109,51 @@ function fakePlaywright(opts: {
       const requests: FakeRequest[] = opts.requests ?? [{ url }];
       for (const request of requests) await handler?.(routeFor(request));
       if (opts.gotoError) throw opts.gotoError;
-      return null;
+      const response = navigationResponse(opts.navigationStatus ?? 200, url);
+      responseHandler?.(response);
+      frameNavigatedHandler?.(mainFrame);
+      return response;
     },
-    async waitForLoadState() {},
-    async evaluate<T>(_expression: string): Promise<T> {
+    async waitForLoadState() {
+      if (opts.redirectNavigationStatus !== undefined) {
+        responseHandler?.(
+          navigationResponse(
+            opts.redirectNavigationStatus,
+            opts.redirectNavigationUrl ?? "https://public.example/redirect",
+          ),
+        );
+      }
+      if (opts.settledNavigationStatus !== undefined) {
+        const url = opts.settledNavigationUrl ?? "https://public.example/settled";
+        navigatedTo = url;
+        responseHandler?.(navigationResponse(opts.settledNavigationStatus, url));
+        frameNavigatedHandler?.(mainFrame);
+      }
+      if (opts.nonCommittingNavigationStatus !== undefined) {
+        responseHandler?.(
+          navigationResponse(
+            opts.nonCommittingNavigationStatus,
+            opts.nonCommittingNavigationUrl ?? "https://public.example/no-content",
+          ),
+        );
+      }
+    },
+    on(event: "response" | "framenavigated", handler_: (value: unknown) => void) {
+      if (event === "response") responseHandler = handler_;
+      if (event === "framenavigated") frameNavigatedHandler = handler_;
+    },
+    mainFrame() {
+      return mainFrame;
+    },
+    async evaluate<T>(expression: string): Promise<T> {
+      state.evaluateExpressions.push(expression);
       if (opts.hangOnEvaluate) return new Promise<T>(() => {});
+      if (opts.navigationDuringEvaluateStatus !== undefined) {
+        const url = opts.navigationDuringEvaluateUrl ?? "https://public.example/during-evaluate";
+        navigatedTo = url;
+        responseHandler?.(navigationResponse(opts.navigationDuringEvaluateStatus, url));
+        frameNavigatedHandler?.(mainFrame);
+      }
       return (opts.domBytes ?? (opts.html ?? "<html><body><p>hi</p></body></html>").length) as unknown as T;
     },
     async content() {
@@ -139,6 +203,7 @@ function fakePlaywright(opts: {
         return {
           async newContext(contextOptions: Record<string, unknown>) {
             state.contextOptions = contextOptions;
+            if (opts.hangOnNewContext) return new Promise<never>(() => {});
             return context;
           },
           async close() {
@@ -282,6 +347,20 @@ describe("makePlaywrightRenderPage", () => {
     expect(state.closedBrowsers).toBe(1);
   });
 
+  it("measures the same serialization page.content() transfers", async () => {
+    // Playwright serializes an optional doctype followed by outerHTML. The
+    // in-page guard must use that exact HTML serialization, not XMLSerializer
+    // on the whole document (which would change void tags and add xmlns).
+    const { module, state } = fakePlaywright();
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await render("https://public.example/a", OPTS);
+
+    expect(state.evaluateExpressions).toContain(
+      "new TextEncoder().encode((document.doctype ? new XMLSerializer().serializeToString(document.doctype) : \"\") + (document.documentElement ? document.documentElement.outerHTML : \"\")).length",
+    );
+  });
+
   it("gives up on a page that never answers, and closes the browser under it", async () => {
     // page.evaluate and page.content have no timeout of their own and both run
     // code the document controls, so a hostile page could otherwise hang the
@@ -301,6 +380,137 @@ describe("makePlaywrightRenderPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("gives up when creating a browser context hangs", async () => {
+    // newContext is a Chromium round trip too. It must not sit outside the
+    // renderer deadline and wedge the unattended run before navigation begins.
+    vi.useFakeTimers();
+    try {
+      const { module, state } = fakePlaywright({ hangOnNewContext: true });
+      const render = makePlaywrightRenderPage({ load: async () => module });
+
+      const pending = render("https://public.example/a", { ...OPTS, timeoutMs: 5_000 });
+      const assertion = expect(pending).rejects.toThrow(/budget/);
+      await vi.advanceTimersByTimeAsync(5_000 + 3_000 + 10_000 + 1);
+      await assertion;
+
+      expect(state.closedBrowsers).toBe(1);
+      expect(state.closedContexts).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    [403, "bad response status 403"],
+    [404, "bad response status 404"],
+    [429, "rate limited by https://public.example/a (status 429"],
+    [500, "bad response status 500"],
+  ])("rejects a final HTTP %i response before reading its DOM", async (navigationStatus, message) => {
+    const { module, state } = fakePlaywright({ navigationStatus });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(message);
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps an error response when the page only changes its history fragment", async () => {
+    // Response.url() is the network URL, while page.url() includes fragments.
+    // A same-document hash/history update must not make a 429 look successful.
+    const { module, state } = fakePlaywright({
+      navigationStatus: 429,
+      finalUrl: "https://public.example/a#retry-later",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "rate limited by https://public.example/a#retry-later (status 429",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps an error response when the page changes its history path", async () => {
+    // pushState/replaceState can change path and query without loading a new
+    // document, so the original HTTP response still describes the captured DOM.
+    const { module, state } = fakePlaywright({
+      navigationStatus: 403,
+      finalUrl: "https://public.example/challenge?retry=1",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 403: https://public.example/challenge?retry=1",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("rejects an error response reached by a client navigation while settling", async () => {
+    const { module, state } = fakePlaywright({
+      navigationStatus: 200,
+      settledNavigationStatus: 404,
+      settledNavigationUrl: "https://public.example/missing",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 404: https://public.example/missing",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps the captured document's error status after a non-committing navigation", async () => {
+    // A 204 emits a main-frame response but leaves the current document and URL
+    // in place. It must not replace the 403 status of the HTML we capture.
+    const { module, state } = fakePlaywright({
+      navigationStatus: 403,
+      nonCommittingNavigationStatus: 204,
+      nonCommittingNavigationUrl: "https://public.example/no-content",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 403: https://public.example/a",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps the captured document after a redirect ends in a non-committing response", async () => {
+    // Neither the intermediate redirect nor the terminal 204 commits a new
+    // document. The original successful article must remain extractable.
+    const { module } = fakePlaywright({
+      navigationStatus: 200,
+      redirectNavigationStatus: 302,
+      redirectNavigationUrl: "https://public.example/no-content",
+      nonCommittingNavigationStatus: 204,
+      nonCommittingNavigationUrl: "https://public.example/no-content",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).resolves.toEqual({
+      html: "<html><body><p>hi</p></body></html>",
+      finalUrl: "https://public.example/a",
+    });
+  });
+
+  it("rejects an error response reached while measuring the eventual snapshot", async () => {
+    const { module, state } = fakePlaywright({
+      navigationStatus: 200,
+      navigationDuringEvaluateStatus: 403,
+      navigationDuringEvaluateUrl: "https://public.example/sign-in",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
+      "bad response status 403: https://public.example/sign-in",
+    );
+    expect(state.closedContexts).toBe(1);
+    expect(state.closedBrowsers).toBe(1);
   });
 
   it("discards a snapshot the page navigated out from under", async () => {

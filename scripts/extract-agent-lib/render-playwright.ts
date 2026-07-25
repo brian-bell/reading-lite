@@ -31,6 +31,8 @@ import {
   type RenderPageOptions,
   type RouteFilter,
 } from "./headless-tier";
+import { BadStatusError } from "../../src/modules/extractor";
+import { RateLimitedError } from "../../src/modules/http-retry";
 import { loadPlaywright } from "./playwright";
 
 // The slice of Playwright's surface this module uses, declared structurally so
@@ -43,13 +45,23 @@ interface RouteLike {
 }
 
 interface PageLike {
-  goto(url: string, opts: { waitUntil: "domcontentloaded"; timeout: number }): Promise<unknown>;
+  goto(url: string, opts: { waitUntil: "domcontentloaded"; timeout: number }): Promise<{ status(): number } | null>;
+  on(event: "response", handler: (response: NavigationResponseLike) => void): void;
+  on(event: "framenavigated", handler: (frame: unknown) => void): void;
+  mainFrame(): unknown;
   waitForLoadState(state: "networkidle", opts: { timeout: number }): Promise<void>;
   // A string expression, not a closure: this repo's tsconfig has no DOM lib
   // (it targets Workers), so `document` cannot be named in a typed callback.
   evaluate<T>(expression: string): Promise<T>;
   content(): Promise<string>;
   url(): string;
+}
+
+interface NavigationResponseLike {
+  status(): number;
+  url(): string;
+  frame(): unknown;
+  request(): { isNavigationRequest(): boolean };
 }
 
 interface WebSocketRouteLike {
@@ -142,32 +154,35 @@ export function makePlaywrightRenderPage(deps: RenderDeps = {}): RenderPage {
       );
     }
 
+    let context: ContextLike | undefined;
     try {
-      const context = await browser.newContext({
-        userAgent: BROWSER_USER_AGENT,
-        locale: "en-US",
-        viewport: { width: 1280, height: 1024 },
-        // Playwright does not route requests a service worker intercepts, and
-        // says so in its own docs: leaving them enabled would let a rendered
-        // page register one and issue requests the filter below never sees.
-        serviceWorkers: "block",
-      });
+      // Context creation talks to Chromium too.  It is therefore inside the
+      // same deadline as navigation and DOM serialization: otherwise a wedged
+      // newContext() could hold an unattended run forever before `render()`
+      // gets a chance to start its watchdog.
       try {
-        // Everything below is raced against one deadline. Per-call timeouts do
-        // not cover the whole render: `page.evaluate` and `page.content()` have
-        // none, and both run code the rendered document controls — a hostile
-        // page whose `TextEncoder.encode` never returns would otherwise hang
-        // here forever, holding the run lock, writing no report, and silencing
-        // the dead-man ping that exists to notice exactly that. The watchdog
-        // turns it into an ordinary per-row failure; closing the browser in
-        // `finally` is what actually unblocks the abandoned call.
         return await withWatchdog(
-          render(context, url, { routeFilter, timeoutMs, maxBytes }),
+          (async () => {
+            const createdContext = await browser.newContext({
+              userAgent: BROWSER_USER_AGENT,
+              locale: "en-US",
+              viewport: { width: 1280, height: 1024 },
+              // Playwright does not route requests a service worker intercepts, and
+              // says so in its own docs: leaving them enabled would let a rendered
+              // page register one and issue requests the filter below never sees.
+              serviceWorkers: "block",
+            });
+            context = createdContext;
+            return render(createdContext, url, { routeFilter, timeoutMs, maxBytes });
+          })(),
           timeoutMs + SETTLE_MS + WATCHDOG_SLACK_MS,
           url,
         );
       } finally {
-        await closeQuietly(() => context.close());
+        // `context` is assigned before render starts. If creation itself timed
+        // out, closing the browser below tears down its pending work.
+        const contextToClose = context;
+        if (contextToClose) await closeQuietly(() => contextToClose.close());
       }
     } finally {
       // Never leave a Chromium behind: an unattended timer would accumulate one
@@ -196,7 +211,35 @@ async function render(
     else ws.connectToServer();
   });
   const page = await context.newPage();
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  // `goto()` only returns its own navigation response. A JS or meta-refresh
+  // can replace that 200 document while we are settling, so retain the response
+  // that actually commits the main frame. Response receipt alone is not enough:
+  // a redirect followed by 204/205 emits responses but leaves the prior DOM.
+  let pendingNavigationResponse: NavigationResponseLike | undefined;
+  let committedNavigationResponse: NavigationResponseLike | undefined;
+  page.on("response", (response) => {
+    if (response.frame() === page.mainFrame() && response.request().isNavigationRequest()) {
+      pendingNavigationResponse =
+        response.status() === 204 || response.status() === 205 ? undefined : response;
+    }
+  });
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame() && pendingNavigationResponse) {
+      committedNavigationResponse = pendingNavigationResponse;
+      pendingNavigationResponse = undefined;
+    }
+  });
+  const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  // Preserve goto's documented return as a fallback for a minimal Playwright
+  // surface, or if its event ordering did not expose the initial commit.
+  if (!committedNavigationResponse && response && response.status() !== 204 && response.status() !== 205) {
+    committedNavigationResponse = {
+      status: () => response.status(),
+      url: () => page.url(),
+      frame: () => page.mainFrame(),
+      request: () => ({ isNavigationRequest: () => true }),
+    };
+  }
   await page.waitForLoadState("networkidle", { timeout: SETTLE_MS }).catch(() => {});
   // Measure the serialized DOM inside the page before pulling it across:
   // `page.content()` materializes the whole thing in this process, so an
@@ -212,7 +255,7 @@ async function render(
   // one oversized transfer, and the watchdog above is what keeps a page that
   // simply never answers from costing the run.
   const bytes = await page.evaluate<number>(
-    "new TextEncoder().encode(document.documentElement.outerHTML).length",
+    "new TextEncoder().encode((document.doctype ? new XMLSerializer().serializeToString(document.doctype) : \"\") + (document.documentElement ? document.documentElement.outerHTML : \"\")).length",
   );
   if (bytes > maxBytes) {
     throw new RenderTooLargeError(url, bytes, maxBytes);
@@ -229,6 +272,22 @@ async function render(
   const finalUrl = page.url();
   if (finalUrl !== before) {
     throw new Error(`page navigated while its content was being read (${before} → ${finalUrl})`);
+  }
+  // Classify only after the snapshot is bound. History API changes can update
+  // page.url() without committing a document, while a response chain ending in
+  // 204/205 may never commit at all.
+  //
+  // `null` is Playwright's documented result for non-HTTP navigations; those
+  // have no HTTP status to classify and are still covered by the URL safety
+  // checks around this renderer.
+  if (committedNavigationResponse) {
+    const status = committedNavigationResponse.status();
+    if (status < 200 || status >= 300) {
+      // Keep the static tier's challenge vocabulary: it converts an HTTP 429
+      // to RateLimitedError before the generic BadStatusError path.
+      if (status === 429) throw new RateLimitedError(status, null, finalUrl);
+      throw new BadStatusError(finalUrl, status);
+    }
   }
   return { html, finalUrl };
 }
