@@ -8,7 +8,7 @@ import { appendRunLine, type RunLine } from "../../../scripts/extract-agent-lib/
 import { runSession, type SessionDeps } from "../../../scripts/extract-agent-lib/session";
 import type { LockFile } from "../../../scripts/extract-agent-lib/lock";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
-import type { StaticOutcome } from "../../../scripts/extract-agent-lib/static-tier";
+import type { ExtractOutcome } from "../../../scripts/extract-agent-lib/outcome";
 import { makeConfig, makeRow } from "./helpers";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
@@ -66,11 +66,11 @@ async function makeDeps(
     config: makeConfig({ runLogPath: await freshLogPath(), lockPath: await freshLockPath(), ...configOverrides }),
     pageReadings: vi.fn(async () => [blockedRow()]),
     extract: vi.fn(
-      async (): Promise<StaticOutcome> => ({
+      async (): Promise<ExtractOutcome> => ({
         kind: "extracted",
         markdown: GOOD_MARKDOWN,
         title: "T",
-        extractor: "readability",
+        tier: "static", salvaged: false,
       }),
     ),
     submit: vi.fn(async () => ({ outcome: "new" as const, id: "rd_x" })),

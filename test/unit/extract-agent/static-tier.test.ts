@@ -24,9 +24,28 @@ function deps(fetchImpl: (url: string) => Promise<Response> | Response) {
 describe("extractStatic", () => {
   it("extracts an article via readability", async () => {
     const outcome = await extractStatic("https://public.example/article", deps(() => htmlResponse(ARTICLE_HTML)));
-    expect(outcome).toMatchObject({ kind: "extracted", extractor: "readability", title: "How Queues Drain" });
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "static", salvaged: false, title: "How Queues Drain" });
     if (outcome.kind !== "extracted") throw new Error("unreachable");
     expect(outcome.markdown).toContain("queue consumer drains messages");
+  });
+
+  it("reports a raw-DOM salvage as salvaged (it is what earns a headless render)", async () => {
+    // No <body> wrapper: Readability crashes and the salvage recovers the text.
+    // Tier 1 has to say so, or the orchestrator cannot tell a real extraction
+    // from boilerplate soup worth re-rendering.
+    const crash = `<div id="content"><article><h1>Reference</h1>${"<p>property value property value property value property value</p>".repeat(8)}</article></div><script>var x=1;</script>`;
+    const outcome = await extractStatic("https://public.example/shell", deps(() => htmlResponse(crash)));
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "static", salvaged: true });
+  });
+
+  it("does not mark a non-HTML capture as salvaged (there is no readability verdict)", async () => {
+    const outcome = await extractStatic(
+      "https://public.example/notes.txt",
+      deps(() => new Response("Plain notes, captured as-is.", { headers: { "content-type": "text/plain" } })),
+    );
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "static", salvaged: false });
   });
 
   it("maps a 403 to a challenge outcome instead of throwing", async () => {
