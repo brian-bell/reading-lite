@@ -10,6 +10,7 @@ export function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     api: { base: "https://reading.example", token: "tok" },
     maxPaidActions: 25,
     maxAttempts: 3,
+    maxRenders: 10,
     fetchMaxBytes: 20 * 1024 * 1024,
     minArticleChars: 350,
     statePath: "/unused/state.json",

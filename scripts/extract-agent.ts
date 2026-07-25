@@ -1,7 +1,8 @@
-// Local extraction agent (plan 016, Phases 1-2): polls the reading API for
+// Local extraction agent (plan 016, Phases 1-3): polls the reading API for
 // fetch_source-failed readings, re-extracts them locally (residential IP,
-// browser headers) through the SSRF-guarded static tier, and re-submits the
-// markdown via import-markdown. Dry-run by default; every submit is a paid
+// browser headers) through the SSRF-guarded static tier — falling back to a
+// headless render when that tier is challenged or finds no real article — and
+// re-submits the markdown via import-markdown. Dry-run by default; every submit is a paid
 // action, capped per run. Each run appends one JSON line to the run log and a
 // completed --execute run pings the dead-man healthcheck. A lockfile keeps two
 // overlapping runs from double-submitting paid work.
@@ -24,6 +25,8 @@ import { parseRunArgs, type RunArgs, type RunSummary } from "./extract-agent-lib
 import { appendRunLine } from "./extract-agent-lib/report";
 import { runSession } from "./extract-agent-lib/session";
 import { loadSidecar, saveSidecar } from "./extract-agent-lib/sidecar";
+import { extractHeadless } from "./extract-agent-lib/headless-tier";
+import { makePlaywrightRenderPage } from "./extract-agent-lib/render-playwright";
 import { extractStatic } from "./extract-agent-lib/static-tier";
 import { makeImportSubmitter } from "./extract-agent-lib/submit";
 import { loadDotVars } from "./lib/dotvars";
@@ -37,10 +40,14 @@ async function main(): Promise<void> {
 
   const lookup = (hostname_: string) => dnsLookup(hostname_, { all: true });
   const warn = (message: string) => console.warn(message);
+  // Built once per run, but Playwright is still only imported when a row
+  // actually earns a render: the lazy import lives inside the returned seam.
+  const renderPage = makePlaywrightRenderPage();
   const result = await runSession(args, {
     config,
     pageReadings: () => pageAllReadings({ fetch, base: config.api.base, token: config.api.token }),
     extract: (url) => extractStatic(url, { fetch, lookup, maxBytes: config.fetchMaxBytes }),
+    render: (url) => extractHeadless(url, { renderPage, lookup, maxBytes: config.fetchMaxBytes }),
     submit: makeImportSubmitter({ ...config.api, fetch, email: config.email }),
     loadState: () => loadSidecar(config.statePath, { warn }),
     saveState: (state) => saveSidecar(config.statePath, state),
@@ -100,7 +107,13 @@ function printSummary(summary: RunSummary, args: RunArgs): void {
     : summary.rows.filter((row) => row.decision === "attempt" || row.decision === "manual" || row.decision === "backed_off");
   for (const row of rows) {
     const outcome = row.outcome ?? row.decision;
-    console.log(`  ${outcome.padEnd(13)} ${row.id}  ${row.url}\n${" ".repeat(16)}${row.why}${row.detail ? ` — ${row.detail}` : ""}`);
+    // The tier is worth a glance on every acted row: "imported" from a render
+    // and "imported" from a plain fetch are the same word for very different
+    // amounts of work.
+    const tier = row.tier === "headless" ? " [rendered]" : "";
+    console.log(
+      `  ${outcome.padEnd(13)} ${row.id}${tier}  ${row.url}\n${" ".repeat(16)}${row.why}${row.detail ? ` — ${row.detail}` : ""}`,
+    );
   }
   if (!args.verbose && rows.length < summary.rows.length) {
     console.log(`  (${summary.rows.length - rows.length} unattempted rows hidden — --verbose to show)`);

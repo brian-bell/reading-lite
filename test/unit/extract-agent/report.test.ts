@@ -27,6 +27,9 @@ function summary(overrides: Partial<RunSummary> = {}): RunSummary {
     no_article: 0,
     errors: 0,
     deferred: 0,
+    rendered: 0,
+    rendered_failed: 0,
+    renders_skipped: 0,
     rows: [],
     ...overrides,
   };
@@ -81,6 +84,23 @@ describe("buildRunLine", () => {
       .map(([key]) => key);
     expect(Object.keys(okLine({ summary: s }).counts!)).toEqual(expected);
     expect(okLine({ summary: s }).counts).toMatchObject({ scanned: 7, imported: 2 });
+  });
+
+  it("carries the tier-2 counters, so a render-heavy run explains itself in the log", () => {
+    const line = okLine({ summary: summary({ rendered: 3, rendered_failed: 1, renders_skipped: 2 }) });
+
+    expect(line.counts).toMatchObject({ rendered: 3, rendered_failed: 1, renders_skipped: 2 });
+    // Without the cap on the line, a skipped count months later cannot be told
+    // apart from a box that simply had no browser.
+    expect(line.caps).toMatchObject({ max_renders: 10 });
+  });
+
+  it("keeps the tier that produced a row's outcome", () => {
+    const line = okLine({
+      summary: summary({ rows: [row({ decision: "attempt", outcome: "imported", tier: "headless" })] }),
+    });
+
+    expect(line.rows?.[0]).toMatchObject({ tier: "headless" });
   });
 
   it("marks a dry run", () => {
