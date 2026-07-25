@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import type { ListIndexItem } from "../../../src/schemas/api";
 import { AgentFatalError } from "../../../scripts/extract-agent-lib/poll";
 import type { RunLine } from "../../../scripts/extract-agent-lib/report";
 import { runSession, type SessionDeps } from "../../../scripts/extract-agent-lib/session";
+import type { LockFile } from "../../../scripts/extract-agent-lib/lock";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
 import type { StaticOutcome } from "../../../scripts/extract-agent-lib/static-tier";
 import { makeConfig, makeRow } from "./helpers";
@@ -34,6 +35,27 @@ async function unwritableLogPath(): Promise<string> {
   return join(blocker, "runs.jsonl");
 }
 
+async function freshLockPath(): Promise<string> {
+  return join(await mkdtemp(join(tmpdir(), "extract-agent-session-lock-")), "extract-agent.lock");
+}
+
+async function writeHeldLock(path: string, lock: Partial<LockFile> = {}): Promise<void> {
+  await mkdir(join(path, ".."), { recursive: true });
+  const full: LockFile = {
+    v: 1,
+    run_id: "run_other",
+    pid: 999,
+    host: "box",
+    started_at: NOW.toISOString(),
+    ...lock,
+  };
+  await writeFile(path, `${JSON.stringify(full)}\n`, "utf-8");
+}
+
+async function exists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
+}
+
 async function makeDeps(
   overrides: Partial<SessionDeps> = {},
   configOverrides: Parameters<typeof makeConfig>[0] = {},
@@ -41,7 +63,7 @@ async function makeDeps(
   const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
   const warn = vi.fn();
   const deps: SessionDeps = {
-    config: makeConfig({ runLogPath: await freshLogPath(), ...configOverrides }),
+    config: makeConfig({ runLogPath: await freshLogPath(), lockPath: await freshLockPath(), ...configOverrides }),
     pageReadings: vi.fn(async () => [blockedRow()]),
     extract: vi.fn(
       async (): Promise<StaticOutcome> => ({
@@ -60,6 +82,8 @@ async function makeDeps(
     runId: "run_1",
     host: "box",
     pid: 4242,
+    uptimeSeconds: () => 7 * 24 * 60 * 60,
+    isProcessAlive: () => true,
     warn,
     ...overrides,
   };
@@ -217,5 +241,86 @@ describe("runSession", () => {
     const line = (await readLines(deps.config.runLogPath))[0]!;
     expect(line.started_at).toBe("2026-07-15T12:00:00.000Z");
     expect(line.duration_ms).toBe(7000);
+  });
+});
+
+describe("runSession concurrency", () => {
+  it("holds the lock for the duration of an execute run and releases it at the end", async () => {
+    let lockedDuringRun: boolean | undefined;
+    const { deps } = await makeDeps();
+    deps.pageReadings = vi.fn(async () => {
+      lockedDuringRun = await exists(deps.config.lockPath);
+      return [];
+    });
+
+    const result = await runSession({ execute: true }, deps);
+    expect(lockedDuringRun).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(await exists(deps.config.lockPath)).toBe(false);
+  });
+
+  it("does no work at all when another live run holds the lock", async () => {
+    const { deps, fetchMock } = await makeDeps({}, { healthcheckUrl: "https://hc.example/ping" });
+    await writeHeldLock(deps.config.lockPath, { run_id: "run_other", pid: 999 });
+    const before = await readFile(deps.config.lockPath, "utf-8");
+
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result).toMatchObject({ status: "already_running", exitCode: 0 });
+    expect(deps.pageReadings).not.toHaveBeenCalled();
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(deps.saveState).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await readFile(deps.config.lockPath, "utf-8")).toBe(before);
+
+    const line = (await readLines(deps.config.runLogPath))[0]!;
+    expect(line).toMatchObject({
+      status: "already_running",
+      lock: { pid: 999, host: "box", started_at: NOW.toISOString() },
+    });
+    expect(line.counts).toBeUndefined();
+  });
+
+  it("releases the lock even when the run crashes", async () => {
+    const { deps } = await makeDeps({
+      pageReadings: vi.fn(async () => {
+        throw new AgentFatalError("boom");
+      }),
+    });
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result.exitCode).toBe(1);
+    expect(await exists(deps.config.lockPath)).toBe(false);
+  });
+
+  it("releases the lock even when the report cannot be written", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "extract-agent-session-"));
+    const { deps } = await makeDeps({}, { runLogPath: dir });
+    const result = await runSession({ execute: true }, deps);
+
+    expect(result.exitCode).toBe(1);
+    expect(await exists(deps.config.lockPath)).toBe(false);
+  });
+
+  it("never takes the lock on a dry run, but warns when an execute run is in flight", async () => {
+    const { deps, warn } = await makeDeps();
+    await writeHeldLock(deps.config.lockPath, { run_id: "run_other", pid: 999 });
+    const before = await readFile(deps.config.lockPath, "utf-8");
+
+    const result = await runSession({ execute: false }, deps);
+
+    expect(result).toMatchObject({ status: "ok", exitCode: 0 });
+    expect(deps.pageReadings).toHaveBeenCalled();
+    expect(await readFile(deps.config.lockPath, "utf-8")).toBe(before);
+    expect(warn.mock.calls.map((c) => String(c[0])).join(" ")).toMatch(/run_other|already running/);
+  });
+
+  it("leaves no lock behind on a dry run with a free lock", async () => {
+    const { deps, warn } = await makeDeps();
+    await runSession({ execute: false }, deps);
+
+    expect(await exists(deps.config.lockPath)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

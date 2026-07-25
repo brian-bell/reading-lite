@@ -19,9 +19,10 @@
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AgentConfig } from "./config";
+import type { LockFile } from "./lock";
 import type { PerRowOutcome, RunArgs, RunSummary } from "./run";
 
-export type RunStatus = "ok" | "crashed";
+export type RunStatus = "ok" | "crashed" | "already_running";
 
 const ERROR_MESSAGE_MAX = 500;
 // Rotation only bounds the file between lines, so the line itself has to be
@@ -51,6 +52,7 @@ export interface RunLine {
   rows?: PerRowOutcome[];
   rows_omitted?: number;
   error?: { name: string; message: string };
+  lock?: { run_id: string; pid: number; host: string; started_at: string };
 }
 
 export interface BuildRunLineInput {
@@ -59,6 +61,7 @@ export interface BuildRunLineInput {
   config: AgentConfig;
   summary?: RunSummary;
   error?: unknown;
+  holder?: LockFile;
   startedAt: Date;
   finishedAt: Date;
   runId: string;
@@ -94,6 +97,16 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
     if (reportable.length > ROWS_PER_LINE_MAX) line.rows_omitted = reportable.length - ROWS_PER_LINE_MAX;
   }
   if (input.status === "crashed") line.error = describeError(input.error);
+  // Who we yielded to: enough to tell an operator which process to look at (or
+  // which stale file to clear) without opening the lock file themselves.
+  if (input.holder) {
+    line.lock = {
+      run_id: input.holder.run_id,
+      pid: input.holder.pid,
+      host: input.holder.host,
+      started_at: input.holder.started_at,
+    };
+  }
   return line;
 }
 

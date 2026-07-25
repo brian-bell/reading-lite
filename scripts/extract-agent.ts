@@ -1,9 +1,10 @@
-// Local extraction agent (plan 016, Phases 1–2): polls the reading API for
+// Local extraction agent (plan 016, Phases 1-2): polls the reading API for
 // fetch_source-failed readings, re-extracts them locally (residential IP,
 // browser headers) through the SSRF-guarded static tier, and re-submits the
 // markdown via import-markdown. Dry-run by default; every submit is a paid
 // action, capped per run. Each run appends one JSON line to the run log and a
-// completed --execute run pings the dead-man healthcheck.
+// completed --execute run pings the dead-man healthcheck. A lockfile keeps two
+// overlapping runs from double-submitting paid work.
 //
 // This file is dependency composition only — the run itself lives in
 // extract-agent-lib/session.ts, which is where the ordering guarantees are
@@ -15,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, uptime } from "node:os";
 import { resolveAgentConfig } from "./extract-agent-lib/config";
 import { pageAllReadings } from "./extract-agent-lib/poll";
 import { parseRunArgs, type RunArgs, type RunSummary } from "./extract-agent-lib/run";
@@ -47,13 +48,30 @@ async function main(): Promise<void> {
     runId: randomUUID(),
     host: hostname(),
     pid: process.pid,
+    uptimeSeconds: uptime,
+    isProcessAlive,
     warn,
   });
 
+  if (result.status === "already_running") {
+    console.log("extract-agent: another run holds the lock; this run did nothing (see the run log)");
+  }
   if (result.summary) printSummary(result.summary, args);
   // exitCode, not exit(): process.exit() drops pending stdout writes, which
   // truncates this summary whenever the timer pipes the agent into a collector.
   process.exitCode = result.exitCode;
+}
+
+// Signal 0 tests for existence without delivering anything. EPERM means the
+// process exists and belongs to someone else — still alive, still holding the
+// lock.
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === "EPERM";
+  }
 }
 
 function printSummary(summary: RunSummary, args: RunArgs): void {

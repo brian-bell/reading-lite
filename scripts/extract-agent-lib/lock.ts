@@ -79,6 +79,12 @@ export async function acquireLock(path: string, deps: AcquireDeps): Promise<Acqu
   return { acquired: false, holder: (await readLock(path)).lock };
 }
 
+// Read-only peek, for a dry run that wants to say "an execute run is in flight"
+// without taking or judging the lock.
+export async function readLockHolder(path: string): Promise<LockFile | undefined> {
+  return (await readLock(path)).lock;
+}
+
 function acquired(path: string, deps: AcquireDeps): AcquireResult {
   return { acquired: true, release: () => release(path, deps) };
 }
