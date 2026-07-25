@@ -11,6 +11,12 @@
 // plausibly points it at a LAN Uptime Kuma — exactly the private-range target
 // safeFetch refuses. Plain injected fetch with a short timeout instead.
 //
+// `runSession` holds a dedicated report lock across rotation plus append. The
+// execution lock cannot provide that serialization: dry and yielded runs must
+// report too, and an execute run releases its execution lock before it knows the
+// final status to record. Keeping the serialization at the caller makes every
+// writer eligible to rotate while preserving this module's simple fs contract.
+//
 // A failed write is not swallowed — the caller fails the run on it. The corpus
 // work may have succeeded, but a paid-action run with no evidence is exactly
 // what the dead-man ping exists to catch; a false-positive page beats silent
@@ -19,9 +25,10 @@
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AgentConfig } from "./config";
+import type { LockFile } from "./lock";
 import type { PerRowOutcome, RunArgs, RunSummary } from "./run";
 
-export type RunStatus = "ok" | "crashed";
+export type RunStatus = "ok" | "crashed" | "already_running";
 
 const ERROR_MESSAGE_MAX = 500;
 // Rotation only bounds the file between lines, so the line itself has to be
@@ -51,6 +58,7 @@ export interface RunLine {
   rows?: PerRowOutcome[];
   rows_omitted?: number;
   error?: { name: string; message: string };
+  lock?: { run_id: string; pid: number; host: string; started_at: string };
 }
 
 export interface BuildRunLineInput {
@@ -59,6 +67,7 @@ export interface BuildRunLineInput {
   config: AgentConfig;
   summary?: RunSummary;
   error?: unknown;
+  holder?: LockFile;
   startedAt: Date;
   finishedAt: Date;
   runId: string;
@@ -94,6 +103,16 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
     if (reportable.length > ROWS_PER_LINE_MAX) line.rows_omitted = reportable.length - ROWS_PER_LINE_MAX;
   }
   if (input.status === "crashed") line.error = describeError(input.error);
+  // Who we yielded to: enough to tell an operator which process to look at (or
+  // which stale file to clear) without opening the lock file themselves.
+  if (input.holder) {
+    line.lock = {
+      run_id: input.holder.run_id,
+      pid: input.holder.pid,
+      host: input.holder.host,
+      started_at: input.holder.started_at,
+    };
+  }
   return line;
 }
 
@@ -131,6 +150,24 @@ export async function appendRunLine(
   const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await rotateIfNeeded(path, opts.maxBytes, Buffer.byteLength(record, "utf-8"));
+  await appendRecord(path, record);
+}
+
+// Exceptional correction path: if releasing the report lock itself fails, the
+// serialized line already on disk is no longer the terminal outcome. A single
+// O_APPEND correction is safer than attempting an unlocked rotation; the next
+// healthy reporter performs the bounded rotation under a fresh report lock.
+export async function appendRunLineCorrection(
+  path: string,
+  line: RunLine,
+  opts: { maxBytes: number },
+): Promise<void> {
+  const record = `${serializeWithinBudget(line, opts.maxBytes - 1)}\n`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await appendRecord(path, record);
+}
+
+async function appendRecord(path: string, record: string): Promise<void> {
   // Owner-only: the log holds every URL the agent touched, which on a shared box
   // is nobody else's business. The mode applies at creation only — a log that
   // predates this is the operator's to chmod.
@@ -214,5 +251,10 @@ async function rotateIfNeeded(path: string, maxBytes: number, pendingBytes: numb
     throw e;
   }
   if (size + pendingBytes <= maxBytes) return;
-  await rename(path, `${path}.1`);
+  try {
+    await rename(path, `${path}.1`);
+  } catch (e) {
+    // Nothing to rotate is not a failure; a run must not fail over housekeeping.
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
+  }
 }
