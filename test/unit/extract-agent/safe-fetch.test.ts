@@ -142,6 +142,35 @@ describe("safeFetch", () => {
     expect(forwarded.redirect).toBe("manual");
   });
 
+  it.each([
+    [304, "not modified"], // conditional GETs are now forwardable, so this is reachable
+    [300, "multiple choices"],
+    [305, "use proxy"],
+  ])("returns a %i response with a Location instead of following it", async (status) => {
+    const base = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status, headers: { location: "https://public.example/other" } }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    const res = await wrapped("https://public.example/start");
+
+    expect(res.status).toBe(status);
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([301, 302, 303, 307, 308])("follows a %i redirect", async (status) => {
+    const base = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status, headers: { location: "https://public.example/moved" } }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    const res = await wrapped("https://public.example/start");
+
+    expect(res.status).toBe(200);
+    expect(base.mock.calls[1]![0]).toBe("https://public.example/moved");
+  });
+
   it("strips credential headers when a redirect crosses origins", async () => {
     const base = vi
       .fn()

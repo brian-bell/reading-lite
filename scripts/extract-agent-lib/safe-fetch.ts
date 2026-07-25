@@ -34,6 +34,12 @@ export interface SafeFetchDeps {
 
 const DEFAULT_MAX_HOPS = 5;
 
+// WHATWG fetch's redirect status set — deliberately not "any 3xx". A 304 also
+// carries a Location and would otherwise be swapped for a different resource;
+// that is reachable here because conditional-GET headers are forwarded. 300
+// and 305 are likewise not redirects to follow.
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 // GET-only semantics: the agent never POSTs through this wrapper, so hops are
 // re-issued with the caller's metadata unchanged (no 303 method rewriting) and
 // no request body is forwarded. The caller's `input` may be a Request; its
@@ -59,7 +65,7 @@ export function safeFetch(base: typeof fetch, deps: SafeFetchDeps): typeof fetch
         signal,
         redirect: "manual",
       });
-      const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+      const location = REDIRECT_STATUSES.has(response.status) ? response.headers.get("location") : null;
       if (!location) return response;
       response.body?.cancel().catch(() => {});
       if (redirects >= maxHops) throw new TooManyRedirectsError(url, maxHops);
