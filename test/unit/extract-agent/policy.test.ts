@@ -82,6 +82,18 @@ const CASES: Array<{ name: string; row: ListIndexItem; expected: Partial<Decisio
     expected: { decision: "never" },
   },
   {
+    name: "a URL containing pdf is not itself a permanent PDF classification",
+    row: failedRow({
+      url: "https://example.test/guides/pdf-rendering",
+      error: {
+        code: "FetchTimeoutError",
+        message: "fetch timed out after 15000ms: https://example.test/guides/pdf-rendering",
+        stage: "fetch_source",
+      },
+    }),
+    expected: { decision: "attempt", route: "static" },
+  },
+  {
     name: "403 is a bot-block — attempt via the static tier",
     row: badStatus(403),
     expected: { decision: "attempt", route: "static" },

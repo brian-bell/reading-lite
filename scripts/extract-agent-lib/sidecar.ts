@@ -51,14 +51,36 @@ export async function loadSidecar(path: string, deps: { warn: (message: string) 
   }
   try {
     const parsed = JSON.parse(raw) as { version?: unknown; readings?: unknown };
-    if (parsed.version !== 1 || typeof parsed.readings !== "object" || parsed.readings === null) {
+    if (parsed.version !== 1 || !isRecord(parsed.readings)) {
       throw new Error(`unsupported sidecar shape (version ${String(parsed.version)})`);
+    }
+    for (const entry of Object.values(parsed.readings)) {
+      if (!isSidecarEntry(entry)) throw new Error("invalid sidecar reading entry");
     }
     return { version: 1, readings: parsed.readings as Record<string, SidecarEntry> };
   } catch (e) {
     deps.warn(`sidecar at ${path} is unreadable (${e instanceof Error ? e.message : String(e)}); starting empty`);
     return emptySidecar();
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function isSidecarEntry(value: unknown): value is SidecarEntry {
+  if (!isRecord(value)) return false;
+  return typeof value.attempts === "number" && Number.isInteger(value.attempts) && value.attempts >= 0
+    && isTimestamp(value.last_attempt_at)
+    && (value.last_manifest_updated_at === undefined || isTimestamp(value.last_manifest_updated_at))
+    && (value.last_outcome === "challenge" || value.last_outcome === "imported" || value.last_outcome === "upgraded"
+      || value.last_outcome === "gate_rejected" || value.last_outcome === "error" || value.last_outcome === "no_article")
+    && (value.next_eligible_at === undefined || isTimestamp(value.next_eligible_at))
+    && typeof value.given_up === "boolean";
 }
 
 export async function saveSidecar(path: string, state: SidecarState): Promise<void> {

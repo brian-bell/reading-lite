@@ -41,7 +41,7 @@ export function classify(row: ListIndexItem): Decision {
   if (code === "BlockedHostError") {
     return { decision: "never", why: "SSRF guard fired — do not retry from inside the LAN" };
   }
-  if (/not an article|PDF/i.test(message)) {
+  if (isExplicitNonArticleReason(message)) {
     return { decision: "never", why: "not an article (PDF)" };
   }
 
@@ -69,4 +69,9 @@ export function classify(row: ListIndexItem): Decision {
   }
   if (status >= 500) return { decision: "attempt", route: "static", why: `origin error (HTTP ${status})` };
   return { decision: "attempt", route: "static", why: "unknown fetch_source failure — try locally" };
+}
+
+function isExplicitNonArticleReason(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return normalized === "not an article" || normalized === "not an article — pdf" || normalized === "not an article (pdf)";
 }

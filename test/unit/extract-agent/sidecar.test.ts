@@ -57,6 +57,15 @@ describe("sidecar load/save", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it("treats a sidecar with malformed reading entries as empty with a warning", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "extract-agent-sidecar-")), "state.json");
+    await writeFile(path, JSON.stringify({ version: 1, readings: { rd_x: null } }), "utf-8");
+    const warn = vi.fn();
+    const state = await loadSidecar(path, { warn });
+    expect(state).toEqual({ version: 1, readings: {} });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("saves atomically (creates parent dirs, leaves no .tmp sibling) and round-trips", async () => {
     const path = await freshPath();
     const row = makeRow();
