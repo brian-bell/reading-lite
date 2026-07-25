@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ListIndexItem } from "../../../src/schemas/api";
-import type { AgentConfig } from "../../../scripts/extract-agent-lib/config";
 import {
   markdownGate,
   MARKDOWN_SUBMIT_BUDGET_BYTES,
@@ -9,7 +8,7 @@ import { parseRunArgs, runAgent, type RunDeps } from "../../../scripts/extract-a
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
 import type { StaticOutcome } from "../../../scripts/extract-agent-lib/static-tier";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../../scripts/import-markdown-lib/parse";
-import { makeRow } from "./helpers";
+import { makeConfig, makeRow } from "./helpers";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const GOOD_MARKDOWN = "A serious article paragraph. ".repeat(20).trim(); // ~580 chars
@@ -22,26 +21,13 @@ function blockedRow(overrides: Partial<ListIndexItem> = {}): ListIndexItem {
   });
 }
 
-function config(overrides: Partial<AgentConfig> = {}): AgentConfig {
-  return {
-    api: { base: "https://reading.example", token: "tok" },
-    maxPaidActions: 25,
-    maxAttempts: 3,
-    fetchMaxBytes: 20 * 1024 * 1024,
-    minArticleChars: 350,
-    statePath: "/unused/state.json",
-    email: false,
-    ...overrides,
-  };
-}
-
 function makeDeps(
   rows: ListIndexItem[],
   overrides: Partial<RunDeps> = {},
 ): { deps: RunDeps; saved: SidecarState[] } {
   const saved: SidecarState[] = [];
   const deps: RunDeps = {
-    config: config(),
+    config: makeConfig(),
     pageReadings: vi.fn(async () => rows),
     extract: vi.fn(
       async (): Promise<StaticOutcome> => ({
@@ -128,11 +114,12 @@ describe("parseRunArgs", () => {
     expect(parseRunArgs(["--dry-run"])).toEqual({ execute: false });
   });
 
-  it("parses --execute, --limit, and --only", () => {
-    expect(parseRunArgs(["--execute", "--limit", "5", "--only", "rd_abc"])).toEqual({
+  it("parses --execute, --limit, --only, and --verbose", () => {
+    expect(parseRunArgs(["--execute", "--limit", "5", "--only", "rd_abc", "--verbose"])).toEqual({
       execute: true,
       limit: 5,
       only: "rd_abc",
+      verbose: true,
     });
   });
 
@@ -197,7 +184,7 @@ describe("runAgent planning", () => {
     // whose first row gate-rejects still imports a later one. The plan must not
     // claim a skip that execute would go on to attempt.
     const rows = [blockedRow(), blockedRow(), blockedRow()];
-    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 1 }) });
+    const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 1 }) });
 
     const summary = await runAgent({ execute: false }, deps);
 
@@ -240,7 +227,7 @@ describe("runAgent execution", () => {
 
   it("respects the paid-action cap and reports the overflow as deferred", async () => {
     const rows = Array.from({ length: 11 }, () => blockedRow());
-    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 10 }) });
+    const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 10 }) });
 
     const summary = await runAgent({ execute: true }, deps);
 
@@ -277,7 +264,7 @@ describe("runAgent execution", () => {
     const big = blockedRow();
     const fine = blockedRow();
     const { deps, saved } = makeDeps([big, fine], {
-      config: config({ maxPaidActions: 1 }),
+      config: makeConfig({ maxPaidActions: 1 }),
       extract: vi.fn(async (url: string): Promise<StaticOutcome> => ({
         kind: "extracted",
         markdown: url === big.url ? "x".repeat(MARKDOWN_IMPORT_MAX_BYTES) : GOOD_MARKDOWN,
@@ -368,7 +355,7 @@ describe("runAgent execution", () => {
       .mockResolvedValueOnce({ outcome: "existing", id: "rd_x" })
       .mockResolvedValueOnce({ outcome: "existing", id: "rd_y" })
       .mockResolvedValueOnce({ outcome: "new", id: "rd_z" });
-    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 1 }), submit });
+    const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 1 }), submit });
 
     const summary = await runAgent({ execute: true }, deps);
 
@@ -379,7 +366,7 @@ describe("runAgent execution", () => {
   it("still stops at the cap once real paid work is enqueued", async () => {
     const rows = [blockedRow(), blockedRow(), blockedRow()];
     const submit = vi.fn().mockResolvedValue({ outcome: "new", id: "rd_z" });
-    const { deps } = makeDeps(rows, { config: config({ maxPaidActions: 2 }), submit });
+    const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 2 }), submit });
 
     const summary = await runAgent({ execute: true }, deps);
 

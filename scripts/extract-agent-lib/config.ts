@@ -2,14 +2,23 @@
 // `{...loadDotVars(".extract-agent.vars"), ...process.env}`). No process.env
 // reads in here so tests can drive every branch.
 
+import { dirname, join } from "node:path";
+
 export interface AgentConfig {
   api: { base: string; token: string };
   healthcheckUrl?: string;
+  healthcheckFailUrl?: string;
   maxPaidActions: number;
   maxAttempts: number;
   fetchMaxBytes: number;
   minArticleChars: number;
   statePath: string;
+  // Siblings of the state file: overriding AGENT_STATE_PATH alone relocates the
+  // whole agent state directory coherently. Both stay independently overridable.
+  runLogPath: string;
+  runLogMaxBytes: number;
+  lockPath: string;
+  lockMaxAgeSeconds: number;
   email: boolean;
 }
 
@@ -23,17 +32,21 @@ export function resolveAgentConfig({ vars, homedir }: ConfigDeps): AgentConfig {
   if (missing.length > 0) {
     throw new Error(`extract-agent config: missing required var(s): ${missing.join(", ")}`);
   }
+  const statePath = vars.AGENT_STATE_PATH || `${homedir}/.reading-lite/extract-agent.state.json`;
+  const stateDir = dirname(statePath);
   return {
     api: { base: vars.READING_API_URL!.replace(/\/$/, ""), token: vars.READER_API_TOKEN! },
-    // Resolved but deliberately unread in Phase 1: the dead-man ping that
-    // consumes it lands in Phase 2 (reading-lite-x1u.3), alongside the run
-    // report and lockfile. Setting it now is inert, not broken.
     healthcheckUrl: vars.HEALTHCHECK_URL || undefined,
+    healthcheckFailUrl: vars.HEALTHCHECK_FAIL_URL || undefined,
     maxPaidActions: positiveInt(vars, "AGENT_MAX_PAID_ACTIONS", 25),
     maxAttempts: positiveInt(vars, "AGENT_MAX_ATTEMPTS", 3),
     fetchMaxBytes: positiveInt(vars, "AGENT_FETCH_MAX_BYTES", 20 * 1024 * 1024),
     minArticleChars: positiveInt(vars, "AGENT_MIN_ARTICLE_CHARS", 350),
-    statePath: vars.AGENT_STATE_PATH || `${homedir}/.reading-lite/extract-agent.state.json`,
+    statePath,
+    runLogPath: vars.AGENT_RUN_LOG_PATH || join(stateDir, "extract-agent.runs.jsonl"),
+    runLogMaxBytes: positiveInt(vars, "AGENT_RUN_LOG_MAX_BYTES", 5 * 1024 * 1024),
+    lockPath: vars.AGENT_LOCK_PATH || join(stateDir, "extract-agent.lock"),
+    lockMaxAgeSeconds: positiveInt(vars, "AGENT_LOCK_MAX_AGE_SECONDS", 3 * 60 * 60),
     email: vars.AGENT_EMAIL === "true" || vars.AGENT_EMAIL === "1",
   };
 }

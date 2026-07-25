@@ -19,6 +19,10 @@ export interface RunArgs {
   execute: boolean;
   limit?: number;
   only?: string;
+  // Console-only: prints every bucketed row instead of the acted-on ones. The
+  // run report applies the same filter and has no escape hatch — a JSONL line
+  // per reading in the corpus, every 45 minutes, is not a log anyone can read.
+  verbose?: boolean;
 }
 
 export function parseRunArgs(argv: string[]): RunArgs {
@@ -31,6 +35,9 @@ export function parseRunArgs(argv: string[]): RunArgs {
         break;
       case "--dry-run":
         args.execute = false;
+        break;
+      case "--verbose":
+        args.verbose = true;
         break;
       case "--limit": {
         const raw = argv[++i];
