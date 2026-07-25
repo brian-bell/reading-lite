@@ -35,29 +35,43 @@ export interface SafeFetchDeps {
 const DEFAULT_MAX_HOPS = 5;
 
 // GET-only semantics: the agent never POSTs through this wrapper, so hops are
-// re-issued with the caller's init unchanged (no 303 method rewriting).
+// re-issued with the caller's metadata unchanged (no 303 method rewriting) and
+// no request body is forwarded. The caller's `input` may be a Request; its
+// headers/method/signal are merged with `init` (init wins) so an authenticated
+// or conditional GET is not silently stripped.
 export function safeFetch(base: typeof fetch, deps: SafeFetchDeps): typeof fetch {
   const maxHops = deps.maxHops ?? DEFAULT_MAX_HOPS;
   return async (input, init = {}) => {
-    let url = urlOf(input);
+    const request = new Request(input, init);
+    const signal = request.signal;
+    // Every hop carries the caller's signal so the extraction timeout still
+    // aborts the in-flight fetch, and the DNS step below races against it too.
+    const hopInit: RequestInit = {
+      method: request.method,
+      headers: request.headers,
+      signal,
+      redirect: "manual",
+    };
+    let url = request.url;
     for (let redirects = 0; ; redirects++) {
-      await assertSafeDestination(url, deps.lookup);
-      const response = await base(url, { ...init, redirect: "manual" });
+      await assertSafeDestination(url, deps.lookup, signal);
+      const response = await base(url, hopInit);
       const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
       if (!location) return response;
-      if (redirects >= maxHops) throw new TooManyRedirectsError(url, maxHops);
       response.body?.cancel().catch(() => {});
+      if (redirects >= maxHops) throw new TooManyRedirectsError(url, maxHops);
       url = new URL(location, url).href;
     }
   };
 }
 
-async function assertSafeDestination(url: string, lookup: LookupFn): Promise<void> {
+async function assertSafeDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   assertSafeUrl(url); // scheme + literal/hostname rules, shared with the Worker
   const hostname = new URL(url).hostname.toLowerCase();
   const bare = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   if (isIpLiteral(bare)) return; // already vetted by assertSafeUrl; nothing to resolve
-  const addresses = await lookup(bare);
+  const addresses = await abortable(lookup(bare), signal);
   for (const { address } of addresses) {
     if (isBlockedHost(address.toLowerCase())) {
       throw new BlockedHostError(url, `resolves to private/loopback/link-local address: ${address}`);
@@ -65,12 +79,24 @@ async function assertSafeDestination(url: string, lookup: LookupFn): Promise<voi
   }
 }
 
-function isIpLiteral(host: string): boolean {
-  return host.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+// LookupFn takes no signal (node's dns.promises.lookup has none), so a stalled
+// resolver would otherwise outlive the extraction timeout and, because the
+// agent works one row at a time, wedge the whole unattended run. Racing against
+// the request signal bounds it; the abandoned lookup settles into the void.
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
-function urlOf(input: Parameters<typeof fetch>[0]): string {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.href;
-  return input.url;
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason;
+}
+
+function isIpLiteral(host: string): boolean {
+  return host.includes(":") || /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
 }

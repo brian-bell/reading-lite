@@ -103,4 +103,59 @@ describe("safeFetch", () => {
     expect(res.status).toBe(200);
     expect(lookup).not.toHaveBeenCalled();
   });
+
+  it("abandons a stalled DNS lookup when the caller's timeout signal fires", async () => {
+    const base = vi.fn();
+    const lookup: LookupFn = () => new Promise(() => {}); // never settles
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup });
+    const controller = new AbortController();
+
+    const pending = wrapped("https://stalled-resolver.example/", { signal: controller.signal });
+    controller.abort();
+
+    // AbortError is what fetchBounded maps to FetchTimeoutError, so the
+    // extraction timeout stays meaningful across the resolve step.
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("rejects an already-aborted request without resolving or connecting", async () => {
+    const base = vi.fn();
+    const lookup = vi.fn();
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup });
+
+    await expect(
+      wrapped("https://public.example/", { signal: AbortSignal.abort() }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("preserves headers and signal when the caller passes a Request", async () => {
+    const base = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    await wrapped(new Request("https://public.example/", { headers: { "user-agent": "reading-agent/1" } }));
+
+    const forwarded = base.mock.calls[0]![1] as RequestInit;
+    expect(new Headers(forwarded.headers).get("user-agent")).toBe("reading-agent/1");
+    expect(forwarded.redirect).toBe("manual");
+  });
+
+  it("cancels the terminal redirect body when the hop ceiling is hit", async () => {
+    const cancelled: number[] = [];
+    const base = vi.fn().mockImplementation(async (url: string) => {
+      const n = Number(new URL(url).pathname.slice(1) || 0);
+      const body = new ReadableStream({
+        cancel() {
+          cancelled.push(n);
+        },
+      });
+      return new Response(body, { status: 302, headers: { location: `https://public.example/${n + 1}` } });
+    });
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup, maxHops: 2 });
+
+    await expect(wrapped("https://public.example/0")).rejects.toThrow(TooManyRedirectsError);
+    expect(cancelled).toEqual([0, 1, 2]); // including the hop that tripped the ceiling
+  });
 });
