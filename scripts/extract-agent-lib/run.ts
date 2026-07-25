@@ -248,10 +248,24 @@ async function attemptRow(
       entry.detail = `${outcome.code}: ${outcome.detail}`;
       return { summaryKey: "errors", sidecarOutcome: "error" };
     case "extracted": {
-      // Build the body once and gate that exact object — the gate sizes what
-      // actually goes on the queue, so it can't drift from what we submit.
+      // Build the body once, and gate the queue message that body becomes — the
+      // gate's job is to size what actually reaches `queue.send`, which is not
+      // always what we sent. When static extraction returns no title (text/JSON
+      // sources, repaired legacy manifests) the import endpoint substitutes
+      // `title ?? manifest.title`, so a stored title we never measured rides
+      // along and near-cap markdown passes here only to 503 at `queue.send`,
+      // *after* the eager writes. `row.title` is the list-row mirror of that
+      // manifest title (same terminal commit writes both), so it is what the
+      // Worker inherits.
+      //
+      // Size it, but deliberately don't forward it: the request schema is
+      // stricter than the stored one (`z.string().trim().min(1)` vs
+      // `z.string().min(1)`), so sending a whitespace-only stored title would
+      // turn a working server-side fallback into a 400 and burn a recovery
+      // attempt. Sizing the superset is the safe direction; the Worker stays in
+      // charge of the value.
       const body: SubmitBody = { source_url: row.url, markdown: outcome.markdown, title: outcome.title };
-      const gate = markdownGate(body, deps.config);
+      const gate = markdownGate({ ...body, title: outcome.title ?? row.title }, deps.config);
       if (!gate.ok) {
         entry.outcome = "gate_rejected";
         entry.detail = gate.why;

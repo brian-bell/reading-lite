@@ -29,6 +29,11 @@ function serializedBytes(text: string): number {
 // eager artifact/manifest/list writes, rolling a recoverable failed reading
 // into a QueueSendError at `queued`. Gating the exact object that gets
 // submitted is what keeps that class of gap from reopening field by field.
+// The object to gate is therefore the *queue message*, not necessarily the HTTP
+// body: where the Worker fills a field in from the stored manifest (it
+// substitutes `title ?? manifest.title`), the caller has to fold that expansion
+// in before gating, or the gate under-measures a payload the Worker then grows
+// past the cap. Over-measuring is the safe direction; under-measuring is the bug.
 export function markdownGate(body: SubmitBody, cfg: { minArticleChars: number }): GateVerdict {
   if (body.markdown.trim().length < cfg.minArticleChars) return { ok: false, why: "too_short" };
   const bytes = (Object.values(body) as string[])

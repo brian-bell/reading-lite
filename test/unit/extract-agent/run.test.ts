@@ -312,6 +312,52 @@ describe("runAgent execution", () => {
     expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
   });
 
+  it("counts the title inherited from the row when static extraction returns none", async () => {
+    // The import endpoint substitutes `title ?? manifest.title` into the queue
+    // message, so a row that already carries a title still pays for it even
+    // when the static tier returns none (text/JSON sources, repaired legacy
+    // manifests). Sizing only outcome.title lets near-cap markdown through the
+    // gate and fail at queue.send, after the eager writes.
+    const row = blockedRow({ title: "T".repeat(200) });
+    const { deps } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+        kind: "extracted",
+        markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
+        extractor: "readability",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
+  });
+
+  it("sizes the inherited title without forwarding it (the request schema is stricter)", async () => {
+    // The import request schema trims (`z.string().trim().min(1)`) while the
+    // stored manifest/list schemas do not, so forwarding a stored title would
+    // turn a whitespace-only one into a 400 and burn a recovery attempt. The
+    // Worker's own `title ?? manifest.title` fallback keeps producing the value;
+    // the agent only has to size it.
+    const row = blockedRow({ title: "   " });
+    const { deps } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<StaticOutcome> => ({
+        kind: "extracted",
+        markdown: GOOD_MARKDOWN,
+        extractor: "readability",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).toHaveBeenCalledWith({
+      source_url: row.url,
+      markdown: GOOD_MARKDOWN,
+      title: undefined,
+    });
+    expect(summary).toMatchObject({ imported: 1 });
+  });
+
   it("refunds the paid-action slot when the import no-ops on an existing owner", async () => {
     // A ready/pending owner returns 200/existing: the Worker enqueued nothing,
     // so the agent initiated no paid work and the slot must go back. Otherwise
