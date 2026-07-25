@@ -35,6 +35,12 @@ export interface ExtractedContent {
   content_sha256: string;
   markdown?: string;
   title?: string;
+  // Which path produced `markdown` on the HTML branch: true when Readability
+  // crashed and the raw-DOM salvage recovered the text. Absent for every other
+  // content type — a text/JSON capture has no Readability verdict to report.
+  // The Worker ignores it; the local extraction agent tiers on it (a
+  // salvage-only static extraction is what earns a headless render).
+  salvaged?: boolean;
 }
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -64,7 +70,13 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
     const html = new TextDecoder("utf-8").decode(raw);
     const article = readabilityFromHtml(html, url);
     if (article && article.markdown.trim().length > 0) {
-      return { ...base, content_status: "captured", markdown: article.markdown, title: article.title };
+      return {
+        ...base,
+        content_status: "captured",
+        markdown: article.markdown,
+        title: article.title,
+        salvaged: article.salvaged,
+      };
     }
     return { ...base, content_status: "raw_only" };
   }
@@ -241,7 +253,19 @@ interface Article {
   title?: string;
 }
 
-function readabilityFromHtml(html: string, url: string): Article | null {
+export interface ArticleFromHtml extends Article {
+  // false: Readability parsed the article. true: Readability threw and the
+  // raw-DOM salvage below recovered the text, boilerplate and all.
+  salvaged: boolean;
+}
+
+// The HTML→markdown rules, single-homed. Exported for the local extraction
+// agent's headless tier, which runs this identical function against a
+// Playwright-rendered DOM (plus that page's final URL) — the whole point of the
+// tier is that a rendered JS shell goes through the same extractor the Worker
+// uses, not a second copy of it. `salvaged` is the tiering signal: see
+// ExtractedContent.salvaged.
+export function readabilityFromHtml(html: string, url: string): ArticleFromHtml | null {
   // Readability/Turndown can throw on pathological documents — e.g. a page with
   // no <body> (the docs.spring.io case in issue #18, where the static fetch is a
   // script-only JS shell): Readability._grabArticle walks the topCandidate's
@@ -251,13 +275,14 @@ function readabilityFromHtml(html: string, url: string): Article | null {
   // "no article" verdict still degrades to raw_only (we don't want to summarize
   // boilerplate from pages Readability deliberately rejected).
   try {
-    return readabilityFromHtmlUnsafe(html, url);
+    const article = readabilityFromHtmlUnsafe(html, url);
+    return article ? { ...article, salvaged: false } : null;
   } catch (e) {
     console.warn(`readability/turndown threw on ${url}, trying raw-DOM fallback:`, e);
     const salvaged = rawDomToMarkdown(html);
     if (salvaged) {
       console.warn(`raw-DOM fallback salvaged ${salvaged.markdown.length} chars for ${url}`);
-      return salvaged;
+      return { ...salvaged, salvaged: true };
     }
     return null;
   }
