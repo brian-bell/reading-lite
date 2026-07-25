@@ -17,7 +17,7 @@ function listTsFilesRecursive(dir: string): string[] {
 }
 
 describe("extract-agent scaffolding", () => {
-  it("wires the extract-agent npm script to the stub CLI entrypoint", () => {
+  it("wires the extract-agent npm script to the CLI entrypoint", () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts["extract-agent"]).toBe("tsx scripts/extract-agent.ts");
   });
