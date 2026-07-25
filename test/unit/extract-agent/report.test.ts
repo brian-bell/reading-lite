@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { appendRunLine, buildRunLine, type RunLine } from "../../../scripts/extract-agent-lib/report";
+import { describe, expect, it, vi } from "vitest";
+import { appendRunLine, buildRunLine, pingHealthcheck, type RunLine } from "../../../scripts/extract-agent-lib/report";
 import type { PerRowOutcome, RunSummary } from "../../../scripts/extract-agent-lib/run";
 import { makeConfig } from "./helpers";
 
@@ -179,5 +179,51 @@ describe("appendRunLine", () => {
   it("propagates a write failure so the caller can fail the run", async () => {
     const dir = await freshDir();
     await expect(appendRunLine(dir, okLine(), { maxBytes: 1024 })).rejects.toThrow();
+  });
+});
+
+describe("pingHealthcheck", () => {
+  function deps(fetchImpl: typeof fetch) {
+    const warn = vi.fn();
+    return { warn, deps: { fetch: fetchImpl, warn } };
+  }
+
+  it("fires exactly one GET at the configured url, with an abort signal", async () => {
+    const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+    const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
+    await pingHealthcheck("https://hc.example/ping", d);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://hc.example/ping");
+    expect(init.method).toBe("GET");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no url is configured", async () => {
+    const fetchMock = vi.fn();
+    const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
+    await pingHealthcheck(undefined, d);
+    await pingHealthcheck("", d);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns but never throws on a non-2xx response", async () => {
+    const fetchMock = vi.fn(async () => new Response("nope", { status: 500 }));
+    const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
+    await expect(pingHealthcheck("https://hc.example/ping", d)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/500/);
+  });
+
+  it("warns but never throws when the request fails outright", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("getaddrinfo ENOTFOUND hc.example");
+    });
+    const { warn, deps: d } = deps(fetchMock as unknown as typeof fetch);
+    await expect(pingHealthcheck("https://hc.example/ping", d)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/ENOTFOUND/);
   });
 });

@@ -5,6 +5,12 @@
 // run: `rows` is therefore filtered (below) while `counts` stays complete, and
 // the line carries the corpus it touched (`api_base`) but never the token.
 //
+// The dead-man ping is the one piece of agent egress that deliberately does NOT
+// go through safeFetch. That guard exists because corpus URLs are attacker-
+// shaped input; the healthcheck URL is operator config, and a home-box operator
+// plausibly points it at a LAN Uptime Kuma — exactly the private-range target
+// safeFetch refuses. Plain injected fetch with a short timeout instead.
+//
 // A failed write is not swallowed — the caller fails the run on it. The corpus
 // work may have succeeded, but a paid-action run with no evidence is exactly
 // what the dead-man ping exists to catch; a false-positive page beats silent
@@ -102,6 +108,30 @@ export async function appendRunLine(
   await mkdir(dirname(path), { recursive: true });
   await rotateIfNeeded(path, opts.maxBytes);
   await appendFile(path, `${JSON.stringify(line)}\n`, "utf-8");
+}
+
+export interface PingDeps {
+  fetch: typeof fetch;
+  warn: (message: string) => void;
+  timeoutMs?: number;
+}
+
+const PING_TIMEOUT_MS = 10_000;
+
+// Never throws: a healthcheck that can't be reached is a monitoring problem,
+// not a run failure. The dead-man window catches a persistently missing ping on
+// its own — failing the run here would only add noise.
+export async function pingHealthcheck(url: string | undefined, deps: PingDeps): Promise<void> {
+  if (!url) return;
+  try {
+    const res = await deps.fetch(url, {
+      method: "GET",
+      signal: AbortSignal.timeout(deps.timeoutMs ?? PING_TIMEOUT_MS),
+    });
+    if (!res.ok) deps.warn(`healthcheck ping to ${url} returned ${res.status}`);
+  } catch (e) {
+    deps.warn(`healthcheck ping to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // Two files, so the log is bounded at ~2 × maxBytes without needing logrotate.
