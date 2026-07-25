@@ -307,8 +307,7 @@ describe("runSession concurrency", () => {
   });
 
   it("releases the lock even when the report cannot be written", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "extract-agent-session-"));
-    const { deps } = await makeDeps({}, { runLogPath: dir });
+    const { deps } = await makeDeps({}, { runLogPath: await unwritableLogPath() });
     const result = await runSession({ execute: true }, deps);
 
     expect(result.exitCode).toBe(1);
