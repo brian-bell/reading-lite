@@ -28,6 +28,7 @@ interface FakeState {
   contextOptions: Record<string, unknown> | undefined;
   routePatterns: string[];
   gotoCalls: Array<{ url: string; opts: unknown }>;
+  evaluateExpressions: string[];
   aborted: string[];
   continued: string[];
 }
@@ -62,6 +63,7 @@ function fakePlaywright(opts: {
     contextOptions: undefined,
     routePatterns: [],
     gotoCalls: [],
+    evaluateExpressions: [],
     aborted: [],
     continued: [],
   };
@@ -119,7 +121,8 @@ function fakePlaywright(opts: {
     mainFrame() {
       return mainFrame;
     },
-    async evaluate<T>(_expression: string): Promise<T> {
+    async evaluate<T>(expression: string): Promise<T> {
+      state.evaluateExpressions.push(expression);
       if (opts.hangOnEvaluate) return new Promise<T>(() => {});
       if (opts.navigationDuringEvaluateStatus !== undefined) {
         const url = opts.navigationDuringEvaluateUrl ?? "https://public.example/during-evaluate";
@@ -317,6 +320,20 @@ describe("makePlaywrightRenderPage", () => {
       RenderTooLargeError,
     );
     expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("measures the same serialization page.content() transfers", async () => {
+    // Playwright serializes an optional doctype followed by outerHTML. The
+    // in-page guard must use that exact HTML serialization, not XMLSerializer
+    // on the whole document (which would change void tags and add xmlns).
+    const { module, state } = fakePlaywright();
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await render("https://public.example/a", OPTS);
+
+    expect(state.evaluateExpressions).toContain(
+      "new TextEncoder().encode((document.doctype ? new XMLSerializer().serializeToString(document.doctype) : \"\") + (document.documentElement ? document.documentElement.outerHTML : \"\")).length",
+    );
   });
 
   it("gives up on a page that never answers, and closes the browser under it", async () => {

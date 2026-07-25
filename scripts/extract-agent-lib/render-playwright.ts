@@ -246,7 +246,7 @@ async function render(
   // one oversized transfer, and the watchdog above is what keeps a page that
   // simply never answers from costing the run.
   const bytes = await page.evaluate<number>(
-    "new TextEncoder().encode(document.documentElement.outerHTML).length",
+    "new TextEncoder().encode((document.doctype ? new XMLSerializer().serializeToString(document.doctype) : \"\") + (document.documentElement ? document.documentElement.outerHTML : \"\")).length",
   );
   if (bytes > maxBytes) {
     throw new RenderTooLargeError(url, bytes, maxBytes);
