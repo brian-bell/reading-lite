@@ -240,8 +240,12 @@ describe("appendRunLine", () => {
   });
 
   it("propagates a write failure so the caller can fail the run", async () => {
-    const dir = await freshDir();
-    await expect(appendRunLine(dir, okLine(), { maxBytes: 1024 })).rejects.toThrow();
+    // A regular file where a parent directory belongs: mkdir fails with ENOTDIR
+    // on every platform. (Pointing the log at a directory is not portable — on
+    // Linux the rotation rename would happily rename the directory itself.)
+    const blocker = join(await freshDir(), "not-a-directory");
+    await writeFile(blocker, "", "utf-8");
+    await expect(appendRunLine(join(blocker, "runs.jsonl"), okLine(), { maxBytes: 1024 })).rejects.toThrow();
   });
 });
 

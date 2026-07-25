@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -22,6 +22,16 @@ function blockedRow(): ListIndexItem {
 
 async function freshLogPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "extract-agent-session-")), "runs.jsonl");
+}
+
+// A regular file standing in for a parent directory: every write under it fails
+// with ENOTDIR, on every platform. (A directory is not portable here — on Linux
+// the rotation rename would rename the directory itself and the append would
+// then succeed.)
+async function unwritableLogPath(): Promise<string> {
+  const blocker = join(await mkdtemp(join(tmpdir(), "extract-agent-session-")), "not-a-directory");
+  await writeFile(blocker, "", "utf-8");
+  return join(blocker, "runs.jsonl");
 }
 
 async function makeDeps(
@@ -172,9 +182,8 @@ describe("runSession", () => {
   });
 
   it("fails the run when the report cannot be written, and pings nothing", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "extract-agent-session-"));
     const { deps, fetchMock, warn } = await makeDeps({}, {
-      runLogPath: dir, // a directory: the append fails with EISDIR
+      runLogPath: await unwritableLogPath(),
       healthcheckUrl: "https://hc.example/ping",
     });
     const result = await runSession({ execute: true }, deps);
