@@ -82,7 +82,7 @@ async function makeDeps(
     runId: "run_1",
     host: "box",
     pid: 4242,
-    uptimeSeconds: () => 7 * 24 * 60 * 60,
+    bootId: "boot_1",
     isProcessAlive: () => true,
     warn,
     ...overrides,

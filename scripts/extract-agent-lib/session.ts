@@ -32,7 +32,7 @@ export interface SessionDeps extends RunDeps {
   runId: string;
   host: string;
   pid: number;
-  uptimeSeconds: () => number;
+  bootId?: string;
   isProcessAlive: (pid: number) => boolean;
   warn: (message: string) => void;
 }
@@ -167,7 +167,7 @@ function lockDeps(deps: SessionDeps) {
     pid: deps.pid,
     host: deps.host,
     runId: deps.runId,
-    uptimeSeconds: deps.uptimeSeconds,
+    bootId: deps.bootId,
     isProcessAlive: deps.isProcessAlive,
     maxAgeSeconds: deps.config.lockMaxAgeSeconds,
     warn: deps.warn,

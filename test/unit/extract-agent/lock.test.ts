@@ -6,7 +6,7 @@ import { acquireLock, type AcquireDeps, type LockFile } from "../../../scripts/e
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const HOST = "box";
-const UPTIME_SECONDS = 7 * 24 * 60 * 60; // booted a week ago: nothing is pre-boot by accident
+const BOOT_ID = "boot_1";
 
 async function freshPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "extract-agent-lock-")), "nested", "extract-agent.lock");
@@ -19,7 +19,7 @@ function makeDeps(overrides: Partial<AcquireDeps> = {}): AcquireDeps & { warn: R
     pid: 4242,
     host: HOST,
     runId: "run_1",
-    uptimeSeconds: () => UPTIME_SECONDS,
+    bootId: BOOT_ID,
     isProcessAlive: () => true,
     maxAgeSeconds: 3 * 60 * 60,
     warn,
@@ -36,6 +36,7 @@ async function writeLockAt(path: string, lock: Partial<LockFile>): Promise<void>
     run_id: "run_other",
     pid: 999,
     host: HOST,
+    boot_id: BOOT_ID,
     started_at: NOW.toISOString(),
     ...lock,
   };
@@ -58,6 +59,7 @@ describe("acquireLock", () => {
       run_id: "run_1",
       pid: 4242,
       host: HOST,
+      boot_id: BOOT_ID,
       started_at: NOW.toISOString(),
     });
     expect(deps.warn).not.toHaveBeenCalled();
@@ -84,6 +86,46 @@ describe("acquireLock", () => {
     expect(result.acquired).toBe(false);
   });
 
+  it("does not break a live same-boot holder when the wall clock jumps forward", async () => {
+    const path = await freshPath();
+    await writeLockAt(path, {
+      started_at: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString(),
+      boot_id: BOOT_ID,
+    });
+    const result = await acquireLock(path, makeDeps({
+      isProcessAlive: () => true,
+    }));
+
+    expect(result.acquired).toBe(false);
+    expect((await readLock(path)).run_id).toBe("run_other");
+  });
+
+  it("keeps a live legacy lock with no boot id", async () => {
+    const path = await freshPath();
+    await writeLockAt(path, {
+      boot_id: undefined,
+      started_at: new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const result = await acquireLock(path, makeDeps({ isProcessAlive: () => true }));
+
+    expect(result.acquired).toBe(false);
+    expect((await readLock(path)).run_id).toBe("run_other");
+  });
+
+  it("keeps a live lock when this system cannot read a boot id", async () => {
+    const path = await freshPath();
+    await writeLockAt(path, { boot_id: "boot_0" });
+
+    const result = await acquireLock(path, makeDeps({
+      bootId: undefined,
+      isProcessAlive: () => true,
+    }));
+
+    expect(result.acquired).toBe(false);
+    expect((await readLock(path)).run_id).toBe("run_other");
+  });
+
   it("breaks a lock whose holder is gone", async () => {
     const path = await freshPath();
     await writeLockAt(path, { run_id: "run_dead", pid: 999 });
@@ -96,9 +138,9 @@ describe("acquireLock", () => {
     expect(deps.warn.mock.calls[0]![0]).toMatch(/run_dead/);
   });
 
-  it("breaks a lock written before the current boot, even though its pid looks alive (pid reuse)", async () => {
+  it("breaks a lock written during a previous boot, even though its pid looks alive (pid reuse)", async () => {
     const path = await freshPath();
-    await writeLockAt(path, { started_at: new Date(NOW.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString() });
+    await writeLockAt(path, { boot_id: "boot_0" });
     const deps = makeDeps({ isProcessAlive: () => true });
 
     const result = await acquireLock(path, deps);
@@ -235,4 +277,3 @@ describe("release", () => {
     expect(deps.warn.mock.calls.at(-1)![0]).toMatch(/run_successor|another run/);
   });
 });
-

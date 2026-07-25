@@ -16,7 +16,8 @@
 
 import { randomUUID } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { homedir, hostname, uptime } from "node:os";
+import { readFile } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
 import { resolveAgentConfig } from "./extract-agent-lib/config";
 import { pageAllReadings } from "./extract-agent-lib/poll";
 import { parseRunArgs, type RunArgs, type RunSummary } from "./extract-agent-lib/run";
@@ -48,7 +49,7 @@ async function main(): Promise<void> {
     runId: randomUUID(),
     host: hostname(),
     pid: process.pid,
-    uptimeSeconds: uptime,
+    bootId: await linuxBootId(),
     isProcessAlive,
     warn,
   });
@@ -60,6 +61,18 @@ async function main(): Promise<void> {
   // exitCode, not exit(): process.exit() drops pending stdout writes, which
   // truncates this summary whenever the timer pipes the agent into a collector.
   process.exitCode = result.exitCode;
+}
+
+async function linuxBootId(): Promise<string | undefined> {
+  try {
+    const id = (await readFile("/proc/sys/kernel/random/boot_id", "utf-8")).trim();
+    return id || undefined;
+  } catch {
+    // Non-Linux systems have no portable reboot-stable identifier. Falling back
+    // to PID liveness may leave a reused pid held until an operator intervenes,
+    // but it never breaks a live lock because the wall clock moved.
+    return undefined;
+  }
 }
 
 // Signal 0 tests for existence without delivering anything. EPERM means the

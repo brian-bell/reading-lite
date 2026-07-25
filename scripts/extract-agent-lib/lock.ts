@@ -11,7 +11,7 @@
 //   | lock state                                       | verdict          |
 //   |--------------------------------------------------|------------------|
 //   | same host, pid alive                              | held (any age)   |
-//   | same host, started_at before this boot            | break + warn     |
+//   | same host, different boot id                       | break + warn     |
 //   | same host, pid dead                               | break + warn     |
 //   | foreign host, age <= maxAgeSeconds                | held             |
 //   | foreign host, age > maxAgeSeconds                 | break + warn     |
@@ -24,8 +24,8 @@
 // unobserved double-spend — a wedged run stops pinging, so the dead-man pages
 // the operator, who clears it by hand. So the age ceiling applies only where
 // liveness is unknowable: a foreign hostname or a corrupt file. The one case
-// where liveness *lies* — reboot with pid reuse — is caught by the boot rule,
-// which is checked before liveness, not by age.
+// where liveness *lies* — reboot with pid reuse — is caught by a reboot-stable
+// boot id, checked before liveness rather than inferred from wall time.
 //
 // Same-boot pid reuse — a killed holder's pid handed to an unrelated long-lived
 // process — reads as "held" forever, and that is accepted, not overlooked: it is
@@ -65,6 +65,7 @@ export interface LockFile {
   run_id: string;
   pid: number;
   host: string;
+  boot_id?: string;
   started_at: string;
 }
 
@@ -73,7 +74,7 @@ export interface AcquireDeps {
   pid: number;
   host: string;
   runId: string;
-  uptimeSeconds: () => number;
+  bootId?: string;
   isProcessAlive: (pid: number) => boolean;
   maxAgeSeconds: number;
   warn: (message: string) => void;
@@ -127,6 +128,7 @@ async function tryCreate(path: string, deps: AcquireDeps): Promise<boolean> {
     run_id: deps.runId,
     pid: deps.pid,
     host: deps.host,
+    boot_id: deps.bootId,
     started_at: deps.now().toISOString(),
   };
   try {
@@ -182,7 +184,9 @@ async function readLock(path: string): Promise<ExistingLock> {
       // forever and stall every scheduled run. A file that says that is corrupt,
       // and the mtime path is how corrupt files get reclaimed.
       parsed.v !== 1 || typeof parsed.run_id !== "string" || !isPid(parsed.pid)
-      || typeof parsed.host !== "string" || typeof parsed.started_at !== "string"
+      || typeof parsed.host !== "string"
+      || (parsed.boot_id !== undefined && typeof parsed.boot_id !== "string")
+      || typeof parsed.started_at !== "string"
       || Number.isNaN(Date.parse(parsed.started_at))
     ) {
       return { mtime };
@@ -218,11 +222,11 @@ async function judge(
 
   const startedAt = Date.parse(lock.started_at);
   if (lock.host === deps.host) {
-    const bootTime = now - deps.uptimeSeconds() * 1000;
-    if (startedAt < bootTime) {
-      // Predates this boot, so its pid — alive or not — belongs to some other
-      // process now. This is the only case where liveness lies.
-      return { hold: false, why: `breaking lock from run ${lock.run_id} (pid ${lock.pid}): written before the current boot` };
+    if (lock.boot_id && deps.bootId && lock.boot_id !== deps.bootId) {
+      // A reboot-stable id is the only safe proof that an apparently live pid
+      // belongs to a different process. Wall-clock-derived boot times can move
+      // when NTP corrects the clock and must not be used to break a live lock.
+      return { hold: false, why: `breaking lock from run ${lock.run_id} (pid ${lock.pid}): written during a previous boot` };
     }
     if (deps.isProcessAlive(lock.pid)) return { hold: true };
     return { hold: false, why: `breaking lock from run ${lock.run_id}: pid ${lock.pid} is gone` };
