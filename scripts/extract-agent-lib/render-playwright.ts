@@ -47,6 +47,7 @@ interface RouteLike {
 interface PageLike {
   goto(url: string, opts: { waitUntil: "domcontentloaded"; timeout: number }): Promise<{ status(): number } | null>;
   on(event: "response", handler: (response: NavigationResponseLike) => void): void;
+  on(event: "framenavigated", handler: (frame: unknown) => void): void;
   mainFrame(): unknown;
   waitForLoadState(state: "networkidle", opts: { timeout: number }): Promise<void>;
   // A string expression, not a closure: this repo's tsconfig has no DOM lib
@@ -211,31 +212,33 @@ async function render(
   });
   const page = await context.newPage();
   // `goto()` only returns its own navigation response. A JS or meta-refresh
-  // can replace that 200 document while we are settling, so retain main-frame
-  // document responses and later select the one belonging to the snapshot URL.
-  // A 204/205 navigation never commits a document, so it must not displace the
-  // status for the DOM that remains on screen.
-  const navigationResponses: NavigationResponseLike[] = [];
+  // can replace that 200 document while we are settling, so retain the response
+  // that actually commits the main frame. Response receipt alone is not enough:
+  // a redirect followed by 204/205 emits responses but leaves the prior DOM.
+  let pendingNavigationResponse: NavigationResponseLike | undefined;
+  let committedNavigationResponse: NavigationResponseLike | undefined;
   page.on("response", (response) => {
-    if (
-      response.frame() === page.mainFrame() &&
-      response.request().isNavigationRequest() &&
-      response.status() !== 204 &&
-      response.status() !== 205
-    ) {
-      navigationResponses.push(response);
+    if (response.frame() === page.mainFrame() && response.request().isNavigationRequest()) {
+      pendingNavigationResponse =
+        response.status() === 204 || response.status() === 205 ? undefined : response;
+    }
+  });
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame() && pendingNavigationResponse) {
+      committedNavigationResponse = pendingNavigationResponse;
+      pendingNavigationResponse = undefined;
     }
   });
   const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-  // The response event is expected for HTTP navigations, but preserve goto's
-  // documented return as a fallback for a minimal/fake Playwright surface.
-  if (navigationResponses.length === 0 && response && response.status() !== 204 && response.status() !== 205) {
-    navigationResponses.push({
+  // Preserve goto's documented return as a fallback for a minimal Playwright
+  // surface, or if its event ordering did not expose the initial commit.
+  if (!committedNavigationResponse && response && response.status() !== 204 && response.status() !== 205) {
+    committedNavigationResponse = {
       status: () => response.status(),
       url: () => page.url(),
       frame: () => page.mainFrame(),
       request: () => ({ isNavigationRequest: () => true }),
-    });
+    };
   }
   await page.waitForLoadState("networkidle", { timeout: SETTLE_MS }).catch(() => {});
   // Measure the serialized DOM inside the page before pulling it across:
@@ -270,17 +273,15 @@ async function render(
   if (finalUrl !== before) {
     throw new Error(`page navigated while its content was being read (${before} → ${finalUrl})`);
   }
-  // Classify only after the snapshot is bound. The latest non-204/205
-  // main-frame response is the response that committed the current document:
-  // history.pushState/replaceState can subsequently change page.url() without
-  // loading a different document, while 204/205 never commit one at all.
+  // Classify only after the snapshot is bound. History API changes can update
+  // page.url() without committing a document, while a response chain ending in
+  // 204/205 may never commit at all.
   //
   // `null` is Playwright's documented result for non-HTTP navigations; those
   // have no HTTP status to classify and are still covered by the URL safety
   // checks around this renderer.
-  const finalNavigationResponse = navigationResponses[navigationResponses.length - 1];
-  if (finalNavigationResponse) {
-    const status = finalNavigationResponse.status();
+  if (committedNavigationResponse) {
+    const status = committedNavigationResponse.status();
     if (status < 200 || status >= 300) {
       // Keep the static tier's challenge vocabulary: it converts an HTTP 429
       // to RateLimitedError before the generic BadStatusError path.

@@ -48,6 +48,8 @@ function fakePlaywright(opts: {
   navigationStatus?: number;
   settledNavigationStatus?: number;
   settledNavigationUrl?: string;
+  redirectNavigationStatus?: number;
+  redirectNavigationUrl?: string;
   nonCommittingNavigationStatus?: number;
   nonCommittingNavigationUrl?: string;
   navigationDuringEvaluateStatus?: number;
@@ -72,6 +74,7 @@ function fakePlaywright(opts: {
   let handler: Handler | undefined;
   let navigatedTo: string | undefined;
   let responseHandler: ((response: unknown) => void) | undefined;
+  let frameNavigatedHandler: ((frame: unknown) => void) | undefined;
   const mainFrame = {};
 
   function navigationResponse(status: number, url: string) {
@@ -108,13 +111,23 @@ function fakePlaywright(opts: {
       if (opts.gotoError) throw opts.gotoError;
       const response = navigationResponse(opts.navigationStatus ?? 200, url);
       responseHandler?.(response);
+      frameNavigatedHandler?.(mainFrame);
       return response;
     },
     async waitForLoadState() {
+      if (opts.redirectNavigationStatus !== undefined) {
+        responseHandler?.(
+          navigationResponse(
+            opts.redirectNavigationStatus,
+            opts.redirectNavigationUrl ?? "https://public.example/redirect",
+          ),
+        );
+      }
       if (opts.settledNavigationStatus !== undefined) {
         const url = opts.settledNavigationUrl ?? "https://public.example/settled";
         navigatedTo = url;
         responseHandler?.(navigationResponse(opts.settledNavigationStatus, url));
+        frameNavigatedHandler?.(mainFrame);
       }
       if (opts.nonCommittingNavigationStatus !== undefined) {
         responseHandler?.(
@@ -125,8 +138,9 @@ function fakePlaywright(opts: {
         );
       }
     },
-    on(event: "response", handler_: (response: unknown) => void) {
+    on(event: "response" | "framenavigated", handler_: (value: unknown) => void) {
       if (event === "response") responseHandler = handler_;
+      if (event === "framenavigated") frameNavigatedHandler = handler_;
     },
     mainFrame() {
       return mainFrame;
@@ -138,6 +152,7 @@ function fakePlaywright(opts: {
         const url = opts.navigationDuringEvaluateUrl ?? "https://public.example/during-evaluate";
         navigatedTo = url;
         responseHandler?.(navigationResponse(opts.navigationDuringEvaluateStatus, url));
+        frameNavigatedHandler?.(mainFrame);
       }
       return (opts.domBytes ?? (opts.html ?? "<html><body><p>hi</p></body></html>").length) as unknown as T;
     },
@@ -463,6 +478,24 @@ describe("makePlaywrightRenderPage", () => {
     );
     expect(state.closedContexts).toBe(1);
     expect(state.closedBrowsers).toBe(1);
+  });
+
+  it("keeps the captured document after a redirect ends in a non-committing response", async () => {
+    // Neither the intermediate redirect nor the terminal 204 commits a new
+    // document. The original successful article must remain extractable.
+    const { module } = fakePlaywright({
+      navigationStatus: 200,
+      redirectNavigationStatus: 302,
+      redirectNavigationUrl: "https://public.example/no-content",
+      nonCommittingNavigationStatus: 204,
+      nonCommittingNavigationUrl: "https://public.example/no-content",
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module });
+
+    await expect(render("https://public.example/a", OPTS)).resolves.toEqual({
+      html: "<html><body><p>hi</p></body></html>",
+      finalUrl: "https://public.example/a",
+    });
   });
 
   it("rejects an error response reached while measuring the eventual snapshot", async () => {
