@@ -1,36 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildRedditImport } from "../../../scripts/reddit-import-lib/parse";
+import threadFixture from "../../fixtures/reddit/thread.json";
 
-// Shape mirrors a real Reddit thread `.json` (2-element [post, comments]
-// listing array) as fetched through a logged-in browser session.
-const THREAD_JSON = JSON.stringify([
-  {
-    kind: "Listing",
-    data: {
-      children: [
-        {
-          kind: "t3",
-          data: {
-            title: "Old Software Was Fast Because It Had No Choice",
-            selftext: "",
-            author: "BlondieCoder",
-            subreddit_name_prefixed: "r/programming",
-            is_self: false,
-            url: "https://yusufaytas.com/old-software-was-fast",
-          },
-        },
-      ],
-    },
-  },
-  {
-    kind: "Listing",
-    data: {
-      children: [
-        { kind: "t1", data: { body: "Old software wasn't actually fast.", author: "jonathancast", score: 820 } },
-      ],
-    },
-  },
-]);
+const THREAD_JSON = JSON.stringify(threadFixture);
 
 describe("buildRedditImport", () => {
   it("renders a thread listing into an import request keyed by the original url", () => {
