@@ -14,6 +14,7 @@ import {
   type SidecarState,
 } from "./sidecar";
 import type { ExtractOutcome } from "./outcome";
+import type { RedditOutcome } from "./reddit";
 import type { SubmitBody, SubmitFn } from "./submit";
 
 export interface RunArgs {
@@ -66,6 +67,7 @@ export interface RunDeps {
   config: AgentConfig;
   pageReadings: () => Promise<ListIndexItem[]>;
   extract: (url: string) => Promise<ExtractOutcome>;
+  reddit: (url: string) => Promise<RedditOutcome>;
   // Tier 2. Optional: a run without it is still a legal run (the static tier
   // recovers most rows on its own), and leaving it out is how a box with no
   // browser installed behaves by configuration rather than by failure.
@@ -160,8 +162,8 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
 
   const rows = args.only ? allRows.filter((r) => r.id === args.only || r.url === args.only) : allRows;
 
-  // Plan: bucket every row; collect the attemptable static-route ones in order.
-  const attemptQueue: Array<{ row: ListIndexItem; why: string }> = [];
+  // Plan: bucket every row; collect attemptable routes in input order.
+  const attemptQueue: Array<{ row: ListIndexItem; route: "static" | "reddit"; why: string }> = [];
   for (const row of rows) {
     const decision = classify(row);
     if (decision.decision !== "attempt") {
@@ -171,26 +173,38 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
     }
     const verdict = shouldAttempt(state.readings[row.id], row, { now: deps.now, maxAttempts: config.maxAttempts });
     if (!verdict.ok) {
+      if (decision.route === "reddit" && state.readings[row.id]?.last_outcome === "manual") {
+        summary.manual += 1;
+        summary.rows.push({
+          id: row.id,
+          url: row.url,
+          decision: "manual",
+          route: "reddit",
+          why: `${decision.why} — anonymous access requires the reddit-import skill`,
+          outcome: "manual",
+        });
+        continue;
+      }
       summary.backed_off += 1;
       summary.rows.push({ id: row.id, url: row.url, decision: "backed_off", route: decision.route, why: verdict.why ?? "backing off" });
       continue;
     }
-    if (decision.route !== "static") {
-      // Reddit/YouTube routes land in Phases 4 and 7; until then these rows are
-      // the manual reddit-import / youtube-import skill queue.
+    if (decision.route === "youtube") {
+      // YouTube recovery lands in Phase 7; until then these rows remain in the
+      // manual youtube-import skill queue.
       summary.manual += 1;
       summary.rows.push({
         id: row.id,
         url: row.url,
         decision: "manual",
         route: decision.route,
-        why: `${decision.why} — route not yet implemented (Phase 4/7)`,
+        why: `${decision.why} — route not yet implemented (Phase 7)`,
         outcome: "manual",
       });
       continue;
     }
     summary.eligible += 1;
-    attemptQueue.push({ row, why: decision.why });
+    attemptQueue.push({ row, route: decision.route, why: decision.why });
   }
 
   const budget = makeBudget(config.maxPaidActions);
@@ -206,8 +220,8 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
   let planned = 0;
   const renders = makeRenderBudget(config.maxRenders, summary, deps.warn);
 
-  for (const { row, why } of attemptQueue) {
-    const entry: PerRowOutcome = { id: row.id, url: row.url, decision: "attempt", route: "static", why };
+  for (const { row, route, why } of attemptQueue) {
+    const entry: PerRowOutcome = { id: row.id, url: row.url, decision: "attempt", route, why };
     summary.rows.push(entry);
 
     if (!args.execute) {
@@ -227,7 +241,7 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
     }
 
     summary.attempted += 1;
-    const acted = await attemptRow(row, entry, deps, budget, renders, summary);
+    const acted = await attemptRow(row, route, entry, deps, budget, renders, summary);
     summary[acted.summaryKey] += 1;
     state = recordAttempt(state, row, acted.sidecarOutcome, { now: deps.now, maxAttempts: config.maxAttempts });
     await deps.saveState(state);
@@ -238,7 +252,7 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
 }
 
 interface ActResult {
-  summaryKey: "imported" | "gate_rejected" | "challenge" | "dead" | "no_article" | "errors";
+  summaryKey: "imported" | "gate_rejected" | "challenge" | "dead" | "no_article" | "errors" | "manual";
   sidecarOutcome: AttemptOutcome;
 }
 
@@ -353,12 +367,41 @@ function describe(outcome: ExtractOutcome): string {
 
 async function attemptRow(
   row: ListIndexItem,
+  route: "static" | "reddit",
   entry: PerRowOutcome,
   deps: RunDeps,
   budget: Pick<Budget, "tryConsume" | "release">,
   renders: RenderBudget,
   summary: RunSummary,
 ): Promise<ActResult> {
+  if (route === "reddit") {
+    let outcome: RedditOutcome;
+    try {
+      outcome = await deps.reddit(row.url);
+    } catch (e) {
+      entry.outcome = "error";
+      entry.detail = e instanceof Error ? e.message : String(e);
+      return { summaryKey: "errors", sidecarOutcome: "error" };
+    }
+
+    switch (outcome.kind) {
+      case "manual":
+        entry.outcome = "manual";
+        entry.detail = outcome.detail;
+        return { summaryKey: "manual", sidecarOutcome: "manual" };
+      case "dead":
+        entry.outcome = "dead";
+        entry.detail = outcome.detail;
+        return { summaryKey: "dead", sidecarOutcome: "error" };
+      case "error":
+        entry.outcome = "error";
+        entry.detail = `${outcome.code}: ${outcome.detail}`;
+        return { summaryKey: "errors", sidecarOutcome: "error" };
+      case "extracted":
+        return submitBody(row, entry, outcome.body, deps, budget);
+    }
+  }
+
   let outcome: ExtractOutcome;
   try {
     outcome = await deps.extract(row.url);
@@ -396,52 +439,49 @@ async function attemptRow(
       entry.outcome = "error";
       detail(`${outcome.code}: ${outcome.detail}`);
       return { summaryKey: "errors", sidecarOutcome: "error" };
-    case "extracted": {
-      // Build the body once, and gate the queue message that body becomes — the
-      // gate's job is to size what actually reaches `queue.send`, which is not
-      // always what we sent. When static extraction returns no title (text/JSON
-      // sources, repaired legacy manifests) the import endpoint substitutes
-      // `title ?? manifest.title`, so a stored title we never measured rides
-      // along and near-cap markdown passes here only to 503 at `queue.send`,
-      // *after* the eager writes. `row.title` is the list-row mirror of that
-      // manifest title (same terminal commit writes both), so it is what the
-      // Worker inherits.
-      //
-      // Size it, but deliberately don't forward it: the request schema is
-      // stricter than the stored one (`z.string().trim().min(1)` vs
-      // `z.string().min(1)`), so sending a whitespace-only stored title would
-      // turn a working server-side fallback into a 400 and burn a recovery
-      // attempt. Sizing the superset is the safe direction; the Worker stays in
-      // charge of the value.
+    case "extracted":
       const body: SubmitBody = { source_url: row.url, markdown: outcome.markdown, title: outcome.title };
-      const gate = markdownGate({ ...body, title: outcome.title ?? row.title }, deps.config);
-      if (!gate.ok) {
-        entry.outcome = "gate_rejected";
-        entry.detail = gate.why;
-        return { summaryKey: "gate_rejected", sidecarOutcome: "gate_rejected" };
-      }
-      if (!budget.tryConsume()) {
-        // Shouldn't happen (checked before attempting), but never submit past the cap.
-        entry.outcome = "deferred";
-        entry.detail = "paid-action budget exhausted";
-        return { summaryKey: "errors", sidecarOutcome: "error" };
-      }
-      const result = await deps.submit(body);
-      if (result.outcome === "error") {
-        entry.outcome = "error";
-        entry.detail = result.error;
-        return { summaryKey: "errors", sidecarOutcome: "error" };
-      }
-      if (result.outcome === "existing") {
-        // 200/existing means a ready or pending owner: the Worker enqueued no
-        // new summarization, so this cost nothing and the slot goes back. Losing
-        // enough of these races would otherwise exhaust the cap and defer rows
-        // the agent could still have recovered.
-        budget.release();
-      }
-      entry.outcome = "imported";
-      entry.detail = result.outcome === "existing" ? "already existing (worker got there first)" : undefined;
-      return { summaryKey: "imported", sidecarOutcome: "imported" };
-    }
+      return submitBody(row, entry, body, deps, budget);
   }
+}
+
+// Gate and submit the exact route-produced body. The object used for sizing can
+// be a safe superset: when a route omits title, import-markdown inherits the
+// manifest title mirrored on the list row. Counting that inherited title keeps
+// the eventual queue message under its cap, while forwarding only `body`
+// preserves the route contract and avoids sending a whitespace-only stored
+// title through the request schema's stricter trim/min check.
+async function submitBody(
+  row: ListIndexItem,
+  entry: PerRowOutcome,
+  body: SubmitBody,
+  deps: RunDeps,
+  budget: Pick<Budget, "tryConsume" | "release">,
+): Promise<ActResult> {
+  const gate = markdownGate({ ...body, title: body.title ?? row.title }, deps.config);
+  if (!gate.ok) {
+    entry.outcome = "gate_rejected";
+    entry.detail = gate.why;
+    return { summaryKey: "gate_rejected", sidecarOutcome: "gate_rejected" };
+  }
+  if (!budget.tryConsume()) {
+    // Shouldn't happen (checked before attempting), but never submit past the cap.
+    entry.outcome = "deferred";
+    entry.detail = "paid-action budget exhausted";
+    return { summaryKey: "errors", sidecarOutcome: "error" };
+  }
+  const result = await deps.submit(body);
+  if (result.outcome === "error") {
+    entry.outcome = "error";
+    entry.detail = result.error;
+    return { summaryKey: "errors", sidecarOutcome: "error" };
+  }
+  if (result.outcome === "existing") {
+    // 200/existing means a ready or pending owner: the Worker enqueued no new
+    // summarization, so this cost nothing and the slot goes back.
+    budget.release();
+  }
+  entry.outcome = "imported";
+  entry.detail = result.outcome === "existing" ? "already existing (worker got there first)" : undefined;
+  return { summaryKey: "imported", sidecarOutcome: "imported" };
 }

@@ -1,11 +1,13 @@
-// Local extraction agent (plan 016, Phases 1-3): polls the reading API for
+// Local extraction agent (plan 016, Phases 1-4): polls the reading API for
 // fetch_source-failed readings, re-extracts them locally (residential IP,
 // browser headers) through the SSRF-guarded static tier — falling back to a
-// headless render when that tier is challenged or finds no real article — and
-// re-submits the markdown via import-markdown. Dry-run by default; every submit is a paid
-// action, capped per run. Each run appends one JSON line to the run log and a
-// completed --execute run pings the dead-man healthcheck. A lockfile keeps two
-// overlapping runs from double-submitting paid work.
+// headless render when that tier is challenged or finds no real article — or
+// fetches Reddit thread JSON anonymously and leaves challenged threads in the
+// manual-skill queue. Successful markdown re-enters through import-markdown.
+// Dry-run by default; every submit is a paid action, capped per run. Each run
+// appends one JSON line to the run log and a completed --execute run pings the
+// dead-man healthcheck. A lockfile keeps two overlapping runs from
+// double-submitting paid work.
 //
 // This file is dependency composition only — the run itself lives in
 // extract-agent-lib/session.ts, which is where the ordering guarantees are
@@ -27,6 +29,7 @@ import { runSession } from "./extract-agent-lib/session";
 import { loadSidecar, saveSidecar } from "./extract-agent-lib/sidecar";
 import { extractHeadless } from "./extract-agent-lib/headless-tier";
 import { makePlaywrightRenderPage } from "./extract-agent-lib/render-playwright";
+import { extractReddit } from "./extract-agent-lib/reddit";
 import { extractStatic } from "./extract-agent-lib/static-tier";
 import { makeImportSubmitter } from "./extract-agent-lib/submit";
 import { loadDotVars } from "./lib/dotvars";
@@ -47,6 +50,7 @@ async function main(): Promise<void> {
     config,
     pageReadings: () => pageAllReadings({ fetch, base: config.api.base, token: config.api.token }),
     extract: (url) => extractStatic(url, { fetch, lookup, maxBytes: config.fetchMaxBytes }),
+    reddit: (url) => extractReddit(url, { fetch, lookup, maxBytes: config.fetchMaxBytes }),
     render: (url) => extractHeadless(url, { renderPage, lookup, maxBytes: config.fetchMaxBytes }),
     submit: makeImportSubmitter({ ...config.api, fetch, email: config.email }),
     loadState: () => loadSidecar(config.statePath, { warn }),

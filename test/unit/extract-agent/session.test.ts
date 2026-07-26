@@ -9,6 +9,7 @@ import { runSession, type SessionDeps } from "../../../scripts/extract-agent-lib
 import type { LockFile } from "../../../scripts/extract-agent-lib/lock";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
 import type { ExtractOutcome } from "../../../scripts/extract-agent-lib/outcome";
+import type { RedditOutcome } from "../../../scripts/extract-agent-lib/reddit";
 import { makeConfig, makeRow } from "./helpers";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
@@ -71,6 +72,12 @@ async function makeDeps(
         markdown: GOOD_MARKDOWN,
         title: "T",
         tier: "static", salvaged: false,
+      }),
+    ),
+    reddit: vi.fn(
+      async (): Promise<RedditOutcome> => ({
+        kind: "extracted",
+        body: { source_url: "https://www.reddit.com/r/x/comments/abc/t/", markdown: GOOD_MARKDOWN, title: "Reddit" },
       }),
     ),
     submit: vi.fn(async () => ({ outcome: "new" as const, id: "rd_x" })),
