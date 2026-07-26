@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   extractHeadless,
   HeadlessUnavailableError,
-  makeRouteFilter,
   shouldAbortRequest,
   type HeadlessDeps,
   type RenderPage,
@@ -74,51 +73,6 @@ describe("shouldAbortRequest", () => {
   });
 });
 
-describe("makeRouteFilter", () => {
-  it("aborts a request whose hostname resolves into the LAN", async () => {
-    // The one fully attacker-controlled input in this system is page content: a
-    // script on the rendered page can request a public hostname that resolves to
-    // a router or metadata service. URL shape alone waves that through, and the
-    // final-URL check comes far too late for a subresource.
-    const filter = makeRouteFilter(lookupOf({ "alias.example": "192.168.1.1" }));
-
-    expect(await filter("https://alias.example/probe")).toBe(true);
-    expect(await filter("https://cdn.example/app.js")).toBe(false);
-  });
-
-  it("aborts on URL shape without paying for a lookup", async () => {
-    const lookup = vi.fn();
-    const filter = makeRouteFilter(lookup as unknown as LookupFn);
-
-    expect(await filter("http://127.0.0.1/x")).toBe(true);
-    expect(await filter("file:///etc/passwd")).toBe(true);
-    expect(lookup).not.toHaveBeenCalled();
-  });
-
-  it("fails closed when the lookup errors", async () => {
-    const filter = makeRouteFilter(async () => {
-      throw new Error("EAI_AGAIN");
-    });
-
-    expect(await filter("https://unresolvable.example/x")).toBe(true);
-  });
-
-  it("resolves each hostname once per render", async () => {
-    // A page pulls dozens of requests from a handful of hosts; a DNS round trip
-    // per image would make rendering slower than the fetch it replaces.
-    const lookup = vi.fn(async () => [{ address: PUBLIC_ADDRESS }]);
-    const filter = makeRouteFilter(lookup);
-
-    await Promise.all([
-      filter("https://cdn.example/a.js"),
-      filter("https://cdn.example/b.css"),
-      filter("https://cdn.example/c.png"),
-    ]);
-
-    expect(lookup).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("extractHeadless", () => {
   it("extracts a rendered article through the shared readability path", async () => {
     const outcome = await extractHeadless("https://public.example/a", deps());
@@ -141,20 +95,22 @@ describe("extractHeadless", () => {
     expect(outcome.kind).toBe("no_article");
   });
 
-  it("hands the renderer a working route filter, wired to its own lookup", async () => {
+  it("hands the renderer a cheap URL-shape filter without doing subresource DNS", async () => {
+    const lookup = vi.fn(lookupOf({ "alias.example": "10.0.0.5" }));
     const renderPage = vi.fn(async (_url: string, opts: { routeFilter: (u: string) => Promise<boolean> }) => {
       expect(await opts.routeFilter("http://10.0.0.1/x")).toBe(true);
-      expect(await opts.routeFilter("https://alias.example/x")).toBe(true);
+      expect(await opts.routeFilter("https://alias.example/x")).toBe(false);
       expect(await opts.routeFilter("https://cdn.example/app.js")).toBe(false);
       return { html: ARTICLE_HTML, finalUrl: "https://public.example/a" };
     });
 
     await extractHeadless("https://public.example/a", deps({
       renderPage: renderPage as unknown as RenderPage,
-      lookup: lookupOf({ "alias.example": "10.0.0.5" }),
+      lookup,
     }));
 
     expect(renderPage).toHaveBeenCalledTimes(1);
+    expect(lookup).not.toHaveBeenCalledWith("alias.example");
   });
 
   it("refuses a private initial URL without rendering", async () => {
@@ -241,18 +197,12 @@ describe("extractHeadless", () => {
   });
 
   it("validates the final URL with a fresh deadline after rendering uses the original one", async () => {
-    const lookup: LookupFn = async (hostname) => {
-      if (hostname === "slow.example") return new Promise(() => {});
-      return [{ address: PUBLIC_ADDRESS }];
-    };
-    const renderPage = vi.fn(async (
-      _url: string,
-      opts: { routeFilter: (url: string) => Promise<boolean> },
-    ) => {
-      // Consume the render deadline through the public route filter. The
-      // completed render is still usable, and final URL validation must get its
-      // own bounded lookup window rather than inherit this expired signal.
-      expect(await opts.routeFilter("https://slow.example/app.js")).toBe(true);
+    const lookup: LookupFn = async () => [{ address: PUBLIC_ADDRESS }];
+    const renderPage = vi.fn(async () => {
+      // A real render may consume the initial deadline while Chromium settles.
+      // The completed render is still usable, so final validation needs a new
+      // bounded lookup window rather than the expired initial one.
+      await new Promise((resolve) => setTimeout(resolve, 25));
       return { html: ARTICLE_HTML, finalUrl: "https://public.example/a" };
     });
 

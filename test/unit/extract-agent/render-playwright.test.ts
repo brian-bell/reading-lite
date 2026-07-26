@@ -225,6 +225,7 @@ const OPTS = {
   maxBytes: 20 * 1024 * 1024,
 };
 
+const PUBLIC_LOOKUP = async () => [{ address: "93.184.216.34", family: 4 }];
 const NAV: FakeRequest = { url: "https://public.example/a" };
 
 describe("makePlaywrightRenderPage", () => {
@@ -233,7 +234,7 @@ describe("makePlaywrightRenderPage", () => {
       html: "<html><body><p>rendered</p></body></html>",
       finalUrl: "https://public.example/final",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     const result = await render("https://public.example/a", OPTS);
 
@@ -244,11 +245,59 @@ describe("makePlaywrightRenderPage", () => {
     });
   });
 
+  it("starts a validating proxy before Chromium and removes the implicit loopback bypass", async () => {
+    const { module, state } = fakePlaywright();
+    const close = vi.fn(async () => {});
+    const startProxy = vi.fn(async () => ({
+      url: "http://127.0.0.1:43123",
+      close,
+    }));
+    const render = makePlaywrightRenderPage({
+      load: async () => module,
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+      startProxy,
+    });
+
+    await render("https://public.example/a", OPTS);
+
+    expect(startProxy).toHaveBeenCalledOnce();
+    expect(state.launchArgs).toContain("--proxy-server=http://127.0.0.1:43123");
+    expect(state.launchArgs).toContain("--proxy-bypass-list=<-loopback>");
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes the validating proxy when Chromium launch fails", async () => {
+    const { module } = fakePlaywright({ launchError: new Error("browser launch failed") });
+    const close = vi.fn(async () => {});
+    const render = makePlaywrightRenderPage({
+      load: async () => module,
+      lookup: PUBLIC_LOOKUP,
+      startProxy: async () => ({ url: "http://127.0.0.1:43123", close }),
+    });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toBeInstanceOf(HeadlessUnavailableError);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not launch Chromium when the validating proxy cannot start", async () => {
+    const { module, state } = fakePlaywright();
+    const render = makePlaywrightRenderPage({
+      load: async () => module,
+      lookup: PUBLIC_LOOKUP,
+      startProxy: async () => {
+        throw new Error("listen EADDRNOTAVAIL");
+      },
+    });
+
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow("validating proxy could not be started");
+    expect(state.launchArgs).toEqual([]);
+  });
+
   it("blocks service workers and routes at the context, not the page", async () => {
     // Playwright does not route service-worker requests and does not route a
     // popup's first request through page.route — both are egress this tier owns.
     const { module, state } = fakePlaywright();
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -261,7 +310,7 @@ describe("makePlaywrightRenderPage", () => {
     // HTTP/3 — neither produces a request context.route or routeWebSocket is
     // given a say in.
     const { module, state } = fakePlaywright();
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -273,7 +322,7 @@ describe("makePlaywrightRenderPage", () => {
 
   it("sends a real browser user-agent rather than playwright's headless one", async () => {
     const { module, state } = fakePlaywright();
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -290,7 +339,7 @@ describe("makePlaywrightRenderPage", () => {
         { url: "file:///etc/passwd", resourceType: "xhr" },
       ],
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -308,7 +357,7 @@ describe("makePlaywrightRenderPage", () => {
         { url: "https://public.example/app.css", resourceType: "stylesheet" },
       ],
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -326,7 +375,7 @@ describe("makePlaywrightRenderPage", () => {
     const { module, state } = fakePlaywright({
       websockets: ["wss://live.example/feed", "ws://192.168.1.1/", "ws://127.0.0.1:9000/"],
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -339,7 +388,7 @@ describe("makePlaywrightRenderPage", () => {
     // page.content() materializes the whole document here, so the cap has to be
     // decided inside the page: a pathological dom must never cross the boundary.
     const { module, state } = fakePlaywright({ domBytes: 5_000 });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", { ...OPTS, maxBytes: 1_000 })).rejects.toBeInstanceOf(
       RenderTooLargeError,
@@ -352,7 +401,7 @@ describe("makePlaywrightRenderPage", () => {
     // in-page guard must use that exact HTML serialization, not XMLSerializer
     // on the whole document (which would change void tags and add xmlns).
     const { module, state } = fakePlaywright();
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await render("https://public.example/a", OPTS);
 
@@ -368,7 +417,7 @@ describe("makePlaywrightRenderPage", () => {
     vi.useFakeTimers();
     try {
       const { module, state } = fakePlaywright({ hangOnEvaluate: true });
-      const render = makePlaywrightRenderPage({ load: async () => module });
+      const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
       const pending = render("https://public.example/a", { ...OPTS, timeoutMs: 5_000 });
       const assertion = expect(pending).rejects.toThrow(/budget/);
@@ -388,7 +437,7 @@ describe("makePlaywrightRenderPage", () => {
     vi.useFakeTimers();
     try {
       const { module, state } = fakePlaywright({ hangOnNewContext: true });
-      const render = makePlaywrightRenderPage({ load: async () => module });
+      const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
       const pending = render("https://public.example/a", { ...OPTS, timeoutMs: 5_000 });
       const assertion = expect(pending).rejects.toThrow(/budget/);
@@ -409,7 +458,7 @@ describe("makePlaywrightRenderPage", () => {
     [500, "bad response status 500"],
   ])("rejects a final HTTP %i response before reading its DOM", async (navigationStatus, message) => {
     const { module, state } = fakePlaywright({ navigationStatus });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(message);
     expect(state.closedContexts).toBe(1);
@@ -423,7 +472,7 @@ describe("makePlaywrightRenderPage", () => {
       navigationStatus: 429,
       finalUrl: "https://public.example/a#retry-later",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "rate limited by https://public.example/a#retry-later (status 429",
@@ -439,7 +488,7 @@ describe("makePlaywrightRenderPage", () => {
       navigationStatus: 403,
       finalUrl: "https://public.example/challenge?retry=1",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "bad response status 403: https://public.example/challenge?retry=1",
@@ -454,7 +503,7 @@ describe("makePlaywrightRenderPage", () => {
       settledNavigationStatus: 404,
       settledNavigationUrl: "https://public.example/missing",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "bad response status 404: https://public.example/missing",
@@ -471,7 +520,7 @@ describe("makePlaywrightRenderPage", () => {
       nonCommittingNavigationStatus: 204,
       nonCommittingNavigationUrl: "https://public.example/no-content",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "bad response status 403: https://public.example/a",
@@ -490,7 +539,7 @@ describe("makePlaywrightRenderPage", () => {
       nonCommittingNavigationStatus: 204,
       nonCommittingNavigationUrl: "https://public.example/no-content",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).resolves.toEqual({
       html: "<html><body><p>hi</p></body></html>",
@@ -504,7 +553,7 @@ describe("makePlaywrightRenderPage", () => {
       navigationDuringEvaluateStatus: 403,
       navigationDuringEvaluateUrl: "https://public.example/sign-in",
     });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
       "bad response status 403: https://public.example/sign-in",
@@ -518,14 +567,14 @@ describe("makePlaywrightRenderPage", () => {
     // otherwise pair the new document's HTML with the old document's URL, and
     // the caller would validate a public url while parsing a private page.
     const { module } = fakePlaywright({ urlAfterContent: "http://192.168.1.1/router" });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow(/navigated/);
   });
 
   it("closes the context and browser even when navigation fails", async () => {
     const { module, state } = fakePlaywright({ gotoError: new Error("net::ERR_NAME_NOT_RESOLVED") });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toThrow("ERR_NAME_NOT_RESOLVED");
     expect(state.closedContexts).toBe(1);
@@ -534,6 +583,7 @@ describe("makePlaywrightRenderPage", () => {
 
   it("reports a missing playwright module as HeadlessUnavailableError", async () => {
     const render = makePlaywrightRenderPage({
+      lookup: PUBLIC_LOOKUP,
       load: async () => {
         throw new Error("Cannot find module 'playwright'");
       },
@@ -546,7 +596,7 @@ describe("makePlaywrightRenderPage", () => {
     // The home box after an OS update, or any machine where `npx playwright
     // install chromium` was never run.
     const { module } = fakePlaywright({ launchError: new Error("Executable doesn't exist at /ms-playwright/chromium") });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.toBeInstanceOf(HeadlessUnavailableError);
   });
@@ -555,7 +605,7 @@ describe("makePlaywrightRenderPage", () => {
     // Only import/launch failures mean "this box cannot render". A page that
     // times out is a property of that row and must stay per-row.
     const { module } = fakePlaywright({ gotoError: new Error("Timeout 30000ms exceeded") });
-    const render = makePlaywrightRenderPage({ load: async () => module });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
     await expect(render("https://public.example/a", OPTS)).rejects.not.toBeInstanceOf(HeadlessUnavailableError);
   });
