@@ -7,7 +7,14 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ListIndexItem } from "../../src/schemas/api";
 
-export type AttemptOutcome = "challenge" | "imported" | "upgraded" | "gate_rejected" | "error" | "no_article";
+export type AttemptOutcome =
+  | "challenge"
+  | "imported"
+  | "upgraded"
+  | "gate_rejected"
+  | "error"
+  | "no_article"
+  | "manual";
 
 export interface SidecarEntry {
   attempts: number;
@@ -78,7 +85,8 @@ function isSidecarEntry(value: unknown): value is SidecarEntry {
     && isTimestamp(value.last_attempt_at)
     && (value.last_manifest_updated_at === undefined || isTimestamp(value.last_manifest_updated_at))
     && (value.last_outcome === "challenge" || value.last_outcome === "imported" || value.last_outcome === "upgraded"
-      || value.last_outcome === "gate_rejected" || value.last_outcome === "error" || value.last_outcome === "no_article")
+      || value.last_outcome === "gate_rejected" || value.last_outcome === "error" || value.last_outcome === "no_article"
+      || value.last_outcome === "manual")
     && (value.next_eligible_at === undefined || isTimestamp(value.next_eligible_at))
     && typeof value.given_up === "boolean";
 }
@@ -126,7 +134,10 @@ export function recordAttempt(
   };
 
   let entry: SidecarEntry;
-  if (SUCCESS_OUTCOMES.has(outcome)) {
+  if (outcome === "manual") {
+    const priorAttempts = prior && !manifestMovedSince(prior, row) ? prior.attempts : 0;
+    entry = { ...base, attempts: priorAttempts + 1, given_up: true };
+  } else if (SUCCESS_OUTCOMES.has(outcome)) {
     entry = base;
   } else {
     // A failure after the Worker moved the manifest is a fresh classification,

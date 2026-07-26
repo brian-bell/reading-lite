@@ -5,8 +5,13 @@ import {
   MARKDOWN_SUBMIT_BUDGET_BYTES,
 } from "../../../scripts/extract-agent-lib/gates";
 import { HeadlessUnavailableError } from "../../../scripts/extract-agent-lib/headless-tier";
+import type { RedditOutcome } from "../../../scripts/extract-agent-lib/reddit";
 import { parseRunArgs, runAgent, type RunDeps } from "../../../scripts/extract-agent-lib/run";
-import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
+import {
+  emptySidecar,
+  recordAttempt,
+  type SidecarState,
+} from "../../../scripts/extract-agent-lib/sidecar";
 import type { ExtractOutcome } from "../../../scripts/extract-agent-lib/outcome";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../../scripts/import-markdown-lib/parse";
 import { makeConfig, makeRow } from "./helpers";
@@ -37,6 +42,12 @@ function makeDeps(
         markdown: GOOD_MARKDOWN,
         title: "T",
         tier: "static", salvaged: false,
+      }),
+    ),
+    reddit: vi.fn(
+      async (): Promise<RedditOutcome> => ({
+        kind: "extracted",
+        body: { source_url: "https://www.reddit.com/r/x/comments/abc/t/", markdown: GOOD_MARKDOWN, title: "Reddit" },
       }),
     ),
     submit: vi.fn(async () => ({ outcome: "new" as const, id: "rd_x" })),
@@ -144,6 +155,21 @@ describe("parseRunArgs", () => {
 });
 
 describe("runAgent planning", () => {
+  it("plans a Reddit row without fetching, rendering, submitting, or persisting", async () => {
+    const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const { deps } = makeDeps([reddit]);
+
+    const summary = await runAgent({ execute: false }, deps);
+
+    expect(summary).toMatchObject({ eligible: 1, manual: 0, attempted: 0 });
+    expect(summary.rows[0]).toMatchObject({ decision: "attempt", route: "reddit", outcome: "planned" });
+    expect(deps.reddit).not.toHaveBeenCalled();
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(deps.saveState).not.toHaveBeenCalled();
+  });
+
   it("buckets rows by policy and sidecar verdicts", async () => {
     const eligible = blockedRow();
     const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
@@ -168,8 +194,8 @@ describe("runAgent planning", () => {
     expect(summary).toMatchObject({
       dry_run: true,
       scanned: 6,
-      eligible: 1,
-      manual: 1,
+      eligible: 2,
+      manual: 0,
       out_of_scope: 1,
       never: 1,
       ineligible: 1,
@@ -178,6 +204,7 @@ describe("runAgent planning", () => {
     });
     const planned = summary.rows.find((r) => r.id === eligible.id);
     expect(planned).toMatchObject({ outcome: "planned", route: "static" });
+    expect(summary.rows.find((r) => r.id === reddit.id)).toMatchObject({ outcome: "planned", route: "reddit" });
   });
 
   it("dry-run plans only what --limit would actually attempt", async () => {
@@ -216,6 +243,162 @@ describe("runAgent planning", () => {
 });
 
 describe("runAgent execution", () => {
+  it("imports the exact body produced by the Reddit route without static extraction or rendering", async () => {
+    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const body = { source_url: row.url, markdown: GOOD_MARKDOWN, title: "Reddit title" };
+    const { deps, saved } = makeDeps([row], {
+      reddit: vi.fn(async (): Promise<RedditOutcome> => ({ kind: "extracted", body })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.reddit).toHaveBeenCalledOnce();
+    expect(deps.reddit).toHaveBeenCalledWith(row.url);
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(deps.submit).toHaveBeenCalledWith(body);
+    expect(summary).toMatchObject({ attempted: 1, imported: 1, rendered: 0 });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "imported", attempts: 0 });
+  });
+
+  it("records a Reddit challenge as durable manual work without consuming render or paid-action capacity", async () => {
+    const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const staticRow = blockedRow();
+    const { deps, saved } = makeDeps([reddit, staticRow], {
+      config: makeConfig({ maxPaidActions: 1, maxRenders: 1 }),
+      reddit: vi.fn(async (): Promise<RedditOutcome> => ({
+        kind: "manual",
+        detail: "anonymous access challenged; use the reddit-import skill",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.extract).toHaveBeenCalledOnce();
+    expect(deps.extract).toHaveBeenCalledWith(staticRow.url);
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(deps.submit).toHaveBeenCalledOnce();
+    expect(summary).toMatchObject({ attempted: 2, manual: 1, imported: 1, rendered: 0 });
+    expect(saved.at(-1)?.readings[reddit.id]).toEqual({
+      attempts: 1,
+      last_attempt_at: NOW.toISOString(),
+      last_manifest_updated_at: reddit.updated_at,
+      last_outcome: "manual",
+      given_up: true,
+    });
+  });
+
+  it("keeps unchanged terminal Reddit work visible as manual and retries after manifest movement", async () => {
+    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const state = recordAttempt(emptySidecar(), row, "manual", { now: () => NOW, maxAttempts: 3 });
+    const { deps } = makeDeps([row], { loadState: vi.fn(async () => state) });
+
+    const unchanged = await runAgent({ execute: true }, deps);
+
+    expect(deps.reddit).not.toHaveBeenCalled();
+    expect(unchanged).toMatchObject({ manual: 1, backed_off: 0, attempted: 0 });
+    expect(unchanged.rows[0]).toMatchObject({
+      decision: "manual",
+      route: "reddit",
+      outcome: "manual",
+      why: expect.stringMatching(/reddit-import skill/i),
+    });
+
+    const moved = { ...row, updated_at: "2026-07-03T00:00:00.000Z" };
+    const { deps: movedDeps } = makeDeps([moved], { loadState: vi.fn(async () => state) });
+    const retried = await runAgent({ execute: true }, movedDeps);
+
+    expect(movedDeps.reddit).toHaveBeenCalledWith(moved.url);
+    expect(retried).toMatchObject({ attempted: 1, imported: 1, manual: 0 });
+  });
+
+  it("applies the shared inherited-title gate to Reddit bodies without submitting", async () => {
+    const row = blockedRow({
+      url: "https://www.reddit.com/r/x/comments/abc/t/",
+      title: "T".repeat(200),
+    });
+    const body = {
+      source_url: row.url,
+      markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
+    };
+    const { deps, saved } = makeDeps([row], {
+      reddit: vi.fn(async (): Promise<RedditOutcome> => ({ kind: "extracted", body })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "gate_rejected", attempts: 1 });
+  });
+
+  it("refunds a Reddit existing-owner race so a later static row can use the paid slot", async () => {
+    const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const staticRow = blockedRow();
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce({ outcome: "existing", id: reddit.id })
+      .mockResolvedValueOnce({ outcome: "new", id: staticRow.id });
+    const { deps } = makeDeps([reddit, staticRow], {
+      config: makeConfig({ maxPaidActions: 1 }),
+      submit,
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ attempted: 2, imported: 2, deferred: 0 });
+  });
+
+  it("records a Reddit submit error with the ordinary retry backoff", async () => {
+    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const { deps, saved } = makeDeps([row], {
+      submit: vi.fn(async () => ({ outcome: "error" as const, error: "500 boom" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(summary).toMatchObject({ errors: 1, imported: 0 });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({
+      attempts: 1,
+      last_outcome: "error",
+      next_eligible_at: new Date(NOW.getTime() + 60 * 60 * 1000).toISOString(),
+      given_up: false,
+    });
+  });
+
+  it("applies --limit across static and Reddit routes in input order", async () => {
+    const first = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/first/" });
+    const second = blockedRow();
+    const third = blockedRow({ url: "https://www.reddit.com/r/x/comments/def/third/" });
+    const order: string[] = [];
+    const { deps } = makeDeps([first, second, third], {
+      reddit: vi.fn(async (url: string): Promise<RedditOutcome> => {
+        order.push(url);
+        return {
+          kind: "extracted",
+          body: { source_url: url, markdown: GOOD_MARKDOWN, title: "Reddit" },
+        };
+      }),
+      extract: vi.fn(async (url: string): Promise<ExtractOutcome> => {
+        order.push(url);
+        return {
+          kind: "extracted",
+          markdown: GOOD_MARKDOWN,
+          title: "Static",
+          tier: "static",
+          salvaged: false,
+        };
+      }),
+    });
+
+    const summary = await runAgent({ execute: true, limit: 2 }, deps);
+
+    expect(order).toEqual([first.url, second.url]);
+    expect(summary).toMatchObject({ attempted: 2, imported: 2, deferred: 1 });
+    expect(summary.rows.find((entry) => entry.id === third.id)?.outcome).toBe("deferred");
+  });
+
   it("imports an eligible row and records the sidecar outcome", async () => {
     const row = blockedRow();
     const { deps, saved } = makeDeps([row]);
@@ -651,15 +834,17 @@ describe("runAgent execution", () => {
     expect(deps.extract).not.toHaveBeenCalled();
   });
 
-  it("routes reddit/youtube rows to the manual queue without extracting", async () => {
-    const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
-    const { deps } = makeDeps([reddit]);
+  it("keeps YouTube in the manual queue without invoking any extraction route", async () => {
+    const youtube = blockedRow({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" });
+    const { deps } = makeDeps([youtube]);
 
     const summary = await runAgent({ execute: true }, deps);
 
+    expect(deps.reddit).not.toHaveBeenCalled();
     expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.render).not.toHaveBeenCalled();
     expect(deps.submit).not.toHaveBeenCalled();
     expect(summary.manual).toBe(1);
-    expect(summary.rows[0]).toMatchObject({ route: "reddit", outcome: "manual" });
+    expect(summary.rows[0]).toMatchObject({ route: "youtube", outcome: "manual" });
   });
 });

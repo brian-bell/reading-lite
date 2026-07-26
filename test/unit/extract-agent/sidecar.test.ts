@@ -78,9 +78,32 @@ describe("sidecar load/save", () => {
     expect(siblings).toEqual(["state.json"]);
     expect(JSON.parse(await readFile(path, "utf-8")).version).toBe(1);
   });
+
+  it("round-trips a terminal manual outcome", async () => {
+    const path = await freshPath();
+    const row = makeRow();
+    const state = recordAttempt(emptySidecar(), row, "manual", deps);
+
+    await saveSidecar(path, state);
+
+    expect(await loadSidecar(path, { warn: vi.fn() })).toEqual(state);
+  });
 });
 
 describe("recordAttempt", () => {
+  it("records a terminal manual outcome without a retry deadline", () => {
+    const row = makeRow();
+    const state = recordAttempt(emptySidecar(), row, "manual", deps);
+
+    expect(state.readings[row.id]).toEqual({
+      attempts: 1,
+      last_attempt_at: NOW.toISOString(),
+      last_manifest_updated_at: row.updated_at,
+      last_outcome: "manual",
+      given_up: true,
+    });
+  });
+
   it("doubles the backoff per failure and gives up at maxAttempts", () => {
     const row = makeRow();
     let state: SidecarState = emptySidecar();
@@ -147,6 +170,14 @@ describe("recordAttempt", () => {
 
 describe("shouldAttempt", () => {
   const row = makeRow({ updated_at: "2026-07-02T00:00:00.000Z" });
+
+  it("keeps a manual outcome terminal until the manifest moves", () => {
+    const entry = recordAttempt(emptySidecar(), row, "manual", deps).readings[row.id];
+    expect(shouldAttempt(entry, row, deps).ok).toBe(false);
+
+    const moved = { ...row, updated_at: "2026-07-03T00:00:00.000Z" };
+    expect(shouldAttempt(entry, moved, deps)).toEqual({ ok: true });
+  });
 
   it("allows a row with no sidecar entry", () => {
     expect(shouldAttempt(undefined, row, deps)).toEqual({ ok: true });
