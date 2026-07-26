@@ -1,5 +1,5 @@
 import { createServer, request } from "node:http";
-import { connect, createServer as createNetServer, type Socket } from "node:net";
+import { connect, createServer as createNetServer, Socket } from "node:net";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,6 +9,10 @@ import {
 } from "../../../scripts/extract-agent-lib/validating-proxy";
 
 const open: Array<{ close(): Promise<void> | void }> = [];
+const DUAL_STACK_ADDRESSES = [
+  { address: "2001:4860:4860::8888", family: 6 },
+  { address: "93.184.216.34", family: 4 },
+];
 
 afterEach(async () => {
   await Promise.allSettled(open.splice(0).reverse().map((resource) => resource.close()));
@@ -38,6 +42,26 @@ describe("startValidatingProxy", () => {
 
     expect(response).toEqual({ status: 201, body: "article body", location: undefined });
     expect(dial).toHaveBeenCalledWith({ address: "93.184.216.34", port: 80, family: 4 });
+  });
+
+  it("tries the next vetted address when the first plain-HTTP connection fails", async () => {
+    const fixture = createServer((_req, res) => res.end("reachable over IPv4"));
+    const fixturePort = await listen(fixture);
+    open.push({ close: () => closeServer(fixture) });
+    const dial = fallbackDial(fixturePort);
+    const proxy = await startValidatingProxy({
+      lookup: async () => DUAL_STACK_ADDRESSES,
+      dial,
+    });
+    open.push(proxy);
+
+    const response = await proxyRequest(proxy, "http://dual-stack.example/article");
+
+    expect(response).toMatchObject({ status: 200, body: "reachable over IPv4" });
+    expect(dial.mock.calls.map(([destination]) => destination.address)).toEqual([
+      "2001:4860:4860::8888",
+      "93.184.216.34",
+    ]);
   });
 
   it("refuses a redirect hop into private space before dialing it", async () => {
@@ -88,6 +112,28 @@ describe("startValidatingProxy", () => {
     socket.destroy();
   });
 
+  it("tries the next vetted address before acknowledging a CONNECT tunnel", async () => {
+    const fixture = createNetServer((socket) => socket.pipe(socket));
+    const fixturePort = await listenNet(fixture);
+    open.push({ close: () => closeNetServer(fixture) });
+    const dial = fallbackDial(fixturePort);
+    const proxy = await startValidatingProxy({
+      lookup: async () => DUAL_STACK_ADDRESSES,
+      dial,
+    });
+    open.push(proxy);
+
+    const socket = await connectToProxy(proxy);
+    socket.write("CONNECT secure.example:443 HTTP/1.1\r\nHost: secure.example:443\r\n\r\n");
+    const responseHead = await readHttpHead(socket);
+
+    expect(responseHead).toContain("200 Connection Established");
+    expect(dial.mock.calls.map(([destination]) => destination.address)).toEqual(
+      DUAL_STACK_ADDRESSES.map(({ address }) => address),
+    );
+    socket.destroy();
+  });
+
   it("refuses a private CONNECT target without dialing it", async () => {
     const dial = vi.fn<ProxyDial>();
     const proxy = await startValidatingProxy({
@@ -102,6 +148,34 @@ describe("startValidatingProxy", () => {
 
     expect(responseHead).toContain("403 Forbidden");
     expect(dial).not.toHaveBeenCalled();
+    socket.destroy();
+  });
+
+  it("tries the next vetted address before forwarding a WebSocket Upgrade", async () => {
+    const fixture = createServer();
+    fixture.on("upgrade", (_req, socket) => {
+      socket.end("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+    });
+    const fixturePort = await listen(fixture);
+    open.push({ close: () => closeServer(fixture) });
+    const dial = fallbackDial(fixturePort);
+    const proxy = await startValidatingProxy({
+      lookup: async () => DUAL_STACK_ADDRESSES,
+      dial,
+    });
+    open.push(proxy);
+
+    const socket = await connectToProxy(proxy);
+    socket.write(
+      "GET ws://live.example/chat HTTP/1.1\r\n" +
+      "Host: live.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+    );
+    const responseHead = await readHttpHead(socket);
+
+    expect(responseHead).toContain("101 Switching Protocols");
+    expect(dial.mock.calls.map(([destination]) => destination.address)).toEqual(
+      DUAL_STACK_ADDRESSES.map(({ address }) => address),
+    );
     socket.destroy();
   });
 
@@ -303,5 +377,16 @@ async function proxyRequest(
     });
     req.on("error", reject);
     req.end();
+  });
+}
+
+function fallbackDial(fixturePort: number) {
+  return vi.fn<ProxyDial>((destination) => {
+    if (destination.family === 6) {
+      const socket = new Socket();
+      queueMicrotask(() => socket.emit("error", new Error("connect ENETUNREACH")));
+      return socket;
+    }
+    return connect({ host: "127.0.0.1", port: fixturePort });
   });
 }

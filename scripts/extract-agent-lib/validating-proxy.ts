@@ -123,14 +123,13 @@ async function forwardHttp(
     return sendError(response, 403, "Forbidden");
   }
 
-  let selected: ResolvedAddress;
+  let addresses: ResolvedAddress[];
   try {
-    const addresses = await resolveSafeDestination(target.href, deps.lookup, deps.signal);
+    addresses = await resolveSafeDestination(target.href, deps.lookup, deps.signal);
     if (!deps.isActive() || deps.signal.aborted) {
       response.destroy();
       return;
     }
-    selected = addresses[0]!;
   } catch (error) {
     if (!deps.isActive() || deps.signal.aborted) {
       response.destroy();
@@ -144,9 +143,15 @@ async function forwardHttp(
   const headers = sanitizeHeaders(incomingHeaders);
   headers.host = target.host;
   const agent = new Agent({ keepAlive: false });
-  agent.createConnection = () => deps.dial({ ...selected, port });
+  agent.createConnection = (_options, callback) => {
+    void connectVetted(addresses, port, deps).then(
+      (socket) => callback?.(null, socket),
+      (error: unknown) => callback?.(asError(error), undefined as unknown as Duplex),
+    );
+    return undefined;
+  };
   const upstream = httpRequest({
-    hostname: selected.address,
+    hostname: addresses[0]!.address,
     port,
     method,
     path: `${target.pathname}${target.search}`,
@@ -183,14 +188,13 @@ async function openConnectTunnel(
     return sendSocketError(client, 403, "Forbidden");
   }
 
-  let selected: ResolvedAddress;
+  let addresses: ResolvedAddress[];
   try {
-    const addresses = await resolveSafeDestination(target.url.href, deps.lookup, deps.signal);
+    addresses = await resolveSafeDestination(target.url.href, deps.lookup, deps.signal);
     if (!deps.isActive() || deps.signal.aborted) {
       client.destroy();
       return;
     }
-    selected = addresses[0]!;
   } catch (error) {
     if (!deps.isActive() || deps.signal.aborted) {
       client.destroy();
@@ -202,31 +206,24 @@ async function openConnectTunnel(
 
   let upstream: Socket;
   try {
-    upstream = deps.dial({ ...selected, port: target.port });
+    upstream = await connectVetted(addresses, target.port, deps);
   } catch {
     return sendSocketError(client, 502, "Bad Gateway");
   }
-  const fail = () => {
-    if (!client.destroyed) sendSocketError(client, 502, "Bad Gateway");
-  };
-  upstream.once("error", fail);
   client.once("error", () => {
     upstream.destroy();
   });
-  upstream.once("connect", () => {
-    upstream.off("error", fail);
-    upstream.on("error", () => {
-      client.destroy();
-    });
-    if (!deps.isActive() || deps.signal.aborted || client.destroyed) {
-      upstream.destroy();
-      return;
-    }
-    client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-    if (head.length > 0) upstream.write(head);
-    client.pipe(upstream);
-    upstream.pipe(client);
+  upstream.on("error", () => {
+    client.destroy();
   });
+  if (!deps.isActive() || deps.signal.aborted || client.destroyed) {
+    upstream.destroy();
+    return;
+  }
+  client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  if (head.length > 0) upstream.write(head);
+  client.pipe(upstream);
+  upstream.pipe(client);
 }
 
 async function openUpgrade(
@@ -247,14 +244,13 @@ async function openUpgrade(
   const validationUrl = new URL(target.href);
   validationUrl.protocol = "http:";
 
-  let selected: ResolvedAddress;
+  let addresses: ResolvedAddress[];
   try {
-    const addresses = await resolveSafeDestination(validationUrl.href, deps.lookup, deps.signal);
+    addresses = await resolveSafeDestination(validationUrl.href, deps.lookup, deps.signal);
     if (!deps.isActive() || deps.signal.aborted) {
       client.destroy();
       return;
     }
-    selected = addresses[0]!;
   } catch (error) {
     if (!deps.isActive() || deps.signal.aborted) {
       client.destroy();
@@ -267,38 +263,76 @@ async function openUpgrade(
   const port = target.port ? Number(target.port) : 80;
   let upstream: Socket;
   try {
-    upstream = deps.dial({ ...selected, port });
+    upstream = await connectVetted(addresses, port, deps);
   } catch {
     return sendSocketError(client, 502, "Bad Gateway");
   }
-  const fail = () => {
-    if (!client.destroyed) sendSocketError(client, 502, "Bad Gateway");
-  };
-  upstream.once("error", fail);
   client.once("error", () => {
     upstream.destroy();
   });
-  upstream.once("connect", () => {
-    upstream.off("error", fail);
-    upstream.on("error", () => {
-      client.destroy();
-    });
-    if (!deps.isActive() || deps.signal.aborted || client.destroyed) {
-      upstream.destroy();
-      return;
-    }
-    const lines = [`${method} ${target.pathname}${target.search} HTTP/${httpVersion}`, `Host: ${target.host}`];
-    for (let i = 0; i < rawHeaders.length; i += 2) {
-      const name = rawHeaders[i]!;
-      const lower = name.toLowerCase();
-      if (lower === "host" || lower === "proxy-authorization" || lower === "proxy-connection") continue;
-      lines.push(`${name}: ${rawHeaders[i + 1] ?? ""}`);
-    }
-    upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
-    if (head.length > 0) upstream.write(head);
-    client.pipe(upstream);
-    upstream.pipe(client);
+  upstream.on("error", () => {
+    client.destroy();
   });
+  if (!deps.isActive() || deps.signal.aborted || client.destroyed) {
+    upstream.destroy();
+    return;
+  }
+  const lines = [`${method} ${target.pathname}${target.search} HTTP/${httpVersion}`, `Host: ${target.host}`];
+  for (let i = 0; i < rawHeaders.length; i += 2) {
+    const name = rawHeaders[i]!;
+    const lower = name.toLowerCase();
+    if (lower === "host" || lower === "proxy-authorization" || lower === "proxy-connection") continue;
+    lines.push(`${name}: ${rawHeaders[i + 1] ?? ""}`);
+  }
+  upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+  if (head.length > 0) upstream.write(head);
+  client.pipe(upstream);
+  upstream.pipe(client);
+}
+
+async function connectVetted(addresses: ResolvedAddress[], port: number, deps: ForwardDeps): Promise<Socket> {
+  let lastError: Error | undefined;
+  for (const address of addresses) {
+    if (!deps.isActive() || deps.signal.aborted) throw deps.signal.reason;
+    try {
+      return await waitForConnect(deps.dial({ ...address, port }), deps.signal);
+    } catch (error) {
+      lastError = asError(error);
+    }
+  }
+  throw lastError ?? new Error("no vetted destination address connected");
+}
+
+function waitForConnect(socket: Socket, signal: AbortSignal): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const onConnect = () => {
+      cleanup();
+      resolve(socket);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      socket.destroy();
+      reject(error);
+    };
+    const onAbort = () => {
+      cleanup();
+      socket.destroy();
+      reject(signal.reason);
+    };
+    const cleanup = () => {
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      signal.removeEventListener("abort", onAbort);
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function parseHttpTarget(raw: string): URL {
