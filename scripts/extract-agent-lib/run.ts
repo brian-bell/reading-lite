@@ -5,6 +5,7 @@
 import type { ListIndexItem } from "../../src/schemas/api";
 import type { AgentConfig } from "./config";
 import { makeBudget, markdownGate, type Budget } from "./gates";
+import { HeadlessUnavailableError } from "./headless-tier";
 import { classify, type Route } from "./policy";
 import {
   recordAttempt,
@@ -65,11 +66,16 @@ export interface RunDeps {
   config: AgentConfig;
   pageReadings: () => Promise<ListIndexItem[]>;
   extract: (url: string) => Promise<ExtractOutcome>;
+  // Tier 2. Optional: a run without it is still a legal run (the static tier
+  // recovers most rows on its own), and leaving it out is how a box with no
+  // browser installed behaves by configuration rather than by failure.
+  render?: (url: string) => Promise<ExtractOutcome>;
   submit: SubmitFn;
   loadState: () => Promise<SidecarState>;
   saveState: (state: SidecarState) => Promise<void>;
   now: () => Date;
   log: (line: string) => void;
+  warn?: (line: string) => void;
 }
 
 export type RowOutcome =
@@ -90,6 +96,9 @@ export interface PerRowOutcome {
   route?: Route;
   why: string;
   outcome?: RowOutcome;
+  // Which tier produced the recorded outcome. Absent when nothing was
+  // extracted at all (planned, deferred, manual rows).
+  tier?: "static" | "headless";
   detail?: string;
 }
 
@@ -110,6 +119,14 @@ export interface RunSummary {
   no_article: number;
   errors: number;
   deferred: number;
+  // Tier-2 accounting, kept separate from the outcome counters above: a render
+  // is not an outcome, it is an attempt to improve one. `rendered_failed`
+  // counts renders that produced no usable article (the row keeps its tier-1
+  // outcome); `renders_skipped` counts rows that qualified for a render and
+  // did not get one — cap reached, or the box cannot render at all.
+  rendered: number;
+  rendered_failed: number;
+  renders_skipped: number;
   rows: PerRowOutcome[];
 }
 
@@ -135,6 +152,9 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
     no_article: 0,
     errors: 0,
     deferred: 0,
+    rendered: 0,
+    rendered_failed: 0,
+    renders_skipped: 0,
     rows: [],
   };
 
@@ -184,6 +204,7 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
   // costs nothing and leaves the slot for a later row. Deferring on the paid cap
   // would make the plan claim skips that an execute run would go on to import.
   let planned = 0;
+  const renders = makeRenderBudget(config.maxRenders, summary, deps.warn);
 
   for (const { row, why } of attemptQueue) {
     const entry: PerRowOutcome = { id: row.id, url: row.url, decision: "attempt", route: "static", why };
@@ -206,7 +227,7 @@ export async function runAgent(args: RunArgs, deps: RunDeps): Promise<RunSummary
     }
 
     summary.attempted += 1;
-    const acted = await attemptRow(row, entry, deps, budget);
+    const acted = await attemptRow(row, entry, deps, budget, renders, summary);
     summary[acted.summaryKey] += 1;
     state = recordAttempt(state, row, acted.sidecarOutcome, { now: deps.now, maxAttempts: config.maxAttempts });
     await deps.saveState(state);
@@ -221,11 +242,122 @@ interface ActResult {
   sidecarOutcome: AttemptOutcome;
 }
 
+// The render budget, plus the run-wide "this box cannot render" latch. Renders
+// are not paid actions — nothing is submitted — so they get their own cap:
+// what they cost is wall clock, and an unattended run that spends hours on
+// renders is one whose lock outlives its own staleness ceiling.
+interface RenderBudget {
+  available(): boolean;
+  consume(): void;
+  disable(reason: string): void;
+}
+
+function makeRenderBudget(cap: number, summary: RunSummary, warn?: (line: string) => void): RenderBudget {
+  let disabled = false;
+  return {
+    available: () => !disabled && summary.rendered < cap,
+    consume: () => {
+      summary.rendered += 1;
+    },
+    // Said once, not once per row: the point of latching is that a box without
+    // a working browser stops paying for the discovery.
+    disable: (reason) => {
+      if (disabled) return;
+      disabled = true;
+      warn?.(`extract-agent: headless tier disabled for this run — ${reason}`);
+    },
+  };
+}
+
+// Tier 2 is worth its wall clock exactly when tier 1 came back without a real
+// article: challenged (the page we got was the block, not the content), no
+// article at all (the JS-shell case), or salvage-only (Readability crashed and
+// we kept boilerplate soup). A dead link or a hard error is not a rendering
+// problem, and a clean static article needs no second opinion.
+function deservesRender(outcome: ExtractOutcome): boolean {
+  return (
+    outcome.kind === "challenge" ||
+    outcome.kind === "no_article" ||
+    (outcome.kind === "extracted" && outcome.salvaged)
+  );
+}
+
+// Runs tier 2 and decides which tier's result the row keeps.
+//
+// A tier-2 article always wins: a rendered DOM is the reason we rendered. A
+// tier-2 non-result never *costs* the row anything — a salvage-only tier-1
+// article is still worth submitting, and a challenged row stays challenged,
+// because "this site blocks us" is the outcome an operator needs to see even
+// when the render also failed. Either way the row's detail names both tiers, so
+// a run log line explains itself.
+async function renderRow(
+  row: ListIndexItem,
+  entry: PerRowOutcome,
+  tier1: ExtractOutcome,
+  deps: RunDeps,
+  renders: RenderBudget,
+  summary: RunSummary,
+): Promise<ExtractOutcome> {
+  if (!deps.render) {
+    // A run configured without a renderer is a supported configuration, not a
+    // silent one: the row qualified, and the report has to say it went
+    // unrendered or `renders_skipped: 0` would read as "nothing was missed".
+    summary.renders_skipped += 1;
+    entry.detail = `${describe(tier1)} — no render (headless tier not configured)`;
+    return tier1;
+  }
+  if (!renders.available()) {
+    summary.renders_skipped += 1;
+    entry.detail = `${describe(tier1)} — no render (cap reached or unavailable)`;
+    return tier1;
+  }
+
+  let tier2: ExtractOutcome;
+  try {
+    renders.consume();
+    tier2 = await deps.render(row.url);
+  } catch (e) {
+    if (e instanceof HeadlessUnavailableError) {
+      // Not this row's failure, and not a render that happened: give the slot
+      // back, latch the tier off, and let the row keep its tier-1 outcome.
+      summary.rendered -= 1;
+      summary.renders_skipped += 1;
+      renders.disable(e.message);
+      entry.detail = `${describe(tier1)} — no render (${e.message})`;
+      return tier1;
+    }
+    summary.rendered_failed += 1;
+    entry.detail = `${describe(tier1)} — render failed: ${e instanceof Error ? e.message : String(e)}`;
+    return tier1;
+  }
+
+  if (tier2.kind === "extracted") {
+    entry.tier = "headless";
+    return tier2;
+  }
+  summary.rendered_failed += 1;
+  entry.detail = `${describe(tier1)} — render: ${describe(tier2)}`;
+  return tier1;
+}
+
+function describe(outcome: ExtractOutcome): string {
+  switch (outcome.kind) {
+    case "extracted":
+      return outcome.salvaged ? "salvaged article" : "article";
+    case "error":
+      return `${outcome.code}: ${outcome.detail}`;
+    default:
+      return `${outcome.kind}: ${outcome.detail}`;
+  }
+}
+
 async function attemptRow(
   row: ListIndexItem,
   entry: PerRowOutcome,
   deps: RunDeps,
   budget: Pick<Budget, "tryConsume" | "release">,
+  renders: RenderBudget,
+  summary: RunSummary,
 ): Promise<ActResult> {
   let outcome: ExtractOutcome;
   try {
@@ -235,24 +367,34 @@ async function attemptRow(
     entry.detail = e instanceof Error ? e.message : String(e);
     return { summaryKey: "errors", sidecarOutcome: "error" };
   }
+  entry.tier = "static";
+
+  if (deservesRender(outcome)) {
+    outcome = await renderRow(row, entry, outcome, deps, renders, summary);
+  }
+
+  // A detail composed above already names both tiers; don't flatten it back to
+  // tier 1's half.
+  const detail = (text: string) => {
+    if (entry.detail === undefined) entry.detail = text;
+  };
 
   switch (outcome.kind) {
     case "challenge":
       entry.outcome = "challenge";
-      entry.detail = outcome.detail;
+      detail(outcome.detail);
       return { summaryKey: "challenge", sidecarOutcome: "challenge" };
     case "dead":
       entry.outcome = "dead";
-      entry.detail = outcome.detail;
+      detail(outcome.detail);
       return { summaryKey: "dead", sidecarOutcome: "error" };
     case "no_article":
-      // Tier 2 (headless render) picks these up in Phase 3.
       entry.outcome = "no_article";
-      entry.detail = outcome.detail;
+      detail(outcome.detail);
       return { summaryKey: "no_article", sidecarOutcome: "no_article" };
     case "error":
       entry.outcome = "error";
-      entry.detail = `${outcome.code}: ${outcome.detail}`;
+      detail(`${outcome.code}: ${outcome.detail}`);
       return { summaryKey: "errors", sidecarOutcome: "error" };
     case "extracted": {
       // Build the body once, and gate the queue message that body becomes — the

@@ -53,7 +53,7 @@ export interface RunLine {
   pid: number;
   api_base: string;
   args: RunArgs;
-  caps: { max_paid_actions: number; max_attempts: number };
+  caps: { max_paid_actions: number; max_attempts: number; max_renders: number };
   counts?: Record<string, number>;
   rows?: PerRowOutcome[];
   rows_omitted?: number;
@@ -89,7 +89,14 @@ export function buildRunLine(input: BuildRunLineInput): RunLine {
     pid: input.pid,
     api_base: config.api.base,
     args: { ...input.args },
-    caps: { max_paid_actions: config.maxPaidActions, max_attempts: config.maxAttempts },
+    // max_renders rides along with the other caps so a line carrying
+    // `renders_skipped` can be read months later without guessing whether the
+    // cap was low or the box had no browser — the latter is only on stderr.
+    caps: {
+      max_paid_actions: config.maxPaidActions,
+      max_attempts: config.maxAttempts,
+      max_renders: config.maxRenders,
+    },
   };
   if (summary) {
     // Derived from the summary's own numeric fields rather than a hand-written

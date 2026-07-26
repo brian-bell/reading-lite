@@ -4,6 +4,7 @@ import {
   markdownGate,
   MARKDOWN_SUBMIT_BUDGET_BYTES,
 } from "../../../scripts/extract-agent-lib/gates";
+import { HeadlessUnavailableError } from "../../../scripts/extract-agent-lib/headless-tier";
 import { parseRunArgs, runAgent, type RunDeps } from "../../../scripts/extract-agent-lib/run";
 import { emptySidecar, type SidecarState } from "../../../scripts/extract-agent-lib/sidecar";
 import type { ExtractOutcome } from "../../../scripts/extract-agent-lib/outcome";
@@ -12,6 +13,7 @@ import { makeConfig, makeRow } from "./helpers";
 
 const NOW = new Date("2026-07-15T12:00:00.000Z");
 const GOOD_MARKDOWN = "A serious article paragraph. ".repeat(20).trim(); // ~580 chars
+const RENDERED_MARKDOWN = "A rendered article paragraph. ".repeat(20).trim();
 
 function blockedRow(overrides: Partial<ListIndexItem> = {}): ListIndexItem {
   return makeRow({
@@ -38,6 +40,16 @@ function makeDeps(
       }),
     ),
     submit: vi.fn(async () => ({ outcome: "new" as const, id: "rd_x" })),
+    render: vi.fn(
+      async (): Promise<ExtractOutcome> => ({
+        kind: "extracted",
+        markdown: RENDERED_MARKDOWN,
+        title: "Rendered",
+        tier: "headless",
+        salvaged: false,
+      }),
+    ),
+    warn: () => {},
     loadState: vi.fn(async () => emptySidecar()),
     saveState: vi.fn(async (state: SidecarState) => {
       saved.push(state);
@@ -392,9 +404,12 @@ describe("runAgent execution", () => {
   });
 
   it("records challenge and dead outcomes in the sidecar without submitting", async () => {
+    // Tier-1 bookkeeping on its own: no render configured, which is also how a
+    // box without a browser runs.
     const challenged = blockedRow();
     const gone = blockedRow();
     const { deps, saved } = makeDeps([challenged, gone], {
+      render: undefined,
       extract: vi.fn(async (url: string): Promise<ExtractOutcome> =>
         url === challenged.url ? { kind: "challenge", detail: "403" } : { kind: "dead", detail: "404" },
       ),
@@ -438,6 +453,202 @@ describe("runAgent execution", () => {
 
     expect(summary).toMatchObject({ errors: 1, imported: 1 });
     expect(saved.at(-1)?.readings[boom.id]).toMatchObject({ last_outcome: "error" });
+  });
+
+  it("renders and imports a row the static tier could only get a challenge for", async () => {
+    const row = blockedRow();
+    const render = vi.fn(async (): Promise<ExtractOutcome> => ({
+      kind: "extracted",
+      markdown: GOOD_MARKDOWN,
+      title: "Rendered",
+      tier: "headless",
+      salvaged: false,
+    }));
+    const { deps, saved } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+      render,
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(render).toHaveBeenCalledWith(row.url);
+    expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ markdown: GOOD_MARKDOWN, title: "Rendered" }));
+    expect(summary).toMatchObject({ rendered: 1, imported: 1, challenge: 0, rendered_failed: 0 });
+    expect(summary.rows[0]).toMatchObject({ outcome: "imported", tier: "headless" });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "imported" });
+  });
+
+  it("renders a row whose static extraction found no article", async () => {
+    const { deps } = makeDeps([blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "no_article", detail: "js shell" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ rendered: 1, imported: 1, no_article: 0 });
+  });
+
+  it("renders a salvage-only static extraction and prefers the rendered article", async () => {
+    // Salvaged markdown is Readability's crash fallback — boilerplate and all.
+    // A rendered DOM is why we bothered rendering, so it wins.
+    const { deps } = makeDeps([blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "extracted",
+        markdown: `${GOOD_MARKDOWN} soup`,
+        tier: "static",
+        salvaged: true,
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).toHaveBeenCalledTimes(1);
+    expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ markdown: RENDERED_MARKDOWN }));
+    expect(summary).toMatchObject({ rendered: 1, imported: 1 });
+  });
+
+  it("does not render when the static tier already produced a real article", async () => {
+    const { deps } = makeDeps([blockedRow()]);
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ markdown: GOOD_MARKDOWN }));
+    expect(summary).toMatchObject({ rendered: 0, imported: 1 });
+  });
+
+  it("does not render a dead link or a hard error", async () => {
+    const gone = blockedRow();
+    const broken = blockedRow();
+    const { deps } = makeDeps([gone, broken], {
+      extract: vi.fn(async (url: string): Promise<ExtractOutcome> =>
+        url === gone.url
+          ? { kind: "dead", detail: "404" }
+          : { kind: "error", code: "OversizedResponseError", detail: "too big" },
+      ),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ dead: 1, errors: 1, rendered: 0 });
+  });
+
+  it("keeps the tier-1 outcome when the render finds nothing either", async () => {
+    const row = blockedRow();
+    const { deps, saved } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403 cloudflare" })),
+      render: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "no_article", detail: "still a shell" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ challenge: 1, rendered: 1, rendered_failed: 1 });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "challenge" });
+    expect(summary.rows[0]?.detail).toContain("403 cloudflare");
+    expect(summary.rows[0]?.detail).toContain("still a shell");
+  });
+
+  it("falls back to a salvaged tier-1 article when the render fails", async () => {
+    // A broken render must not lose an article the static tier did produce.
+    const salvaged = `${GOOD_MARKDOWN} soup`;
+    const { deps } = makeDeps([blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "extracted",
+        markdown: salvaged,
+        tier: "static",
+        salvaged: true,
+      })),
+      render: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "error", code: "TimeoutError", detail: "gave up" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ markdown: salvaged }));
+    expect(summary).toMatchObject({ imported: 1, rendered: 1, rendered_failed: 1 });
+  });
+
+  it("survives a thrown render and keeps the tier-1 outcome", async () => {
+    const { deps } = makeDeps([blockedRow(), blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+      render: vi.fn(async () => {
+        throw new Error("chromium ate it");
+      }),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ challenge: 2, rendered: 2, rendered_failed: 2, errors: 0 });
+  });
+
+  it("stops rendering for the whole run when the box cannot render at all", async () => {
+    const warnings: string[] = [];
+    const { deps } = makeDeps([blockedRow(), blockedRow(), blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+      render: vi.fn(async () => {
+        throw new HeadlessUnavailableError("chromium is not installed");
+      }),
+      warn: (line: string) => warnings.push(line),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    // One doomed launch, not one per row.
+    expect(deps.render).toHaveBeenCalledTimes(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("chromium is not installed");
+    expect(summary).toMatchObject({ challenge: 3, rendered: 0, renders_skipped: 3 });
+  });
+
+  it("counts qualified rows as skipped when no renderer is configured", async () => {
+    // Supported configuration (a box with no browser), and it has to be visible:
+    // renders_skipped at zero would read as "nothing was missed".
+    const { deps } = makeDeps([blockedRow(), blockedRow()], {
+      render: undefined,
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(summary).toMatchObject({ challenge: 2, rendered: 0, renders_skipped: 2 });
+  });
+
+  it("caps renders per run and leaves the rest on their tier-1 outcome", async () => {
+    const { deps } = makeDeps([blockedRow(), blockedRow(), blockedRow()], {
+      config: makeConfig({ maxRenders: 1 }),
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.render).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ rendered: 1, imported: 1, challenge: 2, renders_skipped: 2 });
+  });
+
+  it("renders without consuming the paid-action budget", async () => {
+    // A render costs wall clock, not money; only submits are paid actions.
+    const { deps } = makeDeps([blockedRow(), blockedRow()], {
+      config: makeConfig({ maxPaidActions: 2 }),
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(summary).toMatchObject({ rendered: 2, imported: 2, deferred: 0 });
+  });
+
+  it("performs zero renders in a dry run", async () => {
+    const { deps } = makeDeps([blockedRow(), blockedRow()], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
+    });
+
+    await runAgent({ execute: false }, deps);
+
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(deps.extract).not.toHaveBeenCalled();
   });
 
   it("routes reddit/youtube rows to the manual queue without extracting", async () => {

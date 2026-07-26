@@ -10,6 +10,12 @@ export interface AgentConfig {
   healthcheckFailUrl?: string;
   maxPaidActions: number;
   maxAttempts: number;
+  // Renders are not paid actions — nothing is submitted — so they get their own
+  // cap. What they cost is wall clock: a corpus full of challenged rows would
+  // otherwise keep one unattended run alive for hours, up against the lock's
+  // own staleness ceiling. Over-cap rows keep their tier-1 outcome and are
+  // counted, never silently dropped.
+  maxRenders: number;
   fetchMaxBytes: number;
   minArticleChars: number;
   statePath: string;
@@ -40,6 +46,7 @@ export function resolveAgentConfig({ vars, homedir }: ConfigDeps): AgentConfig {
     healthcheckFailUrl: vars.HEALTHCHECK_FAIL_URL || undefined,
     maxPaidActions: positiveInt(vars, "AGENT_MAX_PAID_ACTIONS", 25),
     maxAttempts: positiveInt(vars, "AGENT_MAX_ATTEMPTS", 3),
+    maxRenders: positiveInt(vars, "AGENT_MAX_RENDERS", 10),
     fetchMaxBytes: positiveInt(vars, "AGENT_FETCH_MAX_BYTES", 20 * 1024 * 1024),
     minArticleChars: positiveInt(vars, "AGENT_MIN_ARTICLE_CHARS", 350),
     statePath,
