@@ -1,0 +1,35 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "title": "Old Software Was Fast Because It Had No Choice",
+            "selftext": "",
+            "author": "BlondieCoder",
+            "subreddit_name_prefixed": "r/programming",
+            "is_self": false,
+            "url": "https://yusufaytas.com/old-software-was-fast"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "body": "Old software wasn't actually fast.",
+            "author": "jonathancast",
+            "score": 820
+          }
+        }
+      ]
+    }
+  }
+]
