@@ -64,6 +64,33 @@ describe("startValidatingProxy", () => {
     ]);
   });
 
+  it("tries the next vetted address when the first connection silently blackholes", async () => {
+    const fixture = createServer((_req, res) => res.end("reachable after timeout"));
+    const fixturePort = await listen(fixture);
+    open.push({ close: () => closeServer(fixture) });
+    const blackhole = new Socket();
+    const dial = vi.fn<ProxyDial>((destination) =>
+      destination.family === 6
+        ? blackhole
+        : connect({ host: "127.0.0.1", port: fixturePort }),
+    );
+    const proxy = await startValidatingProxy({
+      lookup: async () => DUAL_STACK_ADDRESSES,
+      dial,
+      connectAttemptTimeoutMs: 20,
+      signal: AbortSignal.timeout(200),
+    });
+    open.push(proxy);
+
+    const response = await proxyRequest(proxy, "http://dual-stack.example/article");
+
+    expect(response).toMatchObject({ status: 200, body: "reachable after timeout" });
+    expect(blackhole.destroyed).toBe(true);
+    expect(dial.mock.calls.map(([destination]) => destination.address)).toEqual(
+      DUAL_STACK_ADDRESSES.map(({ address }) => address),
+    );
+  });
+
   it("refuses a redirect hop into private space before dialing it", async () => {
     const fixture = createServer((_req, res) => {
       res.writeHead(302, { location: "http://127.0.0.1/admin" });

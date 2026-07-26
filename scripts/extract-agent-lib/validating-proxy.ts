@@ -30,7 +30,10 @@ export interface ValidatingProxyDeps {
   lookup: LookupFn;
   signal?: AbortSignal;
   dial?: ProxyDial;
+  connectAttemptTimeoutMs?: number;
 }
+
+const DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS = 1_500;
 
 export async function startValidatingProxy(deps: ValidatingProxyDeps): Promise<ValidatingProxy> {
   const internalAbort = new AbortController();
@@ -44,6 +47,10 @@ export async function startValidatingProxy(deps: ValidatingProxyDeps): Promise<V
       family: destination.family,
     }));
   const sockets = new Set<Socket>();
+  const connectAttemptTimeoutMs = deps.connectAttemptTimeoutMs ?? DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
+  if (!Number.isFinite(connectAttemptTimeoutMs) || connectAttemptTimeoutMs <= 0) {
+    throw new Error("connectAttemptTimeoutMs must be a positive finite number");
+  }
   let active = true;
   let closePromise: Promise<void> | undefined;
 
@@ -57,6 +64,7 @@ export async function startValidatingProxy(deps: ValidatingProxyDeps): Promise<V
     lookup: deps.lookup,
     signal,
     dial: (destination) => track(dial(destination)),
+    connectAttemptTimeoutMs,
     isActive: () => active,
   };
   const server = createServer((req, res) => {
@@ -105,6 +113,7 @@ interface ForwardDeps {
   lookup: LookupFn;
   signal: AbortSignal;
   dial: ProxyDial;
+  connectAttemptTimeoutMs: number;
   isActive(): boolean;
 }
 
@@ -295,7 +304,11 @@ async function connectVetted(addresses: ResolvedAddress[], port: number, deps: F
   for (const address of addresses) {
     if (!deps.isActive() || deps.signal.aborted) throw deps.signal.reason;
     try {
-      return await waitForConnect(deps.dial({ ...address, port }), deps.signal);
+      return await waitForConnect(
+        deps.dial({ ...address, port }),
+        deps.signal,
+        deps.connectAttemptTimeoutMs,
+      );
     } catch (error) {
       lastError = asError(error);
     }
@@ -303,8 +316,9 @@ async function connectVetted(addresses: ResolvedAddress[], port: number, deps: F
   throw lastError ?? new Error("no vetted destination address connected");
 }
 
-function waitForConnect(socket: Socket, signal: AbortSignal): Promise<Socket> {
+function waitForConnect(socket: Socket, signal: AbortSignal, timeoutMs: number): Promise<Socket> {
   return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onConnect = () => {
       cleanup();
       resolve(socket);
@@ -319,7 +333,13 @@ function waitForConnect(socket: Socket, signal: AbortSignal): Promise<Socket> {
       socket.destroy();
       reject(signal.reason);
     };
+    const onTimeout = () => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy connection attempt exceeded ${timeoutMs}ms`));
+    };
     const cleanup = () => {
+      clearTimeout(timer);
       socket.off("connect", onConnect);
       socket.off("error", onError);
       signal.removeEventListener("abort", onAbort);
@@ -327,6 +347,8 @@ function waitForConnect(socket: Socket, signal: AbortSignal): Promise<Socket> {
     socket.once("connect", onConnect);
     socket.once("error", onError);
     signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(onTimeout, timeoutMs);
+    timer.unref();
     if (signal.aborted) onAbort();
   });
 }
