@@ -18,12 +18,24 @@
 
 import { assertSafeUrl, BlockedHostError, isBlockedHost } from "../../src/modules/extractor";
 
-export type LookupFn = (hostname: string) => Promise<Array<{ address: string }>>;
+export interface ResolvedAddress {
+  address: string;
+  family?: number;
+}
+
+export type LookupFn = (hostname: string) => Promise<ResolvedAddress[]>;
 
 export class TooManyRedirectsError extends Error {
   constructor(public readonly url: string, public readonly maxHops: number) {
     super(`redirect chain exceeded ${maxHops} hops: ${url}`);
     this.name = "TooManyRedirectsError";
+  }
+}
+
+export class DestinationResolutionError extends Error {
+  constructor(public readonly url: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "DestinationResolutionError";
   }
 }
 
@@ -87,23 +99,32 @@ function stripCredentials(headers: Headers): void {
   for (const name of CREDENTIAL_HEADERS) headers.delete(name);
 }
 
-// Exported for the headless tier, which cannot route its egress through this
-// wrapper (the browser owns its own connections) but must apply the identical
-// rules to the URL it navigates to and the URL it ends up on. Sharing the
-// function is what keeps the hostname rules and the resolved-address rules from
-// drifting apart between the two tiers.
+// Exported for the headless tier and its validating proxy so browser and fetch
+// egress apply one hostname/resolved-address policy.
 export async function assertSafeDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<void> {
+  await resolveSafeDestination(url, lookup, signal);
+}
+
+export async function resolveSafeDestination(
+  url: string,
+  lookup: LookupFn,
+  signal?: AbortSignal,
+): Promise<ResolvedAddress[]> {
   throwIfAborted(signal);
   assertSafeUrl(url); // scheme + literal/hostname rules, shared with the Worker
   const hostname = new URL(url).hostname.toLowerCase();
   const bare = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  if (isIpLiteral(bare)) return; // already vetted by assertSafeUrl; nothing to resolve
+  if (isIpLiteral(bare)) return [{ address: bare }]; // already vetted by assertSafeUrl; nothing to resolve
   const addresses = await abortable(lookup(bare), signal);
+  if (addresses.length === 0) {
+    throw new DestinationResolutionError(url, `destination resolved to no addresses: ${url}`);
+  }
   for (const { address } of addresses) {
     if (isBlockedHost(address.toLowerCase())) {
       throw new BlockedHostError(url, `resolves to private/loopback/link-local address: ${address}`);
     }
   }
+  return addresses;
 }
 
 // LookupFn takes no signal (node's dns.promises.lookup has none), so a stalled

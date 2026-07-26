@@ -12,16 +12,13 @@
 // the second: no cookie, storage, or service-worker state carries from one
 // origin to the next.
 //
-// Egress control here is layered on browser APIs — a route filter for HTTP, a
-// separate one for WebSockets, service workers blocked, WebRTC disabled — and
-// its completeness is therefore bounded by what Playwright can intercept. That
-// is a real limit, stated rather than implied: each mechanism below closes a
-// specific documented gap, and the residuals that remain (redirect hops, and
-// any egress path Playwright does not route) are named where they arise. The
-// boundary that would close the class outright is a validating local proxy the
-// browser is launched against — reading-lite-x1u.10 — which is why tier 2 is
-// worth shipping now with the caller's final-URL check as the backstop, and
-// worth revisiting there.
+// Every browser connection is forced through a validating proxy bound to
+// 127.0.0.1. The proxy applies the shared URL and resolved-address rules on each
+// HTTP request, CONNECT tunnel, and WebSocket Upgrade, then dials the vetted IP
+// directly. Redirects therefore receive a new decision at the network boundary,
+// and DNS cannot change between validation and connection. Browser routes,
+// service-worker blocking, and the direct-transport switches below remain cheap
+// defense in depth rather than the security boundary.
 
 import { BROWSER_USER_AGENT } from "../corpus-lib/browser-fetch";
 import {
@@ -34,6 +31,12 @@ import {
 import { BadStatusError } from "../../src/modules/extractor";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { loadPlaywright } from "./playwright";
+import {
+  startValidatingProxy,
+  type ValidatingProxyDeps,
+  type ValidatingProxy,
+} from "./validating-proxy";
+import type { LookupFn } from "./safe-fetch";
 
 // The slice of Playwright's surface this module uses, declared structurally so
 // the fake in the unit test is a plain object, and narrowed to what we actually
@@ -127,11 +130,14 @@ const DISABLE_DIRECT_TRANSPORTS = `for (const key of ["RTCPeerConnection", "webk
 const SKIPPED_RESOURCE_TYPES = new Set(["image", "media", "font"]);
 
 export interface RenderDeps {
+  lookup: LookupFn;
   load?: () => Promise<PlaywrightLike>;
+  startProxy?: (deps: ValidatingProxyDeps) => Promise<ValidatingProxy>;
 }
 
-export function makePlaywrightRenderPage(deps: RenderDeps = {}): RenderPage {
+export function makePlaywrightRenderPage(deps: RenderDeps): RenderPage {
   const load = deps.load ?? (async () => (await loadPlaywright()) as unknown as PlaywrightLike);
+  const startProxy = deps.startProxy ?? startValidatingProxy;
 
   return async (url, { routeFilter, timeoutMs, maxBytes }) => {
     let playwright: PlaywrightLike;
@@ -144,50 +150,65 @@ export function makePlaywrightRenderPage(deps: RenderDeps = {}): RenderPage {
       );
     }
 
-    let browser: BrowserLike;
+    let proxy: ValidatingProxy;
     try {
-      browser = await playwright.chromium.launch({ headless: true, args: CHROMIUM_ARGS });
+      proxy = await startProxy({
+        lookup: deps.lookup,
+        signal: AbortSignal.timeout(timeoutMs + SETTLE_MS + WATCHDOG_SLACK_MS),
+      });
     } catch (e) {
       throw new HeadlessUnavailableError(
-        `chromium could not be launched (try npx playwright install chromium): ${message(e)}`,
+        `validating proxy could not be started: ${message(e)}`,
         { cause: e },
       );
     }
 
-    let context: ContextLike | undefined;
     try {
-      // Context creation talks to Chromium too.  It is therefore inside the
-      // same deadline as navigation and DOM serialization: otherwise a wedged
-      // newContext() could hold an unattended run forever before `render()`
-      // gets a chance to start its watchdog.
+      let browser: BrowserLike;
       try {
-        return await withWatchdog(
-          (async () => {
-            const createdContext = await browser.newContext({
-              userAgent: BROWSER_USER_AGENT,
-              locale: "en-US",
-              viewport: { width: 1280, height: 1024 },
-              // Playwright does not route requests a service worker intercepts, and
-              // says so in its own docs: leaving them enabled would let a rendered
-              // page register one and issue requests the filter below never sees.
-              serviceWorkers: "block",
-            });
-            context = createdContext;
-            return render(createdContext, url, { routeFilter, timeoutMs, maxBytes });
-          })(),
-          timeoutMs + SETTLE_MS + WATCHDOG_SLACK_MS,
-          url,
+        browser = await playwright.chromium.launch({
+          headless: true,
+          args: [
+            ...CHROMIUM_ARGS,
+            `--proxy-server=${proxy.url}`,
+            "--proxy-bypass-list=<-loopback>",
+          ],
+        });
+      } catch (e) {
+        throw new HeadlessUnavailableError(
+          `chromium could not be launched (try npx playwright install chromium): ${message(e)}`,
+          { cause: e },
         );
+      }
+
+      let context: ContextLike | undefined;
+      try {
+        // Context creation talks to Chromium too. It is therefore inside the
+        // same deadline as navigation and DOM serialization.
+        try {
+          return await withWatchdog(
+            (async () => {
+              const createdContext = await browser.newContext({
+                userAgent: BROWSER_USER_AGENT,
+                locale: "en-US",
+                viewport: { width: 1280, height: 1024 },
+                serviceWorkers: "block",
+              });
+              context = createdContext;
+              return render(createdContext, url, { routeFilter, timeoutMs, maxBytes });
+            })(),
+            timeoutMs + SETTLE_MS + WATCHDOG_SLACK_MS,
+            url,
+          );
+        } finally {
+          const contextToClose = context;
+          if (contextToClose) await closeQuietly(() => contextToClose.close());
+        }
       } finally {
-        // `context` is assigned before render starts. If creation itself timed
-        // out, closing the browser below tears down its pending work.
-        const contextToClose = context;
-        if (contextToClose) await closeQuietly(() => contextToClose.close());
+        await closeQuietly(() => browser.close());
       }
     } finally {
-      // Never leave a Chromium behind: an unattended timer would accumulate one
-      // per failed render until the box runs out of memory.
-      await closeQuietly(() => browser.close());
+      await closeQuietly(() => proxy.close());
     }
   };
 }
@@ -323,29 +344,10 @@ async function closeQuietly(close: () => Promise<void>): Promise<void> {
   }
 }
 
-// Every request the context makes, decided here: URL shape and resolved
-// address first, then resource type (a markdown extraction wants text, and
-// skipping media makes renders markedly faster).
-//
-// Redirects are the documented gap, and the reason it is a gap rather than an
-// oversight: Playwright calls a route handler only for the *first* URL of a
-// chain, so a validated request that answers `Location: http://192.168.1.1/…`
-// is followed by Chromium with nothing in between. Following hops ourselves —
-// the stance safe-fetch takes for tier 1 — is not available at this layer
-// without making things worse: re-issuing through `route.fetch` sends the
-// request from Playwright's Node stack (a different TLS/HTTP2 fingerprint,
-// which is the one thing this tier exists to present), buffers an unbounded
-// response body in this process, and cannot even express an ordinary
-// http→https hop (`route.fetch` refuses a URL override that changes protocol).
-//
-// So a redirect into the LAN can still cost one credential-less GET from a
-// fresh, cookie-less context — the same shape as the DNS-rebinding residual
-// this project already accepts, and bounded the same way: URLs arrive only
-// through the authed API, self-submitted, and the caller discards any render
-// that ended up on a private host. Closing the class properly means putting
-// Chromium behind a validating local proxy, where every hop is a connection we
-// approve without touching the browser's own TLS — tracked as
-// reading-lite-x1u.10.
+// Cheap first-layer request handling: reject a URL whose shape is already known
+// unsafe, then skip resource types that do not contribute to markdown. The
+// validating proxy is the complete network boundary: it sees redirect hops and
+// resolved addresses even when Playwright does not invoke this handler.
 async function handleRoute(route: RouteLike, routeFilter: RouteFilter): Promise<void> {
   try {
     const request = route.request();

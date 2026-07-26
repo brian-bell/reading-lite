@@ -7,29 +7,12 @@
 // SSRF decisions, the byte bound, the extraction verdict — is testable without
 // Chromium. The real seam lives in render-playwright.ts.
 //
-// SSRF, in three layers, because the browser makes its own connections and
-// cannot be routed through safeFetch:
-//   1. the initial URL is checked (hostname rules AND resolved addresses)
-//      *before* a browser is ever launched;
-//   2. every request the page makes goes through a route filter that applies
-//      the same two-part rule the initial URL got — URL shape
-//      (`shouldAbortRequest`) *and* resolved addresses — before the browser is
-//      allowed to connect. The DNS half is not optional here: page content is
-//      the one fully attacker-controlled input in this system, and a script on
-//      the page can request `alias.example` whose A record is 192.168.1.1. The
-//      URL-shaped check alone would wave that through, and the final-URL check
-//      happens far too late to matter for a subresource;
-//   3. the final URL (after any redirect the browser followed on its own) is
-//      re-checked before extraction, and a render that landed on a private host
-//      has its HTML discarded rather than parsed.
-// Two residual risks are accepted and documented rather than hidden, both
-// bounded the same way — URLs reach this agent only via the authed API,
-// self-submitted: rendering-time DNS rebinding (the same TOCTOU safe-fetch
-// documents for tier 1), and a *redirect* into the LAN, which costs one
-// credential-less GET before layer 3 discards the render — Playwright routes
-// only the first URL of a redirect chain. See the route handler in
-// render-playwright.ts for why re-issuing hops there would cost more than it
-// buys, and what closing the class properly would take.
+// The real renderer puts Chromium behind a validating loopback proxy. Every
+// HTTP, CONNECT, and WebSocket connection is checked against the shared URL and
+// resolved-address rules, then dialed by the vetted IP so redirects and DNS
+// rebinding cannot step around the decision. Initial/final checks here remain
+// useful early failures and seam backstops; the route filter is now only a cheap
+// URL-shape first layer plus resource skipping in render-playwright.ts.
 
 import { assertSafeUrl, readabilityFromHtml } from "../../src/modules/extractor";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
@@ -98,38 +81,6 @@ export function shouldAbortRequest(requestUrl: string): boolean {
   }
 }
 
-// The full route decision: URL shape, then resolved addresses. Verdicts are
-// memoized per hostname for the life of one render — a page pulls dozens of
-// requests from the same few hosts, and re-resolving each one would add a DNS
-// round trip to every image. The memo deliberately does not outlive the render:
-// a long unattended run must not act on an hour-old answer.
-export function makeRouteFilter(lookup: LookupFn, signal?: AbortSignal): RouteFilter {
-  const verdicts = new Map<string, Promise<boolean>>();
-  return async (requestUrl) => {
-    if (shouldAbortRequest(requestUrl)) return true;
-    // shouldAbortRequest already parsed it, so this cannot throw.
-    const host = new URL(requestUrl).hostname.toLowerCase();
-    let verdict = verdicts.get(host);
-    if (!verdict) {
-      verdict = blocksDestination(requestUrl, lookup, signal);
-      verdicts.set(host, verdict);
-    }
-    return verdict;
-  };
-}
-
-// Fail closed: an unresolvable host is a request the browser could not have
-// completed anyway, and a lookup that errors — or one the render deadline cut
-// short — tells us nothing reassuring.
-async function blocksDestination(url: string, lookup: LookupFn, signal?: AbortSignal): Promise<boolean> {
-  try {
-    await assertSafeDestination(url, lookup, signal);
-    return false;
-  } catch {
-    return true;
-  }
-}
-
 export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<ExtractOutcome> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   // Bound the initial lookup and every routed request during rendering.
@@ -146,7 +97,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   let rendered: RenderResult;
   try {
     rendered = await deps.renderPage(url, {
-      routeFilter: makeRouteFilter(deps.lookup, renderDeadline),
+      routeFilter: async (requestUrl) => shouldAbortRequest(requestUrl),
       timeoutMs,
       maxBytes: deps.maxBytes,
     });

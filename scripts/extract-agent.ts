@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   const warn = (message: string) => console.warn(message);
   // Built once per run, but Playwright is still only imported when a row
   // actually earns a render: the lazy import lives inside the returned seam.
-  const renderPage = makePlaywrightRenderPage();
+  const renderPage = makePlaywrightRenderPage({ lookup });
   const result = await runSession(args, {
     config,
     pageReadings: () => pageAllReadings({ fetch, base: config.api.base, token: config.api.token }),

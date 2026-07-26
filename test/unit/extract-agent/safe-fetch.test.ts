@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { safeFetch, TooManyRedirectsError, type LookupFn } from "../../../scripts/extract-agent-lib/safe-fetch";
+import {
+  resolveSafeDestination,
+  safeFetch,
+  TooManyRedirectsError,
+  type LookupFn,
+} from "../../../scripts/extract-agent-lib/safe-fetch";
 
 const publicLookup: LookupFn = async () => [{ address: "93.184.216.34" }];
 
@@ -8,6 +13,31 @@ function redirect(location: string): Response {
 }
 
 describe("safeFetch", () => {
+  it("returns the vetted DNS addresses so a caller can connect without resolving again", async () => {
+    const lookup: LookupFn = async () => [{ address: "93.184.216.34", family: 4 }];
+
+    await expect(resolveSafeDestination("https://public.example/article", lookup)).resolves.toEqual([
+      { address: "93.184.216.34", family: 4 },
+    ]);
+  });
+
+  it("returns a public IP literal without consulting DNS", async () => {
+    const lookup = vi.fn();
+
+    await expect(resolveSafeDestination("http://93.184.216.34/article", lookup)).resolves.toEqual([
+      { address: "93.184.216.34" },
+    ]);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when DNS successfully returns no addresses", async () => {
+    const lookup: LookupFn = async () => [];
+
+    await expect(resolveSafeDestination("https://empty.example/article", lookup)).rejects.toThrow(
+      "resolved to no addresses",
+    );
+  });
+
   it("rejects a redirect to a LAN host without issuing the second fetch", async () => {
     const base = vi.fn().mockResolvedValue(redirect("http://192.168.1.1/admin"));
     const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
