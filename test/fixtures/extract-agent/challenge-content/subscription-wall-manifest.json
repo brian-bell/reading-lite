@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "scope": "subscription and login walls",
+  "approval_status": "pending",
+  "implementation_must_wait_for_approval": true,
+  "fixtures": [
+    {
+      "file": "wall-short-explicit-title.html",
+      "expected": "challenge",
+      "reason": "An explicit wall title is corroborated by continue-reading copy."
+    },
+    {
+      "file": "wall-short-original-title.html",
+      "expected": "challenge",
+      "reason": "The original article title is retained while multiple independent offer signals block access."
+    },
+    {
+      "file": "wall-long-original-title.html",
+      "expected": "challenge",
+      "reason": "A genuine text-heavy wall remains detectable above 4,000 normalized characters."
+    },
+    {
+      "file": "wall-article-limit.html",
+      "expected": "challenge",
+      "reason": "A free-article limit is corroborated by sign-in or account-recovery instructions."
+    },
+    {
+      "file": "paywall-design-short.html",
+      "expected": "extracted",
+      "reason": "A short article discusses and quotes subscription-wall copy."
+    },
+    {
+      "file": "paywall-design-long.html",
+      "expected": "extracted",
+      "reason": "Long-form prose quotes multiple wall and offer phrases without blocking its reader."
+    },
+    {
+      "file": "article-subscription-footer.html",
+      "expected": "extracted",
+      "reason": "A complete article contains a non-blocking subscription promotion in its footer."
+    },
+    {
+      "file": "membership-landing-page.html",
+      "expected": "human_decision",
+      "reason": "A membership landing page may be a blocking challenge or simply a page with no article; product semantics must decide."
+    }
+  ],
+  "proposed_long_body_policy": {
+    "approval_status": "pending",
+    "decisions": [
+      "Each weak wall-support phrase contributes independently up to a family cap.",
+      "Long-body classification requires several independent wall/support signals and must reject long prose that merely quotes a wall and an offer.",
+      "Retaining the original article title does not prevent wall detection.",
+      "The wall and wall_support families together can reach the long-body threshold when enough independent support signals are present.",
+      "A single subscription offer or footer cannot decide the verdict."
+    ]
+  }
+}
