@@ -15,6 +15,10 @@
 // URL-shape first layer plus resource skipping in render-playwright.ts.
 
 import { assertSafeUrl, readabilityFromHtml } from "../../src/modules/extractor";
+import {
+  challengeContentDetail,
+  classifyChallengeContent,
+} from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
 import { assertSafeDestination, type LookupFn } from "./safe-fetch";
 
@@ -54,6 +58,7 @@ export interface RenderPageOptions {
   routeFilter: RouteFilter;
   timeoutMs: number;
   maxBytes: number;
+  readOnly?: boolean;
 }
 
 export type RenderPage = (url: string, opts: RenderPageOptions) => Promise<RenderResult>;
@@ -63,6 +68,7 @@ export interface HeadlessDeps {
   lookup: LookupFn;
   maxBytes: number;
   timeoutMs?: number;
+  readOnly?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -100,6 +106,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
       routeFilter: async (requestUrl) => shouldAbortRequest(requestUrl),
       timeoutMs,
       maxBytes: deps.maxBytes,
+      readOnly: deps.readOnly,
     });
   } catch (e) {
     // A box that cannot render is not this row's problem — let it out.
@@ -137,6 +144,21 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   const article = readabilityFromHtml(rendered.html, rendered.finalUrl);
   if (!article || article.markdown.trim().length === 0) {
     return { kind: "no_article", detail: `rendered dom produced no article: ${rendered.finalUrl}` };
+  }
+  const verdict = classifyChallengeContent({
+    html: rendered.html,
+    markdown: article.markdown,
+    title: article.title,
+  });
+  if (verdict.challenge) {
+    return {
+      kind: "challenge",
+      detail: challengeContentDetail(verdict, rendered.finalUrl),
+      tier: "headless",
+      title: article.title,
+      normalizedChars: verdict.normalizedChars,
+      evidence: verdict.evidence,
+    };
   }
   return {
     kind: "extracted",

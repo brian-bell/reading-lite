@@ -15,6 +15,7 @@ import { makePlaywrightRenderPage, type PlaywrightLike } from "../../../scripts/
 interface FakeRequest {
   url: string;
   resourceType?: string;
+  method?: string;
 }
 
 interface FakeState {
@@ -93,6 +94,7 @@ function fakePlaywright(opts: {
       request: () => ({
         url: () => request.url,
         resourceType: () => request.resourceType ?? "document",
+        method: () => request.method ?? "GET",
       }),
       abort: async () => {
         state.aborted.push(request.url);
@@ -382,6 +384,28 @@ describe("makePlaywrightRenderPage", () => {
     expect(state.wsRoutePatterns).toEqual(["**/*"]);
     expect(state.wsConnected).toEqual(["wss://live.example/feed"]);
     expect(state.wsClosed).toEqual(["ws://192.168.1.1/", "ws://127.0.0.1:9000/"]);
+  });
+
+  it("aborts non-GET requests and WebSockets in read-only mode", async () => {
+    const { module, state } = fakePlaywright({
+      requests: [
+        NAV,
+        { url: "https://public.example/form", resourceType: "fetch", method: "POST" },
+        { url: "https://api.example/item", resourceType: "xhr", method: "DELETE" },
+      ],
+      websockets: ["wss://live.example/mutations"],
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
+
+    await render("https://public.example/a", { ...OPTS, readOnly: true });
+
+    expect(state.continued).toEqual(["https://public.example/a"]);
+    expect(state.aborted).toEqual([
+      "https://public.example/form",
+      "https://api.example/item",
+    ]);
+    expect(state.wsConnected).toEqual([]);
+    expect(state.wsClosed).toEqual(["wss://live.example/mutations"]);
   });
 
   it("refuses an over-cap dom before pulling it into this process", async () => {

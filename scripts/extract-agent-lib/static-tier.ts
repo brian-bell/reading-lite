@@ -5,6 +5,11 @@
 
 import { extractFromUrl } from "../../src/modules/extractor";
 import { makeBrowserFetch } from "../corpus-lib/browser-fetch";
+import {
+  challengeContentDetail,
+  classifyChallengeContent,
+  HTML_SCAN_MAX_CHARS,
+} from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
 import { safeFetch, type LookupFn } from "./safe-fetch";
 
@@ -29,6 +34,29 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
       maxBytes: deps.maxBytes,
     });
     if (extracted.content_status === "captured" && extracted.markdown && extracted.markdown.trim().length > 0) {
+      // `salvaged` is present for HTML captures only. Classify the bounded raw
+      // bytes already fetched by the extractor; non-HTML captures never enter
+      // this path and no second request is made.
+      if (typeof extracted.salvaged === "boolean") {
+        const html = new TextDecoder("utf-8").decode(
+          extracted.raw.subarray(0, HTML_SCAN_MAX_CHARS),
+        );
+        const verdict = classifyChallengeContent({
+          html,
+          markdown: extracted.markdown,
+          title: extracted.title,
+        });
+        if (verdict.challenge) {
+          return {
+            kind: "challenge",
+            detail: challengeContentDetail(verdict, url),
+            tier: "static",
+            title: extracted.title,
+            normalizedChars: verdict.normalizedChars,
+            evidence: verdict.evidence,
+          };
+        }
+      }
       return {
         kind: "extracted",
         markdown: extracted.markdown,

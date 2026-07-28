@@ -22,6 +22,19 @@ describe("extract-agent scaffolding", () => {
     expect(pkg.scripts["extract-agent"]).toBe("tsx scripts/extract-agent.ts");
   });
 
+  it("wires the read-only probe without any submit or agent-state dependency", () => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8"));
+    expect(pkg.scripts["extract-agent:probe"]).toBe("tsx scripts/extract-agent-probe.ts");
+
+    const entry = readFileSync(join(REPO_ROOT, "scripts/extract-agent-probe.ts"), "utf-8");
+    const library = readFileSync(join(REPO_ROOT, "scripts/extract-agent-lib/probe.ts"), "utf-8");
+    const sources = `${entry}\n${library}`;
+    expect(sources).not.toMatch(
+      /extract-agent-lib\/(?:config|lock|poll|report|run|session|sidecar|submit)/,
+    );
+    expect(sources).not.toMatch(/\b(?:appendFile|mkdir|rename|rm|unlink|writeFile)\b/);
+  });
+
   it("exposes a lazy playwright seam that resolves chromium.launch", async () => {
     const playwright = await loadPlaywright();
     expect(typeof playwright.chromium.launch).toBe("function");
