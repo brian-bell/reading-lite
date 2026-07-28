@@ -691,6 +691,65 @@ describe("runAgent execution", () => {
     expect(summary).toMatchObject({ rendered: 1, imported: 1 });
   });
 
+  it("preserves a rendered challenge instead of submitting salvaged static content", async () => {
+    const row = blockedRow();
+    const salvaged = `${GOOD_MARKDOWN} boilerplate`;
+    const { deps, saved } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "extracted",
+        markdown: salvaged,
+        tier: "static",
+        salvaged: true,
+      })),
+      render: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "challenge",
+        detail: "success-status challenge content detected",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      challenge: 1,
+      imported: 0,
+      rendered: 1,
+      rendered_failed: 1,
+    });
+    expect(summary.rows[0]).toMatchObject({ outcome: "challenge", tier: "headless" });
+    expect(summary.rows[0]?.detail).toContain("salvaged article");
+    expect(summary.rows[0]?.detail).toContain("success-status challenge content detected");
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "challenge" });
+  });
+
+  it("preserves a rendered challenge instead of the static no-article result", async () => {
+    const row = blockedRow();
+    const { deps, saved } = makeDeps([row], {
+      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "no_article",
+        detail: "static shell",
+      })),
+      render: vi.fn(async (): Promise<ExtractOutcome> => ({
+        kind: "challenge",
+        detail: "rendered verification interstitial",
+      })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      challenge: 1,
+      no_article: 0,
+      rendered: 1,
+      rendered_failed: 1,
+    });
+    expect(summary.rows[0]).toMatchObject({ outcome: "challenge", tier: "headless" });
+    expect(summary.rows[0]?.detail).toContain("static shell");
+    expect(summary.rows[0]?.detail).toContain("rendered verification interstitial");
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "challenge" });
+  });
+
   it("does not render when the static tier already produced a real article", async () => {
     const { deps } = makeDeps([blockedRow()]);
 
