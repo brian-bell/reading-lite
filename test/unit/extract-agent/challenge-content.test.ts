@@ -87,6 +87,73 @@ describe("classifyChallengeContent", () => {
     expect(verdict).toEqual({ challenge: false });
   });
 
+  it("does not treat provider text in JSON-LD metadata as live structure", () => {
+    const verdict = classifyChallengeContent({
+      html: [
+        "<article>",
+        "<h1>Inside Cloudflare challenge pages</h1>",
+        "<p>Readers may see the prompt: Please verify you are human to continue.</p>",
+        "</article>",
+        '<script type="application/ld+json">',
+        '{"description":"The /cdn-cgi/challenge-platform endpoint powers the check."}',
+        "</script>",
+      ].join(""),
+      title: "Inside Cloudflare challenge pages",
+      markdown: [
+        "# Inside Cloudflare challenge pages",
+        "",
+        "Readers may see the prompt: Please verify you are human to continue.",
+      ].join("\n"),
+    });
+
+    expect(verdict).toEqual({ challenge: false });
+  });
+
+  it.each([
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+  ])("treats the standard JavaScript MIME type %s as executable structure", (type) => {
+    const verdict = classifyChallengeContent({
+      html: `<script type="${type}">window.cf_chl_opt = {};</script>`,
+      markdown: "Please verify you are human to continue.",
+    });
+
+    expect(verdict.challenge).toBe(true);
+  });
+
+  it.each([
+    "application/ld+json",
+    "application/json",
+    "text/plain",
+    "text/javascript; charset=utf-8",
+  ])("does not treat the data-block script type %s as executable structure", (type) => {
+    const verdict = classifyChallengeContent({
+      html: [
+        `<script type="${type}" id="cf_chl_opt"`,
+        ' src="/cdn-cgi/challenge-platform/x">',
+        "window.cf_chl_opt = {};",
+        "</script>",
+      ].join(""),
+      markdown: "Please verify you are human to continue.",
+    });
+
+    expect(verdict).toEqual({ challenge: false });
+  });
+
   it("keeps every deciding family in bounded stable diagnostics", () => {
     const verdict = classifyChallengeContent({
       html: [

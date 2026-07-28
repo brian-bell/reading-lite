@@ -43,6 +43,7 @@ export interface ProbeResult {
 }
 
 const OFFLINE_PUBLIC_ADDRESS = "192.0.2.1";
+export const PROBE_TITLE_MAX_CHARS = 200;
 
 export function parseProbeArgs(argv: string[]): ProbeArgs {
   const args: ProbeArgs = { tier: "both", json: false };
@@ -168,7 +169,7 @@ function toProbeResult(
     return {
       tier,
       outcome: outcome.kind,
-      title: outcome.title,
+      title: boundedTitle(outcome.title),
       normalized_character_count: normalizedMarkdownChars(outcome.markdown),
       evidence_codes: [],
     };
@@ -177,7 +178,7 @@ function toProbeResult(
     return {
       tier,
       outcome: outcome.kind,
-      title: outcome.title,
+      title: boundedTitle(outcome.title),
       normalized_character_count: outcome.normalizedChars ?? 0,
       evidence_codes: outcome.evidence ?? [],
     };
@@ -188,4 +189,17 @@ function toProbeResult(
     normalized_character_count: 0,
     evidence_codes: [],
   };
+}
+
+function boundedTitle(title: string | undefined): string | undefined {
+  if (title === undefined) return undefined;
+  const chars: string[] = [];
+  for (const char of title) {
+    if (chars.length === PROBE_TITLE_MAX_CHARS) {
+      chars[chars.length - 1] = "…";
+      return chars.join("");
+    }
+    chars.push(char);
+  }
+  return title;
 }

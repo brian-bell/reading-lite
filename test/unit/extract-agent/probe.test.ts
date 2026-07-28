@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   parseProbeArgs,
+  PROBE_TITLE_MAX_CHARS,
   readBoundedUtf8,
   runProbe,
   type ProbeDeps,
@@ -90,6 +91,55 @@ describe("runProbe", () => {
       expect.objectContaining({ readOnly: true }),
     );
     expect(JSON.stringify(results)).not.toContain("Please verify you are human");
+  });
+
+  it("bounds extracted titles in probe results", async () => {
+    const title = "T".repeat(PROBE_TITLE_MAX_CHARS + 500);
+    const html = [
+      `<html><head><title>${title}</title></head><body><article>`,
+      "<h1>Reference</h1>",
+      ...Array.from(
+        { length: 8 },
+        (_, i) => `<p>Paragraph ${i} has enough useful article prose for a stable readability result.</p>`,
+      ),
+      "</article></body></html>",
+    ].join("");
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/long-title.html",
+        sourceUrl: "https://fixture.invalid/article",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["extracted", "extracted"]);
+    for (const result of results) {
+      expect(result.title).toHaveLength(PROBE_TITLE_MAX_CHARS);
+    }
+  });
+
+  it("bounds challenge titles in probe results", async () => {
+    const title = "Challenge ".repeat(PROBE_TITLE_MAX_CHARS);
+    const html = readFileSync(
+      join(FIXTURES, "structural-challenge.html"),
+      "utf-8",
+    ).replace("Just a moment...", title);
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/long-challenge-title.html",
+        sourceUrl: "https://fixture.invalid/challenge",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["challenge", "challenge"]);
+    for (const result of results) {
+      expect(result.title).toHaveLength(PROBE_TITLE_MAX_CHARS);
+    }
   });
 });
 

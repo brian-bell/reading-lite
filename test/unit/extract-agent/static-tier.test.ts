@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { HTML_SCAN_MAX_CHARS } from "../../../scripts/extract-agent-lib/challenge-content";
 import { extractStatic } from "../../../scripts/extract-agent-lib/static-tier";
 import type { LookupFn } from "../../../scripts/extract-agent-lib/safe-fetch";
 
@@ -62,6 +63,25 @@ describe("extractStatic", () => {
     });
   });
 
+  it("classifies a minimal static challenge that Readability rejects", async () => {
+    const html = [
+      "<html><head><title>Just a moment...</title></head><body>",
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "<button>Please verify you are human to continue.</button>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
   it("does not classify non-HTML content containing challenge markers and copy", async () => {
     const outcome = await extractStatic(
       "https://public.example/notes.txt",
@@ -74,6 +94,26 @@ describe("extractStatic", () => {
     );
 
     expect(outcome).toMatchObject({ kind: "extracted", tier: "static" });
+  });
+
+  it("applies the structural scan limit to Unicode characters, not bytes or UTF-16 units", async () => {
+    const html = [
+      "<html><body><article>",
+      "<p>Please verify you are human to continue.</p>",
+      `<p>${"😀".repeat(Math.floor(HTML_SCAN_MAX_CHARS * 0.75))}</p>`,
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "</article></body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
   });
 
   it("maps a 403 to a challenge outcome instead of throwing", async () => {
