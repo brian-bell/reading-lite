@@ -44,6 +44,39 @@ describe("classifyChallengeContent", () => {
     expect(verdict.challenge).toBe(true);
   });
 
+  it("flags a human-verification interstitial with bare imperative copy", () => {
+    const verdict = classifyChallengeContent(
+      input({
+        title: "Are you a robot?",
+        markdown: "Verify you are human.",
+      }),
+    );
+
+    expect(verdict.challenge).toBe(true);
+  });
+
+  it("flags bare verification copy in a punctuation-less markdown block", () => {
+    const verdict = classifyChallengeContent(
+      input({
+        title: "Are you a robot?",
+        markdown: "## Verify you are human\n\nPlease wait while we validate your connection",
+      }),
+    );
+
+    expect(verdict.challenge).toBe(true);
+  });
+
+  it("flags a bare verification heading without a following blank line", () => {
+    const verdict = classifyChallengeContent(
+      input({
+        title: "Are you a robot?",
+        markdown: "## Verify you are human\nPlease wait while we validate your connection",
+      }),
+    );
+
+    expect(verdict.challenge).toBe(true);
+  });
+
   it("flags a text-heavy sign-in wall well above the article-length floor", () => {
     // The case the 350-char floor cannot catch: a wall with more prose than an
     // interstitial, served with HTTP 200, that would otherwise be summarized.
@@ -59,6 +92,20 @@ describe("classifyChallengeContent", () => {
     );
 
     expect(markdown.length).toBeGreaterThan(350);
+    expect(verdict.challenge).toBe(true);
+  });
+
+  it("flags a subscription wall when multiple weak offer phrases corroborate it", () => {
+    const verdict = classifyChallengeContent(
+      input({
+        title: "Markets rebound after a volatile week",
+        markdown: [
+          "Subscribe to continue reading this article.",
+          "Get unlimited access and start your free trial today. Cancel anytime.",
+        ].join("\n\n"),
+      }),
+    );
+
     expect(verdict.challenge).toBe(true);
   });
 
@@ -94,6 +141,19 @@ describe("classifyChallengeContent", () => {
     ].join("\n\n");
 
     expect(markdown.length).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent(input({ title: "Are you a robot? The CAPTCHA arms race", markdown })).challenge).toBe(false);
+  });
+
+  it("leaves a short article about CAPTCHA copy alone", () => {
+    const markdown = [
+      "# Are you a robot? The CAPTCHA arms race",
+      "",
+      "Challenge pages increasingly shape how ordinary readers experience the web.",
+      'Sites ask users to "verify you are human" while risk engines inspect behavior behind the scenes.',
+      "The result is an arms race between publishers, bot operators, and accessibility advocates.",
+    ].join("\n");
+
+    expect(markdown.length).toBeLessThan(4_000);
     expect(classifyChallengeContent(input({ title: "Are you a robot? The CAPTCHA arms race", markdown })).challenge).toBe(false);
   });
 

@@ -127,12 +127,18 @@ const TEXT_SIGNALS: readonly Signal[] = [
     code: "verify-human",
     family: "verify",
     phrases: [
-      "verify you are human",
-      "verify you are a human",
-      "verify that you are human",
-      "verify that you are a human",
-      "prove you are human",
-      "confirm you are human",
+      "please verify you are human",
+      "please verify you are a human",
+      "please verify that you are human",
+      "please verify that you are a human",
+      "verify you are human to continue",
+      "verify you are a human to continue",
+      "verify that you are human to continue",
+      "verify that you are a human to continue",
+      "please prove you are human",
+      "prove you are human to continue",
+      "please confirm you are human",
+      "confirm you are human to continue",
       "complete the security check",
       "complete the captcha",
       "solve the captcha",
@@ -190,9 +196,27 @@ const TEXT_SIGNALS: readonly Signal[] = [
       "reached your free article limit",
     ],
   },
-  { code: "existing-account", family: "wall_support", phrases: ["already a subscriber", "already have an account"] },
-  { code: "subscription-offer", family: "wall_support", phrases: ["unlimited access", "start your free trial", "cancel anytime", "subscribers only", "free articles remaining"] },
+  { code: "existing-subscriber", family: "wall_support", phrases: ["already a subscriber"] },
+  { code: "existing-account", family: "wall_support", phrases: ["already have an account"] },
+  { code: "unlimited-access", family: "wall_support", phrases: ["unlimited access"] },
+  { code: "free-trial", family: "wall_support", phrases: ["start your free trial"] },
+  { code: "cancel-anytime", family: "wall_support", phrases: ["cancel anytime"] },
+  { code: "subscribers-only", family: "wall_support", phrases: ["subscribers only"] },
+  { code: "free-articles", family: "wall_support", phrases: ["free articles remaining"] },
 ];
+
+// Bare imperative copy is strong when it stands on its own, but not when an
+// article quotes it inside a sentence ("sites ask users to verify you are
+// human"). Contextual variants such as "please verify..." and "...to continue"
+// stay in TEXT_SIGNALS above.
+const STANDALONE_VERIFY_PHRASES = [
+  "verify you are human",
+  "verify you are a human",
+  "verify that you are human",
+  "verify that you are a human",
+  "prove you are human",
+  "confirm you are human",
+] as const;
 
 export function classifyChallengeContent(input: ChallengeContentInput): ChallengeVerdict {
   const html = input.html.slice(0, HTML_SCAN_MAX_CHARS).toLowerCase();
@@ -211,6 +235,9 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
   }
   for (const signal of TEXT_SIGNALS) {
     if (signal.phrases.some((p) => body.includes(p))) matched.push(signal);
+  }
+  if (STANDALONE_VERIFY_PHRASES.some((phrase) => containsStandaloneMarkdownBlock(input.markdown, phrase))) {
+    matched.push({ family: "verify", code: "standalone-verify-human" });
   }
   if (matched.length === 0) return { challenge: false };
 
@@ -252,4 +279,11 @@ function normalizeText(text: string): string {
 
 function firstHeading(markdown: string): string | undefined {
   return /^\s{0,3}#{1,6}\s+(.+)$/m.exec(markdown)?.[1];
+}
+
+function containsStandaloneMarkdownBlock(markdown: string, phrase: string): boolean {
+  const bounded = markdown.slice(0, TEXT_SCAN_MAX_CHARS);
+  const blocks = bounded.split(/\n\s*\n/);
+  const headings = bounded.split("\n").filter((line) => /^\s{0,3}#{1,6}\s+/.test(line));
+  return [...blocks, ...headings].some((block) => normalizeText(block).replace(/[.!?]+$/, "") === phrase);
 }
