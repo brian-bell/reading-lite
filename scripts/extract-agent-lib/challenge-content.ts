@@ -127,10 +127,6 @@ const TEXT_SIGNALS: readonly Signal[] = [
     code: "verify-human",
     family: "verify",
     phrases: [
-      "please verify you are human",
-      "please verify you are a human",
-      "please verify that you are human",
-      "please verify that you are a human",
       "verify you are human to continue",
       "verify you are a human to continue",
       "verify that you are human to continue",
@@ -247,7 +243,10 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
     perFamily.set(family, capped);
   }
   const score = [...perFamily.values()].reduce((a, b) => a + b, 0);
-  const threshold = body.length > LONG_BODY_CHARS ? LONG_BODY_SCORE_THRESHOLD : SCORE_THRESHOLD;
+  const hasCorroboratedSubscriptionWall = perFamily.has("wall") && perFamily.has("wall_support");
+  const threshold = body.length > LONG_BODY_CHARS && !hasCorroboratedSubscriptionWall
+    ? LONG_BODY_SCORE_THRESHOLD
+    : SCORE_THRESHOLD;
   if (perFamily.size < MIN_FAMILIES || score < threshold) return { challenge: false };
 
   return {

@@ -157,6 +157,33 @@ describe("classifyChallengeContent", () => {
     expect(classifyChallengeContent(input({ title: "Are you a robot? The CAPTCHA arms race", markdown })).challenge).toBe(false);
   });
 
+  it("leaves a short article that quotes a verification prompt alone", () => {
+    const markdown = [
+      "# Are you a robot? The CAPTCHA arms race",
+      "",
+      'A researcher collected prompts such as "Please verify you are human" to compare their accessibility.',
+      "The article explains why those words are not themselves evidence that its reader is blocked.",
+    ].join("\n");
+
+    expect(classifyChallengeContent(input({ title: "Are you a robot? The CAPTCHA arms race", markdown })).challenge).toBe(false);
+  });
+
+  it("flags a long subscription wall supported by independent offer copy", () => {
+    const markdown = [
+      "Subscribe to continue reading this article.",
+      "Already a subscriber? Log in to your account.",
+      "Get unlimited access and start your free trial today. Cancel anytime.",
+      "Subscriber benefits and account help are available below.",
+      "More membership information follows.",
+      PROSE,
+      PROSE,
+      PROSE,
+    ].join("\n\n");
+
+    expect(markdown.length).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent(input({ title: "Markets rebound after a volatile week", markdown })).challenge).toBe(true);
+  });
+
   it("ignores a CAPTCHA widget embedded outside the article", () => {
     // A comment form's reCAPTCHA is structural evidence of a widget, not of a
     // challenge — one family can never carry a verdict on its own.
