@@ -181,7 +181,20 @@ describe("classifyChallengeContent", () => {
     ].join("\n\n");
 
     expect(markdown.length).toBeGreaterThan(4_000);
-    expect(classifyChallengeContent(input({ title: "Markets rebound after a volatile week", markdown })).challenge).toBe(true);
+    expect(classifyChallengeContent(input({ title: "Subscribe to continue reading | The Ledger", markdown })).challenge).toBe(true);
+  });
+
+  it("keeps the long-body safeguard when prose quotes a subscription offer", () => {
+    const markdown = [
+      "Subscribe to continue reading this article.",
+      "Get unlimited access and start your free trial today.",
+      PROSE,
+      PROSE,
+      PROSE,
+    ].join("\n\n");
+
+    expect(markdown.length).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent(input({ title: "Paywall design patterns", markdown })).challenge).toBe(false);
   });
 
   it("ignores a CAPTCHA widget embedded outside the article", () => {
@@ -192,6 +205,18 @@ describe("classifyChallengeContent", () => {
         title: "How Queues Drain",
         html: `<article>...</article><form class="comment"><div class="g-recaptcha" data-sitekey="x"></div></form>`,
         markdown: `${PROSE}\n\n[Sign in](https://example.com/login) to leave a comment.`,
+      }),
+    );
+
+    expect(verdict.challenge).toBe(false);
+  });
+
+  it("does not let a comment-form CAPTCHA corroborate a challenge-themed article title", () => {
+    const verdict = classifyChallengeContent(
+      input({
+        title: "Are you a robot? The CAPTCHA arms race",
+        html: `<article>...</article><form class="comment"><div class="g-recaptcha" data-sitekey="x"></div></form>`,
+        markdown: "A short report on how CAPTCHA systems shape online publishing.",
       }),
     );
 
