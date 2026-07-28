@@ -88,6 +88,27 @@ describe("extractHeadless", () => {
     expect(outcome).toMatchObject({ kind: "extracted", tier: "headless", salvaged: true });
   });
 
+  it("reports a rendered challenge page as a challenge, not an article", async () => {
+    // A browser is where a bot check looks most like a page: it renders, it has
+    // a title, and Readability finds text. It must still be a non-result, or
+    // renderRow would prefer it over a real tier-1 article.
+    const challenge = `<!doctype html><html><head><title>Just a moment...</title></head><body>
+<div id="cf-wrapper"><form id="challenge-form" action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>
+<article><h1>Verify you are human</h1>
+<p>Please verify you are human by completing the action below. Enable JavaScript and cookies to continue.</p>
+<p>This process is automatic. Your browser will redirect to your requested content shortly, and the security of your connection is reviewed on every request.</p>
+<p>Performance and security by a network security service that protects sites from malicious traffic and automated clients.</p>
+</article></div></body></html>`;
+    const outcome = await extractHeadless(
+      "https://public.example/a",
+      deps({ renderPage: renderer({ html: challenge, finalUrl: "https://public.example/a" }) }),
+    );
+
+    expect(outcome.kind).toBe("challenge");
+    if (outcome.kind !== "challenge") throw new Error("unreachable");
+    expect(outcome.detail).toContain("success-status challenge content detected");
+  });
+
   it("reports no_article when the rendered dom still has nothing to extract", async () => {
     const shell = renderer({ html: "<html><body><script>boot()</script></body></html>" });
     const outcome = await extractHeadless("https://public.example/a", deps({ renderPage: shell }));

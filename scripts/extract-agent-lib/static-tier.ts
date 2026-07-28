@@ -5,6 +5,7 @@
 
 import { extractFromUrl } from "../../src/modules/extractor";
 import { makeBrowserFetch } from "../corpus-lib/browser-fetch";
+import { challengeContentDetail, classifyChallengeContent, HTML_SCAN_MAX_CHARS } from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
 import { safeFetch, type LookupFn } from "./safe-fetch";
 
@@ -29,6 +30,23 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
       maxBytes: deps.maxBytes,
     });
     if (extracted.content_status === "captured" && extracted.markdown && extracted.markdown.trim().length > 0) {
+      // A bot check or login wall served with HTTP 200 arrives here looking
+      // exactly like an article. Classify before calling it one — the outcome
+      // is a challenge, which earns a headless render rather than a paid submit.
+      //
+      // HTML documents only. `salvaged` is present iff Readability produced the
+      // markdown from *this* document's HTML, which is the same discriminator
+      // the `salvaged` mapping below relies on: text, JSON, and YouTube-built
+      // markdown must never be classified from content keywords.
+      if (typeof extracted.salvaged === "boolean") {
+        const verdict = classifyChallengeContent({
+          // The bytes the extractor already fetched — never a second request.
+          html: new TextDecoder("utf-8").decode(extracted.raw.subarray(0, HTML_SCAN_MAX_CHARS)),
+          markdown: extracted.markdown,
+          title: extracted.title,
+        });
+        if (verdict.challenge) return { kind: "challenge", detail: challengeContentDetail(verdict, url) };
+      }
       return {
         kind: "extracted",
         markdown: extracted.markdown,

@@ -15,6 +15,7 @@
 // URL-shape first layer plus resource skipping in render-playwright.ts.
 
 import { assertSafeUrl, readabilityFromHtml } from "../../src/modules/extractor";
+import { challengeContentDetail, classifyChallengeContent } from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
 import { assertSafeDestination, type LookupFn } from "./safe-fetch";
 
@@ -138,6 +139,13 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   if (!article || article.markdown.trim().length === 0) {
     return { kind: "no_article", detail: `rendered dom produced no article: ${rendered.finalUrl}` };
   }
+  // Rendering a challenge page produces a *rendered challenge page*, and a
+  // browser is exactly where one is most convincing. Classify here too, so the
+  // orchestrator keeps its useful tier-1 outcome and never prefers this over a
+  // real static article.
+  const verdict = classifyChallengeContent({ html: rendered.html, markdown: article.markdown, title: article.title });
+  if (verdict.challenge) return { kind: "challenge", detail: challengeContentDetail(verdict, rendered.finalUrl) };
+
   return {
     kind: "extracted",
     markdown: article.markdown,

@@ -9,6 +9,20 @@ const ARTICLE_HTML = `<!doctype html><html><head><title>How Queues Drain</title>
 ${Array.from({ length: 8 }, (_, i) => `<p>Paragraph ${i}: a queue consumer drains messages in waves, and producer pacing keeps the in-flight backlog bounded so retries do not dead-letter under upstream rate limits.</p>`).join("\n")}
 </article></body></html>`;
 
+// A sign-in wall with more prose than the 350-char floor, served with HTTP 200:
+// the shape that used to be extracted, submitted, and summarized as an article.
+const WALL_COPY = [
+  "You have reached your free article limit for this month.",
+  "Sign in to continue reading this article and the rest of today's edition.",
+  "Already a subscriber? Log in with the email address on your account and we will restore your session.",
+  "Subscribe for unlimited access to every story, every newsletter, and the full archive. Cancel anytime.",
+  "Members get the daily briefing, the weekend long read, and every market table we publish each morning.",
+];
+const WALL_HTML = `<!doctype html><html><head><title>Sign in to continue reading | The Ledger</title></head><body>
+<article><h1>Sign in to continue reading</h1>
+${WALL_COPY.map((p) => `<p>${p}</p>`).join("\n")}
+</article></body></html>`;
+
 function htmlResponse(html: string, status = 200): Response {
   return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
@@ -46,6 +60,26 @@ describe("extractStatic", () => {
     );
 
     expect(outcome).toMatchObject({ kind: "extracted", tier: "static", salvaged: false });
+  });
+
+  it("classifies a success-status login wall as a challenge instead of an article", async () => {
+    const outcome = await extractStatic("https://public.example/story", deps(() => htmlResponse(WALL_HTML)));
+
+    expect(outcome.kind).toBe("challenge");
+    if (outcome.kind !== "challenge") throw new Error("unreachable");
+    expect(outcome.detail).toContain("success-status challenge content detected");
+    expect(outcome.detail).toContain("https://public.example/story");
+  });
+
+  it("does not classify non-HTML content from its words alone", async () => {
+    // text/plain, JSON, and YouTube-built markdown never came from a document
+    // Readability judged, so challenge copy in them proves nothing.
+    const outcome = await extractStatic(
+      "https://public.example/notes.txt",
+      deps(() => new Response(WALL_COPY.join("\n\n"), { headers: { "content-type": "text/plain" } })),
+    );
+
+    expect(outcome.kind).toBe("extracted");
   });
 
   it("maps a 403 to a challenge outcome instead of throwing", async () => {
