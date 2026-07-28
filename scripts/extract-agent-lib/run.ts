@@ -298,12 +298,12 @@ function deservesRender(outcome: ExtractOutcome): boolean {
 
 // Runs tier 2 and decides which tier's result the row keeps.
 //
-// A tier-2 article always wins: a rendered DOM is the reason we rendered. A
-// tier-2 non-result never *costs* the row anything — a salvage-only tier-1
-// article is still worth submitting, and a challenged row stays challenged,
-// because "this site blocks us" is the outcome an operator needs to see even
-// when the render also failed. Either way the row's detail names both tiers, so
-// a run log line explains itself.
+// A tier-2 article or challenge always wins: a rendered DOM is the reason we
+// rendered, and a rendered challenge must not fall back to submitting salvaged
+// boilerplate. Other tier-2 non-results never cost the row anything — a
+// salvage-only tier-1 article is still worth submitting, and a challenged row
+// stays challenged when rendering finds nothing or fails. Either way the row's
+// detail names both tiers, so a run log line explains itself.
 async function renderRow(
   row: ListIndexItem,
   entry: PerRowOutcome,
@@ -351,6 +351,10 @@ async function renderRow(
   }
   summary.rendered_failed += 1;
   entry.detail = `${describe(tier1)} — render: ${describe(tier2)}`;
+  if (tier2.kind === "challenge") {
+    entry.tier = "headless";
+    return tier2;
+  }
   return tier1;
 }
 
