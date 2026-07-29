@@ -38,6 +38,14 @@ describe("retryableError", () => {
     expect(retryableError(new TestError("FetchTimeoutError"))).toBe(true);
   });
 
+  it("XApiError 5xx is retryable; X domain and 4xx errors are terminal", () => {
+    expect(retryableError(new TestError("XApiError", "down", 503))).toBe(true);
+    expect(retryableError(new TestError("XApiError", "auth", 401))).toBe(false);
+    expect(retryableError(new TestError("XApiConfigError"))).toBe(false);
+    expect(retryableError(new TestError("XThreadOutsideRecentWindowError"))).toBe(false);
+    expect(retryableError(new TestError("XThreadIncompleteError"))).toBe(false);
+  });
+
   it("BlockedHostError and OversizedResponseError are terminal", () => {
     expect(retryableError(new TestError("BlockedHostError"))).toBe(false);
     expect(retryableError(new TestError("OversizedResponseError"))).toBe(false);

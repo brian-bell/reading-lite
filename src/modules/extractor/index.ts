@@ -2,9 +2,22 @@ import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { ContentStatus } from "../../schemas/manifest";
-import { fetchWithRetry, parseRetryAfterMs, RateLimitedError, type RetryDeps } from "../http-retry";
-import { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
+import {
+  fetchWithRetry,
+  parseRateLimitDelayMs,
+  RateLimitedError,
+  type RetryDeps,
+} from "../http-retry";
+import {
+  BadStatusError,
+  BlockedHostError,
+  FetchTimeoutError,
+  OversizedResponseError,
+  RedditManualImportError,
+} from "./errors";
 import { isRedditThreadUrl } from "./reddit";
+import { readBoundedBody, sha256Bytes } from "./response-bytes";
+import { extractXThread, isXPostUrl } from "./x";
 import {
   buildYoutubeMarkdown,
   canonicalWatchUrl,
@@ -18,13 +31,25 @@ import {
   timedtextToText,
 } from "./youtube";
 
-export { BadStatusError, BlockedHostError, FetchTimeoutError, OversizedResponseError, RedditManualImportError } from "./errors";
+export {
+  BadStatusError,
+  BlockedHostError,
+  FetchTimeoutError,
+  OversizedResponseError,
+  RedditManualImportError,
+  XApiConfigError,
+  XApiError,
+  XThreadIncompleteError,
+  XThreadOutsideRecentWindowError,
+} from "./errors";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
   timeoutMs: number;
   maxBytes: number;
   retry?: RetryDeps;
+  xBearerToken?: string;
+  now?: () => number;
 }
 
 export interface ExtractedContent {
@@ -47,6 +72,16 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   assertSafeUrl(url);
+  if (isXPostUrl(url)) {
+    return extractXThread(url, {
+      fetch: deps.fetch,
+      bearerToken: deps.xBearerToken,
+      timeoutMs: deps.timeoutMs,
+      maxBytes: deps.maxBytes,
+      retry: deps.retry,
+      now: deps.now ?? Date.now,
+    });
+  }
   // Reddit thread JSON can't be fetched from datacenter egress (bot-challenge),
   // so fail with guidance toward the local reddit-import skill instead of
   // burning a generic fetch that would only capture the challenge page.
@@ -57,7 +92,7 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
   if (isYoutubeWatchUrl(url)) return extractYoutube(url, deps);
 
   const { raw, contentType } = await fetchBounded(url, deps);
-  const content_sha256 = await sha256Hex(raw);
+  const content_sha256 = await sha256Bytes(raw);
   const base = {
     raw,
     content_type: contentType,
@@ -165,7 +200,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     raw,
     content_type,
     content_bytes: raw.byteLength,
-    content_sha256: await sha256Hex(raw),
+    content_sha256: await sha256Bytes(raw),
     content_status: "captured",
     markdown,
     title: oembed.title,
@@ -187,7 +222,7 @@ async function fetchBounded(
       : await deps.fetch(url, requestInit);
 
     if (response.status === 429) {
-      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"), Date.now);
+      const retryAfterMs = parseRateLimitDelayMs(response.headers, Date.now);
       response.body?.cancel().catch(() => {});
       throw new RateLimitedError(429, retryAfterMs, url);
     }
@@ -212,40 +247,6 @@ async function fetchBounded(
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function readBoundedBody(response: Response, maxBytes: number, url: string): Promise<Uint8Array> {
-  if (!response.body) {
-    const buf = new Uint8Array(await response.arrayBuffer());
-    if (buf.byteLength > maxBytes) throw new OversizedResponseError(url, maxBytes);
-    return buf;
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value) {
-      total += value.byteLength;
-      if (total > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          /* ignore */
-        }
-        throw new OversizedResponseError(url, maxBytes);
-      }
-      chunks.push(value);
-    }
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.byteLength;
-  }
-  return out;
 }
 
 interface Article {
@@ -456,11 +457,4 @@ function embeddedIPv4(host: string): string | null {
   const lo = parseInt(segments[7]!, 16);
   if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
   return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }

@@ -28,6 +28,7 @@ export interface Env {
   FOUNDER_EMAIL?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
+  X_API_BEARER_TOKEN?: string;
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
   EMAIL_TO: string;

@@ -80,6 +80,46 @@ describe("fetchWithRetry", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it("uses x-rate-limit-reset when Retry-After is missing", async () => {
+    const now = Date.parse("2026-07-28T12:00:00Z");
+    const resetSeconds = Math.floor((now + 45_000) / 1_000);
+    const fetchFn = vi.fn(async () =>
+      res(429, "slow", { "x-rate-limit-reset": String(resetSeconds) }),
+    );
+    const { sleep } = recordingSleep();
+
+    const err = await fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://api.x.com/2/tweets/123",
+      {},
+      { ...baseDeps, sleep, now: () => now },
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect((err as RateLimitedError).retryAfterMs).toBe(45_000);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("prefers Retry-After over x-rate-limit-reset", async () => {
+    const now = Date.parse("2026-07-28T12:00:00Z");
+    const fetchFn = vi.fn(async () =>
+      res(429, "slow", {
+        "retry-after": "10",
+        "x-rate-limit-reset": String(Math.floor((now + 45_000) / 1_000)),
+      }),
+    );
+    const { sleep } = recordingSleep();
+
+    const err = await fetchWithRetry(
+      fetchFn as unknown as typeof fetch,
+      "https://api.x.com/2/tweets/123",
+      {},
+      { ...baseDeps, sleep, now: () => now },
+    ).catch((e) => e);
+
+    expect((err as RateLimitedError).retryAfterMs).toBe(10_000);
+  });
+
   it("does not clamp Retry-After when surfacing it via RateLimitedError", async () => {
     const fetchFn = vi.fn(async () => res(429, "slow", { "retry-after": "600" }));
     const { sleep } = recordingSleep();

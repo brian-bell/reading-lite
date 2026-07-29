@@ -63,7 +63,7 @@ The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 
 | Module | Responsibility |
 |---|---|
-| `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown; special-cases YouTube watch pages (oEmbed + transcript) |
+| `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown; special-cases X author threads and YouTube watch pages |
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
 | `summarizer` | provider selection and normalized result/usage contract; defaults to OpenAI and never silently falls back |
 | `openai-summarizer` | one-shot OpenAI Responses request with strict JSON-schema output |
@@ -233,8 +233,10 @@ npm run ops -- import markdown --dir ~/Documents/articles --execute
 npm run ops -- corpus ingest --dir ~/Documents/articles --execute --sole-writer  # provider Batch API
 ```
 
-Reddit and YouTube need a local extraction step — the Worker is blocked from
-both — via the `reddit-import` and `youtube-import` skills. See
+X/Twitter status URLs extract in-worker through the official recent-search
+API (`X_API_BEARER_TOKEN`). Reddit and YouTube need a local extraction step
+— the Worker is blocked from both — via the `reddit-import` and
+`youtube-import` skills. See [X threads](docs/operations.md#x-threads) and
 [sources that need a local skill](docs/operations.md#sources-that-need-a-local-skill).
 
 ## Repo layout
@@ -256,7 +258,7 @@ src/
   modules/
     reading-claim.ts            # by-url ownership resolution
     staleness.ts                # read-time stale-annotation rule
-    extractor/                  # HTML→Markdown pipeline + bounded fetch; youtube.ts in-worker path
+    extractor/                  # HTML→Markdown pipeline + bounded fetch; x.ts threads + youtube.ts in-worker path
     embeddings/                 # OpenAI client
     summarizer/                 # provider selection + normalized usage/result contract
     openai-summarizer/          # Responses API + strict structured output

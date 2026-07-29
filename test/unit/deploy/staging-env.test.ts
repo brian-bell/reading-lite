@@ -102,6 +102,7 @@ describe("staging environment scripts", () => {
       "wrangler secret put READER_API_TOKEN --env staging",
       "wrangler secret put AUTH_ROOT_SECRET --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
+      "wrangler secret put X_API_BEARER_TOKEN --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",
     ]);
     expect(buildSecretCommands("anthropic")).toEqual([
@@ -109,6 +110,7 @@ describe("staging environment scripts", () => {
       "wrangler secret put AUTH_ROOT_SECRET --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
       "wrangler secret put ANTHROPIC_API_KEY --env staging",
+      "wrangler secret put X_API_BEARER_TOKEN --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",
     ]);
   });

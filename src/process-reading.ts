@@ -473,6 +473,8 @@ async function extractSource(
       timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
       maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
       retry: retryDepsFromEnv(env),
+      xBearerToken: env.X_API_BEARER_TOKEN,
+      now: () => Date.parse(services.now()),
     }),
   );
 }
@@ -846,6 +848,9 @@ export function retryableError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
   const status = (e as { status?: unknown }).status;
   if (e.name === "BadStatusError") {
+    return typeof status === "number" && status >= 500;
+  }
+  if (e.name === "XApiError") {
     return typeof status === "number" && status >= 500;
   }
   if (e.name === "AnthropicError" || e.name === "OpenAIError") {
