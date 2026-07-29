@@ -93,16 +93,16 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
   if (!sourceUrl) throw new Error(offline ? "--html requires --source-url" : "--url is required");
 
   let staticFetch = deps.fetch;
-  let renderPage = deps.renderPage;
   let lookup = deps.lookup;
+  let offlineHtml: string | undefined;
   if (offline) {
     const html = await deps.readFile(args.htmlPath!, deps.maxBytes);
+    offlineHtml = html;
     staticFetch = (async () =>
       new Response(html, {
         status: 200,
         headers: { "content-type": "text/html; charset=utf-8" },
       })) as typeof fetch;
-    renderPage = async () => ({ html, finalUrl: sourceUrl });
     lookup = async () => [{ address: OFFLINE_PUBLIC_ADDRESS }];
   }
 
@@ -117,10 +117,11 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
   }
   if (args.tier === "headless" || args.tier === "both") {
     const outcome = await extractHeadless(sourceUrl, {
-      renderPage,
+      renderPage: deps.renderPage,
       lookup,
       maxBytes: deps.maxBytes,
       readOnly: true,
+      offlineHtml,
     });
     results.push(toProbeResult("headless", outcome));
   }

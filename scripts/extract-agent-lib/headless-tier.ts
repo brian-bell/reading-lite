@@ -59,6 +59,7 @@ export interface RenderPageOptions {
   timeoutMs: number;
   maxBytes: number;
   readOnly?: boolean;
+  offlineHtml?: string;
 }
 
 export type RenderPage = (url: string, opts: RenderPageOptions) => Promise<RenderResult>;
@@ -69,6 +70,7 @@ export interface HeadlessDeps {
   maxBytes: number;
   timeoutMs?: number;
   readOnly?: boolean;
+  offlineHtml?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -107,6 +109,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
       timeoutMs,
       maxBytes: deps.maxBytes,
       readOnly: deps.readOnly,
+      offlineHtml: deps.offlineHtml,
     });
   } catch (e) {
     // A box that cannot render is not this row's problem — let it out.
@@ -146,6 +149,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
     html: rendered.html,
     markdown: article?.markdown,
     title: article?.title,
+    rendered: true,
   });
   if (verdict.challenge) {
     return {

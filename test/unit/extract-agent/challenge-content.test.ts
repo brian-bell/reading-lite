@@ -65,6 +65,35 @@ describe("classifyChallengeContent", () => {
     expect(verdict).toEqual({ challenge: false });
   });
 
+  it("does not treat an article mention of automated queries as reader-directed evidence", () => {
+    const verdict = classifyChallengeContent({
+      html: [
+        '<script src="/cdn-cgi/challenge-platform/widget.js"></script>',
+        "<article><h1>Query automation at scale</h1></article>",
+      ].join(""),
+      title: "Query automation at scale",
+      markdown: [
+        "# Query automation at scale",
+        "",
+        "This article compares automated queries with event-driven data ingestion.",
+      ].join("\n"),
+    });
+
+    expect(verdict).toEqual({ challenge: false });
+  });
+
+  it("accepts contextual automated-query copy directed at the current reader", () => {
+    const verdict = classifyChallengeContent({
+      html: '<script src="/cdn-cgi/challenge-platform/widget.js"></script>',
+      markdown: "Your computer or network may be sending automated queries.",
+    });
+
+    expect(verdict).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining(["body:automated-traffic"]),
+    });
+  });
+
   it("does not treat provider markup shown in an article code sample as live structure", () => {
     const verdict = classifyChallengeContent({
       html: [

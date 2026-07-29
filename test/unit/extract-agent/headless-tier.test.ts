@@ -124,6 +124,21 @@ describe("extractHeadless", () => {
     });
   });
 
+  it("ignores noscript-only instructions after browser rendering", async () => {
+    const html = [
+      "<html><body>",
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
+      "<noscript>Enable JavaScript and cookies to continue.</noscript>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({ kind: "no_article" });
+  });
+
   it("keeps a rendered article with a comment-form CAPTCHA extractable", async () => {
     const html = readFileSync(join(FIXTURES, "captcha-comment-widget.html"), "utf-8");
     const outcome = await extractHeadless(

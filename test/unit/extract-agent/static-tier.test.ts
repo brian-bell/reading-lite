@@ -82,6 +82,25 @@ describe("extractStatic", () => {
     });
   });
 
+  it("retains noscript instructions as static challenge body evidence", async () => {
+    const html = [
+      "<html><body>",
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
+      "<noscript>Enable JavaScript and cookies to continue.</noscript>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:enable-browser"]),
+    });
+  });
+
   it("does not classify non-HTML content containing challenge markers and copy", async () => {
     const outcome = await extractStatic(
       "https://public.example/notes.txt",

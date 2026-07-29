@@ -2,8 +2,9 @@
 //
 // A provider widget is not enough: ordinary articles can embed CAPTCHA in a
 // comment form. A verdict requires both provider-specific structure in the
-// bounded HTML capture and instructions aimed at the current reader in the
-// extracted Markdown. Title evidence is diagnostic only.
+// bounded HTML capture and instructions aimed at the current reader in
+// extracted Markdown or bounded visible fallback text. Title evidence is
+// diagnostic only.
 
 import { parseHTML } from "linkedom";
 
@@ -11,6 +12,7 @@ export interface ChallengeContentInput {
   html: string;
   markdown?: string;
   title?: string;
+  rendered?: boolean;
 }
 
 export type ChallengeFamily = "structural" | "body" | "title";
@@ -71,7 +73,8 @@ const BODY_SIGNALS: readonly Signal[] = [
     phrases: [
       "unusual traffic from your computer network",
       "detected unusual traffic",
-      "automated queries",
+      "your computer or network may be sending automated queries",
+      "we have detected that your computer may be sending automated queries",
       "this website is using a security service to protect itself",
     ],
   },
@@ -110,7 +113,7 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
   const html = boundedCodePointPrefix(input.html, HTML_SCAN_MAX_CHARS);
   const structure = structuralSurface(html);
   const body = input.markdown === undefined
-    ? visibleTextSurface(html)
+    ? visibleTextSurface(html, input.rendered !== true)
     : normalizeMarkdown(input.markdown);
   const title = normalizeInline(input.title ?? "");
   const matched = {
@@ -162,9 +165,12 @@ function isExecutableScriptType(type: string | null): boolean {
     || JAVASCRIPT_MIME_TYPES.has(normalized);
 }
 
-function visibleTextSurface(html: string): string {
+function visibleTextSurface(html: string, includeNoscript: boolean): string {
   const { document } = parseHTML(html);
-  for (const element of document.querySelectorAll("head, script, style, noscript, template")) {
+  const hiddenElements = includeNoscript
+    ? "head, script, style, template"
+    : "head, script, style, noscript, template";
+  for (const element of document.querySelectorAll(hiddenElements)) {
     element.remove();
   }
   return normalizeMarkdown(document.body?.textContent ?? "");
