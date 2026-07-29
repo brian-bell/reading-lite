@@ -1,8 +1,8 @@
 {
   "version": 1,
   "scope": "text-only human-verification interstitials",
-  "approval_status": "pending",
-  "implementation_must_wait_for_approval": true,
+  "approval_status": "approved",
+  "implementation_must_wait_for_approval": false,
   "fixtures": [
     {
       "file": "human-check-contextual.html",
