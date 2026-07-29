@@ -105,6 +105,40 @@ describe("extractHeadless", () => {
     });
   });
 
+  it("classifies a minimal rendered challenge that Readability rejects", async () => {
+    const html = [
+      "<html><head><title>Just a moment...</title></head><body>",
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "<button>Please verify you are human to continue.</button>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "headless",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
+  it("ignores noscript-only instructions after browser rendering", async () => {
+    const html = [
+      "<html><body>",
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
+      "<noscript>Enable JavaScript and cookies to continue.</noscript>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({ kind: "no_article" });
+  });
+
   it("keeps a rendered article with a comment-form CAPTCHA extractable", async () => {
     const html = readFileSync(join(FIXTURES, "captcha-comment-widget.html"), "utf-8");
     const outcome = await extractHeadless(

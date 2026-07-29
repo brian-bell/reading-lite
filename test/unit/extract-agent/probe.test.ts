@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   parseProbeArgs,
+  PROBE_TITLE_MAX_CHARS,
   readBoundedUtf8,
   runProbe,
   type ProbeDeps,
@@ -15,7 +16,10 @@ function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
     readFile: vi.fn(async (path: string) => readFileSync(path, "utf-8")),
     fetch: vi.fn() as unknown as typeof fetch,
     lookup: vi.fn(),
-    renderPage: vi.fn(),
+    renderPage: vi.fn(async (url: string, options: { offlineHtml?: string }) => {
+      if (options.offlineHtml === undefined) throw new Error("test renderer requires offlineHtml");
+      return { html: options.offlineHtml, finalUrl: url };
+    }) as ProbeDeps["renderPage"],
     maxBytes: 20 * 1024 * 1024,
     ...overrides,
   };
@@ -23,7 +27,17 @@ function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
 
 describe("runProbe", () => {
   it("runs an offline fixture through both real tiers without network or state dependencies", async () => {
-    const probeDeps = deps();
+    const html = readFileSync(join(FIXTURES, "structural-challenge.html"), "utf-8");
+    const renderPage = vi.fn(async (
+      url: string,
+      options: { offlineHtml?: string },
+    ) => ({
+      html: options.offlineHtml!,
+      finalUrl: url,
+    }));
+    const probeDeps = deps({
+      renderPage: renderPage as ProbeDeps["renderPage"],
+    });
     const results = await runProbe(
       {
         htmlPath: join(FIXTURES, "structural-challenge.html"),
@@ -48,8 +62,51 @@ describe("runProbe", () => {
     expect(probeDeps.readFile).toHaveBeenCalledOnce();
     expect(probeDeps.fetch).not.toHaveBeenCalled();
     expect(probeDeps.lookup).not.toHaveBeenCalled();
-    expect(probeDeps.renderPage).not.toHaveBeenCalled();
+    expect(renderPage).toHaveBeenCalledWith(
+      "https://fixture.invalid/structural-challenge",
+      expect.objectContaining({ offlineHtml: html, readOnly: true }),
+    );
     expect(JSON.stringify(results)).not.toContain("Please verify you are human");
+  });
+
+  it("renders offline fixture HTML before classifying the headless tier", async () => {
+    const sourceHtml = [
+      "<html><body>",
+      "<script>document.body.innerHTML = '<form action=\"/cdn-cgi/challenge-platform/x\"></form><button>Please verify you are human to continue.</button>';</script>",
+      "</body></html>",
+    ].join("");
+    const renderedHtml = [
+      "<html><body>",
+      '<form action="/cdn-cgi/challenge-platform/x"></form>',
+      "<button>Please verify you are human to continue.</button>",
+      "</body></html>",
+    ].join("");
+    const renderPage = vi.fn(async (
+      url: string,
+      options: { offlineHtml?: string },
+    ) => {
+      expect(url).toBe("https://fixture.invalid/dynamic-challenge");
+      expect(options.offlineHtml).toBe(sourceHtml);
+      return {
+        html: renderedHtml,
+        finalUrl: "https://fixture.invalid/dynamic-challenge",
+      };
+    });
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/dynamic-challenge.html",
+        sourceUrl: "https://fixture.invalid/dynamic-challenge",
+        tier: "both",
+        json: true,
+      },
+      deps({
+        readFile: vi.fn(async () => sourceHtml),
+        renderPage: renderPage as ProbeDeps["renderPage"],
+      }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["no_article", "challenge"]);
+    expect(renderPage).toHaveBeenCalledOnce();
   });
 
   it("uses only page GET and render dependencies for a live URL", async () => {
@@ -90,6 +147,55 @@ describe("runProbe", () => {
       expect.objectContaining({ readOnly: true }),
     );
     expect(JSON.stringify(results)).not.toContain("Please verify you are human");
+  });
+
+  it("bounds extracted titles in probe results", async () => {
+    const title = "T".repeat(PROBE_TITLE_MAX_CHARS + 500);
+    const html = [
+      `<html><head><title>${title}</title></head><body><article>`,
+      "<h1>Reference</h1>",
+      ...Array.from(
+        { length: 8 },
+        (_, i) => `<p>Paragraph ${i} has enough useful article prose for a stable readability result.</p>`,
+      ),
+      "</article></body></html>",
+    ].join("");
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/long-title.html",
+        sourceUrl: "https://fixture.invalid/article",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["extracted", "extracted"]);
+    for (const result of results) {
+      expect(result.title).toHaveLength(PROBE_TITLE_MAX_CHARS);
+    }
+  });
+
+  it("bounds challenge titles in probe results", async () => {
+    const title = "Challenge ".repeat(PROBE_TITLE_MAX_CHARS);
+    const html = readFileSync(
+      join(FIXTURES, "structural-challenge.html"),
+      "utf-8",
+    ).replace("Just a moment...", title);
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/long-challenge-title.html",
+        sourceUrl: "https://fixture.invalid/challenge",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["challenge", "challenge"]);
+    for (const result of results) {
+      expect(result.title).toHaveLength(PROBE_TITLE_MAX_CHARS);
+    }
   });
 });
 

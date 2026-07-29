@@ -2,15 +2,17 @@
 //
 // A provider widget is not enough: ordinary articles can embed CAPTCHA in a
 // comment form. A verdict requires both provider-specific structure in the
-// bounded HTML capture and instructions aimed at the current reader in the
-// extracted Markdown. Title evidence is diagnostic only.
+// bounded HTML capture and instructions aimed at the current reader in
+// extracted Markdown or bounded visible fallback text. Title evidence is
+// diagnostic only.
 
 import { parseHTML } from "linkedom";
 
 export interface ChallengeContentInput {
   html: string;
-  markdown: string;
+  markdown?: string;
   title?: string;
+  rendered?: boolean;
 }
 
 export type ChallengeFamily = "structural" | "body" | "title";
@@ -71,7 +73,8 @@ const BODY_SIGNALS: readonly Signal[] = [
     phrases: [
       "unusual traffic from your computer network",
       "detected unusual traffic",
-      "automated queries",
+      "your computer or network may be sending automated queries",
+      "we have detected that your computer may be sending automated queries",
       "this website is using a security service to protect itself",
     ],
   },
@@ -84,9 +87,34 @@ const TITLE_SIGNALS: readonly Signal[] = [
   { code: "human-check", phrases: ["are you a robot", "are you human", "human verification"] },
 ] as const;
 
+// The JavaScript MIME type essence-match set from the MIME Sniffing Standard.
+// Script `type` parameters are intentionally not parsed away: HTML treats a
+// value such as `text/javascript; charset=utf-8` as a data block.
+const JAVASCRIPT_MIME_TYPES = new Set([
+  "application/ecmascript",
+  "application/javascript",
+  "application/x-ecmascript",
+  "application/x-javascript",
+  "text/ecmascript",
+  "text/javascript",
+  "text/javascript1.0",
+  "text/javascript1.1",
+  "text/javascript1.2",
+  "text/javascript1.3",
+  "text/javascript1.4",
+  "text/javascript1.5",
+  "text/jscript",
+  "text/livescript",
+  "text/x-ecmascript",
+  "text/x-javascript",
+]);
+
 export function classifyChallengeContent(input: ChallengeContentInput): ChallengeVerdict {
-  const structure = structuralSurface(input.html);
-  const body = normalizeMarkdown(input.markdown);
+  const html = boundedCodePointPrefix(input.html, HTML_SCAN_MAX_CHARS);
+  const structure = structuralSurface(html);
+  const body = input.markdown === undefined
+    ? visibleTextSurface(html, input.rendered !== true)
+    : normalizeMarkdown(input.markdown);
   const title = normalizeInline(input.title ?? "");
   const matched = {
     structural: matchSignals(structure, STRUCTURAL_SIGNALS),
@@ -108,22 +136,56 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
 }
 
 function structuralSurface(html: string): string {
-  const { document } = parseHTML(html.slice(0, HTML_SCAN_MAX_CHARS));
+  const { document } = parseHTML(html);
   const values: string[] = [];
   for (const element of document.querySelectorAll("*")) {
     // Provider markup shown as prose is not live page structure.
     if (element.closest("pre, code, blockquote, template")) continue;
+    const isScript = element.tagName === "SCRIPT";
+    if (isScript && !isExecutableScriptType(element.getAttribute("type"))) {
+      continue;
+    }
     for (const attribute of ["id", "class", "action", "src"]) {
       const value = element.getAttribute(attribute);
       if (value) values.push(value);
     }
     // Some providers publish their marker as executable inline configuration.
     // Text in any other element is page prose and never structural evidence.
-    if (element.tagName === "SCRIPT" && element.textContent) {
+    if (isScript && element.textContent) {
       values.push(element.textContent);
     }
   }
   return values.join(" ").toLowerCase();
+}
+
+function isExecutableScriptType(type: string | null): boolean {
+  const normalized = type?.trim().toLowerCase() ?? "";
+  return normalized === ""
+    || normalized === "module"
+    || JAVASCRIPT_MIME_TYPES.has(normalized);
+}
+
+function visibleTextSurface(html: string, includeNoscript: boolean): string {
+  const { document } = parseHTML(html);
+  const hiddenElements = includeNoscript
+    ? "head, script, style, template"
+    : "head, script, style, noscript, template";
+  for (const element of document.querySelectorAll(hiddenElements)) {
+    element.remove();
+  }
+  return normalizeMarkdown(document.body?.textContent ?? "");
+}
+
+function boundedCodePointPrefix(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  let codePoints = 0;
+  let codeUnits = 0;
+  for (const char of text) {
+    if (codePoints === maxChars) break;
+    codePoints++;
+    codeUnits += char.length;
+  }
+  return codeUnits === text.length ? text : text.slice(0, codeUnits);
 }
 
 export function normalizedMarkdownChars(markdown: string): number {

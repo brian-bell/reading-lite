@@ -59,6 +59,7 @@ export interface RenderPageOptions {
   timeoutMs: number;
   maxBytes: number;
   readOnly?: boolean;
+  offlineHtml?: string;
 }
 
 export type RenderPage = (url: string, opts: RenderPageOptions) => Promise<RenderResult>;
@@ -69,6 +70,7 @@ export interface HeadlessDeps {
   maxBytes: number;
   timeoutMs?: number;
   readOnly?: boolean;
+  offlineHtml?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -107,6 +109,7 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
       timeoutMs,
       maxBytes: deps.maxBytes,
       readOnly: deps.readOnly,
+      offlineHtml: deps.offlineHtml,
     });
   } catch (e) {
     // A box that cannot render is not this row's problem — let it out.
@@ -142,23 +145,24 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
   // Extract against the *final* URL so relative links resolve the way the
   // browser saw them, not the way the row's stored URL would have.
   const article = readabilityFromHtml(rendered.html, rendered.finalUrl);
-  if (!article || article.markdown.trim().length === 0) {
-    return { kind: "no_article", detail: `rendered dom produced no article: ${rendered.finalUrl}` };
-  }
   const verdict = classifyChallengeContent({
     html: rendered.html,
-    markdown: article.markdown,
-    title: article.title,
+    markdown: article?.markdown,
+    title: article?.title,
+    rendered: true,
   });
   if (verdict.challenge) {
     return {
       kind: "challenge",
       detail: challengeContentDetail(verdict, rendered.finalUrl),
       tier: "headless",
-      title: article.title,
+      title: article?.title,
       normalizedChars: verdict.normalizedChars,
       evidence: verdict.evidence,
     };
+  }
+  if (!article || article.markdown.trim().length === 0) {
+    return { kind: "no_article", detail: `rendered dom produced no article: ${rendered.finalUrl}` };
   }
   return {
     kind: "extracted",

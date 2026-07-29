@@ -32,6 +32,7 @@ interface FakeState {
   evaluateExpressions: string[];
   aborted: string[];
   continued: string[];
+  fulfilled: Array<{ url: string; body: string; contentType?: string; status?: number }>;
 }
 
 type Handler = (route: unknown) => unknown;
@@ -71,6 +72,7 @@ function fakePlaywright(opts: {
     evaluateExpressions: [],
     aborted: [],
     continued: [],
+    fulfilled: [],
   };
   let handler: Handler | undefined;
   let navigatedTo: string | undefined;
@@ -101,6 +103,9 @@ function fakePlaywright(opts: {
       },
       continue: async () => {
         state.continued.push(request.url);
+      },
+      fulfill: async (response: { body: string; contentType?: string; status?: number }) => {
+        state.fulfilled.push({ url: request.url, ...response });
       },
     };
   }
@@ -406,6 +411,73 @@ describe("makePlaywrightRenderPage", () => {
     ]);
     expect(state.wsConnected).toEqual([]);
     expect(state.wsClosed).toEqual(["wss://live.example/mutations"]);
+  });
+
+  it("renders an offline fixture as the main document and blocks all egress", async () => {
+    const offlineHtml = [
+      "<html><body>",
+      "<script>document.body.textContent = 'rendered';</script>",
+      "</body></html>",
+    ].join("");
+    const { module, state } = fakePlaywright({
+      html: "<html><body>rendered</body></html>",
+      requests: [
+        NAV,
+        { url: "https://cdn.example/app.js", resourceType: "script" },
+        { url: "https://api.example/data", resourceType: "fetch", method: "POST" },
+      ],
+      websockets: ["wss://live.example/socket"],
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
+
+    const result = await render("https://public.example/a", {
+      ...OPTS,
+      readOnly: true,
+      offlineHtml,
+    });
+
+    expect(result).toEqual({
+      html: "<html><body>rendered</body></html>",
+      finalUrl: "https://public.example/a",
+    });
+    expect(state.fulfilled).toEqual([{
+      url: "https://public.example/a",
+      body: offlineHtml,
+      contentType: "text/html; charset=utf-8",
+      status: 200,
+    }]);
+    expect(state.continued).toEqual([]);
+    expect(state.aborted).toEqual([
+      "https://cdn.example/app.js",
+      "https://api.example/data",
+    ]);
+    expect(state.wsConnected).toEqual([]);
+    expect(state.wsClosed).toEqual(["wss://live.example/socket"]);
+  });
+
+  it("matches an offline main-document request after browser URL canonicalization", async () => {
+    const offlineHtml = "<html><body>fixture</body></html>";
+    const { module, state } = fakePlaywright({
+      html: offlineHtml,
+      finalUrl: "https://fixture.invalid/article#section",
+      requests: [{
+        url: "https://fixture.invalid/article",
+        resourceType: "document",
+      }],
+    });
+    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
+
+    await render("https://Fixture.Invalid:443/article#section", {
+      ...OPTS,
+      offlineHtml,
+    });
+
+    expect(state.fulfilled).toEqual([expect.objectContaining({
+      url: "https://fixture.invalid/article",
+      body: offlineHtml,
+    })]);
+    expect(state.aborted).toEqual([]);
+    expect(state.continued).toEqual([]);
   });
 
   it("refuses an over-cap dom before pulling it into this process", async () => {

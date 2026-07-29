@@ -43,6 +43,7 @@ export interface ProbeResult {
 }
 
 const OFFLINE_PUBLIC_ADDRESS = "192.0.2.1";
+export const PROBE_TITLE_MAX_CHARS = 200;
 
 export function parseProbeArgs(argv: string[]): ProbeArgs {
   const args: ProbeArgs = { tier: "both", json: false };
@@ -92,16 +93,16 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
   if (!sourceUrl) throw new Error(offline ? "--html requires --source-url" : "--url is required");
 
   let staticFetch = deps.fetch;
-  let renderPage = deps.renderPage;
   let lookup = deps.lookup;
+  let offlineHtml: string | undefined;
   if (offline) {
     const html = await deps.readFile(args.htmlPath!, deps.maxBytes);
+    offlineHtml = html;
     staticFetch = (async () =>
       new Response(html, {
         status: 200,
         headers: { "content-type": "text/html; charset=utf-8" },
       })) as typeof fetch;
-    renderPage = async () => ({ html, finalUrl: sourceUrl });
     lookup = async () => [{ address: OFFLINE_PUBLIC_ADDRESS }];
   }
 
@@ -116,10 +117,11 @@ export async function runProbe(args: ProbeArgs, deps: ProbeDeps): Promise<ProbeR
   }
   if (args.tier === "headless" || args.tier === "both") {
     const outcome = await extractHeadless(sourceUrl, {
-      renderPage,
+      renderPage: deps.renderPage,
       lookup,
       maxBytes: deps.maxBytes,
       readOnly: true,
+      offlineHtml,
     });
     results.push(toProbeResult("headless", outcome));
   }
@@ -168,7 +170,7 @@ function toProbeResult(
     return {
       tier,
       outcome: outcome.kind,
-      title: outcome.title,
+      title: boundedTitle(outcome.title),
       normalized_character_count: normalizedMarkdownChars(outcome.markdown),
       evidence_codes: [],
     };
@@ -177,7 +179,7 @@ function toProbeResult(
     return {
       tier,
       outcome: outcome.kind,
-      title: outcome.title,
+      title: boundedTitle(outcome.title),
       normalized_character_count: outcome.normalizedChars ?? 0,
       evidence_codes: outcome.evidence ?? [],
     };
@@ -188,4 +190,17 @@ function toProbeResult(
     normalized_character_count: 0,
     evidence_codes: [],
   };
+}
+
+function boundedTitle(title: string | undefined): string | undefined {
+  if (title === undefined) return undefined;
+  const chars: string[] = [];
+  for (const char of title) {
+    if (chars.length === PROBE_TITLE_MAX_CHARS) {
+      chars[chars.length - 1] = "…";
+      return chars.join("");
+    }
+    chars.push(char);
+  }
+  return title;
 }
