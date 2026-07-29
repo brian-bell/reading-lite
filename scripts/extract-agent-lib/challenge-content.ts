@@ -25,6 +25,42 @@ export const HTML_SCAN_MAX_CHARS = 1_000_000;
 export const MARKDOWN_SCAN_MAX_CHARS = 200_000;
 export const MAX_CHALLENGE_EVIDENCE = 6;
 const HTML_VISIBLE_MAX_DEPTH = 256;
+const HTML_TEXT_BLOCK_TAGS = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "BUTTON",
+  "DETAILS",
+  "DIALOG",
+  "DIV",
+  "DL",
+  "FIELDSET",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "FORM",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "PRE",
+  "SECTION",
+  "SUMMARY",
+  "TABLE",
+  "TD",
+  "TH",
+  "TR",
+  "UL",
+]);
 
 const READER_DIRECTED_VERIFY_PREFIXES = [
   "please verify you are human to continue",
@@ -416,11 +452,123 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
     tagName?: string;
     getAttribute?: (name: string) => string | null;
   }
+  const visibleInlineBlockText = (
+    root: TraversableNode,
+    inheritedVisibilityHidden: boolean,
+  ): string => {
+    const parts: string[] = [];
+    const stack = (Array.from(root.childNodes) as TraversableNode[])
+      .reverse()
+      .map((node) => ({ node, inheritedVisibilityHidden }));
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.node.nodeType === 3) {
+        if (!current.inheritedVisibilityHidden) {
+          parts.push(current.node.textContent ?? "");
+        }
+        continue;
+      }
+      if (current.node.nodeType !== 1) continue;
+      const tagName = current.node.tagName?.toUpperCase() ?? "";
+      if (HTML_TEXT_BLOCK_TAGS.has(tagName)) continue;
+      const inputType = (current.node.getAttribute?.("type") ?? "text")
+        .trim()
+        .toLowerCase();
+      const inlineStyle = inlineStyleState(
+        (current.node.getAttribute?.("style") ?? "").toLowerCase(),
+      );
+      const hidden = (current.node.getAttribute?.("hidden") ?? null) !== null
+        || inlineStyle.displayNone
+        || (tagName === "INPUT" && inputType === "hidden");
+      if (hidden) continue;
+      const visibilityHidden = resolveVisibilityHidden(
+        inlineStyle.visibility,
+        current.inheritedVisibilityHidden,
+      );
+      if (!visibilityHidden && tagName === "BR") parts.push(" ");
+      if (
+        !visibilityHidden
+        && tagName === "INPUT"
+        && VISIBLE_INPUT_VALUE_TYPES.has(inputType)
+      ) {
+        parts.push(current.node.getAttribute?.("value") ?? "");
+      }
+      const children = Array.from(current.node.childNodes) as TraversableNode[];
+      for (let index = children.length - 1; index >= 0; index--) {
+        stack.push({
+          node: children[index]!,
+          inheritedVisibilityHidden: visibilityHidden,
+        });
+      }
+    }
+    return normalizeInline(parts.join(""));
+  };
+  const articleIsChallengeShell = (node: TraversableNode): boolean => {
+    const visibleBlocks: string[] = [];
+    const stack = [{ node, inheritedVisibilityHidden: false, depth: 0 }];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.depth >= HTML_VISIBLE_MAX_DEPTH) return false;
+      const tagName = current.node.tagName?.toUpperCase() ?? "";
+      const inputType = (current.node.getAttribute?.("type") ?? "text")
+        .trim()
+        .toLowerCase();
+      const inlineStyle = inlineStyleState(
+        (current.node.getAttribute?.("style") ?? "").toLowerCase(),
+      );
+      const hidden = (current.node.getAttribute?.("hidden") ?? null) !== null
+        || inlineStyle.displayNone
+        || (tagName === "INPUT" && inputType === "hidden")
+        || (tagName === "DIALOG"
+          && (current.node.getAttribute?.("open") ?? null) === null);
+      if (hidden) continue;
+      const visibilityHidden = resolveVisibilityHidden(
+        inlineStyle.visibility,
+        current.inheritedVisibilityHidden,
+      );
+      if (
+        !visibilityHidden
+        && ["BLOCKQUOTE", "Q", "PRE", "CODE"].includes(tagName)
+      ) {
+        return false;
+      }
+
+      const children = Array.from(current.node.childNodes) as TraversableNode[];
+      if (HTML_TEXT_BLOCK_TAGS.has(tagName)) {
+        const block = visibleInlineBlockText(current.node, visibilityHidden);
+        if (block.length > 0) visibleBlocks.push(block);
+      }
+
+      const visibleChildren = tagName === "DETAILS"
+        && (current.node.getAttribute?.("open") ?? null) === null
+        ? children.filter((child) =>
+          child.tagName?.toUpperCase() === "SUMMARY")
+        : children;
+      for (const child of visibleChildren) {
+        if (child.nodeType === 1) {
+          stack.push({
+            node: child,
+            inheritedVisibilityHidden: visibilityHidden,
+            depth: current.depth + 1,
+          });
+        }
+      }
+    }
+    const challengeBlock = (block: string) =>
+      readerDirectedUiBlockSignals([block]).length > 0;
+    const titleBlock = (block: string) =>
+      exactSignalMatches(block, TITLE_SIGNALS).length > 0;
+
+    return visibleBlocks.some(challengeBlock)
+      && visibleBlocks.every((block) =>
+        challengeBlock(block) || titleBlock(block));
+  };
   const visit = (
     value: unknown,
     evidenceExcluded = false,
     inheritedVisibilityHidden = false,
     depth = 0,
+    insideChallengeArticle = false,
   ): string => {
     const node = value as TraversableNode;
     if (node.nodeType === 3) {
@@ -434,7 +582,13 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
     if (node.nodeType !== 1) {
       return Array.from(node.childNodes)
         .map((child) =>
-          visit(child, evidenceExcluded, inheritedVisibilityHidden, depth))
+          visit(
+            child,
+            evidenceExcluded,
+            inheritedVisibilityHidden,
+            depth,
+            insideChallengeArticle,
+          ))
         .join("");
     }
     if (depth >= HTML_VISIBLE_MAX_DEPTH) return "";
@@ -457,9 +611,14 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
       inheritedVisibilityHidden,
     );
 
+    const challengeArticle = tagName === "ARTICLE"
+      && articleIsChallengeShell(node);
     const excludesDescendants = evidenceExcluded
-      || tagName === "ARTICLE"
-      || (hasArticle && tagName === "FORM")
+      // Readability can mistake a text-only interstitial for an article. Keep
+      // prose articles excluded, but admit article wrappers made entirely of
+      // recognized challenge UI blocks.
+      || (tagName === "ARTICLE" && !challengeArticle)
+      || (hasArticle && tagName === "FORM" && !insideChallengeArticle)
       || tagName === "BLOCKQUOTE"
       || tagName === "PRE"
       || tagName === "CODE";
@@ -481,7 +640,13 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
     } else {
       permittedText = visibleChildren
         .map((child) =>
-          visit(child, excludesDescendants, visibilityHidden, depth + 1))
+          visit(
+            child,
+            excludesDescendants,
+            visibilityHidden,
+            depth + 1,
+            insideChallengeArticle || challengeArticle,
+          ))
         .join("");
     }
     if (
@@ -590,9 +755,55 @@ function readerDirectedBlockSignals(bodyBlocks: string[]): string[] {
   return matched;
 }
 
+function readerDirectedUiBlockSignals(bodyBlocks: string[]): string[] {
+  const exactBlocks = bodyBlocks.map((block) => block.replace(/[.!?]+$/, ""));
+  const matched: string[] = [];
+  if (exactBlocks.some((block) =>
+    READER_DIRECTED_VERIFY_PREFIXES.includes(
+      block as (typeof READER_DIRECTED_VERIFY_PREFIXES)[number],
+    )
+    || READER_DIRECTED_VERIFY_LEAD_INS.some((leadIn) =>
+      READER_DIRECTED_VERIFY_PREFIXES.some((phrase) =>
+        block === `${leadIn} ${phrase}`)))) {
+    matched.push("verify-human");
+  }
+  if (exactBlocks.some((block) =>
+    STANDALONE_VERIFY_PHRASES.includes(
+      block as (typeof STANDALONE_VERIFY_PHRASES)[number],
+    ))) {
+    matched.push("standalone-verify-human");
+  }
+  if (exactBlocks.some((block) =>
+    READER_DIRECTED_AUTOMATION_PREFIXES.includes(
+      block as (typeof READER_DIRECTED_AUTOMATION_PREFIXES)[number],
+    ))) {
+    matched.push("automated-traffic");
+  }
+  if (exactBlocks.some((block) =>
+    READER_DIRECTED_SECURITY_PREFIXES.includes(
+      block as (typeof READER_DIRECTED_SECURITY_PREFIXES)[number],
+    ))) {
+    matched.push("verify-human");
+  }
+  if (exactBlocks.some((block) =>
+    READER_DIRECTED_BROWSER_PREFIXES.includes(
+      block as (typeof READER_DIRECTED_BROWSER_PREFIXES)[number],
+    ))) {
+    matched.push("enable-browser");
+  }
+  return matched;
+}
+
 function matchSignals(haystack: string, signals: readonly Signal[]): string[] {
   return signals
     .filter((signal) => signal.phrases.some((phrase) => haystack.includes(phrase)))
+    .map((signal) => signal.code);
+}
+
+function exactSignalMatches(haystack: string, signals: readonly Signal[]): string[] {
+  const exact = haystack.replace(/[.!?]+$/, "");
+  return signals
+    .filter((signal) => signal.phrases.includes(exact))
     .map((signal) => signal.code);
 }
 

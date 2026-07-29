@@ -136,6 +136,105 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it.each([
+    "Please verify you are human to continue.",
+    "Please verify <strong>you are human</strong> to continue.",
+  ])("flags a text-only challenge whose article UI says: %s", (htmlBody) => {
+    const body = "Please verify you are human to continue.";
+    const verdict = classifyChallengeContent({
+      html: [
+        "<html><head><title>Human verification</title></head><body>",
+        "<article><h1>Human verification</h1>",
+        `<p>${htmlBody}</p>`,
+        "<p>Enable JavaScript and cookies to continue.</p></article>",
+        "</body></html>",
+      ].join(""),
+      title: "Human verification",
+      markdown: [
+        "# Human verification",
+        "",
+        body,
+        "",
+        "Enable JavaScript and cookies to continue.",
+      ].join("\n"),
+      rendered: true,
+    });
+
+    expect(verdict).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
+    });
+  });
+
+  it("keeps challenge form copy visible inside an admitted article shell", () => {
+    const body = "Please verify you are human to continue.";
+    const verdict = classifyChallengeContent({
+      html: [
+        "<html><head><title>Human verification</title></head><body>",
+        "<article><h1>Human verification</h1>",
+        `<form><p>${body}</p></form></article>`,
+        "</body></html>",
+      ].join(""),
+      title: "Human verification",
+      markdown: body,
+      rendered: true,
+    });
+
+    expect(verdict).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
+    });
+  });
+
+  it("ignores invisible quotation markup inside an article challenge shell", () => {
+    const body = "Please verify you are human to continue.";
+    const verdict = classifyChallengeContent({
+      html: [
+        "<html><head><title>Human verification</title></head><body>",
+        "<article><h1>Human verification</h1>",
+        `<p>${body}</p>`,
+        '<q style="visibility:hidden">Example verification copy.</q>',
+        "</article></body></html>",
+      ].join(""),
+      title: "Human verification",
+      markdown: body,
+      rendered: true,
+    });
+
+    expect(verdict).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
+    });
+  });
+
+  it("does not treat explanatory prose beginning with verification copy as challenge UI", () => {
+    for (const articleBody of [
+      "<p>Please verify you are human to continue is the copy shown to customers.</p>",
+      [
+        "<p>Please verify you are human to continue.</p>",
+        "<div>This is the copy displayed by the service to its customers.</div>",
+      ].join(""),
+      [
+        "<p>Please verify you are human to continue.</p>",
+        "<p>Human verification is used by publishers to limit automated traffic.</p>",
+      ].join(""),
+      "<p><q>Please verify you are human to continue.</q></p>",
+    ]) {
+      const verdict = classifyChallengeContent({
+        html: [
+          "<html><head><title>Human verification</title></head><body>",
+          `<article><h1>Human verification</h1>${articleBody}</article>`,
+          "</body></html>",
+        ].join(""),
+        title: "Human verification",
+        markdown: "Please verify you are human to continue.",
+        rendered: true,
+      });
+
+      expect(verdict).toEqual({ challenge: false });
+    }
+  });
+
   it("accepts verification after a challenge-specific introductory clause", () => {
     const verdict = classifyChallengeContent({
       html: [
