@@ -5,6 +5,10 @@
 
 import { extractFromUrl } from "../../src/modules/extractor";
 import { makeBrowserFetch } from "../corpus-lib/browser-fetch";
+import {
+  challengeContentDetail,
+  classifyChallengeContent,
+} from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
 import { safeFetch, type LookupFn } from "./safe-fetch";
 
@@ -28,6 +32,28 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
       timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBytes: deps.maxBytes,
     });
+    const majorContentType = extracted.content_type.split(";", 1)[0]!.trim().toLowerCase();
+    if (majorContentType === "text/html" || majorContentType === "application/xhtml+xml") {
+      // The extractor has already bounded the response bytes. Decode that
+      // complete capture so the classifier can apply its documented character
+      // window consistently with the headless tier.
+      const html = new TextDecoder("utf-8").decode(extracted.raw);
+      const verdict = classifyChallengeContent({
+        html,
+        markdown: extracted.markdown,
+        title: extracted.title,
+      });
+      if (verdict.challenge) {
+        return {
+          kind: "challenge",
+          detail: challengeContentDetail(verdict, url),
+          tier: "static",
+          title: extracted.title,
+          normalizedChars: verdict.normalizedChars,
+          evidence: verdict.evidence,
+        };
+      }
+    }
     if (extracted.content_status === "captured" && extracted.markdown && extracted.markdown.trim().length > 0) {
       return {
         kind: "extracted",

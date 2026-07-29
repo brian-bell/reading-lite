@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { HTML_SCAN_MAX_CHARS } from "../../../scripts/extract-agent-lib/challenge-content";
 import { extractStatic } from "../../../scripts/extract-agent-lib/static-tier";
 import type { LookupFn } from "../../../scripts/extract-agent-lib/safe-fetch";
 
 const lookup: LookupFn = async () => [{ address: "93.184.216.34" }];
+const FIXTURES = join(__dirname, "../../fixtures/extract-agent/challenge-content");
 
 const ARTICLE_HTML = `<!doctype html><html><head><title>How Queues Drain</title></head><body>
 <article><h1>How Queues Drain</h1>
@@ -46,6 +50,89 @@ describe("extractStatic", () => {
     );
 
     expect(outcome).toMatchObject({ kind: "extracted", tier: "static", salvaged: false });
+  });
+
+  it("classifies a structurally backed success-status challenge", async () => {
+    const html = readFileSync(join(FIXTURES, "structural-challenge.html"), "utf-8");
+    const outcome = await extractStatic("https://public.example/challenge", deps(() => htmlResponse(html)));
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
+  it("classifies a minimal static challenge that Readability rejects", async () => {
+    const html = [
+      "<html><head><title>Just a moment...</title></head><body>",
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "<button>Please verify you are human to continue.</button>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
+  it("retains noscript instructions as static challenge body evidence", async () => {
+    const html = [
+      "<html><body>",
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
+      "<noscript>Enable JavaScript and cookies to continue.</noscript>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:enable-browser"]),
+    });
+  });
+
+  it("does not classify non-HTML content containing challenge markers and copy", async () => {
+    const outcome = await extractStatic(
+      "https://public.example/notes.txt",
+      deps(() =>
+        new Response(
+          "/cdn-cgi/challenge-platform\n\nPlease verify you are human to continue.",
+          { headers: { "content-type": "text/plain" } },
+        ),
+      ),
+    );
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "static" });
+  });
+
+  it("applies the structural scan limit to Unicode characters, not bytes or UTF-16 units", async () => {
+    const html = [
+      "<html><body><article>",
+      "<p>Please verify you are human to continue.</p>",
+      `<p>${"😀".repeat(Math.floor(HTML_SCAN_MAX_CHARS * 0.75))}</p>`,
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "</article></body></html>",
+    ].join("");
+    const outcome = await extractStatic(
+      "https://public.example/challenge",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
   });
 
   it("maps a 403 to a challenge outcome instead of throwing", async () => {

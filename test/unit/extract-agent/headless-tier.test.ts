@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   extractHeadless,
@@ -9,6 +11,7 @@ import {
 import type { LookupFn } from "../../../scripts/extract-agent-lib/safe-fetch";
 
 const PUBLIC_ADDRESS = "93.184.216.34";
+const FIXTURES = join(__dirname, "../../fixtures/extract-agent/challenge-content");
 
 // The tier resolves hostnames itself (a public name whose A record is 10.0.0.5
 // passes every URL-shaped check), so the fake lookup is keyed by hostname.
@@ -86,6 +89,68 @@ describe("extractHeadless", () => {
     const outcome = await extractHeadless("https://public.example/a", deps({ renderPage: renderer({ html: CRASH_HTML }) }));
 
     expect(outcome).toMatchObject({ kind: "extracted", tier: "headless", salvaged: true });
+  });
+
+  it("classifies a structurally backed rendered challenge", async () => {
+    const html = readFileSync(join(FIXTURES, "structural-challenge.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "headless",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
+  it("classifies a minimal rendered challenge that Readability rejects", async () => {
+    const html = [
+      "<html><head><title>Just a moment...</title></head><body>",
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate"></form>',
+      "<button>Please verify you are human to continue.</button>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "headless",
+      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
+    });
+  });
+
+  it("ignores noscript-only instructions after browser rendering", async () => {
+    const html = [
+      "<html><body>",
+      '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
+      "<noscript>Enable JavaScript and cookies to continue.</noscript>",
+      "</body></html>",
+    ].join("");
+    const outcome = await extractHeadless(
+      "https://public.example/challenge",
+      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
+    );
+
+    expect(outcome).toMatchObject({ kind: "no_article" });
+  });
+
+  it("keeps a rendered article with a comment-form CAPTCHA extractable", async () => {
+    const html = readFileSync(join(FIXTURES, "captcha-comment-widget.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/article",
+      deps({ renderPage: renderer({ html }, "https://public.example/article") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "extracted",
+      tier: "headless",
+      title: "Are you a robot? The CAPTCHA arms race",
+    });
   });
 
   it("reports no_article when the rendered dom still has nothing to extract", async () => {

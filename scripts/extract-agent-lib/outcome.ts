@@ -17,7 +17,14 @@ import { RateLimitedError } from "../../src/modules/http-retry";
 
 export type ExtractOutcome =
   | { kind: "extracted"; markdown: string; title?: string; salvaged: boolean; tier: "static" | "headless" }
-  | { kind: "challenge"; detail: string }
+  | {
+      kind: "challenge";
+      detail: string;
+      tier?: "static" | "headless";
+      title?: string;
+      normalizedChars?: number;
+      evidence?: string[];
+    }
   | { kind: "dead"; detail: string }
   | { kind: "no_article"; detail: string }
   | { kind: "error"; code: string; detail: string };

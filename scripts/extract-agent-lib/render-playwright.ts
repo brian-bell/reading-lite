@@ -42,9 +42,10 @@ import type { LookupFn } from "./safe-fetch";
 // the fake in the unit test is a plain object, and narrowed to what we actually
 // call. The one cast is at the load boundary below.
 interface RouteLike {
-  request(): { url(): string; resourceType(): string };
+  request(): { url(): string; resourceType(): string; method(): string };
   abort(): Promise<void>;
   continue(): Promise<void>;
+  fulfill(response: { body: string; contentType?: string; status?: number }): Promise<void>;
 }
 
 interface PageLike {
@@ -139,7 +140,7 @@ export function makePlaywrightRenderPage(deps: RenderDeps): RenderPage {
   const load = deps.load ?? (async () => (await loadPlaywright()) as unknown as PlaywrightLike);
   const startProxy = deps.startProxy ?? startValidatingProxy;
 
-  return async (url, { routeFilter, timeoutMs, maxBytes }) => {
+  return async (url, { routeFilter, timeoutMs, maxBytes, readOnly, offlineHtml }) => {
     let playwright: PlaywrightLike;
     try {
       playwright = await load();
@@ -195,7 +196,13 @@ export function makePlaywrightRenderPage(deps: RenderDeps): RenderPage {
                 serviceWorkers: "block",
               });
               context = createdContext;
-              return render(createdContext, url, { routeFilter, timeoutMs, maxBytes });
+              return render(createdContext, url, {
+                routeFilter,
+                timeoutMs,
+                maxBytes,
+                readOnly,
+                offlineHtml,
+              });
             })(),
             timeoutMs + SETTLE_MS + WATCHDOG_SLACK_MS,
             url,
@@ -216,19 +223,22 @@ export function makePlaywrightRenderPage(deps: RenderDeps): RenderPage {
 async function render(
   context: ContextLike,
   url: string,
-  { routeFilter, timeoutMs, maxBytes }: RenderPageOptions,
+  { routeFilter, timeoutMs, maxBytes, readOnly, offlineHtml }: RenderPageOptions,
 ): Promise<{ html: string; finalUrl: string }> {
   await context.addInitScript(DISABLE_DIRECT_TRANSPORTS);
+  const offlineRoute = offlineHtml === undefined
+    ? undefined
+    : { documentUrl: navigationRequestUrl(url), html: offlineHtml, pending: true };
   // Context-level, not page-level: page.route misses a popup's first request
   // (per Playwright's docs), and a popup is a page whose requests we never
   // inspect but whose egress is still ours.
-  await context.route("**/*", (route) => handleRoute(route, routeFilter));
+  await context.route("**/*", (route) => handleRoute(route, routeFilter, readOnly, offlineRoute));
   // WebSocket handshakes are not covered by context.route() — Playwright has a
   // separate API for them — so a page could otherwise open `ws://192.168.1.1/`
   // with nothing watching. Same filter, same verdict: a route that never calls
   // connectToServer never connects.
   await context.routeWebSocket("**/*", async (ws) => {
-    if (await routeFilter(wsToHttpUrl(ws.url()))) ws.close();
+    if (offlineRoute || readOnly || await routeFilter(wsToHttpUrl(ws.url()))) ws.close();
     else ws.connectToServer();
   });
   const page = await context.newPage();
@@ -348,9 +358,33 @@ async function closeQuietly(close: () => Promise<void>): Promise<void> {
 // unsafe, then skip resource types that do not contribute to markdown. The
 // validating proxy is the complete network boundary: it sees redirect hops and
 // resolved addresses even when Playwright does not invoke this handler.
-async function handleRoute(route: RouteLike, routeFilter: RouteFilter): Promise<void> {
+async function handleRoute(
+  route: RouteLike,
+  routeFilter: RouteFilter,
+  readOnly?: boolean,
+  offline?: { documentUrl: string; html: string; pending: boolean },
+): Promise<void> {
   try {
     const request = route.request();
+    if (offline) {
+      if (
+        offline.pending
+        && request.method().toUpperCase() === "GET"
+        && request.resourceType() === "document"
+        && navigationRequestUrl(request.url()) === offline.documentUrl
+      ) {
+        offline.pending = false;
+        return await route.fulfill({
+          body: offline.html,
+          contentType: "text/html; charset=utf-8",
+          status: 200,
+        });
+      }
+      return await route.abort();
+    }
+    if (readOnly && request.method().toUpperCase() !== "GET") {
+      return await route.abort();
+    }
     if (await routeFilter(request.url())) return await route.abort();
     if (SKIPPED_RESOURCE_TYPES.has(request.resourceType())) return await route.abort();
     return await route.continue();
@@ -363,6 +397,12 @@ async function handleRoute(route: RouteLike, routeFilter: RouteFilter): Promise<
       /* request is gone; nothing left to answer */
     }
   }
+}
+
+function navigationRequestUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.hash = "";
+  return parsed.href;
 }
 
 // The route filter speaks http(s); a ws:// URL carries the same host rules, so
