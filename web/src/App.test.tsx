@@ -151,6 +151,20 @@ describe("App", () => {
     expect(screen.getByText("agents")).toBeInTheDocument();
   });
 
+  it("allows long reading titles to wrap within the list card", async () => {
+    const longUrl =
+      "https://open.substack.com/pub/thebackenddevelopers/p/graphql-federation-in-2026-contracts?utm_campaign=post&utm_medium=web";
+    stubJSON({
+      ...onePage,
+      readings: [listReading({ title: "", url: longUrl })]
+    });
+
+    render(<App initialPath="/" />);
+
+    const link = await screen.findByRole("link", { name: longUrl });
+    expect(getComputedStyle(link).overflowWrap).toBe("anywhere");
+  });
+
   it("shows the reading-lite brand", async () => {
     render(<App initialPath="/" />);
     await waitForElementToBeRemoved(() => screen.queryByText("Loading readings"));
@@ -204,6 +218,18 @@ describe("App", () => {
     const orgSection = screen.getByRole("heading", { name: "Organizations" }).closest("section");
     expect(orgSection).not.toBeNull();
     expect(within(orgSection as HTMLElement).getByText("Initech")).toBeInTheDocument();
+  });
+
+  it("allows a long URL title to wrap within the detail header", async () => {
+    const longUrl =
+      "https://open.substack.com/pub/thebackenddevelopers/p/graphql-federation-in-2026-contracts?utm_campaign=post&utm_medium=web";
+    stubJSON(manifest({ title: "", url: longUrl }));
+
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    const heading = await screen.findByRole("heading", { name: longUrl });
+    expect(getComputedStyle(heading).overflowWrap).toBe("anywhere");
+    expect(getComputedStyle(heading.parentElement as HTMLElement).minWidth).toBe("0px");
   });
 
   it("renders summary markdown as a rendered heading", async () => {
