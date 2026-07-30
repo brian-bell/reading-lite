@@ -163,6 +163,8 @@ h2 {
   font-size: 1rem;
   font-weight: 700;
   margin-bottom: 6px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .reading-row-main p,
@@ -347,6 +349,16 @@ h2 {
 
 .detail-heading {
   align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.detail-heading > div:first-child {
+  min-width: 0;
+}
+
+.detail-heading h1 {
+  overflow-wrap: anywhere;
 }
 
 .detail-actions {
@@ -517,5 +529,9 @@ h2 {
 
   .detail-actions {
     justify-items: start;
+  }
+
+  .detail-heading {
+    grid-template-columns: 1fr;
   }
 }
