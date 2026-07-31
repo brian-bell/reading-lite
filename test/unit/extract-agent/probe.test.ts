@@ -8,8 +8,17 @@ import {
   runProbe,
   type ProbeDeps,
 } from "../../../scripts/extract-agent-lib/probe";
+import { MARKDOWN_SCAN_MAX_CHARS } from "../../../scripts/extract-agent-lib/challenge-content";
 
 const FIXTURES = join(__dirname, "../../fixtures/extract-agent/challenge-content");
+const TEXT_VERIFICATION_CASES = JSON.parse(
+  readFileSync(join(FIXTURES, "text-verification-manifest.json"), "utf-8"),
+) as {
+  fixtures: Array<{
+    file: string;
+    expected: "challenge" | "extracted";
+  }>;
+};
 
 function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
   return {
@@ -26,6 +35,75 @@ function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
 }
 
 describe("runProbe", () => {
+  it.each(TEXT_VERIFICATION_CASES.fixtures)(
+    "classifies $file as $expected through both extraction tiers",
+    async ({ file, expected }) => {
+      const results = await runProbe(
+        {
+          htmlPath: join(FIXTURES, file),
+          sourceUrl: `https://fixture.invalid/${file}`,
+          tier: "both",
+          json: true,
+        },
+        deps(),
+      );
+
+      expect(results.map((result) => result.outcome)).toEqual([expected, expected]);
+      for (const result of results) {
+        if (expected === "challenge") {
+          expect(result.evidence_codes).toEqual([
+            expect.stringMatching(/^title:[a-z-]+$/),
+            expect.stringMatching(/^body:[a-z-]+$/),
+          ]);
+        } else {
+          expect(result.evidence_codes).toEqual([]);
+        }
+      }
+    },
+  );
+
+  it("classifies generic no-article verification markup through both tiers", async () => {
+    const html = [
+      "<html><head><title>Human verification</title></head><body>",
+      "<div class=\"verification\"><span>Please verify you are human to continue.</span></div>",
+      "</body></html>",
+    ].join("");
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/generic-verification.html",
+        sourceUrl: "https://fixture.invalid/generic-verification",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    expect(results.map((result) => result.outcome)).toEqual(["challenge", "challenge"]);
+  });
+
+  it("keeps generic no-article verification beyond the body bound in both tiers", async () => {
+    const html = [
+      "<html><head><title>Human verification</title></head><body>",
+      `<div>${"x".repeat(MARKDOWN_SCAN_MAX_CHARS)}</div>`,
+      "<div>Please verify you are human to continue.</div>",
+      "</body></html>",
+    ].join("");
+    const results = await runProbe(
+      {
+        htmlPath: "/tmp/bounded-generic-verification.html",
+        sourceUrl: "https://fixture.invalid/bounded-generic-verification",
+        tier: "both",
+        json: true,
+      },
+      deps({ readFile: vi.fn(async () => html) }),
+    );
+
+    for (const result of results) {
+      expect(result.outcome).not.toBe("challenge");
+      expect(result.evidence_codes).toEqual([]);
+    }
+  });
+
   it("runs an offline fixture through both real tiers without network or state dependencies", async () => {
     const html = readFileSync(join(FIXTURES, "structural-challenge.html"), "utf-8");
     const renderPage = vi.fn(async (
