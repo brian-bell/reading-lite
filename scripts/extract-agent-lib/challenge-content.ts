@@ -226,11 +226,15 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
   const body = input.markdown === undefined
     ? visibleTextSurface(html, input.rendered !== true)
     : normalizeMarkdown(input.markdown);
-  const title = normalizeInline(input.title ?? documentTitle(html));
+  const titleMatches = Array.from(new Set(
+    [input.title, documentTitle(html)]
+      .filter((title): title is string => title !== undefined)
+      .flatMap((title) => matchSignals(normalizeInline(title), TITLE_SIGNALS)),
+  ));
   const matched = {
     structural: matchSignals(structure, STRUCTURAL_SIGNALS),
     body: matchSignals(body, BODY_SIGNALS),
-    title: matchSignals(title, TITLE_SIGNALS),
+    title: titleMatches,
   } satisfies Record<ChallengeFamily, string[]>;
   let textOnlyBody: string[] = [];
   if (matched.title.length > 0) {

@@ -136,6 +136,25 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it("uses a challenge document title when the extracted title is benign", () => {
+    const body = "Please verify you are human to continue.";
+    const verdict = classifyChallengeContent({
+      html: [
+        "<html><head><title>Human verification</title></head><body>",
+        `<main><p>${body}</p></main>`,
+        "</body></html>",
+      ].join(""),
+      title: "Requested article",
+      markdown: body,
+      rendered: true,
+    });
+
+    expect(verdict).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
+    });
+  });
+
   it.each([
     "Please verify you are human to continue.",
     "Please verify <strong>you are human</strong> to continue.",
