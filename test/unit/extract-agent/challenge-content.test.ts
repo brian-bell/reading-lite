@@ -7,6 +7,7 @@ import {
   HTML_SCAN_MAX_CHARS,
   MAX_CHALLENGE_EVIDENCE,
   MARKDOWN_SCAN_MAX_CHARS,
+  normalizedMarkdownChars,
 } from "../../../scripts/extract-agent-lib/challenge-content";
 
 const FIXTURES = join(__dirname, "../../fixtures/extract-agent/challenge-content");
@@ -862,6 +863,629 @@ describe("classifyChallengeContent", () => {
     expect(detail).not.toContain("Please verify");
     expect(detail).not.toContain("challenge-platform");
     expect(detail.length).toBeLessThan(300);
+  });
+
+  it("requires a score of six for wall content over 4,000 normalized characters", () => {
+    const filler = "Membership access details and publication benefits. ".repeat(100);
+    const html = [
+      "<html><head><title>Why City Trees Are Moving North</title></head><body><main>",
+      "<h1>Why City Trees Are Moving North</h1>",
+      `<p>${filler}</p>`,
+      "<p>Subscribe to continue reading this article.</p>",
+      "<p>Already a subscriber? Sign in to your account.</p>",
+      "<p>Get unlimited access to every climate story.</p>",
+      "</main></body></html>",
+    ].join("");
+    const markdown = [
+      "# Why City Trees Are Moving North",
+      "",
+      filler,
+      "",
+      "Subscribe to continue reading this article.",
+      "",
+      "Already a subscriber? Sign in to your account.",
+      "",
+      "Get unlimited access to every climate story.",
+    ].join("\n");
+
+    expect(normalizedMarkdownChars(markdown)).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent({ html, markdown })).toEqual({ challenge: false });
+  });
+
+  it("uses the full visible body for the long threshold when Markdown is truncated", () => {
+    const filler = "Visible publication background and membership context. ".repeat(100);
+    const strong = "Subscribe to continue reading this article.";
+    const supports = [
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every climate story.",
+    ];
+    const html = [
+      "<html><head><title>Why City Trees Are Moving North</title></head><body><main>",
+      `<p>${filler}</p><p>${strong}</p>`,
+      ...supports.map((support) => `<p>${support}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [strong, ...supports].join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("counts visually present aria-hidden text toward the long threshold", () => {
+    const filler = "Visible publication background and membership context. ".repeat(100);
+    const strong = "Subscribe to continue reading this article.";
+    const supports = [
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every climate story.",
+    ];
+    const html = [
+      "<html><head><title>Why City Trees Are Moving North</title></head><body><main>",
+      `<div aria-hidden="true">${filler}</div><p>${strong}</p>`,
+      ...supports.map((support) => `<p>${support}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [strong, ...supports].join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("does not count a closed dialog toward the long threshold", () => {
+    const hidden = "Unavailable dialog text and plan detail. ".repeat(130);
+    const instruction = "Subscribe to continue reading this article.";
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body>",
+      `<p>${instruction}</p><dialog>${hidden}</dialog>`,
+      "</body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: `${instruction}\n\n${hidden}`,
+    })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:continue-reading",
+      ]),
+    });
+  });
+
+  it("counts a visible descendant of a visibility-hidden ancestor", () => {
+    const filler = "Visible descendant publication context and reporting detail. ".repeat(90);
+    const strong = "Subscribe to continue reading this article.";
+    const supports = [
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every climate story.",
+    ];
+    const html = [
+      "<html><head><title>Why City Trees Are Moving North</title></head><body><main>",
+      `<div style="visibility:hidden"><div style="visibility:visible">${filler}</div></div>`,
+      `<p>${strong}</p>`,
+      ...supports.map((support) => `<p>${support}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [strong, ...supports].join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("requires strong wall evidence even when title and support copy would reach the threshold", () => {
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body><main>",
+      "<p>Already a subscriber? Sign in to your account.</p>",
+      "<p>Get unlimited access to every climate story.</p>",
+      "</main></body></html>",
+    ].join("");
+    const markdown = [
+      "Already a subscriber? Sign in to your account.",
+      "",
+      "Get unlimited access to every climate story.",
+    ].join("\n");
+
+    expect(classifyChallengeContent({ html, markdown })).toEqual({ challenge: false });
+  });
+
+  it.each([
+    "Register to continue reading.",
+    "Create a free account to continue.",
+    "This article is for subscribers.",
+    "Become a member to read the full story.",
+    "Sign in to read the full article.",
+    "To continue reading this article, subscribe now.",
+  ])("recognizes reader-directed strong wall copy: %s", (instruction) => {
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body>",
+      `<main><p>${instruction}</p></main>`,
+      "</body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({ html, markdown: instruction })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        expect.stringMatching(/^wall:[a-z-]+$/),
+      ]),
+    });
+  });
+
+  it("recognizes an explicit subscribers-only wall title", () => {
+    const instruction = "This article is for subscribers only.";
+    const html = [
+      "<html><head><title>This article is for subscribers only</title></head><body>",
+      `<main><p>${instruction}</p></main>`,
+      "</body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({ html, markdown: instruction })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:subscriber-content",
+      ]),
+    });
+  });
+
+  it("counts a depleted free-article allowance as distinct wall support", () => {
+    const html = [
+      "<html><head><title>Using Online Database Sites</title></head><body><main>",
+      "<p>This article is for subscribers only.</p>",
+      "<p>0 free articles left this month.</p>",
+      "<p>Get unlimited access to premium articles.</p>",
+      "</main></body></html>",
+    ].join("");
+    const markdown = [
+      "This article is for subscribers only.",
+      "",
+      "0 free articles left this month.",
+      "",
+      "Get unlimited access to premium articles.",
+    ].join("\n");
+
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "wall:subscriber-content",
+        "wall_support:free-articles",
+        "wall_support:unlimited-access",
+      ]),
+    });
+  });
+
+  it("counts free registration and an existing subscription as distinct wall support", () => {
+    const html = [
+      "<html><head><title>Register</title></head><body><main>",
+      "<h2>Register to continue reading this premium article.</h2>",
+      "<p>It's free!</p>",
+      "<p>Already have a subscription? Sign in.</p>",
+      "</main></body></html>",
+    ].join("");
+    const markdown = [
+      "Register to continue reading this premium article.",
+      "",
+      "It's free!",
+      "",
+      "Already have a subscription? Sign in.",
+    ].join("\n");
+
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:free-registration",
+        "wall_support:existing-subscriber",
+      ]),
+    });
+  });
+
+  it.each([
+    {
+      title: "Premium Content",
+      strong: "Please subscribe to continue reading.",
+      supports: [
+        "Get unlimited access to every edition.",
+        "Already a member? Sign in.",
+      ],
+      evidence: [
+        "wall_support:unlimited-access",
+        "wall_support:existing-subscriber",
+      ],
+    },
+    {
+      title: "The Irish Field podcasts",
+      strong: "This content is available to digital subscribers only.",
+      supports: [
+        "You have no more free articles this month.",
+        "Get unlimited access to subscriber reporting.",
+      ],
+      evidence: [
+        "wall_support:free-articles",
+        "wall_support:unlimited-access",
+      ],
+    },
+    {
+      title: "Taking the lead",
+      strong: "Subscribe to continue reading.",
+      supports: [
+        "Get unlimited access to The MJ.",
+        "Full website content includes exclusive analysis.",
+      ],
+      evidence: [
+        "wall_support:unlimited-access",
+        "wall_support:full-access",
+      ],
+    },
+    {
+      title: "Vanity Fair Contributors",
+      strong: "Subscribe to continue.",
+      supports: [
+        "Get unlimited access to exclusive newsletters.",
+        "Your first month is free.",
+        "Already a subscriber? Sign in.",
+      ],
+      evidence: [
+        "wall_support:unlimited-access",
+        "wall_support:free-trial",
+        "wall_support:existing-subscriber",
+      ],
+    },
+  ])("classifies current provider-neutral wall copy for $title", ({ title, strong, supports, evidence }) => {
+    const html = [
+      `<html><head><title>${title}</title></head><body><main>`,
+      `<p>${strong}</p>`,
+      ...supports.map((support) => `<p>${support}</p>`),
+      "</main></body></html>",
+    ].join("");
+    const markdown = [strong, "", ...supports.flatMap((support) => [support, ""])].join("\n");
+
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        expect.stringMatching(/^wall:[a-z-]+$/),
+        ...evidence,
+      ]),
+    });
+  });
+
+  it("recognizes a wall inside an article wrapper without admitting article prose", () => {
+    const html = [
+      "<html><head><title>Welcome to My Story</title></head><body><article>",
+      "<h1>Welcome to My Story</h1>",
+      "<h2>Subscribe to continue reading</h2>",
+      "<p>Subscribe to get access to the rest of this post and other subscriber-only content.</p>",
+      "<time>September 28, 2025</time>",
+      "<label>Type your email… <input type=\"email\"></label>",
+      "<button>Subscribe</button>",
+      "<p>Already a paid subscriber?</p>",
+      "<span>Like</span>",
+      "<p>Posted in Uncategorized</p>",
+      "</article></body></html>",
+    ].join("");
+    const markdown = [
+      "# Welcome to My Story",
+      "",
+      "## Subscribe to continue reading",
+      "",
+      "Subscribe to get access to the rest of this post and other subscriber-only content.",
+      "",
+      "September 28, 2025",
+      "",
+      "Type your email…",
+      "",
+      "Subscribe",
+      "",
+      "Already a paid subscriber?",
+      "",
+      "Like",
+      "",
+      "Posted in Uncategorized",
+    ].join("\n");
+
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:subscriber-access",
+        "wall_support:existing-subscriber",
+      ]),
+    });
+  });
+
+  it("recognizes an explicit-title wall inside an article wrapper without support copy", () => {
+    const instruction = "Subscribe to continue reading this article.";
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body><article>",
+      "<h1>Subscribe to continue reading</h1>",
+      `<p>${instruction}</p>`,
+      "</article></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({ html, markdown: instruction })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:continue-reading",
+      ]),
+    });
+  });
+
+  it("allows an explicit wall title, strong wall, and two supports to reach the long threshold", () => {
+    const filler = "Membership access details and publication benefits. ".repeat(100);
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body><main>",
+      `<p>${filler}</p>`,
+      "<p>Subscribe to continue reading this article.</p>",
+      "<p>Already a subscriber? Sign in to your account.</p>",
+      "<p>Get unlimited access to every climate story.</p>",
+      "</main></body></html>",
+    ].join("");
+    const markdown = [
+      "# Subscribe to continue reading",
+      "",
+      filler,
+      "",
+      "Subscribe to continue reading this article.",
+      "",
+      "Already a subscriber? Sign in to your account.",
+      "",
+      "Get unlimited access to every climate story.",
+    ].join("\n");
+
+    expect(normalizedMarkdownChars(markdown)).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:continue-reading",
+        "wall_support:existing-subscriber",
+        "wall_support:unlimited-access",
+      ]),
+    });
+  });
+
+  it("requires visible wall evidence to agree between HTML and extracted Markdown", () => {
+    const visible = "Subscribe to continue reading this article.";
+    const support = "Already a subscriber? Sign in to your account.";
+    const htmlOnly = classifyChallengeContent({
+      html: `<html><head><title>Subscribe to continue reading</title></head><body><p>${visible}</p><p>${support}</p></body></html>`,
+      markdown: "The complete requested article remains readable.",
+    });
+    const markdownOnly = classifyChallengeContent({
+      html: "<html><head><title>Subscribe to continue reading</title></head><body><p>The complete requested article remains readable.</p></body></html>",
+      markdown: `${visible}\n\n${support}`,
+    });
+
+    expect(htmlOnly).toEqual({ challenge: false });
+    expect(markdownOnly).toEqual({ challenge: false });
+  });
+
+  it("ignores a subscription promotion in a footer after a complete non-article story", () => {
+    const story = [
+      "The city council approved the river restoration plan after months of public hearings.",
+      "Engineers will begin surveying the banks next week, with construction scheduled for autumn.",
+      "Residents can review the complete timetable and environmental report at the public library.",
+    ].join(" ");
+    const wall = [
+      "Subscribe to continue reading this article.",
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every local story.",
+    ];
+    const html = [
+      "<html><head><title>River restoration plan approved</title></head><body>",
+      `<main><section><h1>River restoration plan approved</h1><p>${story}</p></section></main>`,
+      `<footer><aside>${wall.map((line) => `<p>${line}</p>`).join("")}</aside></footer>`,
+      "</body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [story, "", ...wall.flatMap((line) => [line, ""])].join("\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("distinguishes a requested membership destination from an article redirected there", () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/membership",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+      evidence: ["page:membership-destination"],
+    });
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/news/membership-reform",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: true,
+      evidence: ["wall:membership-redirect"],
+    });
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/subscribe",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+    });
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/news/requested-story",
+      resolvedUrl: "https://public.example/news/requested-story",
+    })).toEqual({ challenge: false });
+    expect(classifyChallengeContent({ html })).toEqual({ challenge: false });
+  });
+
+  it("recognizes a membership destination that uses an article landmark", () => {
+    const fixture = readFileSync(
+      join(FIXTURES, "membership-landing-page.html"),
+      "utf-8",
+    );
+    const html = fixture
+      .replace("<header>", "<article><header>")
+      .replace("</nav>", "</nav></article>");
+
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/membership",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+      evidence: ["page:membership-destination"],
+    });
+  });
+
+  it("keeps a requested membership destination no_article when it contains wall copy", () => {
+    const html = [
+      "<html><head><title>Membership</title></head><body>",
+      "<h1>Choose your membership</h1>",
+      "<nav aria-label=\"Membership plans\"><a href=\"/membership/checkout\">Join</a></nav>",
+      "<p>Subscribe to continue reading.</p>",
+      "<p>Already a subscriber? Sign in.</p>",
+      "<p>Get unlimited access to every story.</p>",
+      "</body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [
+        "Choose your membership",
+        "Subscribe to continue reading.",
+        "Already a subscriber? Sign in.",
+        "Get unlimited access to every story.",
+      ].join("\n\n"),
+      requestedUrl: "https://public.example/membership",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+      evidence: ["page:membership-destination"],
+    });
+  });
+
+  it("uses requested and resolved membership routes even with generic landing copy", () => {
+    const html = "<html><head><title>Choose your plan</title></head><body><h1>Choose your plan</h1></body></html>";
+
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/plans",
+      resolvedUrl: "https://public.example/plans",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+    });
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/news/requested-story",
+      resolvedUrl: "https://public.example/membership",
+    })).toMatchObject({
+      challenge: true,
+      evidence: ["wall:membership-redirect"],
+    });
+  });
+
+  it("does not let a closed disclosure change the wall body threshold", () => {
+    const instruction = "Subscribe to continue reading this article.";
+    const hidden = "Hidden plan details and legal language. ".repeat(130);
+    const html = [
+      "<html><head><title>Subscribe to continue reading</title></head><body>",
+      `<p>${instruction}</p>`,
+      `<details><summary>Plan terms</summary><p>${hidden}</p></details>`,
+      "</body></html>",
+    ].join("");
+    const markdown = `${instruction}\n\nPlan terms\n\n${hidden}`;
+
+    expect(normalizedMarkdownChars(markdown)).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent({ html, markdown })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:continue-reading",
+      ]),
+      normalizedChars: expect.any(Number),
+    });
+  });
+
+  it("does not admit short article prose as a wall-only article shell", () => {
+    const title = "How subscription prompts shape online reading";
+    const paragraphs = [
+      "Subscribe to continue reading is the bluntest prompt in a publisher's conversion toolkit.",
+      "Already a subscriber is often placed next to the login link for returning readers.",
+      "Get unlimited access is the benefit language most frequently tested by marketing teams.",
+    ];
+    const html = [
+      `<html><head><title>${title}</title></head><body><article><h1>${title}</h1>`,
+      ...paragraphs.map((paragraph) => `<p>${paragraph}</p>`),
+      "</article></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: [`# ${title}`, "", ...paragraphs.flatMap((line) => [line, ""])].join("\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("does not treat reader-directed phrase prefixes in main prose as a wall", () => {
+    const paragraphs = [
+      "Subscribe to continue the debate is a phrase the editorial board uses when inviting letters.",
+      "Already a subscriber is how the next paragraph describes a returning customer.",
+      "Get unlimited access is presented here as marketing language rather than an offer.",
+    ];
+    const html = [
+      "<html><head><title>Subscription language in context</title></head><body><main>",
+      ...paragraphs.map((paragraph) => `<p>${paragraph}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: paragraphs.join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("does not treat question-mark wall phrases with prose continuations as UI", () => {
+    const paragraphs = [
+      "Subscribe to continue reading? That was the slogan considered by the product team.",
+      "Already a subscriber? That was the next message evaluated in the study.",
+      "Get unlimited access? The editors rejected that framing as too broad.",
+    ];
+    const html = [
+      "<html><head><title>Subscription language in context</title></head><body><main>",
+      ...paragraphs.map((paragraph) => `<p>${paragraph}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: paragraphs.join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it.each([
+    "<blockquote>Subscribe to continue reading this article.</blockquote>",
+    "<q>Subscribe to continue reading this article.</q>",
+    "<pre>Subscribe to continue reading this article.</pre>",
+    "<code>Subscribe to continue reading this article.</code>",
+    "<div hidden>Subscribe to continue reading this article.</div>",
+    "<template>Subscribe to continue reading this article.</template>",
+    "<details><summary>Offer details</summary><p>Subscribe to continue reading this article.</p></details>",
+    "<details><summary>Subscribe to continue reading this article.</summary></details>",
+  ])("ignores excluded wall copy in %s", (content) => {
+    const verdict = classifyChallengeContent({
+      html: `<html><head><title>Subscribe to continue reading</title></head><body>${content}</body></html>`,
+      markdown: "Subscribe to continue reading this article.",
+      rendered: true,
+    });
+
+    expect(verdict).toEqual({ challenge: false });
   });
 
   it("ignores structural and body matches beyond the explicit scan bounds", () => {

@@ -149,6 +149,8 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
     html: rendered.html,
     markdown: article?.markdown,
     title: article?.title,
+    requestedUrl: url,
+    resolvedUrl: rendered.finalUrl,
     rendered: true,
   });
   if (verdict.challenge) {
@@ -159,6 +161,12 @@ export async function extractHeadless(url: string, deps: HeadlessDeps): Promise<
       title: article?.title,
       normalizedChars: verdict.normalizedChars,
       evidence: verdict.evidence,
+    };
+  }
+  if ("noArticle" in verdict && verdict.noArticle) {
+    return {
+      kind: "no_article",
+      detail: `requested membership destination contains no article: ${rendered.finalUrl}`,
     };
   }
   if (!article || article.markdown.trim().length === 0) {

@@ -1,10 +1,10 @@
 // High-confidence success-status challenge detection.
 //
-// A provider widget is not enough: ordinary articles can embed CAPTCHA in a
-// comment form. A verdict requires both provider-specific structure in the
-// bounded HTML capture and instructions aimed at the current reader in
-// extracted Markdown or bounded visible fallback text. Title evidence is
-// diagnostic only.
+// A provider widget or subscription phrase is not enough: ordinary articles
+// can embed CAPTCHA in a comment form or discuss paywall copy. A verdict
+// requires bounded visible HTML to agree with instructions aimed at the current
+// reader in extracted Markdown (or visible fallback text). Challenge titles are
+// diagnostic only; exact wall titles contribute to the explicit wall score.
 
 import { parseHTML } from "linkedom";
 
@@ -12,6 +12,8 @@ export interface ChallengeContentInput {
   html: string;
   markdown?: string;
   title?: string;
+  requestedUrl?: string;
+  resolvedUrl?: string;
   rendered?: boolean;
 }
 
@@ -19,6 +21,12 @@ export type ChallengeFamily = "structural" | "body" | "title";
 
 export type ChallengeVerdict =
   | { challenge: false }
+  | {
+    challenge: false;
+    noArticle: true;
+    evidence: ["page:membership-destination"];
+    normalizedChars: number;
+  }
   | { challenge: true; evidence: string[]; normalizedChars: number };
 
 export const HTML_SCAN_MAX_CHARS = 1_000_000;
@@ -198,6 +206,130 @@ const TITLE_SIGNALS: readonly Signal[] = [
   { code: "unusual-traffic", phrases: ["unusual traffic"] },
 ] as const;
 
+const WALL_TITLE_SIGNALS: readonly Signal[] = [
+  {
+    code: "subscription-wall",
+    phrases: [
+      "subscribe to continue reading",
+      "please subscribe to continue reading",
+      "subscribe to continue",
+      "subscribe to read",
+      "sign in to continue reading",
+      "sign in to read",
+      "log in to continue reading",
+      "log in to read",
+      "this article is for subscribers only",
+    ],
+  },
+] as const;
+
+const WALL_SIGNALS: readonly Signal[] = [
+  {
+    code: "continue-reading",
+    phrases: [
+      "subscribe to continue reading",
+      "please subscribe to continue reading",
+      "subscribe to continue",
+      "subscribe to keep reading",
+      "sign in to continue reading",
+      "sign in to keep reading",
+      "sign in to read the full",
+      "log in to continue reading",
+      "log in to keep reading",
+      "log in to read the full",
+      "to continue reading this article",
+      "register to continue reading",
+      "create an account to continue",
+      "create a free account to continue",
+    ],
+  },
+  {
+    code: "subscriber-content",
+    phrases: [
+      "this article is for subscribers",
+      "this content is available to subscribers",
+      "this content is available to digital subscribers",
+    ],
+  },
+  {
+    code: "member-content",
+    phrases: [
+      "become a member to read",
+    ],
+  },
+  {
+    code: "article-limit",
+    phrases: [
+      "you have reached your free article limit",
+      "you've reached your free article limit",
+      "you have reached your article limit",
+      "you've reached your article limit",
+    ],
+  },
+] as const;
+
+const WALL_SUPPORT_SIGNALS: readonly Signal[] = [
+  {
+    code: "existing-subscriber",
+    phrases: [
+      "already a subscriber",
+      "already a paid subscriber",
+      "already a member",
+      "already have a subscription",
+    ],
+  },
+  { code: "existing-account", phrases: ["already have an account"] },
+  {
+    code: "account-access",
+    phrases: [
+      "sign in to your account",
+      "log in to your account",
+    ],
+  },
+  {
+    code: "subscriber-access",
+    phrases: [
+      "subscribe to get access to the rest",
+      "become a paid subscriber to get access to the rest",
+    ],
+  },
+  { code: "unlimited-access", phrases: ["unlimited access", "get unlimited access"] },
+  { code: "full-access", phrases: ["full access", "full website content"] },
+  {
+    code: "free-trial",
+    phrases: [
+      "start your free trial",
+      "your first month is free",
+    ],
+  },
+  { code: "free-registration", phrases: ["it's free"] },
+  { code: "cancel-anytime", phrases: ["cancel anytime"] },
+  {
+    code: "free-articles",
+    phrases: [
+      "0 free articles left",
+      "no free articles left",
+      "free articles remaining",
+      "you have no more free articles",
+      "you have used all your free articles",
+      "you've used all your free articles",
+    ],
+  },
+  {
+    code: "subscriber-only",
+    phrases: [
+      "subscribers only",
+      "subscriber-only",
+      "access every subscriber only story",
+    ],
+  },
+] as const;
+
+const SHORT_WALL_SCORE_THRESHOLD = 4;
+const LONG_BODY_CHARS = 4_000;
+const LONG_WALL_SCORE_THRESHOLD = 6;
+const WALL_SUPPORT_SCORE_CAP = 4;
+
 // The JavaScript MIME type essence-match set from the MIME Sniffing Standard.
 // Script `type` parameters are intentionally not parsed away: HTML treats a
 // value such as `text/javascript; charset=utf-8` as a data block.
@@ -223,9 +355,26 @@ const JAVASCRIPT_MIME_TYPES = new Set([
 export function classifyChallengeContent(input: ChallengeContentInput): ChallengeVerdict {
   const html = boundedCodePointPrefix(input.html, HTML_SCAN_MAX_CHARS);
   const structure = structuralSurface(html);
+  const visibleBody = visibleTextSurface(html, input.rendered !== true);
   const body = input.markdown === undefined
-    ? visibleTextSurface(html, input.rendered !== true)
+    ? visibleBody
     : normalizeMarkdown(input.markdown);
+  const normalizedChars = visibleBody.length;
+  if (isRequestedMembershipDestination(input.requestedUrl, input.resolvedUrl)) {
+    return {
+      challenge: false,
+      noArticle: true,
+      evidence: ["page:membership-destination"],
+      normalizedChars,
+    };
+  }
+  if (isMembershipRedirect(input.requestedUrl, input.resolvedUrl)) {
+    return {
+      challenge: true,
+      evidence: ["wall:membership-redirect"],
+      normalizedChars,
+    };
+  }
   const titleMatches = Array.from(new Set(
     [input.title, documentTitle(html)]
       .filter((title): title is string => title !== undefined)
@@ -236,6 +385,52 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
     body: matchSignals(body, BODY_SIGNALS),
     title: titleMatches,
   } satisfies Record<ChallengeFamily, string[]>;
+  const wallTitle = Array.from(new Set(
+    [input.title, documentTitle(html)]
+      .filter((title): title is string => title !== undefined)
+      .flatMap((title) => exactSignalMatches(normalizeInline(title), WALL_TITLE_SIGNALS)),
+  ));
+  const visibleHtmlBlocks = readerDirectedHtmlBlocks(html, input.rendered !== true);
+  const visibleMarkdownBlocks = input.markdown === undefined
+    ? visibleHtmlBlocks
+    : readerDirectedMarkdownBlocks(input.markdown);
+  const visibleHtmlWall = matchReaderDirectedSignals(
+    visibleHtmlBlocks,
+    WALL_SIGNALS,
+  );
+  const wall = input.markdown === undefined
+    ? visibleHtmlWall
+    : matchReaderDirectedSignals(
+      visibleMarkdownBlocks,
+      WALL_SIGNALS,
+    ).filter((code) => visibleHtmlWall.includes(code));
+  const visibleHtmlWallSupport = matchReaderDirectedSignals(
+    visibleHtmlBlocks,
+    WALL_SUPPORT_SIGNALS,
+  );
+  const wallSupport = input.markdown === undefined
+    ? visibleHtmlWallSupport
+    : matchReaderDirectedSignals(
+      visibleMarkdownBlocks,
+      WALL_SUPPORT_SIGNALS,
+    ).filter((code) => visibleHtmlWallSupport.includes(code));
+  const wallScore = (wallTitle.length > 0 ? 2 : 0)
+    + (wall.length > 0 ? 2 : 0)
+    + Math.min(wallSupport.length, WALL_SUPPORT_SCORE_CAP);
+  const wallThreshold = normalizedChars > LONG_BODY_CHARS
+    ? LONG_WALL_SCORE_THRESHOLD
+    : SHORT_WALL_SCORE_THRESHOLD;
+  if (wall.length > 0 && wallScore >= wallThreshold) {
+    return {
+      challenge: true,
+      evidence: [
+        ...wallTitle.map((code) => `title:${code}`),
+        ...wall.map((code) => `wall:${code}`),
+        ...wallSupport.map((code) => `wall_support:${code}`),
+      ].slice(0, MAX_CHALLENGE_EVIDENCE),
+      normalizedChars,
+    };
+  }
   let textOnlyBody: string[] = [];
   if (matched.title.length > 0) {
     const visibleHtmlBody = readerDirectedHtmlSignals(html, input.rendered !== true);
@@ -260,8 +455,49 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
       { ...matched, body: decidingFamilies[0] === "title" ? textOnlyBody : matched.body },
       decidingFamilies,
     ),
-    normalizedChars: body.length,
+    normalizedChars,
   };
+}
+
+const MEMBERSHIP_DESTINATION_SEGMENTS = new Set([
+  "join",
+  "membership",
+  "membership-landing-page",
+  "plans",
+  "subscribe",
+  "subscription",
+]);
+
+function isRequestedMembershipDestination(
+  requestedUrl: string | undefined,
+  resolvedUrl: string | undefined,
+): boolean {
+  return isMembershipDestinationUrl(requestedUrl)
+    && isMembershipDestinationUrl(resolvedUrl ?? requestedUrl);
+}
+
+function isMembershipRedirect(
+  requestedUrl: string | undefined,
+  resolvedUrl: string | undefined,
+): boolean {
+  return requestedUrl !== undefined
+    && resolvedUrl !== undefined
+    && !isMembershipDestinationUrl(requestedUrl)
+    && isMembershipDestinationUrl(resolvedUrl);
+}
+
+function isMembershipDestinationUrl(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  try {
+    return new URL(value).pathname
+      .toLowerCase()
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => segment.replace(/\.(?:html?|php)$/, ""))
+      .some((segment) => MEMBERSHIP_DESTINATION_SEGMENTS.has(segment));
+  } catch {
+    return false;
+  }
 }
 
 function structuralSurface(html: string): string {
@@ -301,13 +537,94 @@ function isExecutableScriptType(type: string | null): boolean {
 
 function visibleTextSurface(html: string, includeNoscript: boolean): string {
   const { document } = parseHTML(html);
-  const hiddenElements = includeNoscript
-    ? "head, script, style, template"
-    : "head, script, style, noscript, template";
-  for (const element of document.querySelectorAll(hiddenElements)) {
-    element.remove();
+  interface VisibleNode {
+    nodeType: number;
+    textContent: string | null;
+    childNodes: ArrayLike<unknown>;
+    tagName?: string;
+    getAttribute?: (name: string) => string | null;
   }
-  return normalizeMarkdown(document.body?.textContent ?? "");
+  const root = (document.querySelector("body")
+    ?? document.documentElement) as VisibleNode | null;
+  if (root === null) return "";
+
+  const excludedTags = new Set([
+    "ASIDE",
+    "BLOCKQUOTE",
+    "CODE",
+    "FOOTER",
+    "HEAD",
+    "PRE",
+    "Q",
+    "SCRIPT",
+    "STYLE",
+    "TEMPLATE",
+    ...(includeNoscript ? [] : ["NOSCRIPT"]),
+  ]);
+  const parts: string[] = [];
+  let chars = 0;
+  const stack = [{
+    node: root,
+    inheritedVisibilityHidden: false,
+    depth: 0,
+  }];
+  while (stack.length > 0 && chars < MARKDOWN_SCAN_MAX_CHARS) {
+    const current = stack.pop()!;
+    if (current.depth >= HTML_VISIBLE_MAX_DEPTH) continue;
+    if (current.node.nodeType === 3) {
+      if (!current.inheritedVisibilityHidden) {
+        const text = current.node.textContent ?? "";
+        const bounded = text.slice(0, MARKDOWN_SCAN_MAX_CHARS - chars);
+        parts.push(bounded);
+        chars += bounded.length;
+      }
+      continue;
+    }
+    if (current.node.nodeType !== 1) continue;
+
+    const tagName = current.node.tagName?.toUpperCase() ?? "";
+    const inputType = (current.node.getAttribute?.("type") ?? "text")
+      .trim()
+      .toLowerCase();
+    const inlineStyle = inlineStyleState(
+      (current.node.getAttribute?.("style") ?? "").toLowerCase(),
+    );
+    const excluded = excludedTags.has(tagName)
+      || (current.node.getAttribute?.("hidden") ?? null) !== null
+      || inlineStyle.displayNone
+      || (tagName === "INPUT" && inputType === "hidden")
+      || ((tagName === "DETAILS" || tagName === "DIALOG")
+        && (current.node.getAttribute?.("open") ?? null) === null);
+    if (excluded) continue;
+
+    const visibilityHidden = resolveVisibilityHidden(
+      inlineStyle.visibility,
+      current.inheritedVisibilityHidden,
+    );
+    if (!visibilityHidden && tagName === "BR") {
+      parts.push(" ");
+      chars++;
+    }
+    if (
+      !visibilityHidden
+      && tagName === "INPUT"
+      && VISIBLE_INPUT_VALUE_TYPES.has(inputType)
+    ) {
+      const value = current.node.getAttribute?.("value") ?? "";
+      const bounded = value.slice(0, MARKDOWN_SCAN_MAX_CHARS - chars);
+      parts.push(bounded);
+      chars += bounded.length;
+    }
+    const children = Array.from(current.node.childNodes) as VisibleNode[];
+    for (let index = children.length - 1; index >= 0; index--) {
+      stack.push({
+        node: children[index]!,
+        inheritedVisibilityHidden: visibilityHidden,
+        depth: current.depth + 1,
+      });
+    }
+  }
+  return normalizeMarkdown(parts.join(""));
 }
 
 function boundedCodePointPrefix(text: string, maxChars: number): string {
@@ -344,6 +661,10 @@ function boundedEvidence(
 }
 
 function readerDirectedMarkdownSignals(markdown: string): string[] {
+  return readerDirectedBlockSignals(readerDirectedMarkdownBlocks(markdown));
+}
+
+function readerDirectedMarkdownBlocks(markdown: string): string[] {
   const bounded = markdown.slice(0, MARKDOWN_SCAN_MAX_CHARS);
   const blocks: string[] = [];
   let paragraph: string[] = [];
@@ -400,7 +721,7 @@ function readerDirectedMarkdownSignals(markdown: string): string[] {
     paragraph.push(line);
   }
   flushParagraph();
-  return readerDirectedBlockSignals(blocks);
+  return blocks;
 }
 
 function normalizedInstructionBlock(markdown: string): string | undefined {
@@ -439,8 +760,19 @@ function normalizedInstructionBlock(markdown: string): string | undefined {
 }
 
 function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): string[] {
+  return readerDirectedBlockSignals(readerDirectedHtmlBlocks(html, includeNoscript));
+}
+
+function readerDirectedHtmlBlocks(html: string, includeNoscript: boolean): string[] {
   const { document } = parseHTML(html);
   const hasArticle = document.querySelector("article") !== null;
+  const normalizedDocumentTitle = normalizeInline(
+    document.querySelector("title")?.textContent ?? "",
+  );
+  const hasExplicitWallTitle = exactSignalMatches(
+    normalizedDocumentTitle,
+    WALL_TITLE_SIGNALS,
+  ).length > 0;
   const hiddenElements = includeNoscript
     ? "head, script, style, template"
     : "head, script, style, noscript, template";
@@ -507,7 +839,7 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
     }
     return normalizeInline(parts.join(""));
   };
-  const articleIsChallengeShell = (node: TraversableNode): boolean => {
+  const articleIsUiShell = (node: TraversableNode): boolean => {
     const visibleBlocks: string[] = [];
     const stack = [{ node, inheritedVisibilityHidden: false, depth: 0 }];
     while (stack.length > 0) {
@@ -538,15 +870,14 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
       }
 
       const children = Array.from(current.node.childNodes) as TraversableNode[];
-      if (HTML_TEXT_BLOCK_TAGS.has(tagName)) {
+      if (HTML_TEXT_BLOCK_TAGS.has(tagName) && tagName !== "ARTICLE") {
         const block = visibleInlineBlockText(current.node, visibilityHidden);
         if (block.length > 0) visibleBlocks.push(block);
       }
 
       const visibleChildren = tagName === "DETAILS"
         && (current.node.getAttribute?.("open") ?? null) === null
-        ? children.filter((child) =>
-          child.tagName?.toUpperCase() === "SUMMARY")
+        ? []
         : children;
       for (const child of visibleChildren) {
         if (child.nodeType === 1) {
@@ -562,17 +893,43 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
       readerDirectedUiBlockSignals([block]).length > 0;
     const titleBlock = (block: string) =>
       exactSignalMatches(block, TITLE_SIGNALS).length > 0;
+    const terminalWallBlock = (block: string) =>
+      WALL_SIGNALS.some((signal) =>
+        signal.phrases.some((phrase) =>
+          matchesReaderDirectedPhrase(block, phrase)))
+      || exactSignalMatches(block, WALL_TITLE_SIGNALS).length > 0;
+    const wallSupportCodes = (block: string) =>
+      matchReaderDirectedSignals([block], WALL_SUPPORT_SIGNALS);
+    const wallSupport = Array.from(new Set(visibleBlocks.flatMap(wallSupportCodes)));
+    const wallUiChromeBlock = (block: string) => {
+      const bare = block.replace(/[.!?…]+$/, "");
+      return block === normalizedDocumentTitle
+        || ["like", "subscribe"].includes(bare)
+        || /^(?:enter|type) your email\b/.test(block)
+        || /^posted in\b/.test(block);
+    };
 
-    return visibleBlocks.some(challengeBlock)
+    return (
+      visibleBlocks.some(challengeBlock)
       && visibleBlocks.every((block) =>
-        challengeBlock(block) || titleBlock(block));
+        challengeBlock(block) || titleBlock(block)
+      )
+    )
+      || (
+        visibleBlocks.some(terminalWallBlock)
+        && (hasExplicitWallTitle || wallSupport.length >= 2)
+        && visibleBlocks.every((block) =>
+          terminalWallBlock(block)
+          || wallSupportCodes(block).length > 0
+          || wallUiChromeBlock(block))
+      );
   };
   const visit = (
     value: unknown,
     evidenceExcluded = false,
     inheritedVisibilityHidden = false,
     depth = 0,
-    insideChallengeArticle = false,
+    insideUiArticle = false,
   ): string => {
     const node = value as TraversableNode;
     if (node.nodeType === 3) {
@@ -591,7 +948,7 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
             evidenceExcluded,
             inheritedVisibilityHidden,
             depth,
-            insideChallengeArticle,
+            insideUiArticle,
           ))
         .join("");
     }
@@ -615,23 +972,25 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
       inheritedVisibilityHidden,
     );
 
-    const challengeArticle = tagName === "ARTICLE"
-      && articleIsChallengeShell(node);
+    const uiArticle = tagName === "ARTICLE"
+      && articleIsUiShell(node);
     const excludesDescendants = evidenceExcluded
-      // Readability can mistake a text-only interstitial for an article. Keep
-      // prose articles excluded, but admit article wrappers made entirely of
-      // recognized challenge UI blocks.
-      || (tagName === "ARTICLE" && !challengeArticle)
-      || (hasArticle && tagName === "FORM" && !insideChallengeArticle)
+      // Readability can mistake a text-only interstitial or wall for an
+      // article. Keep prose articles excluded, but admit article wrappers made
+      // entirely of recognized challenge/wall UI plus one short title block.
+      || (tagName === "ARTICLE" && !uiArticle)
+      || (hasArticle && tagName === "FORM" && !insideUiArticle)
+      || tagName === "FOOTER"
+      || tagName === "ASIDE"
       || tagName === "BLOCKQUOTE"
+      || tagName === "Q"
       || tagName === "PRE"
       || tagName === "CODE";
     const start = visibleChars;
     const children = Array.from(node.childNodes);
     const visibleChildren = tagName === "DETAILS"
       && (node.getAttribute?.("open") ?? null) === null
-      ? children.filter((child) =>
-        (child as TraversableNode).tagName?.toUpperCase() === "SUMMARY")
+      ? []
       : children;
     let permittedText: string;
     if (tagName === "BR") {
@@ -649,7 +1008,7 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
             excludesDescendants,
             visibilityHidden,
             depth + 1,
-            insideChallengeArticle || challengeArticle,
+            insideUiArticle || uiArticle,
           ))
         .join("");
     }
@@ -671,7 +1030,7 @@ function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): stri
     return excludesDescendants ? "" : permittedText;
   };
   if (document.documentElement && document.body) visit(document.body);
-  return readerDirectedBlockSignals(blocks);
+  return blocks;
 }
 
 function inlineStyleState(style: string): {
@@ -802,6 +1161,37 @@ function matchSignals(haystack: string, signals: readonly Signal[]): string[] {
   return signals
     .filter((signal) => signal.phrases.some((phrase) => haystack.includes(phrase)))
     .map((signal) => signal.code);
+}
+
+function matchReaderDirectedSignals(blocks: string[], signals: readonly Signal[]): string[] {
+  return signals
+    .filter((signal) =>
+      signal.phrases.some((phrase) =>
+        blocks.some((block) => matchesReaderDirectedPhrase(block, phrase))))
+    .map((signal) => signal.code);
+}
+
+function matchesReaderDirectedPhrase(block: string, phrase: string): boolean {
+  const bare = block.replace(/[.!?]+$/, "");
+  if (bare === phrase) return true;
+  if (!bare.startsWith(phrase)) return false;
+  const remainder = bare.slice(phrase.length);
+  const punctuation = /^[?:;]\s*(.*)$/.exec(remainder);
+  if (
+    punctuation
+    && /^(?:continue|get|log in|register|restore|sign in|start|subscribe|view)\b/.test(
+      punctuation[1]!,
+    )
+  ) {
+    return true;
+  }
+  if (/^,\s*(?:including|log in|sign in|subscribe)\b/.test(remainder)) {
+    return true;
+  }
+  const suffix = remainder.trim();
+  return /^(?:article|content|of\b|only|on this device|post|story|the full (?:article|post|story)|this (?:premium )?(?:article|content|post|story)|this month|today|to\b|includes?\b)/.test(
+    suffix,
+  );
 }
 
 function exactSignalMatches(haystack: string, signals: readonly Signal[]): string[] {

@@ -105,6 +105,61 @@ describe("extractHeadless", () => {
     });
   });
 
+  it("classifies a visible rendered subscription wall", async () => {
+    const html = readFileSync(join(FIXTURES, "wall-short-original-title.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/story",
+      deps({ renderPage: renderer({ html }, "https://public.example/story") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "headless",
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:existing-subscriber",
+        "wall_support:unlimited-access",
+      ]),
+    });
+  });
+
+  it("keeps a rendered complete article with a subscription footer extractable", async () => {
+    const html = readFileSync(join(FIXTURES, "article-subscription-footer.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/story",
+      deps({ renderPage: renderer({ html }, "https://public.example/story") }),
+    );
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "headless" });
+  });
+
+  it("maps a rendered membership destination to no_article", async () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/membership",
+      deps({ renderPage: renderer({ html }, "https://public.example/membership") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "no_article",
+      detail: expect.stringContaining("requested membership destination"),
+    });
+  });
+
+  it("classifies a rendered membership redirect for a requested article", async () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+    const outcome = await extractHeadless(
+      "https://public.example/story",
+      deps({ renderPage: renderer({ html }, "https://public.example/membership") }),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "headless",
+      evidence: ["wall:membership-redirect"],
+    });
+  });
+
   it("classifies a minimal rendered challenge that Readability rejects", async () => {
     const html = [
       "<html><head><title>Just a moment...</title></head><body>",

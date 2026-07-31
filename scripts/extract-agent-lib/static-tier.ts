@@ -25,7 +25,14 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
   // makeBrowserFetch hardcodes redirect: "follow"; safeFetch owns redirect
   // handling regardless of caller init (override, don't trust) — so the
   // wrapping order matters: browser headers outside, safety innermost.
-  const guardedFetch = makeBrowserFetch(safeFetch(deps.fetch, { lookup: deps.lookup }));
+  let resolvedUrl = url;
+  const trackingFetch: typeof fetch = async (input, init) => {
+    resolvedUrl = input instanceof Request ? input.url : String(input);
+    return deps.fetch(input, init);
+  };
+  const guardedFetch = makeBrowserFetch(
+    safeFetch(trackingFetch, { lookup: deps.lookup }),
+  );
   try {
     const extracted = await extractFromUrl(url, {
       fetch: guardedFetch,
@@ -42,6 +49,8 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
         html,
         markdown: extracted.markdown,
         title: extracted.title,
+        requestedUrl: url,
+        resolvedUrl,
       });
       if (verdict.challenge) {
         return {
@@ -51,6 +60,12 @@ export async function extractStatic(url: string, deps: StaticTierDeps): Promise<
           title: extracted.title,
           normalizedChars: verdict.normalizedChars,
           evidence: verdict.evidence,
+        };
+      }
+      if ("noArticle" in verdict && verdict.noArticle) {
+        return {
+          kind: "no_article",
+          detail: `requested membership destination contains no article: ${url}`,
         };
       }
     }

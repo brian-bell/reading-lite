@@ -63,6 +63,66 @@ describe("extractStatic", () => {
     });
   });
 
+  it("classifies a visible original-title subscription wall", async () => {
+    const html = readFileSync(join(FIXTURES, "wall-short-original-title.html"), "utf-8");
+    const outcome = await extractStatic(
+      "https://public.example/story",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:existing-subscriber",
+        "wall_support:unlimited-access",
+      ]),
+    });
+  });
+
+  it("keeps a complete article with a subscription footer extractable", async () => {
+    const html = readFileSync(join(FIXTURES, "article-subscription-footer.html"), "utf-8");
+    const outcome = await extractStatic(
+      "https://public.example/story",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({ kind: "extracted", tier: "static" });
+  });
+
+  it("maps a requested membership destination to no_article", async () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+    const outcome = await extractStatic(
+      "https://public.example/membership",
+      deps(() => htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "no_article",
+      detail: expect.stringContaining("requested membership destination"),
+    });
+  });
+
+  it("classifies a membership landing page returned for a requested article", async () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+    const outcome = await extractStatic(
+      "https://public.example/news/membership-reform",
+      deps((url) => url.endsWith("/news/membership-reform")
+        ? new Response(null, {
+          status: 302,
+          headers: { location: "/membership" },
+        })
+        : htmlResponse(html)),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "challenge",
+      tier: "static",
+      evidence: ["wall:membership-redirect"],
+    });
+  });
+
   it("classifies a minimal static challenge that Readability rejects", async () => {
     const html = [
       "<html><head><title>Just a moment...</title></head><body>",

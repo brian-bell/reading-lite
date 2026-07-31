@@ -1,8 +1,8 @@
 {
   "version": 1,
   "scope": "subscription and login walls",
-  "approval_status": "pending",
-  "implementation_must_wait_for_approval": true,
+  "approval_status": "approved",
+  "implementation_must_wait_for_approval": false,
   "fixtures": [
     {
       "file": "wall-short-explicit-title.html",
@@ -41,12 +41,12 @@
     },
     {
       "file": "membership-landing-page.html",
-      "expected": "human_decision",
-      "reason": "A membership landing page may be a blocking challenge or simply a page with no article; product semantics must decide."
+      "expected": "no_article",
+      "reason": "The requested membership destination is itself a non-article page, not substitute content blocking a requested article."
     }
   ],
   "proposed_long_body_policy": {
-    "approval_status": "pending",
+    "approval_status": "approved",
     "decisions": [
       "Each weak wall-support phrase contributes independently up to a family cap.",
       "Long-body classification requires several independent wall/support signals and must reject long prose that merely quotes a wall and an offer.",
