@@ -77,6 +77,27 @@ describe("classifyChallengeContent", () => {
     expect(verdict).toEqual({ challenge: false });
   });
 
+  it.each([
+    ["JavaScript Detections", "/cdn-cgi/challenge-platform/scripts/jsd/main.js"],
+    ["the historical invisible probe", "/cdn-cgi/challenge-platform/h/b/scripts/invisible.js"],
+  ])("does not treat %s as challenge structure", (_label, src) => {
+    // Both are injected into every HTML page on a zone and are force-enabled
+    // under Bot Fight Mode, so on such a zone this article — which quotes a
+    // block page's own wording, as an article about bot checks would — must stay
+    // extractable. The orchestrate paths remain structural evidence.
+    const verdict = classifyChallengeContent({
+      html: `<script src="${src}"></script><article><h1>Inside the bot wars</h1></article>`,
+      title: "Inside the bot wars",
+      markdown: [
+        "# Inside the bot wars",
+        "",
+        "Operators complain that this website is using a security service to protect itself, and readers see the result.",
+      ].join("\n"),
+    });
+
+    expect(verdict).toEqual({ challenge: false });
+  });
+
   it("does not combine a structural marker and challenge-themed title without body corroboration", () => {
     const verdict = classifyChallengeContent({
       html: '<script src="/cdn-cgi/challenge-platform/widget.js"></script><article>Readable story</article>',
@@ -110,7 +131,7 @@ describe("classifyChallengeContent", () => {
 
   it("accepts contextual automated-query copy directed at the current reader", () => {
     const verdict = classifyChallengeContent({
-      html: '<script src="/cdn-cgi/challenge-platform/widget.js"></script>',
+      html: '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script>',
       markdown: "Your computer or network may be sending automated queries.",
     });
 
@@ -754,7 +775,7 @@ describe("classifyChallengeContent", () => {
         "<article>",
         "<h1>Inside Cloudflare challenge pages</h1>",
         "<p>Readers may see the prompt &quot;Please verify you are human to continue.&quot;</p>",
-        "<pre><code>&lt;form id=&quot;challenge-form&quot; action=&quot;/cdn-cgi/challenge-platform/x&quot;&gt;&lt;/form&gt;</code></pre>",
+        "<pre><code>&lt;form id=&quot;challenge-form&quot; action=&quot;/cdn-cgi/challenge-platform/h/b/orchestrate/x&quot;&gt;&lt;/form&gt;</code></pre>",
         "</article>",
       ].join(""),
       title: "Inside Cloudflare challenge pages",
@@ -763,7 +784,7 @@ describe("classifyChallengeContent", () => {
         "",
         'Readers may see the prompt "Please verify you are human to continue."',
         "",
-        '```html\n<form id="challenge-form" action="/cdn-cgi/challenge-platform/x"></form>\n```',
+        '```html\n<form id="challenge-form" action="/cdn-cgi/challenge-platform/h/b/orchestrate/x"></form>\n```',
       ].join("\n"),
     });
 
@@ -778,7 +799,7 @@ describe("classifyChallengeContent", () => {
         "<p>Readers may see the prompt: Please verify you are human to continue.</p>",
         "</article>",
         '<script type="application/ld+json">',
-        '{"description":"The /cdn-cgi/challenge-platform endpoint powers the check."}',
+        '{"description":"The /cdn-cgi/challenge-platform/h/b/orchestrate endpoint powers the check."}',
         "</script>",
       ].join(""),
       title: "Inside Cloudflare challenge pages",
@@ -840,7 +861,7 @@ describe("classifyChallengeContent", () => {
   it("keeps every deciding family in bounded stable diagnostics", () => {
     const verdict = classifyChallengeContent({
       html: [
-        '<form action="/cdn-cgi/challenge-platform/x"></form>',
+        '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></form>',
         '<div class="g-recaptcha"></div>',
         '<div class="h-captcha"></div>',
         '<div id="px-captcha"></div>',
@@ -1491,13 +1512,13 @@ describe("classifyChallengeContent", () => {
   it("ignores structural and body matches beyond the explicit scan bounds", () => {
     expect(
       classifyChallengeContent({
-        html: `<div>${"x".repeat(HTML_SCAN_MAX_CHARS)}</div><form action="/cdn-cgi/challenge-platform/x"></form>`,
+        html: `<div>${"x".repeat(HTML_SCAN_MAX_CHARS)}</div><form action="/cdn-cgi/challenge-platform/h/b/orchestrate/x"></form>`,
         markdown: "Please verify you are human to continue.",
       }),
     ).toEqual({ challenge: false });
     expect(
       classifyChallengeContent({
-        html: '<form action="/cdn-cgi/challenge-platform/x"></form>',
+        html: '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate/x"></form>',
         markdown: `${"x".repeat(MARKDOWN_SCAN_MAX_CHARS)} Please verify you are human to continue.`,
       }),
     ).toEqual({ challenge: false });

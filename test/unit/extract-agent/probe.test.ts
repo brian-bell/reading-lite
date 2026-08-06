@@ -204,12 +204,12 @@ describe("runProbe", () => {
   it("renders offline fixture HTML before classifying the headless tier", async () => {
     const sourceHtml = [
       "<html><body>",
-      "<script>document.body.innerHTML = '<form action=\"/cdn-cgi/challenge-platform/x\"></form><button>Please verify you are human to continue.</button>';</script>",
+      "<script>document.body.innerHTML = '<form action=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></form><button>Please verify you are human to continue.</button>';</script>",
       "</body></html>",
     ].join("");
     const renderedHtml = [
       "<html><body>",
-      '<form action="/cdn-cgi/challenge-platform/x"></form>',
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></form>',
       "<button>Please verify you are human to continue.</button>",
       "</body></html>",
     ].join("");

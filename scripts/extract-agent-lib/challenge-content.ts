@@ -143,7 +143,14 @@ const STRUCTURAL_SIGNALS: readonly Signal[] = [
   {
     code: "cloudflare",
     phrases: [
-      "cdn-cgi/challenge-platform",
+      // Not the bare `cdn-cgi/challenge-platform` prefix: JavaScript Detections
+      // injects `/cdn-cgi/challenge-platform/scripts/jsd/main.js` (and,
+      // historically, `/h/b/scripts/invisible.js`) into every HTML page on a
+      // zone, force-enabled under Bot Fight Mode. Those say the zone buys bot
+      // protection, not that this page is a challenge. The orchestrate paths and
+      // the challenge-page config object are what a served challenge carries.
+      "cdn-cgi/challenge-platform/h/b/orchestrate",
+      "cdn-cgi/challenge-platform/h/g/orchestrate",
       "cf-browser-verification",
       "cf_chl_opt",
     ],
