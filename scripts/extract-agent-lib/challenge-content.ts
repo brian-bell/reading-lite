@@ -399,7 +399,11 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
       .filter((title): title is string => title !== undefined)
       .flatMap((title) => exactSignalMatches(normalizeInline(title), WALL_TITLE_SIGNALS)),
   ));
-  const visibleHtmlBlocks = readerDirectedHtmlBlocks(html, input.rendered !== true);
+  const visibleHtmlBlocks = readerDirectedHtmlBlocks(
+    html,
+    input.rendered !== true,
+    normalizedChars,
+  );
   const visibleMarkdownBlocks = input.markdown === undefined
     ? visibleHtmlBlocks
     : readerDirectedMarkdownBlocks(input.markdown);
@@ -442,7 +446,7 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
   }
   let textOnlyBody: string[] = [];
   if (matched.title.length > 0) {
-    const visibleHtmlBody = readerDirectedHtmlSignals(html, input.rendered !== true);
+    const visibleHtmlBody = readerDirectedBlockSignals(visibleHtmlBlocks);
     textOnlyBody = input.markdown === undefined
       ? visibleHtmlBody
       : readerDirectedMarkdownSignals(input.markdown)
@@ -786,11 +790,14 @@ function normalizedInstructionBlock(markdown: string): string | undefined {
   return normalizeInline(markdown);
 }
 
-function readerDirectedHtmlSignals(html: string, includeNoscript: boolean): string[] {
-  return readerDirectedBlockSignals(readerDirectedHtmlBlocks(html, includeNoscript));
-}
-
-function readerDirectedHtmlBlocks(html: string, includeNoscript: boolean): string[] {
+function readerDirectedHtmlBlocks(
+  html: string,
+  includeNoscript: boolean,
+  // The page measurement that chose the wall score threshold. The article-shell
+  // rule below relaxes only where that threshold is the long one, so it has to
+  // read the same number rather than measure the wrapper itself.
+  pageChars: number,
+): string[] {
   const { document } = parseHTML(html);
   const hasArticle = document.querySelector("article") !== null;
   const normalizedDocumentTitle = normalizeInline(
@@ -866,11 +873,97 @@ function readerDirectedHtmlBlocks(html: string, includeNoscript: boolean): strin
     }
     return normalizeInline(parts.join(""));
   };
-  const articleIsUiShell = (node: TraversableNode): boolean => {
-    const visibleBlocks: string[] = [];
-    const stack = [{ node, inheritedVisibilityHidden: false, depth: 0 }];
+  // Whether a child is part of its parent's own inline text — the same nodes
+  // the block-text pass above collects, so the two agree on where that text
+  // begins. A hidden inline node contributes to neither.
+  const carriesOwnText = (
+    child: TraversableNode,
+    inheritedVisibilityHidden: boolean,
+  ): boolean => {
+    // Normalized, not trimmed: the block-text pass normalizes too, so a node
+    // of nothing but punctuation ("—") survives a trim but leaves no block
+    // text and cannot be where that text starts.
+    if (child.nodeType === 3) {
+      return !inheritedVisibilityHidden
+        && normalizeInline(child.textContent ?? "").length > 0;
+    }
+    if (child.nodeType !== 1) return false;
+    const tagName = child.tagName?.toUpperCase() ?? "";
+    if (HTML_TEXT_BLOCK_TAGS.has(tagName)) return false;
+    const inputType = (child.getAttribute?.("type") ?? "text").trim().toLowerCase();
+    const inlineStyle = inlineStyleState(
+      (child.getAttribute?.("style") ?? "").toLowerCase(),
+    );
+    if (
+      (child.getAttribute?.("hidden") ?? null) !== null
+      || inlineStyle.displayNone
+      || (tagName === "INPUT" && inputType === "hidden")
+    ) {
+      return false;
+    }
+    const visibilityHidden = resolveVisibilityHidden(
+      inlineStyle.visibility,
+      inheritedVisibilityHidden,
+    );
+    if (tagName === "INPUT") {
+      return !visibilityHidden
+        && VISIBLE_INPUT_VALUE_TYPES.has(inputType)
+        && normalizeInline(child.getAttribute?.("value") ?? "").length > 0;
+    }
+    // Not short-circuited on visibilityHidden: the block-text pass descends
+    // into a concealed element too, and a descendant that sets `visibility:
+    // visible` shows again, so its text is part of the wrapper's own block.
+    return visibleInlineBlockText(child, visibilityHidden).length > 0;
+  };
+  const hasBlockDescendant = (node: TraversableNode): boolean => {
+    const stack = Array.from(node.childNodes) as TraversableNode[];
     while (stack.length > 0) {
       const current = stack.pop()!;
+      if (current.nodeType !== 1) continue;
+      if (HTML_TEXT_BLOCK_TAGS.has(current.tagName?.toUpperCase() ?? "")) {
+        return true;
+      }
+      const children = Array.from(current.childNodes) as TraversableNode[];
+      for (const child of children) stack.push(child);
+    }
+    return false;
+  };
+  // How many element children a wrapper's own inline text starts after, or -1
+  // when that has no answer: the wrapper's text is merged into one block, so an
+  // inline child holding both that text and blocks of its own leaves nothing to
+  // file the merged block against. The shell test refuses such a wrapper rather
+  // than guess a position the wall rule then reads as meaningful.
+  const elementsBeforeOwnText = (
+    children: readonly TraversableNode[],
+    inheritedVisibilityHidden: boolean,
+  ): number => {
+    let elements = 0;
+    for (const child of children) {
+      if (carriesOwnText(child, inheritedVisibilityHidden)) {
+        return child.nodeType === 1 && hasBlockDescendant(child) ? -1 : elements;
+      }
+      if (child.nodeType === 1) elements++;
+    }
+    return elements;
+  };
+  const articleIsUiShell = (node: TraversableNode): boolean => {
+    const visibleBlocks: string[] = [];
+    interface ShellFrame {
+      node?: TraversableNode;
+      inheritedVisibilityHidden: boolean;
+      depth: number;
+      block?: string;
+    }
+    const stack: ShellFrame[] = [
+      { node, inheritedVisibilityHidden: false, depth: 0 },
+    ];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.block !== undefined) {
+        visibleBlocks.push(current.block);
+        continue;
+      }
+      if (current.node === undefined) continue;
       if (current.depth >= HTML_VISIBLE_MAX_DEPTH) return false;
       const tagName = current.node.tagName?.toUpperCase() ?? "";
       const inputType = (current.node.getAttribute?.("type") ?? "text")
@@ -897,23 +990,42 @@ function readerDirectedHtmlBlocks(html: string, includeNoscript: boolean): strin
       }
 
       const children = Array.from(current.node.childNodes) as TraversableNode[];
-      if (HTML_TEXT_BLOCK_TAGS.has(tagName) && tagName !== "ARTICLE") {
-        const block = visibleInlineBlockText(current.node, visibilityHidden);
-        if (block.length > 0) visibleBlocks.push(block);
-      }
-
       const visibleChildren = tagName === "DETAILS"
         && (current.node.getAttribute?.("open") ?? null) === null
         ? []
         : children;
-      for (const child of visibleChildren) {
-        if (child.nodeType === 1) {
-          stack.push({
-            node: child,
+      const frames: ShellFrame[] = visibleChildren
+        .filter((child) => child.nodeType === 1)
+        .map((child) => ({
+          node: child,
+          inheritedVisibilityHidden: visibilityHidden,
+          depth: current.depth + 1,
+        }));
+      if (HTML_TEXT_BLOCK_TAGS.has(tagName) && tagName !== "ARTICLE") {
+        const block = visibleInlineBlockText(current.node, visibilityHidden);
+        // A block carries only its element's own inline text, so a wrapper's
+        // block can belong anywhere among the blocks its children produce.
+        // Place it where its own text actually starts: the wall rule reads
+        // block position, and filing a wrapper at its start tag would let a
+        // trailing offer read as leading, while filing it last would hide
+        // leading prose from the same check.
+        if (block.length > 0) {
+          const ownTextIndex = elementsBeforeOwnText(
+            visibleChildren,
+            visibilityHidden,
+          );
+          if (ownTextIndex < 0) return false;
+          frames.splice(ownTextIndex, 0, {
+            block,
             inheritedVisibilityHidden: visibilityHidden,
-            depth: current.depth + 1,
+            depth: current.depth,
           });
         }
+      }
+      // Pushed in reverse so the stack pops them in document order: the wall
+      // rule below reads block position, not just block membership.
+      for (let index = frames.length - 1; index >= 0; index--) {
+        stack.push(frames[index]!);
       }
     }
     const challengeBlock = (block: string) =>
@@ -936,20 +1048,37 @@ function readerDirectedHtmlBlocks(html: string, includeNoscript: boolean): strin
         || /^posted in\b/.test(block);
     };
 
+    const firstWallBlock = visibleBlocks.findIndex(terminalWallBlock);
+    // A text-heavy wall is mostly its own marketing prose, which no block-level
+    // signal can recognize, so requiring every block to be wall UI would only
+    // ever match short walls. Above the long-body threshold, ask instead that
+    // the instruction lead the wrapper: a wall replaces the article rather than
+    // interrupting it, so only the page title, wall chrome, or support copy may
+    // precede it, and an article that opens with body prose stays excluded.
+    // That is safe up here because the score bar is LONG_WALL_SCORE_THRESHOLD —
+    // several independent offer signals. Below it the bar is 4, which a
+    // promotion box clears on its own, so a short wrapper must still be
+    // recognized wall UI end to end or an article carrying a promotion at the
+    // top would convict.
+    const wallShell = pageChars > LONG_BODY_CHARS
+      ? firstWallBlock >= 0
+        && visibleBlocks.slice(0, firstWallBlock).every((block) =>
+          wallSupportCodes(block).length > 0
+          || wallUiChromeBlock(block)
+          || titleBlock(block))
+      : firstWallBlock >= 0
+        && visibleBlocks.every((block) =>
+          terminalWallBlock(block)
+          || wallSupportCodes(block).length > 0
+          || wallUiChromeBlock(block));
+
     return (
       visibleBlocks.some(challengeBlock)
       && visibleBlocks.every((block) =>
         challengeBlock(block) || titleBlock(block)
       )
     )
-      || (
-        visibleBlocks.some(terminalWallBlock)
-        && (hasExplicitWallTitle || wallSupport.length >= 2)
-        && visibleBlocks.every((block) =>
-          terminalWallBlock(block)
-          || wallSupportCodes(block).length > 0
-          || wallUiChromeBlock(block))
-      );
+      || (wallShell && (hasExplicitWallTitle || wallSupport.length >= 2));
   };
   const visit = (
     value: unknown,

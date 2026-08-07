@@ -1260,6 +1260,185 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it("recognizes a text-heavy wall wrapped in an article landmark", () => {
+    const fixture = readFileSync(
+      join(FIXTURES, "wall-long-original-title.html"),
+      "utf-8",
+    );
+    const html = fixture
+      .replace("<main>", "<article>")
+      .replace("</main>", "</article>");
+
+    expect(classifyChallengeContent({ html })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:existing-subscriber",
+        "wall_support:unlimited-access",
+      ]),
+      normalizedChars: expect.any(Number),
+    });
+  });
+
+  it("keeps an article with an inline subscription promotion extractable", () => {
+    const opening = [
+      "The first overnight passenger train in more than a decade left the valley station shortly after sunset, carrying commuters toward towns that lost late service during earlier budget cuts.",
+      "Transit planners restored the route after a year-long trial showed that evening buses were routinely full and that weekend visitors were driving to trailheads before dawn.",
+    ];
+    const promotion = [
+      "Subscribe to continue reading this article.",
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every local story.",
+    ];
+    const closing = [
+      "The new timetable uses existing track and refurbished sleeper cars, but stations along the corridor received lighting and accessibility upgrades before service resumed.",
+      "Officials will review ridership, reliability, and winter operating costs after six months, and local governments have committed bridge funding if ticket revenue stabilizes slowly.",
+    ];
+    const build = (promotionLeads: boolean) => [
+      "<html><head><title>Night Trains Return to the Mountain Corridor</title></head><body><article>",
+      "<h1>Night Trains Return to the Mountain Corridor</h1>",
+      ...(promotionLeads ? [`<section>${promotion.map((line) => `<p>${line}</p>`).join("")}</section>`] : []),
+      ...opening.map((paragraph) => `<p>${paragraph}</p>`),
+      ...(promotionLeads ? [] : [`<section>${promotion.map((line) => `<p>${line}</p>`).join("")}</section>`]),
+      ...closing.map((paragraph) => `<p>${paragraph}</p>`),
+      "</article></body></html>",
+    ].join("");
+    const markdown = [...opening, ...promotion, ...closing].join("\n\n");
+
+    // The promotion is a wall shape wherever it sits, so position alone must not
+    // decide: a readable story stays extractable with the offer above or below it.
+    expect(classifyChallengeContent({ html: build(false), markdown }))
+      .toEqual({ challenge: false });
+    expect(classifyChallengeContent({ html: build(true), markdown }))
+      .toEqual({ challenge: false });
+  });
+
+  it("keeps a long article carrying a subscription promotion extractable", () => {
+    // Four supports, so the offer alone reaches the long threshold of 6: the
+    // wrapper rule is the only thing standing between this article and a wall
+    // verdict, and the assertions below fail if it stops holding.
+    const promotion = [
+      "Subscribe to continue reading this article.",
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every local story.",
+      "Start your free trial today.",
+      "Cancel anytime.",
+    ];
+    const offer = `<section>${promotion.map((line) => `<p>${line}</p>`).join("")}</section>`;
+    const sentence = "The corridor study collected ridership counts, weather delays, and maintenance windows across four seasons before the transit board voted on the restored timetable. ";
+    const build = (story: string, extras: string, promotionLeads: boolean) => [
+      "<html><head><title>Night Trains Return to the Mountain Corridor</title></head><body><article>",
+      "<h1>Night Trains Return to the Mountain Corridor</h1>",
+      ...(promotionLeads ? [offer] : []),
+      `<p>${story}</p>`,
+      ...(promotionLeads ? [] : [offer]),
+      extras,
+      "</article></body></html>",
+    ].join("");
+
+    // Body prose ahead of the offer disqualifies the wrapper: a wall replaces
+    // the article, it does not follow it.
+    const story = sentence.repeat(30);
+    expect(normalizedMarkdownChars(story)).toBeGreaterThan(4_000);
+    expect(classifyChallengeContent({
+      html: build(story, "", false),
+      markdown: [story, ...promotion].join("\n\n"),
+    })).toEqual({ challenge: false });
+
+    // An aside counts toward neither the evidence blocks nor the threshold, so
+    // it must not push the wrapper onto the relaxed rule while the page is
+    // still scored against the lower bar — the offer leads here, so nothing
+    // else would stop the verdict.
+    const shortStory = sentence.repeat(20);
+    const related = `<aside>${"Related coverage of the valley line and the winter service review. ".repeat(20)}</aside>`;
+    expect(normalizedMarkdownChars(shortStory)).toBeLessThan(4_000);
+    expect(classifyChallengeContent({
+      html: build(shortStory, related, true),
+      markdown: [...promotion, shortStory].join("\n\n"),
+    })).toEqual({ challenge: false });
+  });
+
+  it("orders a wrapper's own text where it reads, not at its start or end tag", () => {
+    const story = "The corridor study collected ridership counts, weather delays, and maintenance windows across four seasons before the transit board voted on the restored timetable. "
+      .repeat(15);
+    const instruction = "Subscribe to continue reading this article.";
+    const offers = [
+      "Already a subscriber? Sign in to your account.",
+      "Get unlimited access to every local story.",
+      "Start your free trial today.",
+      "Cancel anytime.",
+    ];
+    const page = (entry: string) => [
+      "<html><head><title>Night Trains Return to the Mountain Corridor</title></head><body><article>",
+      "<h1>Night Trains Return to the Mountain Corridor</h1>",
+      `<div class="entry">${entry}</div>`,
+      "</article></body></html>",
+    ].join("");
+    const markdown = [story, story, instruction, ...offers].join("\n\n");
+
+    // The offer trails the story as the wrapper's own inline text: filing the
+    // wrapper at its start tag would read it as leading the article.
+    expect(classifyChallengeContent({
+      html: page([
+        `<p>${story}</p><p>${story}</p>`,
+        ...offers.map((offer) => `<p>${offer}</p>`),
+        `<a href="/subscribe">${instruction}</a>`,
+      ].join("")),
+      markdown,
+    })).toEqual({ challenge: false });
+
+    // The mirror: the story is the wrapper's own inline text and the offer is
+    // in child blocks, so filing the wrapper last would hide the prose.
+    expect(classifyChallengeContent({
+      html: page([
+        story,
+        story,
+        `<p>${instruction}</p>`,
+        ...offers.map((offer) => `<p>${offer}</p>`),
+      ].join("")),
+      markdown,
+    })).toEqual({ challenge: false });
+
+    // A hidden inline node is part of neither the wrapper's block text nor the
+    // position that text is filed at, so it cannot pull the block forward.
+    for (
+      const concealed of [
+        "<span hidden>Sponsored</span>",
+        "<span style=\"display:none\">Sponsored</span>",
+        "<span style=\"visibility:hidden\">Sponsored</span>",
+        // Concealed, but re-showing a descendant: that text is visible, so it
+        // does mark where the wrapper's own text starts.
+        "<span style=\"visibility:hidden\"><em style=\"visibility:visible\">Note</em></span>",
+        // Punctuation alone survives a trim but normalizes to nothing, so it
+        // leaves no block text to mark a position with.
+        "&mdash;",
+      ]
+    ) {
+      expect(classifyChallengeContent({
+        html: page([
+          concealed,
+          `<p>${story}</p><p>${story}</p>`,
+          ...offers.map((offer) => `<p>${offer}</p>`),
+          `<a href="/subscribe">${instruction}</a>`,
+        ].join("")),
+        markdown,
+      })).toEqual({ challenge: false });
+    }
+
+    // An inline element holding both the wrapper's own text and blocks of its
+    // own leaves the merged block no position to take, so the wrapper is not a
+    // shell at all rather than one filed at a guessed spot.
+    for (const inline of ["span", "em", "label"]) {
+      expect(classifyChallengeContent({
+        html: page([
+          `<${inline}><p>${story}</p><p>${story}</p><a href="/subscribe">${instruction}</a></${inline}>`,
+          ...offers.map((offer) => `<p>${offer}</p>`),
+        ].join("")),
+        markdown,
+      })).toEqual({ challenge: false });
+    }
+  });
+
   it("allows an explicit wall title, strong wall, and two supports to reach the long threshold", () => {
     const filler = "Membership access details and publication benefits. ".repeat(100);
     const html = [
