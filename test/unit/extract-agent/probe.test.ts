@@ -19,6 +19,20 @@ const TEXT_VERIFICATION_CASES = JSON.parse(
     expected: "challenge" | "extracted";
   }>;
 };
+const SUBSCRIPTION_WALL_CASES = JSON.parse(
+  readFileSync(join(FIXTURES, "subscription-wall-manifest.json"), "utf-8"),
+) as {
+  approval_status: "approved";
+  implementation_must_wait_for_approval: false;
+  fixtures: Array<{
+    file: string;
+    expected: "challenge" | "extracted" | "no_article";
+  }>;
+  proposed_long_body_policy: {
+    approval_status: "approved";
+    decisions: string[];
+  };
+};
 
 function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
   return {
@@ -35,6 +49,46 @@ function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
 }
 
 describe("runProbe", () => {
+  it("records the approved subscription-wall fixture and policy gate", () => {
+    expect(SUBSCRIPTION_WALL_CASES).toMatchObject({
+      approval_status: "approved",
+      implementation_must_wait_for_approval: false,
+      proposed_long_body_policy: {
+        approval_status: "approved",
+      },
+    });
+    expect(SUBSCRIPTION_WALL_CASES.proposed_long_body_policy.decisions).toHaveLength(5);
+  });
+
+  it.each(SUBSCRIPTION_WALL_CASES.fixtures)(
+    "classifies approved wall fixture $file as $expected through both extraction tiers",
+    async ({ file, expected }) => {
+      const results = await runProbe(
+        {
+          htmlPath: join(FIXTURES, file),
+          sourceUrl: `https://fixture.invalid/${file}`,
+          tier: "both",
+          json: true,
+        },
+        deps(),
+      );
+
+      expect(results.map((result) => result.outcome)).toEqual([expected, expected]);
+      for (const result of results) {
+        if (file.includes("-long")) {
+          expect(result.normalized_character_count).toBeGreaterThan(4_000);
+        }
+        if (expected === "challenge") {
+          expect(result.evidence_codes).toEqual(
+            expect.arrayContaining([expect.stringMatching(/^wall:[a-z-]+$/)]),
+          );
+        } else {
+          expect(result.evidence_codes).toEqual([]);
+        }
+      }
+    },
+  );
+
   it.each(TEXT_VERIFICATION_CASES.fixtures)(
     "classifies $file as $expected through both extraction tiers",
     async ({ file, expected }) => {
@@ -150,12 +204,12 @@ describe("runProbe", () => {
   it("renders offline fixture HTML before classifying the headless tier", async () => {
     const sourceHtml = [
       "<html><body>",
-      "<script>document.body.innerHTML = '<form action=\"/cdn-cgi/challenge-platform/x\"></form><button>Please verify you are human to continue.</button>';</script>",
+      "<script>document.body.innerHTML = '<form action=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></form><button>Please verify you are human to continue.</button>';</script>",
       "</body></html>",
     ].join("");
     const renderedHtml = [
       "<html><body>",
-      '<form action="/cdn-cgi/challenge-platform/x"></form>',
+      '<form action="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></form>',
       "<button>Please verify you are human to continue.</button>",
       "</body></html>",
     ].join("");
