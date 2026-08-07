@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ListIndexItemSchema,
   ListReadingsResponseSchema,
+  PostReadingReprocessBodySchema,
 } from "../../../src/schemas/api";
 import { ManifestSchema } from "../../../src/schemas/manifest";
 
@@ -23,6 +24,7 @@ import type {
   Manifest as SpaManifest,
   ListReading as SpaListReading,
   ListReadingsResponse as SpaListReadingsResponse,
+  ReprocessReadingBody as SpaReprocessReadingBody,
   Usage as SpaUsage,
 } from "../../../web/src/types";
 
@@ -158,5 +160,21 @@ describe("SPA type mirror — ListReadingsResponse", () => {
       updated_at: "2026-04-26T20:00:00.000Z",
     };
     expect(() => ListIndexItemSchema.parse(item)).not.toThrow();
+  });
+});
+
+describe("SPA type mirror — ReprocessReadingBody", () => {
+  it("the SPA's own empty body still parses (back-compat)", () => {
+    const body: SpaReprocessReadingBody = {};
+    expect(PostReadingReprocessBodySchema.parse(body)).toEqual({ force: false });
+  });
+
+  it("a body carrying a markdown source parses through the worker schema", () => {
+    const body: SpaReprocessReadingBody = {
+      force: true,
+      email: false,
+      source: { kind: "markdown", markdown: "# Recaptured", title: "Recaptured" },
+    };
+    expect(PostReadingReprocessBodySchema.parse(body)).toEqual(body);
   });
 });

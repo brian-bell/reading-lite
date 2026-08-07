@@ -266,7 +266,11 @@ export function createApp(opts: AppOptions = {}) {
       services,
       found.keyPrefix,
       found.manifest,
-      { force: parsed.data.force, email: parsed.data.email ?? false },
+      {
+        force: parsed.data.force,
+        email: parsed.data.email ?? false,
+        ...(parsed.data.source === undefined ? {} : { source: parsed.data.source }),
+      },
     );
     return c.json(result.body, result.status);
   });
@@ -484,7 +488,11 @@ async function enqueueReprocess(
   services: Services,
   keyPrefix: string,
   manifest: Manifest,
-  opts: { force?: boolean; email: boolean },
+  opts: {
+    force?: boolean;
+    email: boolean;
+    source?: Extract<ProcessReadingSource, { kind: "markdown" }>;
+  },
 ): Promise<SubmitJsonResult> {
   const effectiveManifest = annotateStale(manifest, env, services);
   if (effectiveManifest.active_attempt?.status === "running" && !opts.force) {
@@ -501,8 +509,12 @@ async function enqueueReprocess(
   const attemptStartedAt = services.now();
   const attemptId = newAttemptId(services);
   const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
-  let source: ProcessReadingSource | undefined;
-  if (effectiveManifest.source_type === "markdown") {
+  // A request-supplied markdown source wins over the stored-markdown synthesis:
+  // the caller is handing us better content than R2 holds, so we never read
+  // extracted.md (and the "markdown content not available" 409 below can only
+  // fire for a no-source reprocess of a markdown reading).
+  let source: ProcessReadingSource | undefined = opts.source;
+  if (source === undefined && effectiveManifest.source_type === "markdown") {
     const extracted = await reader.readExtracted(keyPrefix);
     if (!extracted) {
       return { body: { error: "markdown content not available" }, status: 409 };

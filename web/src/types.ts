@@ -163,6 +163,21 @@ export interface SubmitReadingResponse {
   attempt_id?: string;
 }
 
+// Mirrors PostReadingReprocessBodySchema. `source` lets a caller hand the
+// worker the content to reprocess with instead of re-fetching the URL; a
+// reading reprocessed that way keeps `source_type: "markdown"` afterwards.
+export interface ReprocessMarkdownSource {
+  kind: "markdown";
+  markdown: string;
+  title?: string;
+}
+
+export interface ReprocessReadingBody {
+  force?: boolean;
+  email?: boolean;
+  source?: ReprocessMarkdownSource;
+}
+
 export interface ReprocessReadingResponse {
   id: string;
   status: ManifestStatus;
