@@ -20,7 +20,10 @@ agent context: current commands, module map, conventions, and gotchas.
 - `src/router.ts` owns the HTTP API, auth-protected `/api/readings*` routes,
   idempotent submit/import/reprocess behavior, lookup, diagnostics, and content
   streaming. After claiming the by-url slot it delegates the eager write +
-  enqueue to `activateAttempt`.
+  enqueue to `activateAttempt`. `enqueueReprocess` resolves the attempt's
+  source as `request source ?? stored-markdown synthesis` — a reprocess body
+  may carry `{source: {kind: "markdown", markdown, title?}}`, and when it does,
+  `extracted.md` is never read.
 - `src/attempt-activation.ts` owns `activateAttempt`, the single home for the
   eager write-and-enqueue ordering (artifacts → manifest → by-id pointer → list
   index → queue message) plus the rollback-to-failed funnel shared by submit,
@@ -222,6 +225,15 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
 - Messages that exhaust main-queue retries route to the DLQ, where
   `markDeadLettered` converts the stranded attempt to retryable `failed` and
   acks terminally.
+- A reprocess carrying a markdown `source` flips the reading's `source_type` to
+  `"markdown"` — but only on a successful terminal write, since
+  `sourceTypeForArgs(args)` is read there. After the flip every later no-source
+  reprocess takes the stored-markdown synthesis instead of re-fetching the URL,
+  which is the point (the URL is what degraded). A failure on a *ready* reading
+  rolls back to `preserveReadyManifest` and keeps the old `source_type`; a
+  failure on a non-ready one lands `source_type: "markdown"` with no
+  `extracted.md` behind it, so a no-source reprocess then 409s "markdown content
+  not available" until a source is supplied again.
 - Read-only `GET /api/readings/lookup` must stay side-effect-free. It must not
   claim cold legacy pointers, repair damaged pointers, deep-scan R2, or write.
 - `Readability`/Turndown can throw on pathological HTML. The extractor has a
