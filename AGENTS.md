@@ -161,7 +161,8 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   staging|production`. `READER_API_TOKEN` and `OPENAI_API_KEY` are always
   required; `ANTHROPIC_API_KEY` is required only when
   `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` is optional. Checked-in
-  defaults select OpenAI with `gpt-5.6-terra` at `low` reasoning effort.
+  environments select OpenAI with `gpt-5.6-terra`; production uses `medium`
+  reasoning effort while local and staging use `low`.
 - Staging teardown R2 emptying additionally needs `CORPUS_R2_ACCOUNT_ID`,
   `CORPUS_R2_ACCESS_KEY`, and `CORPUS_R2_SECRET_KEY` in env or `.corpus.vars`.
 

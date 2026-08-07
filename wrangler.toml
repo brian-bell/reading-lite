@@ -146,7 +146,7 @@ FETCH_MAX_BYTES = "10485760"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
-OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
+OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"
 # Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
 # `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.
