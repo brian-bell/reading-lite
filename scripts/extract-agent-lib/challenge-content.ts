@@ -326,7 +326,9 @@ const WALL_SUPPORT_SIGNALS: readonly Signal[] = [
     code: "subscriber-only",
     phrases: [
       "subscribers only",
-      "subscriber-only",
+      // Stored normalized: normalizeInline rewrites hyphens to spaces before
+      // any phrase is matched, so a hyphenated literal could never match.
+      "subscriber only",
       "access every subscriber only story",
     ],
   },

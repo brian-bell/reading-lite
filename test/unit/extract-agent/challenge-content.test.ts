@@ -1172,6 +1172,32 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it("counts a hyphenated subscriber-only line as wall support", () => {
+    const lines = [
+      "Subscribe to continue reading this article",
+      "Already a subscriber?",
+      "Subscriber-only content",
+    ];
+    const html = [
+      "<html><head><title>The council vote explained</title></head><body><main>",
+      `<h2>${lines[0]}</h2>`,
+      ...lines.slice(1).map((line) => `<p>${line}</p>`),
+      "</main></body></html>",
+    ].join("");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: lines.join("\n\n"),
+    })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "wall:continue-reading",
+        "wall_support:existing-subscriber",
+        "wall_support:subscriber-only",
+      ]),
+    });
+  });
+
   it("recognizes a wall inside an article wrapper without admitting article prose", () => {
     const html = [
       "<html><head><title>Welcome to My Story</title></head><body><article>",
