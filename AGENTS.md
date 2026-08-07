@@ -231,9 +231,13 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   reprocess takes the stored-markdown synthesis instead of re-fetching the URL,
   which is the point (the URL is what degraded). A failure on a *ready* reading
   rolls back to `preserveReadyManifest` and keeps the old `source_type`; a
-  failure on a non-ready one lands `source_type: "markdown"` with no
-  `extracted.md` behind it, so a no-source reprocess then 409s "markdown content
-  not available" until a source is supplied again.
+  failure on a non-ready one flips anyway, since `markFailed` reads
+  `sourceTypeForArgs(args)`. If that failure landed before the `write_extracted`
+  stage, the reading is markdown-typed with nothing written behind it, so a
+  no-source reprocess either 409s "markdown content not available" or — worse,
+  when a stale `extracted.md` survives from an earlier attempt — silently
+  synthesizes from the wrong text (reading-lite-5ap, characterized in
+  `test/integration/readings.test.ts`).
 - Read-only `GET /api/readings/lookup` must stay side-effect-free. It must not
   claim cold legacy pointers, repair damaged pointers, deep-scan R2, or write.
 - `Readability`/Turndown can throw on pathological HTML. The extractor has a

@@ -3831,6 +3831,10 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       ctx2,
     );
     expect(retry.status).toBe(202);
+    expect(queuedJobs[0]).toMatchObject({
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+      preserveReadyManifest: { id, status: "ready" },
+    });
     await drainQueue(failingServices);
     await waitOnExecutionContext(ctx2);
     consoleErr.mockRestore();
