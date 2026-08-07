@@ -477,6 +477,9 @@ const MEMBERSHIP_DESTINATION_SEGMENTS = new Set([
   "subscription",
 ]);
 
+const MEMBERSHIP_DESTINATION_MAX_SEGMENTS = 2;
+const LOCALE_SEGMENT = /^[a-z]{2}(?:-[a-z]{2})?$/;
+
 function isRequestedMembershipDestination(
   requestedUrl: string | undefined,
   resolvedUrl: string | undefined,
@@ -498,12 +501,27 @@ function isMembershipRedirect(
 function isMembershipDestinationUrl(value: string | undefined): boolean {
   if (value === undefined) return false;
   try {
-    return new URL(value).pathname
+    const path = new URL(value).pathname
       .toLowerCase()
       .split("/")
       .filter(Boolean)
-      .map((segment) => segment.replace(/\.(?:html?|php)$/, ""))
-      .some((segment) => MEMBERSHIP_DESTINATION_SEGMENTS.has(segment));
+      .map((segment) => segment.replace(/\.(?:html?|php)$/, ""));
+    // These segments are ordinary words, so their presence anywhere in a path
+    // proves nothing: `/news/plans/retirement` is a story about plans. Only a
+    // landing-page shape counts — the segment leads the path, and at most one
+    // segment follows it (`/membership`, `/subscribe/annual`).
+    if (path.length === 0 || path.length > MEMBERSHIP_DESTINATION_MAX_SEGMENTS) {
+      return false;
+    }
+    // International publishers route the same landing page under a locale, so a
+    // leading locale may take the lead segment's place (`/en/subscribe`). It
+    // replaces that slot rather than adding one: the depth cap above still
+    // holds, so `/en/plans/retirement` stays an article path.
+    const lead = path.length === MEMBERSHIP_DESTINATION_MAX_SEGMENTS
+        && LOCALE_SEGMENT.test(path[0]!)
+      ? path[1]!
+      : path[0]!;
+    return MEMBERSHIP_DESTINATION_SEGMENTS.has(lead);
   } catch {
     return false;
   }

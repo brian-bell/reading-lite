@@ -1439,6 +1439,72 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it("does not read a membership segment inside a deep article path as a destination", () => {
+    const story = [
+      "Retirement plans have changed more in the past decade than in the thirty years before it, and the paperwork has not kept pace with the choices savers are now asked to make.",
+      "Advisers say the most common mistake is treating the default contribution rate as a recommendation rather than the starting point it was designed to be.",
+      "Regulators have proposed clearer statements, but the disclosure rules still assume a reader who already understands the difference between a fund and a plan.",
+    ];
+    const html = [
+      "<html><head><title>Retirement plans explained</title></head><body><main>",
+      "<h1>Retirement plans explained</h1>",
+      ...story.map((paragraph) => `<p>${paragraph}</p>`),
+      "</main></body></html>",
+    ].join("");
+    const markdown = story.join("\n\n");
+
+    for (
+      const url of [
+        "https://news.example/news/plans/retirement",
+        "https://news.example/2026/01/join/a-union",
+        "https://news.example/guides/subscription/basics",
+        // A locale may take the lead segment's place, never add depth to it.
+        "https://news.example/en/plans/retirement",
+        "https://news.example/en-gb/join/a-union",
+      ]
+    ) {
+      expect(classifyChallengeContent({
+        html,
+        markdown,
+        requestedUrl: url,
+        resolvedUrl: url,
+      })).toEqual({ challenge: false });
+    }
+  });
+
+  it("does not call a redirect into a deep article path a membership wall", () => {
+    const html = "<html><head><title>Retirement plans explained</title></head><body><main><p>Ordinary reporting about retirement paperwork.</p></main></body></html>";
+
+    expect(classifyChallengeContent({
+      html,
+      markdown: "Ordinary reporting about retirement paperwork.",
+      requestedUrl: "https://news.example/news/requested-story",
+      resolvedUrl: "https://news.example/news/plans/retirement",
+    })).toEqual({ challenge: false });
+  });
+
+  it("reads a locale-prefixed membership route as a landing page", () => {
+    const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
+
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/en/membership",
+      resolvedUrl: "https://public.example/en/membership",
+    })).toMatchObject({
+      challenge: false,
+      noArticle: true,
+      evidence: ["page:membership-destination"],
+    });
+    expect(classifyChallengeContent({
+      html,
+      requestedUrl: "https://public.example/news/requested-story",
+      resolvedUrl: "https://public.example/en-gb/subscribe",
+    })).toMatchObject({
+      challenge: true,
+      evidence: ["wall:membership-redirect"],
+    });
+  });
+
   it("does not let a closed disclosure change the wall body threshold", () => {
     const instruction = "Subscribe to continue reading this article.";
     const hidden = "Hidden plan details and legal language. ".repeat(130);
