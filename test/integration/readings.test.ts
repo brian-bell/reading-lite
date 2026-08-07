@@ -3697,8 +3697,158 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]).toMatchObject({ id, trigger: "submit" });
 
+    // force is orthogonal to source: it bypasses the same guard and still
+    // carries the supplied markdown.
+    const forced = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          force: true,
+          source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(forced.status).toBe(202);
+    expect(queuedJobs).toHaveLength(2);
+    expect(queuedJobs[1]).toMatchObject({
+      id,
+      trigger: "reprocess",
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+    });
+
     await drainQueue(services);
     await waitOnExecutionContext(ctx);
+  });
+
+  it("reprocesses from a supplied source without reading the stored markdown", async () => {
+    const url = "https://example.com/agent-supplies-missing-markdown";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const ctx1 = createExecutionContext();
+    const imported = await app.fetch(
+      new Request("http://t/api/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source_url: url, title: "Imported", markdown: "# Imported\n\nOld." }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await imported.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    // Strip the stored markdown out from under the reading. A no-source
+    // reprocess now has nothing to synthesize from and must 409...
+    const { keyPrefix } = (await reader.loadReadingById(id))!;
+    await env.READINGS_BUCKET.delete(`${keyPrefix}/extracted.md`);
+    const withoutSource = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+      env,
+    );
+    expect(withoutSource.status).toBe(409);
+    expect(await withoutSource.json()).toEqual({ error: "markdown content not available" });
+    expect(queuedJobs).toHaveLength(0);
+
+    // ...while a supplied source never consults extracted.md at all, which is
+    // also the escape hatch out of that 409.
+    const ctx2 = createExecutionContext();
+    const withSource = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(withSource.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.source).toMatchObject({ kind: "markdown", markdown: AGENT_MARKDOWN });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+    const content = await app.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
+  });
+
+  it("keeps the preserved ready manifest, and its source_type, when a markdown reprocess fails", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/agent-upgrade-fails" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    // Summarization fails on the reprocess attempt. A markdown source never
+    // fetches the URL, so the failure has to come from the summarizer.
+    const base = makeStubFetch();
+    const failingFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.openai.com/v1/responses")) {
+        return new Response(JSON.stringify({ error: { message: "bad request" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base(input, init);
+    });
+    const failingServices = makeServices(failingFetch, idCounter);
+    const failingApp = createApp({ services: failingServices });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx2 = createExecutionContext();
+    const retry = await failingApp.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    await drainQueue(failingServices);
+    await waitOnExecutionContext(ctx2);
+    consoleErr.mockRestore();
+
+    // The preserve-ready rollback wins: the flip to markdown only lands on a
+    // successful terminal write, so this reading is still url-sourced.
+    const get = await failingApp.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({
+      id,
+      status: "ready",
+      source_type: "url",
+      title: "Test Article",
+      last_attempt: { trigger: "reprocess", status: "failed" },
+    });
   });
 
   it("prefers the supplied markdown over the stored markdown of an imported reading", async () => {

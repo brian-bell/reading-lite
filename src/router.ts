@@ -266,11 +266,7 @@ export function createApp(opts: AppOptions = {}) {
       services,
       found.keyPrefix,
       found.manifest,
-      {
-        force: parsed.data.force,
-        email: parsed.data.email ?? false,
-        ...(parsed.data.source === undefined ? {} : { source: parsed.data.source }),
-      },
+      { force: parsed.data.force, email: parsed.data.email ?? false, source: parsed.data.source },
     );
     return c.json(result.body, result.status);
   });
