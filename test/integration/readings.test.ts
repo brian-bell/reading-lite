@@ -3849,6 +3849,19 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       title: "Test Article",
       last_attempt: { trigger: "reprocess", status: "failed" },
     });
+
+    // KNOWN DIVERGENCE (reading-lite-psu): write_extracted already replaced
+    // extracted.md before summarization failed, and the preserve-ready rollback
+    // restores only the manifest. So /content serves the failed attempt's
+    // markdown under a manifest whose hash and byte counts describe the old
+    // text. Characterized here so the divergence is visible rather than silent;
+    // this assertion flips when psu is fixed in process-reading.ts.
+    const content = await failingApp.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
   });
 
   it("prefers the supplied markdown over the stored markdown of an imported reading", async () => {
