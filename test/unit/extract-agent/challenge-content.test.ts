@@ -1260,6 +1260,33 @@ describe("classifyChallengeContent", () => {
     });
   });
 
+  it("recognizes an article wall whose exact title only survives extraction", () => {
+    // Publishers commonly leave the original story or the bare brand in
+    // <title> while the visible wall heading carries the offer, and Readability
+    // promotes that heading to the extracted title. The wall score already
+    // reads both titles, so the article-shell gate has to as well.
+    const instruction = "Subscribe to continue reading this article.";
+    const html = [
+      "<html><head><title>The Evening Standard</title></head><body><article>",
+      "<h1>Subscribe to continue reading</h1>",
+      `<p>${instruction}</p>`,
+      "</article></body></html>",
+    ].join("");
+    const markdown = ["# Subscribe to continue reading", "", instruction].join("\n");
+
+    expect(classifyChallengeContent({
+      html,
+      markdown,
+      title: "Subscribe to continue reading",
+    })).toMatchObject({
+      challenge: true,
+      evidence: expect.arrayContaining([
+        "title:subscription-wall",
+        "wall:continue-reading",
+      ]),
+    });
+  });
+
   it("recognizes a text-heavy wall wrapped in an article landmark", () => {
     const fixture = readFileSync(
       join(FIXTURES, "wall-long-original-title.html"),

@@ -403,6 +403,7 @@ export function classifyChallengeContent(input: ChallengeContentInput): Challeng
     html,
     input.rendered !== true,
     normalizedChars,
+    wallTitle.length > 0,
   );
   const visibleMarkdownBlocks = input.markdown === undefined
     ? visibleHtmlBlocks
@@ -797,16 +798,18 @@ function readerDirectedHtmlBlocks(
   // rule below relaxes only where that threshold is the long one, so it has to
   // read the same number rather than measure the wrapper itself.
   pageChars: number,
+  // Whether an exact wall title scored, decided by the caller across both the
+  // document title and the extracted one. A publisher can leave the original
+  // story in <title> while the visible wall heading carries the offer, so
+  // measuring the document title alone here would withhold the shell
+  // relaxation from pages the score already credits two points.
+  hasExplicitWallTitle: boolean,
 ): string[] {
   const { document } = parseHTML(html);
   const hasArticle = document.querySelector("article") !== null;
   const normalizedDocumentTitle = normalizeInline(
     document.querySelector("title")?.textContent ?? "",
   );
-  const hasExplicitWallTitle = exactSignalMatches(
-    normalizedDocumentTitle,
-    WALL_TITLE_SIGNALS,
-  ).length > 0;
   const hiddenElements = includeNoscript
     ? "head, script, style, template"
     : "head, script, style, noscript, template";
