@@ -19,7 +19,12 @@ index.json
 *.batch.json
 *.batch.input.jsonl
 *.input.jsonl
-*.batch.lock
+# The reconcile lock and its rename-and-reclaim artifacts; the lock file
+# lives at `<sidecar>.lock`, and reclaim leaves `<sidecar>.lock.broken.*`.
+*.batch.json.lock
+*.batch.json.lock.broken.*
+*.batch.input.jsonl.*.tmp
+.*.tmp
 # Temp Reddit thread JSON saved by the reddit-import skill (may hold logged-in content)
 .reddit-thread.tmp.json
 chrome-reading-list.csv

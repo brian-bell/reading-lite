@@ -116,8 +116,8 @@ export async function runBatchPipeline(
   const existing = await deps.loadSidecar();
   if (existing) {
     if (existing.provider === "openai") {
-      const openaiBatch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
       if (existing.phase === "submitted") {
+        const openaiBatch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
         log(`Resuming OpenAI batch ${existing.batchId} (${existing.targets.length} readings)`);
         const report = await pollAndWriteOpenAI(existing, deps, openaiBatch);
         return {
@@ -131,6 +131,7 @@ export async function runBatchPipeline(
         existing.phase === "uploading" ||
         existing.phase === "creating"
       ) {
+        const openaiBatch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
         // Pre-submit sidecar — auto-reconcile against OpenAI list APIs so a
         // crashed upload/create window doesn't require manual console cleanup.
         // The reconciler lists remote files/batches by run id before any

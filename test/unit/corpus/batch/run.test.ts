@@ -864,6 +864,42 @@ describe("runBatch — resume", () => {
     expect(h.deps.openaiBatch!.listBatches).not.toHaveBeenCalled();
   });
 
+  it("aborts an OpenAI activating sidecar even when no OpenAI client is wired", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const activatingTarget = {
+      id: "rd_a",
+      customId: "rd_a",
+      keyPrefix: "readings/kp-rd_a",
+      url: "https://example.com/rd_a",
+      urlHash: manifest("rd_a").url_hash,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    h.deps.loadSidecar = vi.fn(
+      async () =>
+        ({
+          version: 2,
+          provider: "openai",
+          phase: "activating",
+          runId: "run_1",
+          batchId: "",
+          inputFileId: null,
+          outputFileId: null,
+          errorFileId: null,
+          model: "gpt-pinned",
+          reasoningEffort: "low",
+          processingStatus: "activating",
+          targets: [activatingTarget],
+        }) as PersistedSidecar,
+    );
+    // No openaiBatch client wired — the abort message must point at
+    // activation, not "missing OpenAI batch credentials".
+    h.deps.openaiBatch = undefined;
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /ownership activation/i,
+    );
+  });
+
   it("adopts a remote batch from an OpenAI creating sidecar without crashing the run", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     const fullTarget = {
