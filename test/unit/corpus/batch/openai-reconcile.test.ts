@@ -177,8 +177,40 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
 
     expect(c.create).toHaveBeenCalledTimes(1);
     expect(c.create).toHaveBeenCalledWith("file_input", "run_1");
+    // The last-chance re-list is one extra batch list (page 0 + last-chance).
+    expect(c.listBatches.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(result.batchId).toBe("batch_new");
     expect(saved.map((s) => s.phase)).toEqual(["submitted"]);
+  });
+
+  it("refuses to create when a last-chance re-list discovers a concurrent batch", async () => {
+    // Simulates a concurrent resume that successfully created a batch
+    // between the reconcile's main list and its create call. The
+    // last-chance re-list must observe the new batch and abort this run
+    // rather than double-create.
+    const c = makeClient();
+    c.listBatches
+      .mockResolvedValueOnce(batchesResponse([]))
+      .mockResolvedValueOnce(
+        batchesResponse([
+          {
+            id: "batch_concurrent",
+            status: "validating",
+            metadata: { run_id: "run_1" },
+          },
+        ]),
+      );
+    const saved: PersistedSidecar[] = [];
+    const sidecar: OpenAICreatingSidecar = {
+      ...baseCreating,
+      targets: [sampleTarget],
+    };
+
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
+    ).rejects.toThrow(/last-chance re-list found/i);
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
   });
 
   it("refuses to adopt a foreign batch whose input_file_id does not match the sidecar", async () => {
@@ -406,7 +438,8 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
 
     await reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved));
 
-    expect(c.listBatches).toHaveBeenCalledTimes(2);
+    // Main list (2 pages) + last-chance re-list before create.
+    expect(c.listBatches).toHaveBeenCalledTimes(3);
     expect(c.create).toHaveBeenCalledTimes(1);
   });
 

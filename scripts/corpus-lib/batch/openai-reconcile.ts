@@ -12,6 +12,19 @@ import type {
 // first listed remote batches for this run id; we never call `upload` unless
 // we've first listed remote files for this run id. This keeps a crashed run
 // from double-billing the summarize step.
+//
+// Concurrency model: the list-then-create window is not atomic at the OpenAI
+// API level (the Batch endpoint has no idempotency key). The architectural
+// defense against two concurrent resumes of the same sidecar is the
+// `--sole-writer` flag, already enforced at the CLI layer in
+// `corpus-ingest.ts` and `corpus-recover.ts` (see
+// `scripts/corpus-lib/sole-writer.ts`). With `--sole-writer` honored, only one
+// batch process runs at a time and the race window is closed.
+//
+// As a defense-in-depth narrow-band measure, this reconciler performs one
+// last-chance re-list immediately before each `create` call. The remaining
+// race window is the few milliseconds between that re-list and the create
+// response — both processes must hit that exact interval to double-bill.
 
 export interface ReconcileDeps {
   batch: OpenAIBatchClient;
@@ -63,7 +76,11 @@ export async function reconcileOpenAIPreSubmitSidecar(
     if (remote.length > 1) {
       throw ambiguousBatchesError(runId, remote.map((m) => m.info));
     }
-    const info = await deps.batch.create(existing.inputFileId, runId);
+    const info = await createOnceWithLastChanceCheck(
+      deps.batch,
+      runId,
+      existing.inputFileId,
+    );
     const submitted = submittedSidecarFrom(existing, info, existing.inputFileId);
     await deps.saveSidecar(submitted);
     log(`No remote batch; creating once for file ${existing.inputFileId} -> ${info.id}`);
@@ -131,7 +148,7 @@ export async function reconcileOpenAIPreSubmitSidecar(
   if (remote.length > 1) {
     throw ambiguousBatchesError(runId, remote.map((m) => m.info));
   }
-  const info = await deps.batch.create(inputFileId, runId);
+  const info = await createOnceWithLastChanceCheck(deps.batch, runId, inputFileId);
   const submitted = submittedSidecarFrom(existing, info, inputFileId);
   await deps.saveSidecar(submitted);
   log(
@@ -139,6 +156,32 @@ export async function reconcileOpenAIPreSubmitSidecar(
       `(checkpoints=${checkpointsBefore})`,
   );
   return submitted;
+}
+
+// Defense-in-depth: re-list remote batches by run id immediately before
+// calling `create`. Closes the multi-millisecond window between the main
+// reconcile-time list and the create call (the architectural sole-writer
+// contract at the CLI layer is the primary defense).
+async function createOnceWithLastChanceCheck(
+  batch: OpenAIBatchClient,
+  runId: string,
+  inputFileId: string,
+) {
+  const lastChance = await findBatchesByRunId(batch, runId);
+  if (lastChance.length === 1) {
+    const match = assertResponsesBatchShape(lastChance[0]!.raw, {
+      id: lastChance[0]!.info.id,
+      runId,
+    });
+    throw new Error(
+      `OpenAI run ${runId}: last-chance re-list found batch ${match.id}; ` +
+        `refusing to create a second batch for this run id`,
+    );
+  }
+  if (lastChance.length > 1) {
+    throw ambiguousBatchesError(runId, lastChance.map((m) => m.info));
+  }
+  return batch.create(inputFileId, runId);
 }
 
 async function findFilesByRunId(
