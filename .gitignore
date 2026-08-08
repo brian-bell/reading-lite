@@ -10,6 +10,7 @@ dist/
 .import-reading-list-index.json
 .failed-attempts/
 .summarizer-eval/
+.summarizer-comparisons/
 # Generated corpus-audit / reading-list outputs (written to cwd)
 INDEX.md
 index.json
