@@ -90,7 +90,9 @@ export async function extractReddit(sourceUrl: string, deps: RedditDeps): Promis
   }
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const guardedFetch = makeBrowserFetch(safeFetch(deps.fetch, { lookup: deps.lookup }));
+  const guardedFetch = makeBrowserFetch(
+    safeFetch(deps.fetch, { lookup: deps.lookup, rewriteRedirect: redditRedirectTarget }),
+  );
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -151,6 +153,20 @@ export async function extractReddit(sourceUrl: string, deps: RedditDeps): Promis
 
 function isHtmlContentType(contentType: string): boolean {
   return /(?:^|;|\s)(?:text\/html|application\/xhtml\+xml)(?:;|\s|$)/i.test(contentType);
+}
+
+// Reddit's redirectors (redd.it, /s/ share links) resolve to the canonical
+// thread page URL — the Location carries neither the .json suffix nor the
+// raw_json query. Re-apply the thread-JSON shape to any redirect target that
+// is itself a recognized thread URL; anything else (a login wall, an off-site
+// hop) follows untouched under the same per-hop guards and lands on the normal
+// response policy.
+function redditRedirectTarget(target: string): string {
+  try {
+    return redditJsonUrl(target);
+  } catch {
+    return target;
+  }
 }
 
 function looksLikeHtml(text: string): boolean {

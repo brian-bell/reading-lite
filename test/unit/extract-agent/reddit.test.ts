@@ -136,6 +136,52 @@ describe("extractReddit", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("re-applies the .json request shape when a shortlink redirect drops it", async () => {
+    // redd.it and /s/ share links resolve to the canonical thread page; the
+    // Location carries neither the .json suffix nor the raw_json query. The
+    // route re-applies both to the redirect target so a shortlink recovers the
+    // same unescaped listing a canonical URL would.
+    const sourceUrl = "https://redd.it/1ua2lxq/";
+    const canonical = "https://www.reddit.com/r/programming/comments/1ua2lxq/old_software/";
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: canonical } }))
+      .mockResolvedValueOnce(jsonResponse());
+
+    const outcome = await extractReddit(sourceUrl, {
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      lookup: publicLookup(),
+      maxBytes: 1024 * 1024,
+    });
+
+    expect(outcome).toEqual({ kind: "extracted", body: buildRedditImport(sourceUrl, THREAD_JSON) });
+    expect(vi.mocked(fetch).mock.calls.map((call) => call[0])).toEqual([
+      `https://redd.it/1ua2lxq.json?${JSON_QUERY}`,
+      `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
+    ]);
+  });
+
+  it("follows a redirect to a non-thread destination without rewriting it", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "https://www.reddit.com/login/" } }),
+      )
+      .mockResolvedValueOnce(new Response("<html>login wall</html>"));
+
+    const outcome = await extractReddit(ORIGINAL_URL, {
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      lookup: publicLookup(),
+      maxBytes: 1024,
+    });
+
+    expect(outcome).toMatchObject({ kind: "manual" });
+    expect(vi.mocked(fetch).mock.calls.map((call) => call[0])).toEqual([
+      `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
+      "https://www.reddit.com/login/",
+    ]);
+  });
+
   it("rejects URL credentials before fetch and redacts them from the error", async () => {
     const fetch = vi.fn();
     const outcome = await extractReddit(
