@@ -289,6 +289,8 @@ describe("submitOpenAIBatch", () => {
       }),
       get: vi.fn(),
       content: vi.fn(),
+      listFiles: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], has_more: false })),
     };
 
     const result = await submitOpenAIBatch([target], prepared, {
@@ -297,6 +299,9 @@ describe("submitOpenAIBatch", () => {
       runId: "run_stable",
       batch: client,
       putObject: noopPut(),
+      saveInputJsonl: vi.fn(async (jsonl: string) => {
+        order.push(`saveJsonl:${jsonl.length}`);
+      }),
       saveSidecar: vi.fn(async (sidecar: PersistedSidecar) => {
         saved.push(sidecar);
         order.push(`save:${sidecar.phase}`);
@@ -304,12 +309,14 @@ describe("submitOpenAIBatch", () => {
     });
 
     expect(order).toEqual([
+      `saveJsonl:${prepared.jsonl.length}`,
       "save:uploading",
       "upload:run_stable",
       "save:creating",
       "create:file_input:run_stable",
       "save:submitted",
     ]);
+    expect(saved[0]!.targets).toEqual(result.sidecar.targets);
     expect(saved).toMatchObject([
       {
         provider: "openai",

@@ -77,6 +77,7 @@ function harness(seed: Record<string, string> = {}) {
     ),
   };
   let n = 0;
+  let inputJsonl: string | null = null;
   const deps: FreshMarkdownRunDeps = {
     r2: r2 as any,
     vectorize: vectorize as any,
@@ -101,6 +102,10 @@ function harness(seed: Record<string, string> = {}) {
     clearSidecar: vi.fn(async () => {
       sidecar = null;
     }),
+    saveInputJsonl: vi.fn(async (jsonl: string) => {
+      inputJsonl = jsonl;
+    }),
+    loadInputJsonl: vi.fn(async () => inputJsonl),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
   return { store, r2, vectorize, batch, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };
@@ -174,6 +179,8 @@ describe("runFreshMarkdownBatch — fresh run", () => {
           }) + "\n"
         );
       }),
+      listFiles: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], has_more: false })),
     };
 
     const result = await runFreshMarkdownBatch(

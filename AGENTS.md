@@ -262,8 +262,14 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   Worker terminal-write contract. Version-2 sidecars pin provider, model,
   OpenAI reasoning effort, and a stable run id, so resume is independent of
   later environment changes and never falls back across providers. OpenAI
-  upload/create phases are persisted and reconciled before creating another
-  remote object after a crash. Like fresh ingest it eagerly claims by-url
+  upload/create phases are persisted (companion `.batch.input.jsonl` holds
+  the exact bytes, written before the `uploading` checkpoint) and
+  auto-reconciled on resume via `scripts/corpus-lib/batch/openai-reconcile.ts`:
+  the run lists remote files by `reading-lite-${runId}.jsonl` and remote
+  batches by `metadata.run_id`, adopts what already exists, and otherwise
+  advances the incomplete step once. Ambiguous matches fail closed rather
+  than risk double-billing. Anthropic pre-submit and OpenAI `activating`
+  sidecars still require manual reconcile. Like fresh ingest it eagerly claims by-url
   ownership before batch submit
   (`activateRecoverTargets` in `activation-phase.ts`, wired in `runBatch`), but
   for a recover target the slot is usually already held (realtime-failed readings

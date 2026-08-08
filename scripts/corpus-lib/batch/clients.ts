@@ -128,6 +128,23 @@ export interface OpenAIBatchClient {
   create(inputFileId: string, runId: string): Promise<OpenAIBatchInfo>;
   get(batchId: string): Promise<OpenAIBatchInfo>;
   content(fileId: string): Promise<string>;
+  listFiles(opts?: {
+    purpose?: string;
+    after?: string;
+    limit?: number;
+  }): Promise<{
+    data: OpenAIFile[];
+    has_more: boolean;
+    last_id?: string;
+  }>;
+  listBatches(opts?: {
+    after?: string;
+    limit?: number;
+  }): Promise<{
+    data: OpenAIBatchInfo[];
+    has_more: boolean;
+    last_id?: string;
+  }>;
 }
 
 export class OpenAIBatchError extends Error {
@@ -162,6 +179,9 @@ export interface OpenAIBatchInfo {
     completed: number;
     failed: number;
   };
+  // The API may omit metadata or return null. Reconcilers key on
+  // `metadata?.run_id` to adopt remote batches created by prior runs.
+  metadata?: Record<string, string> | null;
 }
 
 const OpenAIBatchInfoSchema = z
@@ -183,6 +203,7 @@ const OpenAIBatchInfoSchema = z
         failed: z.number().int().nonnegative(),
       })
       .default({ total: 0, completed: 0, failed: 0 }),
+    metadata: z.record(z.string(), z.string()).nullish(),
   })
   .passthrough();
 
@@ -273,6 +294,67 @@ export function makeOpenAIBatchClient(
         );
       }
       return response.text();
+    },
+    async listFiles(opts) {
+      const url = new URL(OPENAI_FILES_URL);
+      if (opts?.purpose) url.searchParams.set("purpose", opts.purpose);
+      if (opts?.after) url.searchParams.set("after", opts.after);
+      if (opts?.limit !== undefined) url.searchParams.set("limit", String(opts.limit));
+      const response = await deps.fetch(url, {
+        method: "GET",
+        headers: { authorization },
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "files list",
+          response.status,
+          text || `OpenAI files list returned ${response.status}`,
+        );
+      }
+      const body = (await response.json()) as {
+        data?: unknown[];
+        has_more?: unknown;
+        last_id?: unknown;
+      };
+      const data = (Array.isArray(body.data) ? body.data : []).map(
+        (f) => OpenAIFileSchema.parse(f),
+      );
+      return {
+        data,
+        has_more: Boolean(body.has_more),
+        last_id: typeof body.last_id === "string" ? body.last_id : undefined,
+      };
+    },
+    async listBatches(opts) {
+      const url = new URL(OPENAI_BATCHES_URL);
+      if (opts?.after) url.searchParams.set("after", opts.after);
+      if (opts?.limit !== undefined) url.searchParams.set("limit", String(opts.limit));
+      const response = await deps.fetch(url, {
+        method: "GET",
+        headers: { authorization },
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "batches list",
+          response.status,
+          text || `OpenAI batches list returned ${response.status}`,
+        );
+      }
+      const body = (await response.json()) as {
+        data?: unknown[];
+        has_more?: unknown;
+        last_id?: unknown;
+      };
+      const data = (Array.isArray(body.data) ? body.data : []).map((b) =>
+        OpenAIBatchInfoSchema.parse(b),
+      );
+      return {
+        data,
+        has_more: Boolean(body.has_more),
+        last_id: typeof body.last_id === "string" ? body.last_id : undefined,
+      };
     },
   };
 }

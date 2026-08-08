@@ -170,6 +170,66 @@ describe("makeOpenAIBatchClient", () => {
     await expect(client.get("batch_1")).resolves.toMatchObject(expected);
   });
 
+  it("lists files with purpose=batch and accepts a pagination cursor", async () => {
+    const files = [
+      {
+        id: "file_1",
+        object: "file",
+        bytes: 10,
+        filename: "reading-lite-run_1.jsonl",
+        purpose: "batch",
+      },
+      {
+        id: "file_2",
+        object: "file",
+        bytes: 20,
+        filename: "reading-lite-run_1.jsonl",
+        purpose: "batch",
+      },
+    ];
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json({
+          object: "list",
+          data: [files[0]],
+          has_more: true,
+          last_id: "file_1",
+        }),
+      )
+      .mockResolvedValueOnce(
+        json({
+          object: "list",
+          data: [files[1]],
+          has_more: false,
+          last_id: "file_2",
+        }),
+      );
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    const page1 = await client.listFiles({ purpose: "batch" });
+    expect(page1.data).toHaveLength(1);
+    expect(page1.data[0]!.id).toBe("file_1");
+    expect(page1.has_more).toBe(true);
+
+    const page2 = await client.listFiles({ purpose: "batch", after: "file_1" });
+    expect(page2.data.map((f) => f.id)).toEqual(["file_2"]);
+    expect(page2.has_more).toBe(false);
+
+    const firstUrl = new URL(fetchFn.mock.calls[0]![0] as string);
+    expect(firstUrl.pathname).toBe("/v1/files");
+    expect(firstUrl.searchParams.get("purpose")).toBe("batch");
+    expect(new Headers(fetchFn.mock.calls[0]![1]!.headers).get("authorization")).toBe(
+      "Bearer sk-oa",
+    );
+
+    const secondUrl = new URL(fetchFn.mock.calls[1]![0] as string);
+    expect(secondUrl.searchParams.get("after")).toBe("file_1");
+  });
+
   it("retrieves batch status and file content by id", async () => {
     const batch = {
       id: "batch_1",

@@ -227,4 +227,45 @@ export async function saveSidecar(path: string, sidecar: PersistedSidecar): Prom
 
 export async function clearSidecar(path: string): Promise<void> {
   await fs.rm(path, { force: true });
+  await fs.rm(inputJsonlPath(path), { force: true });
+}
+
+// Exact JSONL bytes persisted beside the sidecar so a resume from phase
+// "uploading" with no remote file can re-upload the *same* payload. The bytes
+// are written before the "uploading" checkpoint so a crash after either step
+// leaves the sidecar in a state whose local bytes are recoverable.
+export function inputJsonlPath(sidecarPath: string): string {
+  return sidecarPath.replace(/\.json$/i, "") + ".input.jsonl";
+}
+
+export async function saveInputJsonl(
+  sidecarPath: string,
+  jsonl: string,
+): Promise<void> {
+  const path = inputJsonlPath(sidecarPath);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tmp, jsonl);
+  await fs.rename(tmp, path);
+}
+
+export async function loadInputJsonl(
+  sidecarPath: string,
+): Promise<string | null> {
+  try {
+    return await fs.readFile(inputJsonlPath(sidecarPath), "utf8");
+  } catch (e) {
+    if (
+      typeof e === "object" &&
+      e &&
+      "code" in e &&
+      (e as { code?: string }).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw e;
+  }
+}
+
+export async function clearInputJsonl(sidecarPath: string): Promise<void> {
+  await fs.rm(inputJsonlPath(sidecarPath), { force: true });
 }

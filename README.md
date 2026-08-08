@@ -366,8 +366,14 @@ recorded in a versioned sidecar (`./corpus-ingest.batch.json` by default);
 re-running resumes that batch instead of creating a second (double-billed) one.
 The sidecar pins provider, model, OpenAI reasoning effort, and a stable run id,
 so an environment change cannot switch a resume to another provider. OpenAI's
-pre-submit upload/create phases are also persisted and reconciled after a crash
-before any new remote object is created. There is no cross-provider fallback.
+pre-submit upload/create phases are persisted (companion `.batch.input.jsonl`
+holds the exact JSONL bytes, written before the `uploading` checkpoint) and
+auto-reconciled on resume: the run lists remote files by filename
+(`reading-lite-${runId}.jsonl`) and remote batches by `metadata.run_id`,
+adopts what already exists, and otherwise advances the incomplete step once.
+An ambiguous match fails closed rather than risk double-billing. Anthropic
+pre-submit and OpenAI `activating` sidecars still require manual reconcile.
+There is no cross-provider fallback.
 The tools always need `CORPUS_R2_*`, `CORPUS_CF_API_TOKEN`, and
 `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is needed only for an
 Anthropic start or resume. `--execute` requires the applicable credentials,

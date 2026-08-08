@@ -42,6 +42,10 @@ export interface OpenAISubmitDeps {
   runId: string;
   batch: OpenAIBatchClient;
   putObject(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
+  // Persisted *before* the "uploading" checkpoint so a resume whose remote
+  // upload never landed can still re-upload the exact bytes. Resume via
+  // openai-reconcile.ts uses loadInputJsonl to recover this JSONL.
+  saveInputJsonl(jsonl: string): Promise<void>;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
 }
 
@@ -128,6 +132,11 @@ export async function submitOpenAIBatch(
     errorFileId: null,
     targets: sidecarTargets,
   };
+
+  // Persist the exact JSONL first so a resume from "uploading" can re-upload
+  // the same bytes when the prior remote upload was lost (see
+  // openai-reconcile.ts).
+  await deps.saveInputJsonl(prepared.jsonl);
 
   await deps.saveSidecar({
     ...base,

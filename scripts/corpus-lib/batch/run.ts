@@ -34,6 +34,7 @@ import type {
 } from "./types";
 import type { ActivationResult } from "./activation-phase";
 import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
+import { reconcileOpenAIPreSubmitSidecar } from "./openai-reconcile";
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -54,6 +55,13 @@ export interface BatchRunDeps {
   loadSidecar(): Promise<PersistedSidecar | null>;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   clearSidecar(): Promise<void>;
+  // Persist the exact input JSONL beside the sidecar. Required for OpenAI
+  // resume (a crashed upload has no recoverable payload otherwise). For
+  // Anthropic / non-pre-submit paths this is unused.
+  saveInputJsonl?(jsonl: string): Promise<void>;
+  // Resume support for OpenAI pre-submit sidecars: load the exact JSONL that
+  // the failed upload was sending so a re-upload produces the same bytes.
+  loadInputJsonl?(): Promise<string | null>;
   activateExtracted?(
     targets: ExtractedTarget[],
     identity: BatchIdentity,
@@ -101,25 +109,47 @@ export async function runBatchPipeline(
 
   const existing = await deps.loadSidecar();
   if (existing) {
-    if (!existing.batchId) {
-      // A sidecar with no batch id means a prior run crashed either while
-      // activating eager owners or in the create window. Abort rather than risk
-      // silently skipping stranded owners or creating a second, double-billed batch.
+    if (existing.provider === "openai") {
+      const openaiBatch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
+      if (existing.phase === "submitted") {
+        log(`Resuming OpenAI batch ${existing.batchId} (${existing.targets.length} readings)`);
+        const report = await pollAndWriteOpenAI(existing, deps, openaiBatch);
+        return {
+          report,
+          dropped: [],
+          resumed: true,
+          batchId: existing.batchId,
+        };
+      }
+      if (
+        existing.phase === "uploading" ||
+        existing.phase === "creating"
+      ) {
+        // Pre-submit sidecar — auto-reconcile against OpenAI list APIs so a
+        // crashed upload/create window doesn't require manual console cleanup.
+        // The reconciler lists remote files/batches by run id before any
+        // non-idempotent call, so a resumed run never double-bills.
+        const submitted = await reconcileOpenAIPreSubmitSidecar(existing, {
+          batch: openaiBatch,
+          saveSidecar: deps.saveSidecar,
+          ...(deps.loadInputJsonl ? { loadInputJsonl: deps.loadInputJsonl } : {}),
+          log,
+        });
+        const report = await pollAndWriteOpenAI(submitted, deps, openaiBatch);
+        return {
+          report,
+          dropped: [],
+          resumed: true,
+          batchId: submitted.batchId,
+        };
+      }
+      // OpenAI `activating` (no remote object) keeps the manual reconcile path.
       throw noIdReconciliationError(existing);
     }
-    if (existing.provider === "openai") {
-      if (existing.phase !== "submitted") {
-        throw noIdReconciliationError(existing);
-      }
-      const batch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
-      log(`Resuming OpenAI batch ${existing.batchId} (${existing.targets.length} readings)`);
-      const report = await pollAndWriteOpenAI(existing, deps, batch);
-      return {
-        report,
-        dropped: [],
-        resumed: true,
-        batchId: existing.batchId,
-      };
+    // Anthropic: an empty batchId still aborts; we have no remote-tagged
+    // identity to adopt.
+    if (!existing.batchId) {
+      throw noIdReconciliationError(existing);
     }
     const batch = requireAnthropicBatchClient(deps, "resume pinned sidecar");
     const sidecar = existing as Sidecar;
@@ -256,6 +286,14 @@ export async function runBatchPipeline(
         batch: openaiBatch!,
         putObject: (key, body, contentType) =>
           deps.r2.put(key, body, { contentType }),
+        saveInputJsonl: deps.saveInputJsonl ?? (() => {
+          // OpenAI resume depends on the companion JSONL; if a caller wires
+          // an OpenAI provider without one, fail loudly here rather than
+          // silently lose the upload bytes on the next crash.
+          throw new Error(
+            "OpenAI submission requires a saveInputJsonl helper on BatchRunDeps",
+          );
+        }),
         saveSidecar: deps.saveSidecar,
       },
     );
