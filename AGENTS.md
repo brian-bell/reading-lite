@@ -248,7 +248,15 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   `<thread>.json`, renders it with the shared `redditListingToMarkdown` parser,
   and imports the markdown (`scripts/reddit-import.ts` → `/api/readings/import-markdown`).
   No Reddit app / OAuth credentials are involved. corpus-recover routes Reddit
-  rows to `skip` for the same reason — recover them with the skill.
+  rows to `skip` for the same reason. The extract-agent's Reddit route
+  (`scripts/extract-agent-lib/reddit.ts`) instead attempts one anonymous fetch
+  of `<thread>.json?raw_json=1&limit=20&sort=top` (the skill's exact query;
+  `raw_json=1` keeps Reddit from HTML-escaping entities) per manifest version
+  through `safeFetch` + browser headers, parses with the shared
+  `buildRedditImport`, and re-enters via import-markdown. A challenge
+  (401/403/429 or served HTML) becomes a durable terminal `manual` sidecar
+  outcome that stays in the run report's manual queue until the manifest moves
+  — recover those with the skill.
 - YouTube watch pages are JS shells with no article body, so the extractor
   special-cases them in-worker (`src/modules/extractor/youtube.ts`). It detects
   watch/`youtu.be`/`shorts`/`live`/`embed` URLs (`isYoutubeWatchUrl`) and builds

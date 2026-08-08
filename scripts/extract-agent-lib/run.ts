@@ -99,7 +99,9 @@ export interface PerRowOutcome {
   why: string;
   outcome?: RowOutcome;
   // Which tier produced the recorded outcome. Absent when nothing was
-  // extracted at all (planned, deferred, manual rows).
+  // extracted at all (planned, deferred, manual rows) — and on Reddit rows,
+  // where the extraction route is already named by `route` and the
+  // static/headless distinction this field exists to mark does not apply.
   tier?: "static" | "headless";
   detail?: string;
 }

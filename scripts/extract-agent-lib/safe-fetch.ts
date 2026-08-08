@@ -42,6 +42,12 @@ export class DestinationResolutionError extends Error {
 export interface SafeFetchDeps {
   lookup: LookupFn;
   maxHops?: number;
+  // Optional redirect-target policy, applied to each resolved Location before
+  // the hop is vetted and fetched; default identity. Lets a route re-apply its
+  // required request shape (the Reddit route's `.json?raw_json=1`) when a
+  // redirector drops it. The rewritten URL goes through the same per-hop
+  // destination check as any other — a hook can narrow, never widen.
+  rewriteRedirect?: (target: string) => string;
 }
 
 const DEFAULT_MAX_HOPS = 5;
@@ -87,7 +93,7 @@ export function safeFetch(base: typeof fetch, deps: SafeFetchDeps): typeof fetch
       // strip is permanent for the rest of the chain — a hop back to the
       // original origin must not resurrect what an off-origin hop already saw.
       if (next.origin !== new URL(url).origin) stripCredentials(headers);
-      url = next.href;
+      url = deps.rewriteRedirect?.(next.href) ?? next.href;
     }
   };
 }

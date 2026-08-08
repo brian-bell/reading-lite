@@ -46,6 +46,46 @@ describe("safeFetch", () => {
     expect(base).toHaveBeenCalledTimes(1);
   });
 
+  it("applies the redirect-target rewrite hook to every hop, still vetting the result", async () => {
+    const base = vi
+      .fn()
+      .mockResolvedValueOnce(redirect("https://public.example/canonical"))
+      .mockResolvedValueOnce(new Response("ok"));
+    const seen: string[] = [];
+    const wrapped = safeFetch(base as unknown as typeof fetch, {
+      lookup: publicLookup,
+      rewriteRedirect: (target) => {
+        seen.push(target);
+        return `${target}.json?raw=1`;
+      },
+    });
+
+    const res = await wrapped("https://public.example/start.json?raw=1");
+
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(["https://public.example/canonical"]);
+    expect(vi.mocked(base).mock.calls.map((call) => call[0])).toEqual([
+      "https://public.example/start.json?raw=1",
+      "https://public.example/canonical.json?raw=1",
+    ]);
+  });
+
+  it("rejects a rewritten redirect target that resolves privately", async () => {
+    const base = vi.fn().mockResolvedValue(redirect("https://public.example/canonical"));
+    const lookup: LookupFn = async (hostname) => [
+      { address: hostname === "evil.example" ? "192.168.1.2" : "93.184.216.34" },
+    ];
+    const wrapped = safeFetch(base as unknown as typeof fetch, {
+      lookup,
+      rewriteRedirect: () => "https://evil.example/hijacked.json",
+    });
+
+    // The hook output goes through the same per-hop destination check: a
+    // rewrite cannot smuggle a request past the guard.
+    await expect(wrapped("https://public.example/start")).rejects.toThrow(/192\.168\.1\.2/);
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up after the hop ceiling with a structured error", async () => {
     const base = vi.fn().mockImplementation(async (url: string) => {
       const n = Number(new URL(url).pathname.slice(1) || 0);
