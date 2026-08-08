@@ -366,13 +366,17 @@ recorded in a versioned sidecar (`./corpus-ingest.batch.json` by default);
 re-running resumes that batch instead of creating a second (double-billed) one.
 The sidecar pins provider, model, OpenAI reasoning effort, and a stable run id,
 so an environment change cannot switch a resume to another provider. OpenAI's
-pre-submit upload/create phases are persisted (companion `.batch.input.jsonl`
-holds the exact JSONL bytes, written before the `uploading` checkpoint) and
-auto-reconciled on resume: the run lists remote files by filename
-(`reading-lite-${runId}.jsonl`) and remote batches by `metadata.run_id`,
-adopts what already exists, and otherwise advances the incomplete step once.
-An ambiguous match fails closed rather than risk double-billing. Anthropic
-pre-submit and OpenAI `activating` sidecars still require manual reconcile.
+pre-submit upload/create phases are persisted (companion `<sidecar>.input.jsonl`
+holds the exact JSONL bytes, written before the `uploading` checkpoint). On
+resume, the reconciler adopts what already exists: remote files by filename
+(`reading-lite-${runId}.jsonl`), remote batches by `metadata.run_id`. The
+expensive `create` step is **fail-closed**: a list-then-create cannot
+distinguish a successful-but-lost-response prior create from a failed one
+(the OpenAI Batch API has no idempotency key, and listing can lag). An
+ambiguous match or no visible remote batch at the create step aborts and
+asks the operator to reconcile manually. Anthropic pre-submit and OpenAI
+`activating` sidecars still require manual reconcile. A sidecar-scoped file
+lock serializes the entire reconcile path against concurrent resumes.
 There is no cross-provider fallback.
 The tools always need `CORPUS_R2_*`, `CORPUS_CF_API_TOKEN`, and
 `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is needed only for an

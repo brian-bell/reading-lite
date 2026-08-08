@@ -162,10 +162,14 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
     expect(saved.map((s) => s.phase)).toEqual(["submitted"]);
   });
 
-  it("creates a batch once when the remote list has no match for this run id", async () => {
+  it("fails closed from a creating sidecar when no remote batch is visible (no auto-create)", async () => {
+    // The OpenAI Batch API has no idempotency key. A list-then-create cannot
+    // distinguish a failed prior create from a successful-but-lost-response
+    // one (visibility lag may temporarily hide it). The reconciler refuses
+    // to create and asks the operator to reconcile manually.
     const c = makeClient();
     c.create.mockResolvedValueOnce({
-      id: "batch_new",
+      id: "batch_would_have_double_billed",
       input_file_id: "file_input",
       status: "validating",
       output_file_id: null,
@@ -178,27 +182,24 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
       targets: [sampleTarget],
     };
 
-    const result = await reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved));
-
-    expect(c.create).toHaveBeenCalledTimes(1);
-    expect(c.create).toHaveBeenCalledWith("file_input", "run_1");
-    // The last-chance re-list is one extra batch list (page 0 + last-chance).
-    expect(c.listBatches.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(result.batchId).toBe("batch_new");
-    expect(saved.map((s) => s.phase)).toEqual(["submitted"]);
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
+    ).rejects.toThrow(/Refusing to create a second batch/);
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
   });
 
-  it("acquires a create-window lock for every `create` call and releases it", async () => {
+  it("acquires the reconcile lock once for the whole path and releases it", async () => {
     const c = makeClient();
-    c.listBatches.mockResolvedValueOnce(batchesResponse([]));
-    c.create.mockResolvedValueOnce({
-      id: "batch_new",
-      input_file_id: "file_input",
-      status: "validating",
-      output_file_id: null,
-      error_file_id: null,
-      request_counts: { total: 1, completed: 0, failed: 0 },
-    });
+    c.listBatches.mockResolvedValueOnce(
+      batchesResponse([
+        {
+          id: "batch_adopt",
+          status: "validating",
+          metadata: { run_id: "run_1" },
+        },
+      ]),
+    );
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAICreatingSidecar = {
       ...baseCreating,
@@ -206,10 +207,9 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
     };
     const deps = makeDeps(c.batch, saved);
 
-    const result = await reconcileOpenAIPreSubmitSidecar(sidecar, deps);
+    await reconcileOpenAIPreSubmitSidecar(sidecar, deps);
 
     expect(deps.acquireLock).toHaveBeenCalledTimes(1);
-    expect(result.batchId).toBe("batch_new");
   });
 
   it("fails closed when the create-window lock cannot be acquired", async () => {
@@ -230,36 +230,6 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
     await expect(
       reconcileOpenAIPreSubmitSidecar(sidecar, deps),
     ).rejects.toThrow(/held by another process/);
-    expect(c.create).not.toHaveBeenCalled();
-    expect(saved).toHaveLength(0);
-  });
-
-  it("refuses to create when a last-chance re-list discovers a concurrent batch", async () => {
-    // Simulates a concurrent resume that successfully created a batch
-    // between the reconcile's main list and its create call. The
-    // last-chance re-list must observe the new batch and abort this run
-    // rather than double-create.
-    const c = makeClient();
-    c.listBatches
-      .mockResolvedValueOnce(batchesResponse([]))
-      .mockResolvedValueOnce(
-        batchesResponse([
-          {
-            id: "batch_concurrent",
-            status: "validating",
-            metadata: { run_id: "run_1" },
-          },
-        ]),
-      );
-    const saved: PersistedSidecar[] = [];
-    const sidecar: OpenAICreatingSidecar = {
-      ...baseCreating,
-      targets: [sampleTarget],
-    };
-
-    await expect(
-      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
-    ).rejects.toThrow(/last-chance re-list found/i);
     expect(c.create).not.toHaveBeenCalled();
     expect(saved).toHaveLength(0);
   });
@@ -320,21 +290,16 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
 });
 
 describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
-  it("uploads the persisted JSONL once when no remote file matches the run id", async () => {
+  it("uploads the persisted JSONL once when no remote file matches the run id, then fails closed (no create)", async () => {
+    // Re-uploading the JSONL is cheap and recoverable. The reconciler
+    // does it, advances to `creating`, then refuses to call `create`
+    // because no remote batch is visible. Operator must reconcile.
     const c = makeClient();
     c.upload.mockResolvedValueOnce({
       id: "file_input",
       filename: "reading-lite-run_1.jsonl",
       purpose: "batch",
       bytes: 12,
-    });
-    c.create.mockResolvedValueOnce({
-      id: "batch_new",
-      input_file_id: "file_input",
-      status: "validating",
-      output_file_id: null,
-      error_file_id: null,
-      request_counts: { total: 1, completed: 0, failed: 0 },
     });
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAIUploadingSidecar = {
@@ -343,21 +308,21 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
     };
     const jsonl = '{"custom_id":"rd_a"}\n';
 
-    const result = await reconcileOpenAIPreSubmitSidecar(
-      sidecar,
-      makeDeps(c.batch, saved, async () => jsonl),
-    );
-
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(
+        sidecar,
+        makeDeps(c.batch, saved, async () => jsonl),
+      ),
+    ).rejects.toThrow(/Refusing to create a second batch/);
     expect(c.listFiles).toHaveBeenCalledTimes(1);
     expect(c.upload).toHaveBeenCalledTimes(1);
     expect(c.upload).toHaveBeenCalledWith(jsonl, "run_1");
-    expect(c.create).toHaveBeenCalledTimes(1);
-    expect(c.create).toHaveBeenCalledWith("file_input", "run_1");
-    expect(result.batchId).toBe("batch_new");
-    expect(saved.map((s) => s.phase)).toEqual(["creating", "submitted"]);
+    expect(c.create).not.toHaveBeenCalled();
+    // The creating checkpoint was written before the failed create.
+    expect(saved.map((s) => s.phase)).toEqual(["creating"]);
   });
 
-  it("adopts the remote file and skips upload when exactly one file matches", async () => {
+  it("adopts the remote file and skips upload when exactly one file matches, then fails closed (no create)", async () => {
     const c = makeClient();
     c.listFiles.mockResolvedValueOnce({
       data: [
@@ -370,29 +335,18 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
       ],
       has_more: false,
     });
-    c.listBatches.mockResolvedValueOnce({ data: [], has_more: false });
-    c.create.mockResolvedValueOnce({
-      id: "batch_new",
-      input_file_id: "file_existing",
-      status: "validating",
-      output_file_id: null,
-      error_file_id: null,
-      request_counts: { total: 1, completed: 0, failed: 0 },
-    });
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAIUploadingSidecar = {
       ...baseUploading,
       targets: [sampleTarget],
     };
 
-    const result = await reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved));
-
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
+    ).rejects.toThrow(/Refusing to create a second batch/);
     expect(c.upload).not.toHaveBeenCalled();
-    expect(c.create).toHaveBeenCalledTimes(1);
-    expect(c.create).toHaveBeenCalledWith("file_existing", "run_1");
-    expect(result.inputFileId).toBe("file_existing");
-    expect(result.batchId).toBe("batch_new");
-    expect(saved.map((s) => s.phase)).toEqual(["creating", "submitted"]);
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved.map((s) => s.phase)).toEqual(["creating"]);
   });
 
   it("aborts without upload or create when the local JSONL is missing", async () => {
@@ -450,7 +404,7 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
     expect(c.create).not.toHaveBeenCalled();
   });
 
-  it("paginates batch list when more pages are available before treating as not found", async () => {
+  it("paginates the batch list before failing closed", async () => {
     const c = makeClient();
     c.listFiles.mockResolvedValueOnce({
       data: [
@@ -473,25 +427,18 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
         data: [],
         has_more: false,
       });
-    c.create.mockResolvedValueOnce({
-      id: "batch_new",
-      input_file_id: "file_existing",
-      status: "validating",
-      output_file_id: null,
-      error_file_id: null,
-      request_counts: { total: 1, completed: 0, failed: 0 },
-    });
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAIUploadingSidecar = {
       ...baseUploading,
       targets: [sampleTarget],
     };
 
-    await reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved));
-
-    // Main list (2 pages) + last-chance re-list before create.
-    expect(c.listBatches).toHaveBeenCalledTimes(3);
-    expect(c.create).toHaveBeenCalledTimes(1);
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
+    ).rejects.toThrow(/Refusing to create a second batch/);
+    // Both pages of the list were fetched.
+    expect(c.listBatches).toHaveBeenCalledTimes(2);
+    expect(c.create).not.toHaveBeenCalled();
   });
 
   it("fails closed when the batch list reports has_more without a last_id cursor", async () => {

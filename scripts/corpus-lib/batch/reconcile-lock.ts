@@ -139,9 +139,18 @@ async function confirm(
   }
   return {
     async release() {
-      // Best-effort unlink; missing is fine (TTL reclaim handles it).
+      // Identity-check before unlink: if a stale pause exceeded the TTL
+      // and another holder reclaimed the lock, our unlink would delete
+      // the new holder's record and let a third contender slip through.
       try {
-        await unlink(lockPath);
+        const settledNow = await readLock(lockPath);
+        if (
+          settledNow.lock &&
+          settledNow.lock.pid === expected.pid &&
+          settledNow.lock.started_at === expected.started_at
+        ) {
+          await unlink(lockPath);
+        }
       } catch (e) {
         if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
       }

@@ -9,23 +9,27 @@ import type {
 import { acquireReconcileLock, type ReconcileLock } from "./reconcile-lock";
 
 // Cost-safe resume of a pre-submit OpenAI sidecar (`phase: uploading` or
-// `creating`, `batchId: ""`). On resume we never call `create` unless we've
-// first listed remote batches for this run id; we never call `upload` unless
-// we've first listed remote files for this run id. This keeps a crashed run
-// from double-billing the summarize step.
+// `creating`, `batchId: ""`). On resume we adopt remote objects when the
+// list-then-match finds them. The expensive `create` step is fail-closed:
+// if no remote batch is visible, we abort rather than risk double-billing.
 //
-// Concurrency model: the list-then-create window is not atomic at the OpenAI
-// API level (the Batch endpoint has no idempotency key). The architectural
-// defense against two concurrent resumes of the same sidecar is:
+// Why fail-closed on create: the OpenAI Batch API has no idempotency key.
+// A create that succeeds server-side but loses its response (crash,
+// timeout) cannot be distinguished from a create that failed before
+// reaching OpenAI. A list call right after may temporarily miss the new
+// batch (visibility lag). Re-creating in that window would double-bill.
+// The reconciler therefore refuses to create from a `creating` or
+// `uploading`-after-no-remote-file sidecar when the list is empty, and
+// asks the operator to resolve manually.
+//
+// Concurrency model: the sidecar-scoped file lock (`acquireReconcileLock`)
+// serializes the entire reconcile path against concurrent resumes:
 //   1. `--sole-writer` at the CLI layer (`scripts/corpus-lib/sole-writer.ts`),
 //      an operator acknowledgement that the realtime writer is paused.
-//   2. A sidecar-scoped file lock acquired immediately before each `create`
-//      call via `acquireReconcileLock`. Two concurrent resumes of the same
-//      sidecar cannot both pass the wx create — the loser refuses to create.
-//   3. A last-chance re-list inside `createOnceWithLastChanceCheck` catches
-//      the case where the other process acquired the lock, listed, found
-//      nothing, created, released, and exited before this process's create
-//      call landed (multi-millisecond window).
+//   2. The file lock prevents two concurrent resumes from both adopting
+//      or both uploading. A second resume fails to acquire and aborts.
+//   3. The lock is held for the entire reconcile path (uploading through
+//      creating checkpoint), so even long pauses don't race a new holder.
 
 export interface ReconcileDeps {
   batch: OpenAIBatchClient;
@@ -46,7 +50,7 @@ const BATCH_LIST_PAGE_CAP = 20;
 const INPUT_FILENAME = (runId: string) => `reading-lite-${runId}.jsonl`;
 
 export async function reconcileOpenAIPreSubmitSidecar(
-  existing: OpenAIUploadingSidecar | OpenAICreatingSidecar,
+existing: OpenAIUploadingSidecar | OpenAICreatingSidecar,
   deps: ReconcileDeps,
 ): Promise<OpenAISubmittedSidecar> {
   const log = deps.log ?? (() => {});
@@ -57,56 +61,71 @@ export async function reconcileOpenAIPreSubmitSidecar(
     );
   }
 
-  if (existing.phase === "creating") {
-    log(`Reconciling OpenAI creating sidecar run_id=${runId}`);
-    const remote = await findBatchesByRunId(deps.batch, runId);
-    if (remote.length === 1) {
-      const match = assertResponsesBatchShape(remote[0]!.raw, {
-        id: remote[0]!.info.id,
-        runId,
-      });
-      if (
-        match.input_file_id &&
-        match.input_file_id !== existing.inputFileId
-      ) {
-        throw new Error(
-          `OpenAI run ${runId}: remote batch ${match.id} uses input_file_id=${match.input_file_id} ` +
-            `but sidecar records ${existing.inputFileId}; refusing to adopt a foreign batch`,
-        );
-      }
-      const submitted = submittedSidecarFrom(existing, match, existing.inputFileId);
-      await deps.saveSidecar(submitted);
-      log(`Found remote batch ${match.id}; adopting (no create)`);
-      return submitted;
+  // Serialize the entire reconcile path against concurrent resumes.
+  const lock = await acquireCreateLock(deps);
+  try {
+    if (existing.phase === "creating") {
+      return await reconcileCreatingPhase(existing, deps, log);
     }
-    if (remote.length > 1) {
-      throw ambiguousBatchesError(runId, remote.map((m) => m.info));
-    }
-    const lock = await acquireCreateLock(deps);
-    let submitted: OpenAISubmittedSidecar;
-    try {
-      const info = await createOnceWithLastChanceCheck(
-        deps.batch,
-        runId,
-        existing.inputFileId,
-      );
-      submitted = submittedSidecarFrom(existing, info, existing.inputFileId);
-      await deps.saveSidecar(submitted);
-      log(`No remote batch; creating once for file ${existing.inputFileId} -> ${info.id}`);
-    } finally {
-      await lock.release();
-    }
-    return submitted!;
+    return await reconcileUploadingPhase(existing, deps, log);
+  } finally {
+    await lock.release();
   }
+}
 
-  // phase === "uploading" — inputFileId is null in the sidecar.
+async function reconcileCreatingPhase(
+  existing: OpenAICreatingSidecar,
+  deps: ReconcileDeps,
+  log: (line: string) => void,
+): Promise<OpenAISubmittedSidecar> {
+  const { runId } = existing;
+  log(`Reconciling OpenAI creating sidecar run_id=${runId}`);
+  const remote = await findBatchesByRunId(deps.batch, runId);
+  if (remote.length === 1) {
+    const match = assertResponsesBatchShape(remote[0]!.raw, {
+      id: remote[0]!.info.id,
+      runId,
+    });
+    if (
+      match.input_file_id &&
+      match.input_file_id !== existing.inputFileId
+    ) {
+      throw new Error(
+        `OpenAI run ${runId}: remote batch ${match.id} uses input_file_id=${match.input_file_id} ` +
+          `but sidecar records ${existing.inputFileId}; refusing to adopt a foreign batch`,
+      );
+    }
+    const submitted = submittedSidecarFrom(existing, match, existing.inputFileId);
+    await deps.saveSidecar(submitted);
+    log(`Found remote batch ${match.id}; adopting (no create)`);
+    return submitted;
+  }
+  if (remote.length > 1) {
+    throw ambiguousBatchesError(runId, remote.map((m) => m.info));
+  }
+  // Fail closed: do not create from a `creating` sidecar without a visible
+  // remote batch. Visibility lag could hide a successful prior create.
+  throw new Error(
+    `OpenAI run ${runId}: creating sidecar with no remote batch visible. ` +
+      `Refusing to create a second batch — the prior create may have succeeded ` +
+      `but its response was lost. Reconcile the in-flight batch in the OpenAI ` +
+      `dashboard (look for metadata.run_id=${runId}), then delete the sidecar ` +
+      `and re-run.`,
+  );
+}
+
+async function reconcileUploadingPhase(
+  existing: OpenAIUploadingSidecar,
+  deps: ReconcileDeps,
+  log: (line: string) => void,
+): Promise<OpenAISubmittedSidecar> {
+  const { runId } = existing;
   log(`Reconciling OpenAI uploading sidecar run_id=${runId}`);
   const files = await findFilesByRunId(deps.batch, runId);
   if (files.length > 1) {
     throw ambiguousFilesError(runId, files);
   }
   let inputFileId: string;
-  let checkpointsBefore: number = 0;
   if (files.length === 1) {
     inputFileId = files[0]!.id;
     log(`Found remote input file ${inputFileId}; adopting`);
@@ -130,16 +149,17 @@ export async function reconcileOpenAIPreSubmitSidecar(
     inputFileId = uploaded.id;
     log(`No remote input file; re-uploading persisted JSONL -> ${inputFileId}`);
   }
-  // Adopt / upload complete; advance to "creating" so a crash between list and
-  // create lands on the creating branch instead of re-listing.
+  // Advance to "creating" so the next resume lands on the creating branch.
   const creatingCheckpoint: OpenAICreatingSidecar = {
-    ...(existing as OpenAIUploadingSidecar),
+    ...existing,
     phase: "creating",
     inputFileId,
     processingStatus: "creating",
   };
   await deps.saveSidecar(creatingCheckpoint);
-  checkpointsBefore = 1;
+
+  // Now look for a remote batch. If found, adopt it; if not, fail closed
+  // (visibility lag could hide a successful prior create).
   const remote = await findBatchesByRunId(deps.batch, runId);
   if (remote.length === 1) {
     const match = assertResponsesBatchShape(remote[0]!.raw, {
@@ -160,46 +180,13 @@ export async function reconcileOpenAIPreSubmitSidecar(
   if (remote.length > 1) {
     throw ambiguousBatchesError(runId, remote.map((m) => m.info));
   }
-  const lock = await acquireCreateLock(deps);
-  let submitted: OpenAISubmittedSidecar;
-  try {
-    const info = await createOnceWithLastChanceCheck(deps.batch, runId, inputFileId);
-    submitted = submittedSidecarFrom(existing, info, inputFileId);
-    await deps.saveSidecar(submitted);
-    log(
-      `No remote batch; creating once for file ${inputFileId} -> ${info.id} ` +
-        `(checkpoints=${checkpointsBefore})`,
-    );
-  } finally {
-    await lock.release();
-  }
-  return submitted;
-}
-
-// Defense-in-depth: re-list remote batches by run id immediately before
-// calling `create`. Closes the multi-millisecond window between the main
-// reconcile-time list and the create call (the architectural sole-writer
-// contract at the CLI layer is the primary defense).
-async function createOnceWithLastChanceCheck(
-  batch: OpenAIBatchClient,
-  runId: string,
-  inputFileId: string,
-) {
-  const lastChance = await findBatchesByRunId(batch, runId);
-  if (lastChance.length === 1) {
-    const match = assertResponsesBatchShape(lastChance[0]!.raw, {
-      id: lastChance[0]!.info.id,
-      runId,
-    });
-    throw new Error(
-      `OpenAI run ${runId}: last-chance re-list found batch ${match.id}; ` +
-        `refusing to create a second batch for this run id`,
-    );
-  }
-  if (lastChance.length > 1) {
-    throw ambiguousBatchesError(runId, lastChance.map((m) => m.info));
-  }
-  return batch.create(inputFileId, runId);
+  throw new Error(
+    `OpenAI run ${runId}: uploading sidecar reached the create step but no remote ` +
+      `batch is visible. Refusing to create a second batch — the prior create may ` +
+      `have succeeded but its response was lost. Reconcile the in-flight batch in the ` +
+      `OpenAI dashboard (look for metadata.run_id=${runId}), then delete the sidecar ` +
+      `and re-run.`,
+  );
 }
 
 async function findFilesByRunId(
