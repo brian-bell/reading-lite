@@ -106,6 +106,9 @@ function harness(seed: Record<string, string> = {}) {
       inputJsonl = jsonl;
     }),
     loadInputJsonl: vi.fn(async () => inputJsonl),
+    reconcileAcquireLock: async () => ({
+      release: async () => undefined,
+    }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
   return { store, r2, vectorize, batch, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };

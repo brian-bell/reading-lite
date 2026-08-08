@@ -262,6 +262,7 @@ async function main(): Promise<void> {
     clearSidecar: () => clearSidecar(args.sidecar),
     saveInputJsonl: (jsonl) => saveInputJsonl(args.sidecar, jsonl),
     loadInputJsonl: () => loadInputJsonl(args.sidecar),
+    sidecarFilePath: args.sidecar,
     log: (line) => process.stderr.write(line + "\n"),
   });
 

@@ -142,6 +142,11 @@ function harness(seedManifests: Record<string, Manifest>) {
       inputJsonl = jsonl;
     }),
     loadInputJsonl: vi.fn(async () => inputJsonl),
+    // The reconciler's create-window lock isn't relevant to integration
+    // tests — provide a no-op so the lock release path doesn't touch the fs.
+    reconcileAcquireLock: async () => ({
+      release: async () => undefined,
+    }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
   return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };

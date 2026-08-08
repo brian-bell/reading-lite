@@ -6,6 +6,7 @@ import type {
   OpenAIUploadingSidecar,
   PersistedSidecar,
 } from "./types";
+import { acquireReconcileLock, type ReconcileLock } from "./reconcile-lock";
 
 // Cost-safe resume of a pre-submit OpenAI sidecar (`phase: uploading` or
 // `creating`, `batchId: ""`). On resume we never call `create` unless we've
@@ -15,16 +16,16 @@ import type {
 //
 // Concurrency model: the list-then-create window is not atomic at the OpenAI
 // API level (the Batch endpoint has no idempotency key). The architectural
-// defense against two concurrent resumes of the same sidecar is the
-// `--sole-writer` flag, already enforced at the CLI layer in
-// `corpus-ingest.ts` and `corpus-recover.ts` (see
-// `scripts/corpus-lib/sole-writer.ts`). With `--sole-writer` honored, only one
-// batch process runs at a time and the race window is closed.
-//
-// As a defense-in-depth narrow-band measure, this reconciler performs one
-// last-chance re-list immediately before each `create` call. The remaining
-// race window is the few milliseconds between that re-list and the create
-// response — both processes must hit that exact interval to double-bill.
+// defense against two concurrent resumes of the same sidecar is:
+//   1. `--sole-writer` at the CLI layer (`scripts/corpus-lib/sole-writer.ts`),
+//      an operator acknowledgement that the realtime writer is paused.
+//   2. A sidecar-scoped file lock acquired immediately before each `create`
+//      call via `acquireReconcileLock`. Two concurrent resumes of the same
+//      sidecar cannot both pass the wx create — the loser refuses to create.
+//   3. A last-chance re-list inside `createOnceWithLastChanceCheck` catches
+//      the case where the other process acquired the lock, listed, found
+//      nothing, created, released, and exited before this process's create
+//      call landed (multi-millisecond window).
 
 export interface ReconcileDeps {
   batch: OpenAIBatchClient;
@@ -33,6 +34,11 @@ export interface ReconcileDeps {
   // checkpoint. Required when phase=uploading and no remote file matches.
   loadInputJsonl?(): Promise<string | null>;
   log?(line: string): void;
+  // Sidecar-scoped file lock used to serialize the list-then-create window.
+  // If not provided, the reconciler falls back to `acquireReconcileLock`
+  // deriving the path from `sidecarFilePath`. Provide this in tests.
+  acquireLock?: (sidecarPath: string) => Promise<ReconcileLock>;
+  sidecarFilePath?: string;
 }
 
 const BATCH_LIST_PAGE_CAP = 20;
@@ -76,15 +82,21 @@ export async function reconcileOpenAIPreSubmitSidecar(
     if (remote.length > 1) {
       throw ambiguousBatchesError(runId, remote.map((m) => m.info));
     }
-    const info = await createOnceWithLastChanceCheck(
-      deps.batch,
-      runId,
-      existing.inputFileId,
-    );
-    const submitted = submittedSidecarFrom(existing, info, existing.inputFileId);
-    await deps.saveSidecar(submitted);
-    log(`No remote batch; creating once for file ${existing.inputFileId} -> ${info.id}`);
-    return submitted;
+    const lock = await acquireCreateLock(deps);
+    let submitted: OpenAISubmittedSidecar;
+    try {
+      const info = await createOnceWithLastChanceCheck(
+        deps.batch,
+        runId,
+        existing.inputFileId,
+      );
+      submitted = submittedSidecarFrom(existing, info, existing.inputFileId);
+      await deps.saveSidecar(submitted);
+      log(`No remote batch; creating once for file ${existing.inputFileId} -> ${info.id}`);
+    } finally {
+      await lock.release();
+    }
+    return submitted!;
   }
 
   // phase === "uploading" — inputFileId is null in the sidecar.
@@ -148,13 +160,19 @@ export async function reconcileOpenAIPreSubmitSidecar(
   if (remote.length > 1) {
     throw ambiguousBatchesError(runId, remote.map((m) => m.info));
   }
-  const info = await createOnceWithLastChanceCheck(deps.batch, runId, inputFileId);
-  const submitted = submittedSidecarFrom(existing, info, inputFileId);
-  await deps.saveSidecar(submitted);
-  log(
-    `No remote batch; creating once for file ${inputFileId} -> ${info.id} ` +
-      `(checkpoints=${checkpointsBefore})`,
-  );
+  const lock = await acquireCreateLock(deps);
+  let submitted: OpenAISubmittedSidecar;
+  try {
+    const info = await createOnceWithLastChanceCheck(deps.batch, runId, inputFileId);
+    submitted = submittedSidecarFrom(existing, info, inputFileId);
+    await deps.saveSidecar(submitted);
+    log(
+      `No remote batch; creating once for file ${inputFileId} -> ${info.id} ` +
+        `(checkpoints=${checkpointsBefore})`,
+    );
+  } finally {
+    await lock.release();
+  }
   return submitted;
 }
 
@@ -239,6 +257,19 @@ async function findBatchesByRunId(
     `OpenAI run ${runId}: batch list page cap (${BATCH_LIST_PAGE_CAP}) reached before exhausting results; ` +
       `refusing to create until the operator clears the in-flight batch in the OpenAI dashboard.`,
   );
+}
+
+async function acquireCreateLock(deps: ReconcileDeps): Promise<ReconcileLock> {
+  if (deps.acquireLock) return deps.acquireLock(deps.sidecarFilePath ?? "");
+  if (!deps.sidecarFilePath) {
+    // Test harnesses that don't pass sidecarFilePath can still opt in via
+    // acquireLock; otherwise we fail closed rather than silently serialize
+    // against a phantom path.
+    throw new Error(
+      "OpenAI reconcile requires sidecarFilePath on ReconcileDeps so the create-window lock has a path to lock",
+    );
+  }
+  return acquireReconcileLock(deps.sidecarFilePath);
 }
 
 function submittedSidecarFrom(

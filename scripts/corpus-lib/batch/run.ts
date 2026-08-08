@@ -62,6 +62,12 @@ export interface BatchRunDeps {
   // Resume support for OpenAI pre-submit sidecars: load the exact JSONL that
   // the failed upload was sending so a re-upload produces the same bytes.
   loadInputJsonl?(): Promise<string | null>;
+  // Filesystem path of the sidecar. Used by the OpenAI reconciler to acquire
+  // a create-window lock that serializes the list-then-create critical
+  // section against concurrent resumes.
+  sidecarFilePath?: string;
+  // Override the reconciler's lock acquisition (tests inject a no-op).
+  reconcileAcquireLock?: (path: string) => Promise<{ release(): Promise<void> }>;
   activateExtracted?(
     targets: ExtractedTarget[],
     identity: BatchIdentity,
@@ -133,6 +139,8 @@ export async function runBatchPipeline(
           batch: openaiBatch,
           saveSidecar: deps.saveSidecar,
           ...(deps.loadInputJsonl ? { loadInputJsonl: deps.loadInputJsonl } : {}),
+          ...(deps.sidecarFilePath ? { sidecarFilePath: deps.sidecarFilePath } : {}),
+          ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
           log,
         });
         const report = await pollAndWriteOpenAI(submitted, deps, openaiBatch);

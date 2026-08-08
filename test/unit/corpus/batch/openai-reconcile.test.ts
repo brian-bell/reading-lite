@@ -123,6 +123,11 @@ function makeDeps(
       saved.push(s);
     }),
     ...(loadJsonl ? { loadInputJsonl: loadJsonl } : {}),
+    // Provide an in-memory no-op lock by default so reconcile unit tests
+    // don't touch the filesystem; the lock is exercised in `reconcile-lock.test.ts`.
+    acquireLock: vi.fn(async () => ({
+      release: vi.fn(async () => undefined),
+    })),
     log: () => undefined,
   };
 }
@@ -181,6 +186,52 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
     expect(c.listBatches.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(result.batchId).toBe("batch_new");
     expect(saved.map((s) => s.phase)).toEqual(["submitted"]);
+  });
+
+  it("acquires a create-window lock for every `create` call and releases it", async () => {
+    const c = makeClient();
+    c.listBatches.mockResolvedValueOnce(batchesResponse([]));
+    c.create.mockResolvedValueOnce({
+      id: "batch_new",
+      input_file_id: "file_input",
+      status: "validating",
+      output_file_id: null,
+      error_file_id: null,
+      request_counts: { total: 1, completed: 0, failed: 0 },
+    });
+    const saved: PersistedSidecar[] = [];
+    const sidecar: OpenAICreatingSidecar = {
+      ...baseCreating,
+      targets: [sampleTarget],
+    };
+    const deps = makeDeps(c.batch, saved);
+
+    const result = await reconcileOpenAIPreSubmitSidecar(sidecar, deps);
+
+    expect(deps.acquireLock).toHaveBeenCalledTimes(1);
+    expect(result.batchId).toBe("batch_new");
+  });
+
+  it("fails closed when the create-window lock cannot be acquired", async () => {
+    const c = makeClient();
+    c.listBatches.mockResolvedValueOnce(batchesResponse([]));
+    const saved: PersistedSidecar[] = [];
+    const sidecar: OpenAICreatingSidecar = {
+      ...baseCreating,
+      targets: [sampleTarget],
+    };
+    const deps = {
+      ...makeDeps(c.batch, saved),
+      acquireLock: vi.fn(async () => {
+        throw new Error("OpenAI reconcile lock is held by another process");
+      }),
+    };
+
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, deps),
+    ).rejects.toThrow(/held by another process/);
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
   });
 
   it("refuses to create when a last-chance re-list discovers a concurrent batch", async () => {

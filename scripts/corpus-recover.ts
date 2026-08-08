@@ -357,6 +357,7 @@ async function runBatchMode(
     clearSidecar: () => clearSidecar(scPath),
     saveInputJsonl: (jsonl) => saveInputJsonl(scPath, jsonl),
     loadInputJsonl: () => loadInputJsonl(scPath),
+    sidecarFilePath: scPath,
     log: (line) => process.stderr.write(line + "\n"),
   });
 
