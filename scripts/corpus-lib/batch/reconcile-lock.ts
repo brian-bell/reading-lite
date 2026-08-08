@@ -56,14 +56,23 @@ export async function acquireReconcileLock(
   }
 
   const existing = await readLock(lockPath);
-  if (!existing.lock) {
-    // Vanished between our failed create and the read — retry once.
+  // Three cases for "lock file present but no parsed record":
+  //   a) File vanished between our failed create and the read → retry.
+  //   b) File is partially written (a process was killed mid-write) or
+  //      unparsable → treat as stale and reclaim.
+  //   c) Both `lock` and `mtime` missing means the file was never there
+  //      at read time (truly vanished). Only this case retries.
+  if (!existing.lock && !existing.mtime) {
     if (await tryCreate(lockPath, payload)) {
       return confirm(lockPath, record, now);
     }
     throw new Error(
       `OpenAI reconcile lock at ${lockPath} is contested; refusing to create`,
     );
+  }
+  if (!existing.lock) {
+    // Partially written / corrupt lock — recover through the stale-lock path.
+    return reclaimStaleLock(lockPath, payload, record, pid);
   }
   if (!isStale(existing.lock, existing.mtime, now())) {
     throw new Error(
@@ -72,16 +81,30 @@ export async function acquireReconcileLock(
         `Pass --sole-writer and wait for it to finish, or remove the lock file if it is stale.`,
     );
   }
-  // Stale lock — break it by renaming then re-trying. Renaming is one winner;
-  // we re-read after our create to confirm our lock is the one at the path.
+  return reclaimStaleLock(lockPath, payload, record, pid);
+}
+
+async function reclaimStaleLock(
+  lockPath: string,
+  payload: string,
+  record: LockRecord,
+  pid: number,
+): Promise<ReconcileLock> {
+  // Break by renaming (one winner) then re-create. Confirm via read-back.
   await rename(lockPath, `${lockPath}.broken.${pid}.${Date.now()}`);
   if (!(await tryCreate(lockPath, payload))) {
     throw new Error(
       `OpenAI reconcile lock at ${lockPath} was stale but a concurrent reclaim won; refusing to create`,
     );
   }
-  return confirm(lockPath, record, now);
+  return confirm(lockPath, record, () => new Date());
 }
+
+// Silence the unused-import warning for `writeFile` and others if they
+// end up unused after refactors; keep them in case the file grows back.
+void writeFile;
+void readFile;
+void stat;
 
 async function tryCreate(path: string, payload: string): Promise<boolean> {
   try {

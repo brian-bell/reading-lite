@@ -44,6 +44,26 @@ describe("acquireReconcileLock", () => {
     }
   });
 
+  it("reclaims a partially-written lock (file present but unparsable)", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lockPath = reconcileLockPath(sidecar);
+      // A process killed mid-write leaves a partially written lock file
+      // at the path. The next acquirer must treat it as stale and reclaim.
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(lockPath, '{"pid":', { encoding: "utf-8", mode: 0o600 });
+      const lock = await acquireReconcileLock(sidecar);
+      try {
+        const contents = await readFile(lockPath, "utf-8");
+        expect(JSON.parse(contents)).toMatchObject({ pid: process.pid });
+      } finally {
+        await lock.release();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("breaks a stale lock once and proceeds", async () => {
     const { dir, sidecar } = await tempSidecar();
     try {
