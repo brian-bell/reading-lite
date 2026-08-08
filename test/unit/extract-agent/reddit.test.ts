@@ -38,29 +38,36 @@ function jsonResponse(body = THREAD_JSON, init: ResponseInit = {}): Response {
   });
 }
 
+// The query string is load-bearing, not decoration: it is exactly the one the
+// manual reddit-import skill fetches. Without `raw_json=1` Reddit HTML-escapes
+// entities in title/selftext/body and the recovered markdown lands in the
+// corpus as `&gt;`/`&amp;` literals; `limit=20&sort=top` bounds the listing and
+// keeps the agent's markdown aligned with a skill import of the same thread.
+const JSON_QUERY = "raw_json=1&limit=20&sort=top";
+
 describe("redditJsonUrl", () => {
   it.each([
     [
       "https://www.reddit.com/r/programming/comments/1ua2lxq/old_software/",
-      "https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json",
+      `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
     ],
     [
       "https://www.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1/",
-      "https://www.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1.json",
+      `https://www.reddit.com/r/Xennials/comments/1kelqna/comment/mqk9hr1.json?${JSON_QUERY}`,
     ],
-    ["https://www.reddit.com/comment/1ua2lxq/", "https://www.reddit.com/comment/1ua2lxq.json"],
-    ["https://redd.it/1ua2lxq/", "https://redd.it/1ua2lxq.json"],
+    ["https://www.reddit.com/comment/1ua2lxq/", `https://www.reddit.com/comment/1ua2lxq.json?${JSON_QUERY}`],
+    ["https://redd.it/1ua2lxq/", `https://redd.it/1ua2lxq.json?${JSON_QUERY}`],
     [
       "https://sh.reddit.com/r/programming/s/AbC123xyz/",
-      "https://sh.reddit.com/r/programming/s/AbC123xyz.json",
+      `https://sh.reddit.com/r/programming/s/AbC123xyz.json?${JSON_QUERY}`,
     ],
     [
       "https://old.reddit.com/r/programming/comments/1ua2lxq/title.json/",
-      "https://old.reddit.com/r/programming/comments/1ua2lxq/title.json",
+      `https://old.reddit.com/r/programming/comments/1ua2lxq/title.json?${JSON_QUERY}`,
     ],
     [
       ORIGINAL_URL,
-      "https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json",
+      `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
     ],
   ])("turns %s into %s", (source, expected) => {
     expect(redditJsonUrl(source)).toBe(expected);
@@ -98,7 +105,9 @@ describe("extractReddit", () => {
     expect(hosts).toEqual(["www.reddit.com"]);
     expect(d.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = vi.mocked(d.fetch).mock.calls[0]!;
-    expect(url).toBe("https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json");
+    expect(url).toBe(
+      `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
+    );
     const headers = new Headers(init?.headers);
     expect(headers.get("accept")).toBe("application/json");
     expect(headers.get("user-agent")).toBe(BROWSER_USER_AGENT);
@@ -155,7 +164,12 @@ describe("extractReddit", () => {
       deps(new Response(body, { status, headers: { "content-type": "text/html" } })),
     );
 
-    expect(outcome).toMatchObject({ kind: "manual", detail: expect.stringMatching(/reddit-import skill/i) });
+    // The detail names the condition: a 403 wall and a transient 429 read very
+    // differently in a run report, but both route to the same skill fallback.
+    expect(outcome).toMatchObject({
+      kind: "manual",
+      detail: expect.stringMatching(new RegExp(`HTTP ${status}.*reddit-import skill`, "i")),
+    });
     expect(cancelled).toBe(true);
   });
 
@@ -167,7 +181,10 @@ describe("extractReddit", () => {
       deps(new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } })),
     );
 
-    expect(outcome.kind).toBe("manual");
+    expect(outcome).toMatchObject({
+      kind: "manual",
+      detail: expect.stringMatching(/HTML.*reddit-import skill/i),
+    });
     expect(cancelled).toBe(true);
   });
 
@@ -175,7 +192,10 @@ describe("extractReddit", () => {
     "maps an HTML-looking body without a useful content type to manual",
     async (body) => {
       const outcome = await extractReddit(ORIGINAL_URL, deps(new Response(body)));
-      expect(outcome).toMatchObject({ kind: "manual" });
+      expect(outcome).toMatchObject({
+        kind: "manual",
+        detail: expect.stringMatching(/HTML.*reddit-import skill/i),
+      });
     },
   );
 

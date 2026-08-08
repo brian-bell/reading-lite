@@ -28,8 +28,14 @@ export interface RedditDeps {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MANUAL_DETAIL =
-  "anonymous Reddit access was challenged; use the reddit-import skill";
+// One message per challenge condition, all ending in the skill pointer: a 403
+// edge wall and a transient-looking 429 read very differently in a run report,
+// and an operator scanning the manual queue deserves to know which fired.
+const MANUAL_DETAIL = {
+  status: (status: number) =>
+    `anonymous Reddit access was challenged (HTTP ${status}); use the reddit-import skill`,
+  html: "anonymous Reddit access was challenged (served HTML); use the reddit-import skill",
+} as const;
 
 export function redditJsonUrl(sourceUrl: string): string {
   if (!isRedditThreadUrl(sourceUrl)) {
@@ -46,11 +52,25 @@ export function redditJsonUrl(sourceUrl: string): string {
   url.hash = "";
   url.pathname = url.pathname.replace(/\/+$/, "");
   if (!url.pathname.toLowerCase().endsWith(".json")) url.pathname += ".json";
+  // The query is the exact one the reddit-import skill fetches. `raw_json=1`
+  // is load-bearing: without it Reddit HTML-escapes entities in
+  // title/selftext/body, and the shared parser does no unescaping, so markdown
+  // would land in the corpus as `&gt;`/`&amp;` literals. `limit=20&sort=top`
+  // bounds the listing and keeps the recovered markdown aligned with a skill
+  // import of the same thread.
+  url.searchParams.set("raw_json", "1");
+  url.searchParams.set("limit", "20");
+  url.searchParams.set("sort", "top");
   return url.href;
 }
 
 type ResponseAction = "consume" | "manual" | "dead" | "error";
 
+// 429 joins 401/403 as a terminal manual outcome on purpose: Reddit's
+// anonymous edge serves rate-limit and bot-wall responses interchangeably, and
+// the phase spec names the logged-in skill as the one fallback for all of them.
+// A retryable 429 would burn the attempt ceiling over hours and then strand the
+// row as generic backoff — outside the manual queue an operator actually reads.
 const RESPONSE_POLICY: ReadonlyArray<{
   matches: (status: number) => boolean;
   action: ResponseAction;
@@ -84,7 +104,7 @@ export async function extractReddit(sourceUrl: string, deps: RedditDeps): Promis
     switch (action) {
       case "manual":
         await cancelBody(response);
-        return { kind: "manual", detail: MANUAL_DETAIL };
+        return { kind: "manual", detail: MANUAL_DETAIL.status(response.status) };
       case "dead":
         await cancelBody(response);
         return { kind: "dead", detail: `Reddit thread returned HTTP ${response.status}` };
@@ -98,7 +118,7 @@ export async function extractReddit(sourceUrl: string, deps: RedditDeps): Promis
     const contentType = response.headers.get("content-type") ?? "";
     if (isHtmlContentType(contentType)) {
       await cancelBody(response);
-      return { kind: "manual", detail: MANUAL_DETAIL };
+      return { kind: "manual", detail: MANUAL_DETAIL.html };
     }
 
     const declaredLength = Number(response.headers.get("content-length"));
@@ -108,7 +128,7 @@ export async function extractReddit(sourceUrl: string, deps: RedditDeps): Promis
     }
 
     const text = new TextDecoder().decode(await readBounded(response, deps.maxBytes, jsonUrl));
-    if (looksLikeHtml(text)) return { kind: "manual", detail: MANUAL_DETAIL };
+    if (looksLikeHtml(text)) return { kind: "manual", detail: MANUAL_DETAIL.html };
 
     const body = buildRedditImport(sourceUrl, text);
     if (!body) {
