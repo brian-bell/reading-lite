@@ -165,7 +165,7 @@ function fakeOpenAIClient(
     get: vi.fn(),
     content: vi.fn(),
     listFiles: vi.fn(async () => ({ data: [], has_more: false })),
-    listBatches: vi.fn(async () => ({ data: [], has_more: false })),
+    listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
     ...over,
   } as any;
 }
@@ -947,24 +947,31 @@ describe("runBatch — resume", () => {
             }
           : { data: [], has_more: false },
       );
-      uploaded.listBatches = vi.fn(async () =>
-        existingRemoteBatch
-          ? {
-              data: [
-                {
-                  id: "batch_remote",
-                  input_file_id: "file_input",
-                  status: "validating",
-                  output_file_id: null,
-                  error_file_id: null,
-                  request_counts: { total: 1, completed: 0, failed: 0 },
-                  metadata: { run_id: "run_1" },
-                },
-              ],
-              has_more: false,
-            }
-          : { data: [], has_more: false },
-      );
+      uploaded.listBatches = vi.fn(async () => {
+        const data = existingRemoteBatch
+          ? [
+              {
+                id: "batch_remote",
+                input_file_id: "file_input",
+                status: "validating",
+                output_file_id: null,
+                error_file_id: null,
+                request_counts: { total: 1, completed: 0, failed: 0 },
+                metadata: { run_id: "run_1" },
+              },
+            ]
+          : [];
+        return {
+          data,
+          raw: data.map((b) => ({
+            object: "batch",
+            endpoint: "/v1/responses",
+            completion_window: "24h",
+            ...b,
+          })),
+          has_more: false,
+        };
+      });
 
       // Resume runs the reconcile branch; for uploading-no-remote the harness
       // has not saved JSONL so re-upload would hard-fail. Provide one.
@@ -1655,6 +1662,20 @@ describe("runBatch — recover resume", () => {
           metadata: { run_id: "run_recovery" },
         },
       ],
+      raw: [
+        {
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          id: "batch_adopted",
+          input_file_id: "file_input",
+          status: "completed",
+          output_file_id: "file_output",
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_recovery" },
+        },
+      ],
       has_more: false,
     }));
     openai.get = vi.fn(async () => ({
@@ -1722,8 +1743,8 @@ describe("runBatch — recover resume", () => {
       throw new Error("create must not be called on ambiguous match");
     });
     openai.create = createSpy as any;
-    openai.listBatches = vi.fn(async () => ({
-      data: [
+    openai.listBatches = vi.fn(async () => {
+      const data = [
         {
           id: "batch_dup1",
           input_file_id: "file_input",
@@ -1742,9 +1763,18 @@ describe("runBatch — recover resume", () => {
           request_counts: { total: 1, completed: 0, failed: 0 },
           metadata: { run_id: "run_recovery" },
         },
-      ],
-      has_more: false,
-    }));
+      ];
+      return {
+        data,
+        raw: data.map((b) => ({
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          ...b,
+        })),
+        has_more: false,
+      };
+    });
 
     await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/ambiguous/);
     expect(createSpy).not.toHaveBeenCalled();

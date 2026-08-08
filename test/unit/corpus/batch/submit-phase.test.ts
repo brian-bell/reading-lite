@@ -290,7 +290,7 @@ describe("submitOpenAIBatch", () => {
       get: vi.fn(),
       content: vi.fn(),
       listFiles: vi.fn(async () => ({ data: [], has_more: false })),
-      listBatches: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
     };
 
     const result = await submitOpenAIBatch([target], prepared, {

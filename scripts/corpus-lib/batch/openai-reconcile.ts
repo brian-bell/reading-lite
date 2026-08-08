@@ -1,4 +1,5 @@
 import type { OpenAIBatchClient, OpenAIBatchInfo } from "./clients";
+import { assertResponsesBatchShape } from "./clients";
 import type {
   OpenAICreatingSidecar,
   OpenAISubmittedSidecar,
@@ -41,7 +42,10 @@ export async function reconcileOpenAIPreSubmitSidecar(
     log(`Reconciling OpenAI creating sidecar run_id=${runId}`);
     const remote = await findBatchesByRunId(deps.batch, runId);
     if (remote.length === 1) {
-      const match = remote[0]!;
+      const match = assertResponsesBatchShape(remote[0]!.raw, {
+        id: remote[0]!.info.id,
+        runId,
+      });
       if (
         match.input_file_id &&
         match.input_file_id !== existing.inputFileId
@@ -57,7 +61,7 @@ export async function reconcileOpenAIPreSubmitSidecar(
       return submitted;
     }
     if (remote.length > 1) {
-      throw ambiguousBatchesError(runId, remote);
+      throw ambiguousBatchesError(runId, remote.map((m) => m.info));
     }
     const info = await deps.batch.create(existing.inputFileId, runId);
     const submitted = submittedSidecarFrom(existing, info, existing.inputFileId);
@@ -109,7 +113,10 @@ export async function reconcileOpenAIPreSubmitSidecar(
   checkpointsBefore = 1;
   const remote = await findBatchesByRunId(deps.batch, runId);
   if (remote.length === 1) {
-    const match = remote[0]!;
+    const match = assertResponsesBatchShape(remote[0]!.raw, {
+      id: remote[0]!.info.id,
+      runId,
+    });
     if (match.input_file_id && match.input_file_id !== inputFileId) {
       throw new Error(
         `OpenAI run ${runId}: remote batch ${match.id} uses input_file_id=${match.input_file_id} ` +
@@ -122,7 +129,7 @@ export async function reconcileOpenAIPreSubmitSidecar(
     return submitted;
   }
   if (remote.length > 1) {
-    throw ambiguousBatchesError(runId, remote);
+    throw ambiguousBatchesError(runId, remote.map((m) => m.info));
   }
   const info = await deps.batch.create(inputFileId, runId);
   const submitted = submittedSidecarFrom(existing, info, inputFileId);
@@ -167,14 +174,14 @@ async function findFilesByRunId(
 async function findBatchesByRunId(
   batch: OpenAIBatchClient,
   runId: string,
-): Promise<OpenAIBatchInfo[]> {
-  const matches: OpenAIBatchInfo[] = [];
+): Promise<Array<{ info: OpenAIBatchInfo; raw: unknown }>> {
+  const matches: Array<{ info: OpenAIBatchInfo; raw: unknown }> = [];
   let after: string | undefined;
   for (let i = 0; i < BATCH_LIST_PAGE_CAP; i++) {
     const page = await batch.listBatches({ after, limit: 100 });
-    for (const b of page.data) {
-      if (b.metadata?.run_id === runId) {
-        matches.push(b);
+    for (let i = 0; i < page.data.length; i++) {
+      if (page.data[i]!.metadata?.run_id === runId) {
+        matches.push({ info: page.data[i]!, raw: page.raw[i] });
       }
     }
     if (!page.has_more) return matches;

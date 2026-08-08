@@ -180,7 +180,7 @@ describe("runFreshMarkdownBatch — fresh run", () => {
         );
       }),
       listFiles: vi.fn(async () => ({ data: [], has_more: false })),
-      listBatches: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
     };
 
     const result = await runFreshMarkdownBatch(

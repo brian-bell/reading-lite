@@ -64,13 +64,51 @@ function makeClient(): {
   const upload = vi.fn();
   const create = vi.fn();
   const listFiles = vi.fn(async () => ({ data: [], has_more: false }));
-  const listBatches = vi.fn(async () => ({ data: [], has_more: false }));
+  const listBatches = vi.fn(async () => ({ data: [], raw: [], has_more: false }));
   return {
     batch: { upload, create, get: vi.fn(), content: vi.fn(), listFiles, listBatches },
     upload,
     create,
     listFiles,
     listBatches,
+  };
+}
+
+// Build the parallel `data`/`raw` shape returned by `listBatches`. Each
+// `entry` becomes a strict-`/v1/responses` batch in both `data` and `raw`
+// (so existing tests don't accidentally exercise the strict-validation path).
+function batchesResponse(
+  entries: Array<{
+    id: string;
+    input_file_id?: string;
+    status: string;
+    output_file_id?: string | null;
+    error_file_id?: string | null;
+    request_counts?: { total: number; completed: number; failed: number };
+    metadata?: Record<string, string> | null;
+  }>,
+  opts: { has_more?: boolean; last_id?: string } = {},
+) {
+  const data = entries.map((e) => ({
+    id: e.id,
+    input_file_id: e.input_file_id ?? "file_input",
+    status: e.status,
+    output_file_id: e.output_file_id ?? null,
+    error_file_id: e.error_file_id ?? null,
+    request_counts: e.request_counts ?? { total: 1, completed: 0, failed: 0 },
+    metadata: e.metadata ?? null,
+  }));
+  const raw = data.map((b) => ({
+    object: "batch",
+    endpoint: "/v1/responses",
+    completion_window: "24h",
+    ...b,
+  }));
+  return {
+    data,
+    raw,
+    has_more: opts.has_more ?? false,
+    ...(opts.last_id ? { last_id: opts.last_id } : {}),
   };
 }
 
@@ -92,20 +130,16 @@ function makeDeps(
 describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
   it("adopts the remote batch when exactly one matches the run id and never calls create", async () => {
     const c = makeClient();
-    c.listBatches.mockResolvedValueOnce({
-      data: [
+    c.listBatches.mockResolvedValueOnce(
+      batchesResponse([
         {
           id: "batch_adopt",
           input_file_id: "file_input",
           status: "validating",
-          output_file_id: null,
-          error_file_id: null,
-          request_counts: { total: 1, completed: 0, failed: 0 },
           metadata: { run_id: "run_1" },
         },
-      ],
-      has_more: false,
-    });
+      ]),
+    );
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAICreatingSidecar = {
       ...baseCreating,
@@ -149,20 +183,16 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
 
   it("refuses to adopt a foreign batch whose input_file_id does not match the sidecar", async () => {
     const c = makeClient();
-    c.listBatches.mockResolvedValueOnce({
-      data: [
+    c.listBatches.mockResolvedValueOnce(
+      batchesResponse([
         {
           id: "batch_foreign",
           input_file_id: "file_other",
           status: "validating",
-          output_file_id: null,
-          error_file_id: null,
-          request_counts: { total: 1, completed: 0, failed: 0 },
           metadata: { run_id: "run_1" },
         },
-      ],
-      has_more: false,
-    });
+      ]),
+    );
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAICreatingSidecar = {
       ...baseCreating,
@@ -178,29 +208,20 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
 
   it("aborts when more than one batch matches the run id", async () => {
     const c = makeClient();
-    c.listBatches.mockResolvedValueOnce({
-      data: [
+    c.listBatches.mockResolvedValueOnce(
+      batchesResponse([
         {
           id: "batch_dup1",
-          input_file_id: "file_input",
           status: "validating",
-          output_file_id: null,
-          error_file_id: null,
-          request_counts: { total: 1, completed: 0, failed: 0 },
           metadata: { run_id: "run_1" },
         },
         {
           id: "batch_dup2",
-          input_file_id: "file_input",
           status: "validating",
-          output_file_id: null,
-          error_file_id: null,
-          request_counts: { total: 1, completed: 0, failed: 0 },
           metadata: { run_id: "run_1" },
         },
-      ],
-      has_more: false,
-    });
+      ]),
+    );
     const saved: PersistedSidecar[] = [];
     const sidecar: OpenAICreatingSidecar = {
       ...baseCreating,
@@ -505,6 +526,118 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
     ).rejects.toThrow(/file list page cap/i);
     expect(c.upload).not.toHaveBeenCalled();
     expect(c.create).not.toHaveBeenCalled();
+  });
+
+  it("tolerates a non-/v1/responses batch on the same page (filters by metadata.run_id, then strict-validates)", async () => {
+    // A pre-existing /v1/chat/completions batch in the same OpenAI org must
+    // not break parsing of the responses batch we're trying to adopt.
+    const c = makeClient();
+    c.listBatches.mockResolvedValueOnce({
+      data: [
+        {
+          id: "batch_other_endpoint",
+          // OpenAIListBatchSchema accepts arbitrary endpoint / completion_window.
+          endpoint: "/v1/chat/completions",
+          completion_window: "1h",
+          status: "completed",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_other" },
+        },
+        {
+          id: "batch_adopt",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+          metadata: { run_id: "run_1" },
+        },
+      ],
+      raw: [
+        {
+          object: "batch",
+          endpoint: "/v1/chat/completions",
+          completion_window: "1h",
+          id: "batch_other_endpoint",
+          status: "completed",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_other" },
+        },
+        {
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          id: "batch_adopt",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+          metadata: { run_id: "run_1" },
+        },
+      ],
+      has_more: false,
+    });
+    const saved: PersistedSidecar[] = [];
+    const sidecar: OpenAICreatingSidecar = {
+      ...baseCreating,
+      targets: [sampleTarget],
+    };
+
+    const result = await reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved));
+
+    expect(c.create).not.toHaveBeenCalled();
+    expect(result.batchId).toBe("batch_adopt");
+    expect(result.inputFileId).toBe("file_input");
+    expect(saved.map((s) => s.phase)).toEqual(["submitted"]);
+  });
+
+  it("fails closed when the matched batch's raw shape is not a /v1/responses batch", async () => {
+    // A run_id collision: some unrelated tool stamps our run_id on a batch
+    // targeted at /v1/chat/completions. Strict re-validation must refuse to
+    // adopt it rather than publish a `submitted` sidecar.
+    const c = makeClient();
+    c.listBatches.mockResolvedValueOnce({
+      data: [
+        {
+          id: "batch_foreign_endpoint",
+          status: "completed",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_1" },
+        },
+      ],
+      raw: [
+        {
+          object: "batch",
+          endpoint: "/v1/chat/completions",
+          completion_window: "1h",
+          id: "batch_foreign_endpoint",
+          status: "completed",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_1" },
+        },
+      ],
+      has_more: false,
+    });
+    const saved: PersistedSidecar[] = [];
+    const sidecar: OpenAICreatingSidecar = {
+      ...baseCreating,
+      targets: [sampleTarget],
+    };
+
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(sidecar, makeDeps(c.batch, saved)),
+    ).rejects.toThrow(/strict validation/i);
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
   });
 
   it("refuses to upload when no loadInputJsonl helper is provided", async () => {
