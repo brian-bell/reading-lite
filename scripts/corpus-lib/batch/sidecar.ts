@@ -244,7 +244,11 @@ export async function saveInputJsonl(
 ): Promise<void> {
   const path = inputJsonlPath(sidecarPath);
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, jsonl);
+  // 0600: the companion holds extracted article text + similar-reading
+  // context, so it must not be world-readable. POSIX `fs.writeFile`
+  // honours `mode` on file creation; `fs.rename` preserves the mode of
+  // the renamed file, so the final path keeps 0600.
+  await fs.writeFile(tmp, jsonl, { mode: 0o600 });
   await fs.rename(tmp, path);
 }
 
