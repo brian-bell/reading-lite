@@ -86,8 +86,9 @@ describe("compare-summary-effort", () => {
   });
 
   it("resolves a URL into one frozen comparison input using production GETs only", async () => {
-    const content = "# Captured article\n\nComplete body.";
-    const contentSha = createHash("sha256").update(content).digest("hex");
+    const rawContent = "<html><body><article>Complete body.</article></body></html>";
+    const extractedContent = "# Captured article\n\nComplete body.";
+    const contentSha = createHash("sha256").update(rawContent).digest("hex");
     const fetchFn = vi.fn(
       async (input: string | URL | Request, init?: RequestInit) => {
       const request =
@@ -102,15 +103,22 @@ describe("compare-summary-effort", () => {
       if (url.pathname === "/api/readings/rd_MAIN") {
         return Response.json(
           readyManifest({
-            content_bytes: Buffer.byteLength(content),
-            extracted_bytes: Buffer.byteLength(content),
+            source_type: "url",
+            content_type: "text/html; charset=utf-8",
+            content_bytes: Buffer.byteLength(rawContent),
+            extracted_bytes: Buffer.byteLength(extractedContent),
             content_sha256: contentSha,
           }),
         );
       }
       if (url.pathname === "/api/readings/rd_MAIN/content") {
-        return new Response(content, {
+        return new Response(extractedContent, {
           headers: { "content-type": "text/markdown; charset=utf-8" },
+        });
+      }
+      if (url.pathname === "/api/readings/rd_MAIN/content/raw") {
+        return new Response(rawContent, {
+          headers: { "content-type": "text/html; charset=utf-8" },
         });
       }
       if (url.pathname === "/api/readings/rd_CONTEXT") {
@@ -138,7 +146,7 @@ describe("compare-summary-effort", () => {
     expect(plan.input).toEqual({
       url: ARTICLE_URL,
       title: "Google's competing theory of intelligence",
-      extractedText: content,
+      extractedText: extractedContent,
       similarReadings: [
         {
           id: "rd_CONTEXT",
@@ -152,7 +160,44 @@ describe("compare-summary-effort", () => {
       "A production baseline.",
     );
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.553_216, 6);
-    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn).toHaveBeenCalledTimes(5);
+  });
+
+  it("rejects when the raw capture no longer matches the manifest hash", async () => {
+    const expectedRaw = "<html><body>Expected capture</body></html>";
+    const fetchedRaw = "<html><body>Different capture</body></html>";
+    const fetchFn = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        input instanceof Request ? input.url : input.toString(),
+      );
+      if (url.pathname === "/api/readings/rd_MAIN") {
+        return Response.json(
+          readyManifest({
+            source_type: "url",
+            connections: [],
+            content_type: "text/html; charset=utf-8",
+            content_bytes: Buffer.byteLength(expectedRaw),
+            content_sha256: createHash("sha256")
+              .update(expectedRaw)
+              .digest("hex"),
+          }),
+        );
+      }
+      if (url.pathname === "/api/readings/rd_MAIN/content") {
+        return new Response("# Extracted article");
+      }
+      if (url.pathname === "/api/readings/rd_MAIN/content/raw") {
+        return new Response(fetchedRaw);
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    await expect(
+      prepareComparison(parseComparisonArgs(["--target", "rd_MAIN"]), {
+        fetch: fetchFn,
+        readerToken: "reader-token",
+      }),
+    ).rejects.toThrow("content hash mismatch for rd_MAIN");
   });
 
   it("runs every effort sequentially over the same frozen input", async () => {

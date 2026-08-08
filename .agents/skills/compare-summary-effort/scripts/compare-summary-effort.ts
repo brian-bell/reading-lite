@@ -155,7 +155,11 @@ export async function prepareComparison(
     `${args.baseUrl}/api/readings/${encodeURIComponent(readingId)}/content`,
     deps,
   );
-  const actualSha = createHash("sha256").update(extractedText).digest("hex");
+  const rawContent = await getBytes(
+    `${args.baseUrl}/api/readings/${encodeURIComponent(readingId)}/content/raw`,
+    deps,
+  );
+  const actualSha = createHash("sha256").update(rawContent).digest("hex");
   if (actualSha !== manifest.content_sha256) {
     throw new Error(
       `content hash mismatch for ${readingId}: manifest=${manifest.content_sha256} downloaded=${actualSha}`,
@@ -444,6 +448,13 @@ async function getJson(url: string, deps: PrepareComparisonDeps): Promise<unknow
 
 async function getText(url: string, deps: PrepareComparisonDeps): Promise<string> {
   return (await authorizedGet(url, deps)).text();
+}
+
+async function getBytes(
+  url: string,
+  deps: PrepareComparisonDeps,
+): Promise<Uint8Array> {
+  return new Uint8Array(await (await authorizedGet(url, deps)).arrayBuffer());
 }
 
 async function authorizedGet(
