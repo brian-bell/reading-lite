@@ -532,6 +532,9 @@ async function enqueueReprocess(
     attemptStartedAt,
     trigger: "reprocess",
     preserveReadyManifest: effectiveManifest.status === "ready" ? effectiveManifest : undefined,
+    // Legacy manifests omit source_type and are treated as URL-backed by the
+    // no-source path above, so snapshot that same effective default.
+    sourceTypeOnFailure: effectiveManifest.source_type ?? "url",
     email: opts.email,
   };
   const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);

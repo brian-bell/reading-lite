@@ -25,6 +25,10 @@ export interface ProcessReadingArgs {
   attemptStartedAt?: string;
   trigger?: ProcessingAttemptTrigger;
   preserveReadyManifest?: Manifest;
+  // Reprocess snapshots the prior source type so a failed supplied-markdown
+  // attempt cannot claim durable markdown before its terminal write succeeds.
+  // Optional for backwards compatibility with in-flight queue messages.
+  sourceTypeOnFailure?: Manifest["source_type"];
   // Optional in TS for backwards compat with in-flight queue messages enqueued
   // before this field existed; current entry points always set it explicitly.
   email?: boolean;

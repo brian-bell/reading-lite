@@ -226,18 +226,13 @@ npm run corpus-recover -- --index ./index.json --execute --monitor
   `markDeadLettered` converts the stranded attempt to retryable `failed` and
   acks terminally.
 - A reprocess carrying a markdown `source` flips the reading's `source_type` to
-  `"markdown"` — but only on a successful terminal write, since
-  `sourceTypeForArgs(args)` is read there. After the flip every later no-source
-  reprocess takes the stored-markdown synthesis instead of re-fetching the URL,
-  which is the point (the URL is what degraded). A failure on a *ready* reading
-  rolls back to `preserveReadyManifest` and keeps the old `source_type`; a
-  failure on a non-ready one flips anyway, since `markFailed` reads
-  `sourceTypeForArgs(args)`. If that failure landed before the `write_extracted`
-  stage, the reading is markdown-typed with nothing written behind it, so a
-  no-source reprocess either 409s "markdown content not available" or — worse,
-  when a stale `extracted.md` survives from an earlier attempt — silently
-  synthesizes from the wrong text (reading-lite-5ap, characterized in
-  `test/integration/readings.test.ts`).
+  `"markdown"` only on a successful terminal write. After the flip every later
+  no-source reprocess takes the stored-markdown synthesis instead of re-fetching
+  the URL, which is the point (the URL is what degraded). Reprocess queue args
+  snapshot `sourceTypeOnFailure`, so an unsuccessful attempt keeps its prior
+  source type even when supplied Markdown fails before `write_extracted`; a
+  failure on a *ready* reading additionally rolls back to
+  `preserveReadyManifest`.
 - Read-only `GET /api/readings/lookup` must stay side-effect-free. It must not
   claim cold legacy pointers, repair damaged pointers, deep-scan R2, or write.
 - `Readability`/Turndown can throw on pathological HTML. The extractor has a

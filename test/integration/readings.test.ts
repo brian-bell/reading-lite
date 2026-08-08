@@ -3868,16 +3868,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     expect(await content.text()).toBe(AGENT_MARKDOWN);
   });
 
-  // KNOWN DIVERGENCE (reading-lite-5ap): unlike the import paths, reprocess
-  // activation writes no eager artifacts, so a supplied source only reaches
-  // extracted.md at the write_extracted stage. An attempt that dies before that
-  // stage still records source_type: "markdown" (sourceTypeForArgs reads the
-  // args, not what was written), leaving a markdown-typed reading whose stored
-  // extracted.md is stale url-derived text. The next NO-SOURCE reprocess then
-  // synthesizes from that stale text and silently summarizes the wrong article.
-  // Characterized here rather than fixed: every available fix reshapes
-  // reprocess activation or process-reading.ts, both frozen for x1u.6.
-  it("reuses stale url-derived markdown after a supplied-source attempt dies before write_extracted", async () => {
+  it("retains the url source after a supplied-source attempt dies before write_extracted", async () => {
     const idCounter = { n: 0 };
     const base = makeStubFetch();
     const noSummaryFetch = vi.fn<typeof fetch>(async (input, init) => {
@@ -3914,7 +3905,6 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     const { keyPrefix } = (await reader.loadReadingById(id))!;
     const urlDerived = await (await reader.readExtracted(keyPrefix))!.text();
     expect(urlDerived).toContain("picked up by readability");
-
     // 2. A supplied-markdown reprocess whose raw write fails, i.e. it dies
     //    before write_extracted ever runs.
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
@@ -3939,20 +3929,23 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       ctx2,
     );
     expect(supplied.status).toBe(202);
+    // Simulate a message enqueued before sourceTypeOnFailure was deployed. The
+    // consumer must recover the prior type from this attempt's pending manifest.
+    delete queuedJobs[0]!.sourceTypeOnFailure;
     await drainQueue(services);
     await waitOnExecutionContext(ctx2);
     putSpy.mockRestore();
     consoleErr.mockRestore();
     expect(failedRawWrite).toBe(true);
 
-    // The reading now claims to be markdown-sourced, but the markdown behind it
-    // was never written — extracted.md is still the url-derived text.
+    // The supplied markdown was never written, so the failed attempt must not
+    // claim that it became the reading's durable source.
     const manifest = (await reader.loadReadingById(id))!.manifest;
-    expect(manifest).toMatchObject({ status: "failed", source_type: "markdown" });
+    expect(manifest).toMatchObject({ status: "failed", source_type: "url" });
     await expect((await reader.readExtracted(keyPrefix))!.text()).resolves.toBe(urlDerived);
 
-    // 3. The bug: a no-source reprocess synthesizes from that stale text
-    //    instead of 409ing or re-fetching the url.
+    // A later no-source reprocess therefore fetches the URL again instead of
+    // silently synthesizing from the stale extracted.md artifact.
     const again = await app.request(
       `/api/readings/${id}/reprocess`,
       {
@@ -3963,8 +3956,50 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       env,
     );
     expect(again.status).toBe(202);
-    expect(queuedJobs[0]!.source).toMatchObject({ kind: "markdown", markdown: urlDerived });
+    expect(queuedJobs[0]!.source).toBeUndefined();
     queuedJobs.length = 0;
+  });
+
+  it("treats a legacy missing source_type as url when snapshotting reprocess failure state", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const id = "rd_LEGACY_SOURCE_TYPE";
+    const url = "https://example.com/legacy-source-type";
+    const createdAt = "2026-08-07T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const manifest: Manifest = {
+      id,
+      url,
+      url_hash: await sha256Hex(url),
+      status: "failed",
+      error: { code: "LegacyError", message: "legacy failure" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, manifest);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+
+    const response = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      },
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+      sourceTypeOnFailure: "url",
+    });
   });
 
   it("prefers the supplied markdown over the stored markdown of an imported reading", async () => {
