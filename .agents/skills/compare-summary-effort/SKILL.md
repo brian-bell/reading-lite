@@ -6,10 +6,10 @@ description: Compare OpenAI reasoning-effort summaries locally for an existing r
 # Compare Summary Effort
 
 Use the bundled runner from the reading-lite repository root. It downloads the
-stored production Markdown with authenticated `GET` requests, verifies its hash,
-freezes one comparison input, calls the repository's real OpenAI summarizer, and
-writes local JSON and Markdown reports. It never updates a manifest, vector, list
-row, or other production state.
+stored production Markdown and raw capture with authenticated `GET` requests,
+verifies the raw capture's hash, freezes one comparison input, calls the
+repository's real OpenAI summarizer, and writes local JSON and Markdown reports.
+It never updates a manifest, vector, list row, or other production state.
 
 ## Workflow
 
@@ -47,6 +47,9 @@ row, or other production state.
    Use `--output-dir <path>` when the user requests a specific destination.
    Otherwise artifacts go under
    `.summarizer-comparisons/<reading-id>/<timestamp>/`, which is gitignored.
+   The runner prints that checkpoint directory before the first paid call and
+   rewrites `results.json` and `report.md` after every successful candidate. If
+   a later candidate fails, preserve and report those partial artifacts.
 
 6. Read `report.md` and `results.json`. Compare factual coverage, specificity,
    synthesis, useful connections, entity quality, latency, reasoning tokens, and

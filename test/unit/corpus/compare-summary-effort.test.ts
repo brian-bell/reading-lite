@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   parseComparisonArgs,
   prepareComparison,
+  runCheckpointedComparison,
   runComparison,
   writeComparisonArtifacts,
   type ComparisonPlan,
@@ -50,6 +51,36 @@ function readyManifest(overrides: Record<string, unknown> = {}) {
       openai_embedding_tokens: 2_000,
     },
     ...overrides,
+  };
+}
+
+function checkpointPlan(): ComparisonPlan {
+  const productionBaseline: ComparisonPlan["productionBaseline"] = {
+    title: "Production title",
+    tldr: "Production TLDR",
+    tags: ["ai"],
+    keywords: ["reasoning effort"],
+    people: [],
+    orgs: ["OpenAI"],
+    novelty_verdict: "novel",
+    connections: [],
+    summary_markdown: "Production summary.",
+  };
+  return {
+    readingId: "rd_MAIN",
+    contentSha256: "d".repeat(64),
+    model: "gpt-5.6-terra",
+    efforts: ["low", "high"],
+    input: {
+      url: ARTICLE_URL,
+      extractedText: "Complete article body.",
+      similarReadings: [],
+    },
+    productionBaseline,
+    inputPricePerMillion: 2,
+    outputPricePerMillion: 12,
+    priceDate: "2026-07-30",
+    estimatedMaximumCostUsd: 0.3,
   };
 }
 
@@ -271,6 +302,121 @@ describe("compare-summary-effort", () => {
         estimatedCostUsd: 0.052,
       }),
     ]);
+  });
+
+  it("checkpoints a successful candidate before starting the next paid call", async () => {
+    const plan = checkpointPlan();
+    const productionBaseline = plan.productionBaseline;
+    const events: string[] = [];
+    let releaseCheckpoint = () => {};
+    const checkpointGate = new Promise<void>((resolve) => {
+      releaseCheckpoint = resolve;
+    });
+    let announceCheckpoint = () => {};
+    const checkpointStarted = new Promise<void>((resolve) => {
+      announceCheckpoint = resolve;
+    });
+    const summarize = vi.fn(async (_input, candidate) => {
+      events.push(`summarize:${candidate.reasoningEffort}`);
+      if (candidate.reasoningEffort === "high") {
+        throw new Error("high effort failed");
+      }
+      return {
+        reading: productionBaseline,
+        usage: {
+          provider: "openai" as const,
+          model: candidate.model,
+          input_tokens: 20_000,
+          output_tokens: 1_000,
+          reasoning_tokens: 100,
+          cached_input_tokens: 0,
+          cache_write_tokens: 0,
+        },
+      };
+    });
+    const times = [0, 10, 10];
+    const comparison = runComparison(plan, {
+      summarize,
+      now: () => times.shift()!,
+      onProgress: async (observation) => {
+        events.push(`checkpoint:${observation.effort}:start`);
+        announceCheckpoint();
+        await checkpointGate;
+        events.push(`checkpoint:${observation.effort}:end`);
+      },
+    });
+    const settled = comparison.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    try {
+      await checkpointStarted;
+      expect(summarize).toHaveBeenCalledTimes(1);
+      releaseCheckpoint();
+      await expect(settled).resolves.toEqual(
+        expect.objectContaining({ message: "high effort failed" }),
+      );
+      expect(events).toEqual([
+        "summarize:low",
+        "checkpoint:low:start",
+        "checkpoint:low:end",
+        "summarize:high",
+      ]);
+    } finally {
+      releaseCheckpoint();
+      await settled;
+    }
+  });
+
+  it("persists completed candidates when a later paid call fails", async () => {
+    const outputDir = await mkdtemp(
+      path.join(tmpdir(), "compare-summary-effort-checkpoint-test-"),
+    );
+    const plan = checkpointPlan();
+    const productionBaseline = plan.productionBaseline;
+
+    try {
+      await expect(
+        runCheckpointedComparison(
+          plan,
+          outputDir,
+          "2026-08-03T04:00:00.000Z",
+          {
+            now: () => 0,
+            summarize: async (_input, candidate) => {
+              if (candidate.reasoningEffort === "high") {
+                throw new Error("high effort failed");
+              }
+              return {
+                reading: productionBaseline,
+                usage: {
+                  provider: "openai" as const,
+                  model: candidate.model,
+                  input_tokens: 20_000,
+                  output_tokens: 1_000,
+                  reasoning_tokens: 100,
+                  cached_input_tokens: 0,
+                  cache_write_tokens: 0,
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toThrow("high effort failed");
+
+      const [results, report] = await Promise.all([
+        readFile(path.join(outputDir, "results.json"), "utf8").then(JSON.parse),
+        readFile(path.join(outputDir, "report.md"), "utf8"),
+      ]);
+      expect(results.candidates).toEqual([
+        expect.objectContaining({ effort: "low" }),
+      ]);
+      expect(report).toContain("## low effort");
+      expect(report).not.toContain("## high effort");
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
   });
 
   it("writes a local comparison report without duplicating the captured article", async () => {

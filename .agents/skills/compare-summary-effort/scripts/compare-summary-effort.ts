@@ -69,7 +69,7 @@ export interface RunComparisonDeps {
     candidate: ComparisonCandidate,
   ): Promise<SummarizeReadingResult>;
   now(): number;
-  onProgress?(observation: ComparisonObservation): void;
+  onProgress?(observation: ComparisonObservation): void | Promise<void>;
 }
 
 type OpenAIUsage = Extract<SummarizationUsage, { provider: "openai" }>;
@@ -261,9 +261,37 @@ export async function runComparison(
       ),
     };
     observations.push(observation);
-    deps.onProgress?.(observation);
+    await deps.onProgress?.(observation);
   }
   return observations;
+}
+
+export async function runCheckpointedComparison(
+  plan: ComparisonPlan,
+  outputDir: string,
+  generatedAt: string,
+  deps: RunComparisonDeps,
+): Promise<{
+  observations: ComparisonObservation[];
+  paths: ComparisonArtifactPaths;
+}> {
+  const completed: ComparisonObservation[] = [];
+  let paths: ComparisonArtifactPaths | undefined;
+  const observations = await runComparison(plan, {
+    ...deps,
+    onProgress: async (observation) => {
+      completed.push(observation);
+      paths = await writeComparisonArtifacts(
+        plan,
+        completed,
+        outputDir,
+        generatedAt,
+      );
+      await deps.onProgress?.(observation);
+    },
+  });
+  if (!paths) throw new Error("comparison completed without any candidates");
+  return { observations, paths };
 }
 
 export async function writeComparisonArtifacts(
@@ -539,34 +567,34 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   }
   if (!vars.OPENAI_API_KEY) throw new Error("missing OPENAI_API_KEY");
 
-  const observations = await runComparison(plan, {
-    now: () => Date.now(),
-    summarize: (input, candidate) =>
-      summarizeReading(input, {
-        fetch: globalThis.fetch,
-        provider: "openai",
-        openaiApiKey: vars.OPENAI_API_KEY!,
-        openaiModel: candidate.model,
-        openaiReasoningEffort: candidate.reasoningEffort,
-        anthropicApiKey: vars.ANTHROPIC_API_KEY,
-        anthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
-      }),
-    onProgress: (observation) => {
-      process.stderr.write(
-        `${observation.effort}: ok (${observation.latencyMs} ms, ` +
-          `$${observation.estimatedCostUsd.toFixed(6)})\n`,
-      );
-    },
-  });
   const generatedAt = new Date().toISOString();
   const outputDir =
     args.outputDir ??
     `.summarizer-comparisons/${plan.readingId}/${generatedAt.replace(/[:.]/g, "-")}`;
-  const paths = await writeComparisonArtifacts(
+  process.stdout.write(`  candidate checkpoints: ${resolve(outputDir)}\n`);
+  const { observations, paths } = await runCheckpointedComparison(
     plan,
-    observations,
     outputDir,
     generatedAt,
+    {
+      now: () => Date.now(),
+      summarize: (input, candidate) =>
+        summarizeReading(input, {
+          fetch: globalThis.fetch,
+          provider: "openai",
+          openaiApiKey: vars.OPENAI_API_KEY!,
+          openaiModel: candidate.model,
+          openaiReasoningEffort: candidate.reasoningEffort,
+          anthropicApiKey: vars.ANTHROPIC_API_KEY,
+          anthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+        }),
+      onProgress: (observation) => {
+        process.stderr.write(
+          `${observation.effort}: ok (${observation.latencyMs} ms, ` +
+            `$${observation.estimatedCostUsd.toFixed(6)})\n`,
+        );
+      },
+    },
   );
   const totalCost = observations.reduce(
     (sum, observation) => sum + observation.estimatedCostUsd,
