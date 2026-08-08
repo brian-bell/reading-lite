@@ -18,7 +18,8 @@ commands, conventions, and gotchas.
 - `src/index.ts` — Worker fetch + queue handlers (main queue → `processReading`,
   DLQ → `markDeadLettered`).
 - `src/router.ts` — HTTP API: auth, idempotent submit/import/reprocess, lookup,
-  diagnostics, content streaming.
+  diagnostics, content streaming. Reprocess prefers request Markdown over
+  stored-Markdown synthesis; supplied Markdown bypasses `extracted.md`.
 - `src/attempt-activation.ts` — `activateAttempt`: the eager write-and-enqueue
   ordering plus the shared rollback-to-failed funnel.
 - `src/process-reading.ts` — background pipeline, attempt logging, terminal
@@ -75,8 +76,9 @@ full matrix.
 - Secrets via `wrangler secret put --env …`: `READER_API_TOKEN` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional. Checked-in
-  defaults: OpenAI `gpt-5.6-terra` at `low` effort. Staging teardown's R2
-  emptying needs `CORPUS_R2_*` creds in env or `.corpus.vars`.
+  defaults: OpenAI `gpt-5.6-terra`; production uses `medium` effort, local and
+  staging use `low`. Staging teardown's R2 emptying needs `CORPUS_R2_*` creds
+  in env or `.corpus.vars`.
 
 ## Conventions
 
@@ -119,11 +121,18 @@ Pointers only — the details live in the named files' comments.
   delay, manifest stays pending; other errors → failed manifest + ack.
   Exhausted retries hit the DLQ, where `markDeadLettered` writes a retryable
   `failed`.
+- Reprocess with a Markdown source flips `source_type` only after success;
+  failures retain the prior source type, and ready readings also restore their
+  preserved manifest. After a successful flip, later source-less reprocesses
+  reuse stored Markdown.
 - `GET /api/readings/lookup` must stay side-effect-free: no pointer claims,
   repairs, deep scans, or writes.
 - Reddit can't be fetched from the worker (bot challenge) — the reading lands
-  `failed` with guidance; import threads with the **`reddit-import`** skill.
-  YouTube extracts a metadata floor in-worker
+  `failed` with guidance. The extract-agent makes one anonymous
+  `<thread>.json?raw_json=1&limit=20&sort=top` attempt per manifest version and
+  records challenges as durable `manual` outcomes; recover those with the
+  **`reddit-import`** skill.
+- YouTube extracts a metadata floor in-worker
   (`src/modules/extractor/youtube.ts`); for description + transcript use the
   **`youtube-import`** skill.
 - Turndown/linkedom quirks and the raw-DOM salvage path are documented in

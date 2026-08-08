@@ -171,7 +171,7 @@ Vars in `wrangler.toml` (non-secret, can be edited per-environment):
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
 | `SUMMARIZER_PROVIDER` | `openai` | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
 | `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
-| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` (`medium` in production) | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
@@ -192,7 +192,7 @@ All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
 | `GET /api/readings` | Newest-first list. Query: `q` (substring across title/tldr/url, case-insensitive), `tag` (exact, case-insensitive), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /api/readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /api/readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
-| `POST /api/readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. |
+| `POST /api/readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Failed readings move through `pending`; ready readings keep their current ready manifest if the new attempt fails. Optional body `{ "force": true }` bypasses an active-attempt conflict. Optional body `{ "source": { "kind": "markdown", "markdown": "..." } }` (with an optional `title`) reprocesses the supplied Markdown instead of re-fetching the URL, taking precedence over a markdown reading's stored text. A successful attempt makes the reading `source_type: "markdown"`, so later no-source reprocesses reuse that Markdown rather than re-fetching the URL. On failure the reading keeps its previous `source_type`, preventing an early failure from treating unstored supplied Markdown as durable; a reading that was already `ready` also rolls back to its preserved manifest. The Markdown must fit Cloudflare's 128 KB queue-message limit; a larger body rolls the attempt back and returns 503. |
 | `GET /api/readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /api/readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |

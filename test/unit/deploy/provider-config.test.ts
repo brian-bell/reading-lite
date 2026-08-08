@@ -6,7 +6,7 @@ function read(path: string): string {
 }
 
 describe("checked-in summarizer provider configuration", () => {
-  it("sets the OpenAI default explicitly in every Worker environment", () => {
+  it("uses medium OpenAI effort in production while local and staging stay low", () => {
     const wrangler = read("wrangler.toml");
 
     expect(
@@ -21,7 +21,17 @@ describe("checked-in summarizer provider configuration", () => {
       wrangler.match(
         /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+    expect(
+      wrangler.match(
+        /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"$/gm,
+      ),
+    ).toHaveLength(1);
+    expect(
+      wrangler.match(
+        /\[env\.production\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"$/m,
+      ),
+    ).toHaveLength(1);
     expect(
       wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-4-6"$/gm),
     ).toHaveLength(3);

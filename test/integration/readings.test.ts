@@ -3519,6 +3519,540 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   });
 });
 
+describe("POST /api/readings/:id/reprocess — markdown source", () => {
+  const AGENT_MARKDOWN = "# Agent Extraction\n\nThe local agent captured the full article text.";
+
+  it("reprocesses a ready url reading with supplied markdown and flips it to a markdown source", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/agent-upgrade" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+    await expect(
+      new ReadingStore(env.READINGS_BUCKET).loadReadingById(id).then((f) => f!.manifest.source_type),
+    ).resolves.toBe("url");
+
+    const ctx2 = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source: { kind: "markdown", markdown: AGENT_MARKDOWN, title: "Agent Extraction" },
+        }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+
+    // Asserted before the drain: the queued job carries the supplied text, and
+    // the ready manifest is still preserved across the attempt.
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      id,
+      trigger: "reprocess",
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN, title: "Agent Extraction" },
+    });
+    expect(queuedJobs[0]!.preserveReadyManifest).toMatchObject({ id, status: "ready" });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({ id, status: "ready", source_type: "markdown" });
+
+    const content = await app.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(content.status).toBe(200);
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
+
+    // Deliberate consequence of the flip: a later reprocess with no source
+    // reuses the stored markdown instead of re-fetching the degraded URL.
+    const ctx3 = createExecutionContext();
+    const again = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+      env,
+      ctx3,
+    );
+    expect(again.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.source).toMatchObject({ kind: "markdown", markdown: AGENT_MARKDOWN });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx3);
+  });
+
+  it("recovers a failed reading from supplied markdown without disturbing by-url ownership", async () => {
+    const url = "https://example.com/agent-recovers-failed";
+    const idCounter = { n: 0 };
+    // The same fetch stub stays 404 on the source for the whole test: a supplied
+    // markdown source must never re-fetch the URL that failed.
+    const services = makeServices(
+      makeStubFetch({ source: { status: 404, body: "not found" } }),
+      idCounter,
+    );
+    const app = createApp({ services });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    const ctx2 = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+    consoleErr.mockRestore();
+
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({ id, status: "ready", source_type: "markdown" });
+
+    // by-url ownership is untouched: resubmitting the URL resolves to the same
+    // reading rather than minting a duplicate.
+    const resubmit = await app.request(
+      "/api/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      env,
+    );
+    expect(resubmit.status).toBe(200);
+    expect(await resubmit.json()).toMatchObject({ id, status: "ready" });
+    expect(queuedJobs).toHaveLength(0);
+  });
+
+  it("rejects a markdown-source reprocess while another attempt is active", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/agent-active-attempt" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+
+    // Deliberately not drained: the submit attempt is still running, so the
+    // guard must fire before the supplied source is considered.
+    const retry = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(retry.status).toBe(409);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({ id, trigger: "submit" });
+
+    // force is orthogonal to source: it bypasses the same guard and still
+    // carries the supplied markdown.
+    const forced = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          force: true,
+          source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+        }),
+      }),
+      env,
+      createExecutionContext(),
+    );
+    expect(forced.status).toBe(202);
+    expect(queuedJobs).toHaveLength(2);
+    expect(queuedJobs[1]).toMatchObject({
+      id,
+      trigger: "reprocess",
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+    });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("reprocesses from a supplied source without reading the stored markdown", async () => {
+    const url = "https://example.com/agent-supplies-missing-markdown";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const ctx1 = createExecutionContext();
+    const imported = await app.fetch(
+      new Request("http://t/api/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source_url: url, title: "Imported", markdown: "# Imported\n\nOld." }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await imported.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    // Strip the stored markdown out from under the reading. A no-source
+    // reprocess now has nothing to synthesize from and must 409...
+    const { keyPrefix } = (await reader.loadReadingById(id))!;
+    await env.READINGS_BUCKET.delete(`${keyPrefix}/extracted.md`);
+    const withoutSource = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+      env,
+    );
+    expect(withoutSource.status).toBe(409);
+    expect(await withoutSource.json()).toEqual({ error: "markdown content not available" });
+    expect(queuedJobs).toHaveLength(0);
+
+    // ...while a supplied source never consults extracted.md at all, which is
+    // also the escape hatch out of that 409.
+    const ctx2 = createExecutionContext();
+    const withSource = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(withSource.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.source).toMatchObject({ kind: "markdown", markdown: AGENT_MARKDOWN });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+    const content = await app.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
+  });
+
+  it("keeps the preserved ready manifest, and its source_type, when a markdown reprocess fails", async () => {
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/agent-upgrade-fails" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    // Summarization fails on the reprocess attempt. A markdown source never
+    // fetches the URL, so the failure has to come from the summarizer.
+    const base = makeStubFetch();
+    const failingFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.openai.com/v1/responses")) {
+        return new Response(JSON.stringify({ error: { message: "bad request" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base(input, init);
+    });
+    const failingServices = makeServices(failingFetch, idCounter);
+    const failingApp = createApp({ services: failingServices });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx2 = createExecutionContext();
+    const retry = await failingApp.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    expect(queuedJobs[0]).toMatchObject({
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+      preserveReadyManifest: { id, status: "ready" },
+    });
+    await drainQueue(failingServices);
+    await waitOnExecutionContext(ctx2);
+    consoleErr.mockRestore();
+
+    // The preserve-ready rollback wins: the flip to markdown only lands on a
+    // successful terminal write, so this reading is still url-sourced.
+    const get = await failingApp.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({
+      id,
+      status: "ready",
+      source_type: "url",
+      title: "Test Article",
+      last_attempt: { trigger: "reprocess", status: "failed" },
+    });
+
+    // KNOWN DIVERGENCE (reading-lite-psu): write_extracted already replaced
+    // extracted.md before summarization failed, and the preserve-ready rollback
+    // restores only the manifest. So /content serves the failed attempt's
+    // markdown under a manifest whose hash and byte counts describe the old
+    // text. Characterized here so the divergence is visible rather than silent;
+    // this assertion flips when psu is fixed in process-reading.ts.
+    const content = await failingApp.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
+  });
+
+  it("retains the url source after a supplied-source attempt dies before write_extracted", async () => {
+    const idCounter = { n: 0 };
+    const base = makeStubFetch();
+    const noSummaryFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.openai.com/v1/responses")) {
+        return new Response(JSON.stringify({ error: { message: "bad request" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base(input, init);
+    });
+    const services = makeServices(noSummaryFetch, idCounter);
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // 1. A url reading that extracts fine but fails to summarize: it lands
+    //    failed, still source_type "url", with url-derived extracted.md stored.
+    const ctx1 = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/agent-stale-extracted" }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+    const { keyPrefix } = (await reader.loadReadingById(id))!;
+    const urlDerived = await (await reader.readExtracted(keyPrefix))!.text();
+    expect(urlDerived).toContain("picked up by readability");
+    // 2. A supplied-markdown reprocess whose raw write fails, i.e. it dies
+    //    before write_extracted ever runs.
+    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    let failedRawWrite = false;
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
+      (async (key: string, value: unknown, options?: R2PutOptions) => {
+        if (key === `${keyPrefix}/raw.md` && !failedRawWrite) {
+          failedRawWrite = true;
+          throw new Error("simulated raw write failure");
+        }
+        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
+      }) as R2Bucket["put"],
+    );
+    const ctx2 = createExecutionContext();
+    const supplied = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(supplied.status).toBe(202);
+    // Simulate a message enqueued before sourceTypeOnFailure was deployed. The
+    // consumer must recover the prior type from this attempt's pending manifest.
+    delete queuedJobs[0]!.sourceTypeOnFailure;
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+    putSpy.mockRestore();
+    consoleErr.mockRestore();
+    expect(failedRawWrite).toBe(true);
+
+    // The supplied markdown was never written, so the failed attempt must not
+    // claim that it became the reading's durable source.
+    const manifest = (await reader.loadReadingById(id))!.manifest;
+    expect(manifest).toMatchObject({ status: "failed", source_type: "url" });
+    await expect((await reader.readExtracted(keyPrefix))!.text()).resolves.toBe(urlDerived);
+
+    // A later no-source reprocess therefore fetches the URL again instead of
+    // silently synthesizing from the stale extracted.md artifact.
+    const again = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+      env,
+    );
+    expect(again.status).toBe(202);
+    expect(queuedJobs[0]!.source).toBeUndefined();
+    queuedJobs.length = 0;
+  });
+
+  it("treats a legacy missing source_type as url when snapshotting reprocess failure state", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const id = "rd_LEGACY_SOURCE_TYPE";
+    const url = "https://example.com/legacy-source-type";
+    const createdAt = "2026-08-07T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const manifest: Manifest = {
+      id,
+      url,
+      url_hash: await sha256Hex(url),
+      status: "failed",
+      error: { code: "LegacyError", message: "legacy failure" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, manifest);
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+
+    const response = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source: { kind: "markdown", markdown: AGENT_MARKDOWN } }),
+      },
+      env,
+    );
+
+    expect(response.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject({
+      source: { kind: "markdown", markdown: AGENT_MARKDOWN },
+      sourceTypeOnFailure: "url",
+    });
+  });
+
+  it("prefers the supplied markdown over the stored markdown of an imported reading", async () => {
+    const url = "https://example.com/agent-replaces-imported-markdown";
+    const stored = "# Imported\n\nThe first, thinner capture of this article.";
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx1 = createExecutionContext();
+    const imported = await app.fetch(
+      new Request("http://t/api/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source_url: url, title: "Imported", markdown: stored }),
+      }),
+      env,
+      ctx1,
+    );
+    const { id } = (await imported.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx1);
+
+    const ctx2 = createExecutionContext();
+    const retry = await app.fetch(
+      new Request(`http://t/api/readings/${id}/reprocess`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          source: { kind: "markdown", markdown: AGENT_MARKDOWN, title: "Agent Extraction" },
+        }),
+      }),
+      env,
+      ctx2,
+    );
+    expect(retry.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]!.source).toMatchObject({
+      kind: "markdown",
+      markdown: AGENT_MARKDOWN,
+      title: "Agent Extraction",
+    });
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx2);
+
+    const content = await app.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await content.text()).toBe(AGENT_MARKDOWN);
+  });
+});
+
 describe("POST /api/readings — email notifications", () => {
   it("fires one Resend email by default after a successful submit", async () => {
     const fetchFn = makeStubFetch();

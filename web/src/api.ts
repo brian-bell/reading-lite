@@ -2,6 +2,7 @@ import type {
   ListReadingsResponse,
   Manifest,
   ReadingDiagnostics,
+  ReprocessReadingBody,
   ReprocessReadingResponse,
   SubmitReadingResponse
 } from "./types";
@@ -117,14 +118,15 @@ export async function submitReading(
 
 export async function reprocessReading(
   token: string,
-  id: string
+  id: string,
+  body: ReprocessReadingBody = {}
 ): Promise<ReprocessReadingResponse> {
   const target = new URL(`/api/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
   const response = await fetch(
     new Request(target, {
       method: "POST",
       headers: authHeaders(token),
-      body: JSON.stringify({})
+      body: JSON.stringify(body)
     })
   );
   if (!response.ok) {

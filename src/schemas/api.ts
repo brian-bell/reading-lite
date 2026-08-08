@@ -31,10 +31,20 @@ export type PostReadingsImportMarkdownBody = z.infer<
   typeof PostReadingsImportMarkdownBodySchema
 >;
 
+// A reprocess may carry the content to reprocess with. Field rules mirror
+// import-markdown above so the two write paths validate identically. Only
+// markdown is accepted: a url reprocess is the no-source default.
+export const ReprocessMarkdownSourceSchema = z.object({
+  kind: z.literal("markdown"),
+  markdown: z.string().min(1),
+  title: z.string().trim().min(1).optional(),
+});
+
 export const PostReadingReprocessBodySchema = z
   .object({
     force: z.boolean().default(false),
     email: z.boolean().optional(),
+    source: ReprocessMarkdownSourceSchema.optional(),
   })
   .default({ force: false });
 export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;

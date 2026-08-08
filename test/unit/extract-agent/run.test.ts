@@ -367,6 +367,40 @@ describe("runAgent execution", () => {
     });
   });
 
+  it("maps a dead Reddit thread to the dead outcome with the ordinary error sidecar", async () => {
+    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const { deps, saved } = makeDeps([row], {
+      reddit: vi.fn(async (): Promise<RedditOutcome> => ({ kind: "dead", detail: "Reddit thread returned HTTP 404" })),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ attempted: 1, dead: 1, imported: 0 });
+    expect(summary.rows[0]).toMatchObject({ outcome: "dead", detail: "Reddit thread returned HTTP 404" });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "error", attempts: 1 });
+  });
+
+  it("records a thrown Reddit dependency as a retryable error without submitting", async () => {
+    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
+    const { deps, saved } = makeDeps([row], {
+      reddit: vi.fn(async (): Promise<RedditOutcome> => {
+        throw new Error("socket exploded");
+      }),
+    });
+
+    const summary = await runAgent({ execute: true }, deps);
+
+    expect(deps.submit).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ attempted: 1, errors: 1 });
+    expect(summary.rows[0]).toMatchObject({ outcome: "error", detail: "socket exploded" });
+    expect(saved.at(-1)?.readings[row.id]).toMatchObject({
+      last_outcome: "error",
+      attempts: 1,
+      given_up: false,
+    });
+  });
+
   it("applies --limit across static and Reddit routes in input order", async () => {
     const first = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/first/" });
     const second = blockedRow();
