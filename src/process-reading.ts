@@ -348,11 +348,12 @@ async function markFailed(
     return;
   }
 
+  const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
   const manifest: Manifest = {
     id: args.id,
     url: args.url,
     url_hash: args.urlHash,
-    source_type: sourceTypeForArgs(args),
+    source_type: sourceTypeOnFailure,
     status: "failed",
     error,
     content_type: "application/octet-stream",
@@ -375,6 +376,25 @@ async function markFailed(
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
+}
+
+async function resolveSourceTypeOnFailure(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<"url" | "markdown"> {
+  if (args.sourceTypeOnFailure) return args.sourceTypeOnFailure;
+
+  // Queue messages already in flight when sourceTypeOnFailure was introduced
+  // do not carry the snapshot. A reprocess pending manifest retains the prior
+  // source type, so recover it only while this attempt still owns that manifest.
+  if (args.trigger === "reprocess") {
+    const current = await reader.readManifest(args.keyPrefix).catch(() => null);
+    if (current && attemptOwnership(current, args).isActive) {
+      return current.source_type ?? "url";
+    }
+  }
+
+  return sourceTypeForArgs(args);
 }
 
 export async function newReadingArgs(

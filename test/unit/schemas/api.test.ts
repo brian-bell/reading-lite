@@ -73,6 +73,50 @@ describe("PostReadingReprocessBodySchema", () => {
   it("accepts force=true", () => {
     expect(PostReadingReprocessBodySchema.parse({ force: true })).toEqual({ force: true });
   });
+
+  it("accepts an optional markdown source", () => {
+    expect(
+      PostReadingReprocessBodySchema.parse({
+        source: { kind: "markdown", markdown: "# Hi" },
+      }),
+    ).toEqual({ force: false, source: { kind: "markdown", markdown: "# Hi" } });
+  });
+
+  it("accepts a markdown source with a title, alongside force and email", () => {
+    expect(
+      PostReadingReprocessBodySchema.parse({
+        force: true,
+        email: true,
+        source: { kind: "markdown", markdown: "# Hi", title: "  A Title  " },
+      }),
+    ).toEqual({
+      force: true,
+      email: true,
+      source: { kind: "markdown", markdown: "# Hi", title: "A Title" },
+    });
+  });
+
+  it("rejects a non-markdown source kind", () => {
+    expect(() =>
+      PostReadingReprocessBodySchema.parse({
+        source: { kind: "url", url: "https://example.com/a" },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects empty markdown, missing markdown, and an empty title", () => {
+    expect(() =>
+      PostReadingReprocessBodySchema.parse({ source: { kind: "markdown", markdown: "" } }),
+    ).toThrow();
+    expect(() =>
+      PostReadingReprocessBodySchema.parse({ source: { kind: "markdown" } }),
+    ).toThrow();
+    expect(() =>
+      PostReadingReprocessBodySchema.parse({
+        source: { kind: "markdown", markdown: "# Hi", title: "   " },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("PostReadingsSimilarBodySchema", () => {
