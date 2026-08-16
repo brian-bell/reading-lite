@@ -483,7 +483,9 @@ const FLOWS = {
       "src/modules/staleness.ts",
     ],
     kind: "read",
-    nodes: ["spa", "worker", "r2", "staleness", "vectorize"],
+    // SPA list/search is q/tag over index/list.json via the Worker — it never
+    // calls POST /api/readings/similar, so Vectorize stays off this path.
+    nodes: ["spa", "worker", "r2", "staleness"],
     hops: [
       {
         from: "spa",
@@ -502,12 +504,6 @@ const FLOWS = {
         to: "staleness",
         label: "annotateStale",
         payload: `read-time only`,
-      },
-      {
-        from: "spa",
-        to: "vectorize",
-        label: "POST /similar (via API)",
-        payload: `{ query_embedding[1536], k? }`,
       },
     ],
   },
@@ -713,11 +709,18 @@ mapViewport.addEventListener("pointerdown", (e) => {
   mapViewport.setPointerCapture(e.pointerId);
 });
 
+function applyPan(x, y) {
+  // Pan via CSS vars so media-query --map-scale is preserved (inline
+  // transform would clobber the responsive scale on small viewports).
+  isoWorld.style.setProperty("--pan-x", `${x}px`);
+  isoWorld.style.setProperty("--pan-y", `${y}px`);
+}
+
 mapViewport.addEventListener("pointermove", (e) => {
   if (!dragging) return;
   const dx = e.clientX - startX;
   const dy = e.clientY - startY;
-  isoWorld.style.transform = `translate(${baseX + dx}px, ${baseY + dy}px)`;
+  applyPan(baseX + dx, baseY + dy);
 });
 
 function endDrag(e) {
@@ -726,6 +729,7 @@ function endDrag(e) {
   mapViewport.classList.remove("is-dragging");
   baseX += e.clientX - startX;
   baseY += e.clientY - startY;
+  applyPan(baseX, baseY);
 }
 
 mapViewport.addEventListener("pointerup", endDrag);
@@ -734,7 +738,7 @@ mapViewport.addEventListener("pointercancel", endDrag);
 mapViewport.addEventListener("dblclick", () => {
   baseX = 0;
   baseY = 0;
-  isoWorld.style.transform = "";
+  applyPan(0, 0);
   resetOverview();
 });
 
