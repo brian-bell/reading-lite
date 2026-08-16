@@ -386,7 +386,10 @@ created `.dev.vars` from `.dev.vars.example`).
   SPA, paste the bearer token (`dev-local-token`) into the field in the top-right
   and Save to authenticate.
 - Local `wrangler dev` deliberately has no Queue/Vectorize binding, so
-  `POST /api/readings` and `/reprocess` return 503 and search returns nothing.
+  `POST /api/readings` and `/reprocess` return 503 and similarity search
+  (`POST /api/readings/similar`) returns an empty result set. List search via
+  `q` on `GET /api/readings` still works — it filters `index/list.json` from
+  local R2 and does not need Vectorize.
   The submit→summarize pipeline itself is covered end-to-end by the test suite
   (integration tests inject queue/Vectorize stubs). The read-path routes (list,
   detail, `/content`, `/lookup`) work against whatever is in the local R2 bucket.
@@ -396,7 +399,12 @@ created `.dev.vars` from `.dev.vars.example`).
   --local` (which writes to a different local store the dev server never reads).
   The running dev server also caches R2 in-process, so restart it after seeding.
   A minimal `ready` reading needs `readings/<key_prefix>/manifest.json` (a valid
-  `ManifestSchema`), `index/by-id/<id>`, and an `index/list.json` row.
+  `ManifestSchema` with `content_status: "captured"`), `index/by-id/<id>`,
+  `index/by-url/<url_hash>` (matching the manifest's `url_hash`), an
+  `index/list.json` row, `readings/<key_prefix>/extracted.md` (for `/content`),
+  and `readings/<key_prefix>/raw.{ext}` matching the manifest's `content_type`
+  (for `/content/raw`). `/lookup` requires the by-url pointer and does not
+  discover pointerless readings.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
