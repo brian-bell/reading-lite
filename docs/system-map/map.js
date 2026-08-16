@@ -640,7 +640,7 @@ function setFlow(id) {
     btn.setAttribute("aria-selected", on ? "true" : "false");
   });
   const flow = FLOWS[id];
-  setExplainer(flow.title, flow.summary, flow.cites, flow.hops[0]?.payload ?? null);
+  setExplainer(flow.title, flow.summary, flow.cites, flow.hops[0]?.payload ?? null, "Active flow");
   renderPaths();
   syncBuildingHighlight(flow.nodes);
 }
@@ -648,7 +648,7 @@ function setFlow(id) {
 function selectBuilding(id) {
   selectedId = id;
   const b = BUILDINGS.find((x) => x.id === id);
-  setExplainer(b.name, b.blurb, b.cites, b.payload ?? null);
+  setExplainer(b.name, b.blurb, b.cites, b.payload ?? null, "Building");
   const flowNodes = FLOWS[activeFlow].nodes;
   syncBuildingHighlight(flowNodes, id);
 }
@@ -656,11 +656,11 @@ function selectBuilding(id) {
 function highlightBuilding(id) {
   if (selectedId) return;
   const b = BUILDINGS.find((x) => x.id === id);
-  setExplainer(b.name, b.blurb, b.cites, b.payload ?? null);
+  setExplainer(b.name, b.blurb, b.cites, b.payload ?? null, "Building");
 }
 
 function showHop(hop) {
-  setExplainer(hop.label, FLOWS[activeFlow].summary, FLOWS[activeFlow].cites, hop.payload);
+  setExplainer(hop.label, FLOWS[activeFlow].summary, FLOWS[activeFlow].cites, hop.payload, "Path hop");
 }
 
 function setExplainer(title, body, cites, payload, kicker = "District overview") {
