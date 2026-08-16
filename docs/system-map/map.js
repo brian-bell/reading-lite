@@ -627,10 +627,6 @@ function renderPaths() {
     packet.style.setProperty("--dur", `${2.8 + i * 0.35}s`);
     packet.style.animationDelay = `${i * 0.28}s`;
     packet.title = hop.label;
-    packet.addEventListener("animationiteration", () => {
-      // Keep explainer hop cue in sync when a building is not selected.
-      if (!selectedId) showHop(hop);
-    });
     payloadLayer.appendChild(packet);
   });
 }
@@ -667,7 +663,8 @@ function showHop(hop) {
   setExplainer(hop.label, FLOWS[activeFlow].summary, FLOWS[activeFlow].cites, hop.payload);
 }
 
-function setExplainer(title, body, cites, payload) {
+function setExplainer(title, body, cites, payload, kicker = "District overview") {
+  document.querySelector(".explainer-kicker").textContent = kicker;
   explainerTitle.textContent = title;
   explainerBody.textContent = body;
   explainerCites.innerHTML = cites.map((c) => `<li><code>${escapeHtml(c)}</code></li>`).join("");
@@ -692,7 +689,7 @@ function syncBuildingHighlight(activeNodes, focusId = null) {
 
 function resetOverview() {
   selectedId = null;
-  setExplainer(OVERVIEW.title, OVERVIEW.body, OVERVIEW.cites, null);
+  setExplainer(OVERVIEW.title, OVERVIEW.body, OVERVIEW.cites, null, "District overview");
   syncBuildingHighlight(FLOWS[activeFlow].nodes);
 }
 

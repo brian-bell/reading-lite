@@ -566,6 +566,10 @@ pre {
   background: #2f6f72;
 }
 
+.swatch.zone-pipeline {
+  background: #2f5f58;
+}
+
 .swatch.zone-store {
   background: #6b5e4e;
 }
