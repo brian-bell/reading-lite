@@ -22,6 +22,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
+import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -38,6 +39,7 @@ export async function processReading(
   args: ProcessReadingArgs,
   env: Env,
   services: Services,
+  _tenant?: TenantContext,
 ): Promise<void> {
   const reader = new ReadingStore(env.READINGS_BUCKET);
   const similarity = new SimilarityStore(env.READINGS_INDEX);

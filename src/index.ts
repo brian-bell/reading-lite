@@ -1,3 +1,11 @@
+import { fromD1 } from "./control-plane/db";
+import {
+  admitEnvelopeOrReject,
+  consumeProcessReadingMessage,
+  logEnvelopeRejected,
+  parseProcessReadingEnvelope,
+  type ProcessReadingEnvelopeV1,
+} from "./control-plane/envelope";
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
@@ -9,7 +17,7 @@ export interface Env {
   CONTROL_PLANE: D1Database;
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
-  READING_JOBS?: Queue<ProcessReadingArgs>;
+  READING_JOBS?: Queue<ProcessReadingEnvelopeV1>;
   // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
@@ -50,11 +58,11 @@ const QUEUE_MAX_DELAY_SECONDS = 43_200;
 const DEAD_LETTER_QUEUE = "reading-lite-dlq";
 
 export async function dispatchQueueMessage(
-  msg: Message<ProcessReadingArgs>,
-  process: (body: ProcessReadingArgs) => Promise<void>,
+  msg: Message<unknown>,
+  process: () => Promise<void>,
 ): Promise<void> {
   try {
-    await process(msg.body);
+    await process();
     msg.ack();
   } catch (e) {
     if (e instanceof RateLimitedError) {
@@ -75,11 +83,29 @@ export async function dispatchQueueMessage(
 // visible, retryable `failed` manifest and ack (the DLQ is terminal; never
 // retry, or the message could loop).
 export async function handleDeadLetter(
-  msg: Message<ProcessReadingArgs>,
-  mark: (body: ProcessReadingArgs) => Promise<void>,
+  msg: Message<unknown>,
+  deps: {
+    db: ReturnType<typeof fromD1>;
+    nowMs: number;
+    mark: (body: ProcessReadingArgs) => Promise<void>;
+  },
 ): Promise<void> {
+  const parsed = parseProcessReadingEnvelope(msg.body);
+  if (!parsed.ok) {
+    logEnvelopeRejected(parsed.reason);
+    msg.ack();
+    return;
+  }
+  const admitted = await admitEnvelopeOrReject(deps.db, parsed.envelope, deps.nowMs);
+  if (!admitted.ok) {
+    if ("reason" in admitted && admitted.reason === "malformed_job") {
+      logEnvelopeRejected("malformed_job");
+    }
+    msg.ack();
+    return;
+  }
   try {
-    await mark(msg.body);
+    await deps.mark(parsed.envelope.job);
   } catch (e) {
     console.error(e);
   }
@@ -99,16 +125,27 @@ export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     return app.fetch(request, env, ctx);
   },
-  async queue(batch: MessageBatch<ProcessReadingArgs>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const services = defaultServices();
     if (batch.queue === DEAD_LETTER_QUEUE) {
+      const db = fromD1(env.CONTROL_PLANE);
+      const nowMs = Date.now();
       for (const msg of batch.messages) {
-        await handleDeadLetter(msg, (body) => markDeadLettered(body, env, services));
+        await handleDeadLetter(msg, {
+          db,
+          nowMs,
+          mark: (body) => markDeadLettered(body, env, services),
+        });
       }
       return;
     }
     for (const msg of batch.messages) {
-      await dispatchQueueMessage(msg, (body) => processReading(body, env, services));
+      await consumeProcessReadingMessage(msg, {
+        db: fromD1(env.CONTROL_PLANE),
+        nowMs: Date.now(),
+        process: (job, tenant) =>
+          dispatchQueueMessage(msg, () => processReading(job, env, services, tenant)),
+      });
     }
   },
 };

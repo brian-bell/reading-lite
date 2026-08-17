@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mintTokenId,
   mintUserId,
+  parseSessionId,
   parseTenantId,
   parseTokenId,
   parseUserId,
@@ -9,6 +10,7 @@ import {
 
 const USER = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
+const SESSION = "ses_550e8400-e29b-41d4-a716-446655440000";
 
 describe("control-plane IDs", () => {
   it("parses prefixed UUIDv4 user and tenant IDs", () => {
@@ -16,8 +18,10 @@ describe("control-plane IDs", () => {
     expect(parseTenantId(USER)).toBe(USER);
   });
 
-  it("parses prefixed UUIDv4 token IDs", () => {
+  it("parses prefixed UUIDv4 token and session IDs", () => {
     expect(parseTokenId(TOKEN)).toBe(TOKEN);
+    expect(parseSessionId(SESSION)).toBe(SESSION);
+    expect(parseSessionId(TOKEN)).toBeNull();
   });
 
   it("canonicalizes uppercase hex to lowercase", () => {
@@ -42,6 +46,7 @@ describe("control-plane IDs", () => {
     }
     expect(parseTokenId(USER)).toBeNull();
     expect(parseTokenId("tok_not-a-uuid")).toBeNull();
+    expect(parseSessionId(USER)).toBeNull();
   });
 
   it("mints user and token IDs that parse", () => {

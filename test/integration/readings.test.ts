@@ -1,5 +1,10 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fromD1 } from "../../src/control-plane/db";
+import {
+  consumeProcessReadingMessage,
+  type ProcessReadingEnvelopeV1,
+} from "../../src/control-plane/envelope";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import {
@@ -7,7 +12,7 @@ import {
   type ProcessReadingArgs,
 } from "../../src/process-reading";
 import { ReadingVisibility } from "../../src/reading-visibility";
-import { sha256Hex, type Services } from "../../src/services";
+import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
@@ -61,34 +66,46 @@ async function clearBucket() {
   }
 }
 
-// Production sends ProcessReadingArgs through Cloudflare Queues. Miniflare has
-// no native queue emulator (and per CLAUDE.md adding the binding to
+// Production sends ProcessReadingEnvelopeV1 through Cloudflare Queues. Miniflare
+// has no native queue emulator (and per CLAUDE.md adding the binding to
 // wrangler.test.toml hangs the runtime), so we install a stub that captures
-// `send()` calls and a `drainQueue(services)` helper runs the worker's queue
-// handler logic for each captured message.
+// `send()` calls. `queuedJobs` is the job view used by existing assertions;
+// `queuedEnvelopes` is the on-the-wire v1 payload. `drainQueue` runs the
+// fail-closed consumer (validate + admit founder tenant/token) then processReading.
+let queuedEnvelopes: ProcessReadingEnvelopeV1[] = [];
 let queuedJobs: ProcessReadingArgs[] = [];
 function installQueueStub(): ProcessReadingArgs[] {
+  queuedEnvelopes = [];
   queuedJobs = [];
-  (env as unknown as { READING_JOBS: Queue<ProcessReadingArgs> }).READING_JOBS = {
-    send: vi.fn(async (msg: ProcessReadingArgs) => {
-      queuedJobs.push(msg);
+  (env as unknown as { READING_JOBS: Queue<ProcessReadingEnvelopeV1> }).READING_JOBS = {
+    send: vi.fn(async (msg: ProcessReadingEnvelopeV1) => {
+      queuedEnvelopes.push(msg);
+      queuedJobs.push(msg.job);
     }),
-  } as unknown as Queue<ProcessReadingArgs>;
+  } as unknown as Queue<ProcessReadingEnvelopeV1>;
   return queuedJobs;
 }
 
 function installRejectingQueueStub(error: unknown = new Error("queue send failed")) {
-  (env as unknown as { READING_JOBS: Queue<ProcessReadingArgs> }).READING_JOBS = {
+  (env as unknown as { READING_JOBS: Queue<ProcessReadingEnvelopeV1> }).READING_JOBS = {
     send: vi.fn(async () => {
       throw error;
     }),
-  } as unknown as Queue<ProcessReadingArgs>;
+  } as unknown as Queue<ProcessReadingEnvelopeV1>;
 }
 
 async function drainQueue(services: Services): Promise<void> {
-  while (queuedJobs.length > 0) {
-    const msg = queuedJobs.shift()!;
-    await processReading(msg, env as unknown as Env, services);
+  while (queuedEnvelopes.length > 0) {
+    const envelope = queuedEnvelopes.shift()!;
+    queuedJobs.shift();
+    await consumeProcessReadingMessage(
+      { body: envelope, ack() {} },
+      {
+        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        nowMs: Date.now(),
+        process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
+      },
+    );
   }
 }
 
@@ -215,7 +232,10 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
   return {
     fetch: fetchFn,
     now: () => new Date(start + idCounter.n * 1000).toISOString(),
-    newId: () => `rd_TEST${String(++idCounter.n).padStart(2, "0")}`,
+    newId: () => {
+      idCounter.n++;
+      return mintReadingId();
+    },
   };
 }
 
@@ -261,6 +281,86 @@ beforeEach(() => {
   installQueueStub();
 });
 afterEach(clearBucket);
+
+async function founderIds(): Promise<{ tenantId: string; tokenId: string }> {
+  const workerEnv = env as unknown as Env;
+  const user = await workerEnv.CONTROL_PLANE.prepare(
+    "SELECT id FROM users WHERE email_canonical = ?",
+  )
+    .bind("founder@test.example")
+    .first<{ id: string }>();
+  const token = await workerEnv.CONTROL_PLANE.prepare(
+    "SELECT id FROM api_tokens WHERE user_id = ?",
+  )
+    .bind(user!.id)
+    .first<{ id: string }>();
+  return { tenantId: user!.id, tokenId: token!.id };
+}
+
+// Drain-only cutover (ADR 0001): there is no legacy decoder. Operators stop
+// producers, drain the old queue (unversioned leftovers are acked without
+// processing), then deploy the v1 producer and consumer together.
+describe("versioned tenant queue envelope cutover", () => {
+  it("rejects leftover unversioned jobs and preserves founder submit-to-ready on v1", async () => {
+    const { tenantId, tokenId } = await founderIds();
+    const process = vi.fn();
+    const leftover = {
+      id: "rd_LEGACY",
+      url: "https://example.com/legacy-drain",
+      urlHash: "b".repeat(64),
+      createdAt: "2026-08-16T12:00:00.000Z",
+      keyPrefix: "readings/2026/08/16T120000Z-rd_LEGACY",
+    };
+    const leftoverAck = vi.fn();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumeProcessReadingMessage(
+      { body: leftover, ack: leftoverAck },
+      {
+        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        nowMs: Date.now(),
+        process,
+      },
+    );
+    expect(process).not.toHaveBeenCalled();
+    expect(leftoverAck).toHaveBeenCalledOnce();
+    consoleErr.mockRestore();
+
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/envelope-cutover" }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    expect(queuedEnvelopes).toHaveLength(1);
+    expect(queuedEnvelopes[0]).toMatchObject({
+      version: 1,
+      tenant: { tenantId },
+      actor: { kind: "api_token", credentialId: tokenId },
+      job: { url: "https://example.com/envelope-cutover", trigger: "submit" },
+    });
+    expect(queuedEnvelopes[0]).not.toHaveProperty("scopes");
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+    const { id } = (await submit.json()) as { id: string };
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({ id, status: "ready", title: "Test Article" });
+  });
+});
 
 describe.each([
   ["openai", "gpt-5.6-terra"],
@@ -2109,13 +2209,16 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("marks a claimed submit retryable when setup fails before queueing", async () => {
     const idCounter = { n: 0 };
+    const fixedId = "rd_0123456781";
     const services = makeServices(makeStubFetch(), idCounter);
+    services.newId = () => fixedId;
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const url = "https://example.com/setup-fails-after-claim";
     const urlHash = await sha256Hex(url);
-    const id = "rd_TEST01";
-    const byIdKey = `index/by-id/${id}`;
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(fixedId, createdAt);
+    const byIdKey = `index/by-id/${fixedId}`;
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
     let failedByIdWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
@@ -2139,14 +2242,14 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(first.status).toBe(503);
-    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(await first.json()).toEqual({ error: "reading setup failed", id: fixedId });
     expect(queuedJobs).toHaveLength(0);
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
-      id,
-      key_prefix: buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"),
+      id: fixedId,
+      key_prefix: keyPrefix,
     });
-    await expect(reader.readManifest(buildKeyPrefix(id, "2026-04-26T20:00:01.000Z"))).resolves.toMatchObject({
-      id,
+    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
+      id: fixedId,
       status: "failed",
       error: { retryable: true },
     });
@@ -2164,9 +2267,9 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     );
 
     expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(await retry.json()).toMatchObject({ id: fixedId, status: "pending" });
     expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
+    expect(queuedJobs[0]).toMatchObject({ id: fixedId, trigger: "reprocess" });
   });
 
   it("imports Markdown without fetching the source URL", async () => {
@@ -2262,15 +2365,16 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("marks a claimed Markdown import retryable when setup fails before queueing", async () => {
     const idCounter = { n: 0 };
+    const fixedId = "rd_0123456782";
     const services = makeServices(makeStubFetch(), idCounter);
+    services.newId = () => fixedId;
     const app = createApp({ services });
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const sourceUrl = "https://example.com/import-setup-fails-after-claim";
     const markdown = "# Setup Failure\n\nRetry me immediately.";
     const urlHash = await sha256Hex(sourceUrl);
-    const id = "rd_TEST01";
-    const createdAt = "2026-04-26T20:00:01.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(fixedId, createdAt);
     const rawKey = `${keyPrefix}/raw.md`;
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
     let failedRawWrite = false;
@@ -2299,11 +2403,11 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(first.status).toBe(503);
-    expect(await first.json()).toEqual({ error: "reading setup failed", id });
+    expect(await first.json()).toEqual({ error: "reading setup failed", id: fixedId });
     expect(queuedJobs).toHaveLength(0);
-    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({ id, key_prefix: keyPrefix });
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({ id: fixedId, key_prefix: keyPrefix });
     await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
-      id,
+      id: fixedId,
       status: "failed",
       source_type: "markdown",
       error: { retryable: true },
@@ -2326,10 +2430,10 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     );
 
     expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(await retry.json()).toMatchObject({ id: fixedId, status: "pending" });
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]).toMatchObject({
-      id,
+      id: fixedId,
       trigger: "import",
       source: { kind: "markdown", markdown, title: "Setup Failure" },
     });
@@ -2434,7 +2538,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const urlHash = await sha256Hex(sourceUrl);
     const failed: Manifest = {
-      id: "rd_FAILED_IMPORT",
+      id: "rd_0123456783",
       url: sourceUrl,
       url_hash: urlHash,
       source_type: "url",
@@ -2946,7 +3050,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("returns 503 from POST /api/readings when the queue binding is missing", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    (env as unknown as { READING_JOBS?: Queue<ProcessReadingArgs> }).READING_JOBS =
+    (env as unknown as { READING_JOBS?: Queue<ProcessReadingEnvelopeV1> }).READING_JOBS =
       undefined;
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -3160,7 +3264,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const { id } = (await submit.json()) as { id: string };
     await drainQueue(services);
 
-    (env as unknown as { READING_JOBS?: Queue<ProcessReadingArgs> }).READING_JOBS =
+    (env as unknown as { READING_JOBS?: Queue<ProcessReadingEnvelopeV1> }).READING_JOBS =
       undefined;
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -3216,7 +3320,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(diagnostics.attempts[0]!.status).toBe("failed");
     expect(diagnostics.attempts[0]!.error?.stage).toBe("fetch_source");
     expect(diagnostics.pointers.by_url.exists).toBe(true);
-    expect(diagnostics.objects.some((o) => o.key.endsWith("/attempts/at_rd_TEST02.json"))).toBe(true);
+    expect(diagnostics.objects.some((o) => o.key.includes("/attempts/at_"))).toBe(true);
     consoleErr.mockRestore();
   });
 

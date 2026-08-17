@@ -28,6 +28,7 @@ import { SimilarityStore } from "./modules/stores/similarity-store";
 import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
 import { activateAttempt, type SubmitJsonResult } from "./attempt-activation";
+import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { stalenessOf } from "./modules/staleness";
 
 export interface AppOptions {
@@ -79,7 +80,7 @@ export function createApp(opts: AppOptions = {}) {
           services,
           owner.pointer,
           owner.manifest,
-          { email },
+          { email, principal: c.get("principal") },
         );
         return c.json(result.body, result.status);
       }
@@ -95,7 +96,7 @@ export function createApp(opts: AppOptions = {}) {
           claim,
           url,
           email,
-          { replaceEtag: owner.replaceEtag },
+          { replaceEtag: owner.replaceEtag, principal: c.get("principal") },
         );
         return c.json(result.body, result.status);
       }
@@ -128,6 +129,7 @@ export function createApp(opts: AppOptions = {}) {
           markdown,
           title,
           email,
+          c.get("principal"),
         );
         return c.json(result.body, result.status);
       }
@@ -145,7 +147,7 @@ export function createApp(opts: AppOptions = {}) {
           markdown,
           title,
           email,
-          { replaceEtag: owner.replaceEtag },
+          { replaceEtag: owner.replaceEtag, principal: c.get("principal") },
         );
         return c.json(result.body, result.status);
       }
@@ -268,7 +270,12 @@ export function createApp(opts: AppOptions = {}) {
       services,
       found.keyPrefix,
       found.manifest,
-      { force: parsed.data.force, email: parsed.data.email ?? false, source: parsed.data.source },
+      {
+        force: parsed.data.force,
+        email: parsed.data.email ?? false,
+        source: parsed.data.source,
+        principal: c.get("principal"),
+      },
     );
     return c.json(result.body, result.status);
   });
@@ -320,7 +327,7 @@ async function submitResultForOwnedReading(
   services: Services,
   pointer: ByUrlPointer,
   manifest: Manifest,
-  opts: { email: boolean },
+  opts: { email: boolean; principal: AuthenticatedPrincipal },
 ): Promise<SubmitJsonResult> {
   await reader.writeByIdPointer(pointer.id, pointer);
   const effectiveManifest = annotateStale(manifest, env, services);
@@ -329,6 +336,7 @@ async function submitResultForOwnedReading(
   }
   return enqueueReprocess(reader, env, services, pointer.key_prefix, effectiveManifest, {
     email: opts.email,
+    principal: opts.principal,
   });
 }
 
@@ -339,7 +347,7 @@ async function createNewReadingForSubmit(
   claim: ReadingClaim,
   url: string,
   email: boolean,
-  opts: { replaceEtag?: string } = {},
+  opts: { replaceEtag?: string; principal: AuthenticatedPrincipal },
 ): Promise<SubmitJsonResult> {
   const args = await newReadingArgs(url, services);
   const attemptStartedAt = services.now();
@@ -373,6 +381,7 @@ async function createNewReadingForSubmit(
     onOwned: (res) =>
       submitResultForOwnedReading(reader, env, services, res.pointer, res.manifest, {
         email,
+        principal: opts.principal,
       }),
   });
   if (!claimed.ok) return claimed.result;
@@ -384,6 +393,7 @@ async function createNewReadingForSubmit(
     rollbackManifest: pendingManifest,
     rollbackAttempt: activeAttempt,
     queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "submit", email },
+    principal: opts.principal,
   });
 }
 
@@ -465,6 +475,7 @@ async function markdownImportResultForOwnedReading(
   markdown: string,
   title: string | undefined,
   email: boolean,
+  principal: AuthenticatedPrincipal,
 ): Promise<SubmitJsonResult> {
   const effective = annotateStale(manifest, env, services);
   if (effective.status !== "failed") return { body: effective, status: 200 };
@@ -477,6 +488,7 @@ async function markdownImportResultForOwnedReading(
     markdown,
     title,
     email,
+    principal,
   );
 }
 
@@ -490,6 +502,7 @@ async function enqueueReprocess(
     force?: boolean;
     email: boolean;
     source?: Extract<ProcessReadingSource, { kind: "markdown" }>;
+    principal: AuthenticatedPrincipal;
   },
 ): Promise<SubmitJsonResult> {
   const effectiveManifest = annotateStale(manifest, env, services);
@@ -548,6 +561,7 @@ async function enqueueReprocess(
     rollbackManifest: effectiveManifest,
     rollbackAttempt: activeAttempt,
     queueMessage: args,
+    principal: opts.principal,
   });
 }
 
@@ -560,7 +574,7 @@ async function createNewReadingForMarkdownImport(
   markdown: string,
   title: string | undefined,
   email: boolean,
-  opts: { replaceEtag?: string } = {},
+  opts: { replaceEtag?: string; principal: AuthenticatedPrincipal },
 ): Promise<SubmitJsonResult> {
   const source: ProcessReadingSource = {
     kind: "markdown",
@@ -608,6 +622,7 @@ async function createNewReadingForMarkdownImport(
         markdown,
         title,
         email,
+        opts.principal,
       ),
   });
   if (!claimed.ok) return claimed.result;
@@ -625,6 +640,7 @@ async function createNewReadingForMarkdownImport(
     rollbackManifest: pendingManifest,
     rollbackAttempt: activeAttempt,
     queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "import", email },
+    principal: opts.principal,
   });
 }
 
@@ -637,6 +653,7 @@ async function enqueueMarkdownImport(
   markdown: string,
   title: string | undefined,
   email: boolean,
+  principal: AuthenticatedPrincipal,
 ): Promise<SubmitJsonResult> {
   const effectiveManifest = annotateStale(manifest, env, services);
   if (
@@ -704,6 +721,7 @@ async function enqueueMarkdownImport(
     rollbackManifest: pendingManifest,
     rollbackAttempt: activeAttempt,
     queueMessage: args,
+    principal,
   });
 }
 
