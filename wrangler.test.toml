@@ -17,6 +17,8 @@ SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 READER_API_TOKEN = "test-token"
+AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+FOUNDER_EMAIL = "founder@test.example"
 ANTHROPIC_API_KEY = "test-anthropic-key"
 OPENAI_API_KEY = "test-openai-key"
 RESEND_API_KEY = "test-resend-key"
@@ -27,3 +29,9 @@ WEB_BASE_URL = "https://reading.test.example"
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-test"
+
+[[d1_databases]]
+binding = "CONTROL_PLANE"
+database_name = "reading-lite-control-test"
+database_id = "00000000-0000-0000-0000-000000000099"
+migrations_dir = "migrations"

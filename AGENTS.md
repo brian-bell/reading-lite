@@ -45,6 +45,12 @@ agent context: current commands, module map, conventions, and gotchas.
   Homing it below both keeps the dependency graph acyclic
   (`process-reading.ts → reading-visibility.ts → attempt-ownership.ts`, no
   back-edge); `process-reading.ts` re-exports the args types for its callers.
+- `src/control-plane/` owns D1 auth for this slice: branded IDs, HKDF/HMAC
+  crypto, `AuthenticatedPrincipal`, founder bootstrap, and bearer
+  authentication. `requirePrincipal` in `src/middleware.ts` joins a D1
+  `api_tokens` row to an active user and stores the principal on the Hono
+  context. Runtime auth does not fall back to `READER_API_TOKEN`; that secret
+  is imported once as a legacy-format token by `scripts/founder-bootstrap.ts`.
 - `src/modules/reading-claim.ts` resolves URL ownership through
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` owns the read-time stale-annotation rule
@@ -140,6 +146,8 @@ Corpus/import tools:
 ```sh
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
 npm run import-markdown -- --dir ~/Documents/articles --dry-run
+npm run founder-bootstrap -- --email founder@example.com
+npm run founder-bootstrap -- --email founder@example.com --execute
 npm run corpus-audit -- --bucket reading-lite-staging
 npm run corpus-drop -- "$URL" --bucket reading-lite-staging --allow-ready --vectorize reading-lite-staging --execute
 npm run corpus-recover -- --index ./index.json --execute --monitor

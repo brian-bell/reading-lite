@@ -1,5 +1,8 @@
 # Copy to .dev.vars and fill in. .dev.vars is gitignored.
 READER_API_TOKEN=dev-local-token
+# 256-bit hex root used to HMAC API tokens. Generate with: openssl rand -hex 32
+AUTH_ROOT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+FOUNDER_EMAIL=founder@localhost
 OPENAI_API_KEY=sk-...
 # Required only when SUMMARIZER_PROVIDER=anthropic.
 ANTHROPIC_API_KEY=sk-ant-...

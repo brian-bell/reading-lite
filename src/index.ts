@@ -6,10 +6,17 @@ import { defaultServices } from "./services";
 export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
+  CONTROL_PLANE: D1Database;
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingArgs>;
+  // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
+  AUTH_ROOT_SECRET: string;
+  AUTH_ROOT_KEY_VERSION?: string;
+  AUTH_PREVIOUS_ROOT_SECRET?: string;
+  AUTH_PREVIOUS_ROOT_KEY_VERSION?: string;
+  FOUNDER_EMAIL?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
   RESEND_API_KEY: string;

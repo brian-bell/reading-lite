@@ -40,6 +40,10 @@ describe("staging environment scripts", () => {
         label: "Create staging dead-letter queue",
         args: ["queues", "create", "reading-lite-staging-dlq"],
       },
+      {
+        label: "Create staging D1 control plane",
+        args: ["d1", "create", "reading-lite-control-staging"],
+      },
     ]);
   });
 
@@ -73,6 +77,10 @@ describe("staging environment scripts", () => {
         label: "Delete staging R2 bucket",
         args: ["r2", "bucket", "delete", "reading-lite-staging"],
       },
+      {
+        label: "Delete staging D1 control plane",
+        args: ["d1", "delete", "reading-lite-control-staging", "--skip-confirmation"],
+      },
     ]);
   });
 
@@ -92,11 +100,13 @@ describe("staging environment scripts", () => {
   it("prints the staging secrets that must be set manually", () => {
     expect(buildSecretCommands()).toEqual([
       "wrangler secret put READER_API_TOKEN --env staging",
+      "wrangler secret put AUTH_ROOT_SECRET --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",
     ]);
     expect(buildSecretCommands("anthropic")).toEqual([
       "wrangler secret put READER_API_TOKEN --env staging",
+      "wrangler secret put AUTH_ROOT_SECRET --env staging",
       "wrangler secret put OPENAI_API_KEY --env staging",
       "wrangler secret put ANTHROPIC_API_KEY --env staging",
       "wrangler secret put RESEND_API_KEY --env staging",

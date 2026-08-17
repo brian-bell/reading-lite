@@ -1,0 +1,153 @@
+import { parsePresentedToken } from "./bearer";
+import { deriveHmacKey, hmacHex, timingSafeEqualHex, type AuthRoot } from "./crypto";
+import type { ControlPlaneDb } from "./db";
+import { createApiTokenPrincipal, type AuthenticatedPrincipal } from "./principal";
+
+export type AuthVerdict =
+  | { kind: "ok"; principal: AuthenticatedPrincipal }
+  | { kind: "unauthenticated" }
+  | { kind: "forbidden" };
+
+export interface AuthenticateBearerInput {
+  authorization: string | undefined;
+  authRoot: AuthRoot;
+  previousAuthRoot?: AuthRoot;
+  nowMs: number;
+}
+
+interface TokenRow {
+  id: string;
+  user_id: string;
+  format: string;
+  secret_hmac: string;
+  expires_at_ms: number;
+  revoked_at_ms: number | null;
+}
+
+interface UserRow {
+  id: string;
+  status: string;
+}
+
+export async function authenticateBearer(
+  db: ControlPlaneDb,
+  input: AuthenticateBearerInput,
+): Promise<AuthVerdict> {
+  const presented = parseAuthorization(input.authorization);
+  if (!presented) return { kind: "unauthenticated" };
+
+  const match =
+    presented.format === "standard"
+      ? await lookupStandardToken(db, presented.selector, presented.secret, input.authRoot, input.previousAuthRoot)
+      : await lookupLegacyToken(db, presented.secret, input.authRoot, input.previousAuthRoot);
+  if (!match || !tokenUsable(match.token, input.nowMs)) return { kind: "unauthenticated" };
+
+  if (match.viaPrevious) {
+    await persistRotatedHmac(db, match.token.id, presented.secret, input.authRoot);
+  }
+
+  const token = match.token;
+  const user = await db.first<UserRow>("SELECT id, status FROM users WHERE id = ?", token.user_id);
+  if (!user) return { kind: "unauthenticated" };
+  if (user.status !== "active") return { kind: "forbidden" };
+
+  const scopeRows = await db.all<{ scope: string }>(
+    "SELECT scope FROM api_token_scopes WHERE token_id = ?",
+    token.id,
+  );
+
+  try {
+    return {
+      kind: "ok",
+      principal: createApiTokenPrincipal({
+        tenantId: user.id,
+        userId: user.id,
+        tokenId: token.id,
+        scopes: scopeRows.map((row) => row.scope),
+      }),
+    };
+  } catch {
+    return { kind: "unauthenticated" };
+  }
+}
+
+function parseAuthorization(header: string | undefined): ReturnType<typeof parsePresentedToken> {
+  if (!header) return null;
+  const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
+  if (!match) return null;
+  return parsePresentedToken(match[1]!);
+}
+
+function tokenUsable(token: TokenRow, nowMs: number): boolean {
+  return token.revoked_at_ms == null && token.expires_at_ms > nowMs;
+}
+
+interface TokenMatch {
+  token: TokenRow;
+  viaPrevious: boolean;
+}
+
+async function lookupLegacyToken(
+  db: ControlPlaneDb,
+  secret: string,
+  authRoot: AuthRoot,
+  previousAuthRoot?: AuthRoot,
+): Promise<TokenMatch | null> {
+  const active = await findLegacyByRoot(db, secret, authRoot);
+  if (active) return { token: active, viaPrevious: false };
+  if (!previousAuthRoot) return null;
+  const previous = await findLegacyByRoot(db, secret, previousAuthRoot);
+  return previous ? { token: previous, viaPrevious: true } : null;
+}
+
+async function findLegacyByRoot(
+  db: ControlPlaneDb,
+  secret: string,
+  root: AuthRoot,
+): Promise<TokenRow | null> {
+  const digest = await hmacHex(await deriveHmacKey(root, "api_token"), secret);
+  return db.first<TokenRow>(
+    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms
+     FROM api_tokens WHERE secret_hmac = ? AND format = 'legacy'`,
+    digest,
+  );
+}
+
+async function lookupStandardToken(
+  db: ControlPlaneDb,
+  selector: string,
+  secret: string,
+  authRoot: AuthRoot,
+  previousAuthRoot?: AuthRoot,
+): Promise<TokenMatch | null> {
+  const row = await db.first<TokenRow>(
+    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms
+     FROM api_tokens WHERE id = ? AND format = 'standard'`,
+    selector,
+  );
+  if (!row) return null;
+  const activeDigest = await hmacHex(await deriveHmacKey(authRoot, "api_token"), secret);
+  if (timingSafeEqualHex(activeDigest, row.secret_hmac)) {
+    return { token: row, viaPrevious: false };
+  }
+  if (!previousAuthRoot) return null;
+  const previousDigest = await hmacHex(await deriveHmacKey(previousAuthRoot, "api_token"), secret);
+  return timingSafeEqualHex(previousDigest, row.secret_hmac)
+    ? { token: row, viaPrevious: true }
+    : null;
+}
+
+async function persistRotatedHmac(
+  db: ControlPlaneDb,
+  tokenId: string,
+  secret: string,
+  authRoot: AuthRoot,
+): Promise<void> {
+  const secretHmac = await hmacHex(await deriveHmacKey(authRoot, "api_token"), secret);
+  await db.batch([
+    {
+      sql: "UPDATE api_tokens SET secret_hmac = ?, hash_key_version = ? WHERE id = ?",
+      params: [secretHmac, authRoot.version, tokenId],
+    },
+  ]);
+}
