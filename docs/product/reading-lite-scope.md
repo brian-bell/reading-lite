@@ -79,6 +79,8 @@ Code facts that shape the scope (from `src/`): a single shared bearer token in `
 
 **Goal.** Serve many users from one deployment with strict data isolation and hostile-user safety.
 
+**Architecture decision:** [ADR 0001 · Tenant control plane](../decisions/0001-tenant-control-plane.md).
+
 **In scope**
 - **Accounts & auth.** Magic-link email auth (Resend already integrated); session cookies for the SPA; scoped API tokens for programmatic access (the MCP server and skills in WS-E depend on these); token revocation.
 - **Tenancy in storage.** R2 keys re-prefixed `u/{user_id}/…` across `reading-store.ts`, `list-index.ts`, and the by-url/by-id indexes; migration script for the existing 331-reading corpus into the founder's tenant; per-user list index with the existing CAS semantics preserved.
