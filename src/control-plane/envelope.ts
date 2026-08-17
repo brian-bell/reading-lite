@@ -143,12 +143,14 @@ export async function admitProcessReadingEnvelope(
     ) {
       return { ok: false, reason: "token_unusable" };
     }
-    const writeScope = await db.first<{ scope: string }>(
+    const requiredScope =
+      envelope.job.trigger === "import" ? "readings:import" : "readings:write";
+    const required = await db.first<{ scope: string }>(
       "SELECT scope FROM api_token_scopes WHERE token_id = ? AND scope = ?",
       token.id,
-      "readings:write",
+      requiredScope,
     );
-    if (!writeScope) {
+    if (!required) {
       return { ok: false, reason: "token_unusable" };
     }
   }

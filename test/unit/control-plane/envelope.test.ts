@@ -222,6 +222,21 @@ describe("admitProcessReadingEnvelope", () => {
     });
   });
 
+  it("admits an api_token with readings:import for an import job", async () => {
+    const { sqlite, db, founder } = await seededFounder();
+    sqlite.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:import'").run(TOKEN);
+    await expect(
+      admitProcessReadingEnvelope(
+        db,
+        founderEnvelope({ job: job({ trigger: "import" }) }),
+        NOW_MS,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      tenant: { tenantId: founder.userId },
+    });
+  });
+
   it("rejects session and operator actors until their authority can be verified", async () => {
     const { db } = await seededFounder();
     await expect(
@@ -309,6 +324,24 @@ describe("consumeProcessReadingMessage", () => {
   it("passes tenant context and job to process for an admitted founder envelope", async () => {
     const { db, founder } = await seededFounder();
     const envelope = founderEnvelope();
+    const msg = fakeMessage(envelope);
+    const process = vi.fn(async () => {});
+
+    await consumeProcessReadingMessage(msg, {
+      db,
+      nowMs: NOW_MS,
+      process,
+    });
+
+    expect(process).toHaveBeenCalledOnce();
+    expect(process).toHaveBeenCalledWith(envelope.job, { tenantId: founder.userId });
+    expect(msg.ack).not.toHaveBeenCalled();
+  });
+
+  it("processes an import job from an import-only api_token", async () => {
+    const { sqlite, db, founder } = await seededFounder();
+    sqlite.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:import'").run(TOKEN);
+    const envelope = founderEnvelope({ job: job({ trigger: "import" }) });
     const msg = fakeMessage(envelope);
     const process = vi.fn(async () => {});
 
