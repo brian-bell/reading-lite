@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "beads": {
+      "command": "beads-mcp",
+      "args": [],
+      "env": {
+        "BEADS_PATH": "/Users/brian/.local/bin/bd"
+      }
+    }
+  }
+}
