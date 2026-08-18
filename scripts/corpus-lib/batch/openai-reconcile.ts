@@ -6,7 +6,7 @@ import type {
   OpenAIUploadingSidecar,
   PersistedSidecar,
 } from "./types";
-import { acquireReconcileLock, type ReconcileLock } from "./reconcile-lock";
+import { acquireSidecarLock, type ReconcileLock } from "./reconcile-lock";
 
 // Cost-safe resume of a pre-submit OpenAI sidecar (`phase: uploading` or
 // `creating`, `batchId: ""`). On resume we adopt remote objects when the
@@ -22,14 +22,17 @@ import { acquireReconcileLock, type ReconcileLock } from "./reconcile-lock";
 // `uploading`-after-no-remote-file sidecar when the list is empty, and
 // asks the operator to resolve manually.
 //
-// Concurrency model: the sidecar-scoped file lock (`acquireReconcileLock`)
-// serializes the entire reconcile path against concurrent resumes:
+// Concurrency model: the sidecar-scoped file lock (`acquireSidecarLock`)
+// serializes the initial upload/create transition and any later resume:
 //   1. `--sole-writer` at the CLI layer (`scripts/corpus-lib/sole-writer.ts`),
 //      an operator acknowledgement that the realtime writer is paused.
-//   2. The file lock prevents two concurrent resumes from both adopting
-//      or both uploading. A second resume fails to acquire and aborts.
-//   3. The lock is held for the entire reconcile path (uploading through
-//      creating checkpoint), so even long pauses don't race a new holder.
+//   2. The file lock prevents a still-running submit from racing a resume,
+//      and prevents two concurrent resumes from both adopting or uploading.
+//      A second holder fails to acquire and aborts.
+//   3. The lock is held for the entire upload/create path. A live same-host
+//      holder is never aged out. A background heartbeat refreshes mtime
+//      for the hold lifetime so a foreign-host TTL cannot reclaim mid-upload;
+//      `heartbeat()` also rechecks identity before list/upload/create.
 
 export interface ReconcileDeps {
   batch: OpenAIBatchClient;
@@ -37,6 +40,9 @@ export interface ReconcileDeps {
   // Exact JSONL bytes persisted beside the sidecar before the "uploading"
   // checkpoint. Required when phase=uploading and no remote file matches.
   loadInputJsonl?(): Promise<string | null>;
+  // Re-read after lock acquisition so a stale pre-lock snapshot cannot
+  // re-upload after another process already submitted.
+  loadSidecar?(): Promise<PersistedSidecar | null>;
   log?(line: string): void;
   // Sidecar-scoped file lock used to serialize the list-then-create window.
   // If not provided, the reconciler falls back to `acquireReconcileLock`
@@ -62,12 +68,26 @@ existing: OpenAIUploadingSidecar | OpenAICreatingSidecar,
   }
 
   // Serialize the entire reconcile path against concurrent resumes.
-  const lock = await acquireCreateLock(deps);
+  const lock = await acquireSidecarLock(deps);
   try {
-    if (existing.phase === "creating") {
-      return await reconcileCreatingPhase(existing, deps, log);
+    const live = deps.loadSidecar ? await deps.loadSidecar() : existing;
+    if (live?.provider === "openai" && live.phase === "submitted" && live.batchId) {
+      log(`Sidecar is already submitted as ${live.batchId}; adopting without remote work`);
+      return live;
     }
-    return await reconcileUploadingPhase(existing, deps, log);
+    if (
+      !live ||
+      live.provider !== "openai" ||
+      (live.phase !== "uploading" && live.phase !== "creating")
+    ) {
+      throw new Error(
+        `OpenAI run ${runId}: sidecar changed under the lock (phase=${live && "phase" in live ? live.phase : "missing"}); refusing to reconcile a stale snapshot`,
+      );
+    }
+    if (live.phase === "creating") {
+      return await reconcileCreatingPhase(live, deps, log, lock);
+    }
+    return await reconcileUploadingPhase(live, deps, log, lock);
   } finally {
     await lock.release();
   }
@@ -77,9 +97,11 @@ async function reconcileCreatingPhase(
   existing: OpenAICreatingSidecar,
   deps: ReconcileDeps,
   log: (line: string) => void,
+  lock: ReconcileLock,
 ): Promise<OpenAISubmittedSidecar> {
   const { runId } = existing;
   log(`Reconciling OpenAI creating sidecar run_id=${runId}`);
+  await lock.heartbeat?.();
   const remote = await findBatchesByRunId(deps.batch, runId);
   if (remote.length === 1) {
     const match = assertResponsesBatchShape(remote[0]!.raw, {
@@ -118,9 +140,11 @@ async function reconcileUploadingPhase(
   existing: OpenAIUploadingSidecar,
   deps: ReconcileDeps,
   log: (line: string) => void,
+  lock: ReconcileLock,
 ): Promise<OpenAISubmittedSidecar> {
   const { runId } = existing;
   log(`Reconciling OpenAI uploading sidecar run_id=${runId}`);
+  await lock.heartbeat?.();
   const files = await findFilesByRunId(deps.batch, runId);
   if (files.length > 1) {
     throw ambiguousFilesError(runId, files);
@@ -145,6 +169,7 @@ async function reconcileUploadingPhase(
         ),
       );
     }
+    await lock.heartbeat?.();
     const uploaded = await deps.batch.upload(jsonl, runId);
     inputFileId = uploaded.id;
     log(`No remote input file; re-uploading persisted JSONL -> ${inputFileId}`);
@@ -160,6 +185,7 @@ async function reconcileUploadingPhase(
 
   // Now look for a remote batch. If found, adopt it; if not, fail closed
   // (visibility lag could hide a successful prior create).
+  await lock.heartbeat?.();
   const remote = await findBatchesByRunId(deps.batch, runId);
   if (remote.length === 1) {
     const match = assertResponsesBatchShape(remote[0]!.raw, {
@@ -244,19 +270,6 @@ async function findBatchesByRunId(
     `OpenAI run ${runId}: batch list page cap (${BATCH_LIST_PAGE_CAP}) reached before exhausting results; ` +
       `refusing to create until the operator clears the in-flight batch in the OpenAI dashboard.`,
   );
-}
-
-async function acquireCreateLock(deps: ReconcileDeps): Promise<ReconcileLock> {
-  if (deps.acquireLock) return deps.acquireLock(deps.sidecarFilePath ?? "");
-  if (!deps.sidecarFilePath) {
-    // Test harnesses that don't pass sidecarFilePath can still opt in via
-    // acquireLock; otherwise we fail closed rather than silently serialize
-    // against a phantom path.
-    throw new Error(
-      "OpenAI reconcile requires sidecarFilePath on ReconcileDeps so the create-window lock has a path to lock",
-    );
-  }
-  return acquireReconcileLock(deps.sidecarFilePath);
 }
 
 function submittedSidecarFrom(

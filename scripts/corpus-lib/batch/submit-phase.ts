@@ -8,6 +8,7 @@ import type {
   OpenAIBatchInfo,
 } from "./clients";
 import type { PreparedOpenAIBatchPayload } from "./openai-payload";
+import { acquireSidecarLock } from "./reconcile-lock";
 import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 import type {
   ExtractedTarget,
@@ -47,6 +48,16 @@ export interface OpenAISubmitDeps {
   // openai-reconcile.ts uses loadInputJsonl to recover this JSONL.
   saveInputJsonl(jsonl: string): Promise<void>;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
+  // Same sidecar-scoped lock the reconciler holds. The initial upload/create
+  // must serialize against a concurrent resume of the `uploading` sidecar.
+  acquireLock?: (sidecarPath: string) => Promise<{
+    release(): Promise<void>;
+    heartbeat?(): Promise<void>;
+  }>;
+  sidecarFilePath?: string;
+  // Re-read after lock acquisition so a stale "no sidecar" decision cannot
+  // overwrite a submit that finished (or crashed mid-window) while we waited.
+  loadSidecar(): Promise<PersistedSidecar | null>;
 }
 
 export interface OpenAISubmitResult {
@@ -136,36 +147,56 @@ export async function submitOpenAIBatch(
   // Persist the exact JSONL first so a resume from "uploading" can re-upload
   // the same bytes when the prior remote upload was lost (see
   // openai-reconcile.ts).
-  await deps.saveInputJsonl(prepared.jsonl);
+  const lock = await acquireSidecarLock(deps);
+  try {
+    const existing = await deps.loadSidecar();
+    // Activation writes this run's `activating` sidecar before submit. That
+    // checkpoint is ours to overwrite. Anything else means another process
+    // already claimed the sidecar (or this run already left the activating
+    // window), so creating again would double-bill.
+    if (existing && !isCurrentRunActivating(existing, deps.runId)) {
+      throw new Error(
+        `OpenAI sidecar already exists (phase=${existing.phase}); refusing to start a second submit. Re-run to resume the existing batch.`,
+      );
+    }
 
-  await deps.saveSidecar({
-    ...base,
-    phase: "uploading",
-    batchId: "",
-    inputFileId: null,
-    processingStatus: "uploading",
-  });
-  const input = await deps.batch.upload(prepared.jsonl, deps.runId);
+    // Persist the exact JSONL inside the lock so a losing contender cannot
+    // overwrite crash-recovery bytes for the holder.
+    await deps.saveInputJsonl(prepared.jsonl);
 
-  await deps.saveSidecar({
-    ...base,
-    phase: "creating",
-    batchId: "",
-    inputFileId: input.id,
-    processingStatus: "creating",
-  });
-  const info = await deps.batch.create(input.id, deps.runId);
-  const sidecar: OpenAISubmittedSidecar = {
-    ...base,
-    phase: "submitted",
-    batchId: info.id,
-    inputFileId: input.id,
-    outputFileId: info.output_file_id,
-    errorFileId: info.error_file_id,
-    processingStatus: info.status,
-  };
-  await deps.saveSidecar(sidecar);
-  return { info, sidecar };
+    await deps.saveSidecar({
+      ...base,
+      phase: "uploading",
+      batchId: "",
+      inputFileId: null,
+      processingStatus: "uploading",
+    });
+    await lock.heartbeat?.();
+    const input = await deps.batch.upload(prepared.jsonl, deps.runId);
+
+    await deps.saveSidecar({
+      ...base,
+      phase: "creating",
+      batchId: "",
+      inputFileId: input.id,
+      processingStatus: "creating",
+    });
+    await lock.heartbeat?.();
+    const info = await deps.batch.create(input.id, deps.runId);
+    const sidecar: OpenAISubmittedSidecar = {
+      ...base,
+      phase: "submitted",
+      batchId: info.id,
+      inputFileId: input.id,
+      outputFileId: info.output_file_id,
+      errorFileId: info.error_file_id,
+      processingStatus: info.status,
+    };
+    await deps.saveSidecar(sidecar);
+    return { info, sidecar };
+  } finally {
+    await lock.release();
+  }
 }
 
 export function assertExtractedBatchPayloadWithinLimit(
@@ -296,6 +327,17 @@ function readySnapshotForBatchFailure(m: Manifest, readingId: string): Manifest 
 
 function withoutNestedReadySnapshot(m: Manifest): Manifest {
   return ManifestSchema.parse({ ...m, preserve_ready_manifest: undefined });
+}
+
+function isCurrentRunActivating(
+  existing: PersistedSidecar,
+  runId: string,
+): boolean {
+  return (
+    existing.provider === "openai" &&
+    existing.phase === "activating" &&
+    existing.runId === runId
+  );
 }
 
 // Mirror process-reading.ts:extToken so raw object keys match the realtime path.

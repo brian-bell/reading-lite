@@ -230,6 +230,48 @@ describe("makeOpenAIBatchClient", () => {
     expect(secondUrl.searchParams.get("after")).toBe("file_1");
   });
 
+  it("rejects a files-list envelope whose data field is missing or not an array", async () => {
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ object: "list", has_more: false }))
+      .mockResolvedValueOnce(json({ object: "list", data: { id: "file_1" }, has_more: false }));
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    await expect(client.listFiles({ purpose: "batch" })).rejects.toThrow(/files list/i);
+    await expect(client.listFiles({ purpose: "batch" })).rejects.toThrow(/files list/i);
+  });
+
+  it("rejects a files-list 200 that is not object=list even when data is an empty array", async () => {
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ object: "error", data: [], has_more: false }))
+      .mockResolvedValueOnce(json({ data: [], has_more: false }));
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    await expect(client.listFiles({ purpose: "batch" })).rejects.toThrow(/files list/i);
+    await expect(client.listFiles({ purpose: "batch" })).rejects.toThrow(/files list/i);
+  });
+
+  it("rejects a batches-list envelope whose data field is missing or not an array", async () => {
+    const fetchFn: FetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ object: "list", has_more: false }))
+      .mockResolvedValueOnce(json({ object: "list", data: { id: "batch_1" }, has_more: false }));
+    const client = makeOpenAIBatchClient({
+      fetch: fetchFn as unknown as typeof fetch,
+      apiKey: "sk-oa",
+    });
+
+    await expect(client.listBatches()).rejects.toThrow(/batches list/i);
+    await expect(client.listBatches()).rejects.toThrow(/batches list/i);
+  });
+
   it("retrieves batch status and file content by id", async () => {
     const batch = {
       id: "batch_1",

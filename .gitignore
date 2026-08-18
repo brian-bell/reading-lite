@@ -24,6 +24,8 @@ index.json
 # lives at `<sidecar>.lock`, and reclaim leaves `<sidecar>.lock.broken.*`.
 *.batch.json.lock
 *.batch.json.lock.broken.*
+*.batch.json.save.lock
+*.batch.json.save.lock.broken.*
 *.batch.input.jsonl.*.tmp
 .*.tmp
 # Temp Reddit thread JSON saved by the reddit-import skill (may hold logged-in content)

@@ -376,7 +376,8 @@ distinguish a successful-but-lost-response prior create from a failed one
 ambiguous match or no visible remote batch at the create step aborts and
 asks the operator to reconcile manually. Anthropic pre-submit and OpenAI
 `activating` sidecars still require manual reconcile. A sidecar-scoped file
-lock serializes the entire reconcile path against concurrent resumes.
+lock serializes the initial upload/create transition and any later resume
+against each other.
 There is no cross-provider fallback.
 The tools always need `CORPUS_R2_*`, `CORPUS_CF_API_TOKEN`, and
 `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is needed only for an

@@ -64,6 +64,25 @@ describe("acquireReconcileLock", () => {
     }
   });
 
+  it("does not reclaim a live same-host lock just because mtime is past the TTL", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const first = await acquireReconcileLock(sidecar);
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      await utimes(lockPath, ancient, ancient);
+      try {
+        await expect(
+          acquireReconcileLock(sidecar, { pid: 999_999 }),
+        ).rejects.toThrow(new RegExp(`is held by pid ${process.pid}`));
+      } finally {
+        await first.release();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("breaks a stale lock once and proceeds", async () => {
     const { dir, sidecar } = await tempSidecar();
     try {
@@ -94,6 +113,51 @@ describe("acquireReconcileLock", () => {
       } finally {
         await second.release();
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps refreshing lock mtime for the lifetime of the hold", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lock = await acquireReconcileLock(sidecar, {
+        heartbeatIntervalMs: 20,
+      });
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      await utimes(lockPath, ancient, ancient);
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      const after = await stat(lockPath);
+      expect(after.mtime.getTime()).toBeGreaterThan(ancient.getTime());
+      await lock.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes lock mtime on heartbeat and refuses once another holder reclaims", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lock = await acquireReconcileLock(sidecar);
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      await utimes(lockPath, ancient, ancient);
+      await lock.heartbeat!();
+      const after = await stat(lockPath);
+      expect(after.mtime.getTime()).toBeGreaterThan(ancient.getTime());
+
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          pid: 2,
+          host: "other",
+          started_at: new Date().toISOString(),
+        }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await expect(lock.heartbeat!()).rejects.toThrow(/reclaimed/i);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -172,6 +172,39 @@ const OpenAIFileSchema = z
   })
   .passthrough();
 
+// List endpoints must fail closed on a 200 that is not a list page. Defaulting
+// a missing/non-array `data` to [] looks like "no remote objects" and would
+// re-upload / re-create, leaving duplicates that make later resumes ambiguous.
+const OpenAIListEnvelopeSchema = z
+  .object({
+    object: z.literal("list"),
+    data: z.array(z.unknown()),
+    has_more: z.boolean(),
+    last_id: z.string().min(1).nullish(),
+  })
+  .passthrough();
+
+function parseOpenAIListEnvelope(
+  body: unknown,
+  operation: "files list" | "batches list",
+): { data: unknown[]; has_more: boolean; last_id?: string } {
+  const parsed = OpenAIListEnvelopeSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new OpenAIBatchError(
+      operation,
+      200,
+      `OpenAI ${operation} returned a malformed list envelope (${parsed.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")})`,
+    );
+  }
+  return {
+    data: parsed.data.data,
+    has_more: parsed.data.has_more,
+    ...(parsed.data.last_id ? { last_id: parsed.data.last_id } : {}),
+  };
+}
+
 export interface OpenAIBatchInfo {
   id: string;
   input_file_id: string;
@@ -362,18 +395,12 @@ export function makeOpenAIBatchClient(
           text || `OpenAI files list returned ${response.status}`,
         );
       }
-      const body = (await response.json()) as {
-        data?: unknown[];
-        has_more?: unknown;
-        last_id?: unknown;
-      };
-      const data = (Array.isArray(body.data) ? body.data : []).map(
-        (f) => OpenAIFileSchema.parse(f),
-      );
+      const body = parseOpenAIListEnvelope(await response.json(), "files list");
+      const data = body.data.map((f) => OpenAIFileSchema.parse(f));
       return {
         data,
-        has_more: Boolean(body.has_more),
-        last_id: typeof body.last_id === "string" ? body.last_id : undefined,
+        has_more: body.has_more,
+        last_id: body.last_id,
       };
     },
     async listBatches(opts) {
@@ -392,18 +419,14 @@ export function makeOpenAIBatchClient(
           text || `OpenAI batches list returned ${response.status}`,
         );
       }
-      const body = (await response.json()) as {
-        data?: unknown[];
-        has_more?: unknown;
-        last_id?: unknown;
-      };
-      const raw = Array.isArray(body.data) ? body.data : [];
+      const body = parseOpenAIListEnvelope(await response.json(), "batches list");
+      const raw = body.data;
       const data = raw.map((b) => OpenAIListBatchSchema.parse(b)) as OpenAIBatchInfo[];
       return {
         data,
         raw,
-        has_more: Boolean(body.has_more),
-        last_id: typeof body.last_id === "string" ? body.last_id : undefined,
+        has_more: body.has_more,
+        last_id: body.last_id,
       };
     },
   };

@@ -671,6 +671,37 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
     expect(saved).toHaveLength(0);
   });
 
+  it("adopts a submitted sidecar that appeared after the lock was acquired", async () => {
+    const c = makeClient();
+    const saved: PersistedSidecar[] = [];
+    const staleUploading: OpenAIUploadingSidecar = {
+      ...baseUploading,
+      targets: [sampleTarget],
+    };
+    const liveSubmitted: PersistedSidecar = {
+      ...baseUploading,
+      phase: "submitted",
+      batchId: "batch_winner",
+      inputFileId: "file_winner",
+      processingStatus: "validating",
+      targets: [sampleTarget],
+    };
+    const deps = {
+      ...makeDeps(c.batch, saved),
+      loadSidecar: async () => liveSubmitted,
+    };
+
+    const result = await reconcileOpenAIPreSubmitSidecar(staleUploading, deps);
+    expect(result).toMatchObject({
+      phase: "submitted",
+      batchId: "batch_winner",
+      inputFileId: "file_winner",
+    });
+    expect(c.listFiles).not.toHaveBeenCalled();
+    expect(c.upload).not.toHaveBeenCalled();
+    expect(c.create).not.toHaveBeenCalled();
+  });
+
   it("refuses to upload when no loadInputJsonl helper is provided", async () => {
     const c = makeClient();
     c.listFiles.mockResolvedValueOnce({ data: [], has_more: false });

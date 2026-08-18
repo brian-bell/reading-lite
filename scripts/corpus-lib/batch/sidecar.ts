@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { z } from "zod";
+import { acquireReconcileLock } from "./reconcile-lock";
 import type { PersistedSidecar } from "./types";
 
 // The sidecar lives next to the audit index: ./index.json -> ./index.batch.json.
@@ -218,11 +219,36 @@ export async function loadSidecar(path: string): Promise<PersistedSidecar | null
   }
 }
 
+const OPENAI_PHASE_RANK = {
+  activating: 0,
+  uploading: 1,
+  creating: 2,
+  submitted: 3,
+} as const;
+
 export async function saveSidecar(path: string, sidecar: PersistedSidecar): Promise<void> {
   const parsed = V2SidecarSchema.parse(sidecar);
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, JSON.stringify(parsed, null, 2) + "\n");
-  await fs.rename(tmp, path);
+  // Serialize sidecar replacements so the phase-rank check and rename are
+  // one critical section. This is a short lock distinct from the submit
+  // lock (which is already held by the upload/create owner).
+  const writeLock = await acquireReconcileLock(`${path}.save`);
+  try {
+    const existing = await loadSidecar(path);
+    if (existing?.provider === "openai" && parsed.provider === "openai") {
+      const from = OPENAI_PHASE_RANK[existing.phase];
+      const to = OPENAI_PHASE_RANK[parsed.phase];
+      if (to < from) {
+        throw new Error(
+          `refusing to overwrite OpenAI sidecar phase=${existing.phase} with ${parsed.phase}`,
+        );
+      }
+    }
+    const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+    await fs.writeFile(tmp, JSON.stringify(parsed, null, 2) + "\n");
+    await fs.rename(tmp, path);
+  } finally {
+    await writeLock.release();
+  }
 }
 
 export async function clearSidecar(path: string): Promise<void> {

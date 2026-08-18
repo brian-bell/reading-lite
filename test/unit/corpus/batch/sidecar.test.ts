@@ -147,6 +147,51 @@ describe("batch sidecar I/O", () => {
     }
   });
 
+  it("refuses to overwrite an OpenAI uploading sidecar with an activating checkpoint", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const uploading: PersistedSidecar = {
+        version: 2,
+        provider: "openai",
+        phase: "uploading",
+        runId: "run_holder",
+        batchId: "",
+        inputFileId: null,
+        outputFileId: null,
+        errorFileId: null,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        processingStatus: "uploading",
+        targets: [target],
+      };
+      await saveSidecar(path, uploading);
+      await expect(
+        saveSidecar(path, {
+          ...uploading,
+          phase: "activating",
+          runId: "run_other",
+          processingStatus: "activating",
+          targets: [
+            {
+              id: "rd_a",
+              customId: "rd_a",
+              keyPrefix: "readings/kp",
+              url: "https://example.com/a",
+              urlHash: "a".repeat(64),
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        }),
+      ).rejects.toThrow(/refusing to overwrite/i);
+      await expect(loadSidecar(path)).resolves.toMatchObject({
+        phase: "uploading",
+        runId: "run_holder",
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("accepts an activating sidecar marker", async () => {
     const { dir, path } = await tempPath();
     try {

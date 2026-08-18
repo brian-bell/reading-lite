@@ -306,6 +306,10 @@ describe("submitOpenAIBatch", () => {
         saved.push(sidecar);
         order.push(`save:${sidecar.phase}`);
       }),
+      acquireLock: async () => ({
+        release: async () => undefined,
+      }),
+      loadSidecar: async () => null,
     });
 
     expect(order).toEqual([
@@ -339,5 +343,210 @@ describe("submitOpenAIBatch", () => {
       },
     ]);
     expect(result.sidecar.targets).toEqual(saved[0]!.targets);
+  });
+
+  it("holds the sidecar lock from before upload until after the submitted checkpoint", async () => {
+    const target = summarizeTarget();
+    const prepared = prepareOpenAIBatchPayload(
+      [target],
+      "gpt-5.6-terra",
+      "low",
+    );
+    const events: string[] = [];
+    const lock = {
+      heartbeat: vi.fn(async () => {
+        events.push("heartbeat");
+      }),
+      release: vi.fn(async () => {
+        events.push("release");
+      }),
+    };
+    const client = {
+      upload: vi.fn(async () => {
+        events.push("upload");
+        return {
+          id: "file_input",
+          filename: "reading-lite-run_stable.jsonl",
+          purpose: "batch",
+          bytes: prepared.byteCount,
+        };
+      }),
+      create: vi.fn(async () => {
+        events.push("create");
+        return {
+          id: "batch_1",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+        };
+      }),
+      get: vi.fn(),
+      content: vi.fn(),
+      listFiles: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
+    };
+
+    await submitOpenAIBatch([target], prepared, {
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      runId: "run_stable",
+      batch: client,
+      putObject: noopPut(),
+      saveInputJsonl: vi.fn(async () => {
+        events.push("saveJsonl");
+      }),
+      saveSidecar: vi.fn(async (sidecar: PersistedSidecar) => {
+        events.push(`save:${sidecar.phase}`);
+      }),
+      acquireLock: vi.fn(async () => {
+        events.push("acquire");
+        return lock;
+      }),
+      loadSidecar: async () => {
+        events.push("loadSidecar");
+        return null;
+      },
+      sidecarFilePath: "/tmp/index.batch.json",
+    });
+
+    expect(events).toEqual([
+      "acquire",
+      "loadSidecar",
+      "saveJsonl",
+      "save:uploading",
+      "heartbeat",
+      "upload",
+      "save:creating",
+      "heartbeat",
+      "create",
+      "save:submitted",
+      "release",
+    ]);
+  });
+
+  it("refuses to start a second submit when a sidecar already exists after the lock is held", async () => {
+    const target = summarizeTarget();
+    const prepared = prepareOpenAIBatchPayload(
+      [target],
+      "gpt-5.6-terra",
+      "low",
+    );
+    const client = {
+      upload: vi.fn(),
+      create: vi.fn(),
+      get: vi.fn(),
+      content: vi.fn(),
+      listFiles: vi.fn(),
+      listBatches: vi.fn(),
+    };
+    const saveInputJsonl = vi.fn(async () => undefined);
+    const saveSidecar = vi.fn(async () => undefined);
+
+    await expect(
+      submitOpenAIBatch([target], prepared, {
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        runId: "run_stable",
+        batch: client,
+        putObject: noopPut(),
+        saveInputJsonl,
+        saveSidecar,
+        acquireLock: async () => ({
+          release: async () => undefined,
+        }),
+        loadSidecar: async () =>
+          ({
+            version: 2,
+            provider: "openai",
+            phase: "submitted",
+            runId: "run_other",
+            batchId: "batch_existing",
+            inputFileId: "file_existing",
+            outputFileId: null,
+            errorFileId: null,
+            model: "gpt-5.6-terra",
+            reasoningEffort: "low",
+            processingStatus: "validating",
+            targets: [],
+          }) as PersistedSidecar,
+      }),
+    ).rejects.toThrow(/already exists/);
+    expect(saveInputJsonl).not.toHaveBeenCalled();
+    expect(saveSidecar).not.toHaveBeenCalled();
+    expect(client.upload).not.toHaveBeenCalled();
+    expect(client.create).not.toHaveBeenCalled();
+  });
+
+  it("allows the current run's activating checkpoint and still rejects a foreign one", async () => {
+    const target = summarizeTarget();
+    const prepared = prepareOpenAIBatchPayload(
+      [target],
+      "gpt-5.6-terra",
+      "low",
+    );
+    const activating = {
+      version: 2 as const,
+      provider: "openai" as const,
+      phase: "activating" as const,
+      runId: "run_stable",
+      batchId: "" as const,
+      inputFileId: null,
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low" as const,
+      processingStatus: "activating" as const,
+      targets: [],
+    };
+    const client = {
+      upload: vi.fn(async () => ({
+        id: "file_input",
+        filename: "reading-lite-run_stable.jsonl",
+        purpose: "batch",
+        bytes: prepared.byteCount,
+      })),
+      create: vi.fn(async () => ({
+        id: "batch_1",
+        input_file_id: "file_input",
+        status: "validating",
+        output_file_id: null,
+        error_file_id: null,
+        request_counts: { total: 1, completed: 0, failed: 0 },
+      })),
+      get: vi.fn(),
+      content: vi.fn(),
+      listFiles: vi.fn(),
+      listBatches: vi.fn(),
+    };
+
+    await expect(
+      submitOpenAIBatch([target], prepared, {
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        runId: "run_stable",
+        batch: client,
+        putObject: noopPut(),
+        saveInputJsonl: async () => undefined,
+        saveSidecar: async () => undefined,
+        acquireLock: async () => ({ release: async () => undefined }),
+        loadSidecar: async () => activating,
+      }),
+    ).resolves.toMatchObject({ sidecar: { phase: "submitted", batchId: "batch_1" } });
+
+    await expect(
+      submitOpenAIBatch([target], prepared, {
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        runId: "run_stable",
+        batch: client,
+        putObject: noopPut(),
+        saveInputJsonl: async () => undefined,
+        saveSidecar: async () => undefined,
+        acquireLock: async () => ({ release: async () => undefined }),
+        loadSidecar: async () => ({ ...activating, runId: "run_other" }),
+      }),
+    ).rejects.toThrow(/already exists/);
   });
 });

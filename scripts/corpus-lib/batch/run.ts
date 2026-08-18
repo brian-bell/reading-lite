@@ -139,6 +139,7 @@ export async function runBatchPipeline(
         const submitted = await reconcileOpenAIPreSubmitSidecar(existing, {
           batch: openaiBatch,
           saveSidecar: deps.saveSidecar,
+          loadSidecar: deps.loadSidecar,
           ...(deps.loadInputJsonl ? { loadInputJsonl: deps.loadInputJsonl } : {}),
           ...(deps.sidecarFilePath ? { sidecarFilePath: deps.sidecarFilePath } : {}),
           ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
@@ -304,6 +305,9 @@ export async function runBatchPipeline(
           );
         }),
         saveSidecar: deps.saveSidecar,
+        loadSidecar: deps.loadSidecar,
+        ...(deps.sidecarFilePath ? { sidecarFilePath: deps.sidecarFilePath } : {}),
+        ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
       },
     );
     log(`Batch ${info.id} created; polling for completion...`);
