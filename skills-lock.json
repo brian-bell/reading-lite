@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "chrome-reading-list": {
+      "source": "brian-bell/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chrome-reading-list/SKILL.md",
+      "computedHash": "b8d5997cbf94a72340af196d8930ea76881f6af5a7930f16a08b1c6426b2a73a"
+    }
+  }
+}
