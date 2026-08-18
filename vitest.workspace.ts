@@ -63,6 +63,7 @@ export default [
         "test/unit/process-reading-list/**/*.test.ts",
         "test/unit/extract-agent/**/*.test.ts",
         "test/unit/control-plane/**/*.test.ts",
+        "test/unit/scripts/**/*.test.ts",
       ],
       environment: "node",
     },
