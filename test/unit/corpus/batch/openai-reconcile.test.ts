@@ -702,6 +702,63 @@ describe("reconcileOpenAIPreSubmitSidecar — uploading phase", () => {
     expect(c.create).not.toHaveBeenCalled();
   });
 
+  it("refuses to adopt a submitted sidecar whose runId does not match the resume", async () => {
+    const c = makeClient();
+    const saved: PersistedSidecar[] = [];
+    const staleUploading: OpenAIUploadingSidecar = {
+      ...baseUploading,
+      targets: [sampleTarget],
+    };
+    const foreignSubmitted: PersistedSidecar = {
+      ...baseUploading,
+      runId: "run_other",
+      phase: "submitted",
+      batchId: "batch_foreign",
+      inputFileId: "file_foreign",
+      processingStatus: "validating",
+      targets: [sampleTarget],
+    };
+    const deps = {
+      ...makeDeps(c.batch, saved),
+      loadSidecar: async () => foreignSubmitted,
+    };
+
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(staleUploading, deps),
+    ).rejects.toThrow(/changed under the lock/);
+    expect(c.listFiles).not.toHaveBeenCalled();
+    expect(c.upload).not.toHaveBeenCalled();
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+  });
+
+  it("refuses to reconcile an uploading sidecar whose runId does not match the resume", async () => {
+    const c = makeClient();
+    const saved: PersistedSidecar[] = [];
+    const staleUploading: OpenAIUploadingSidecar = {
+      ...baseUploading,
+      targets: [sampleTarget],
+    };
+    const foreignUploading: PersistedSidecar = {
+      ...baseUploading,
+      runId: "run_other",
+      targets: [sampleTarget],
+    };
+    const deps = {
+      ...makeDeps(c.batch, saved),
+      loadSidecar: async () => foreignUploading,
+      loadInputJsonl: async () => "custom-id,body\n",
+    };
+
+    await expect(
+      reconcileOpenAIPreSubmitSidecar(staleUploading, deps),
+    ).rejects.toThrow(/changed under the lock/);
+    expect(c.listFiles).not.toHaveBeenCalled();
+    expect(c.upload).not.toHaveBeenCalled();
+    expect(c.create).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+  });
+
   it("refuses to upload when no loadInputJsonl helper is provided", async () => {
     const c = makeClient();
     c.listFiles.mockResolvedValueOnce({ data: [], has_more: false });

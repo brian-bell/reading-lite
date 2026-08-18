@@ -71,13 +71,19 @@ existing: OpenAIUploadingSidecar | OpenAICreatingSidecar,
   const lock = await acquireSidecarLock(deps);
   try {
     const live = deps.loadSidecar ? await deps.loadSidecar() : existing;
-    if (live?.provider === "openai" && live.phase === "submitted" && live.batchId) {
+    if (
+      live?.provider === "openai" &&
+      live.runId === runId &&
+      live.phase === "submitted" &&
+      live.batchId
+    ) {
       log(`Sidecar is already submitted as ${live.batchId}; adopting without remote work`);
       return live;
     }
     if (
       !live ||
       live.provider !== "openai" ||
+      live.runId !== runId ||
       (live.phase !== "uploading" && live.phase !== "creating")
     ) {
       throw new Error(
