@@ -92,4 +92,22 @@ describe("handleDeadLetter", () => {
     expect(msg.retry).not.toHaveBeenCalled();
     consoleErr.mockRestore();
   });
+
+  it("acks even when admission throws, so the message cannot loop in the DLQ", async () => {
+    const msg = fakeMessage();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mark = vi.fn(async () => {});
+    const db = {
+      first: async () => {
+        throw new Error("D1 hiccup");
+      },
+      all: async () => [],
+      batch: async () => {},
+    };
+    await handleDeadLetter(msg, { db, nowMs: Date.now(), mark });
+    expect(mark).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
 });

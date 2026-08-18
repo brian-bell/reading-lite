@@ -96,20 +96,20 @@ export async function handleDeadLetter(
     msg.ack();
     return;
   }
-  const admitted = await admitEnvelopeOrReject(deps.db, parsed.envelope, deps.nowMs);
-  if (!admitted.ok) {
-    if ("reason" in admitted && admitted.reason === "malformed_job") {
-      logEnvelopeRejected("malformed_job");
-    }
-    msg.ack();
-    return;
-  }
   try {
+    const admitted = await admitEnvelopeOrReject(deps.db, parsed.envelope, deps.nowMs);
+    if (!admitted.ok) {
+      if ("reason" in admitted && admitted.reason === "malformed_job") {
+        logEnvelopeRejected("malformed_job");
+      }
+      return;
+    }
     await deps.mark(parsed.envelope.job);
   } catch (e) {
     console.error(e);
+  } finally {
+    msg.ack();
   }
-  msg.ack();
 }
 
 function rateLimitedDelaySeconds(e: RateLimitedError, attempts: number): number {
