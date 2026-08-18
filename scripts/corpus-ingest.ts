@@ -10,7 +10,13 @@ import {
   makeOpenAIBatchClient,
   makeOpenAIEmbedClient,
 } from "./corpus-lib/batch/clients";
-import { clearSidecar, loadSidecar, saveSidecar } from "./corpus-lib/batch/sidecar";
+import {
+  clearSidecar,
+  loadInputJsonl,
+  loadSidecar,
+  saveInputJsonl,
+  saveSidecar,
+} from "./corpus-lib/batch/sidecar";
 import { prepareFreshMarkdown, tallyDispositions } from "./corpus-lib/batch/prepare-fresh-markdown";
 import { r2ReadDeps } from "./corpus-lib/batch/r2-reads";
 import { runFreshMarkdownBatch } from "./corpus-lib/batch/run-fresh-markdown";
@@ -254,6 +260,9 @@ async function main(): Promise<void> {
     loadSidecar: () => loadSidecar(args.sidecar),
     saveSidecar: (s) => saveSidecar(args.sidecar, s),
     clearSidecar: () => clearSidecar(args.sidecar),
+    saveInputJsonl: (jsonl) => saveInputJsonl(args.sidecar, jsonl),
+    loadInputJsonl: () => loadInputJsonl(args.sidecar),
+    sidecarFilePath: args.sidecar,
     log: (line) => process.stderr.write(line + "\n"),
   });
 

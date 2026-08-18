@@ -77,6 +77,7 @@ function harness(seed: Record<string, string> = {}) {
     ),
   };
   let n = 0;
+  let inputJsonl: string | null = null;
   const deps: FreshMarkdownRunDeps = {
     r2: r2 as any,
     vectorize: vectorize as any,
@@ -100,6 +101,13 @@ function harness(seed: Record<string, string> = {}) {
     }),
     clearSidecar: vi.fn(async () => {
       sidecar = null;
+    }),
+    saveInputJsonl: vi.fn(async (jsonl: string) => {
+      inputJsonl = jsonl;
+    }),
+    loadInputJsonl: vi.fn(async () => inputJsonl),
+    reconcileAcquireLock: async () => ({
+      release: async () => undefined,
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
@@ -174,6 +182,8 @@ describe("runFreshMarkdownBatch — fresh run", () => {
           }) + "\n"
         );
       }),
+      listFiles: vi.fn(async () => ({ data: [], has_more: false })),
+      listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
     };
 
     const result = await runFreshMarkdownBatch(

@@ -128,6 +128,27 @@ export interface OpenAIBatchClient {
   create(inputFileId: string, runId: string): Promise<OpenAIBatchInfo>;
   get(batchId: string): Promise<OpenAIBatchInfo>;
   content(fileId: string): Promise<string>;
+  listFiles(opts?: {
+    purpose?: string;
+    after?: string;
+    limit?: number;
+  }): Promise<{
+    data: OpenAIFile[];
+    has_more: boolean;
+    last_id?: string;
+  }>;
+  listBatches(opts?: {
+    after?: string;
+    limit?: number;
+  }): Promise<{
+    // Permissively parsed batch info (any endpoint / completion window).
+    data: OpenAIBatchInfo[];
+    // Raw batch objects parallel to `data`, so reconcilers can re-validate
+    // a matched batch with the strict `/v1/responses` schema before adopting.
+    raw: unknown[];
+    has_more: boolean;
+    last_id?: string;
+  }>;
 }
 
 export class OpenAIBatchError extends Error {
@@ -151,6 +172,39 @@ const OpenAIFileSchema = z
   })
   .passthrough();
 
+// List endpoints must fail closed on a 200 that is not a list page. Defaulting
+// a missing/non-array `data` to [] looks like "no remote objects" and would
+// re-upload / re-create, leaving duplicates that make later resumes ambiguous.
+const OpenAIListEnvelopeSchema = z
+  .object({
+    object: z.literal("list"),
+    data: z.array(z.unknown()),
+    has_more: z.boolean(),
+    last_id: z.string().min(1).nullish(),
+  })
+  .passthrough();
+
+function parseOpenAIListEnvelope(
+  body: unknown,
+  operation: "files list" | "batches list",
+): { data: unknown[]; has_more: boolean; last_id?: string } {
+  const parsed = OpenAIListEnvelopeSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new OpenAIBatchError(
+      operation,
+      200,
+      `OpenAI ${operation} returned a malformed list envelope (${parsed.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")})`,
+    );
+  }
+  return {
+    data: parsed.data.data,
+    has_more: parsed.data.has_more,
+    ...(parsed.data.last_id ? { last_id: parsed.data.last_id } : {}),
+  };
+}
+
 export interface OpenAIBatchInfo {
   id: string;
   input_file_id: string;
@@ -162,6 +216,9 @@ export interface OpenAIBatchInfo {
     completed: number;
     failed: number;
   };
+  // The API may omit metadata or return null. Reconcilers key on
+  // `metadata?.run_id` to adopt remote batches created by prior runs.
+  metadata?: Record<string, string> | null;
 }
 
 const OpenAIBatchInfoSchema = z
@@ -183,6 +240,53 @@ const OpenAIBatchInfoSchema = z
         failed: z.number().int().nonnegative(),
       })
       .default({ total: 0, completed: 0, failed: 0 }),
+    metadata: z.record(z.string(), z.string()).nullish(),
+  })
+  .passthrough();
+
+export function assertResponsesBatchShape(
+  raw: unknown,
+  context: { id: string; runId: string },
+): OpenAIBatchInfo {
+  // Strict re-validation of a matched-by-run-id batch: listBatches accepts
+  // arbitrary endpoints; only batches targeted at /v1/responses with a 24h
+  // window are adoptable. Anything else is a foreign run_id collision and
+  // must fail closed rather than adopt an unrelated batch.
+  const parsed = OpenAIBatchInfoSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(
+      `OpenAI run ${context.runId}: batch ${context.id} matched run_id but failed strict validation (${parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}); refusing to adopt`,
+    );
+  }
+  return parsed.data;
+}
+
+// Permissive schema for the account-wide list endpoint. The list endpoint can
+// return batches created against other endpoints (e.g. /v1/chat/completions);
+// parsing those with `OpenAIBatchInfoSchema` would throw and break resume.
+// `findBatchesByRunId` filters on `metadata.run_id` before adopting, and the
+// matching batch is re-validated strictly via `OpenAIBatchInfoSchema` when the
+// reconciler commits to it.
+const OpenAIListBatchSchema = z
+  .object({
+    id: z.string().min(1),
+    object: z.literal("batch"),
+    endpoint: z.string().min(1).optional(),
+    input_file_id: z.string().min(1).optional(),
+    completion_window: z.string().min(1).optional(),
+    status: z.string().min(1),
+    output_file_id: z.string().min(1).nullable().default(null),
+    error_file_id: z.string().min(1).nullable().default(null),
+    request_counts: z
+      .object({
+        total: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+      })
+      .default({ total: 0, completed: 0, failed: 0 }),
+    metadata: z.record(z.string(), z.string()).nullish(),
   })
   .passthrough();
 
@@ -273,6 +377,57 @@ export function makeOpenAIBatchClient(
         );
       }
       return response.text();
+    },
+    async listFiles(opts) {
+      const url = new URL(OPENAI_FILES_URL);
+      if (opts?.purpose) url.searchParams.set("purpose", opts.purpose);
+      if (opts?.after) url.searchParams.set("after", opts.after);
+      if (opts?.limit !== undefined) url.searchParams.set("limit", String(opts.limit));
+      const response = await deps.fetch(url, {
+        method: "GET",
+        headers: { authorization },
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "files list",
+          response.status,
+          text || `OpenAI files list returned ${response.status}`,
+        );
+      }
+      const body = parseOpenAIListEnvelope(await response.json(), "files list");
+      const data = body.data.map((f) => OpenAIFileSchema.parse(f));
+      return {
+        data,
+        has_more: body.has_more,
+        last_id: body.last_id,
+      };
+    },
+    async listBatches(opts) {
+      const url = new URL(OPENAI_BATCHES_URL);
+      if (opts?.after) url.searchParams.set("after", opts.after);
+      if (opts?.limit !== undefined) url.searchParams.set("limit", String(opts.limit));
+      const response = await deps.fetch(url, {
+        method: "GET",
+        headers: { authorization },
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new OpenAIBatchError(
+          "batches list",
+          response.status,
+          text || `OpenAI batches list returned ${response.status}`,
+        );
+      }
+      const body = parseOpenAIListEnvelope(await response.json(), "batches list");
+      const raw = body.data;
+      const data = raw.map((b) => OpenAIListBatchSchema.parse(b)) as OpenAIBatchInfo[];
+      return {
+        data,
+        raw,
+        has_more: body.has_more,
+        last_id: body.last_id,
+      };
     },
   };
 }

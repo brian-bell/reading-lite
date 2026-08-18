@@ -14,6 +14,22 @@ dist/
 # Generated corpus-audit / reading-list outputs (written to cwd)
 INDEX.md
 index.json
+# Generated batch sidecars (record in-flight providers) and their companion
+# JSONL (contains full extracted article text + similar-reading context).
+# Never commit: a stray `git add .` would publish corpus contents.
+*.batch.json
+*.batch.input.jsonl
+*.input.jsonl
+# The reconcile lock and its rename-and-reclaim artifacts; the lock file
+# lives at `<sidecar>.lock`, and reclaim leaves `<sidecar>.lock.broken.*`.
+*.batch.json.lock
+*.batch.json.lock.broken.*
+*.batch.json.lock.reclaim
+*.batch.json.lock.reclaim.broken.*
+*.batch.json.save.lock
+*.batch.json.save.lock.broken.*
+*.batch.input.jsonl.*.tmp
+.*.tmp
 # Temp Reddit thread JSON saved by the reddit-import skill (may hold logged-in content)
 .reddit-thread.tmp.json
 chrome-reading-list.csv

@@ -84,6 +84,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     query: vi.fn(async () => []),
   };
   let sidecar: PersistedSidecar | null = null;
+  let inputJsonl: string | null = null;
   const batch = {
     create: vi.fn(async (requests: Array<{ custom_id: string }>) => ({
       id: "msgbatch_run",
@@ -137,9 +138,41 @@ function harness(seedManifests: Record<string, Manifest>) {
     clearSidecar: vi.fn(async () => {
       sidecar = null;
     }),
+    saveInputJsonl: vi.fn(async (jsonl: string) => {
+      inputJsonl = jsonl;
+    }),
+    loadInputJsonl: vi.fn(async () => inputJsonl),
+    // The reconciler's create-window lock isn't relevant to integration
+    // tests — provide a no-op so the lock release path doesn't touch the fs.
+    reconcileAcquireLock: async () => ({
+      release: async () => undefined,
+    }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s) };
+  return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
+}
+
+// A minimal OpenAI batch client with sensible defaults so tests don't have to
+// thread listFiles / listBatches through every fixture.
+function fakeOpenAIClient(
+  over: {
+    upload?: ReturnType<typeof vi.fn>;
+    create?: ReturnType<typeof vi.fn>;
+    get?: ReturnType<typeof vi.fn>;
+    content?: ReturnType<typeof vi.fn>;
+    listFiles?: ReturnType<typeof vi.fn>;
+    listBatches?: ReturnType<typeof vi.fn>;
+  } = {},
+) {
+  return {
+    upload: vi.fn(),
+    create: vi.fn(),
+    get: vi.fn(),
+    content: vi.fn(),
+    listFiles: vi.fn(async () => ({ data: [], has_more: false })),
+    listBatches: vi.fn(async () => ({ data: [], raw: [], has_more: false })),
+    ...over,
+  } as any;
 }
 
 function installCompletedOpenAIBatch(
@@ -169,7 +202,7 @@ function installCompletedOpenAIBatch(
     error_file_id: null,
     request_counts: { total: 1, completed: 0, failed: 0 },
   }));
-  h.deps.openaiBatch = {
+h.deps.openaiBatch = fakeOpenAIClient({
     upload,
     create,
     get: vi.fn(async () => ({
@@ -213,7 +246,7 @@ function installCompletedOpenAIBatch(
         }) + "\n"
       );
     }),
-  };
+  });
   return { upload, create };
 }
 
@@ -290,7 +323,7 @@ describe("runBatch — fresh run", () => {
       purpose: "batch",
       bytes: new TextEncoder().encode(jsonl).byteLength,
     }));
-    h.deps.openaiBatch = {
+    h.deps.openaiBatch = fakeOpenAIClient({
       upload,
       create: vi.fn(async (inputFileId: string, runId: string) => ({
         id: "batch_openai",
@@ -341,7 +374,7 @@ describe("runBatch — fresh run", () => {
           error: null,
         }) + "\n",
       ),
-    };
+    });
 
     const result = await runBatch([row("rd_a")], h.deps);
 
@@ -468,9 +501,7 @@ describe("runBatch — resume", () => {
         }) + "\n"
       );
     });
-    h.deps.openaiBatch = {
-      upload: vi.fn(),
-      create: vi.fn(),
+    h.deps.openaiBatch = fakeOpenAIClient({
       get: vi.fn(async () => ({
         id: "batch_error_only",
         input_file_id: "file_input",
@@ -480,7 +511,7 @@ describe("runBatch — resume", () => {
         request_counts: { total: 1, completed: 0, failed: 1 },
       })),
       content,
-    };
+    });
 
     const result = await runBatch([row("rd_a")], h.deps);
 
@@ -536,9 +567,7 @@ describe("runBatch — resume", () => {
         ],
       };
       h.deps.loadSidecar = vi.fn(async () => sc);
-      h.deps.openaiBatch = {
-        upload: vi.fn(),
-        create: vi.fn(),
+      h.deps.openaiBatch = fakeOpenAIClient({
         get: vi.fn(async () => ({
           id: "batch_terminal",
           input_file_id: "file_input",
@@ -548,7 +577,7 @@ describe("runBatch — resume", () => {
           request_counts: { total: 1, completed: 0, failed: 1 },
         })),
         content: vi.fn(),
-      };
+      });
 
       const result = await runBatch([row("rd_a")], h.deps);
 
@@ -596,9 +625,7 @@ describe("runBatch — resume", () => {
       "cancelling",
       "completed",
     ];
-    h.deps.openaiBatch = {
-      upload: vi.fn(),
-      create: vi.fn(),
+    h.deps.openaiBatch = fakeOpenAIClient({
       get: vi.fn(async () => ({
         id: "batch_polling",
         input_file_id: "file_input",
@@ -608,11 +635,11 @@ describe("runBatch — resume", () => {
         request_counts: { total: 0, completed: 0, failed: 0 },
       })),
       content: vi.fn(),
-    };
+    });
 
     const result = await runBatch([row("rd_a")], h.deps);
 
-    expect(h.deps.openaiBatch.get).toHaveBeenCalledTimes(5);
+    expect(h.deps.openaiBatch!.get).toHaveBeenCalledTimes(5);
     expect(h.deps.sleep).toHaveBeenCalledTimes(4);
     expect(result.report).toEqual([]);
   });
@@ -679,9 +706,7 @@ describe("runBatch — resume", () => {
         }) + "\n"
       );
     });
-    h.deps.openaiBatch = {
-      upload: vi.fn(),
-      create: vi.fn(),
+    h.deps.openaiBatch = fakeOpenAIClient({
       get: vi.fn(async () => ({
         id: "batch_download",
         input_file_id: "file_input",
@@ -691,7 +716,7 @@ describe("runBatch — resume", () => {
         request_counts: { total: 1, completed: 1, failed: 0 },
       })),
       content,
-    };
+    });
 
     await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
       /download unavailable/,
@@ -740,7 +765,7 @@ describe("runBatch — resume", () => {
     h.deps.loadSidecar = vi.fn(async () => sc);
     h.deps.configuredProvider = "anthropic";
     const upload = vi.fn();
-    h.deps.openaiBatch = {
+    h.deps.openaiBatch = fakeOpenAIClient({
       upload,
       create: vi.fn(),
       get: vi.fn(async () => ({
@@ -778,14 +803,14 @@ describe("runBatch — resume", () => {
           error: null,
         }) + "\n",
       ),
-    };
+    });
     const result = await runBatch([row("rd_a")], h.deps);
 
     expect(result.resumed).toBe(true);
     expect(h.extract).not.toHaveBeenCalled();
     expect(upload).not.toHaveBeenCalled();
-    expect(h.deps.openaiBatch.create).not.toHaveBeenCalled();
-    expect(h.deps.openaiBatch.get).toHaveBeenCalledWith("batch_pinned");
+    expect(h.deps.openaiBatch!.create).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch!.get).toHaveBeenCalledWith("batch_pinned");
     const final = ManifestSchema.parse(
       JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
     );
@@ -794,31 +819,214 @@ describe("runBatch — resume", () => {
     });
   });
 
+  it("still aborts an OpenAI activating sidecar before any remote check", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const activatingTarget = {
+      id: "rd_a",
+      customId: "rd_a",
+      keyPrefix: "readings/kp-rd_a",
+      url: "https://example.com/rd_a",
+      urlHash: manifest("rd_a").url_hash,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    h.deps.loadSidecar = vi.fn(
+      async () =>
+        ({
+          version: 2,
+          provider: "openai",
+          phase: "activating",
+          runId: "run_1",
+          batchId: "",
+          inputFileId: null,
+          outputFileId: null,
+          errorFileId: null,
+          model: "gpt-pinned",
+          reasoningEffort: "low",
+          processingStatus: "activating",
+          targets: [activatingTarget],
+        }) as PersistedSidecar,
+    );
+    h.deps.openaiBatch = {
+      upload: vi.fn(),
+      create: vi.fn(),
+      get: vi.fn(),
+      content: vi.fn(),
+      listFiles: vi.fn(),
+      listBatches: vi.fn(),
+    } as any;
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /ownership activation/i,
+    );
+    expect(h.deps.openaiBatch!.upload).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch!.create).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch!.listFiles).not.toHaveBeenCalled();
+    expect(h.deps.openaiBatch!.listBatches).not.toHaveBeenCalled();
+  });
+
+  it("aborts an OpenAI activating sidecar even when no OpenAI client is wired", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const activatingTarget = {
+      id: "rd_a",
+      customId: "rd_a",
+      keyPrefix: "readings/kp-rd_a",
+      url: "https://example.com/rd_a",
+      urlHash: manifest("rd_a").url_hash,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    h.deps.loadSidecar = vi.fn(
+      async () =>
+        ({
+          version: 2,
+          provider: "openai",
+          phase: "activating",
+          runId: "run_1",
+          batchId: "",
+          inputFileId: null,
+          outputFileId: null,
+          errorFileId: null,
+          model: "gpt-pinned",
+          reasoningEffort: "low",
+          processingStatus: "activating",
+          targets: [activatingTarget],
+        }) as PersistedSidecar,
+    );
+    // No openaiBatch client wired — the abort message must point at
+    // activation, not "missing OpenAI batch credentials".
+    h.deps.openaiBatch = undefined;
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /ownership activation/i,
+    );
+  });
+
+  it("adopts a remote batch from an OpenAI creating sidecar without crashing the run", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const fullTarget = {
+      customId: "rd_a",
+      keyPrefix: "readings/kp-rd_a",
+      id: "rd_a",
+      url: "https://example.com/rd_a",
+      urlHash: manifest("rd_a").url_hash,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceType: "url" as const,
+      contentType: "text/html",
+      contentStatus: "captured",
+      contentBytes: 10,
+      contentSha256: "b".repeat(64),
+      queryEmbedTokens: 0,
+    };
+    h.deps.loadSidecar = vi.fn(
+      async () =>
+        ({
+          version: 2,
+          provider: "openai",
+          phase: "creating",
+          runId: "run_1",
+          batchId: "",
+          inputFileId: "file_input",
+          outputFileId: null,
+          errorFileId: null,
+          model: "gpt-pinned",
+          reasoningEffort: "low",
+          processingStatus: "creating",
+          targets: [fullTarget],
+        }) as PersistedSidecar,
+    );
+
+    installCompletedOpenAIBatch(h);
+    const uploaded = h.deps.openaiBatch!;
+    uploaded.listFiles = vi.fn(async () => ({ data: [], has_more: false }));
+    uploaded.listBatches = vi.fn(async () => {
+      const data = [
+        {
+          id: "batch_remote",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+          metadata: { run_id: "run_1" },
+        },
+      ];
+      return {
+        data,
+        raw: data.map((b) => ({
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          ...b,
+        })),
+        has_more: false,
+      };
+    });
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(result.resumed).toBe(true);
+    expect(uploaded.create).not.toHaveBeenCalled();
+    expect(uploaded.listFiles).not.toHaveBeenCalled();
+    expect(uploaded.listBatches).toHaveBeenCalled();
+  });
+
+  it("fails closed when a creating sidecar has no visible remote batch", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const fullTarget = {
+      customId: "rd_a",
+      keyPrefix: "readings/kp-rd_a",
+      id: "rd_a",
+      url: "https://example.com/rd_a",
+      urlHash: manifest("rd_a").url_hash,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      sourceType: "url" as const,
+      contentType: "text/html",
+      contentStatus: "captured",
+      contentBytes: 10,
+      contentSha256: "b".repeat(64),
+      queryEmbedTokens: 0,
+    };
+    h.deps.loadSidecar = vi.fn(
+      async () =>
+        ({
+          version: 2,
+          provider: "openai",
+          phase: "creating",
+          runId: "run_1",
+          batchId: "",
+          inputFileId: "file_input",
+          outputFileId: null,
+          errorFileId: null,
+          model: "gpt-pinned",
+          reasoningEffort: "low",
+          processingStatus: "creating",
+          targets: [fullTarget],
+        }) as PersistedSidecar,
+    );
+
+    installCompletedOpenAIBatch(h);
+    const uploaded = h.deps.openaiBatch!;
+    uploaded.listFiles = vi.fn(async () => ({ data: [], has_more: false }));
+    uploaded.listBatches = vi.fn(async () => ({ data: [], raw: [], has_more: false }));
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+      /Refusing to create a second batch/,
+    );
+    expect(uploaded.create).not.toHaveBeenCalled();
+    expect(uploaded.upload).not.toHaveBeenCalled();
+  });
+
   it.each([
-    {
-      phase: "activating" as const,
-      processingStatus: "activating" as const,
-      inputFileId: null,
-      targetKind: "activating" as const,
-      expected: /ownership activation/i,
-    },
     {
       phase: "uploading" as const,
       processingStatus: "uploading" as const,
       inputFileId: null,
       targetKind: "full" as const,
-      expected: /input file may have been uploaded/i,
-    },
-    {
-      phase: "creating" as const,
-      processingStatus: "creating" as const,
-      inputFileId: "file_input",
-      targetKind: "full" as const,
-      expected: /batch may have been created/i,
+      existingRemoteBatch: false,
+      existingRemoteFile: false,
     },
   ])(
-    "requires phase-specific reconciliation for OpenAI $phase before checking credentials",
-    async ({ phase, processingStatus, inputFileId, targetKind, expected }) => {
+    "fails closed on an OpenAI $phase sidecar when no remote batch is visible (no auto-create)",
+    async ({ phase, processingStatus, inputFileId, targetKind, existingRemoteBatch, existingRemoteFile }) => {
       const h = harness({ rd_a: manifest("rd_a") });
       const fullTarget = {
         customId: "rd_a",
@@ -864,11 +1072,72 @@ describe("runBatch — resume", () => {
             targets,
           }) as PersistedSidecar,
       );
-      h.deps.openaiBatch = undefined;
 
-      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(expected);
-      expect(h.r2.put).not.toHaveBeenCalled();
-      expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+      installCompletedOpenAIBatch(h);
+      const preSidecar = h.getSidecar();
+      expect(preSidecar).toBeNull();
+      // The harness defaults to Anthropic; switch the resume to OpenAI so the
+      // pre-submit branch is reached. Install listFiles/listBatches mocks so
+      // reconcile doesn't fall through to "create once".
+      const uploaded = h.deps.openaiBatch!;
+      uploaded.listFiles = vi.fn(async () =>
+        existingRemoteFile
+          ? {
+              data: [
+                {
+                  id: "file_input",
+                  filename: "reading-lite-run_1.jsonl",
+                  purpose: "batch",
+                  bytes: 12,
+                },
+              ],
+              has_more: false,
+            }
+          : { data: [], has_more: false },
+      );
+      uploaded.listBatches = vi.fn(async () => {
+        const data = existingRemoteBatch
+          ? [
+              {
+                id: "batch_remote",
+                input_file_id: "file_input",
+                status: "validating",
+                output_file_id: null,
+                error_file_id: null,
+                request_counts: { total: 1, completed: 0, failed: 0 },
+                metadata: { run_id: "run_1" },
+              },
+            ]
+          : [];
+        return {
+          data,
+          raw: data.map((b) => ({
+            object: "batch",
+            endpoint: "/v1/responses",
+            completion_window: "24h",
+            ...b,
+          })),
+          has_more: false,
+        };
+      });
+
+      // Resume runs the reconcile branch; for uploading-no-remote the harness
+      // has not saved JSONL so re-upload would hard-fail. Provide one.
+      h.setInputJsonl('{"custom_id":"rd_a","body":"x"}\n');
+
+      // The reconciler uploads (or adopts) the file, advances to `creating`,
+      // and refuses to call `create` because no remote batch is visible.
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
+        /Refusing to create a second batch/,
+      );
+      if (!existingRemoteFile && phase === "uploading") {
+        expect(uploaded.upload).toHaveBeenCalledTimes(1);
+      }
+      if (phase === "uploading") {
+        expect(uploaded.listFiles).toHaveBeenCalled();
+      }
+      expect(uploaded.listBatches).toHaveBeenCalled();
+      expect(uploaded.create).not.toHaveBeenCalled();
     },
   );
 
@@ -1417,7 +1686,7 @@ describe("runBatch — eager recover claim", () => {
 });
 
 describe("runBatch — recover resume", () => {
-  it("reconciles an OpenAI upload crash, then reuses activated markdown without refetching", async () => {
+  it("reconciles an OpenAI upload crash, then fails closed at the create step without operator cleanup", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     h.store.delete("readings/kp-rd_a/extracted.md");
     installCompletedOpenAIBatch(h, {
@@ -1450,26 +1719,211 @@ describe("runBatch — recover resume", () => {
     expect(h.store.get("readings/kp-rd_a/extracted.md")).toBe(
       "fresh https://example.com/rd_a",
     );
+    // Companion JSONL was persisted before the upload checkpoint, so a
+    // resume from "uploading" with no remote file can re-upload the same
+    // bytes.
+    expect(h.getInputJsonl()).toContain('"custom_id":"rd_a"');
 
+    // Re-install the OpenAI batch client — this time without the crash hook —
+    // so the second run resumes from "uploading" and reaches the create
+    // step, where the reconciler fails closed (no remote batch visible,
+    // operator must reconcile manually).
+    h.setSidecar(h.getSidecar());
     h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+    installCompletedOpenAIBatch(h);
+
     await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(
-      /input file may have been uploaded/i,
+      /Refusing to create a second batch/,
     );
     expect(h.extract).toHaveBeenCalledOnce();
-
-    // Simulate the documented operator reconciliation/sidecar removal. The
-    // next run must attach to the exact batch_<reading-id> activation markdown.
-    h.setSidecar(null);
-    installCompletedOpenAIBatch(h);
-    const result = await runBatch([row("rd_a")], h.deps);
-
-    expect(h.extract).toHaveBeenCalledOnce();
-    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    // The reconcile lock prevents a double-create; the by-url claim stays
+    // owned so a manual reconciliation can resolve.
     expect(
       [...h.store.keys()].filter((key) =>
         key.startsWith("index/by-url/"),
       ),
     ).toHaveLength(1);
+  });
+
+  it("adopts an OpenAI batch that was created after the sidecar said 'creating'", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    installCompletedOpenAIBatch(h);
+    const activated = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    const urlHash = activated.url_hash;
+    const kp = "readings/kp-rd_a";
+    const submittedSidecar: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "creating",
+      runId: "run_recovery",
+      batchId: "",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      processingStatus: "creating",
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: kp,
+          id: "rd_a",
+          url: activated.url,
+          urlHash,
+          createdAt: activated.created_at,
+          sourceType: "url",
+          contentType: activated.content_type,
+          contentStatus: "captured",
+          contentBytes: activated.content_bytes,
+          contentSha256: activated.content_sha256,
+          queryEmbedTokens: 0,
+        },
+      ],
+    };
+    h.setSidecar(submittedSidecar);
+    h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+    // The harness's installCompletedOpenAIBatch already wired listFiles /
+    // listBatches with empty defaults. Override to inject the "remote batch
+    // created but never written to the sidecar" case.
+    const openai = h.deps.openaiBatch!;
+    const createSpy = vi.fn(async () => {
+      throw new Error("create must not be called when a remote batch exists");
+    });
+    openai.create = createSpy as any;
+    openai.listBatches = vi.fn(async () => ({
+      data: [
+        {
+          id: "batch_adopted",
+          input_file_id: "file_input",
+          status: "completed",
+          output_file_id: "file_output",
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_recovery" },
+        },
+      ],
+      raw: [
+        {
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          id: "batch_adopted",
+          input_file_id: "file_input",
+          status: "completed",
+          output_file_id: "file_output",
+          error_file_id: null,
+          request_counts: { total: 1, completed: 1, failed: 0 },
+          metadata: { run_id: "run_recovery" },
+        },
+      ],
+      has_more: false,
+    }));
+    openai.get = vi.fn(async () => ({
+      id: "batch_adopted",
+      input_file_id: "file_input",
+      status: "completed",
+      output_file_id: "file_output",
+      error_file_id: null,
+      request_counts: { total: 1, completed: 1, failed: 0 },
+    }));
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(openai.listBatches).toHaveBeenCalled();
+    expect(result.resumed).toBe(true);
+    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
+    expect(h.getSidecar()).toMatchObject({
+      phase: "submitted",
+      batchId: "batch_adopted",
+    });
+  });
+
+  it("fails closed from a creating sidecar when two remote batches share the run id (no create)", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    installCompletedOpenAIBatch(h);
+    const activated = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    const kp = "readings/kp-rd_a";
+    const submittedSidecar: PersistedSidecar = {
+      version: 2,
+      provider: "openai",
+      phase: "creating",
+      runId: "run_recovery",
+      batchId: "",
+      inputFileId: "file_input",
+      outputFileId: null,
+      errorFileId: null,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+      processingStatus: "creating",
+      targets: [
+        {
+          customId: "rd_a",
+          keyPrefix: kp,
+          id: "rd_a",
+          url: activated.url,
+          urlHash: activated.url_hash,
+          createdAt: activated.created_at,
+          sourceType: "url",
+          contentType: activated.content_type,
+          contentStatus: "captured",
+          contentBytes: activated.content_bytes,
+          contentSha256: activated.content_sha256,
+          queryEmbedTokens: 0,
+        },
+      ],
+    };
+    h.setSidecar(submittedSidecar);
+    h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+    const openai = h.deps.openaiBatch!;
+    const createSpy = vi.fn(async () => {
+      throw new Error("create must not be called on ambiguous match");
+    });
+    openai.create = createSpy as any;
+    openai.listBatches = vi.fn(async () => {
+      const data = [
+        {
+          id: "batch_dup1",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+          metadata: { run_id: "run_recovery" },
+        },
+        {
+          id: "batch_dup2",
+          input_file_id: "file_input",
+          status: "validating",
+          output_file_id: null,
+          error_file_id: null,
+          request_counts: { total: 1, completed: 0, failed: 0 },
+          metadata: { run_id: "run_recovery" },
+        },
+      ];
+      return {
+        data,
+        raw: data.map((b) => ({
+          object: "batch",
+          endpoint: "/v1/responses",
+          completion_window: "24h",
+          ...b,
+        })),
+        has_more: false,
+      };
+    });
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/ambiguous/);
+    expect(createSpy).not.toHaveBeenCalled();
+    // The sidecar must NOT advance to "submitted" — the operator must resolve
+    // the duplicate before the next run.
+    expect(h.getSidecar()).toMatchObject({ phase: "creating", batchId: "" });
   });
 
   it("resumes a post-create sidecar and flips its eager-claim pending to ready (no re-create)", async () => {

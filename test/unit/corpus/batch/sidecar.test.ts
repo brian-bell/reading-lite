@@ -2,7 +2,15 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { loadSidecar, saveSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
+import {
+  clearInputJsonl,
+  clearSidecar,
+  inputJsonlPath,
+  loadInputJsonl,
+  loadSidecar,
+  saveInputJsonl,
+  saveSidecar,
+} from "../../../../scripts/corpus-lib/batch/sidecar";
 import type {
   ActivatingSidecar,
   OpenAISubmittedSidecar,
@@ -134,6 +142,51 @@ describe("batch sidecar I/O", () => {
         await saveSidecar(path, checkpoint);
         await expect(loadSidecar(path)).resolves.toEqual(checkpoint);
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite an OpenAI uploading sidecar with an activating checkpoint", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const uploading: PersistedSidecar = {
+        version: 2,
+        provider: "openai",
+        phase: "uploading",
+        runId: "run_holder",
+        batchId: "",
+        inputFileId: null,
+        outputFileId: null,
+        errorFileId: null,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        processingStatus: "uploading",
+        targets: [target],
+      };
+      await saveSidecar(path, uploading);
+      await expect(
+        saveSidecar(path, {
+          ...uploading,
+          phase: "activating",
+          runId: "run_other",
+          processingStatus: "activating",
+          targets: [
+            {
+              id: "rd_a",
+              customId: "rd_a",
+              keyPrefix: "readings/kp",
+              url: "https://example.com/a",
+              urlHash: "a".repeat(64),
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        }),
+      ).rejects.toThrow(/refusing to overwrite/i);
+      await expect(loadSidecar(path)).resolves.toMatchObject({
+        phase: "uploading",
+        runId: "run_holder",
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -307,6 +360,57 @@ describe("batch sidecar I/O", () => {
 
       await writeFile(path, JSON.stringify({ batchId: "", processingStatus: "mystery", targets: [] }));
       await expect(loadSidecar(path)).rejects.toThrow(/manual reconciliation required/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("batch sidecar companion JSONL", () => {
+  it("derives the companion path from the sidecar path", () => {
+    expect(inputJsonlPath("/tmp/index.batch.json")).toBe("/tmp/index.batch.input.jsonl");
+    expect(inputJsonlPath("./corpus-ingest.batch.json")).toBe(
+      "./corpus-ingest.batch.input.jsonl",
+    );
+  });
+
+  it("round-trips exact bytes including a trailing newline", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const jsonl = '{"custom_id":"rd_a"}\n';
+      await saveInputJsonl(path, jsonl);
+      expect(await readFile(inputJsonlPath(path), "utf8")).toBe(jsonl);
+      await expect(loadInputJsonl(path)).resolves.toBe(jsonl);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when the companion file is missing", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await expect(loadInputJsonl(path)).resolves.toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("clearSidecar also removes the companion JSONL", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await saveInputJsonl(path, '{"custom_id":"rd_a"}\n');
+      expect(await readFile(inputJsonlPath(path), "utf8")).toBeTruthy();
+      await clearSidecar(path);
+      await expect(readFile(inputJsonlPath(path), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("clearInputJsonl is a no-op when nothing is present", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await expect(clearInputJsonl(path)).resolves.toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
