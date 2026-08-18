@@ -111,6 +111,25 @@ describe("bootstrapFounder", () => {
     expect(tokens).toHaveLength(1);
   });
 
+  it("repairs an expired or revoked legacy token on re-run", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    const first = await bootstrapFounder(db, input());
+    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ?, revoked_at_ms = ? WHERE id = ?").run(
+      NOW_MS - 1,
+      NOW_MS,
+      first.tokenId,
+    );
+
+    const second = await bootstrapFounder(db, input());
+    expect(second.createdToken).toBe(false);
+
+    const token = sqlite
+      .prepare("SELECT expires_at_ms, revoked_at_ms FROM api_tokens WHERE id = ?")
+      .get(first.tokenId) as { expires_at_ms: number; revoked_at_ms: number | null };
+    expect(token.revoked_at_ms).toBeNull();
+    expect(token.expires_at_ms).toBe(NOW_MS + TOKEN_MAX_TTL_MS);
+  });
+
   it("plans without writing when apply is false", async () => {
     const { db } = openMigratedControlPlane();
     const result = await bootstrapFounder(db, input(), { apply: false });

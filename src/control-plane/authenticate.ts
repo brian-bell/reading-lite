@@ -49,7 +49,11 @@ export async function authenticateBearer(
 
   const secretForHmac = match.token.format === "legacy" ? rawToken : presented.secret;
   if (match.viaPrevious) {
-    await persistRotatedHmac(db, match.token.id, secretForHmac, input.authRoot);
+    try {
+      await persistRotatedHmac(db, match.token.id, secretForHmac, input.authRoot);
+    } catch {
+      // Best-effort re-HMAC during auth-root rotation; auth still succeeds.
+    }
   }
 
   const token = match.token;

@@ -226,4 +226,28 @@ describe("authenticateBearer", () => {
     expect(rotated.secret_hmac).toBe(await hmacHex(await deriveHmacKey(authRoot, "api_token"), "super-secret"));
     expect(rotated.hash_key_version).toBe(1);
   });
+
+  it("still authenticates when re-HMAC persistence fails during rotation", async () => {
+    const previousAuthRoot = {
+      secret: parseAuthRootSecret("ff".repeat(32)),
+      version: 0,
+    };
+    const { db, founder } = await seeded(previousAuthRoot);
+    const failingDb = {
+      ...db,
+      batch: async () => {
+        throw new Error("d1 write failed");
+      },
+    };
+
+    const result = await authenticateBearer(failingDb, {
+      authorization: "Bearer test-token",
+      authRoot,
+      previousAuthRoot,
+      nowMs: NOW_MS,
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok" || result.principal.kind !== "api_token") return;
+    expect(result.principal.tokenId).toBe(founder.tokenId);
+  });
 });

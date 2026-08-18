@@ -144,9 +144,14 @@ export async function bootstrapFounder(
       ? [
           {
             sql: `UPDATE api_tokens
-                  SET secret_hmac = ?, hash_key_version = ?
+                  SET secret_hmac = ?, hash_key_version = ?, expires_at_ms = ?, revoked_at_ms = NULL
                   WHERE id = ?`,
-            params: [secretHmac, input.authRoot.version, tokenId],
+            params: [
+              secretHmac,
+              input.authRoot.version,
+              input.nowMs + TOKEN_MAX_TTL_MS,
+              tokenId,
+            ],
           },
         ]
       : [
@@ -229,12 +234,25 @@ async function lookupExistingLegacyToken(
   legacyToken: string,
   authRoot: AuthRoot,
   previousAuthRoot?: AuthRoot,
-): Promise<{ id: string; user_id: string; format: string } | null> {
+): Promise<{
+  id: string;
+  user_id: string;
+  format: string;
+  expires_at_ms: number;
+  revoked_at_ms: number | null;
+} | null> {
   const roots = previousAuthRoot ? [authRoot, previousAuthRoot] : [authRoot];
   for (const root of roots) {
     const digest = await legacyTokenHmac(legacyToken, root);
-    const row = await db.first<{ id: string; user_id: string; format: string }>(
-      "SELECT id, user_id, format FROM api_tokens WHERE secret_hmac = ?",
+    const row = await db.first<{
+      id: string;
+      user_id: string;
+      format: string;
+      expires_at_ms: number;
+      revoked_at_ms: number | null;
+    }>(
+      `SELECT id, user_id, format, expires_at_ms, revoked_at_ms
+       FROM api_tokens WHERE secret_hmac = ?`,
       digest,
     );
     if (row) return row;
