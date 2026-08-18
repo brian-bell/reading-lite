@@ -147,6 +147,48 @@ Pointers only — the details live in the named files' comments.
 - The SPA invalidates queries after submit/reprocess but does not poll pending
   manifests.
 
+## Cursor Cloud specific instructions
+
+Standard commands live in `## Commands` above and in `README.md`; this section
+only captures non-obvious caveats for running/testing in the Cloud Agent VM
+(the update script already ran `npm install`, `npm install --prefix web`, and
+created `.dev.vars` from `.dev.vars.example`).
+
+- There is no separate lint script. `npm run typecheck` (`tsc --noEmit`) is the
+  static gate for the Worker; the SPA type-checks via `cd web && npm run build`
+  (`tsc -b && vite build`). Prefer `npm run test:quiet` over `npm test` for the
+  root suite (it strips the Workers-pool stderr noise but keeps the exit code).
+- `.dev.vars` holds only placeholders (`READER_API_TOKEN=dev-local-token`,
+  `OPENAI_API_KEY=sk-...`). The token makes local auth work; the OpenAI/Anthropic
+  keys are fake. Real summarization needs real provider keys plus Cloudflare
+  Queue + Vectorize, which only exist in staging/production — you cannot run the
+  full submit→summarize pipeline against local `wrangler dev`.
+- Run the Worker with `npm run dev` (serves `http://localhost:8787`, also
+  reachable at `127.0.0.1:8787`) and the SPA with `cd web && npm run dev`
+  (`http://127.0.0.1:5173`, proxies `/api` + `/health` to the Worker). In the
+  SPA, paste the bearer token (`dev-local-token`) into the field in the top-right
+  and Save to authenticate.
+- Local `wrangler dev` deliberately has no Queue/Vectorize binding, so
+  `POST /api/readings` and `/reprocess` return 503 and similarity search
+  (`POST /api/readings/similar`) returns an empty result set. List search via
+  `q` on `GET /api/readings` still works — it filters `index/list.json` from
+  local R2 and does not need Vectorize.
+  The submit→summarize pipeline itself is covered end-to-end by the test suite
+  (integration tests inject queue/Vectorize stubs). The read-path routes (list,
+  detail, `/content`, `/lookup`) work against whatever is in the local R2 bucket.
+- To exercise the read path / SPA against real data locally, seed the local R2
+  bucket, then restart `wrangler dev`. Seed via **Miniflare** (persist path
+  `.wrangler/state/v3/r2`, bucket `reading-lite`), not `wrangler r2 object put
+  --local` (which writes to a different local store the dev server never reads).
+  The running dev server also caches R2 in-process, so restart it after seeding.
+  A minimal `ready` reading needs `readings/<key_prefix>/manifest.json` (a valid
+  `ManifestSchema` with `content_status: "captured"`), `index/by-id/<id>`,
+  `index/by-url/<url_hash>` (matching the manifest's `url_hash`), an
+  `index/list.json` row, `readings/<key_prefix>/extracted.md` (for `/content`),
+  and `readings/<key_prefix>/raw.{ext}` matching the manifest's `content_type`
+  (for `/content/raw`). `/lookup` requires the by-url pointer and does not
+  discover pointerless readings.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
