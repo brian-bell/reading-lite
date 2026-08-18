@@ -17,7 +17,14 @@ import {
   makeOpenAIEmbedClient,
 } from "./corpus-lib/batch/clients";
 import { runBatch } from "./corpus-lib/batch/run";
-import { clearSidecar, loadSidecar, saveSidecar, sidecarPath } from "./corpus-lib/batch/sidecar";
+import {
+  clearSidecar,
+  loadInputJsonl,
+  loadSidecar,
+  saveInputJsonl,
+  saveSidecar,
+  sidecarPath,
+} from "./corpus-lib/batch/sidecar";
 import type { AuditRow, RecoveryAction } from "./corpus-lib/types";
 import { makeBrowserFetch } from "./corpus-lib/browser-fetch";
 import { enforceSoleWriter } from "./corpus-lib/sole-writer";
@@ -348,6 +355,9 @@ async function runBatchMode(
     loadSidecar: () => loadSidecar(scPath),
     saveSidecar: (s) => saveSidecar(scPath, s),
     clearSidecar: () => clearSidecar(scPath),
+    saveInputJsonl: (jsonl) => saveInputJsonl(scPath, jsonl),
+    loadInputJsonl: () => loadInputJsonl(scPath),
+    sidecarFilePath: scPath,
     log: (line) => process.stderr.write(line + "\n"),
   });
 

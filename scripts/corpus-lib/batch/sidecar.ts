@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { z } from "zod";
+import { acquireReconcileLock } from "./reconcile-lock";
 import type { PersistedSidecar } from "./types";
 
 // The sidecar lives next to the audit index: ./index.json -> ./index.batch.json.
@@ -218,13 +219,83 @@ export async function loadSidecar(path: string): Promise<PersistedSidecar | null
   }
 }
 
+const OPENAI_PHASE_RANK = {
+  activating: 0,
+  uploading: 1,
+  creating: 2,
+  submitted: 3,
+} as const;
+
 export async function saveSidecar(path: string, sidecar: PersistedSidecar): Promise<void> {
   const parsed = V2SidecarSchema.parse(sidecar);
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, JSON.stringify(parsed, null, 2) + "\n");
-  await fs.rename(tmp, path);
+  // Serialize sidecar replacements so the phase-rank check and rename are
+  // one critical section. This is a short lock distinct from the submit
+  // lock (which is already held by the upload/create owner).
+  const writeLock = await acquireReconcileLock(`${path}.save`);
+  try {
+    const existing = await loadSidecar(path);
+    if (existing?.provider === "openai" && parsed.provider === "openai") {
+      const from = OPENAI_PHASE_RANK[existing.phase];
+      const to = OPENAI_PHASE_RANK[parsed.phase];
+      if (to < from) {
+        throw new Error(
+          `refusing to overwrite OpenAI sidecar phase=${existing.phase} with ${parsed.phase}`,
+        );
+      }
+    }
+    const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+    await fs.writeFile(tmp, JSON.stringify(parsed, null, 2) + "\n");
+    await fs.rename(tmp, path);
+  } finally {
+    await writeLock.release();
+  }
 }
 
 export async function clearSidecar(path: string): Promise<void> {
   await fs.rm(path, { force: true });
+  await fs.rm(inputJsonlPath(path), { force: true });
+}
+
+// Exact JSONL bytes persisted beside the sidecar so a resume from phase
+// "uploading" with no remote file can re-upload the *same* payload. The bytes
+// are written before the "uploading" checkpoint so a crash after either step
+// leaves the sidecar in a state whose local bytes are recoverable.
+export function inputJsonlPath(sidecarPath: string): string {
+  return sidecarPath.replace(/\.json$/i, "") + ".input.jsonl";
+}
+
+export async function saveInputJsonl(
+  sidecarPath: string,
+  jsonl: string,
+): Promise<void> {
+  const path = inputJsonlPath(sidecarPath);
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  // 0600: the companion holds extracted article text + similar-reading
+  // context, so it must not be world-readable. POSIX `fs.writeFile`
+  // honours `mode` on file creation; `fs.rename` preserves the mode of
+  // the renamed file, so the final path keeps 0600.
+  await fs.writeFile(tmp, jsonl, { mode: 0o600 });
+  await fs.rename(tmp, path);
+}
+
+export async function loadInputJsonl(
+  sidecarPath: string,
+): Promise<string | null> {
+  try {
+    return await fs.readFile(inputJsonlPath(sidecarPath), "utf8");
+  } catch (e) {
+    if (
+      typeof e === "object" &&
+      e &&
+      "code" in e &&
+      (e as { code?: string }).code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw e;
+  }
+}
+
+export async function clearInputJsonl(sidecarPath: string): Promise<void> {
+  await fs.rm(inputJsonlPath(sidecarPath), { force: true });
 }
