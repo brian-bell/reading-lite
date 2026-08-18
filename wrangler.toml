@@ -14,7 +14,7 @@
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
-#   2. `npm run dev`.
+#   2. `npm run dev` (applies local D1 migrations and founder bootstrap, then starts wrangler).
 # Note: `wrangler dev` runs against a local emulated R2 bucket (initially empty)
 # and has no Vectorize binding, so search returns no results locally. POST
 # /api/readings and /api/readings/:id/reprocess also fail under `wrangler dev` (no queue

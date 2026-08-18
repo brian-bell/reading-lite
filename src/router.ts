@@ -53,9 +53,11 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/health", (c) => c.text("ok", 200));
 
+  const authNowMs = () => Date.parse(services.now());
+
   // Everything below requires bearer auth.
-  app.use("/api/readings", requirePrincipal());
-  app.use("/api/readings/*", requirePrincipal());
+  app.use("/api/readings", requirePrincipal(authNowMs));
+  app.use("/api/readings/*", requirePrincipal(authNowMs));
 
   app.post("/api/readings", requireScope("readings:write"), async (c) => {
     const json = await c.req.json().catch(() => null);

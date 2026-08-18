@@ -10,7 +10,7 @@ export type AppBindings = {
   Variables: { principal: AuthenticatedPrincipal };
 };
 
-export const requirePrincipal = (): MiddlewareHandler<AppBindings> => {
+export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBindings> => {
   return async (c, next) => {
     if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
@@ -31,7 +31,7 @@ export const requirePrincipal = (): MiddlewareHandler<AppBindings> => {
       authorization: c.req.header("authorization"),
       authRoot,
       ...(previousAuthRoot ? { previousAuthRoot } : {}),
-      nowMs: Date.now(),
+      nowMs: nowMs(),
     });
     if (verdict.kind === "unauthenticated") {
       return jsonNoStore(c, { error: "unauthorized" }, 401);

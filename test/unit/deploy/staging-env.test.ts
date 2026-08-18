@@ -74,12 +74,12 @@ describe("staging environment scripts", () => {
         args: ["vectorize", "delete", "reading-lite-staging", "--force"],
       },
       {
-        label: "Delete staging R2 bucket",
-        args: ["r2", "bucket", "delete", "reading-lite-staging"],
-      },
-      {
         label: "Delete staging D1 control plane",
         args: ["d1", "delete", "reading-lite-control-staging", "--skip-confirmation"],
+      },
+      {
+        label: "Delete staging R2 bucket",
+        args: ["r2", "bucket", "delete", "reading-lite-staging"],
       },
     ]);
   });

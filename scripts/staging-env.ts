@@ -153,13 +153,13 @@ export function buildStagingTeardownCommands(
       idempotentOk: MISSING_RESOURCE,
     },
     {
-      label: "Delete staging R2 bucket",
-      args: ["r2", "bucket", "delete", resources.bucket],
+      label: "Delete staging D1 control plane",
+      args: ["d1", "delete", resources.d1, "--skip-confirmation"],
       idempotentOk: MISSING_RESOURCE,
     },
     {
-      label: "Delete staging D1 control plane",
-      args: ["d1", "delete", resources.d1, "--skip-confirmation"],
+      label: "Delete staging R2 bucket",
+      args: ["r2", "bucket", "delete", resources.bucket],
       idempotentOk: MISSING_RESOURCE,
     },
   ];

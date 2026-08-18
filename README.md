@@ -65,7 +65,7 @@ The Worker is composed of deeply isolated modules (each unit-tested with stubbed
 ```sh
 npm install
 cp .dev.vars.example .dev.vars   # fill in API keys
-npm run dev                      # wrangler dev with local R2 only; Queue/Vectorize absent by design
+npm run dev                      # applies local D1 migrations + founder bootstrap, then wrangler dev
 npm test                         # vitest workspace (workers pool + node pool)
 npm run typecheck
 ```

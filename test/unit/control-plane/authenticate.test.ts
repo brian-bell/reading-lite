@@ -164,6 +164,37 @@ describe("authenticateBearer", () => {
     expect(after.kind).toBe("ok");
   });
 
+  it("falls back to legacy lookup when a token-shaped secret was imported as legacy", async () => {
+    const { db } = openMigratedControlPlane();
+    const tokenId = "tok_550e8400-e29b-41d4-a716-446655440000";
+    const legacyToken = `${tokenId}.imported-secret`;
+    const founder = await bootstrapFounder(db, {
+      email: "founder@example.com",
+      legacyToken,
+      signupMode: "open",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => tokenId,
+    });
+
+    const result = await authenticateBearer(db, {
+      authorization: `Bearer ${legacyToken}`,
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(result).toEqual({
+      kind: "ok",
+      principal: {
+        kind: "api_token",
+        tenantId: founder.userId,
+        userId: founder.userId,
+        tokenId: founder.tokenId,
+        scopes: new Set(API_SCOPES),
+      },
+    });
+  });
+
   it("re-HMACs a standard token authenticated under the previous auth root", async () => {
     const previousAuthRoot = {
       secret: parseAuthRootSecret("ff".repeat(32)),

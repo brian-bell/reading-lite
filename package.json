@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist to R2 + Vectorize.",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "npm run dev:setup && wrangler dev",
+    "dev:setup": "tsx scripts/dev-setup.ts",
     "deploy": "tsx scripts/deploy.ts",
     "deploy:web": "tsx scripts/deploy-web.ts",
     "staging:setup": "tsx scripts/staging-setup.ts",

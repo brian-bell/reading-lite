@@ -33,17 +33,23 @@ export async function authenticateBearer(
   db: ControlPlaneDb,
   input: AuthenticateBearerInput,
 ): Promise<AuthVerdict> {
-  const presented = parseAuthorization(input.authorization);
+  const rawToken = parseAuthorizationRaw(input.authorization);
+  if (!rawToken) return { kind: "unauthenticated" };
+  const presented = parsePresentedToken(rawToken);
   if (!presented) return { kind: "unauthenticated" };
 
-  const match =
+  let match =
     presented.format === "standard"
       ? await lookupStandardToken(db, presented.selector, presented.secret, input.authRoot, input.previousAuthRoot)
       : await lookupLegacyToken(db, presented.secret, input.authRoot, input.previousAuthRoot);
+  if (!match && presented.format === "standard") {
+    match = await lookupLegacyToken(db, rawToken, input.authRoot, input.previousAuthRoot);
+  }
   if (!match || !tokenUsable(match.token, input.nowMs)) return { kind: "unauthenticated" };
 
+  const secretForHmac = match.token.format === "legacy" ? rawToken : presented.secret;
   if (match.viaPrevious) {
-    await persistRotatedHmac(db, match.token.id, presented.secret, input.authRoot);
+    await persistRotatedHmac(db, match.token.id, secretForHmac, input.authRoot);
   }
 
   const token = match.token;
@@ -71,11 +77,10 @@ export async function authenticateBearer(
   }
 }
 
-function parseAuthorization(header: string | undefined): ReturnType<typeof parsePresentedToken> {
+function parseAuthorizationRaw(header: string | undefined): string | null {
   if (!header) return null;
   const match = /^Bearer\s+(\S+)$/i.exec(header.trim());
-  if (!match) return null;
-  return parsePresentedToken(match[1]!);
+  return match ? match[1]! : null;
 }
 
 function tokenUsable(token: TokenRow, nowMs: number): boolean {

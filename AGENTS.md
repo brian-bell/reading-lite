@@ -168,8 +168,10 @@ created `.dev.vars` from `.dev.vars.example`).
   keys are fake. Real summarization needs real provider keys plus Cloudflare
   Queue + Vectorize, which only exist in staging/production — you cannot run the
   full submit→summarize pipeline against local `wrangler dev`.
-- Run the Worker with `npm run dev` (serves `http://localhost:8787`, also
-  reachable at `127.0.0.1:8787`) and the SPA with `cd web && npm run dev`
+- Run the Worker with `npm run dev` (runs `dev:setup` first to apply local D1
+  migrations and import `dev-local-token` as the founder legacy bearer, then
+  serves `http://localhost:8787`, also reachable at `127.0.0.1:8787`) and the
+  SPA with `cd web && npm run dev`
   (`http://127.0.0.1:5173`, proxies `/api` + `/health` to the Worker). In the
   SPA, paste the bearer token (`dev-local-token`) into the field in the top-right
   and Save to authenticate.
