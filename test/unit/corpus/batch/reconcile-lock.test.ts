@@ -1,5 +1,5 @@
-import { mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -19,7 +19,11 @@ describe("acquireReconcileLock", () => {
       const lock = await acquireReconcileLock(sidecar);
       const lockPath = reconcileLockPath(sidecar);
       const contents = await readFile(lockPath, "utf-8");
-      expect(JSON.parse(contents)).toMatchObject({ pid: process.pid });
+      expect(JSON.parse(contents)).toMatchObject({
+        pid: process.pid,
+        host: hostname(),
+      });
+      expect(JSON.parse(contents).host).not.toBe("unknown");
       await stat(lockPath);
       await lock.release();
       await expect(stat(lockPath)).rejects.toThrow();
@@ -64,6 +68,37 @@ describe("acquireReconcileLock", () => {
     }
   });
 
+  it("treats an unknown-host lock as foreign even when that pid is live locally", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          host: "unknown",
+          started_at: ancient.toISOString(),
+        }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await utimes(lockPath, ancient, ancient);
+      const lock = await acquireReconcileLock(sidecar);
+      try {
+        const contents = await readFile(lockPath, "utf-8");
+        expect(JSON.parse(contents)).toMatchObject({
+          pid: process.pid,
+          host: hostname(),
+        });
+      } finally {
+        await lock.release();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not reclaim a live same-host lock just because mtime is past the TTL", async () => {
     const { dir, sidecar } = await tempSidecar();
     try {
@@ -77,6 +112,99 @@ describe("acquireReconcileLock", () => {
         ).rejects.toThrow(new RegExp(`is held by pid ${process.pid}`));
       } finally {
         await first.release();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to reclaim a stale lock while another reclaim is in progress", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        lockPath,
+        JSON.stringify({ pid: 1, host: "stale", started_at: ancient.toISOString() }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await utimes(lockPath, ancient, ancient);
+      await writeFile(
+        `${lockPath}.reclaim`,
+        JSON.stringify({ pid: process.pid, host: hostname() }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await expect(acquireReconcileLock(sidecar)).rejects.toThrow(
+        /already being reclaimed/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers an abandoned empty reclaim gate and proceeds", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      await writeFile(
+        lockPath,
+        JSON.stringify({ pid: 1, host: "stale", started_at: ancient.toISOString() }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await utimes(lockPath, ancient, ancient);
+      await writeFile(`${lockPath}.reclaim`, '{"pid":', {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
+      const lock = await acquireReconcileLock(sidecar);
+      try {
+        const contents = await readFile(lockPath, "utf-8");
+        expect(JSON.parse(contents)).toMatchObject({ pid: process.pid });
+        await expect(stat(`${lockPath}.reclaim`)).rejects.toThrow();
+      } finally {
+        await lock.release();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets only one of two concurrent stale-lock reclaimers proceed", async () => {
+    const { dir, sidecar } = await tempSidecar();
+    try {
+      const lockPath = reconcileLockPath(sidecar);
+      const ancient = new Date(Date.now() - 60 * 60 * 1000);
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        lockPath,
+        JSON.stringify({ pid: 1, host: "stale", started_at: ancient.toISOString() }) + "\n",
+        { encoding: "utf-8", mode: 0o600 },
+      );
+      await utimes(lockPath, ancient, ancient);
+      const results = await Promise.allSettled([
+        acquireReconcileLock(sidecar, {
+          pid: 111,
+          host: "a",
+          isProcessAlive: () => false,
+          heartbeatIntervalMs: 0,
+        }),
+        acquireReconcileLock(sidecar, {
+          pid: 222,
+          host: "a",
+          isProcessAlive: () => false,
+          heartbeatIntervalMs: 0,
+        }),
+      ]);
+      const wins = results.filter((r) => r.status === "fulfilled");
+      expect(wins).toHaveLength(1);
+      const lock = (wins[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof acquireReconcileLock>>>).value;
+      try {
+        const contents = await readFile(lockPath, "utf-8");
+        expect([111, 222]).toContain(JSON.parse(contents).pid);
+      } finally {
+        await lock.release();
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
