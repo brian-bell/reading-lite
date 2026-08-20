@@ -8,10 +8,12 @@ readings, summarizes through the configured provider (OpenAI structured output
 by default; Anthropic forced tool use when selected — provider selection never
 falls back silently), and commits the terminal manifest plus `index/list.json`.
 
-`README.md` is the user-facing architecture and operations guide. Module design
-rationale lives in the header comments of the modules themselves — read those
-before changing a module. This file is the agent quick reference: module map,
-commands, conventions, and gotchas.
+This file is the agent quick reference: module map, commands, conventions, and
+gotchas. Elsewhere: `README.md` is the user-facing architecture and API guide,
+`docs/operations.md` is the operator runbook (deploy, staging, bulk ingest,
+corpus repair), and `CONTEXT.md` defines the domain language the code is named
+after. Module design rationale lives in the header comments of the modules
+themselves — read those before changing a module.
 
 ## Module Map
 
@@ -48,8 +50,7 @@ commands, conventions, and gotchas.
   is `prepare.ts`/`extract-phase.ts`/`activation-phase.ts`, the fresh-markdown
   front-end is `prepare-fresh-markdown.ts`/`run-fresh-markdown.ts`.
 - `web/` — React/Vite SPA (bearer token in localStorage, list/search, submit,
-  detail/diagnostics, reprocess). `plans/` — historical/task docs; ignore
-  unless the user names one.
+  detail/diagnostics, reprocess).
 
 ## Commands
 
@@ -67,7 +68,7 @@ dry-run by default and take `--execute` to act, e.g. `npm run deploy -- --env
 staging --execute`, `npm run founder-bootstrap -- --email founder@example.com
 --execute`, `npm run corpus-recover -- --index ./index.json --execute`. Make
 targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
-`README.md` or `--help` for the full matrix.
+`docs/operations.md` or `--help` for the full matrix.
 
 ## Environments
 
@@ -78,12 +79,15 @@ targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `staging:setup`/`staging:teardown` are idempotent and
   hard-coded to staging names.
-- Secrets via `wrangler secret put --env …`: `READER_API_TOKEN` and
+- Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
-  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional. Checked-in
-  defaults: OpenAI `gpt-5.6-terra`; production uses `medium` effort, local and
-  staging use `low`. Staging teardown's R2 emptying needs `CORPUS_R2_*` creds
-  in env or `.corpus.vars`.
+  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional.
+  `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
+  `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
+  Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
+  Checked-in defaults: OpenAI `gpt-5.6-terra`; production uses `medium`
+  effort, local and staging use `low`. Staging teardown's R2 emptying needs
+  `CORPUS_R2_*` creds in env or `.corpus.vars`.
 
 ## Conventions
 
@@ -152,110 +156,38 @@ Pointers only — the details live in the named files' comments.
 - The SPA invalidates queries after submit/reprocess but does not poll pending
   manifests.
 
-## Cursor Cloud specific instructions
+## Working Locally
 
-Standard commands live in `## Commands` above and in `README.md`; this section
-only captures non-obvious caveats for running/testing in the Cloud Agent VM
-(the update script already ran `npm install`, `npm install --prefix web`, and
-created `.dev.vars` from `.dev.vars.example`).
-
-- There is no separate lint script. `npm run typecheck` (`tsc --noEmit`) is the
-  static gate for the Worker; the SPA type-checks via `cd web && npm run build`
-  (`tsc -b && vite build`). Prefer `npm run test:quiet` over `npm test` for the
-  root suite (it strips the Workers-pool stderr noise but keeps the exit code).
-- `.dev.vars` holds only placeholders (`READER_API_TOKEN=dev-local-token`,
-  `OPENAI_API_KEY=sk-...`). The token makes local auth work; the OpenAI/Anthropic
-  keys are fake. Real summarization needs real provider keys plus Cloudflare
-  Queue + Vectorize, which only exist in staging/production — you cannot run the
-  full submit→summarize pipeline against local `wrangler dev`.
-- Run the Worker with `npm run dev` (runs `dev:setup` first to apply local D1
-  migrations and import `dev-local-token` as the founder legacy bearer, then
-  serves `http://localhost:8787`, also reachable at `127.0.0.1:8787`) and the
-  SPA with `cd web && npm run dev`
-  (`http://127.0.0.1:5173`, proxies `/api` + `/health` to the Worker). In the
-  SPA, paste the bearer token (`dev-local-token`) into the field in the top-right
-  and Save to authenticate.
-- Local `wrangler dev` deliberately has no Queue/Vectorize binding, so
-  `POST /api/readings` and `/reprocess` return 503 and similarity search
-  (`POST /api/readings/similar`) returns an empty result set. List search via
-  `q` on `GET /api/readings` still works — it filters `index/list.json` from
-  local R2 and does not need Vectorize.
-  The submit→summarize pipeline itself is covered end-to-end by the test suite
-  (integration tests inject queue/Vectorize stubs). The read-path routes (list,
-  detail, `/content`, `/lookup`) work against whatever is in the local R2 bucket.
-- To exercise the read path / SPA against real data locally, seed the local R2
-  bucket, then restart `wrangler dev`. Seed via **Miniflare** (persist path
-  `.wrangler/state/v3/r2`, bucket `reading-lite`), not `wrangler r2 object put
-  --local` (which writes to a different local store the dev server never reads).
-  The running dev server also caches R2 in-process, so restart it after seeding.
-  A minimal `ready` reading needs `readings/<key_prefix>/manifest.json` (a valid
-  `ManifestSchema` with `content_status: "captured"`), `index/by-id/<id>`,
-  `index/by-url/<url_hash>` (matching the manifest's `url_hash`), an
-  `index/list.json` row, `readings/<key_prefix>/extracted.md` (for `/content`),
-  and `readings/<key_prefix>/raw.{ext}` matching the manifest's `content_type`
-  (for `/content/raw`). `/lookup` requires the by-url pointer and does not
-  discover pointerless readings.
+- There is no lint script. `npm run typecheck` (`tsc --noEmit`) is the static
+  gate for the Worker; the SPA type-checks via `cd web && npm run build`
+  (`tsc -b && vite build`).
+- `.dev.vars` holds placeholders: `READER_API_TOKEN=dev-local-token` makes local
+  auth work, but the provider keys are fake. Real summarization needs real keys
+  plus Queue + Vectorize, which exist only in staging/production — you cannot run
+  the full submit→summarize pipeline against local `wrangler dev`. It is covered
+  end-to-end by the integration tests instead.
+- Worker on `http://127.0.0.1:8787` (`npm run dev` runs `dev:setup` first to
+  apply local D1 migrations and import `dev-local-token` as the founder legacy
+  bearer), SPA on `http://127.0.0.1:5173` (`cd web && npm run dev`) proxying
+  `/api` + `/health`. Paste the bearer token into the SPA's top-right field and
+  Save.
+- Read-path routes (list, detail, `/content`, `/lookup`) and `q` search on
+  `GET /api/readings` work against the local R2 bucket without Vectorize. To try
+  them against real data, see "Seeding local R2" in `docs/operations.md`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
+<!-- Hand-merged union of the `bd setup claude` and `bd setup codex` blocks.
+     CLAUDE.md symlinks to this file, so both recipes write here and each
+     produced its own near-identical section. The `hash:` above is pinned to the
+     template this merge came from, so `bd setup claude --check` reports it
+     current and leaves the merge alone; re-pin it if you adopt a new template.
+     A stub at the end of the file holds the codex recipe's markers so its
+     re-runs replace that stub in place instead of appending a duplicate. -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   bd dolt push
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
+This project tracks issues with **bd (beads)**. Run `bd prime` for live session
+context and the full command reference; `.agents/skills/beads/SKILL.md` (project)
+or `~/.agents/skills/beads/SKILL.md` (global) holds the workflow guidance.
 
 ### Quick Reference
 
@@ -269,9 +201,63 @@ bd prime                # Refresh Beads context
 
 ### Rules
 
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown
+  TODO lists.
+- Run `bd prime` when Beads context is missing or stale (after compaction, clear,
+  or a new session). Codex 0.129.0+ can load it automatically through native
+  hooks; use `/hooks` to inspect or toggle them.
+- Use `bd remember` for persistent knowledge — do NOT create MEMORY.md or other
+  ad hoc memory files.
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+**Architecture in one line:** issues live in a local Dolt DB; sync uses
+`refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export.
+See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for
+details and anti-patterns.
+
+### Agent Context Profiles
+
+This block is task-tracking guidance, not permission to override repository,
+user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits,
+  git pushes, or Dolt remote sync unless explicitly asked. At handoff, report
+  changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the
+  same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may
+  close beads, run quality gates, commit, and push as part of session close. A
+  current "do not commit" or "do not push" instruction still wins.
+
+### Session Completion
+
+Subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** — create beads for anything needing follow-up.
+2. **Run quality gates** (if code changed) — tests, linters, builds.
+3. **Update issue status** — close finished work, update in-progress items.
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   bd dolt push
+   git push
+   git status
+   ```
+5. **Hand off** — summarize changes, validation, issue status, and any blocked
+   sync/commit/push step.
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this block.
+- Do not commit or push without clear authority from the active profile or the
+  current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
+<!-- Intentionally empty. The codex recipe's content is merged into the unified
+     Beads block above; these markers stay so `bd setup codex` replaces this
+     stub in place rather than appending a second Beads section. -->
 <!-- END BEADS CODEX SETUP -->
