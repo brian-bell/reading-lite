@@ -223,11 +223,10 @@ bucket_name = "reading-lite"
 binding = "READINGS_INDEX"
 index_name = "reading-lite"
 
-# Replace database_id after `wrangler d1 create reading-lite-control`.
 [[env.production.d1_databases]]
 binding = "CONTROL_PLANE"
 database_name = "reading-lite-control"
-database_id = "00000000-0000-0000-0000-000000000003"
+database_id = "23c5298d-42b0-42fc-8a77-bef441ee712e"
 migrations_dir = "migrations"
 
 # Worker routes scoped to API paths only; Pages (attached to the same custom
