@@ -246,33 +246,34 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
   };
 }
 
-function r2ClientForBucket(bucket: R2Bucket) {
+function r2ClientForBucket(bucket: R2Bucket, keyRoot = "") {
+  const objectKey = (key: string) => `${keyRoot}${key}`;
   return {
     async put(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
-      await bucket.put(key, body, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
+      await bucket.put(objectKey(key), body, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
     },
     async putIfAbsent(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
-      const result = await bucket.put(key, body, {
+      const result = await bucket.put(objectKey(key), body, {
         ...(opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : {}),
         onlyIf: new Headers({ "If-None-Match": "*" }),
       });
       return result !== null;
     },
     async get(key: string) {
-      const obj = await bucket.get(key);
+      const obj = await bucket.get(objectKey(key));
       return obj ? obj.text() : null;
     },
     async head(key: string) {
-      return (await bucket.head(key)) !== null;
+      return (await bucket.head(objectKey(key))) !== null;
     },
     async delete(key: string) {
-      await bucket.delete(key);
+      await bucket.delete(objectKey(key));
     },
     async listKeys() {
       const keys: string[] = [];
       let cursor: string | undefined;
       do {
-        const listed = await bucket.list({ cursor });
+        const listed = await bucket.list({ prefix: keyRoot || undefined, cursor });
         keys.push(...listed.objects.map((obj) => obj.key));
         cursor = listed.truncated ? listed.cursor : undefined;
       } while (cursor);
@@ -1098,7 +1099,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     ];
 
     await writeResults(sidecar, results, {
-      r2: r2ClientForBucket(env.READINGS_BUCKET),
+      r2: r2ClientForBucket(env.READINGS_BUCKET, `u/${FOUNDER_TENANT_ID}/`),
       vectorize: { upsert: vi.fn(), query: vi.fn() },
       embedMany: vi.fn(async () => ({ embeddings: [], tokensByInput: [] })),
       now: () => "2026-04-26T19:05:00.000Z",
@@ -3948,7 +3949,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     // Strip the stored markdown out from under the reading. A no-source
     // reprocess now has nothing to synthesize from and must 409...
     const { keyPrefix } = (await reader.loadReadingById(id))!;
-    await env.READINGS_BUCKET.delete(`${keyPrefix}/extracted.md`);
+    await env.READINGS_BUCKET.delete(founderObjectKey(`${keyPrefix}/extracted.md`));
     const withoutSource = await app.request(
       `/api/readings/${id}/reprocess`,
       {
