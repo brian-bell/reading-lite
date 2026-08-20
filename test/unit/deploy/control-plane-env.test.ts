@@ -61,10 +61,8 @@ describe("validateWranglerD1Bindings", () => {
     expect(() => validateWranglerD1Bindings(file)).toThrow(/placeholder/i);
   });
 
-  it("rejects the checked-in wrangler.toml placeholders", () => {
-    expect(() => validateWranglerD1Bindings(path.join(process.cwd(), "wrangler.toml"))).toThrow(
-      /placeholder/i,
-    );
+  it("accepts the pinned staging and production D1 ids in checked-in wrangler.toml", () => {
+    expect(() => validateWranglerD1Bindings(path.join(process.cwd(), "wrangler.toml"))).not.toThrow();
   });
 
   it("accepts real staging and production D1 ids and ignores the local placeholder", () => {
