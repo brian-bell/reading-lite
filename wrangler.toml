@@ -14,7 +14,7 @@
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
-#   2. `npm run dev`.
+#   2. `npm run dev` (applies local D1 migrations and founder bootstrap, then starts wrangler).
 # Note: `wrangler dev` runs against a local emulated R2 bucket (initially empty)
 # and has no Vectorize binding, so search returns no results locally. POST
 # /api/readings and /api/readings/:id/reprocess also fail under `wrangler dev` (no queue
@@ -46,7 +46,8 @@ compatibility_flags = ["nodejs_compat"]
 
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
-#   READER_API_TOKEN     — bearer token required on every protected route
+#   READER_API_TOKEN     — imported once as the founder legacy D1 token
+#   AUTH_ROOT_SECRET     — 256-bit hex HKDF root for credential HMACs
 #   OPENAI_API_KEY       — always required: embeddings + default summarizer
 #   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
 #   RESEND_API_KEY       — Resend API key (per-reading email notifications)
@@ -79,6 +80,12 @@ RETRY_MAX_DELAY_MS = "8000"
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite"
+
+[[d1_databases]]
+binding = "CONTROL_PLANE"
+database_name = "reading-lite-control-dev"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "migrations"
 
 # ---- staging ----
 # Deploy with `npm run deploy -- --env staging --execute`.
@@ -130,6 +137,13 @@ bucket_name = "reading-lite-staging"
 [[env.staging.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite-staging"
+
+# Replace database_id after `wrangler d1 create reading-lite-control-staging`.
+[[env.staging.d1_databases]]
+binding = "CONTROL_PLANE"
+database_name = "reading-lite-control-staging"
+database_id = "a29af3ca-280c-443e-9edd-7acec745698c"
+migrations_dir = "migrations"
 
 # ---- production ----
 # Deploy with `npm run deploy -- --execute` (which passes --env production).
@@ -205,6 +219,13 @@ bucket_name = "reading-lite"
 [[env.production.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite"
+
+# Replace database_id after `wrangler d1 create reading-lite-control`.
+[[env.production.d1_databases]]
+binding = "CONTROL_PLANE"
+database_name = "reading-lite-control"
+database_id = "00000000-0000-0000-0000-000000000003"
+migrations_dir = "migrations"
 
 # Worker routes scoped to API paths only; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.

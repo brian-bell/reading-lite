@@ -1,5 +1,9 @@
-import { defineWorkersProject } from "@cloudflare/vitest-pool-workers/config";
+import path from "node:path";
+import { defineWorkersProject, readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
 import { defineProject } from "vitest/config";
+
+const AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
 
 export default [
   defineWorkersProject({
@@ -20,6 +24,7 @@ export default [
         "test/unit/attempt-activation/**/*.test.ts",
         "test/unit/reading-visibility/**/*.test.ts",
       ],
+      setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
         workers: {
           wrangler: { configPath: "./wrangler.test.toml" },
@@ -30,6 +35,9 @@ export default [
             // credentials into the test process or override the test token.
             bindings: {
               READER_API_TOKEN: "test-token",
+              AUTH_ROOT_SECRET,
+              FOUNDER_EMAIL: "founder@test.example",
+              TEST_MIGRATIONS: migrations,
               ANTHROPIC_API_KEY: "test-anthropic-key",
               OPENAI_API_KEY: "test-openai-key",
               RESEND_API_KEY: "test-resend-key",
@@ -54,6 +62,8 @@ export default [
         "test/unit/check-corpus/**/*.test.ts",
         "test/unit/process-reading-list/**/*.test.ts",
         "test/unit/extract-agent/**/*.test.ts",
+        "test/unit/control-plane/**/*.test.ts",
+        "test/unit/scripts/**/*.test.ts",
       ],
       environment: "node",
     },

@@ -11,6 +11,7 @@ export interface StagingResources {
   vectorizeIndex: string;
   queue: string;
   dlq: string;
+  d1: string;
 }
 
 export interface WranglerCommand {
@@ -39,6 +40,7 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   vectorizeIndex: "reading-lite-staging",
   queue: "reading-lite-staging",
   dlq: "reading-lite-staging-dlq",
+  d1: "reading-lite-control-staging",
 };
 
 const ALREADY_EXISTS = [
@@ -107,6 +109,11 @@ export function buildStagingSetupCommands(
       args: ["queues", "create", resources.dlq],
       idempotentOk: ALREADY_EXISTS,
     },
+    {
+      label: "Create staging D1 control plane",
+      args: ["d1", "create", resources.d1],
+      idempotentOk: ALREADY_EXISTS,
+    },
   ];
 }
 
@@ -146,6 +153,11 @@ export function buildStagingTeardownCommands(
       idempotentOk: MISSING_RESOURCE,
     },
     {
+      label: "Delete staging D1 control plane",
+      args: ["d1", "delete", resources.d1, "--skip-confirmation"],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
       label: "Delete staging R2 bucket",
       args: ["r2", "bucket", "delete", resources.bucket],
       idempotentOk: MISSING_RESOURCE,
@@ -158,6 +170,7 @@ export function buildSecretCommands(
 ): string[] {
   const names = [
     "READER_API_TOKEN",
+    "AUTH_ROOT_SECRET",
     "OPENAI_API_KEY",
     ...(provider === "anthropic" ? ["ANTHROPIC_API_KEY"] : []),
     "RESEND_API_KEY",

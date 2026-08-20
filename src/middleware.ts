@@ -1,15 +1,61 @@
 import type { MiddlewareHandler } from "hono";
+import { authenticateBearer } from "./control-plane/authenticate";
+import {
+  parseAuthRootKeyVersion,
+  parseAuthRootSecret,
+  type AuthRoot,
+} from "./control-plane/crypto";
+import { fromD1 } from "./control-plane/db";
+import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import type { Env } from "./index";
 
-export const requireBearer = (): MiddlewareHandler<{ Bindings: Env }> => {
-  return async (c, next) => {
-    const expected = c.env.READER_API_TOKEN;
-    if (!expected) return c.json({ error: "auth misconfigured" }, 500);
+export type AppBindings = {
+  Bindings: Env;
+  Variables: { principal: AuthenticatedPrincipal };
+};
 
-    const header = c.req.header("authorization") ?? "";
-    const m = /^Bearer\s+(.+)$/i.exec(header);
-    if (!m || !timingSafeEqual(m[1]!, expected)) {
-      return c.json({ error: "unauthorized" }, 401);
+export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBindings> => {
+  return async (c, next) => {
+    if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+      return jsonNoStore(c, { error: "auth misconfigured" }, 500);
+    }
+
+    let authRoot: AuthRoot;
+    let previousAuthRoot: AuthRoot | undefined;
+    try {
+      authRoot = rootFromEnv(c.env.AUTH_ROOT_SECRET, c.env.AUTH_ROOT_KEY_VERSION);
+      previousAuthRoot = c.env.AUTH_PREVIOUS_ROOT_SECRET
+        ? rootFromEnv(c.env.AUTH_PREVIOUS_ROOT_SECRET, c.env.AUTH_PREVIOUS_ROOT_KEY_VERSION)
+        : undefined;
+    } catch {
+      return jsonNoStore(c, { error: "auth misconfigured" }, 500);
+    }
+
+    const verdict = await authenticateBearer(fromD1(c.env.CONTROL_PLANE), {
+      authorization: c.req.header("authorization"),
+      authRoot,
+      ...(previousAuthRoot ? { previousAuthRoot } : {}),
+      nowMs: nowMs(),
+    });
+    if (verdict.kind === "unauthenticated") {
+      return jsonNoStore(c, { error: "unauthorized" }, 401);
+    }
+    if (verdict.kind === "forbidden") {
+      return jsonNoStore(c, { error: "forbidden" }, 403);
+    }
+
+    c.set("principal", verdict.principal);
+    c.header("Cache-Control", "no-store");
+    await next();
+    return undefined;
+  };
+};
+
+export const requireScope = (scope: ApiScope): MiddlewareHandler<AppBindings> => {
+  return async (c, next) => {
+    const principal = c.get("principal");
+    if (!principal || !principalHasScope(principal, scope)) {
+      return jsonNoStore(c, { error: "forbidden" }, 403);
     }
     await next();
     return undefined;
@@ -43,6 +89,23 @@ export const corsMiddleware = (): MiddlewareHandler<{ Bindings: Env }> => {
   };
 };
 
+function rootFromEnv(secret: string, versionRaw: string | undefined): AuthRoot {
+  return {
+    secret: parseAuthRootSecret(secret),
+    version: parseAuthRootKeyVersion(versionRaw),
+  };
+}
+
+function jsonNoStore(
+  c: { json: (body: unknown, status: 401 | 403 | 500) => Response },
+  body: unknown,
+  status: 401 | 403 | 500,
+): Response {
+  const res = c.json(body, status);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
 function corsHeaders(origin: string): Record<string, string> {
   return {
     "access-control-allow-origin": origin,
@@ -59,13 +122,4 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
 }

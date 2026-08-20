@@ -30,6 +30,11 @@ themselves — read those before changing a module.
   owner gate protecting it.
 - `src/attempt-ownership.ts` — the shared ownership verdict + attempt args
   shapes (the low layer under `process-reading.ts` and `reading-visibility.ts`).
+- `src/control-plane/` — D1 auth: branded IDs, HKDF/HMAC crypto,
+  `AuthenticatedPrincipal`, founder bootstrap (`scripts/founder-bootstrap.ts`),
+  and bearer authentication via `requirePrincipal` in `src/middleware.ts`.
+  Runtime auth does not fall back to `READER_API_TOKEN`; that secret is imported
+  once as a legacy-format token.
 - `src/modules/reading-claim.ts` — by-url ownership via
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` — the read-time stale-annotation rule.
@@ -58,12 +63,12 @@ npm run typecheck
 cd web && npm install     # then: npm run dev, npm test, npm run build
 ```
 
-Deploy, staging-lifecycle, and corpus scripts are all dry-run by default and
-take `--execute` to act, e.g. `npm run deploy -- --env staging --execute`,
-`npm run staging:teardown -- --execute`, `npm run corpus-recover -- --index
-./index.json --execute`. Make targets wrap the same scripts
-(`make deploy-worker ENV=stg EXECUTE=1`). See `docs/operations.md` or `--help`
-for the full matrix.
+Deploy, staging-lifecycle, corpus, and founder-bootstrap scripts are all
+dry-run by default and take `--execute` to act, e.g. `npm run deploy -- --env
+staging --execute`, `npm run founder-bootstrap -- --email founder@example.com
+--execute`, `npm run corpus-recover -- --index ./index.json --execute`. Make
+targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
+`docs/operations.md` or `--help` for the full matrix.
 
 ## Environments
 
@@ -74,12 +79,15 @@ for the full matrix.
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `staging:setup`/`staging:teardown` are idempotent and
   hard-coded to staging names.
-- Secrets via `wrangler secret put --env …`: `READER_API_TOKEN` and
+- Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
-  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional. Checked-in
-  defaults: OpenAI `gpt-5.6-terra`; production uses `medium` effort, local and
-  staging use `low`. Staging teardown's R2 emptying needs `CORPUS_R2_*` creds
-  in env or `.corpus.vars`.
+  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional.
+  `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
+  `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
+  Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
+  Checked-in defaults: OpenAI `gpt-5.6-terra`; production uses `medium`
+  effort, local and staging use `low`. Staging teardown's R2 emptying needs
+  `CORPUS_R2_*` creds in env or `.corpus.vars`.
 
 ## Conventions
 
@@ -158,9 +166,11 @@ Pointers only — the details live in the named files' comments.
   plus Queue + Vectorize, which exist only in staging/production — you cannot run
   the full submit→summarize pipeline against local `wrangler dev`. It is covered
   end-to-end by the integration tests instead.
-- Worker on `http://127.0.0.1:8787` (`npm run dev`), SPA on
-  `http://127.0.0.1:5173` (`cd web && npm run dev`) proxying `/api` + `/health`.
-  Paste the bearer token into the SPA's top-right field and Save.
+- Worker on `http://127.0.0.1:8787` (`npm run dev` runs `dev:setup` first to
+  apply local D1 migrations and import `dev-local-token` as the founder legacy
+  bearer), SPA on `http://127.0.0.1:5173` (`cd web && npm run dev`) proxying
+  `/api` + `/health`. Paste the bearer token into the SPA's top-right field and
+  Save.
 - Read-path routes (list, detail, `/content`, `/lookup`) and `q` search on
   `GET /api/readings` work against the local R2 bucket without Vectorize. To try
   them against real data, see "Seeding local R2" in `docs/operations.md`.

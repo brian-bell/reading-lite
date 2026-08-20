@@ -72,7 +72,7 @@ The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 ```sh
 npm install
 cp .dev.vars.example .dev.vars   # fill in API keys
-npm run dev                      # wrangler dev on http://127.0.0.1:8787
+npm run dev                      # D1 migrations + founder bootstrap, then wrangler dev on :8787
 npm test
 npm run typecheck
 ```
@@ -119,7 +119,10 @@ Secrets are set with `wrangler secret put` — see
 
 ## API
 
-All routes except `/health` require `Authorization: Bearer $READER_API_TOKEN`.
+All routes except `/health` require `Authorization: Bearer <token>`. After
+cutover the token is the founder legacy bearer imported by
+`founder-bootstrap` from `READER_API_TOKEN`; runtime auth looks it up in D1
+and does not fall back to the secret itself.
 
 | Method + path | Behavior |
 |---|---|
@@ -201,6 +204,7 @@ src/
   process-reading.ts            # processReading pipeline (runs in the queue consumer)
   reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
   attempt-ownership.ts          # shared ownership verdict + attempt arg shapes
+  control-plane/                # D1 auth: HMAC crypto, principal, founder bootstrap
   services.ts                   # Services interface (DI for fetch / now / id)
   schemas/                      # zod: manifest, tool input, API request/response
   modules/
@@ -219,6 +223,7 @@ src/
       similarity-store.ts       # Vectorize: upsert + query
 scripts/                        # operator CLIs — all dry-run by default
   deploy.ts, deploy-web.ts      # wrangler / Pages deploy wrappers
+  founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
   read-url.ts                   # POST a single URL
   corpus-audit.ts               # inventory non-ready readings (read-only)

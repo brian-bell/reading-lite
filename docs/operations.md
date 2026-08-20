@@ -20,14 +20,27 @@ accidental bare `wrangler deploy` clobbering production.
 
 ### Secrets
 
-Set per deployed environment with `wrangler secret put --env staging|production`:
+Runtime Worker secrets (`wrangler secret put --env staging|production`):
 
 | Secret | When |
 |---|---|
-| `READER_API_TOKEN` | always — bearer token for every protected route |
+| `AUTH_ROOT_SECRET` | always — 256-bit hex HKDF root for credential HMACs |
+| `AUTH_PREVIOUS_ROOT_SECRET` | optional — previous root during a bounded rotation window |
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `RESEND_API_KEY` | optional — per-reading email notifications |
+
+Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
+default to `1`. HKDF includes the version, so a secret-only rotation must keep
+the previous root on the same version the tokens were minted with (the default).
+Bump both version vars explicitly when advancing the key generation.
+
+`founder-bootstrap` cannot read Wrangler secrets. Put the **same**
+`AUTH_ROOT_SECRET` plus `READER_API_TOKEN` (and `FOUNDER_EMAIL` unless you pass
+`--email`) in `.stg.vars` / `.prd.vars` or the process environment. A local
+root that differs from the Worker secret produces HMACs the Worker cannot
+verify. After import, `READER_API_TOKEN` is not a runtime Worker fallback;
+keep it in the dotenv for operator CLIs that still POST that bearer.
 
 `POST /api/readings` requests notification by default (`email: true`). Without
 `RESEND_API_KEY` and the `EMAIL_*` / `WEB_BASE_URL` vars, submissions still
@@ -40,18 +53,43 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 
 ### Deploying
 
+Bring the control plane up before deploying a Worker that authenticates
+against D1. `make deploy-worker` does not create the database, apply
+migrations, or import the founder token, and `--execute` refuses placeholder
+`CONTROL_PLANE` `database_id` values in `wrangler.toml`.
+
+Staging:
+
 ```sh
-cp .stg.vars.example .stg.vars   # fill in staging values
+cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
+wrangler d1 create reading-lite-control-staging
+# replace [env.staging] CONTROL_PLANE database_id in wrangler.toml
+wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
+wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
+npm run founder-bootstrap -- --email founder@example.com --env staging --execute
 make deploy-worker ENV=stg EXECUTE=1
 make deploy-web    ENV=stg EXECUTE=1
+```
 
+Production is the same sequence with `reading-lite-control`, `--env production`,
+`.prd.vars`, and:
+
+```sh
+npm run founder-bootstrap -- --email founder@example.com --env production \
+  --execute --confirm-production
 make deploy-worker ENV=prd EXECUTE=1
 make deploy-web    ENV=prd EXECUTE=1
 ```
 
+The imported founder token expires after 90 days; re-running the same
+bootstrap command refreshes `expires_at_ms` and clears a revoked row.
+
 `make` refuses a deployed upload with `ENV=dev`. The underlying scripts are
 `npm run deploy -- --env staging --execute` and `npm run deploy:web -- --execute`
 (which targets production). `SKIP_BUILD=1` reuses an existing SPA build.
+
+Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
+bootstrap of `dev-local-token`).
 
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*` and `/health` so Pages handles every other

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "./index";
-import { corsMiddleware, requireBearer } from "./middleware";
+import { corsMiddleware, requirePrincipal, requireScope, type AppBindings } from "./middleware";
 import {
   newAttemptId,
   newAttemptSummary,
@@ -36,7 +36,7 @@ export interface AppOptions {
 
 export function createApp(opts: AppOptions = {}) {
   const services = opts.services ?? defaultServices();
-  const app = new Hono<{ Bindings: Env }>();
+  const app = new Hono<AppBindings>();
 
   app.use("*", corsMiddleware());
 
@@ -53,11 +53,13 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/health", (c) => c.text("ok", 200));
 
-  // Everything below requires bearer auth.
-  app.use("/api/readings", requireBearer());
-  app.use("/api/readings/*", requireBearer());
+  const authNowMs = () => Date.parse(services.now());
 
-  app.post("/api/readings", async (c) => {
+  // Everything below requires bearer auth.
+  app.use("/api/readings", requirePrincipal(authNowMs));
+  app.use("/api/readings/*", requirePrincipal(authNowMs));
+
+  app.post("/api/readings", requireScope("readings:write"), async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -100,7 +102,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.post("/api/readings/import-markdown", async (c) => {
+  app.post("/api/readings/import-markdown", requireScope("readings:import"), async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsImportMarkdownBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -150,7 +152,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.get("/api/readings", async (c) => {
+  app.get("/api/readings", requireScope("readings:read"), async (c) => {
     const parsed = ListReadingsQuerySchema.safeParse(c.req.query());
     if (!parsed.success) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
@@ -167,7 +169,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.get("/api/readings/lookup", async (c) => {
+  app.get("/api/readings/lookup", requireScope("readings:read"), async (c) => {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "missing url" }, 400);
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
@@ -193,7 +195,7 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.post("/api/readings/similar", async (c) => {
+  app.post("/api/readings/similar", requireScope("readings:write"), async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostReadingsSimilarBodySchema.safeParse(json);
     if (!parsed.success) {
@@ -210,7 +212,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json({ items });
   });
 
-  app.get("/api/readings/:id/diagnostics", async (c) => {
+  app.get("/api/readings/:id/diagnostics", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const ptr = await reader.readByIdPointer(id);
@@ -243,7 +245,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.post("/api/readings/:id/reprocess", async (c) => {
+  app.post("/api/readings/:id/reprocess", requireScope("readings:write"), async (c) => {
     let json: unknown;
     try {
       const text = await c.req.text();
@@ -271,7 +273,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json(result.body, result.status);
   });
 
-  app.get("/api/readings/:id", async (c) => {
+  app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
@@ -279,7 +281,7 @@ export function createApp(opts: AppOptions = {}) {
     return c.json(annotateStale(found.manifest, c.env, services));
   });
 
-  app.get("/api/readings/:id/content", async (c) => {
+  app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
@@ -295,7 +297,7 @@ export function createApp(opts: AppOptions = {}) {
     });
   });
 
-  app.get("/api/readings/:id/content/raw", async (c) => {
+  app.get("/api/readings/:id/content/raw", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
     const reader = new ReadingStore(c.env.READINGS_BUCKET);
     const found = await reader.loadReadingById(id);
