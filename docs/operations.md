@@ -25,9 +25,15 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | Secret | When |
 |---|---|
 | `AUTH_ROOT_SECRET` | always — 256-bit hex HKDF root for credential HMACs |
+| `AUTH_PREVIOUS_ROOT_SECRET` | optional — previous root during a bounded rotation window |
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `RESEND_API_KEY` | optional — per-reading email notifications |
+
+Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
+default to `1`. HKDF includes the version, so a secret-only rotation must keep
+the previous root on the same version the tokens were minted with (the default).
+Bump both version vars explicitly when advancing the key generation.
 
 `founder-bootstrap` cannot read Wrangler secrets. Put the **same**
 `AUTH_ROOT_SECRET` plus `READER_API_TOKEN` (and `FOUNDER_EMAIL` unless you pass

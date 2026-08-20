@@ -19,6 +19,10 @@
 # Keep this token different from production.
 
 AUTH_ROOT_SECRET=
+# Optional during auth-root rotation (defaults to key version 1 when unset):
+# AUTH_ROOT_KEY_VERSION=1
+# AUTH_PREVIOUS_ROOT_SECRET=
+# AUTH_PREVIOUS_ROOT_KEY_VERSION=1
 FOUNDER_EMAIL=
 READER_API_TOKEN=
 OPENAI_API_KEY=

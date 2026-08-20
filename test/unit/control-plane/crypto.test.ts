@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveHmacKey,
   hmacHex,
+  parseAuthRootKeyVersion,
   parseAuthRootSecret,
   timingSafeEqualHex,
 } from "../../../src/control-plane/crypto";
@@ -14,6 +15,15 @@ describe("auth crypto", () => {
     expect(secret.byteLength).toBe(32);
     expect(() => parseAuthRootSecret("abcd")).toThrow(/256-bit/);
     expect(() => parseAuthRootSecret("")).toThrow(/256-bit/);
+  });
+
+  it("defaults auth-root key versions to 1 when unset", () => {
+    expect(parseAuthRootKeyVersion(undefined)).toBe(1);
+    expect(parseAuthRootKeyVersion("")).toBe(1);
+    expect(parseAuthRootKeyVersion("2")).toBe(2);
+    expect(parseAuthRootKeyVersion("0")).toBe(0);
+    expect(() => parseAuthRootKeyVersion("1.5")).toThrow(/non-negative integer/);
+    expect(() => parseAuthRootKeyVersion("-1")).toThrow(/non-negative integer/);
   });
 
   it("derives domain-separated HMAC keys from the same root", async () => {

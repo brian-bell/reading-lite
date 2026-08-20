@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { bootstrapFounder, signupModeForEnv, type SignupMode } from "../src/control-plane/bootstrap";
-import { parseAuthRootSecret } from "../src/control-plane/crypto";
+import { parseAuthRootKeyVersion, parseAuthRootSecret } from "../src/control-plane/crypto";
 import { redactEmail } from "../src/control-plane/email";
 import type { ControlPlaneDb, SqlStatement } from "../src/control-plane/db";
 import { loadDotVars } from "./lib/dotvars";
@@ -113,13 +113,13 @@ export async function runFounderBootstrap(
       nowMs: deps.nowMs,
       authRoot: {
         secret: parseAuthRootSecret(rootSecret),
-        version: parseKeyVersion(deps.envVars.AUTH_ROOT_KEY_VERSION, 1),
+        version: parseAuthRootKeyVersion(deps.envVars.AUTH_ROOT_KEY_VERSION),
       },
       ...(previousRootSecret
         ? {
             previousAuthRoot: {
               secret: parseAuthRootSecret(previousRootSecret),
-              version: parseKeyVersion(deps.envVars.AUTH_PREVIOUS_ROOT_KEY_VERSION, 0),
+              version: parseAuthRootKeyVersion(deps.envVars.AUTH_PREVIOUS_ROOT_KEY_VERSION),
             },
           }
         : {}),
@@ -206,15 +206,6 @@ function parseWranglerD1Rows(stdout: string): Record<string, unknown>[] {
   if (!block || typeof block !== "object" || !("results" in block)) return [];
   const results = (block as { results?: unknown }).results;
   return Array.isArray(results) ? (results as Record<string, unknown>[]) : [];
-}
-
-function parseKeyVersion(raw: string | undefined, fallback: number): number {
-  if (raw === undefined || raw === "") return fallback;
-  const version = Number(raw);
-  if (!Number.isInteger(version) || version < 0) {
-    throw new Error("AUTH_ROOT_KEY_VERSION must be a non-negative integer");
-  }
-  return version;
 }
 
 function runWrangler(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {

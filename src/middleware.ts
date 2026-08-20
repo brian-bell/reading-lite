@@ -1,6 +1,10 @@
 import type { MiddlewareHandler } from "hono";
 import { authenticateBearer } from "./control-plane/authenticate";
-import { parseAuthRootSecret, type AuthRoot } from "./control-plane/crypto";
+import {
+  parseAuthRootKeyVersion,
+  parseAuthRootSecret,
+  type AuthRoot,
+} from "./control-plane/crypto";
 import { fromD1 } from "./control-plane/db";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import type { Env } from "./index";
@@ -19,9 +23,9 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
     let authRoot: AuthRoot;
     let previousAuthRoot: AuthRoot | undefined;
     try {
-      authRoot = rootFromEnv(c.env.AUTH_ROOT_SECRET, c.env.AUTH_ROOT_KEY_VERSION, 1);
+      authRoot = rootFromEnv(c.env.AUTH_ROOT_SECRET, c.env.AUTH_ROOT_KEY_VERSION);
       previousAuthRoot = c.env.AUTH_PREVIOUS_ROOT_SECRET
-        ? rootFromEnv(c.env.AUTH_PREVIOUS_ROOT_SECRET, c.env.AUTH_PREVIOUS_ROOT_KEY_VERSION, 0)
+        ? rootFromEnv(c.env.AUTH_PREVIOUS_ROOT_SECRET, c.env.AUTH_PREVIOUS_ROOT_KEY_VERSION)
         : undefined;
     } catch {
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
@@ -85,12 +89,11 @@ export const corsMiddleware = (): MiddlewareHandler<{ Bindings: Env }> => {
   };
 };
 
-function rootFromEnv(secret: string, versionRaw: string | undefined, fallback: number): AuthRoot {
-  const version = versionRaw === undefined || versionRaw === "" ? fallback : Number(versionRaw);
-  if (!Number.isInteger(version) || version < 0) {
-    throw new Error("invalid auth root version");
-  }
-  return { secret: parseAuthRootSecret(secret), version };
+function rootFromEnv(secret: string, versionRaw: string | undefined): AuthRoot {
+  return {
+    secret: parseAuthRootSecret(secret),
+    version: parseAuthRootKeyVersion(versionRaw),
+  };
 }
 
 function jsonNoStore(
