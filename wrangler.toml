@@ -142,7 +142,7 @@ index_name = "reading-lite-staging"
 [[env.staging.d1_databases]]
 binding = "CONTROL_PLANE"
 database_name = "reading-lite-control-staging"
-database_id = "00000000-0000-0000-0000-000000000002"
+database_id = "a29af3ca-280c-443e-9edd-7acec745698c"
 migrations_dir = "migrations"
 
 # ---- production ----
