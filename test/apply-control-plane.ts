@@ -13,4 +13,6 @@ await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
     secret: parseAuthRootSecret(env.AUTH_ROOT_SECRET),
     version: 1,
   },
+  newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+  newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
 });
