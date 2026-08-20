@@ -141,6 +141,7 @@ export interface ListReading {
   title?: string;
   tldr?: string;
   tags?: string[];
+  keywords?: string[];
   novelty_verdict?: NoveltyVerdict;
   created_at: string;
   updated_at?: string;

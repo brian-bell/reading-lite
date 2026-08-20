@@ -191,7 +191,7 @@ function ReadingList({ token }: { token: string }) {
           type="search"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="title, url, tldr"
+          placeholder="title, url, tldr, keywords"
         />
         <button type="submit">Search</button>
       </form>

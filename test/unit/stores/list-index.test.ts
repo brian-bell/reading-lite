@@ -287,6 +287,19 @@ describe("ListIndexStore — list (filter / sort / paginate)", () => {
   });
 });
 
+describe("manifestToIndexItem", () => {
+  it("copies keywords when present and omits the field when absent", () => {
+    const withKeywords = manifestToIndexItem(
+      emptyManifest({ id: "rd_kw", keywords: ["soft skills", "sales"] }),
+      "readings/2026/04/26T200000Z-rd_kw",
+    );
+    expect(withKeywords.keywords).toEqual(["soft skills", "sales"]);
+
+    const without = manifestToIndexItem(emptyManifest({ id: "rd_plain" }), "readings/2026/04/26T200000Z-rd_plain");
+    expect(without.keywords).toBeUndefined();
+  });
+});
+
 describe("ListIndexStore — rebuild", () => {
   it("synthesizes items from a bucket scan and reports completeness", async () => {
     const index = new ListIndexStore(env.READINGS_BUCKET);
