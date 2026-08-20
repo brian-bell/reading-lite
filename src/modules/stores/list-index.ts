@@ -80,6 +80,13 @@ export interface ListIndexCasDeps {
   random?: () => number;
 }
 
+export interface ListIndexStoreOptions extends ListIndexCasDeps {
+  // Tenant (or empty) root prepended to every R2 key. Relative constants
+  // (`index/list.json`, `readings/`) stay unchanged; hosted stores pass
+  // `u/{tenantId}/` when TENANT_DATA_PLANE=1.
+  keyRoot?: string;
+}
+
 interface ResolvedCasDeps {
   maxAttempts: number;
   baseDelayMs: number;
@@ -94,28 +101,45 @@ interface ResolvedCasDeps {
 // composes one and delegates its public index methods here.
 export class ListIndexStore {
   private readonly cas: ResolvedCasDeps;
+  private readonly keyRoot: string;
 
   constructor(
     private readonly bucket: R2Bucket,
-    casDeps: ListIndexCasDeps = {},
+    opts: ListIndexStoreOptions = {},
   ) {
+    this.keyRoot = opts.keyRoot ?? "";
     this.cas = {
-      maxAttempts: casDeps.maxAttempts ?? 8,
-      baseDelayMs: casDeps.baseDelayMs ?? 20,
-      sleep: casDeps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-      random: casDeps.random ?? Math.random,
+      maxAttempts: opts.maxAttempts ?? 8,
+      baseDelayMs: opts.baseDelayMs ?? 20,
+      sleep: opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      random: opts.random ?? Math.random,
     };
   }
 
+  private objectKey(relative: string): string {
+    return `${this.keyRoot}${relative}`;
+  }
+
+  private relativeKey(objectKey: string): string {
+    if (this.keyRoot !== "" && objectKey.startsWith(this.keyRoot)) {
+      return objectKey.slice(this.keyRoot.length);
+    }
+    return objectKey;
+  }
+
+  private listIndexKey(): string {
+    return this.objectKey(LIST_INDEX_KEY);
+  }
+
   async readListIndex(): Promise<ListIndex | null> {
-    const obj = await this.bucket.get(LIST_INDEX_KEY);
+    const obj = await this.bucket.get(this.listIndexKey());
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ListIndexSchema.parse(json);
   }
 
   async writeListIndex(index: ListIndex): Promise<void> {
-    await this.bucket.put(LIST_INDEX_KEY, JSON.stringify(index), {
+    await this.bucket.put(this.listIndexKey(), JSON.stringify(index), {
       httpMetadata: { contentType: "application/json" },
     });
   }
@@ -154,7 +178,7 @@ export class ListIndexStore {
     mutate: (items: ListIndexItem[]) => ListIndexItem[],
   ): Promise<void> {
     for (let attempt = 0; attempt < this.cas.maxAttempts; attempt++) {
-      const obj = await this.bucket.get(LIST_INDEX_KEY);
+      const obj = await this.bucket.get(this.listIndexKey());
       const current = obj
         ? ListIndexSchema.parse(JSON.parse(await obj.text()))
         : { version: 1 as const, items: [] };
@@ -163,7 +187,7 @@ export class ListIndexStore {
       const onlyIf: R2PutOptions["onlyIf"] = obj
         ? { etagMatches: obj.etag }
         : new Headers({ "If-None-Match": "*" });
-      const res = await this.bucket.put(LIST_INDEX_KEY, JSON.stringify(next), {
+      const res = await this.bucket.put(this.listIndexKey(), JSON.stringify(next), {
         httpMetadata: { contentType: "application/json" },
         onlyIf,
       });
@@ -285,7 +309,7 @@ export class ListIndexStore {
   // manifests directly (rather than depending on ReadingStore) to keep the
   // dependency graph acyclic.
   private async readManifest(keyPrefix: string): Promise<Manifest | null> {
-    const obj = await this.bucket.get(`${keyPrefix}/${MANIFEST_FILE}`);
+    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ManifestSchema.parse(json);
@@ -300,7 +324,7 @@ export class ListIndexStore {
     let complete = true;
     do {
       const list = await this.bucket.list({
-        prefix: READINGS_PREFIX,
+        prefix: this.objectKey(READINGS_PREFIX),
         limit: 1000,
         ...(cursor ? { cursor } : {}),
       });
@@ -320,7 +344,7 @@ export class ListIndexStore {
       const json: unknown = JSON.parse(await obj.text());
       const parsed = ManifestSchema.safeParse(json);
       if (!parsed.success) continue;
-      const keyPrefix = key.slice(0, -("/" + MANIFEST_FILE).length);
+      const keyPrefix = this.relativeKey(key.slice(0, -("/" + MANIFEST_FILE).length));
       items.push(manifestToIndexItem(parsed.data, keyPrefix));
     }
     return { items, complete };

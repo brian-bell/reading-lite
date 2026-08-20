@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
+import { founderTenant } from "../../helpers/tenant-fixtures";
 
 function args() {
   return {
@@ -58,7 +59,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     } as unknown as R2Bucket;
 
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(args(), envWith(bucket), services())).resolves.toBeUndefined();
+    await expect(processReading(args(), envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
     expect(consoleErr).toHaveBeenCalled();
     consoleErr.mockRestore();
   });
@@ -77,7 +78,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     } as unknown as R2Bucket;
 
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(args(), envWith(bucket), services())).resolves.toBeUndefined();
+    await expect(processReading(args(), envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
     expect(consoleErr).toHaveBeenCalled();
     consoleErr.mockRestore();
   });

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-reading";
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
-import { manifestToIndexItem, ReadingStore } from "../../src/modules/stores/reading-store";
+import { manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import { founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
 
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
@@ -67,12 +68,12 @@ describe("markDeadLettered", () => {
   beforeEach(clearBucket);
 
   it("flips a stranded pending reading to a retryable failed manifest + updates the index", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
-    await markDeadLettered(args(), env as unknown as Env, services());
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("failed");
@@ -87,7 +88,7 @@ describe("markDeadLettered", () => {
   });
 
   it("rolls back to the preserved ready snapshot when a reprocess of a ready reading is dead-lettered", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const ready: Manifest = {
       ...pendingManifest(),
       status: "ready",
@@ -106,7 +107,7 @@ describe("markDeadLettered", () => {
     const queued = JSON.parse(
       JSON.stringify(args({ preserveReadyManifest: ready })),
     ) as ProcessReadingArgs;
-    await markDeadLettered(queued, env as unknown as Env, services());
+    await markDeadLettered(queued, env as unknown as Env, services(), founderTenant());
 
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("ready");
@@ -119,7 +120,7 @@ describe("markDeadLettered", () => {
   });
 
   it("skips a stale dead-lettered message whose attempt was superseded by a newer one", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     // The reading was reprocessed again (a newer attempt) and is now ready (v2)
     // while the original message sat in the DLQ pipeline.
     const v2: Manifest = {
@@ -142,6 +143,7 @@ describe("markDeadLettered", () => {
       args({ attemptId: "at_ORIGINAL", preserveReadyManifest: v1 }),
       env as unknown as Env,
       services(),
+      founderTenant(),
     );
 
     // The stale message must not roll back to v1 over the newer v2.
@@ -172,7 +174,7 @@ describe("queue() dead-letter routing", () => {
   beforeEach(clearBucket);
 
   it("routes a reading-lite-dlq batch through the mark path (not processReading) and acks", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));

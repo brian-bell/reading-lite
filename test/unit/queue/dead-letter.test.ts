@@ -38,7 +38,7 @@ function fakeMessage(
   } as unknown as Message<unknown>;
 }
 
-function deadLetterDeps(mark: (body: ProcessReadingArgs) => Promise<void>) {
+function deadLetterDeps(mark: (body: ProcessReadingArgs, tenant: { tenantId: string }) => Promise<void>) {
   return {
     db: fromD1(env.CONTROL_PLANE),
     nowMs: Date.now(),
@@ -52,7 +52,7 @@ describe("handleDeadLetter", () => {
     const mark = vi.fn(async () => {});
     await handleDeadLetter(msg, deadLetterDeps(mark));
     expect(mark).toHaveBeenCalledOnce();
-    expect(mark).toHaveBeenCalledWith(JOB);
+    expect(mark).toHaveBeenCalledWith(JOB, { tenantId: TENANT });
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
   });

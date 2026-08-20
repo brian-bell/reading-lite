@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
+import { founderTenant } from "../../helpers/tenant-fixtures";
 
 function args() {
   return {
@@ -66,6 +67,7 @@ describe("processReading — config preflight", () => {
         OPENAI_SUMMARIZATION_REASONING_EFFORT: "extreme",
       }),
       services,
+      founderTenant(),
     );
 
     // The seam rejects before any upstream spend: no source fetch, no embed.

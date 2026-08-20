@@ -41,6 +41,7 @@ export default [
               ANTHROPIC_API_KEY: "test-anthropic-key",
               OPENAI_API_KEY: "test-openai-key",
               RESEND_API_KEY: "test-resend-key",
+              TENANT_DATA_PLANE: "1",
             },
           },
         },

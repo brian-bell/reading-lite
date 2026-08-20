@@ -17,8 +17,15 @@ import { SimilarityStore } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
   manifestToIndexItem,
-  ReadingStore,
 } from "../../src/modules/stores/reading-store";
+import {
+  FOUNDER_TENANT_ID,
+  OTHER_TENANT_ID,
+  OTHER_TOKEN_SECRET,
+  founderTenant,
+  insertSecondTenant,
+  testReadingStore,
+} from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
 import { writeResults } from "../../scripts/corpus-lib/batch/write-phase";
 import type { BatchResult } from "../../scripts/corpus-lib/batch/clients";
@@ -276,6 +283,10 @@ function r2ClientForBucket(bucket: R2Bucket) {
 
 const TOKEN = "test-token";
 
+function founderObjectKey(relative: string): string {
+  return `u/${FOUNDER_TENANT_ID}/${relative}`;
+}
+
 beforeEach(() => {
   installVectorizeStub();
   installQueueStub();
@@ -359,6 +370,87 @@ describe("versioned tenant queue envelope cutover", () => {
       env,
     );
     expect(await get.json()).toMatchObject({ id, status: "ready", title: "Test Article" });
+  });
+});
+
+describe("two-tenant save-to-ready lifecycle", () => {
+  it("lets two users save the same URL and reach ready without observing each other", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const url = "https://example.com/shared-two-tenant";
+    const urlHash = await sha256Hex(url);
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+
+    async function submit(token: string) {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request("http://t/api/readings", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ url, email: false }),
+        }),
+        env,
+        ctx,
+      );
+      return { res, ctx };
+    }
+
+    const founderSubmit = await submit(TOKEN);
+    const otherSubmit = await submit(OTHER_TOKEN_SECRET);
+    expect(founderSubmit.res.status).toBe(202);
+    expect(otherSubmit.res.status).toBe(202);
+    const founderBody = (await founderSubmit.res.json()) as { id: string };
+    const otherBody = (await otherSubmit.res.json()) as { id: string };
+    expect(founderBody.id).not.toBe(otherBody.id);
+    expect(founderBody.id).toMatch(/^rd_/);
+    expect(otherBody.id).toMatch(/^rd_/);
+
+    await drainQueue(services);
+    await waitOnExecutionContext(founderSubmit.ctx);
+    await waitOnExecutionContext(otherSubmit.ctx);
+
+    async function getReading(token: string, id: string) {
+      return app.request(`/api/readings/${id}`, { headers: { authorization: `Bearer ${token}` } }, env);
+    }
+    async function listReadings(token: string) {
+      return app.request("/api/readings", { headers: { authorization: `Bearer ${token}` } }, env);
+    }
+
+    const founderDetail = await getReading(TOKEN, founderBody.id);
+    const otherDetail = await getReading(OTHER_TOKEN_SECRET, otherBody.id);
+    expect(founderDetail.status).toBe(200);
+    expect(otherDetail.status).toBe(200);
+    expect(await founderDetail.json()).toMatchObject({ id: founderBody.id, status: "ready", url });
+    expect(await otherDetail.json()).toMatchObject({ id: otherBody.id, status: "ready", url });
+
+    const founderList = (await (await listReadings(TOKEN)).json()) as { readings: { id: string }[] };
+    const otherList = (await (await listReadings(OTHER_TOKEN_SECRET)).json()) as { readings: { id: string }[] };
+    expect(founderList.readings.map((r) => r.id)).toEqual([founderBody.id]);
+    expect(otherList.readings.map((r) => r.id)).toEqual([otherBody.id]);
+
+    const crossFounder = await getReading(TOKEN, otherBody.id);
+    const crossOther = await getReading(OTHER_TOKEN_SECRET, founderBody.id);
+    const unknown = await getReading(TOKEN, "rd_UNKNOWN");
+    expect(crossFounder.status).toBe(404);
+    expect(crossOther.status).toBe(404);
+    expect(unknown.status).toBe(404);
+    expect(await crossFounder.json()).toEqual({ error: "not found" });
+    expect(await crossOther.json()).toEqual({ error: "not found" });
+    expect(await unknown.json()).toEqual({ error: "not found" });
+
+    const resubmit = await submit(TOKEN);
+    expect(resubmit.res.status).toBe(200);
+    expect(await resubmit.res.json()).toMatchObject({ id: founderBody.id, status: "ready" });
+    await waitOnExecutionContext(resubmit.ctx);
+
+    expect(await env.READINGS_BUCKET.head(`index/by-url/${urlHash}`)).toBeNull();
+    expect(await env.READINGS_BUCKET.head(`u/${FOUNDER_TENANT_ID}/index/by-url/${urlHash}`)).not.toBeNull();
+    expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/by-url/${urlHash}`)).not.toBeNull();
+    expect(await env.READINGS_BUCKET.head(`u/${FOUNDER_TENANT_ID}/index/list.json`)).not.toBeNull();
+    expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/list.json`)).not.toBeNull();
   });
 });
 
@@ -684,7 +776,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("returns an old batch-owned pending reading without enqueueing realtime work", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/offline-batch-pending";
     const urlHash = await sha256Hex(url);
     const pending: Manifest = {
@@ -887,7 +979,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("claims and reprocesses a legacy failed reading that has no by-url pointer", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/legacy-failed-no-pointer";
     const urlHash = await sha256Hex(url);
     const createdAt = "2026-04-26T19:00:00.000Z";
@@ -938,7 +1030,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("reprocesses in place after a failed fresh batch releases its by-url claim", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/failed-fresh-batch-release";
     const urlHash = await sha256Hex(url);
     const id = "rd_BATCH_FAILED_RELEASE";
@@ -1054,7 +1146,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("claims and reprocesses a legacy failed reading when index/list.json is missing", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/legacy-failed-no-index";
     const urlHash = await sha256Hex(url);
     const createdAt = "2026-04-26T19:00:00.000Z";
@@ -1096,7 +1188,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("claims the newest legacy failed reading when index/list.json has an older same-url row", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/legacy-stale-index";
     const urlHash = await sha256Hex(url);
     const older: Manifest = {
@@ -1147,7 +1239,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("repairs a damaged by-url owner from a legacy failed reading missing from index/list.json", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/legacy-missing-from-index";
     const urlHash = await sha256Hex(url);
     const indexedUrl = "https://example.com/other-indexed-url";
@@ -1206,7 +1298,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("repairs a stale by-url pointer whose manifest is missing", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/damaged-pointer";
     const urlHash = await sha256Hex(url);
     await reader.writeByUrlPointer(urlHash, {
@@ -1243,7 +1335,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("GET /api/readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-readonly";
     const urlHash = await sha256Hex(url);
     // A damaged orphan pointer (manifest missing, past the grace window). A write
@@ -1275,7 +1367,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     // not "not found" — so a poller knows to keep polling rather than re-submit.
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-initializing";
     const urlHash = await sha256Hex(url);
     // Fresh pointer: key_prefix timestamp == services.now() baseTime (20:00:00Z).
@@ -1295,7 +1387,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/forever-contended";
     const urlHash = await sha256Hex(url);
     // A stale damaged orphan with no recoverable legacy: resolveOwner returns
@@ -1308,7 +1400,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     // Make every conditional write to the by-url slot lose, so the claim never
     // converges and the bounded retry must give up rather than spin forever.
     const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    const byUrlKey = `index/by-url/${urlHash}`;
+    const byUrlKey = founderObjectKey(`index/by-url/${urlHash}`);
     const spy = vi
       .spyOn(env.READINGS_BUCKET, "put")
       .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
@@ -1338,7 +1430,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("returns 503 (not 500) when a recoverable repair stays contended past the bound", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/repair-forever-contended";
     const urlHash = await sha256Hex(url);
     // A damaged orphan pointer over a *recoverable* legacy: resolveOwner stays in
@@ -1368,7 +1460,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     // Every CAS-replace of the by-url pointer loses, so resolveOwner never
     // converges and must throw its bounded-contention error.
     const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    const byUrlKey = `index/by-url/${urlHash}`;
+    const byUrlKey = founderObjectKey(`index/by-url/${urlHash}`);
     const spy = vi
       .spyOn(env.READINGS_BUCKET, "put")
       .mockImplementation((async (key: string, value: unknown, options?: R2PutOptions) => {
@@ -1398,7 +1490,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("repairs a stale by-url pointer to an existing manifest for the URL", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/damaged-pointer-existing-manifest";
     const urlHash = await sha256Hex(url);
     await reader.writeByUrlPointer(urlHash, {
@@ -1446,7 +1538,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("repairs a missing by-id pointer when a duplicate submit finds the by-url owner", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/missing-by-id-pointer";
     const urlHash = await sha256Hex(url);
     const id = "rd_MISSING_BY_ID";
@@ -1494,7 +1586,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("repairs a by-url pointer that points to a manifest for a different URL", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/mismatched-by-url-owner";
     const urlHash = await sha256Hex(url);
     const otherUrl = "https://example.com/other-owned-reading";
@@ -1550,7 +1642,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("does not treat a future-dated missing-manifest owner as fresh", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/future-dated-pointer";
     const urlHash = await sha256Hex(url);
     await reader.writeByUrlPointer(urlHash, {
@@ -1579,7 +1671,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("does not let a stale successful job overwrite a newer by-url owner", async () => {
     const services = makeServices(makeStubFetch());
     const vector = installVectorizeStub();
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-job-success";
     const urlHash = await sha256Hex(url);
     const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
@@ -1615,6 +1707,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
 
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
@@ -1638,7 +1731,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     // attempt. The vector gate must refuse — a last_attempt signals another
     // attempt touched the reading, so this attempt may not own the vector.
     const vector = installVectorizeStub();
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const similarity = new SimilarityStore(env.READINGS_INDEX);
     const id = "rd_DIVERGENT";
     const url = "https://example.com/divergent-cleanup";
@@ -1701,7 +1794,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
     const services = makeServices(makeStubFetch());
     const vector = installVectorizeStub();
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-same-reading-success";
     const urlHash = await sha256Hex(url);
     const id = "rd_SAME_READING";
@@ -1749,6 +1842,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
 
     await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
@@ -1767,7 +1861,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("does not let a stale successful attempt overwrite a newer ready reading", async () => {
     const services = makeServices(makeStubFetch());
     const vector = installVectorizeStub();
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-after-ready";
     const urlHash = await sha256Hex(url);
     const id = "rd_READY_WINNER";
@@ -1829,6 +1923,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
 
     await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
@@ -1862,7 +1957,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
     }));
     const vector = installVectorizeStub();
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-cas-cleanup";
     const urlHash = await sha256Hex(url);
     const id = "rd_CAS_WINNER";
@@ -1926,7 +2021,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
 
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    const manifestKey = `${keyPrefix}/manifest.json`;
+    const manifestKey = founderObjectKey(`${keyPrefix}/manifest.json`);
     let injectedWinner = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
       (async (key: string, value: unknown, options?: R2PutOptions) => {
@@ -1939,7 +2034,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
           await originalPut(manifestKey, JSON.stringify(newerReady), {
             httpMetadata: { contentType: "application/json" },
           });
-          await originalPut("index/list.json", JSON.stringify({
+          await originalPut(founderObjectKey("index/list.json"), JSON.stringify({
             version: 1,
             items: [manifestToIndexItem(newerReady, keyPrefix)],
           }), {
@@ -1964,6 +2059,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
     putSpy.mockRestore();
 
@@ -1983,7 +2079,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-job-failure";
     const urlHash = await sha256Hex(url);
     const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
@@ -2016,6 +2112,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
 
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
@@ -2032,7 +2129,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("does not let stale failure cleanup publish an old index row after losing the manifest CAS", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-failure-cas-cleanup";
     const urlHash = await sha256Hex(url);
     const id = "rd_FAILED_CAS_WINNER";
@@ -2096,7 +2193,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
 
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    const manifestKey = `${keyPrefix}/manifest.json`;
+    const manifestKey = founderObjectKey(`${keyPrefix}/manifest.json`);
     let injectedWinner = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
       (async (key: string, value: unknown, options?: R2PutOptions) => {
@@ -2105,7 +2202,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
           await originalPut(manifestKey, JSON.stringify(newerReady), {
             httpMetadata: { contentType: "application/json" },
           });
-          await originalPut("index/list.json", JSON.stringify({
+          await originalPut(founderObjectKey("index/list.json"), JSON.stringify({
             version: 1,
             items: [manifestToIndexItem(newerReady, keyPrefix)],
           }), {
@@ -2131,6 +2228,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
     putSpy.mockRestore();
     consoleErr.mockRestore();
@@ -2148,7 +2246,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("does not let a stale failed attempt overwrite a newer attempt for the same reading", async () => {
     const services = makeServices(makeStubFetch({ source: { status: 404, body: "not found" } }));
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/stale-same-reading-failure";
     const urlHash = await sha256Hex(url);
     const id = "rd_SAME_READING_FAILED";
@@ -2193,6 +2291,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
       env as unknown as Env,
       services,
+      founderTenant(),
     );
 
     await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
@@ -2213,12 +2312,12 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const services = makeServices(makeStubFetch(), idCounter);
     services.newId = () => fixedId;
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/setup-fails-after-claim";
     const urlHash = await sha256Hex(url);
     const createdAt = "2026-04-26T20:00:00.000Z";
     const keyPrefix = buildKeyPrefix(fixedId, createdAt);
-    const byIdKey = `index/by-id/${fixedId}`;
+    const byIdKey = founderObjectKey(`index/by-id/${fixedId}`);
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
     let failedByIdWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
@@ -2369,13 +2468,13 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const services = makeServices(makeStubFetch(), idCounter);
     services.newId = () => fixedId;
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const sourceUrl = "https://example.com/import-setup-fails-after-claim";
     const markdown = "# Setup Failure\n\nRetry me immediately.";
     const urlHash = await sha256Hex(sourceUrl);
     const createdAt = "2026-04-26T20:00:00.000Z";
     const keyPrefix = buildKeyPrefix(fixedId, createdAt);
-    const rawKey = `${keyPrefix}/raw.md`;
+    const rawKey = founderObjectKey(`${keyPrefix}/raw.md`);
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
     let failedRawWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
@@ -2487,7 +2586,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const markdown = "# Repaired Import\n\nThis import replaces a stale owner.";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     await reader.writeByUrlPointer(urlHash, {
       id: "rd_ORPHAN_IMPORT",
@@ -2535,7 +2634,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     });
     const services = makeServices(fetchFn);
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const failed: Manifest = {
       id: "rd_0123456783",
@@ -2612,7 +2711,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const markdown = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const legacy: Manifest = {
       id: "rd_LEGACY_IMPORT",
@@ -2666,7 +2765,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const markdown = "# Legacy Damaged Owner\n\nThe user supplied text for the old failed URL.";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const legacy: Manifest = {
       id: "rd_LEGACY_DAMAGED_IMPORT",
@@ -2724,7 +2823,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const markdown = "# Legacy Stale Index\n\nThe user supplied text for an unindexed old failed URL.";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const indexedUrl = "https://example.com/other-import-index-row";
     const legacy: Manifest = {
@@ -2792,7 +2891,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const markdown = "# Retryable Import\n\nThe markdown body should survive queue failure.";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const failed: Manifest = {
       id: "rd_IMPORT_QUEUE_FAIL",
@@ -2874,7 +2973,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     });
     const services = makeServices(fetchFn);
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const urlHash = await sha256Hex(sourceUrl);
     const stalePending: Manifest = {
       id: "rd_STALE_IMPORT",
@@ -3348,10 +3447,10 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
     // Read the live by-id pointer, then rewrite it with a mismatched id while
     // keeping its key_prefix so the manifest still resolves.
-    const ptrObj = await env.READINGS_BUCKET.get(`index/by-id/${id}`);
+    const ptrObj = await env.READINGS_BUCKET.get(founderObjectKey(`index/by-id/${id}`));
     const ptr = JSON.parse(await ptrObj!.text()) as { id: string; key_prefix: string };
     await env.READINGS_BUCKET.put(
-      `index/by-id/${id}`,
+      founderObjectKey(`index/by-id/${id}`),
       JSON.stringify({ id: "rd_WRONG", key_prefix: ptr.key_prefix }),
     );
 
@@ -3532,7 +3631,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   });
 
   it("allows reprocess when a running active attempt is stale", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const createdAt = "2026-04-26T18:00:00.000Z";
     const prefix = buildKeyPrefix("rd_STALE_ACTIVE", createdAt);
     const staleReady: Manifest = {
@@ -3643,7 +3742,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     await drainQueue(services);
     await waitOnExecutionContext(ctx1);
     await expect(
-      new ReadingStore(env.READINGS_BUCKET).loadReadingById(id).then((f) => f!.manifest.source_type),
+      testReadingStore(env).loadReadingById(id).then((f) => f!.manifest.source_type),
     ).resolves.toBe("url");
 
     const ctx2 = createExecutionContext();
@@ -3831,7 +3930,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     const url = "https://example.com/agent-supplies-missing-markdown";
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const ctx1 = createExecutionContext();
     const imported = await app.fetch(
       new Request("http://t/api/readings/import-markdown", {
@@ -3988,7 +4087,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     });
     const services = makeServices(noSummaryFetch, idCounter);
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     // 1. A url reading that extracts fine but fails to summarize: it lands
@@ -4015,7 +4114,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     let failedRawWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
       (async (key: string, value: unknown, options?: R2PutOptions) => {
-        if (key === `${keyPrefix}/raw.md` && !failedRawWrite) {
+        if (key === founderObjectKey(`${keyPrefix}/raw.md`) && !failedRawWrite) {
           failedRawWrite = true;
           throw new Error("simulated raw write failure");
         }
@@ -4067,7 +4166,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
   it("treats a legacy missing source_type as url when snapshotting reprocess failure state", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const id = "rd_LEGACY_SOURCE_TYPE";
     const url = "https://example.com/legacy-source-type";
     const createdAt = "2026-08-07T20:00:00.000Z";
@@ -4387,7 +4486,7 @@ describe("processReading — backwards-compat for in-flight queue messages witho
     const idCounter = { n: 0 };
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn, idCounter);
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const id = "rd_PRE01";
     const createdAt = "2026-04-26T20:00:00.000Z";
     const prefix = buildKeyPrefix(id, createdAt);
@@ -4416,7 +4515,7 @@ describe("processReading — backwards-compat for in-flight queue messages witho
     });
     await reader.writeByIdPointer(id, { id, key_prefix: prefix });
 
-    await processReading(args, env as unknown as Env, services);
+    await processReading(args, env as unknown as Env, services, founderTenant());
 
     expect(resendCalls(fetchFn)).toHaveLength(1);
   });
@@ -4425,7 +4524,7 @@ describe("processReading — backwards-compat for in-flight queue messages witho
     const idCounter = { n: 0 };
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn, idCounter);
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const id = "rd_PRE02";
     const createdAt = "2026-04-26T20:00:00.000Z";
     const prefix = buildKeyPrefix(id, createdAt);
@@ -4453,7 +4552,7 @@ describe("processReading — backwards-compat for in-flight queue messages witho
     });
     await reader.writeByIdPointer(id, { id, key_prefix: prefix });
 
-    await processReading(args, env as unknown as Env, services);
+    await processReading(args, env as unknown as Env, services, founderTenant());
 
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
@@ -4499,7 +4598,7 @@ describe("GET /api/readings/lookup", () => {
 
   it("returns 409 for a fresh initializing by-url owner", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-initializing";
     const urlHash = await sha256Hex(url);
     await reader.writeByUrlPointer(urlHash, {
@@ -4523,7 +4622,7 @@ describe("GET /api/readings/lookup", () => {
 
   it("does not repair a stale lookup owner (read-only); leaves the deep scan + repair to the next write", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-legacy-stale-index";
     const urlHash = await sha256Hex(url);
     const indexedUrl = "https://example.com/lookup-other-index-row";
@@ -4579,7 +4678,7 @@ describe("GET /api/readings/lookup", () => {
 
   it("returns 404 without writing a pointer for a legacy reading that has none", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-legacy-no-pointer";
     const urlHash = await sha256Hex(url);
     const legacy: Manifest = {
@@ -4613,7 +4712,7 @@ describe("GET /api/readings/lookup", () => {
 
   it("returns 404 for a stale lookup owner without a matching manifest", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const reader = testReadingStore(env);
     const url = "https://example.com/lookup-orphan";
     const urlHash = await sha256Hex(url);
     await reader.writeByUrlPointer(urlHash, {
@@ -4970,9 +5069,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     // Seed an index entry whose created_at is ancient but updated_at is fresh.
     // The staleness annotator must trust updated_at and leave it as pending
     // (matches the manifest-level annotateStale semantics).
-    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
-      env.READINGS_BUCKET,
-    );
+    const reader = testReadingStore(env);
     await reader.writeListIndex({
       version: 1,
       items: [
@@ -5003,9 +5100,7 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     // updated_at older than TTL → annotator must mark it failed in the
     // response (the underlying manifest stays pending; this is presentation
     // only, same contract as the manifest-level annotateStale).
-    const reader = new (await import("../../src/modules/stores/reading-store")).ReadingStore(
-      env.READINGS_BUCKET,
-    );
+    const reader = testReadingStore(env);
     await reader.writeListIndex({
       version: 1,
       items: [

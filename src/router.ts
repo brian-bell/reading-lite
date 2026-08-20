@@ -22,6 +22,7 @@ import type {
 } from "./schemas/manifest";
 import {
   PointerExistsError,
+  readingStoreFor,
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
@@ -33,6 +34,10 @@ import { stalenessOf } from "./modules/staleness";
 
 export interface AppOptions {
   services?: Services;
+}
+
+function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
+  return readingStoreFor(env.READINGS_BUCKET, { tenantId: principal.tenantId }, env);
 }
 
 export function createApp(opts: AppOptions = {}) {
@@ -69,7 +74,7 @@ export function createApp(opts: AppOptions = {}) {
     const url = parsed.data.url;
     const email = parsed.data.email ?? true;
 
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const claim = new ReadingClaim(reader, services);
     const owner = await claim.resolveOwner(url);
     switch (owner.kind) {
@@ -115,7 +120,7 @@ export function createApp(opts: AppOptions = {}) {
     const title = parsed.data.title;
     const email = parsed.data.email ?? false;
 
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const claim = new ReadingClaim(reader, services);
     const owner = await claim.resolveOwner(url);
     switch (owner.kind) {
@@ -160,7 +165,7 @@ export function createApp(opts: AppOptions = {}) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
     }
     const { q, tag, offset, limit } = parsed.data;
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const out = await reader.listManifests({ q, tag, offset, limit });
     const annotated = out.readings.map((item) => annotateStaleIndexItem(item, c.env, services));
     return c.json({
@@ -174,7 +179,7 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/api/readings/lookup", requireScope("readings:read"), async (c) => {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "missing url" }, 400);
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const claim = new ReadingClaim(reader, services);
     // Read-only: a GET must be side-effect-free and cheap, so a lookup neither
     // claims a cold pointerless legacy nor repairs a damaged pointer (both are
@@ -216,7 +221,7 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id/diagnostics", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const ptr = await reader.readByIdPointer(id);
     if (!ptr) return c.json({ error: "not found" }, 404);
     const manifest = await reader.readManifest(ptr.key_prefix);
@@ -261,7 +266,7 @@ export function createApp(opts: AppOptions = {}) {
     }
 
     const id = c.req.param("id");
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     const result = await enqueueReprocess(
@@ -282,7 +287,7 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     return c.json(annotateStale(found.manifest, c.env, services));
@@ -290,7 +295,7 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     if (found.manifest.content_status !== "captured") {
@@ -306,7 +311,7 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id/content/raw", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = new ReadingStore(c.env.READINGS_BUCKET);
+    const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     const ext = extFromContentType(found.manifest.content_type);

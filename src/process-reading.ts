@@ -1,7 +1,8 @@
 import {
   buildKeyPrefix,
   PointerExistsError,
-  ReadingStore,
+  readingStoreFor,
+  type ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
@@ -39,9 +40,9 @@ export async function processReading(
   args: ProcessReadingArgs,
   env: Env,
   services: Services,
-  _tenant?: TenantContext,
+  tenant: TenantContext,
 ): Promise<void> {
-  const reader = new ReadingStore(env.READINGS_BUCKET);
+  const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
   const similarity = new SimilarityStore(env.READINGS_INDEX);
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
@@ -288,8 +289,9 @@ export async function markDeadLettered(
   args: ProcessReadingArgs,
   env: Env,
   services: Services,
+  tenant: TenantContext,
 ): Promise<void> {
-  const reader = new ReadingStore(env.READINGS_BUCKET);
+  const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
   const existing = await reader.readManifest(args.keyPrefix).catch(() => null);
 
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.

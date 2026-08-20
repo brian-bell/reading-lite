@@ -25,6 +25,7 @@ RESEND_API_KEY = "test-resend-key"
 EMAIL_FROM = "reading-lite@test.example"
 EMAIL_TO = "reader@test.example"
 WEB_BASE_URL = "https://reading.test.example"
+TENANT_DATA_PLANE = "1"
 
 [[r2_buckets]]
 binding = "READINGS_BUCKET"

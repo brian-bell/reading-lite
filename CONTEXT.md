@@ -9,9 +9,15 @@ The protocol for answering **"who owns this URL?"** before doing any work for a
 submit, a markdown import, or a lookup. It lives in
 `src/modules/reading-claim.ts` (`ReadingClaim.resolveOwner`), not in the router.
 
-- **By-url pointer** — `index/by-url/{sha256(url)}` → `{ id, key_prefix }`. The
-  eager ownership claim: `POST /readings` writes it (conditional create) before
-  queueing work, so concurrent submits of one URL converge on the first owner.
+- **Tenant R2 root** — hosted stores prepend `u/{tenantId}/` to every reading
+  and index key when `TENANT_DATA_PLANE=1`. Stored `key_prefix` stays relative
+  (`readings/YYYY/…`). Production/staging leave the gate off until the founder
+  corpus is copied (s1k.6).
+- **By-url pointer** — `{tenantRoot}index/by-url/{sha256(url)}` → `{ id, key_prefix }`.
+  The eager ownership claim is **per tenant**: `POST /readings` writes it
+  (conditional create) before queueing work, so concurrent submits of one URL
+  *within a tenant* converge on the first owner. Two tenants saving the same
+  URL get distinct readings and distinct pointers.
 - **Owner resolution** — the `OwnerResolution` a `resolveOwner(url)` returns:
   - `owned` — a pointer resolves to a manifest that genuinely owns the URL
     (`id`, `url`, `url_hash` all match). The caller decides what to do with it
@@ -51,8 +57,9 @@ submit, a markdown import, or a lookup. It lives in
   send rolls the slot back to a `failed` (retryable `QueueSendError`) manifest and
   returns 503. Same lockstep discipline as `commitTerminalManifest` on the
   terminal side.
-- **List index** — `index/list.json`, maintained on every terminal write
-  (idempotent on `id`) so list/search never go stale.
+- **List index** — `{tenantRoot}index/list.json`, maintained on every terminal
+  write (idempotent on `id`) so list/search never go stale. Each tenant has its
+  own CAS object; a deep scan lists only that tenant's `readings/` prefix.
 - **Reading visibility** — a reading is publicly visible iff its **list index**
   row and its Vectorize vector are both present, and only the attempt that owns
   the reading may change either. That list+vector lockstep and the owner gate
