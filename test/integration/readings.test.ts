@@ -4805,6 +4805,25 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     const app2 = createApp({ services: services2 });
     await postOne(app2, "https://example.com/go", services2);
 
+    const services3 = makeServices(
+      makeStubFetch({
+        toolInput: {
+          title: "Do Not Sell the Whole Ticket at Once",
+          tldr: "Small commitments rather than one attempt to win the whole project.",
+          tags: ["sales", "career"],
+          keywords: ["micro-sales", "soft skills", "stakeholder buy-in"],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "summary body",
+        },
+      }),
+      idCounter,
+    );
+    const app3 = createApp({ services: services3 });
+    await postOne(app3, "https://example.com/ticket", services3);
+
     const res = await app.request(
       "/api/readings?q=rust",
       { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -4813,6 +4832,14 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     const body = (await res.json()) as { readings: Array<{ url: string }> };
     expect(body.readings).toHaveLength(1);
     expect(body.readings[0]!.url).toBe("https://example.com/rust");
+
+    const byKeyword = await app.request(
+      "/api/readings?q=soft+skills",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const keywordBody = (await byKeyword.json()) as { readings: Array<{ url: string }> };
+    expect(keywordBody.readings.map((r) => r.url)).toEqual(["https://example.com/ticket"]);
   });
 
   it("?tag= filters by exact tag match (case-insensitive)", async () => {

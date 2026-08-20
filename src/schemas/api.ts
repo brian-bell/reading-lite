@@ -84,6 +84,7 @@ export const ListIndexItemSchema = z.object({
   title: z.string().min(1).optional(),
   tldr: z.string().min(1).optional(),
   tags: z.array(z.string()).optional(),
+  keywords: z.array(z.string()).optional(),
   status: ManifestStatusSchema,
   novelty_verdict: NoveltyVerdictSchema.optional(),
   created_at: z.string().datetime(),
