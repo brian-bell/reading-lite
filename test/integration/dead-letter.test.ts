@@ -6,7 +6,12 @@ import type { Services } from "../../src/services";
 import { manifestToIndexItem, ReadingStore } from "../../src/modules/stores/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
 
-const KEY_PREFIX = "readings/2026/05/07T120000Z-rd_DLQ";
+import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+
+const READING_ID = "rd_0123456780";
+const KEY_PREFIX = buildKeyPrefix(READING_ID, "2026-05-07T12:00:00.000Z");
+const DLQ_URL = "https://example.com/dlq";
+const DLQ_URL_HASH = "b7dada632530beda9d7421510dc770125241cffc112dfdff1db0df8f991ebd78";
 
 function services(): Services {
   return {
@@ -14,15 +19,15 @@ function services(): Services {
       throw new Error("no network in this test");
     }) as unknown as typeof fetch,
     now: () => "2026-05-07T13:00:00.000Z",
-    newId: () => "rd_DLQ",
+    newId: () => READING_ID,
   };
 }
 
 function args(extra: Partial<ProcessReadingArgs> = {}): ProcessReadingArgs {
   return {
-    id: "rd_DLQ",
-    url: "https://example.com/dlq",
-    urlHash: "d".repeat(64),
+    id: READING_ID,
+    url: DLQ_URL,
+    urlHash: DLQ_URL_HASH,
     createdAt: "2026-05-07T12:00:00.000Z",
     keyPrefix: KEY_PREFIX,
     trigger: "reprocess",
@@ -32,9 +37,9 @@ function args(extra: Partial<ProcessReadingArgs> = {}): ProcessReadingArgs {
 
 function pendingManifest(): Manifest {
   return {
-    id: "rd_DLQ",
-    url: "https://example.com/dlq",
-    url_hash: "d".repeat(64),
+    id: READING_ID,
+    url: DLQ_URL,
+    url_hash: DLQ_URL_HASH,
     source_type: "url",
     status: "pending",
     content_type: "application/octet-stream",
@@ -44,7 +49,7 @@ function pendingManifest(): Manifest {
     created_at: "2026-05-07T12:00:00.000Z",
     updated_at: "2026-05-07T12:00:05.000Z",
     active_attempt: {
-      id: "at_rd_DLQ",
+      id: `at_${READING_ID}`,
       trigger: "reprocess",
       status: "running",
       stage: "queued",
@@ -74,7 +79,7 @@ describe("markDeadLettered", () => {
     expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
     expect(after?.error?.retryable).toBe(true);
 
-    const item = await reader.findListIndexItem("rd_DLQ");
+    const item = await reader.findListIndexItem(READING_ID);
     expect(item?.status).toBe("failed");
 
     // Failed readings must stay re-submittable: no by-url pointer.
@@ -147,15 +152,20 @@ describe("markDeadLettered", () => {
   });
 });
 
-function dlqMessage(): Message<ProcessReadingArgs> {
+function dlqMessage(): Message<unknown> {
   return {
     id: "m_dlq",
     timestamp: new Date(),
-    body: args(),
+    body: {
+      version: 1,
+      tenant: { tenantId: "usr_550e8400-e29b-41d4-a716-446655440000" },
+      actor: { kind: "api_token" as const, credentialId: "tok_550e8400-e29b-41d4-a716-446655440000" },
+      job: args(),
+    },
     attempts: 4,
     ack: vi.fn(),
     retry: vi.fn(),
-  } as unknown as Message<ProcessReadingArgs>;
+  } as unknown as Message<unknown>;
 }
 
 describe("queue() dead-letter routing", () => {
@@ -171,7 +181,7 @@ describe("queue() dead-letter routing", () => {
     const batch = {
       queue: "reading-lite-dlq",
       messages: [msg],
-    } as unknown as MessageBatch<ProcessReadingArgs>;
+    } as unknown as MessageBatch<unknown>;
 
     // markDeadLettered touches only R2, so the real queue() handler runs here
     // with no network. If the branch ever fell through to dispatchQueueMessage,

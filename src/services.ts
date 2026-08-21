@@ -13,6 +13,7 @@ export function defaultServices(): Services {
 }
 
 const ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const READING_ID_SUFFIX_RE = /^[0-9A-HJ-NP-Z]{10}$/;
 
 export function mintReadingId(): string {
   const buf = new Uint8Array(10);
@@ -22,6 +23,12 @@ export function mintReadingId(): string {
     s += ID_ALPHABET[b % ID_ALPHABET.length];
   }
   return `rd_${s}`;
+}
+
+export function parseReadingId(raw: string): string | null {
+  if (!raw.startsWith("rd_")) return null;
+  const suffix = raw.slice(3);
+  return READING_ID_SUFFIX_RE.test(suffix) ? raw : null;
 }
 
 export async function sha256Hex(input: string): Promise<string> {

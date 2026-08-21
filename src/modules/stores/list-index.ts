@@ -63,6 +63,7 @@ export function manifestToIndexItem(
   if (m.title !== undefined) item.title = m.title;
   if (m.tldr !== undefined) item.tldr = m.tldr;
   if (m.tags !== undefined) item.tags = m.tags;
+  if (m.keywords !== undefined) item.keywords = m.keywords;
   if (m.novelty_verdict !== undefined) item.novelty_verdict = m.novelty_verdict;
   if (m.error !== undefined) item.error = m.error;
   if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
@@ -87,8 +88,9 @@ interface ResolvedCasDeps {
 }
 
 // Owns index/list.json: the optimistic-concurrency mutate loop, the q/tag
-// filter+sort+paginate read path, URL-ownership resolution (the ready>pending>
-// failed ranking), and the full-bucket rebuild fallback. `ReadingStore`
+// filter+sort+paginate read path (q is title/tldr/url/keywords), URL-ownership
+// resolution (the ready>pending>failed ranking), and the full-bucket rebuild
+// fallback. `ReadingStore`
 // composes one and delegates its public index methods here.
 export class ListIndexStore {
   private readonly cas: ResolvedCasDeps;
@@ -235,7 +237,7 @@ export class ListIndexStore {
 
     const filtered = index.items.filter((item) => {
       if (q !== "") {
-        const hay = `${item.title ?? ""}\n${item.tldr ?? ""}\n${item.url}`.toLowerCase();
+        const hay = `${item.title ?? ""}\n${item.tldr ?? ""}\n${item.url}\n${(item.keywords ?? []).join("\n")}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (tag !== "") {

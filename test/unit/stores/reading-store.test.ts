@@ -517,6 +517,30 @@ describe("ReadingStore — listManifests", () => {
     expect(noMatch.total_filtered).toBe(0);
   });
 
+  it("filters by q across keywords (case-insensitive substring)", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({
+        id: "rd_kw",
+        title: "Do Not Sell the Whole Ticket at Once",
+        tldr: "Small commitments, not the whole project.",
+        url: "https://example.com/ticket",
+        keywords: ["micro-sales", "Soft Skills", "stakeholder buy-in"],
+      }),
+      indexItem({
+        id: "rd_other",
+        title: "Rust async",
+        tldr: "How async works in Rust",
+        url: "https://example.com/rust",
+        keywords: ["rust async", "systems language"],
+      }),
+    ]);
+
+    const page = await store.listManifests({ offset: 0, limit: 10, q: "soft skills" });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_kw"]);
+    expect(page.total_filtered).toBe(1);
+  });
+
   it("filters by tag (exact, case-insensitive)", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     await seedIndex(store, [
@@ -528,6 +552,17 @@ describe("ReadingStore — listManifests", () => {
     const page = await store.listManifests({ offset: 0, limit: 10, tag: "ai" });
     expect(page.readings.map((r) => r.id).sort()).toEqual(["rd_a", "rd_b"]);
     expect(page.total_filtered).toBe(2);
+  });
+
+  it("does not treat keywords as tags", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    await seedIndex(store, [
+      indexItem({ id: "rd_kw_only", keywords: ["ai"], tags: ["career"] }),
+      indexItem({ id: "rd_tagged", tags: ["ai"] }),
+    ]);
+    const page = await store.listManifests({ offset: 0, limit: 10, tag: "ai" });
+    expect(page.readings.map((r) => r.id)).toEqual(["rd_tagged"]);
+    expect(page.total_filtered).toBe(1);
   });
 
   it("ANDs q and tag together", async () => {

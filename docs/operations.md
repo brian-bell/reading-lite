@@ -152,8 +152,23 @@ and a failed one preserves the ready manifest with
 | `npm run corpus-audit` | read-only inventory of every non-ready reading, classified by failure reason |
 | `npm run corpus-recover` | acts on an audit: reprocess or re-extract per a per-reason policy table |
 | `npm run corpus-drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
+| `npm run corpus-rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run corpus-delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run corpus-ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
+
+`corpus-rebuild-list` re-projects every indexed manifest through
+`manifestToIndexItem` and writes `index/list.json`. Use it after deploying a
+Worker that added list-row fields (keywords, for `q` search) so existing
+readings become searchable without a paid reprocess. Dry-run by default;
+`--execute` requires `--sole-writer` because the rewrite is a plain put.
+
+```sh
+npm run corpus-rebuild-list -- --bucket reading-lite
+npm run corpus-rebuild-list -- --bucket reading-lite --execute --sole-writer
+```
+
+Deploy the new Worker **before** the production rewrite. An old Worker that
+later commits a terminal manifest would strip the new fields off that row.
 
 `corpus-recover` has two execution paths: `--wave` paces realtime submissions
 through `POST /api/readings/:id/reprocess`, and `--batch` routes the same work

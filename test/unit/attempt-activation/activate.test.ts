@@ -5,9 +5,18 @@ import {
   type AttemptActivation,
 } from "../../../src/attempt-activation";
 import { ReadingStore } from "../../../src/modules/stores/reading-store";
+import type { ProcessReadingEnvelopeV1 } from "../../../src/control-plane/envelope";
+import { createApiTokenPrincipal } from "../../../src/control-plane/principal";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
 import { sha256Hex, type Services } from "../../../src/services";
+
+const PRINCIPAL = createApiTokenPrincipal({
+  tenantId: "usr_550e8400-e29b-41d4-a716-446655440000",
+  userId: "usr_550e8400-e29b-41d4-a716-446655440000",
+  tokenId: "tok_550e8400-e29b-41d4-a716-446655440000",
+  scopes: ["readings:write"],
+});
 
 const NOW = "2026-04-26T20:00:05.000Z";
 
@@ -27,22 +36,22 @@ async function clearBucket() {
 }
 
 // A capturing queue stub mirroring installQueueStub() from the integration suite.
-function captureQueue(): { queue: Queue<ProcessReadingArgs>; sent: ProcessReadingArgs[] } {
-  const sent: ProcessReadingArgs[] = [];
+function captureQueue(): { queue: Queue<ProcessReadingEnvelopeV1>; sent: ProcessReadingEnvelopeV1[] } {
+  const sent: ProcessReadingEnvelopeV1[] = [];
   const queue = {
-    send: vi.fn(async (msg: ProcessReadingArgs) => {
+    send: vi.fn(async (msg: ProcessReadingEnvelopeV1) => {
       sent.push(msg);
     }),
-  } as unknown as Queue<ProcessReadingArgs>;
+  } as unknown as Queue<ProcessReadingEnvelopeV1>;
   return { queue, sent };
 }
 
-function rejectingQueue(error: unknown = new Error("queue send failed")): Queue<ProcessReadingArgs> {
+function rejectingQueue(error: unknown = new Error("queue send failed")): Queue<ProcessReadingEnvelopeV1> {
   return {
     send: vi.fn(async () => {
       throw error;
     }),
-  } as unknown as Queue<ProcessReadingArgs>;
+  } as unknown as Queue<ProcessReadingEnvelopeV1>;
 }
 
 const ID = "rd_TEST01";
@@ -103,6 +112,7 @@ function baseActivation(overrides: Partial<AttemptActivation> = {}): AttemptActi
     rollbackManifest: manifest,
     rollbackAttempt: activeAttempt(),
     queueMessage: queueMessage(),
+    principal: PRINCIPAL,
     ...overrides,
   };
 }
@@ -126,7 +136,13 @@ describe("activateAttempt", () => {
     const index = await reader.readListIndex();
     expect(index?.items.map((i) => i.id)).toContain(ID);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ id: ID, attemptId: ATTEMPT_ID });
+    expect(sent[0]).toMatchObject({
+      version: 1,
+      tenant: { tenantId: PRINCIPAL.tenantId },
+      actor: { kind: "api_token", credentialId: PRINCIPAL.tokenId },
+      job: { id: ID, attemptId: ATTEMPT_ID },
+    });
+    expect(sent[0]).not.toHaveProperty("scopes");
   });
 
   it("reprocess shape: writeByIdPointer false skips the by-id pointer write", async () => {
@@ -165,10 +181,10 @@ describe("activateAttempt", () => {
     trace("writeManifest", "manifest");
     trace("writeByIdPointer", "byId");
     trace("appendOrReplaceListIndexItem", "index");
-    vi.spyOn(queue, "send").mockImplementation((async (msg: ProcessReadingArgs) => {
+    vi.spyOn(queue, "send").mockImplementation((async (msg: ProcessReadingEnvelopeV1) => {
       order.push("send");
       sent.push(msg);
-    }) as unknown as Queue<ProcessReadingArgs>["send"]);
+    }) as unknown as Queue<ProcessReadingEnvelopeV1>["send"]);
 
     const result = await activateAttempt(
       reader,

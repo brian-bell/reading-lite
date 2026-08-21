@@ -1,3 +1,5 @@
+import { envelopeFromPrincipal, type ProcessReadingEnvelopeV1 } from "./control-plane/envelope";
+import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import type { ProcessReadingArgs } from "./process-reading";
 import type { Manifest, ProcessingAttemptSummary } from "./schemas/manifest";
 import { manifestToIndexItem, ReadingStore } from "./modules/stores/reading-store";
@@ -35,6 +37,7 @@ export interface AttemptActivation {
   rollbackManifest: Manifest;
   rollbackAttempt: ProcessingAttemptSummary;
   queueMessage: ProcessReadingArgs;
+  principal: AuthenticatedPrincipal;
 }
 
 // The write-side mirror of commitTerminalManifest: owns the canonical
@@ -45,7 +48,7 @@ export interface AttemptActivation {
 // failed (retryable) manifest and reports 503.
 export async function activateAttempt(
   reader: ReadingStore,
-  queue: Queue<ProcessReadingArgs>,
+  queue: Queue<ProcessReadingEnvelopeV1>,
   services: Services,
   a: AttemptActivation,
 ): Promise<SubmitJsonResult> {
@@ -69,7 +72,7 @@ export async function activateAttempt(
     }
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(a.manifest, a.keyPrefix));
     failureMessage = "queue send failed";
-    await queue.send(a.queueMessage);
+    await queue.send(envelopeFromPrincipal(a.principal, a.queueMessage));
   } catch (err) {
     console.error(err);
     await writeFailedActivationManifest(
