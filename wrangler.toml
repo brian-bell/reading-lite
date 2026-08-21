@@ -65,6 +65,9 @@ OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
 WEB_BASE_URL = ""
+# Tenant-prefixed R2 keys (u/{tenantId}/…). Leave unset until s1k.6 copies the
+# founder corpus; "1" would hide global readings/ and index/ objects.
+# TENANT_DATA_PLANE = "1"
 # In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
 # to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
 # full jitter starting from RETRY_BASE_DELAY_MS.

@@ -1,3 +1,4 @@
+import type { TenantContext } from "./control-plane/ids";
 import { fromD1 } from "./control-plane/db";
 import {
   admitEnvelopeOrReject,
@@ -39,6 +40,9 @@ export interface Env {
   SUMMARIZER_PROVIDER?: string;
   OPENAI_SUMMARIZATION_MODEL?: string;
   OPENAI_SUMMARIZATION_REASONING_EFFORT?: string;
+  // "1" enables tenant-prefixed R2 keys (u/{tenantId}/…). Off by default so
+  // production/staging keep the founder corpus visible until s1k.6 copies it.
+  TENANT_DATA_PLANE?: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;
   RETRY_MAX_DELAY_MS?: string;
@@ -87,7 +91,7 @@ export async function handleDeadLetter(
   deps: {
     db: ReturnType<typeof fromD1>;
     nowMs: number;
-    mark: (body: ProcessReadingArgs) => Promise<void>;
+    mark: (body: ProcessReadingArgs, tenant: TenantContext) => Promise<void>;
   },
 ): Promise<void> {
   const parsed = parseProcessReadingEnvelope(msg.body);
@@ -104,7 +108,7 @@ export async function handleDeadLetter(
       }
       return;
     }
-    await deps.mark(parsed.envelope.job);
+    await deps.mark(parsed.envelope.job, admitted.tenant);
   } catch (e) {
     console.error(e);
   } finally {
@@ -134,7 +138,7 @@ export default {
         await handleDeadLetter(msg, {
           db,
           nowMs,
-          mark: (body) => markDeadLettered(body, env, services),
+          mark: (body, tenant) => markDeadLettered(body, env, services, tenant),
         });
       }
       return;

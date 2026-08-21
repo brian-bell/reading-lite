@@ -98,9 +98,12 @@ targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
   responses. Manifest reads from R2 are always parsed (stored-schema drift).
 - Keep by-url ownership eager: submit/import claim the URL slot before queueing.
   Ready/pending owners return the existing manifest; failed owners reprocess in
-  place.
+  place. Ownership is per tenant — hosted code constructs `ReadingStore` via
+  `readingStoreFor` from a validated `TenantContext`.
 - Keep `index/list.json` in sync on every terminal write, via existing
-  `ReadingStore` helpers.
+  `ReadingStore` helpers. When `TENANT_DATA_PLANE=1` those objects live under
+  `u/{tenantId}/`; stored `key_prefix` stays relative. Do not turn the gate on
+  in staging/production before the founder corpus copy (s1k.6).
 - Keep manifest contracts synchronized: `src/schemas/manifest.ts`,
   `src/schemas/api.ts`, tests, and `web/src/types.ts` change together.
 - Keep summarizer config fail-closed: require the selected provider's

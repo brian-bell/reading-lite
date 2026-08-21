@@ -61,7 +61,7 @@ describe("validateWranglerD1Bindings", () => {
     expect(() => validateWranglerD1Bindings(file)).toThrow(/placeholder/i);
   });
 
-  it("accepts the checked-in wrangler.toml D1 ids", () => {
+  it("accepts the pinned staging and production D1 ids in checked-in wrangler.toml", () => {
     expect(() => validateWranglerD1Bindings(path.join(process.cwd(), "wrangler.toml"))).not.toThrow();
   });
 

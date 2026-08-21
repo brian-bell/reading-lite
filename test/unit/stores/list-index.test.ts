@@ -334,6 +334,33 @@ describe("ListIndexStore — rebuild", () => {
   });
 });
 
+describe("ListIndexStore — tenant keyRoot isolation", () => {
+  it("rebuilds and lists only manifests under its own root", async () => {
+    const a = new ListIndexStore(env.READINGS_BUCKET, {
+      keyRoot: "u/usr_550e8400-e29b-41d4-a716-446655440000/",
+    });
+    const b = new ListIndexStore(env.READINGS_BUCKET, {
+      keyRoot: "u/usr_11111111-1111-4111-8111-111111111111/",
+    });
+    const prefix = "readings/2026/04/26T200000Z-rd_TEST";
+    await env.READINGS_BUCKET.put(
+      `u/usr_550e8400-e29b-41d4-a716-446655440000/${prefix}/manifest.json`,
+      JSON.stringify(emptyManifest({ id: "rd_A" })),
+    );
+    await env.READINGS_BUCKET.put(
+      `u/usr_11111111-1111-4111-8111-111111111111/${prefix}/manifest.json`,
+      JSON.stringify(emptyManifest({ id: "rd_B" })),
+    );
+
+    const rebuiltA = await a.rebuild();
+    const rebuiltB = await b.rebuild();
+    expect(rebuiltA.items.map((i) => i.id)).toEqual(["rd_A"]);
+    expect(rebuiltA.items[0]?.key_prefix).toBe(prefix);
+    expect(rebuiltB.items.map((i) => i.id)).toEqual(["rd_B"]);
+    expect(rebuiltB.items[0]?.key_prefix).toBe(prefix);
+  });
+});
+
 async function writeManifest(m: Manifest): Promise<void> {
   await env.READINGS_BUCKET.put(`${buildKeyPrefix(m.id, m.created_at)}/manifest.json`, JSON.stringify(m), {
     httpMetadata: { contentType: "application/json" },

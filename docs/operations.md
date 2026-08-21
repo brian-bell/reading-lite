@@ -18,6 +18,12 @@ Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.tom
 repeats them per environment. The distinct dev Worker name guards against an
 accidental bare `wrangler deploy` clobbering production.
 
+`TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Leave it
+unset in local, staging, and production until the founder corpus is copied
+under that prefix (s1k.6). Workers-pool tests turn it on so two tenants can
+share a URL without colliding. Operator corpus scripts still talk to the
+global `readings/` and `index/` layout.
+
 ### Secrets
 
 Runtime Worker secrets (`wrangler secret put --env staging|production`):

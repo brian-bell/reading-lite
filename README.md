@@ -23,7 +23,7 @@ Pages-hosted SPA. Deployed and in personal use at
 
 ```
 POST /api/readings { url }
-  ├─ dedup via index/by-url/{sha256(url)} → existing manifest? return 200
+  ├─ dedup via per-tenant index/by-url/{sha256(url)} → existing manifest? return 200
   └─ else: claim the by-url owner, write a "pending" manifest, enqueue a
            job on the READING_JOBS queue, return 202. Poll GET
            /api/readings/:id until ready/failed. Re-submitting a pending URL
@@ -51,7 +51,10 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
 Each background run also stages an attempt record under
 `readings/.../attempts/{attempt_id}.json` capturing the trigger, stage, timings,
 and sanitized error details, so failed readings can be inspected without
-`wrangler tail`.
+`wrangler tail`. When `TENANT_DATA_PLANE=1` (Workers-pool tests today;
+production stays off until the founder corpus is copied), those objects live
+under `u/{tenantId}/`. Stored `key_prefix` remains the relative `readings/…`
+path.
 
 The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 `fetch` and bindings:

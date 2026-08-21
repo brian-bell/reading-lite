@@ -866,3 +866,27 @@ describe("ReadingStore — listManifests", () => {
     expect(found?.manifest.id).toBe("rd_newer");
   });
 });
+
+describe("ReadingStore — tenant keyRoot isolation", () => {
+  it("keeps same-URL pointers and list rows on separate roots", async () => {
+    const urlHash = "c".repeat(64);
+    const a = new ReadingStore(env.READINGS_BUCKET, { keyRoot: "u/usr_550e8400-e29b-41d4-a716-446655440000/" });
+    const b = new ReadingStore(env.READINGS_BUCKET, { keyRoot: "u/usr_11111111-1111-4111-8111-111111111111/" });
+    const prefixA = "readings/2026/04/26T200000Z-rd_A";
+    const prefixB = "readings/2026/04/26T200000Z-rd_B";
+    await a.writeByUrlPointer(urlHash, { id: "rd_A", key_prefix: prefixA });
+    await b.writeByUrlPointer(urlHash, { id: "rd_B", key_prefix: prefixB });
+    await a.writeManifest(prefixA, emptyManifest({ id: "rd_A" }));
+    await b.writeManifest(prefixB, emptyManifest({ id: "rd_B" }));
+    await a.appendOrReplaceListIndexItem(indexItem({ id: "rd_A", key_prefix: prefixA }));
+    await b.appendOrReplaceListIndexItem(indexItem({ id: "rd_B", key_prefix: prefixB }));
+
+    expect(await a.readByUrlPointer(urlHash)).toEqual({ id: "rd_A", key_prefix: prefixA });
+    expect(await b.readByUrlPointer(urlHash)).toEqual({ id: "rd_B", key_prefix: prefixB });
+    expect((await a.listManifests({ offset: 0, limit: 10 })).readings.map((r) => r.id)).toEqual(["rd_A"]);
+    expect((await b.listManifests({ offset: 0, limit: 10 })).readings.map((r) => r.id)).toEqual(["rd_B"]);
+    expect(await env.READINGS_BUCKET.head("index/by-url/" + urlHash)).toBeNull();
+    expect(await env.READINGS_BUCKET.head("u/usr_550e8400-e29b-41d4-a716-446655440000/index/by-url/" + urlHash)).not.toBeNull();
+    expect(await env.READINGS_BUCKET.head("u/usr_11111111-1111-4111-8111-111111111111/index/by-url/" + urlHash)).not.toBeNull();
+  });
+});
