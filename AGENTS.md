@@ -159,6 +159,19 @@ Pointers only — the details live in the named files' comments.
 - The SPA invalidates queries after submit/reprocess but does not poll pending
   manifests.
 
+## Cloud Agents
+
+`.cursor/environment.json` runs `npm ci`, `cd web && npm ci`, then
+`scripts/cloud-agent-install.ts` on boot. Add these **environment secrets** in
+the Cursor dashboard (not in git):
+
+- `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` — non-interactive wrangler
+- `AUTH_ROOT_SECRET`, `READER_API_TOKEN`, `FOUNDER_EMAIL` — writes `.stg.vars`
+
+Staging founder state already lives in D1 after the first bootstrap; re-run is
+only needed after credential rotation. Set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` to
+run `founder-bootstrap --env staging --execute` on every install (idempotent).
+
 ## Working Locally
 
 - There is no lint script. `npm run typecheck` (`tsc --noEmit`) is the static
