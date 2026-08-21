@@ -17,12 +17,16 @@ export interface CloudAgentInstallDeps {
 
 const DEFAULT_FOUNDER_EMAIL = "bellbm@gmail.com";
 
+export function resolveFounderEmail(env: Record<string, string | undefined>): string {
+  return env.FOUNDER_EMAIL?.trim() || DEFAULT_FOUNDER_EMAIL;
+}
+
 export function renderStgVars(env: Record<string, string | undefined>): string | null {
   const authRoot = env.AUTH_ROOT_SECRET?.trim();
   const readerToken = env.READER_API_TOKEN?.trim();
   if (!authRoot || !readerToken) return null;
 
-  const founderEmail = env.FOUNDER_EMAIL?.trim() || DEFAULT_FOUNDER_EMAIL;
+  const founderEmail = resolveFounderEmail(env);
   return [
     `AUTH_ROOT_SECRET=${authRoot}`,
     `FOUNDER_EMAIL=${founderEmail}`,
@@ -83,7 +87,10 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
     const result = await founderBootstrap(
       { execute: true, env: "staging", confirmProduction: false },
       {
-        envVars,
+        envVars: {
+          ...envVars,
+          FOUNDER_EMAIL: resolveFounderEmail(envVars),
+        },
         nowMs: Date.now(),
         write: (line) => log(`[founder-bootstrap] ${line.trimEnd()}`),
         openDb: async () => {

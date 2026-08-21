@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { renderStgVars, runCloudAgentInstall } from "../../../scripts/cloud-agent-install";
+import {
+  renderStgVars,
+  resolveFounderEmail,
+  runCloudAgentInstall,
+} from "../../../scripts/cloud-agent-install";
 
 describe("cloud-agent-install", () => {
   it("renders .stg.vars when staging secrets are present", () => {
@@ -92,5 +98,43 @@ describe("cloud-agent-install", () => {
 
     expect(code).toBe(0);
     expect(founderBootstrap).toHaveBeenCalledOnce();
+    const [, deps] = founderBootstrap.mock.calls[0] as [
+      unknown,
+      { envVars: Record<string, string | undefined> },
+    ];
+    expect(deps.envVars.FOUNDER_EMAIL).toBe(resolveFounderEmail({}));
+  });
+
+  it("passes an explicit FOUNDER_EMAIL through to founder-bootstrap", async () => {
+    const founderBootstrap = vi.fn().mockResolvedValue({ exitCode: 0 });
+
+    await runCloudAgentInstall({
+      envVars: {
+        AUTH_ROOT_SECRET: "aa",
+        READER_API_TOKEN: "tok",
+        FOUNDER_EMAIL: "founder@example.com",
+        CLOUD_AGENT_FOUNDER_BOOTSTRAP: "1",
+      },
+      writeFile: () => {},
+      chmod: () => {},
+      log: () => {},
+      run: async () => 0,
+      founderBootstrap,
+    });
+
+    const [, deps] = founderBootstrap.mock.calls[0] as [
+      unknown,
+      { envVars: Record<string, string | undefined> },
+    ];
+    expect(deps.envVars.FOUNDER_EMAIL).toBe("founder@example.com");
+  });
+
+  it("installs the SPA without leaving cwd in web/", () => {
+    const env = JSON.parse(readFileSync(path.join(".cursor", "environment.json"), "utf8")) as {
+      install: string;
+    };
+    expect(env.install).toMatch(/\(cd web && npm ci\)|npm ci --prefix web|npm --prefix web ci/);
+    expect(env.install).toContain("scripts/cloud-agent-install.ts");
+    expect(env.install).not.toMatch(/cd web && npm ci && /);
   });
 });
