@@ -114,6 +114,32 @@ to the bucket name — they match in every environment), `--local`, `--execute`,
 Errors, rather than guessing, when a selector names something that is not part
 of any duplicate group, or when `--keep` names two ids in the same group.
 
+## After a sweep: stale relationship claims
+
+A sweep changes the corpus around each keeper, and both `novelty_verdict` and
+the similarity snapshot are claims about a *relationship* frozen on one node at
+summarize time. Nothing recomputes them, so they can be wrong the moment the
+sweep finishes.
+
+This is not hypothetical: two keepers of an earlier sweep were left marked
+`duplicate`, each citing as justification the copy that had just been deleted.
+
+So an executed sweep now reports which keepers actually reference a dropped
+reading — a cited connection, or a snapshot measured while the dropped copy was
+still indexed. It flags only those, not every keeper, so the warning stays worth
+reading.
+
+To refresh the measured score (no LLM call, no re-summarization, no tag churn):
+
+```bash
+npm run corpus-backfill-similarity -- rd_KEEPER --rescore --execute
+```
+
+The `novelty_verdict` label itself only refreshes on a **reprocess**, which
+re-runs the summarizer and re-rolls the title and tags on unchanged source text.
+Weigh that before reprocessing purely to fix a label — and prefer the score,
+which is the more granular signal anyway.
+
 ## Prerequisites
 
 A Cloudflare session that can read **and write** R2 *and* Vectorize:

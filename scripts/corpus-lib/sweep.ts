@@ -305,3 +305,102 @@ export function planExplicitPair(
     readyDropCount: drop!.status === "ready" ? 1 : 0,
   };
 }
+
+// What a sweep silently invalidated on the copy it kept.
+//
+// novelty_verdict and the similarity snapshot are both claims about a
+// *relationship*, computed once at summarize time and then frozen on one node.
+// Dropping a duplicate changes the corpus around the survivor, so both can go
+// wrong the moment the sweep finishes -- and nothing recomputes them.
+//
+// This is not hypothetical. Two keepers of an earlier sweep were left marked
+// "duplicate", each citing the copy that had just been deleted as its
+// justification: a verdict that was not merely stale but self-referential.
+//
+// Reporting is deliberately narrow. A keeper is flagged only when it actually
+// references a dropped reading -- a cited connection, or a similarity snapshot
+// measured while the dropped copy was still indexed -- rather than flagging
+// every keeper, which would train the operator to ignore the warning.
+export interface DropInvalidation {
+  id: string;
+  invalidated: boolean;
+  verdict?: string;
+  staleConnections: string[];
+  staleSimilarity: boolean;
+}
+
+export function invalidatedByDrop(
+  keeperId: string,
+  manifest: {
+    novelty_verdict?: string;
+    connections?: { id: string; reason: string }[];
+    similarity?: { count: number; max?: number; mean?: number; computed_at: string };
+  } | null,
+  droppedIds: Set<string>,
+  // Drops the index actually held a vector for, probed rather than inferred
+  // from status. created_at lets a snapshot that predates a copy rule it out.
+  vectoredDrops: { id: string; created_at?: string }[],
+): DropInvalidation {
+  const base: DropInvalidation = {
+    id: keeperId,
+    invalidated: false,
+    staleConnections: [],
+    staleSimilarity: false,
+  };
+  // No manifest means no evidence either way. Say nothing rather than guess:
+  // a false warning is worse than a missed one here, since the operator's
+  // remedy costs a rescore.
+  if (manifest === null) return base;
+
+  // Every field below is read defensively. This report runs AFTER objects are
+  // deleted and index/list.json is rewritten, so a stored value of an
+  // unexpected shape must not throw -- that would turn a fully successful
+  // destructive sweep into a failed command and discard the report with it.
+  // Full ManifestSchema parsing would be the wrong tool: it would reject a
+  // drifted-but-readable manifest outright and lose the report anyway.
+  const connections = Array.isArray(manifest.connections) ? manifest.connections : [];
+  const staleConnections = connections
+    .filter((c): c is { id: string; reason: string } =>
+      typeof c === "object" && c !== null && typeof (c as { id?: unknown }).id === "string")
+    .map((c) => c.id)
+    .filter((id) => droppedIds.has(id));
+
+  const similarity =
+    typeof manifest.similarity === "object" && manifest.similarity !== null
+      ? manifest.similarity
+      : undefined;
+  const count = typeof similarity?.count === "number" ? similarity.count : 0;
+  const computedAt = typeof similarity?.computed_at === "string" ? similarity.computed_at : undefined;
+
+  // A dropped copy can only have been in the snapshot if it existed when the
+  // snapshot was computed. That is a proof, not a heuristic, and it rules out
+  // the case where the older, richer copy is kept -- or --keep forces it -- so
+  // the survivor's score predates the copy being removed.
+  //
+  // Residual limitation: a positive count does not prove the dropped copy was
+  // among the neighbours counted; it may have been entirely other readings.
+  // The snapshot stores count/max/mean but not neighbour ids, so no stored
+  // evidence can settle that. Recording ids would be a schema change, and the
+  // remedy for a false warning is one --rescore with no LLM call, so the
+  // asymmetry favours warning here.
+  // Compare instants, not strings. ManifestSchema uses zod .datetime(), which
+  // accepts both "…00Z" and "…00.000Z" for the same moment, and "." sorts
+  // before "Z" -- so raw string ordering would rule out a copy that really
+  // could have been counted. An unparseable or missing timestamp is treated as
+  // "could have been", since suppressing on bad data would hide a real warning.
+  const snapshotAt = computedAt === undefined ? NaN : Date.parse(computedAt);
+  const anyDropPredatesSnapshot = vectoredDrops.some((d) => {
+    if (d.created_at === undefined || Number.isNaN(snapshotAt)) return true;
+    const dropAt = Date.parse(d.created_at);
+    return Number.isNaN(dropAt) || dropAt <= snapshotAt;
+  });
+  const staleSimilarity = count > 0 && anyDropPredatesSnapshot;
+
+  return {
+    ...base,
+    ...(manifest.novelty_verdict === undefined ? {} : { verdict: manifest.novelty_verdict }),
+    staleConnections,
+    staleSimilarity,
+    invalidated: staleConnections.length > 0 || staleSimilarity,
+  };
+}

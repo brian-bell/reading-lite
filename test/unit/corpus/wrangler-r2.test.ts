@@ -3,6 +3,7 @@ import {
   isObjectNotFound,
   keysForReading,
   queryByVectorId,
+  vectorExists,
   type Runner,
 } from "../../../scripts/corpus-lib/wrangler-r2";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
@@ -183,5 +184,40 @@ describe("queryByVectorId", () => {
       run: ok([{ id: "rd_b", score: 0.5 }, { id: 7 }, { score: 0.2 }]),
     });
     expect(out).toEqual([{ id: "rd_b", score: 0.5 }]);
+  });
+});
+
+describe("vectorExists", () => {
+  it("is true when the index returns the vector", async () => {
+    const run: Runner = async () => ({
+      code: 0,
+      stdout: `📋 Fetching vectors...\n${JSON.stringify([{ id: "rd_a", values: [1] }])}`,
+      stderr: "",
+    });
+    expect(await vectorExists("idx", "rd_a", { run })).toBe(true);
+  });
+
+  it("is false on the confirmed not-found warning, which exits ZERO", async () => {
+    const run: Runner = async () => ({
+      code: 0,
+      stdout: "📋 Fetching vectors...",
+      stderr: "▲ [WARNING] The index does not contain vectors corresponding to the provided identifiers",
+    });
+    expect(await vectorExists("idx", "rd_gone", { run })).toBe(false);
+  });
+
+  it("is false for an empty array", async () => {
+    const run: Runner = async () => ({ code: 0, stdout: "[]", stderr: "" });
+    expect(await vectorExists("idx", "rd_gone", { run })).toBe(false);
+  });
+
+  it("throws on a non-zero exit rather than guessing absence", async () => {
+    const run: Runner = async () => ({ code: 1, stdout: "", stderr: "Unknown arguments: bogus" });
+    await expect(vectorExists("idx", "rd_a", { run })).rejects.toThrow(/get-vectors/i);
+  });
+
+  it("throws when a zero exit yields neither JSON nor the known warning", async () => {
+    const run: Runner = async () => ({ code: 0, stdout: "something unexpected", stderr: "" });
+    await expect(vectorExists("idx", "rd_a", { run })).rejects.toThrow(/unexpected/i);
   });
 });
