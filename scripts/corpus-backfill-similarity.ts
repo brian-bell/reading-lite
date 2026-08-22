@@ -11,7 +11,11 @@
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
-import { planBackfill, snapshotFor, withSimilarity } from "./corpus-lib/backfill-similarity";
+import {
+  planBackfill,
+  snapshotFor,
+  validateBackfillWrite,
+} from "./corpus-lib/backfill-similarity";
 import { SIMILAR_TOP_K } from "../src/modules/stores/similarity-store";
 import {
   queryByVectorId,
@@ -130,10 +134,40 @@ async function main(): Promise<void> {
   }
 
   const now = new Date().toISOString();
+  // Confirmed-written only. A reading enters this map after its manifest write
+  // succeeds, never before: the flush below turns it into a list row, and
+  // planBackfill treats that row as the resumability marker. Recording a score
+  // whose manifest write failed would skip the reading permanently on every
+  // later run -- the same manifest/index divergence this flush exists to
+  // prevent, but in the direction that does not self-heal.
   const scored = new Map<string, ReturnType<typeof snapshotFor>>();
+  let measured = 0;
   let noVector = 0;
   let errored = 0;
+  let invalid = 0;
 
+  // Flush the list index for whatever was written, on every exit path. Manifest
+  // writes happen per reading, so deferring the index to a clean finish would
+  // leave the manifests carrying a score while every list row still lacked one
+  // if the pass threw or was interrupted.
+  //
+  // Not a per-row write: that would be one non-CAS put of the whole ~570KB
+  // index per reading, widening the concurrent-write window it is meant to
+  // protect. A flush on the way out costs one put and closes everything except
+  // a hard kill -- and even that self-heals, because planBackfill decides what
+  // to score from the list row, so anything missing from the index is simply
+  // rescored on the next run.
+  const flushIndex = async (): Promise<void> => {
+    if (!opts.execute || scored.size === 0) return;
+    const updated = items.map((i) => {
+      const snap = scored.get(i.id);
+      return snap === undefined ? i : { ...i, similarity: snap };
+    });
+    await writeListIndex(updated, deps);
+    console.log(`index/list.json rewritten (${scored.size} row(s) updated).`);
+  };
+
+  try {
   for (const t of targets) {
     // Over-fetch by one: the reading's own vector always comes back first.
     const matches = await queryByVectorId(vectorizeIndex, t.id, SIMILAR_TOP_K + 1);
@@ -143,44 +177,92 @@ async function main(): Promise<void> {
       continue;
     }
     const snap = snapshotFor(t.id, matches, now);
-    scored.set(t.id, snap);
+    measured++;
     const score = snap.max === undefined ? "none" : snap.max.toFixed(3);
     console.log(`  ${t.id}  neighbours=${snap.count} nearest=${score}  ${t.url}`);
 
     if (!opts.execute) continue;
 
-    const manifest = await readManifest(t.key_prefix, deps);
+    // readManifest JSON.parses without a guard, so malformed stored JSON throws
+    // here. Catch it per reading: one bad object should cost that reading, not
+    // abort a pass that has already written others.
+    let manifest: unknown;
+    try {
+      manifest = await readManifest(t.key_prefix, deps);
+    } catch (e) {
+      errored++;
+      console.error(`  ! manifest unparseable for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
     if (manifest === null) {
       errored++;
       console.error(`  ! manifest unreadable for ${t.id}`);
-      scored.delete(t.id);
       continue;
     }
-    await writeManifest(t.key_prefix, withSimilarity(manifest, snap), deps);
+    // Stored schema can drift. Writing an invalid manifest back would add a
+    // score to an object the Worker rejects at read time and mark its row
+    // scored, hiding it from later repair -- so skip and report it instead.
+    const check = validateBackfillWrite(manifest, snap);
+    if (!check.ok) {
+      invalid++;
+      console.error(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
+      continue;
+    }
+    try {
+      await writeManifest(t.key_prefix, check.manifest, deps);
+    } catch (e) {
+      errored++;
+      console.error(`  ! manifest write failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    // Only now is the score durable enough to record in the index.
+    scored.set(t.id, snap);
+  }
+  } finally {
+    await flushIndex();
   }
 
-  console.log(`\nScored: ${scored.size}`);
+  console.log(`\nMeasured: ${measured}${opts.execute ? `, written: ${scored.size}` : ""}`);
   if (noVector > 0) {
     console.log(
       `No vector indexed: ${noVector} — these are ready readings whose vector was ` +
       `never written or has been removed. They cannot be scored without re-embedding.`,
     );
   }
-  if (errored > 0) console.log(`Manifest read errors: ${errored}`);
+  if (errored > 0) {
+    console.log(`Manifest read/write failures: ${errored} — these readings were not scored.`);
+  }
+  if (invalid > 0) {
+    console.log(
+      `Manifests failing ManifestSchema: ${invalid} — skipped rather than rewritten, ` +
+      `so they stay visible to a later repair.`,
+    );
+  }
+
+  // One rule for the exit status: a reading this run attempted and did not
+  // score means the run did not do its job, whatever the cause. Per-reading
+  // catches keep one bad object from aborting a pass that has already written
+  // others, but they must not turn a partial run into a successful exit --
+  // automation would read that as "backfill complete", and every unscored row
+  // stays eligible and is retried on every future run.
+  //
+  // A --limit run is not a failure: those targets were never attempted.
+  //
+  // This does mean the command keeps exiting nonzero while the corpus holds
+  // readings with no vector, which is the current steady state. That is
+  // intended. It is the same reason those are reported rather than recorded as
+  // an empty neighbourhood: a gap the tool cannot close should stay visible.
+  const unscored = noVector + errored + invalid;
+  if (opts.execute && unscored > 0) {
+    console.error(
+      `\n${unscored} of ${targets.length} attempted reading(s) were not scored — run incomplete.`,
+    );
+    process.exitCode = 1;
+  }
 
   if (!opts.execute) {
     console.log("\nDRY RUN — nothing changed. Re-run with --execute to apply.");
-    return;
   }
-
-  // Mirror the scores onto the list rows so the SPA sees them without a
-  // per-reading manifest fetch.
-  const updated = items.map((i) => {
-    const snap = scored.get(i.id);
-    return snap === undefined ? i : { ...i, similarity: snap };
-  });
-  await writeListIndex(updated, deps);
-  console.log("index/list.json rewritten.");
 }
 
 main().catch((e: unknown) => {

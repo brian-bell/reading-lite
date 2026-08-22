@@ -16,6 +16,7 @@
 // already owns -- no OpenAI spend, and no risk of a re-embed drifting from the
 // vector actually stored.
 
+import { ManifestSchema } from "../../src/schemas/manifest";
 import {
   SIMILAR_TOP_K,
   excludeSelf,
@@ -84,4 +85,47 @@ export function withSimilarity<T extends object>(
   similarity: SimilaritySnapshot,
 ): T & { similarity: SimilaritySnapshot } {
   return { ...manifest, similarity };
+}
+
+// Checks the object the backfill is about to WRITE, not the one it read.
+//
+// AGENTS.md requires manifest reads from R2 to be parsed, because stored schema
+// can drift. The backfill is the one corpus tool that writes the manifest back,
+// so skipping validation would do more than tolerate an invalid object: it
+// would add a score to something the Worker rejects at read time and mark its
+// list row scored, hiding it from any later repair.
+//
+// Validating the candidate rather than the input matters in one direction.
+// A manifest whose ONLY defect is a malformed `similarity` -- left by an older
+// writer, a manual repair, or a manifest/index divergence -- is repaired by
+// this very write, so rejecting it on the way in would fail the same reading on
+// every run forever while refusing the fix it could safely make. Unrelated
+// drift still fails, because the candidate carries it too.
+//
+// On success it returns the ORIGINAL merged object, not the parsed one.
+// ManifestSchema is `.strip()`, so writing the zod output would silently drop
+// any field the schema does not know about -- exactly the byte-identical
+// guarantee that separates this tool from a reprocess. Parsing is a gate here,
+// not a transform.
+export type ManifestCheck =
+  | { ok: true; manifest: Record<string, unknown> }
+  | { ok: false; error: string };
+
+export function validateBackfillWrite(
+  raw: unknown,
+  similarity: SimilaritySnapshot,
+): ManifestCheck {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "manifest is not an object" };
+  }
+  const candidate = withSimilarity(raw as Record<string, unknown>, similarity);
+  const parsed = ManifestSchema.safeParse(candidate);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first ? `${first.path.join(".") || "(root)"}: ${first.message}` : "failed ManifestSchema",
+    };
+  }
+  return { ok: true, manifest: candidate };
 }
