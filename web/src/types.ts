@@ -94,6 +94,16 @@ export interface AnthropicUsage {
 
 export type Usage = LegacyUsage | OpenAIUsage | AnthropicUsage;
 
+// Measured closeness to nearest neighbours at summarize time. Optional: it
+// postdates the corpus, so older readings have none and the UI must render
+// without it. Mirrors SimilaritySnapshotSchema in src/schemas/manifest.ts.
+export interface SimilaritySnapshot {
+  count: number;
+  max?: number;
+  mean?: number;
+  computed_at: string;
+}
+
 export interface Manifest {
   id: string;
   url: string;
@@ -112,6 +122,7 @@ export interface Manifest {
   people?: string[];
   orgs?: string[];
   novelty_verdict?: NoveltyVerdict;
+  similarity?: SimilaritySnapshot;
   connections?: Connection[];
   summary_markdown?: string;
 
@@ -143,6 +154,7 @@ export interface ListReading {
   tags?: string[];
   keywords?: string[];
   novelty_verdict?: NoveltyVerdict;
+  similarity?: SimilaritySnapshot;
   created_at: string;
   updated_at?: string;
   error?: ManifestError;

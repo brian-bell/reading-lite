@@ -205,7 +205,10 @@ export function assertExtractedBatchPayloadWithinLimit(
   maxBytes = MAX_BATCH_BYTES,
 ): void {
   const requests = targets.map((extracted) =>
-    requestForSummarizeTarget({ extracted, similar: [], queryEmbedTokens: 0 }, model),
+    requestForSummarizeTarget(
+      { extracted, similar: [], queryEmbedTokens: 0, similarity: { count: 0, computed_at: "1970-01-01T00:00:00.000Z" } },
+      model,
+    ),
   );
   assertBatchPayloadWithinLimit(requests, maxBytes);
 }
@@ -280,6 +283,7 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     // Carry the query-embedding cost so the write phase records it even on a
     // resumed run (the similar phase won't recompute it).
     queryEmbedTokens: st.queryEmbedTokens,
+    similarity: st.similarity,
   };
   if (
     st.extracted.freshActivation?.kind === "create-new" ||

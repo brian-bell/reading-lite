@@ -2,12 +2,17 @@ import { truncateForEmbed } from "../../../src/process-reading";
 import type { SimilarContext } from "../../../src/modules/anthropic";
 import type { VectorizeMatch } from "../../lib/cf-clients";
 import type { EmbedResult } from "./clients";
+import {
+  SIMILAR_TOP_K,
+  excludeSelf,
+  summarizeSimilarity,
+} from "../../../src/modules/stores/similarity-store";
 import type { ExtractedTarget, SummarizeTarget } from "./types";
 
 // Mirror the realtime pipeline: embed the source text, query the index for the
 // top-K most similar readings, and feed those (id/url/title) into the summarize
 // prompt to ground novelty_verdict + connections.
-const TOP_K = 5;
+const TOP_K = SIMILAR_TOP_K;
 
 export interface SimilarDeps {
   embedMany(inputs: string[]): Promise<EmbedResult>;
@@ -15,6 +20,7 @@ export interface SimilarDeps {
     vector: number[],
     opts: { topK: number; returnMetadata?: boolean },
   ): Promise<VectorizeMatch[]>;
+  now(): string;
   topK?: number;
 }
 
@@ -32,9 +38,11 @@ export async function resolveSimilar(
   const out: SummarizeTarget[] = [];
   for (let i = 0; i < extracted.length; i++) {
     const e = extracted[i]!;
-    const matches = await deps.query(embeddings[i]!, { topK, returnMetadata: true });
-    const similar: SimilarContext[] = matches
-      .filter((m) => m.id !== e.target.readingId)
+    // Over-fetch by one, then drop self: on a recover/reprocess the reading is
+    // already indexed and would otherwise consume a neighbour slot.
+    const matches = await deps.query(embeddings[i]!, { topK: topK + 1, returnMetadata: true });
+    const neighbours = excludeSelf(matches, e.target.readingId, topK);
+    const similar: SimilarContext[] = neighbours
       .map((m) => {
         const md = (m.metadata ?? {}) as { url?: unknown; title?: unknown };
         const ctx: SimilarContext = {
@@ -44,7 +52,15 @@ export async function resolveSimilar(
         if (typeof md.title === "string") ctx.title = md.title;
         return ctx;
       });
-    out.push({ extracted: e, similar, queryEmbedTokens: tokensByInput[i] ?? 0 });
+    out.push({
+      extracted: e,
+      similar,
+      queryEmbedTokens: tokensByInput[i] ?? 0,
+      similarity: summarizeSimilarity(
+        neighbours.map((m) => ({ id: m.id, score: m.score, url: "" })),
+        deps.now(),
+      ),
+    });
   }
   return out;
 }

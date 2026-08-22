@@ -716,6 +716,51 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
   });
 
+  it("records a measured similarity snapshot on the terminal manifest", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    installVectorizeStub();
+
+    const submit = async (url: string) => {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request("http://t/api/readings", {
+          method: "POST",
+          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({ url }),
+        }),
+        env,
+        ctx,
+      );
+      await drainQueue(services);
+      await waitOnExecutionContext(ctx);
+      const { id } = (await res.json()) as { id: string };
+      const detail = await app.fetch(
+        new Request(`http://t/api/readings/${id}`, { headers: { authorization: `Bearer ${TOKEN}` } }),
+        env,
+        createExecutionContext(),
+      );
+      return (await detail.json()) as {
+        status: string;
+        similarity?: { count: number; max?: number; mean?: number; computed_at: string };
+      };
+    };
+
+    // First reading: nothing in the index yet, so the neighbourhood is empty.
+    // That must be recorded as count 0 rather than a fabricated score.
+    const first = await submit("https://example.com/sim-first");
+    expect(first.status).toBe("ready");
+    expect(first.similarity?.count).toBe(0);
+    expect(first.similarity?.max).toBeUndefined();
+    expect(first.similarity?.computed_at).toEqual(expect.any(String));
+
+    // Second reading now has the first as a neighbour, at the stub's 0.9.
+    const second = await submit("https://example.com/sim-second");
+    expect(second.similarity?.count).toBe(1);
+    expect(second.similarity?.max).toBeCloseTo(0.9, 10);
+    expect(second.similarity?.mean).toBeCloseTo(0.9, 10);
+  });
+
   it("makes a new URL discoverable by lookup before processing finishes", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });

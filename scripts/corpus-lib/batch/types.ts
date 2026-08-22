@@ -1,3 +1,4 @@
+import type { SimilaritySnapshot } from "../../../src/modules/stores/similarity-store";
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type {
@@ -51,6 +52,9 @@ export interface SummarizeTarget {
   // (the realtime "query" embedding). Summed with the tldr embedding at write
   // time to mirror process-reading.ts's openai_embedding_tokens.
   queryEmbedTokens: number;
+  // Measured closeness to the neighbours above, mirroring process-reading.ts so
+  // a batch-written reading is indistinguishable from a realtime one.
+  similarity: SimilaritySnapshot;
 }
 
 export interface DroppedTarget {
@@ -80,6 +84,9 @@ export interface SidecarTarget {
   // Persisted so the write phase records the full embedding cost even on a
   // resumed run (the similar phase, which computes it, doesn't re-run on resume).
   queryEmbedTokens: number;
+  // Same reason: the similar phase measures it and does not re-run on resume.
+  // Optional so sidecars written before this field still load.
+  similarity?: SimilaritySnapshot;
   // Only fresh ingest sets this. Both batch paths now eagerly claim by-url before
   // submit, but they differ on terminal failure: a fresh ingest *created* the
   // slot, so write-phase releases that exact claim (set true for create-new /

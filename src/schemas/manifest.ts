@@ -138,6 +138,20 @@ export const ProcessingAttemptSchema = ProcessingAttemptSummarySchema.extend({
 }).strip();
 export type ProcessingAttempt = z.infer<typeof ProcessingAttemptSchema>;
 
+
+// Measured closeness to the nearest neighbours at summarize time. Optional
+// because it postdates the corpus: readings written before it exist without
+// one, and must keep parsing. See SimilaritySnapshot in similarity-store.ts
+// for why this is a number and why computed_at matters.
+export const SimilaritySnapshotSchema = z
+  .object({
+    count: z.number().int().nonnegative(),
+    max: z.number().optional(),
+    mean: z.number().optional(),
+    computed_at: z.string().datetime(),
+  })
+  .strip();
+
 export const ManifestSchema = z
   .object({
     id: z.string().min(1),
@@ -157,6 +171,7 @@ export const ManifestSchema = z
     people: z.array(z.string()).optional(),
     orgs: z.array(z.string()).optional(),
     novelty_verdict: NoveltyVerdictSchema.optional(),
+    similarity: SimilaritySnapshotSchema.optional(),
     connections: z.array(ConnectionSchema).optional(),
     summary_markdown: z.string().optional(),
 
