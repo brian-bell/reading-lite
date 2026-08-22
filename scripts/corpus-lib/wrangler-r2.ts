@@ -122,6 +122,48 @@ export async function deleteVector(
   return code === 0 ? "deleted" : "error";
 }
 
+// Queries the index using a vector that is already stored, by id. This is what
+// makes the similarity backfill free: no embedding call, no OpenAI spend, and no
+// risk of a freshly-computed embedding drifting from the vector actually indexed.
+//
+// Returns null when the reading owns no vector — a `ready` row whose vector was
+// never written, or was removed. That is a real state in the corpus (the index
+// holds fewer vectors than there are ready readings), and the caller must report
+// it rather than silently record an empty neighbourhood, which would be
+// indistinguishable from a genuinely isolated reading.
+export async function queryByVectorId(
+  index: string,
+  id: string,
+  topK: number,
+  deps: Pick<R2Deps, "run"> = {},
+): Promise<{ id: string; score: number }[] | null> {
+  const run = deps.run ?? defaultRunner;
+  const { code, stdout, stderr } = await run("wrangler", [
+    "vectorize", "query", index,
+    "--vector-id", id,
+    "--top-k", String(topK),
+  ]);
+  if (code !== 0) {
+    if (/not found|does not exist|no such/i.test(stderr)) return null;
+    throw new Error(`vectorize query failed for ${id}: ${stderr.trim().split("\n").pop() ?? code}`);
+  }
+  const start = stdout.indexOf("{");
+  if (start < 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.slice(start));
+  } catch {
+    throw new Error(`could not parse vectorize query output for ${id}`);
+  }
+  const matches = (parsed as { matches?: unknown }).matches;
+  if (!Array.isArray(matches)) return null;
+  return matches
+    .filter((m): m is { id: string; score: number } =>
+      typeof (m as { id?: unknown }).id === "string" &&
+      typeof (m as { score?: unknown }).score === "number")
+    .map((m) => ({ id: m.id, score: m.score }));
+}
+
 // Rewrites index/list.json wholesale (a plain put, not a CAS write — run when
 // nothing is being submitted so a concurrent queue write can't be lost).
 export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<void> {
