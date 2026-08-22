@@ -47,6 +47,18 @@ export function recoveryAction(row: AuditRow): ActionDecision {
       return { action: "reprocess", why: "summarize hiccup — re-run" };
     case "FetchTimeoutError":
       return { action: "reprocess", why: "transient fetch timeout" };
+    case "SourceRejectedError":
+    case "OpenAISourceRejectedError":
+      if (isYoutube) {
+        return {
+          action: "skip",
+          why: "thin YouTube floor — import via local youtube-import skill",
+        };
+      }
+      return {
+        action: "skip",
+        why: "thin extraction — reprocess would resubmit the same source",
+      };
     case "OversizedResponseError":
       return { action: "local-extract", why: "retry locally (article body usually < cap once extracted)" };
     case "BadStatusError": {

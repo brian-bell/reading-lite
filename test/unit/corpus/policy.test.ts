@@ -28,6 +28,36 @@ describe("recoveryAction", () => {
     expect(recoveryAction(row({ category: "teaser" })).action).toBe("skip");
   });
 
+  it("skips source-rejected readings instead of reprocessing the same extraction", () => {
+    expect(
+      recoveryAction(row({ code: "SourceRejectedError", message: "teaser of the URL" })),
+    ).toMatchObject({
+      action: "skip",
+      why: /thin extraction — reprocess would resubmit the same source/i,
+    });
+    expect(
+      recoveryAction(
+        row({
+          code: "OpenAISourceRejectedError",
+          url: "https://www.youtube.com/watch?v=YtTWNzOtkxU",
+          message: "metadata-only YouTube floor, no transcript",
+        }),
+      ),
+    ).toMatchObject({
+      action: "skip",
+      why: /youtube-import/i,
+    });
+    expect(
+      recoveryAction(
+        row({
+          code: "SourceRejectedError",
+          url: "https://youtu.be/YtTWNzOtkxU",
+          message: "no transcript",
+        }),
+      ).action,
+    ).toBe("skip");
+  });
+
   it("routes failed by error class/status", () => {
     const ba = (msg: string, reason = "") => row({ code: "BadStatusError", message: msg, reason });
     expect(recoveryAction(ba("status 403")).action).toBe("local-extract");

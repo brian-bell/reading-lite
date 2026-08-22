@@ -44,6 +44,12 @@ export function reasonForFailure(
       return "Summarization failed — invalid model tool output";
     case "FetchTimeoutError":
       return "Fetch timed out";
+    case "SourceRejectedError":
+    case "OpenAISourceRejectedError":
+      if (/youtube\.com|youtu\.be/i.test(url)) {
+        return "Thin extraction — import via local youtube-import skill";
+      }
+      return "Thin extraction — not a full article or transcript";
     default:
       return code ? `${code}: ${(message ?? "").slice(0, 60)}` : "Unknown failure";
   }
