@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isObjectNotFound,
   keysForReading,
+  queryByVectorId,
   type Runner,
 } from "../../../scripts/corpus-lib/wrangler-r2";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
@@ -122,5 +123,65 @@ describe("isObjectNotFound", () => {
     expect(isObjectNotFound("503 Service Unavailable: GET b/index/by-url/aa404bb")).toBe(false);
     expect(isObjectNotFound("403 Forbidden")).toBe(false);
     expect(isObjectNotFound("Internal Server Error (500)")).toBe(false);
+  });
+});
+
+describe("queryByVectorId", () => {
+  const ok = (matches: unknown[]): Runner => async () => ({
+    code: 0,
+    stdout: `📋 Searching...\n${JSON.stringify({ count: matches.length, matches })}`,
+    stderr: "",
+  });
+
+  it("parses matches out of wrangler's decorated stdout", async () => {
+    const out = await queryByVectorId("idx", "rd_a", 6, {
+      run: ok([{ id: "rd_a", score: 1 }, { id: "rd_b", score: 0.7 }]),
+    });
+    expect(out).toEqual([{ id: "rd_a", score: 1 }, { id: "rd_b", score: 0.7 }]);
+  });
+
+  it("returns null on the real missing-vector signal, which exits ZERO", async () => {
+    // Verified against wrangler 4.101: an unknown vector id is not an error.
+    // It exits 0 with a warning on stderr and prints no JSON.
+    const run: Runner = async () => ({
+      code: 0,
+      stdout: "📋 Searching for relevant vectors...",
+      stderr: "▲ [WARNING] Could not find any relevant vectors",
+    });
+    expect(await queryByVectorId("idx", "rd_gone", 6, { run })).toBeNull();
+  });
+
+  it("throws on a non-zero exit instead of reporting a missing vector", async () => {
+    // Missing vectors never exit non-zero, so a failure here is a real error.
+    // Collapsing it into null would invent a corpus gap that does not exist.
+    const run: Runner = async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "Unknown arguments: bogusFlag\nwrangler vectorize query --filter '{ 'p2': { '$ne': true } }'",
+    });
+    await expect(queryByVectorId("idx", "rd_a", 6, { run })).rejects.toThrow(/vectorize query failed/i);
+  });
+
+  it("does not mistake CLI usage text for a missing vector", async () => {
+    const run: Runner = async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "error: no such option '--vector-id'",
+    });
+    await expect(queryByVectorId("idx", "rd_a", 6, { run })).rejects.toThrow();
+  });
+
+  it("throws when a zero exit yields neither JSON nor the known warning", async () => {
+    // Silently returning null here would turn any future change in wrangler's
+    // output shape into a fabricated 'no vector indexed' report.
+    const run: Runner = async () => ({ code: 0, stdout: "something unexpected", stderr: "" });
+    await expect(queryByVectorId("idx", "rd_a", 6, { run })).rejects.toThrow(/unexpected/i);
+  });
+
+  it("ignores malformed match entries rather than passing junk on", async () => {
+    const out = await queryByVectorId("idx", "rd_a", 6, {
+      run: ok([{ id: "rd_b", score: 0.5 }, { id: 7 }, { score: 0.2 }]),
+    });
+    expect(out).toEqual([{ id: "rd_b", score: 0.5 }]);
   });
 });

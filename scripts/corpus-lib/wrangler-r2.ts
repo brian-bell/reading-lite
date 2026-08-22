@@ -122,6 +122,68 @@ export async function deleteVector(
   return code === 0 ? "deleted" : "error";
 }
 
+// Queries the index using a vector that is already stored, by id. This is what
+// makes the similarity backfill free: no embedding call, no OpenAI spend, and no
+// risk of a freshly-computed embedding drifting from the vector actually indexed.
+//
+// Returns null ONLY for the confirmed missing-vector signal — a `ready` row
+// whose vector was never written, or was removed. That is a real state in the
+// corpus (the index holds fewer vectors than there are ready readings), and the
+// caller must report it rather than silently record an empty neighbourhood,
+// which would be indistinguishable from a genuinely isolated reading.
+//
+// Every other failure throws. Collapsing an error into null would invent a
+// corpus gap, which is the same mistake in the opposite direction and just as
+// misleading. This mirrors readObjectStrict / isObjectNotFound in this module:
+// erring toward "not absent" is the safe direction.
+// The exact phrase wrangler emits for an id that has no vector in the index.
+const VECTOR_NOT_FOUND = /could not find any relevant vectors/i;
+
+export async function queryByVectorId(
+  index: string,
+  id: string,
+  topK: number,
+  deps: Pick<R2Deps, "run"> = {},
+): Promise<{ id: string; score: number }[] | null> {
+  const run = deps.run ?? defaultRunner;
+  const { code, stdout, stderr } = await run("wrangler", [
+    "vectorize", "query", index,
+    "--vector-id", id,
+    "--top-k", String(topK),
+  ]);
+  // A missing vector is NOT an error exit. Verified against wrangler 4.101:
+  // an unknown vector id exits 0, prints no JSON, and writes
+  // "Could not find any relevant vectors" to stderr. So a non-zero exit is
+  // always a real failure -- there is no not-found phrase to match for here,
+  // and matching one could only ever misclassify a genuine error as a missing
+  // vector (wrangler dumps usage text full of quotable phrases on a bad flag).
+  if (code !== 0) {
+    throw new Error(`vectorize query failed for ${id}: ${stderr.trim().split("\n").pop() ?? code}`);
+  }
+  if (VECTOR_NOT_FOUND.test(stderr)) return null;
+  const start = stdout.indexOf("{");
+  // Zero exit, no JSON, and not the known warning: something changed in
+  // wrangler's output. Fail loudly rather than return null, which would report
+  // a corpus gap that does not exist -- the one thing this function must keep
+  // distinct from a genuine missing vector.
+  if (start < 0) {
+    throw new Error(`unexpected vectorize query output for ${id}: ${stdout.trim().slice(0, 120)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.slice(start));
+  } catch {
+    throw new Error(`could not parse vectorize query output for ${id}`);
+  }
+  const matches = (parsed as { matches?: unknown }).matches;
+  if (!Array.isArray(matches)) return null;
+  return matches
+    .filter((m): m is { id: string; score: number } =>
+      typeof (m as { id?: unknown }).id === "string" &&
+      typeof (m as { score?: unknown }).score === "number")
+    .map((m) => ({ id: m.id, score: m.score }));
+}
+
 // Rewrites index/list.json wholesale (a plain put, not a CAS write — run when
 // nothing is being submitted so a concurrent queue write can't be lost).
 export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<void> {

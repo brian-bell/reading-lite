@@ -159,6 +159,7 @@ and a failed one preserves the ready manifest with
 | `npm run corpus-recover` | acts on an audit: reprocess or re-extract per a per-reason policy table |
 | `npm run corpus-drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run corpus-sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
+| `npm run corpus-backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
 | `npm run corpus-rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run corpus-delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run corpus-ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |

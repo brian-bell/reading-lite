@@ -234,6 +234,7 @@ scripts/                        # operator CLIs — all dry-run by default
   corpus-ingest.ts              # bulk-ingest a fresh .md dir via a provider Batch API
   corpus-drop.ts                # remove readings by URL or id
   corpus-sweep.ts               # reconcile duplicate copies of one resource
+  corpus-backfill-similarity.ts # score readings written before the field existed
   corpus-delete-orphans.ts      # remove orphan-dup pending readings, consistently
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
   reddit-import.ts, youtube-import.ts                     # source-specific local extraction

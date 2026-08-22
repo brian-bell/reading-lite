@@ -26,6 +26,7 @@
     "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
     "corpus-drop": "tsx scripts/corpus-drop.ts",
     "corpus-sweep": "tsx scripts/corpus-sweep.ts",
+    "corpus-backfill-similarity": "tsx scripts/corpus-backfill-similarity.ts",
     "corpus-rebuild-list": "tsx scripts/corpus-rebuild-list.ts",
     "summarizer-eval": "tsx scripts/summarizer-eval.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",
