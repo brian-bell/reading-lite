@@ -19,6 +19,19 @@ describe("novelty instructions", () => {
     expect(LIBRARIAN_INSTRUCTIONS).not.toMatch(/prefer\s+"familiar"\s+to\s+"novel"/i);
   });
 
+
+  it("gives a restatement somewhere to go, so the three verdicts partition", () => {
+    // A different piece that restates an argument already on the list adds
+    // nothing, so it is not "novel"; it is not the same piece, so it is not
+    // "duplicate". Requiring familiar to "add" left it homeless, and the enum
+    // is required -- the model would have had to pick arbitrarily.
+    expect(LIBRARIAN_INSTRUCTIONS).toMatch(/restates/i);
+  });
+
+  it("does not condition familiar on the piece adding something", () => {
+    expect(LIBRARIAN_INSTRUCTIONS).not.toMatch(/"familiar":[^\n]*and this piece adds to it/i);
+  });
+
   it("keeps duplicate strict", () => {
     expect(LIBRARIAN_INSTRUCTIONS).toMatch(/duplicate/i);
     expect(LIBRARIAN_INSTRUCTIONS).toMatch(/same piece/i);

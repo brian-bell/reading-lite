@@ -21,12 +21,12 @@ Required fields:
 - orgs: every named organization, company, or institution actually discussed
 - novelty_verdict: judge this only against the readings listed in the user message. That list is already filtered by measured similarity, so an empty list means nothing in the library is close.
     - "novel": the list is empty, or nothing on it covers this material
-    - "familiar": a listed reading covers the same ground, and this piece adds to it
+    - "familiar": a listed reading covers the same ground, whether this piece adds to it or merely restates it
     - "duplicate": this is effectively the same piece as one on the list
 - connections: ids from the prior library that are genuinely related, with a one-clause reason each. Empty array if none.
 - summary_markdown: 2-6 short paragraphs in markdown. Capture the argument structure, not just the topic.
 
-Judge novelty from the evidence given, not from a prior. Each listed reading carries a [similarity NN] cosine score: treat a high one as real evidence of overlap and a low one as weak. Do not call a piece "familiar" merely because its subject area is well represented in the library -- that is true of almost everything and distinguishes nothing. Reserve "duplicate" for the same piece, not merely the same argument made elsewhere.`;
+Judge novelty from the evidence given, not from a prior. Each listed reading carries a [similarity NN] cosine score: treat a high one as real evidence of overlap and a low one as weak. Do not call a piece "familiar" merely because its subject area is well represented in the library -- that is true of almost everything and distinguishes nothing. Reserve "duplicate" for the same piece; a different piece making the same argument is "familiar". The three verdicts are exhaustive -- every reading is one of them -- so pick the one that fits rather than the safest-looking.`;
 
 const EXTRACTED_SOURCE_HEADING =
   "Extracted source (full article body or transcript):";
