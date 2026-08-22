@@ -235,6 +235,7 @@ scripts/                        # operator CLIs — all dry-run by default
   corpus-drop.ts                # remove readings by URL or id
   corpus-sweep.ts               # reconcile duplicate copies of one resource
   corpus-backfill-similarity.ts # score readings written before the field existed
+  corpus-normalize-tags.ts      # rewrite stored tags into canonical hyphenated form
   corpus-delete-orphans.ts      # remove orphan-dup pending readings, consistently
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
   reddit-import.ts, youtube-import.ts                     # source-specific local extraction

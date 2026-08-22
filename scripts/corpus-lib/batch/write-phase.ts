@@ -6,6 +6,7 @@ import {
 } from "../../../src/schemas/manifest";
 import type { ReadingSummary } from "../../../src/schemas/reading-summary";
 import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
+import { normalizeTags } from "../../../src/modules/tags";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
@@ -410,7 +411,7 @@ function buildReadyManifest(
     status: "ready",
     title: reading.title,
     tldr: reading.tldr,
-    tags: reading.tags,
+    tags: normalizeTags(reading.tags),
     keywords: reading.keywords,
     people: reading.people,
     orgs: reading.orgs,
@@ -525,6 +526,6 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
   };
   if (m.title) out.title = m.title;
   if (m.tldr) out.tldr = m.tldr;
-  if (m.tags) out.tags = m.tags;
+  if (m.tags) out.tags = normalizeTags(m.tags);
   return out;
 }

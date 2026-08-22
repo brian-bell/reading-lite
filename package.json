@@ -33,7 +33,8 @@
     "process-reading-list": "tsx scripts/process-reading-list.ts",
     "extract-agent": "tsx scripts/extract-agent.ts",
     "extract-agent:probe": "tsx scripts/extract-agent-probe.ts",
-    "founder-bootstrap": "tsx scripts/founder-bootstrap.ts"
+    "founder-bootstrap": "tsx scripts/founder-bootstrap.ts",
+    "corpus-normalize-tags": "tsx scripts/corpus-normalize-tags.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",

@@ -22,6 +22,7 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
+import { normalizeTags } from "./modules/tags";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
@@ -163,7 +164,7 @@ export async function processReading(
       status: "ready",
       title: llm.reading.title,
       tldr: llm.reading.tldr,
-      tags: llm.reading.tags,
+      tags: normalizeTags(llm.reading.tags),
       keywords: llm.reading.keywords,
       people: llm.reading.people,
       orgs: llm.reading.orgs,
@@ -213,7 +214,7 @@ export async function processReading(
             url: args.url,
             title: llm.reading.title,
             tldr: llm.reading.tldr,
-            tags: llm.reading.tags,
+            tags: normalizeTags(llm.reading.tags),
             created_at: args.createdAt,
           },
         },
