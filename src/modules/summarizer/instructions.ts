@@ -19,14 +19,14 @@ Required fields:
 - keywords: 3-15 specific noun phrases that name the things the article is about
 - people: every named person actually discussed (not just cited)
 - orgs: every named organization, company, or institution actually discussed
-- novelty_verdict: one of
-    - "novel": no item in the user's prior library covers this material
-    - "familiar": the topic appears in the prior library but this piece adds something
-    - "duplicate": the user has effectively already read this
+- novelty_verdict: judge this only against the readings listed in the user message. That list is already filtered by measured similarity, so an empty list means nothing in the library is close.
+    - "novel": the list is empty, or nothing on it covers this material
+    - "familiar": a listed reading covers the same ground, and this piece adds to it
+    - "duplicate": this is effectively the same piece as one on the list
 - connections: ids from the prior library that are genuinely related, with a one-clause reason each. Empty array if none.
 - summary_markdown: 2-6 short paragraphs in markdown. Capture the argument structure, not just the topic.
 
-Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "duplicate" only when the prior reading is essentially the same piece.`;
+Judge novelty from the evidence given, not from a prior. Each listed reading carries a [similarity NN] cosine score: treat a high one as real evidence of overlap and a low one as weak. Do not call a piece "familiar" merely because its subject area is well represented in the library -- that is true of almost everything and distinguishes nothing. Reserve "duplicate" for the same piece, not merely the same argument made elsewhere.`;
 
 const EXTRACTED_SOURCE_HEADING =
   "Extracted source (full article body or transcript):";
