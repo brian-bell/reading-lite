@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   planBackfill,
   snapshotFor,
+  validateBackfillWrite,
   withSimilarity,
 } from "../../../scripts/corpus-lib/backfill-similarity";
 
@@ -121,5 +122,54 @@ describe("planBackfill --rescore", () => {
   it("still refuses to score a non-ready reading, which owns no vector", () => {
     const plan = planBackfill([{ ...scored, status: "failed" }] as never, { rescore: true });
     expect(plan.targets).toEqual([]);
+  });
+});
+
+describe("validateBackfillWrite", () => {
+  const SNAP = { count: 1, max: 0.6, mean: 0.6, computed_at: AT };
+  const valid = {
+    id: "rd_a",
+    url: "https://a.com/p",
+    url_hash: "a".repeat(64),
+    status: "ready",
+    content_type: "text/html",
+    content_status: "captured",
+    content_bytes: 10,
+    content_sha256: "b".repeat(64),
+    created_at: "2026-08-22T00:00:00.000Z",
+    updated_at: "2026-08-22T00:00:00.000Z",
+  };
+
+  it("accepts a manifest that parses once the score is merged in", () => {
+    const out = validateBackfillWrite(valid, SNAP);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.manifest.similarity).toEqual(SNAP);
+  });
+
+  it("rejects unrelated schema drift instead of entrenching it", () => {
+    const out = validateBackfillWrite({ ...valid, status: "not-a-status" }, SNAP);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toMatch(/status/);
+  });
+
+  it("repairs a malformed existing similarity rather than failing forever", () => {
+    // Validating the manifest as read would reject this on every run while
+    // refusing the very fix that would make it valid: the write replaces the
+    // offending field.
+    const out = validateBackfillWrite({ ...valid, similarity: { count: "lots" } }, SNAP);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.manifest.similarity).toEqual(SNAP);
+  });
+
+  it("rejects a non-object", () => {
+    expect(validateBackfillWrite(null, SNAP).ok).toBe(false);
+    expect(validateBackfillWrite("nope", SNAP).ok).toBe(false);
+  });
+
+  it("preserves unknown stored fields, which ManifestSchema would strip", () => {
+    const withExtra = { ...valid, some_future_field: { keep: "me" } };
+    const out = validateBackfillWrite(withExtra, SNAP);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.manifest.some_future_field).toEqual({ keep: "me" });
   });
 });

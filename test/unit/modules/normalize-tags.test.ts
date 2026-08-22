@@ -35,15 +35,69 @@ describe("normalizeTag", () => {
     expect(normalizeTag("ai/ml")).toBe("ai-ml");
   });
 
-  it("keeps a tag whose characters would otherwise be stripped entirely", () => {
-    // "c++" must not normalize to "c" -- that would silently merge it with a
-    // different language, so fall back to the trimmed lowercase original.
+  it("keeps punctuation that carries meaning, wherever it sits in the tag", () => {
+    // "c++" must not normalize to "c", nor "c#" to "c" -- either would silently
+    // merge a language tag into a different, plausible-looking one.
     expect(normalizeTag("C++")).toBe("c++");
+    expect(normalizeTag("C#")).toBe("c#");
   });
 
-  it("returns empty for input that is only separators", () => {
+  it("keeps meaningful punctuation when a word boundary follows it", () => {
+    // Regression: the old length-comparison guard inserted a hyphen per word
+    // boundary, and those hyphens cancelled out the stripped characters, so the
+    // fallback never fired. Trailing punctuation ("c++") was the only shape
+    // that happened to work.
+    expect(normalizeTag("f# music")).toBe("f#-music");
+    expect(normalizeTag("c# developers")).toBe("c#-developers");
+    expect(normalizeTag("c++ concurrency")).toBe("c++-concurrency");
+  });
+
+  it("keeps combining marks inside a word", () => {
+    // \p{L} alone excludes combining marks, which shatters any script that
+    // uses them: Devanagari vowel signs and the virama are marks, not letters.
+    expect(normalizeTag("हिन्दी")).toBe("हिन्दी");
+    // Decomposed "naive" + U+0308 must match the precomposed spelling, or two
+    // visually identical tags stay distinct forever.
+    expect(normalizeTag("nai\u0308ve")).toBe(normalizeTag("naïve"));
+  });
+
+  it("never keeps a partial sigil run", () => {
+    // Regression: `[+#]+` backtracked to satisfy the lookahead, so "C++17"
+    // became "c+-17" -- half a sigil, which is meaningless either way.
+    // A run is kept whole or dropped whole.
+    expect(normalizeTag("C++17")).toBe("c-17");
+    expect(normalizeTag("c+++x")).toBe("c-x");
+    expect(normalizeTag("ai##ml")).toBe("ai-ml");
+  });
+
+  it("only keeps a sigil that ends the token", () => {
+    // "+"/"#" belong to c++ and f#, but between two words they are a boundary.
+    // Otherwise "AI+ML" and "AI ML" would not collapse.
+    expect(normalizeTag("AI+ML")).toBe("ai-ml");
+    expect(normalizeTag("AI#ML")).toBe("ai-ml");
+    expect(normalizeTag("AI+ML")).toBe(normalizeTag("AI ML"));
+  });
+
+  it("does not hyphenate inside a non-ASCII word", () => {
+    // Regression: the old keep-list was /[a-z0-9]+/, so any accented or
+    // non-Latin letter was treated as a separator.
+    expect(normalizeTag("naïve")).toBe("naïve");
+    expect(normalizeTag("Café Culture")).toBe("café-culture");
+    expect(normalizeTag("日本語")).toBe("日本語");
+  });
+
+  it("returns empty for input that is only separators or punctuation", () => {
     expect(normalizeTag("   ")).toBe("");
     expect(normalizeTag("---")).toBe("");
+    expect(normalizeTag("!!!")).toBe("");
+  });
+
+  it("treats ordinary punctuation as a word boundary, not as content", () => {
+    // Otherwise "AI, ML" and "AI ML" would no longer collapse onto one tag,
+    // which is the whole point of the module.
+    expect(normalizeTag("AI, ML")).toBe("ai-ml");
+    expect(normalizeTag("Node.js")).toBe("node-js");
+    expect(normalizeTag("AI, ML")).toBe(normalizeTag("AI ML"));
   });
 });
 
