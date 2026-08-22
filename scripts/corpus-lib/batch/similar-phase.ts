@@ -44,12 +44,14 @@ export async function resolveSimilar(
     const neighbours = excludeSelf(matches, e.target.readingId, topK);
     const similar: SimilarContext[] = neighbours
       .map((m) => {
-        const md = (m.metadata ?? {}) as { url?: unknown; title?: unknown };
+        const md = (m.metadata ?? {}) as { url?: unknown; title?: unknown; tldr?: unknown };
         const ctx: SimilarContext = {
           id: m.id,
           url: typeof md.url === "string" ? md.url : "",
+          score: m.score,
         };
         if (typeof md.title === "string") ctx.title = md.title;
+        if (typeof md.tldr === "string") ctx.tldr = md.tldr;
         return ctx;
       });
     out.push({

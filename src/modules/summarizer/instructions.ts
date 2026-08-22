@@ -41,7 +41,9 @@ export function buildSummarizeUserMessage(input: SummarizeReadingInput): string 
       const heading = similar.title
         ? `${similar.id} — ${similar.title} (${similar.url})`
         : `${similar.id} — ${similar.url}`;
-      parts.push(`- ${heading}`);
+      const closeness =
+        similar.score === undefined ? "" : ` [similarity ${similar.score.toFixed(2)}]`;
+      parts.push(`- ${heading}${closeness}`);
       if (similar.tldr) parts.push(`  ${similar.tldr}`);
     }
     parts.push(

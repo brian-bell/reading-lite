@@ -44,7 +44,7 @@ describe("resolveSimilar", () => {
     expect(embedMany).toHaveBeenCalledWith(["body a"]);
     expect(out).toHaveLength(1);
     expect(out[0]!.similar).toEqual([
-      { id: "rd_other", url: "https://example.com/other", title: "Other" },
+      { id: "rd_other", url: "https://example.com/other", title: "Other", score: 0.9 },
     ]);
     // The query-embedding token count rides along for the write phase.
     expect(out[0]!.queryEmbedTokens).toBe(7);
