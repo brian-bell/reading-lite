@@ -100,8 +100,13 @@ export async function processReading(
     // context and the measured snapshot, so the number and the LLM's verdict
     // describe the same neighbourhood.
     const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
-    const similarContext: SimilarContext[] = neighbours
-      .map((s) => ({ id: s.id, url: s.url, title: s.title }));
+    const similarContext: SimilarContext[] = neighbours.map((s) => ({
+      id: s.id,
+      url: s.url,
+      ...(s.title === undefined ? {} : { title: s.title }),
+      ...(s.tldr === undefined ? {} : { tldr: s.tldr }),
+      score: s.score,
+    }));
     const similaritySnapshot = summarizeSimilarity(neighbours, services.now());
 
     const llm = await runStage(
@@ -198,6 +203,7 @@ export async function processReading(
           meta: {
             url: args.url,
             title: llm.reading.title,
+            tldr: llm.reading.tldr,
             tags: llm.reading.tags,
             created_at: args.createdAt,
           },
@@ -490,7 +496,7 @@ export interface CommitTerminalOpts {
   // Provided only when publishing a vector; omitted on failure paths.
   vector?: {
     embedding: number[];
-    meta: { url: string; title: string; tags: string[]; created_at: string };
+    meta: { url: string; title: string; tldr: string; tags: string[]; created_at: string };
   };
   // The success path passes a runStage-bound closure so each sub-write still logs
   // a stage event; failure paths omit it and write plainly.

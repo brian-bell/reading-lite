@@ -12,6 +12,11 @@ export class WrongEmbeddingDimensionError extends Error {
 export interface SimilarityMetadata {
   url: string;
   title?: string;
+  // Carried on the vector so a neighbour can be *described* to the summarizer,
+  // not merely named. Judging novelty from five bare titles is what the prompt
+  // was doing before; a tldr is 1-3 sentences by schema, far inside Vectorize's
+  // 10KiB per-vector metadata budget.
+  tldr?: string;
   tags?: string[];
   created_at?: string;
 }
@@ -157,6 +162,7 @@ export class SimilarityStore {
         url: typeof md.url === "string" ? md.url : "",
       };
       if (typeof md.title === "string") out.title = md.title;
+      if (typeof md.tldr === "string") out.tldr = md.tldr;
       if (Array.isArray(md.tags)) out.tags = md.tags.filter((t): t is string => typeof t === "string");
       if (typeof md.created_at === "string") out.created_at = md.created_at;
       return out;

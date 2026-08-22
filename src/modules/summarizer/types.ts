@@ -5,6 +5,10 @@ export interface SimilarContext {
   url: string;
   title?: string;
   tldr?: string;
+  // Measured cosine similarity to the reading being summarized. Shown to the
+  // model so closeness is read off the number that was actually computed
+  // rather than inferred from how alike two titles look.
+  score?: number;
 }
 
 export interface SummarizeReadingInput {

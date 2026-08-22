@@ -524,6 +524,7 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
     created_at: m.created_at,
   };
   if (m.title) out.title = m.title;
+  if (m.tldr) out.tldr = m.tldr;
   if (m.tags) out.tags = m.tags;
   return out;
 }

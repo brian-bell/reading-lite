@@ -79,7 +79,7 @@ function embedding(): number[] {
 function vectorOpt() {
   return {
     embedding: embedding(),
-    meta: { url: URL, title: "Test", tags: ["x"], created_at: "2026-06-19T00:00:00.000Z" },
+    meta: { url: URL, title: "Test", tldr: "Test tldr.", tags: ["x"], created_at: "2026-06-19T00:00:00.000Z" },
   };
 }
 
