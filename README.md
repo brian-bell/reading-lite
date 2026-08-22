@@ -36,7 +36,7 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
       → OpenAI text-embedding-3-small over the extracted text
       → Vectorize.query(top-K) for similar context
       → selected summarizer with structured output (OpenAI Responses by
-        default; Anthropic forced tool use when configured; no fallback)
+        default; Anthropic tool use when configured; no fallback)
       → OpenAI embed the final TL;DR
       → Vectorize.upsert(id, tldr_embedding, metadata)
       → R2 write final manifest + confirm by-url pointer
@@ -65,7 +65,7 @@ The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
 | `summarizer` | provider selection and normalized result/usage contract; defaults to OpenAI and never silently falls back |
 | `openai-summarizer` | one-shot OpenAI Responses request with strict JSON-schema output |
-| `anthropic` | one-shot `messages.create` with `tool_choice: {type: "tool", name: "emit_reading"}`; system + tool def cached via `cache_control` |
+| `anthropic` | one-shot `messages.create` with `tool_choice: any` (`emit_reading` or `reject_source`); system + tool defs cached via `cache_control` |
 | `stores` | `ReadingStore` over R2 (manifest, raw, extracted, by-url + by-id pointers) and `SimilarityStore` over Vectorize |
 | `http-retry` | `fetchWithRetry`: 5xx + network retry with exponential backoff + jitter; 429 → `RateLimitedError` so the queue reschedules instead of burning a slot |
 | `email` | per-reading notification via Resend |
@@ -217,7 +217,7 @@ src/
     embeddings/                 # OpenAI client
     summarizer/                 # provider selection + normalized usage/result contract
     openai-summarizer/          # Responses API + strict structured output
-    anthropic/                  # forced tool use + prompt caching
+    anthropic/                  # emit_reading / reject_source + prompt caching
     http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
     email.ts                    # Resend per-reading notification
     stores/

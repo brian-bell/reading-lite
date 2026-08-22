@@ -222,9 +222,9 @@ const BUILDINGS = [
     zone: "external",
     variant: "annex",
     blurb:
-      "Optional summarizer when SUMMARIZER_PROVIDER=anthropic. Forced tool_choice emit_reading; system+tool cached via cache_control. No silent fallback to OpenAI.",
+      "Optional summarizer when SUMMARIZER_PROVIDER=anthropic. tool_choice any (emit_reading or reject_source); system+tools cached via cache_control. No silent fallback to OpenAI.",
     cites: ["src/modules/anthropic", "src/modules/summarizer"],
-    payload: `messages.create +\ntool_choice: emit_reading\nANTHROPIC_API_KEY required`,
+    payload: `messages.create +\ntool_choice: any\nANTHROPIC_API_KEY required`,
   },
   {
     id: "dlq",
@@ -384,7 +384,7 @@ const FLOWS = {
         from: "pipeline",
         to: "anthropic",
         label: "summarize (optional)",
-        payload: `tool emit_reading\nwhen provider=anthropic`,
+        payload: `emit_reading or reject_source\nwhen provider=anthropic`,
       },
       {
         from: "pipeline",

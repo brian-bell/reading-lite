@@ -6,7 +6,9 @@ import {
   AnthropicError,
   NoToolUseError,
   BadToolInputError,
+  SourceRejectedError,
   EMIT_READING_TOOL_NAME,
+  REJECT_SOURCE_TOOL_NAME,
 } from "../../../src/modules/anthropic";
 import { READING_SUMMARY_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
 
@@ -92,10 +94,12 @@ describe("summarizeReading", () => {
     expect(headers.get("content-type")).toBe("application/json");
     const body = JSON.parse(init.body as string);
     expect(body.model).toBe("claude-sonnet-4-6");
-    expect(body.tool_choice).toEqual({ type: "tool", name: EMIT_READING_TOOL_NAME });
+    expect(body.tool_choice).toEqual({ type: "any" });
     expect(Array.isArray(body.tools)).toBe(true);
-    expect(body.tools).toHaveLength(1);
-    expect(body.tools[0].name).toBe(EMIT_READING_TOOL_NAME);
+    expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      EMIT_READING_TOOL_NAME,
+      REJECT_SOURCE_TOOL_NAME,
+    ]);
     // System is an array of blocks with cache_control on the last block (caches tools+system together).
     expect(Array.isArray(body.system)).toBe(true);
     const lastSystem = body.system[body.system.length - 1];
@@ -121,6 +125,9 @@ describe("summarizeReading", () => {
       .join("\n");
     expect(userText).toContain("https://example.com/article-xyz");
     expect(userText).toContain("body text here");
+    expect(userText).toContain(
+      "Extracted source (full article body or transcript):",
+    );
   });
 
   it("includes top-K similar readings as context", async () => {
@@ -188,6 +195,35 @@ describe("summarizeReading", () => {
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
 
+  it("throws SourceRejectedError when the model rejects a non-source extraction", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      ok({
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        stop_reason: "tool_use",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_01",
+            name: REJECT_SOURCE_TOOL_NAME,
+            input: { reason: "metadata-only YouTube floor, no transcript" },
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 10 },
+      }),
+    );
+    const error = await summarizeReading(
+      { url: "https://example.com/a", extractedText: "Watch on YouTube", similarReadings: [] },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+    ).catch((caught) => caught);
+    expect(error).toBeInstanceOf(SourceRejectedError);
+    expect(error).toMatchObject({
+      message: "metadata-only YouTube floor, no transcript",
+    });
+  });
+
   it("propagates RateLimitedError on 429 (no in-process retry)", async () => {
     const { RateLimitedError } = await import("../../../src/modules/http-retry");
     const fetchFn = vi.fn(async () =>
@@ -239,12 +275,27 @@ describe("buildSummarizeRequestBody", () => {
       "claude-opus-4-8",
     ) as Record<string, any>;
     expect(body.model).toBe("claude-opus-4-8");
-    expect(body.tool_choice).toEqual({ type: "tool", name: EMIT_READING_TOOL_NAME });
-    expect(body.tools).toHaveLength(1);
-    expect(body.tools[0].name).toBe(EMIT_READING_TOOL_NAME);
+    expect(body.tool_choice).toEqual({ type: "any" });
+    expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      EMIT_READING_TOOL_NAME,
+      REJECT_SOURCE_TOOL_NAME,
+    ]);
     const lastSystem = body.system[body.system.length - 1];
     expect(lastSystem.cache_control).toEqual({ type: "ephemeral" });
     expect(body.messages[0].role).toBe("user");
+  });
+
+  it("requires a full extraction and rejects a summary of the URL", () => {
+    const body = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-opus-4-8",
+    ) as Record<string, any>;
+    expect(body.system[0].text).toContain("full article body or a full transcript");
+    expect(body.system[0].text).toMatch(/summary or recap of the URL/i);
+    expect(body.system[0].text).toContain("Call reject_source when it is not");
+    expect(body.messages[0].content[0].text).toContain(
+      "Extracted source (full article body or transcript):",
+    );
   });
 
   it("is byte-identical to what summarizeReading sends (single source of truth)", async () => {
@@ -323,5 +374,56 @@ describe("parseEmitReadingResult", () => {
         usage,
       ),
     ).toThrow(BadToolInputError);
+  });
+
+  it("throws SourceRejectedError when reject_source is called", () => {
+    expect(() =>
+      parseEmitReadingResult(
+        [
+          {
+            type: "tool_use",
+            id: "t",
+            name: REJECT_SOURCE_TOOL_NAME,
+            input: { reason: "this is a recap of the URL, not the article" },
+          },
+        ],
+        usage,
+      ),
+    ).toThrow(SourceRejectedError);
+    expect(() =>
+      parseEmitReadingResult(
+        [
+          {
+            type: "tool_use",
+            id: "t",
+            name: REJECT_SOURCE_TOOL_NAME,
+            input: { reason: "this is a recap of the URL, not the article" },
+          },
+        ],
+        usage,
+      ),
+    ).toThrow("this is a recap of the URL, not the article");
+  });
+
+  it("prefers reject_source when both tools are present", () => {
+    expect(() =>
+      parseEmitReadingResult(
+        [
+          {
+            type: "tool_use",
+            id: "emit",
+            name: EMIT_READING_TOOL_NAME,
+            input: validToolInput,
+          },
+          {
+            type: "tool_use",
+            id: "reject",
+            name: REJECT_SOURCE_TOOL_NAME,
+            input: { reason: "teaser" },
+          },
+        ],
+        usage,
+      ),
+    ).toThrow(SourceRejectedError);
   });
 });

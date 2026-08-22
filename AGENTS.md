@@ -5,7 +5,7 @@ Submitting a URL writes an eager by-url ownership claim, stores a pending
 manifest in R2, and enqueues a `READING_JOBS` message; the consumer
 (`processReading`) extracts, embeds with OpenAI, queries Vectorize for similar
 readings, summarizes through the configured provider (OpenAI structured output
-by default; Anthropic forced tool use when selected — provider selection never
+by default; Anthropic tool use when selected — provider selection never
 falls back silently), and commits the terminal manifest plus `index/list.json`.
 
 This file is the agent quick reference: module map, commands, conventions, and

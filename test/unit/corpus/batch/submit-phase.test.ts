@@ -4,7 +4,6 @@ import {
   submitOpenAIBatch,
 } from "../../../../scripts/corpus-lib/batch/submit-phase";
 import { prepareOpenAIBatchPayload } from "../../../../scripts/corpus-lib/batch/openai-payload";
-import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type {
   BatchActivationPolicy,
   PersistedSidecar,
@@ -93,7 +92,7 @@ describe("submitBatch", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0].custom_id).toBe("rd_a");
     expect(requests[0].params.model).toBe("claude-opus-4-8");
-    expect(requests[0].params.tool_choice).toEqual({ type: "tool", name: EMIT_READING_TOOL_NAME });
+    expect(requests[0].params.tool_choice).toEqual({ type: "any" });
     const userText = JSON.stringify(requests[0].params.messages);
     expect(userText).toContain("# Article");
     expect(userText).toContain("https://example.com/a");

@@ -3,6 +3,10 @@ import {
   type ReadingSummary,
 } from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import {
+  LIBRARIAN_INSTRUCTIONS,
+  buildSummarizeUserMessage,
+} from "../summarizer/instructions";
 import type { SummarizeReadingInput } from "../summarizer/types";
 
 export type {
@@ -14,6 +18,7 @@ const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
 export const EMIT_READING_TOOL_NAME = "emit_reading";
+export const REJECT_SOURCE_TOOL_NAME = "reject_source";
 
 export class AnthropicError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -36,6 +41,13 @@ export class BadToolInputError extends Error {
   }
 }
 
+export class SourceRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SourceRejectedError";
+  }
+}
+
 export interface AnthropicDeps {
   fetch: typeof fetch;
   apiKey: string;
@@ -53,25 +65,9 @@ export interface SummarizeReadingResult {
   };
 }
 
-const SYSTEM_PROMPT = `You are a personal librarian. The user has saved a URL to read. Your job is to produce a structured summary so the user can decide whether to re-read it later, find it again by topic, and see how it relates to the rest of their library.
+const SYSTEM_PROMPT = `${LIBRARIAN_INSTRUCTIONS}
 
-Your output goes through a single tool call to "emit_reading". Use it exactly once. Do not write free-form prose.
-
-Required fields:
-- title: the article's title, or a faithful 5-12 word title if none
-- tldr: 1-3 sentences capturing the core thesis or finding
-- tags: 1-6 broad topical buckets (e.g. "ai", "infrastructure", "memoir")
-- keywords: 3-15 specific noun phrases that name the things the article is about
-- people: every named person actually discussed (not just cited)
-- orgs: every named organization, company, or institution actually discussed
-- novelty_verdict: one of
-    - "novel": no item in the user's prior library covers this material
-    - "familiar": the topic appears in the prior library but this piece adds something
-    - "duplicate": the user has effectively already read this
-- connections: ids from the prior library that are genuinely related, with a one-clause reason each. Empty array if none.
-- summary_markdown: 2-6 short paragraphs in markdown. Capture the argument structure, not just the topic.
-
-Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "duplicate" only when the prior reading is essentially the same piece.`;
+Call exactly one tool. Call emit_reading when the extracted source is a full article or transcript. Call reject_source when it is not. Do not write free-form prose.`;
 
 // Must advertise exactly the constraints ReadingSummarySchema enforces at parse
 // time (strictness + bounds); a tool call valid per this contract must never
@@ -148,6 +144,20 @@ const EMIT_READING_INPUT_SCHEMA = {
   ],
 } as const;
 
+const REJECT_SOURCE_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    reason: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Why the extracted source is not a full article or transcript.",
+    },
+  },
+  required: ["reason"],
+} as const;
+
 interface AnthropicToolUseBlock {
   type: "tool_use";
   id: string;
@@ -187,18 +197,25 @@ export function buildSummarizeRequestBody(
     tools: [
       {
         name: EMIT_READING_TOOL_NAME,
-        description: "Emit the structured reading record. Call exactly once.",
+        description:
+          "Emit the structured reading record when the extracted source is a full article or transcript.",
         input_schema: EMIT_READING_INPUT_SCHEMA,
       },
+      {
+        name: REJECT_SOURCE_TOOL_NAME,
+        description:
+          "Reject the input when it is a teaser, metadata-only page, or a summary of the URL rather than a full article or transcript.",
+        input_schema: REJECT_SOURCE_INPUT_SCHEMA,
+      },
     ],
-    tool_choice: { type: "tool", name: EMIT_READING_TOOL_NAME },
+    tool_choice: { type: "any" },
     messages: [
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: buildUserMessage(input),
+            text: buildSummarizeUserMessage(input),
           },
         ],
       },
@@ -207,11 +224,20 @@ export function buildSummarizeRequestBody(
 }
 
 // Parse a Messages `content` array (realtime or batch result) into the validated
-// reading + usage. Shared so both paths apply the same forced-tool-use contract.
+// reading + usage. Shared so both paths apply the same tool-use contract.
 export function parseEmitReadingResult(
   content: AnthropicMessageResponse["content"],
   usage: AnthropicMessageResponse["usage"],
 ): SummarizeReadingResult {
+  const rejectUse = content.find(
+    (b): b is AnthropicToolUseBlock =>
+      b.type === "tool_use" &&
+      (b as AnthropicToolUseBlock).name === REJECT_SOURCE_TOOL_NAME,
+  );
+  if (rejectUse) {
+    throw new SourceRejectedError(rejectSourceReason(rejectUse.input));
+  }
+
   const toolUse = content.find(
     (b): b is AnthropicToolUseBlock =>
       b.type === "tool_use" && (b as AnthropicToolUseBlock).name === EMIT_READING_TOOL_NAME,
@@ -230,6 +256,19 @@ export function parseEmitReadingResult(
   }
 
   return { reading: parsed.data, usage };
+}
+
+function rejectSourceReason(input: unknown): string {
+  if (
+    input &&
+    typeof input === "object" &&
+    "reason" in input &&
+    typeof input.reason === "string" &&
+    input.reason.trim().length > 0
+  ) {
+    return input.reason.trim();
+  }
+  return "extracted source is not a full article or transcript";
 }
 
 export async function summarizeReading(
@@ -262,37 +301,6 @@ export async function summarizeReading(
 
   const json = (await response.json()) as AnthropicMessageResponse;
   return parseEmitReadingResult(json.content, json.usage);
-}
-
-function buildUserMessage(input: SummarizeReadingInput): string {
-  const parts: string[] = [];
-  parts.push(`Source URL: ${input.url}`);
-  if (input.title) parts.push(`Page title: ${input.title}`);
-
-  if (input.similarReadings.length > 0) {
-    parts.push("");
-    parts.push("Possibly-related readings already in the library:");
-    for (const s of input.similarReadings) {
-      const head = s.title ? `${s.id} — ${s.title} (${s.url})` : `${s.id} — ${s.url}`;
-      parts.push(`- ${head}`);
-      if (s.tldr) parts.push(`  ${s.tldr}`);
-    }
-    parts.push("");
-    parts.push(
-      "Use these only as context for the novelty_verdict and connections. Do not summarize them.",
-    );
-  } else {
-    parts.push("");
-    parts.push("The user has no prior readings on closely-related topics.");
-  }
-
-  parts.push("");
-  parts.push("---");
-  parts.push("Article content (markdown):");
-  parts.push("");
-  parts.push(input.extractedText);
-
-  return parts.join("\n");
 }
 
 function anthropicErrorMessage(text: string, status: number): string {
