@@ -30,6 +30,47 @@ export interface SimilarityMatch extends SimilarityMetadata {
 // snapshot. Shared so the realtime and offline-batch pipelines agree.
 export const SIMILAR_TOP_K = 5;
 
+// Minimum cosine similarity for a neighbour to count as related.
+//
+// Vectorize's nearest-K always returns K results however far away they are, so
+// without a floor every reading -- however novel -- reached the summarizer under
+// the heading "Possibly-related readings already in the library:" followed by
+// five entries. The framing presupposed the answer, and the "no prior readings"
+// branch was unreachable once the corpus was non-trivial. That is a large part
+// of why novelty_verdict decayed toward a constant "familiar".
+//
+// Calibrated against the live corpus, not guessed: 16 stored vectors queried
+// back against the index (no embedding calls -- Vectorize can query by vector
+// id), self excluded, giving this median score by neighbour rank:
+//
+//   rank 1  0.584   (min 0.443, max 0.855)
+//   rank 2  0.538
+//   rank 3  0.524
+//   rank 4  0.515
+//   rank 5  0.510
+//
+// The flat 0.51-0.54 tail across ranks 2-5 is the tell: those are not degrees
+// of relatedness, they are the baseline similarity of same-domain prose. Only
+// rank 1 pulls meaningfully away, and only sometimes. Note how high that
+// baseline sits in absolute terms -- a 0.1-style threshold, or even 0.45, would
+// sit *below* the noise floor and admit everything, changing nothing.
+//
+// 0.55 cuts just above that tail: on the sample it keeps 38% of neighbours and
+// leaves 5 of 16 readings with an empty neighbourhood -- i.e. genuinely able to
+// come back "novel" again. 0.60 was the alternative but pushed 9 of 16 to
+// empty, which over-corrects for a corpus that really is topically concentrated.
+//
+// Worth revisiting against the full distribution once the backfill scores every
+// reading, rather than a 16-reading sample.
+export const SIMILARITY_FLOOR = 0.55;
+
+// Keeps only neighbours at or above `floor`. Returning an empty list is a
+// meaningful result, not a failure: it is what lets a novel reading reach the
+// prompt's "no prior readings" branch.
+export function aboveFloor<T extends { score: number }>(matches: T[], floor: number): T[] {
+  return matches.filter((m) => m.score >= floor);
+}
+
 // Removes the reading's own vector from its query results, then caps the list.
 //
 // Order matters. On a reprocess the reading is already indexed and scores ~1.0

@@ -4,6 +4,8 @@ import type { VectorizeMatch } from "../../lib/cf-clients";
 import type { EmbedResult } from "./clients";
 import {
   SIMILAR_TOP_K,
+  SIMILARITY_FLOOR,
+  aboveFloor,
   excludeSelf,
   summarizeSimilarity,
 } from "../../../src/modules/stores/similarity-store";
@@ -42,7 +44,10 @@ export async function resolveSimilar(
     // already indexed and would otherwise consume a neighbour slot.
     const matches = await deps.query(embeddings[i]!, { topK: topK + 1, returnMetadata: true });
     const neighbours = excludeSelf(matches, e.target.readingId, topK);
-    const similar: SimilarContext[] = neighbours
+    // Floor the prompt context only; the snapshot below measures the unfloored
+    // neighbourhood (see process-reading.ts for why the two differ).
+    const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
+    const similar: SimilarContext[] = related
       .map((m) => {
         const md = (m.metadata ?? {}) as { url?: unknown; title?: unknown; tldr?: unknown };
         const ctx: SimilarContext = {
