@@ -253,3 +253,49 @@ export function planSweep(items: SweepItem[], opts: SweepOptions = {}): SweepPla
   );
   return { groups: planned, errors, readyDropCount };
 }
+
+// An operator-asserted duplicate: two readings that are the same *material* but
+// not the same *resource*, so no canonicalization rule can pair them — a video
+// and the tweet arguing the same thing, an article and its conference talk.
+// Merging those by URL would be wrong (x.com is not youtube.com), so the
+// assertion has to come from the operator.
+//
+// The result is a normal one-group SweepPlan, which keeps every safety property
+// the canonical path has: exactly one survivor, and the drop's vector deleted
+// with it. The keeper must be `ready` — dropping a summarized reading in favour
+// of a failed or pending one would destroy the surviving content.
+export function planExplicitPair(
+  items: SweepItem[],
+  sel: { drop: string; keep: string },
+): SweepPlan {
+  const errors: string[] = [];
+  if (sel.drop === sel.keep) {
+    return { groups: [], errors: [`--drop and --keep name the same reading: ${sel.drop}`], readyDropCount: 0 };
+  }
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const drop = byId.get(sel.drop);
+  const keep = byId.get(sel.keep);
+  if (!drop) errors.push(`id not found in index/list.json: ${sel.drop}`);
+  if (!keep) errors.push(`id not found in index/list.json: ${sel.keep}`);
+  if (errors.length > 0) return { groups: [], errors, readyDropCount: 0 };
+
+  if (keep!.status !== "ready") {
+    return {
+      groups: [],
+      errors: [`refusing to keep ${keep!.id}: it is ${keep!.status}, not ready — the surviving copy must carry the summary`],
+      readyDropCount: 0,
+    };
+  }
+
+  return {
+    groups: [{
+      key: `${canonicalizeUrl(keep!.url)} (asserted)`,
+      items: [keep!, drop!],
+      keeper: keep!,
+      drops: [drop!],
+      reason: "asserted duplicate via --drop/--keep",
+    }],
+    errors: [],
+    readyDropCount: drop!.status === "ready" ? 1 : 0,
+  };
+}

@@ -11,7 +11,7 @@
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
-import { planSweep, type SweepItem } from "./corpus-lib/sweep";
+import { planExplicitPair, planSweep, type SweepItem } from "./corpus-lib/sweep";
 import { shouldRewriteIndex } from "./corpus-lib/drop";
 import {
   deleteObject,
@@ -25,6 +25,7 @@ import {
 interface Opts {
   only: string[];
   keep: string[];
+  drop?: string;
   bucket: string;
   vectorizeIndex?: string;
   remote: boolean;
@@ -49,6 +50,7 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--bucket") opts.bucket = argv[++i];
     else if (a === "--vectorize") opts.vectorizeIndex = argv[++i];
     else if (a === "--keep") opts.keep.push(argv[++i]);
+    else if (a === "--drop") opts.drop = argv[++i];
     else if (a.startsWith("--")) {
       console.error(`unknown flag: ${a}`);
       process.exit(2);
@@ -70,6 +72,10 @@ sweep to the groups it touches — the safe way to fix one known duplicate.
 Keeper ranking, best first: ready beats non-ready, then the richer summary,
 then the newer copy. Override per group with --keep <rd_ID>.
 
+For two readings that carry the same material but are genuinely different
+resources (a video and the tweet arguing the same thing), no URL rule can pair
+them -- assert it with --drop <rd_ID> --keep <rd_ID>. The keeper must be ready.
+
 Unlike corpus-drop, this WILL drop a ready reading on production, because a
 drop is only ever proposed alongside a surviving keeper and the reading's
 Vectorize vector is deleted with it. --vectorize defaults to the bucket name
@@ -85,7 +91,8 @@ Examples:
   tsx scripts/corpus-sweep.ts                                   # report all duplicates
   tsx scripts/corpus-sweep.ts rd_PQ132K3HK5                     # plan one group
   tsx scripts/corpus-sweep.ts https://youtu.be/0oXOOlqVu5M --execute
-  tsx scripts/corpus-sweep.ts rd_A --keep rd_B --execute`);
+  tsx scripts/corpus-sweep.ts rd_A --keep rd_B --execute
+  tsx scripts/corpus-sweep.ts --drop rd_TWEET --keep rd_VIDEO --execute`);
 }
 
 async function main(): Promise<void> {
@@ -94,7 +101,18 @@ async function main(): Promise<void> {
   const deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
 
   const items = (await readListIndex(deps)) as unknown as SweepItem[];
-  const plan = planSweep(items, { only: opts.only, keep: opts.keep });
+
+  // --drop is the operator-asserted pair mode: two readings that carry the same
+  // material but are genuinely different resources, so no canonicalization rule
+  // pairs them. It takes exactly one --keep and no positional selectors, so the
+  // assertion stays unambiguous.
+  if (opts.drop !== undefined && (opts.keep.length !== 1 || opts.only.length > 0)) {
+    console.error("--drop takes exactly one --keep <rd_ID> and no other selectors");
+    process.exit(2);
+  }
+  const plan = opts.drop !== undefined
+    ? planExplicitPair(items, { drop: opts.drop, keep: opts.keep[0] })
+    : planSweep(items, { only: opts.only, keep: opts.keep });
 
   if (plan.errors.length > 0) {
     for (const e of plan.errors) console.error(`✗ ${e}`);

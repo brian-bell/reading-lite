@@ -1,6 +1,6 @@
 ---
 name: corpus-sweep
-description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which by-url ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest including their Vectorize vectors — so it works on ready readings, which corpus-drop refuses. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
+description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which by-url ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest including their Vectorize vectors — so it works on ready readings, which corpus-drop refuses. Also drops an operator-asserted pair (--drop/--keep) for readings that share material but are genuinely different resources, which no URL rule can pair. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
 ---
 
 # corpus-sweep
@@ -66,6 +66,29 @@ Best first, per group:
 Override per group with `--keep <rd_ID>`. The plan prints the keeper and the
 reason for every group, so check it before `--execute`.
 
+## Asserted pairs — same material, different resource
+
+Sometimes two readings carry the same argument but are genuinely different
+resources: a video and the tweet making the same case, an article and its
+conference talk. No canonicalization rule can pair those, and none should —
+`x.com` is not `youtube.com`, and a rule that merged them would silently
+mis-group unrelated readings. The assertion has to come from you:
+
+```bash
+npm run corpus-sweep -- --drop rd_TWEET --keep rd_VIDEO --execute
+```
+
+This builds a normal one-group plan, so it keeps every safety property the
+canonical path has — exactly one survivor, and the drop's vector deleted with
+it. The keeper must be `ready`: dropping a summarized reading in favour of a
+failed or pending one would destroy the surviving content. `--drop` takes
+exactly one `--keep` and no positional selectors, so the assertion stays
+unambiguous.
+
+Check both summaries before running. Two readings on one subject are often not
+subsets of each other — a tweet's reply thread can carry points its linked
+video never makes — and the drop is irreversible short of re-importing.
+
 ## Usage
 
 ```bash
@@ -83,7 +106,7 @@ npm run corpus-sweep -- rd_PQ132K3HK5 --execute
 npm run corpus-sweep -- rd_A --keep rd_B --execute
 ```
 
-Flags: `--keep <rd_ID>` (repeatable), `--bucket` (default
+Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
 `READING_LITE_BUCKET` env, then `reading-lite`), `--vectorize <index>` (defaults
 to the bucket name — they match in every environment), `--local`, `--execute`,
 `--help`.

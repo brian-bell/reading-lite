@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeUrl,
   findDuplicateGroups,
+  planExplicitPair,
   planSweep,
   type SweepItem,
 } from "../../../scripts/corpus-lib/sweep";
@@ -236,6 +237,48 @@ describe("planSweep", () => {
   it("reports no groups and no errors on a clean corpus", () => {
     const plan = planSweep([item({ id: "rd_1" }), item({ id: "rd_2", url: "https://b.com" })]);
     expect(plan.groups).toEqual([]);
+    expect(plan.errors).toEqual([]);
+    expect(plan.readyDropCount).toBe(0);
+  });
+});
+
+describe("planExplicitPair", () => {
+  const items = [
+    item({ id: "rd_tweet", url: "https://x.com/theo/status/209", status: "ready" }),
+    item({ id: "rd_video", url: "https://youtu.be/vid00000001", status: "ready" }),
+    item({ id: "rd_fail", url: "https://c.com/x", status: "failed" }),
+  ];
+
+  it("builds a one-group plan dropping the named id in favour of the keeper", () => {
+    const plan = planExplicitPair(items, { drop: "rd_tweet", keep: "rd_video" });
+    expect(plan.errors).toEqual([]);
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0].keeper.id).toBe("rd_video");
+    expect(plan.groups[0].drops.map((d) => d.id)).toEqual(["rd_tweet"]);
+    expect(plan.readyDropCount).toBe(1);
+  });
+
+  it("labels the group as an operator assertion, since urls do not match", () => {
+    const plan = planExplicitPair(items, { drop: "rd_tweet", keep: "rd_video" });
+    expect(plan.groups[0].reason).toMatch(/asserted|--keep|explicit/i);
+  });
+
+  it("errors when either id is missing from the corpus", () => {
+    expect(planExplicitPair(items, { drop: "rd_nope", keep: "rd_video" }).errors[0]).toMatch(/rd_nope/);
+    expect(planExplicitPair(items, { drop: "rd_tweet", keep: "rd_nope" }).errors[0]).toMatch(/rd_nope/);
+  });
+
+  it("refuses to drop and keep the same reading", () => {
+    expect(planExplicitPair(items, { drop: "rd_video", keep: "rd_video" }).errors[0]).toMatch(/same/i);
+  });
+
+  it("refuses a keeper that is not ready, which would lose the summary", () => {
+    const plan = planExplicitPair(items, { drop: "rd_video", keep: "rd_fail" });
+    expect(plan.errors[0]).toMatch(/ready/i);
+  });
+
+  it("still counts a non-ready drop as needing no vector", () => {
+    const plan = planExplicitPair(items, { drop: "rd_fail", keep: "rd_video" });
     expect(plan.errors).toEqual([]);
     expect(plan.readyDropCount).toBe(0);
   });
