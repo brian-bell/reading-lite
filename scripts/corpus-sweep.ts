@@ -11,12 +11,18 @@
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
-import { invalidatedByDrop, planExplicitPair, planSweep, type SweepItem } from "./corpus-lib/sweep";
+import {
+  invalidatedByDrop,
+  planExplicitPair,
+  planSweep,
+  type SweepItem,
+} from "./corpus-lib/sweep";
 import { shouldRewriteIndex } from "./corpus-lib/drop";
 import { readManifest } from "./corpus-lib/wrangler-r2";
 import {
   deleteObject,
   deleteVector,
+  vectorExists,
   keysForReading,
   readListIndex,
   writeListIndex,
@@ -165,11 +171,33 @@ async function main(): Promise<void> {
   let deleted = 0;
   let absent = 0;
   let errored = 0;
+  // Ids the index actually held a vector for, so the post-sweep warning can be
+  // exact instead of guessing from status.
+  const vectoredDropIds = new Set<string>();
 
   for (const t of targets) {
     const keys = await keysForReading(t.id, t.key_prefix, t.url, deps);
     console.log(`• dropping ${t.id}  ${t.url}`);
-    if (t.status === "ready") {
+    // Ask the index whether a vector exists rather than inferring it from
+    // status. Every status-based rule was wrong in some direction: a pending
+    // row can be a reprocess whose vector is still indexed, and a failed row
+    // can be a failed re-import over a previously-ready reading whose old
+    // vector survived. The probe is read-only, so it also makes the dry run
+    // report exactly what an execute would delete.
+    //
+    // Skipped under --local: Vectorize has no local emulator, so these commands
+    // always target the real index while --local scopes R2 only. A local corpus
+    // seeded from production shares reading ids, so touching Vectorize here
+    // would mutate PRODUCTION during an operation presented as local.
+    let hasVector = false;
+    if (!opts.remote) {
+      console.log(`    skipping vector (--local: Vectorize has no local store)`);
+    } else {
+      hasVector = await vectorExists(vectorizeIndex, t.id);
+      if (hasVector) vectoredDropIds.add(t.id);
+      else console.log(`    no vector indexed for ${t.id}`);
+    }
+    if (hasVector) {
       if (!opts.execute) {
         console.log(`    would delete vector  ${vectorizeIndex}/${t.id}`);
       } else {
@@ -229,7 +257,7 @@ async function main(): Promise<void> {
   console.log("\nindex/list.json rewritten.");
   console.log(`Done. deleted: ${deleted}, absent (skipped): ${absent}`);
 
-  await reportInvalidatedKeepers(plan.groups, dropIds, deps);
+  await reportInvalidatedKeepers(plan.groups, dropIds, vectoredDropIds, deps);
 }
 
 // A sweep changes the corpus around each keeper, so the keeper's frozen
@@ -237,13 +265,14 @@ async function main(): Promise<void> {
 // Nothing recomputes them, so at minimum say so.
 async function reportInvalidatedKeepers(
   groups: { keeper: { id: string; key_prefix: string; url: string } }[],
-  dropIds: Set<string>,
+  droppedIds: Set<string>,
+  vectoredDropIds: Set<string>,
   deps: R2Deps,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
     const manifest = await readManifest(g.keeper.key_prefix, deps).catch(() => null);
-    const v = invalidatedByDrop(g.keeper.id, manifest, dropIds);
+    const v = invalidatedByDrop(g.keeper.id, manifest, droppedIds, vectoredDropIds);
     if (v.invalidated) flagged.push({ ...v, url: g.keeper.url });
   }
   if (flagged.length === 0) return;

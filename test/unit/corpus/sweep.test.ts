@@ -309,6 +309,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "same piece" }] },
       new Set(["rd_gone"]),
+      new Set(["rd_gone"]),
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleConnections).toEqual(["rd_gone"]);
@@ -319,20 +320,79 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "x" }] },
       new Set(["rd_gone"]),
+      new Set(["rd_gone"]),
     );
     expect(out.verdict).toBe("duplicate");
   });
 
-  it("flags a keeper whose similarity snapshot counted a dropped neighbour", () => {
+  it("flags a keeper whose similarity snapshot counted a dropped READY neighbour", () => {
     // The score was measured against a neighbourhood that included the copy
     // just deleted, so the number is now wrong even with no stale connection.
     const out = invalidatedByDrop(
       keeper.id,
       { novelty_verdict: "familiar", similarity: { count: 3, max: 0.99, computed_at: "2026-01-01T00:00:00.000Z" } },
       new Set(["rd_gone"]),
+      new Set(["rd_gone"]),
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("flags similarity when a dropped copy is pending, which may still own a vector", () => {
+    // Reprocessing a ready reading writes a pending list row and leaves the
+    // existing vector in place until the terminal success upserts a
+    // replacement, so `pending` is not evidence of no vector.
+    const out = invalidatedByDrop(
+      keeper.id,
+      { similarity: { count: 2, computed_at: "2026-01-01T00:00:00.000Z" } },
+      new Set(["rd_gone"]),
+      new Set(["rd_gone"]),
+    );
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("flags a keeper against readings dropped from OTHER groups in the same sweep", () => {
+    // Vectorize is global and connections cite any reading in the library, so
+    // neither signal is confined to the keeper's own duplicate group.
+    const out = invalidatedByDrop(
+      keeper.id,
+      {
+        connections: [{ id: "rd_other_group", reason: "related" }],
+        similarity: { count: 2, computed_at: "2026-01-01T00:00:00.000Z" },
+      },
+      new Set(["rd_other_group"]),
+      new Set(["rd_other_group"]),
+    );
+    expect(out.staleConnections).toEqual(["rd_other_group"]);
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("does NOT flag similarity when every dropped copy was failed", () => {
+    // Only ready readings are upserted to Vectorize, so a failed or pending
+    // duplicate was never in the index and cannot have been in the keeper's
+    // neighbourhood. This is the commonest sweep shape -- one ready keeper
+    // beside failed copies -- so warning here would fire on almost every run
+    // and train the operator to ignore the warning entirely.
+    const out = invalidatedByDrop(
+      keeper.id,
+      { novelty_verdict: "familiar", similarity: { count: 3, max: 0.99, computed_at: "2026-01-01T00:00:00.000Z" } },
+      new Set(["rd_gone", "rd_gone2"]),
+      new Set([]),
+    );
+    expect(out.staleSimilarity).toBe(false);
+    expect(out.invalidated).toBe(false);
+  });
+
+  it("still flags a cited connection even when the dropped copy was non-ready", () => {
+    // A citation is direct evidence, whatever the dropped reading's status.
+    const out = invalidatedByDrop(
+      keeper.id,
+      { connections: [{ id: "rd_gone", reason: "same piece" }] },
+      new Set(["rd_gone"]),
+      new Set([]),
+    );
+    expect(out.invalidated).toBe(true);
+    expect(out.staleConnections).toEqual(["rd_gone"]);
   });
 
   it("leaves a keeper alone when nothing references the dropped readings", () => {
@@ -340,18 +400,20 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "novel", connections: [{ id: "rd_other", reason: "x" }] },
       new Set(["rd_gone"]),
+      new Set(["rd_gone"]),
     );
     expect(out.invalidated).toBe(false);
   });
 
   it("treats a keeper with no manifest data as not invalidated rather than guessing", () => {
-    expect(invalidatedByDrop(keeper.id, null, new Set(["rd_gone"])).invalidated).toBe(false);
+    expect(invalidatedByDrop(keeper.id, null, new Set(["rd_gone"]), new Set(["rd_gone"])).invalidated).toBe(false);
   });
 
   it("lists every dropped id a keeper cites, not just the first", () => {
     const out = invalidatedByDrop(
       keeper.id,
       { connections: [{ id: "rd_g1", reason: "x" }, { id: "rd_ok", reason: "y" }, { id: "rd_g2", reason: "z" }] },
+      new Set(["rd_g1", "rd_g2"]),
       new Set(["rd_g1", "rd_g2"]),
     );
     expect(out.staleConnections).toEqual(["rd_g1", "rd_g2"]);

@@ -337,6 +337,11 @@ export function invalidatedByDrop(
     similarity?: { count: number; max?: number; mean?: number; computed_at: string };
   } | null,
   droppedIds: Set<string>,
+  // Ids the index actually held a vector for, probed rather than inferred from
+  // status -- every attempt to read ownership off status was wrong in some
+  // direction (a pending reprocess keeps its vector; a failed re-import over a
+  // ready reading can too).
+  vectoredDropIds: Set<string>,
 ): DropInvalidation {
   const base: DropInvalidation = {
     id: keeperId,
@@ -349,15 +354,18 @@ export function invalidatedByDrop(
   // remedy costs a rescore.
   if (manifest === null) return base;
 
+  // A citation is direct evidence that the keeper's verdict leaned on the
+  // dropped reading, whatever that reading's status.
   const staleConnections = (manifest.connections ?? [])
     .map((c) => c.id)
     .filter((id) => droppedIds.has(id));
 
-  // Any stored snapshot predates this drop by construction, and the dropped
-  // copies were the survivor's nearest neighbours -- that is why they grouped.
-  // So a snapshot that counted anything was measured against a neighbourhood
-  // this sweep just changed.
-  const staleSimilarity = (manifest.similarity?.count ?? 0) > 0;
+  // The snapshot is different: it can only have counted a neighbour that was
+  // actually in the index. Now that ownership is probed rather than guessed,
+  // this is exact -- no false warning for a keeper paired only with copies that
+  // never had a vector (the commonest sweep shape), and no missed warning for
+  // the odd failed row that kept one.
+  const staleSimilarity = [...vectoredDropIds].length > 0 && (manifest.similarity?.count ?? 0) > 0;
 
   return {
     ...base,

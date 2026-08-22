@@ -184,6 +184,44 @@ export async function queryByVectorId(
     .map((m) => ({ id: m.id, score: m.score }));
 }
 
+// Whether the index actually holds a vector for this reading.
+//
+// Status cannot answer this. Reprocessing a ready reading leaves a `pending`
+// row whose vector is still indexed (activateAttempt never touches Vectorize),
+// and a failed re-import over a previously-ready reading can leave a `failed`
+// row whose old vector survived the null-SimilarityStore failure path. Every
+// attempt to infer ownership from status has been wrong in some direction, so
+// this asks the index instead.
+//
+// Same three-outcome discipline as queryByVectorId: a confirmed not-found
+// exits ZERO with a warning, so a non-zero exit is a real failure and throws
+// rather than being read as absence.
+const VECTOR_IDS_NOT_FOUND = /does not contain vectors corresponding/i;
+
+export async function vectorExists(
+  index: string,
+  id: string,
+  deps: Pick<R2Deps, "run"> = {},
+): Promise<boolean> {
+  const run = deps.run ?? defaultRunner;
+  const { code, stdout, stderr } = await run("wrangler", [
+    "vectorize", "get-vectors", index, "--ids", id,
+  ]);
+  if (code !== 0) {
+    throw new Error(`vectorize get-vectors failed for ${id}: ${stderr.trim().split("\n").pop() ?? code}`);
+  }
+  if (VECTOR_IDS_NOT_FOUND.test(stderr)) return false;
+  const start = stdout.indexOf("[");
+  if (start < 0) {
+    throw new Error(`unexpected vectorize get-vectors output for ${id}: ${stdout.trim().slice(0, 120)}`);
+  }
+  try {
+    return (JSON.parse(stdout.slice(start)) as unknown[]).length > 0;
+  } catch {
+    throw new Error(`could not parse vectorize get-vectors output for ${id}`);
+  }
+}
+
 // Rewrites index/list.json wholesale (a plain put, not a CAS write — run when
 // nothing is being submitted so a concurrent queue write can't be lost).
 export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<void> {
