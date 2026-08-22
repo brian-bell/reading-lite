@@ -104,6 +104,15 @@ targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
   `ReadingStore` helpers. When `TENANT_DATA_PLANE=1` those objects live under
   `u/{tenantId}/`; stored `key_prefix` stays relative. Do not turn the gate on
   in staging/production before the founder corpus copy (s1k.6).
+- Keep Vectorize scoped the same way: hosted code builds the store via
+  `similarityStoreFor`, which maps the tenant onto a Vectorize **namespace**
+  (its own segmentation primitive — a namespaced query cannot match another
+  namespace's vector, and unlike a metadata `filter` it needs no metadata
+  index). While the gate is off the namespace is unset, which is what keeps the
+  pre-tenant corpus visible. Flipping the gate therefore also requires
+  re-upserting existing vectors into the founder namespace — a namespaced query
+  will not see un-namespaced vectors, so a corpus migrated in R2 but not in
+  Vectorize would silently return zero neighbours.
 - Keep manifest contracts synchronized: `src/schemas/manifest.ts`,
   `src/schemas/api.ts`, tests, and `web/src/types.ts` change together.
 - Keep summarizer config fail-closed: require the selected provider's

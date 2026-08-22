@@ -25,7 +25,7 @@ import {
   readingStoreFor,
   ReadingStore,
 } from "./modules/stores/reading-store";
-import { SimilarityStore } from "./modules/stores/similarity-store";
+import { similarityStoreFor } from "./modules/stores/similarity-store";
 import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, sha256Hex, type Services } from "./services";
 import { activateAttempt, type SubmitJsonResult } from "./attempt-activation";
@@ -214,7 +214,7 @@ export function createApp(opts: AppOptions = {}) {
     if (!c.env.READINGS_INDEX) {
       return c.json({ items: [] });
     }
-    const similarity = new SimilarityStore(c.env.READINGS_INDEX);
+    const similarity = similarityStoreFor(c.env.READINGS_INDEX, { tenantId: c.get("principal").tenantId }, c.env);
     const items = await similarity.query(parsed.data.query_embedding, parsed.data.k);
     return c.json({ items });
   });

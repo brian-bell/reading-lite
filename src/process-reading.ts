@@ -8,6 +8,7 @@ import {
   SimilarityStore,
   SIMILAR_TOP_K,
   excludeSelf,
+  similarityStoreFor,
   summarizeSimilarity,
 } from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
@@ -48,7 +49,7 @@ export async function processReading(
   tenant: TenantContext,
 ): Promise<void> {
   const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  const similarity = new SimilarityStore(env.READINGS_INDEX);
+  const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
 
