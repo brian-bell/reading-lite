@@ -415,6 +415,7 @@ function buildReadyManifest(
     people: reading.people,
     orgs: reading.orgs,
     novelty_verdict: reading.novelty_verdict,
+    ...(target.similarity === undefined ? {} : { similarity: target.similarity }),
     connections: reading.connections,
     summary_markdown: reading.summary_markdown,
     content_type: target.contentType,

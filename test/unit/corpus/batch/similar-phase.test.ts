@@ -3,6 +3,8 @@ import { resolveSimilar } from "../../../../scripts/corpus-lib/batch/similar-pha
 import type { ExtractedTarget } from "../../../../scripts/corpus-lib/batch/types";
 import type { Manifest } from "../../../../src/schemas/manifest";
 
+const AT = "2026-08-22T00:00:00.000Z";
+
 function extractedTarget(id: string, markdown: string): ExtractedTarget {
   const manifest = {
     id,
@@ -38,7 +40,7 @@ describe("resolveSimilar", () => {
     const query = vi.fn(async () => [
       { id: "rd_other", score: 0.9, metadata: { url: "https://example.com/other", title: "Other" } },
     ]);
-    const out = await resolveSimilar([extractedTarget("rd_a", "body a")], { embedMany, query });
+    const out = await resolveSimilar([extractedTarget("rd_a", "body a")], { embedMany, query, now: () => AT });
     expect(embedMany).toHaveBeenCalledWith(["body a"]);
     expect(out).toHaveLength(1);
     expect(out[0]!.similar).toEqual([
@@ -57,7 +59,7 @@ describe("resolveSimilar", () => {
       { id: "rd_a", score: 1, metadata: { url: "https://example.com/rd_a" } },
       { id: "rd_b", score: 0.8, metadata: { url: "https://example.com/rd_b", title: "B" } },
     ]);
-    const out = await resolveSimilar([extractedTarget("rd_a", "x")], { embedMany, query });
+    const out = await resolveSimilar([extractedTarget("rd_a", "x")], { embedMany, query, now: () => AT });
     expect(out[0]!.similar.map((s) => s.id)).toEqual(["rd_b"]);
   });
 
@@ -68,7 +70,7 @@ describe("resolveSimilar", () => {
     }));
     const query = vi.fn(async () => []);
     const long = "z".repeat(20000);
-    await resolveSimilar([extractedTarget("rd_a", long)], { embedMany, query });
+    await resolveSimilar([extractedTarget("rd_a", long)], { embedMany, query, now: () => AT });
     const sent = embedMany.mock.calls[0]![0]![0]!;
     expect(sent.length).toBeLessThan(long.length);
   });
@@ -79,7 +81,47 @@ describe("resolveSimilar", () => {
       tokensByInput: inputs.map(() => 1),
     }));
     const query = vi.fn(async () => []);
-    const out = await resolveSimilar([extractedTarget("rd_a", "x")], { embedMany, query });
+    const out = await resolveSimilar([extractedTarget("rd_a", "x")], { embedMany, query, now: () => AT });
     expect(out[0]!.similar).toEqual([]);
+  });
+});
+
+describe("resolveSimilar — similarity snapshot", () => {
+  const embedMany = vi.fn(async (inputs: string[]) => ({
+    embeddings: inputs.map(() => [0]),
+    tokensByInput: inputs.map(() => 1),
+  }));
+
+  it("records the measured snapshot alongside the prompt context", async () => {
+    const query = vi.fn(async () => [
+      { id: "rd_x", score: 0.9, metadata: { url: "https://example.com/x" } },
+      { id: "rd_y", score: 0.7, metadata: { url: "https://example.com/y" } },
+    ]);
+    const out = await resolveSimilar([extractedTarget("rd_a", "body")], { embedMany, query, now: () => AT });
+    expect(out[0]!.similarity).toEqual({ count: 2, max: 0.9, mean: 0.8, computed_at: AT });
+  });
+
+  it("over-fetches by one so self does not consume a neighbour slot", async () => {
+    const query = vi.fn(async () => [
+      { id: "rd_a", score: 1, metadata: { url: "https://example.com/rd_a" } },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: `rd_${i}`,
+        score: 0.9 - i / 100,
+        metadata: { url: `https://example.com/${i}` },
+      })),
+    ]);
+    const out = await resolveSimilar([extractedTarget("rd_a", "body")], { embedMany, query, now: () => AT });
+    expect((query.mock.calls[0] as unknown as [number[], { topK: number }])[1]).toMatchObject({ topK: 6 });
+    // Self dropped, still a full neighbourhood of 5 -- comparable to a reading
+    // that was not yet indexed when it was summarized.
+    expect(out[0]!.similar).toHaveLength(5);
+    expect(out[0]!.similarity!.count).toBe(5);
+    expect(out[0]!.similar.map((c) => c.id)).not.toContain("rd_a");
+  });
+
+  it("records an empty neighbourhood without inventing a score", async () => {
+    const query = vi.fn(async () => []);
+    const out = await resolveSimilar([extractedTarget("rd_a", "body")], { embedMany, query, now: () => AT });
+    expect(out[0]!.similarity).toEqual({ count: 0, computed_at: AT });
   });
 });

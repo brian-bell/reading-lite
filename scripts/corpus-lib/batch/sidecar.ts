@@ -26,6 +26,17 @@ const SidecarTargetSchema = z
     contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
     extractedBytes: z.number().int().nonnegative().optional(),
     queryEmbedTokens: z.number().int().nonnegative(),
+    // Optional: sidecars written before the similarity snapshot existed must
+    // still load, so a run in flight across the upgrade can resume.
+    similarity: z
+      .object({
+        count: z.number().int().nonnegative(),
+        max: z.number().optional(),
+        mean: z.number().optional(),
+        computed_at: z.string().datetime(),
+      })
+      .strip()
+      .optional(),
     releaseByUrlOnFailure: z.literal(true).optional(),
     preserveReadyManifest: z.unknown().optional(),
   })

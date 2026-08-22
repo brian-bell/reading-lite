@@ -19,6 +19,26 @@ export interface SimilarityMatch extends SimilarityMetadata {
   score: number;
 }
 
+// How many neighbours ground novelty_verdict/connections and the similarity
+// snapshot. Shared so the realtime and offline-batch pipelines agree.
+export const SIMILAR_TOP_K = 5;
+
+// Removes the reading's own vector from its query results, then caps the list.
+//
+// Order matters. On a reprocess the reading is already indexed and scores ~1.0
+// against itself, so a bare topK query spends one slot on self and leaves only
+// topK-1 real neighbours -- while a first-time submit gets a full topK. That
+// made `count` and `mean` incomparable between fresh and reprocessed readings,
+// and silently dropped the genuine last neighbour. Callers over-fetch by one
+// and cap here, so the neighbourhood is the same size either way.
+export function excludeSelf<T extends { id: string }>(
+  matches: T[],
+  selfId: string,
+  limit: number,
+): T[] {
+  return matches.filter((m) => m.id !== selfId).slice(0, limit);
+}
+
 // A measured snapshot of how close a reading sits to its nearest neighbours at
 // the moment it was summarized.
 //

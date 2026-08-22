@@ -215,6 +215,8 @@ export async function runBatchPipeline(
           extracted: target,
           similar: [],
           queryEmbedTokens: 0,
+          // Size-check payload only: never written to a manifest.
+          similarity: { count: 0, computed_at: deps.now() },
         })),
         deps.model,
         reasoningEffort,
@@ -228,6 +230,7 @@ export async function runBatchPipeline(
   let summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     query: (vector, opts) => deps.vectorize.query(vector, opts),
+    now: () => deps.now(),
   });
 
   if (deps.activateExtracted) {

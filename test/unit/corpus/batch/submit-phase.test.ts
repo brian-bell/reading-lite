@@ -54,6 +54,7 @@ function summarizeTarget(
     },
     similar: over.similar ?? [],
     queryEmbedTokens: 12,
+    similarity: { count: 0, computed_at: "2026-08-22T00:00:00.000Z" },
   };
 }
 

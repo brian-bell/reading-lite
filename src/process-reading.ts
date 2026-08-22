@@ -4,7 +4,12 @@ import {
   readingStoreFor,
   type ReadingStore,
 } from "./modules/stores/reading-store";
-import { SimilarityStore, summarizeSimilarity } from "./modules/stores/similarity-store";
+import {
+  SimilarityStore,
+  SIMILAR_TOP_K,
+  excludeSelf,
+  summarizeSimilarity,
+} from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
 import { extractFromUrl, type ExtractedContent } from "./modules/extractor";
 import { embed } from "./modules/embeddings";
@@ -86,12 +91,14 @@ export async function processReading(
       }),
     );
     const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
-      similarity.query(queryEmbed.embedding, 5),
+      // Over-fetch by one: on a reprocess this reading's own vector is already
+      // indexed and would otherwise consume a slot (see excludeSelf).
+      similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
     );
     // Exclude self once, then use the same neighbour set for both the prompt
     // context and the measured snapshot, so the number and the LLM's verdict
     // describe the same neighbourhood.
-    const neighbours = similar.filter((s) => s.id !== args.id);
+    const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
     const similarContext: SimilarContext[] = neighbours
       .map((s) => ({ id: s.id, url: s.url, title: s.title }));
     const similaritySnapshot = summarizeSimilarity(neighbours, services.now());
