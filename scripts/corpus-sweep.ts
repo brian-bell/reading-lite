@@ -171,9 +171,10 @@ async function main(): Promise<void> {
   let deleted = 0;
   let absent = 0;
   let errored = 0;
-  // Ids the index actually held a vector for, so the post-sweep warning can be
-  // exact instead of guessing from status.
-  const vectoredDropIds = new Set<string>();
+  // Drops the index actually held a vector for, so the post-sweep warning can
+  // be exact instead of guessing from status. created_at rides along so a
+  // snapshot computed before a copy existed can rule that copy out.
+  const vectoredDrops: { id: string; created_at?: string }[] = [];
 
   for (const t of targets) {
     const keys = await keysForReading(t.id, t.key_prefix, t.url, deps);
@@ -194,7 +195,7 @@ async function main(): Promise<void> {
       console.log(`    skipping vector (--local: Vectorize has no local store)`);
     } else {
       hasVector = await vectorExists(vectorizeIndex, t.id);
-      if (hasVector) vectoredDropIds.add(t.id);
+      if (hasVector) vectoredDrops.push({ id: t.id, created_at: t.created_at });
       else console.log(`    no vector indexed for ${t.id}`);
     }
     if (hasVector) {
@@ -257,7 +258,16 @@ async function main(): Promise<void> {
   console.log("\nindex/list.json rewritten.");
   console.log(`Done. deleted: ${deleted}, absent (skipped): ${absent}`);
 
-  await reportInvalidatedKeepers(plan.groups, dropIds, vectoredDropIds, deps);
+  // The sweep has already deleted objects and rewritten the index by now, so
+  // the report is strictly informational: never let it fail the command.
+  try {
+    await reportInvalidatedKeepers(plan.groups, dropIds, vectoredDrops, deps);
+  } catch (e) {
+    console.error(
+      `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
+      `The sweep itself succeeded; re-read the keepers' manifests if you need that report.`,
+    );
+  }
 }
 
 // A sweep changes the corpus around each keeper, so the keeper's frozen
@@ -266,13 +276,13 @@ async function main(): Promise<void> {
 async function reportInvalidatedKeepers(
   groups: { keeper: { id: string; key_prefix: string; url: string } }[],
   droppedIds: Set<string>,
-  vectoredDropIds: Set<string>,
+  vectoredDrops: { id: string; created_at?: string }[],
   deps: R2Deps,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
     const manifest = await readManifest(g.keeper.key_prefix, deps).catch(() => null);
-    const v = invalidatedByDrop(g.keeper.id, manifest, droppedIds, vectoredDropIds);
+    const v = invalidatedByDrop(g.keeper.id, manifest, droppedIds, vectoredDrops);
     if (v.invalidated) flagged.push({ ...v, url: g.keeper.url });
   }
   if (flagged.length === 0) return;

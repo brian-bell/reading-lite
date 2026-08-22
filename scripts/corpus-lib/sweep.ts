@@ -337,11 +337,9 @@ export function invalidatedByDrop(
     similarity?: { count: number; max?: number; mean?: number; computed_at: string };
   } | null,
   droppedIds: Set<string>,
-  // Ids the index actually held a vector for, probed rather than inferred from
-  // status -- every attempt to read ownership off status was wrong in some
-  // direction (a pending reprocess keeps its vector; a failed re-import over a
-  // ready reading can too).
-  vectoredDropIds: Set<string>,
+  // Drops the index actually held a vector for, probed rather than inferred
+  // from status. created_at lets a snapshot that predates a copy rule it out.
+  vectoredDrops: { id: string; created_at?: string }[],
 ): DropInvalidation {
   const base: DropInvalidation = {
     id: keeperId,
@@ -354,18 +352,49 @@ export function invalidatedByDrop(
   // remedy costs a rescore.
   if (manifest === null) return base;
 
-  // A citation is direct evidence that the keeper's verdict leaned on the
-  // dropped reading, whatever that reading's status.
-  const staleConnections = (manifest.connections ?? [])
+  // Every field below is read defensively. This report runs AFTER objects are
+  // deleted and index/list.json is rewritten, so a stored value of an
+  // unexpected shape must not throw -- that would turn a fully successful
+  // destructive sweep into a failed command and discard the report with it.
+  // Full ManifestSchema parsing would be the wrong tool: it would reject a
+  // drifted-but-readable manifest outright and lose the report anyway.
+  const connections = Array.isArray(manifest.connections) ? manifest.connections : [];
+  const staleConnections = connections
+    .filter((c): c is { id: string; reason: string } =>
+      typeof c === "object" && c !== null && typeof (c as { id?: unknown }).id === "string")
     .map((c) => c.id)
     .filter((id) => droppedIds.has(id));
 
-  // The snapshot is different: it can only have counted a neighbour that was
-  // actually in the index. Now that ownership is probed rather than guessed,
-  // this is exact -- no false warning for a keeper paired only with copies that
-  // never had a vector (the commonest sweep shape), and no missed warning for
-  // the odd failed row that kept one.
-  const staleSimilarity = [...vectoredDropIds].length > 0 && (manifest.similarity?.count ?? 0) > 0;
+  const similarity =
+    typeof manifest.similarity === "object" && manifest.similarity !== null
+      ? manifest.similarity
+      : undefined;
+  const count = typeof similarity?.count === "number" ? similarity.count : 0;
+  const computedAt = typeof similarity?.computed_at === "string" ? similarity.computed_at : undefined;
+
+  // A dropped copy can only have been in the snapshot if it existed when the
+  // snapshot was computed. That is a proof, not a heuristic, and it rules out
+  // the case where the older, richer copy is kept -- or --keep forces it -- so
+  // the survivor's score predates the copy being removed.
+  //
+  // Residual limitation: a positive count does not prove the dropped copy was
+  // among the neighbours counted; it may have been entirely other readings.
+  // The snapshot stores count/max/mean but not neighbour ids, so no stored
+  // evidence can settle that. Recording ids would be a schema change, and the
+  // remedy for a false warning is one --rescore with no LLM call, so the
+  // asymmetry favours warning here.
+  // Compare instants, not strings. ManifestSchema uses zod .datetime(), which
+  // accepts both "…00Z" and "…00.000Z" for the same moment, and "." sorts
+  // before "Z" -- so raw string ordering would rule out a copy that really
+  // could have been counted. An unparseable or missing timestamp is treated as
+  // "could have been", since suppressing on bad data would hide a real warning.
+  const snapshotAt = computedAt === undefined ? NaN : Date.parse(computedAt);
+  const anyDropPredatesSnapshot = vectoredDrops.some((d) => {
+    if (d.created_at === undefined || Number.isNaN(snapshotAt)) return true;
+    const dropAt = Date.parse(d.created_at);
+    return Number.isNaN(dropAt) || dropAt <= snapshotAt;
+  });
+  const staleSimilarity = count > 0 && anyDropPredatesSnapshot;
 
   return {
     ...base,

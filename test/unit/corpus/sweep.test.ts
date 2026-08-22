@@ -309,7 +309,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "same piece" }] },
       new Set(["rd_gone"]),
-      new Set(["rd_gone"]),
+      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleConnections).toEqual(["rd_gone"]);
@@ -320,7 +320,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "x" }] },
       new Set(["rd_gone"]),
-      new Set(["rd_gone"]),
+      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.verdict).toBe("duplicate");
   });
@@ -332,7 +332,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "familiar", similarity: { count: 3, max: 0.99, computed_at: "2026-01-01T00:00:00.000Z" } },
       new Set(["rd_gone"]),
-      new Set(["rd_gone"]),
+      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleSimilarity).toBe(true);
@@ -346,7 +346,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { similarity: { count: 2, computed_at: "2026-01-01T00:00:00.000Z" } },
       new Set(["rd_gone"]),
-      new Set(["rd_gone"]),
+      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.staleSimilarity).toBe(true);
   });
@@ -361,7 +361,7 @@ describe("invalidatedByDrop", () => {
         similarity: { count: 2, computed_at: "2026-01-01T00:00:00.000Z" },
       },
       new Set(["rd_other_group"]),
-      new Set(["rd_other_group"]),
+      [{ id: "rd_other_group", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.staleConnections).toEqual(["rd_other_group"]);
     expect(out.staleSimilarity).toBe(true);
@@ -377,7 +377,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "familiar", similarity: { count: 3, max: 0.99, computed_at: "2026-01-01T00:00:00.000Z" } },
       new Set(["rd_gone", "rd_gone2"]),
-      new Set([]),
+      [],
     );
     expect(out.staleSimilarity).toBe(false);
     expect(out.invalidated).toBe(false);
@@ -389,7 +389,7 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { connections: [{ id: "rd_gone", reason: "same piece" }] },
       new Set(["rd_gone"]),
-      new Set([]),
+      [],
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleConnections).toEqual(["rd_gone"]);
@@ -400,13 +400,13 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { novelty_verdict: "novel", connections: [{ id: "rd_other", reason: "x" }] },
       new Set(["rd_gone"]),
-      new Set(["rd_gone"]),
+      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.invalidated).toBe(false);
   });
 
   it("treats a keeper with no manifest data as not invalidated rather than guessing", () => {
-    expect(invalidatedByDrop(keeper.id, null, new Set(["rd_gone"]), new Set(["rd_gone"])).invalidated).toBe(false);
+    expect(invalidatedByDrop(keeper.id, null, new Set(["rd_gone"]), [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }]).invalidated).toBe(false);
   });
 
   it("lists every dropped id a keeper cites, not just the first", () => {
@@ -414,8 +414,117 @@ describe("invalidatedByDrop", () => {
       keeper.id,
       { connections: [{ id: "rd_g1", reason: "x" }, { id: "rd_ok", reason: "y" }, { id: "rd_g2", reason: "z" }] },
       new Set(["rd_g1", "rd_g2"]),
-      new Set(["rd_g1", "rd_g2"]),
+      [{ id: "rd_g1", created_at: "2020-01-01T00:00:00.000Z" }, { id: "rd_g2", created_at: "2020-01-01T00:00:00.000Z" }],
     );
     expect(out.staleConnections).toEqual(["rd_g1", "rd_g2"]);
+  });
+});
+
+describe("invalidatedByDrop — snapshot evidence", () => {
+  const SNAP = (computed_at: string) => ({ similarity: { count: 3, computed_at } });
+
+  it("does not flag when the snapshot predates every dropped copy", () => {
+    // A copy created after the score was computed cannot have been counted in
+    // it, so warning here would be provably wrong. Happens whenever the older,
+    // richer copy is kept -- or --keep forces it.
+    const out = invalidatedByDrop(
+      "rd_keep",
+      SNAP("2026-01-01T00:00:00.000Z"),
+      new Set(["rd_new"]),
+      [{ id: "rd_new", created_at: "2026-06-01T00:00:00.000Z" }],
+    );
+    expect(out.staleSimilarity).toBe(false);
+  });
+
+  it("flags when a dropped copy existed before the snapshot was computed", () => {
+    const out = invalidatedByDrop(
+      "rd_keep",
+      SNAP("2026-06-01T00:00:00.000Z"),
+      new Set(["rd_old"]),
+      [{ id: "rd_old", created_at: "2026-01-01T00:00:00.000Z" }],
+    );
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("flags when any one dropped copy predates the snapshot", () => {
+    const out = invalidatedByDrop(
+      "rd_keep",
+      SNAP("2026-06-01T00:00:00.000Z"),
+      new Set(["rd_new", "rd_old"]),
+      [
+        { id: "rd_new", created_at: "2026-09-01T00:00:00.000Z" },
+        { id: "rd_old", created_at: "2026-01-01T00:00:00.000Z" },
+      ],
+    );
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("compares instants, not strings", () => {
+    // ManifestSchema uses zod .datetime(), which accepts both "…00Z" and
+    // "…00.000Z". Lexicographically "." sorts before "Z", so the same instant
+    // in the two spellings compares wrong and would suppress a real warning.
+    const out = invalidatedByDrop(
+      "rd_keep",
+      SNAP("2026-01-01T00:00:00.000Z"),
+      new Set(["rd_same"]),
+      [{ id: "rd_same", created_at: "2026-01-01T00:00:00Z" }],
+    );
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("assumes the worst when a timestamp cannot be parsed", () => {
+    const out = invalidatedByDrop(
+      "rd_keep",
+      SNAP("2026-06-01T00:00:00.000Z"),
+      new Set(["rd_x"]),
+      [{ id: "rd_x", created_at: "not-a-date" }],
+    );
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("assumes the worst when a drop has no created_at to compare", () => {
+    const out = invalidatedByDrop("rd_keep", SNAP("2026-06-01T00:00:00.000Z"), new Set(["rd_x"]), [{ id: "rd_x" }]);
+    expect(out.staleSimilarity).toBe(true);
+  });
+});
+
+describe("invalidatedByDrop — malformed stored fields", () => {
+  it("does not throw on a non-array connections value", () => {
+    // Schema drift must not blow up a report that runs AFTER objects are
+    // deleted and the index rewritten -- that would turn a fully successful
+    // sweep into a failed command.
+    const out = invalidatedByDrop(
+      "rd_keep",
+      { connections: "not an array" as never },
+      new Set(["rd_gone"]),
+      [],
+    );
+    expect(out.staleConnections).toEqual([]);
+    expect(out.invalidated).toBe(false);
+  });
+
+  it("ignores connection entries that are not objects with a string id", () => {
+    const out = invalidatedByDrop(
+      "rd_keep",
+      { connections: [null, 7, { id: "rd_gone" }, { reason: "x" }] as never },
+      new Set(["rd_gone"]),
+      [],
+    );
+    expect(out.staleConnections).toEqual(["rd_gone"]);
+  });
+
+  it("ignores a non-object similarity value", () => {
+    const out = invalidatedByDrop("rd_keep", { similarity: "nope" as never }, new Set(["a"]), [{ id: "a" }]);
+    expect(out.staleSimilarity).toBe(false);
+  });
+
+  it("ignores a non-numeric count", () => {
+    const out = invalidatedByDrop(
+      "rd_keep",
+      { similarity: { count: "lots", computed_at: "2026-01-01T00:00:00.000Z" } as never },
+      new Set(["a"]),
+      [{ id: "a" }],
+    );
+    expect(out.staleSimilarity).toBe(false);
   });
 });
