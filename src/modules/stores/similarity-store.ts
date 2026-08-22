@@ -1,4 +1,6 @@
 import { EMBEDDING_DIM } from "../../schemas/api";
+import { parseTenantId } from "../../control-plane/ids";
+import type { TenantContext } from "../../control-plane/ids";
 
 export class WrongEmbeddingDimensionError extends Error {
   constructor(public readonly got: number) {
@@ -80,8 +82,44 @@ export function summarizeSimilarity(
 const MIN_TOP_K = 1;
 const MAX_TOP_K = 50;
 
+// Vectorize namespace for a tenant, or undefined while the data plane gate is
+// off. Namespaces are Vectorize's own segmentation primitive: a query in one
+// namespace cannot match a vector in another, with no metadata index to create
+// (which a `filter` on a metadata property would have required).
+//
+// Returning undefined when the gate is off is what keeps the existing corpus
+// working: its vectors were written with no namespace, so an unnamespaced query
+// still finds them. Flipping TENANT_DATA_PLANE on therefore needs those vectors
+// re-upserted into the founder namespace first, exactly like the R2 key-root
+// migration -- see tenantKeyRoot in reading-store.ts, which this mirrors.
+export function tenantNamespace(
+  tenant: TenantContext,
+  enabled: boolean,
+): string | undefined {
+  const tenantId = parseTenantId(String(tenant.tenantId));
+  if (!tenantId) {
+    throw new Error("malformed tenant id");
+  }
+  if (!enabled) return undefined;
+  return tenantId;
+}
+
+export function similarityStoreFor(
+  index: VectorizeIndex,
+  tenant: TenantContext,
+  env: { TENANT_DATA_PLANE?: string },
+): SimilarityStore {
+  return new SimilarityStore(index, tenantNamespace(tenant, env.TENANT_DATA_PLANE === "1"));
+}
+
 export class SimilarityStore {
-  constructor(private readonly index: VectorizeIndex) {}
+  // `namespace` undefined means the shared, pre-tenant namespace. Construct via
+  // similarityStoreFor in hosted code so the scope comes from a validated
+  // TenantContext rather than an ad-hoc string.
+  constructor(
+    private readonly index: VectorizeIndex,
+    private readonly namespace?: string,
+  ) {}
 
   async upsert(id: string, embedding: number[], metadata: SimilarityMetadata): Promise<void> {
     if (embedding.length !== EMBEDDING_DIM) {
@@ -91,6 +129,7 @@ export class SimilarityStore {
       {
         id,
         values: embedding,
+        ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
         metadata: metadata as unknown as Record<string, VectorizeVectorMetadata>,
       },
     ]);
@@ -108,6 +147,7 @@ export class SimilarityStore {
     const result = await this.index.query(embedding, {
       topK: clampedTopK,
       returnMetadata: true,
+      ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
     });
     return result.matches.map((m) => {
       const md = (m.metadata ?? {}) as Partial<SimilarityMetadata>;
