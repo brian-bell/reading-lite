@@ -107,6 +107,22 @@ describe("canonicalizeUrl — reddit", () => {
     ).toBe(canonicalizeUrl("https://www.reddit.com/r/flightsim/comments/1m5c9s8/challenging_airport_you_never_heard_of/"));
   });
 
+  it("collapses any reddit subdomain, including the ios share host", () => {
+    // sh.reddit.com is what the iOS share sheet emits -- the same sheet that
+    // adds the utm_name/share_id params this canonicalizer already strips.
+    const want = canonicalizeUrl("https://www.reddit.com/r/sub/comments/1abcdef/slug/");
+    expect(canonicalizeUrl("https://sh.reddit.com/r/sub/comments/1abcdef/slug/")).toBe(want);
+    expect(canonicalizeUrl("https://m.reddit.com/r/sub/comments/1abcdef/slug/")).toBe(want);
+    expect(canonicalizeUrl("https://i.reddit.com/r/sub/comments/1abcdef/slug/")).toBe(want);
+  });
+
+  it("does not treat a lookalike host as reddit", () => {
+    expect(canonicalizeUrl("https://notreddit.com/r/sub/comments/1abcdef/slug/"))
+      .toBe("https://notreddit.com/r/sub/comments/1abcdef/slug");
+    expect(canonicalizeUrl("https://reddit.com.evil.test/r/sub/comments/1abcdef/"))
+      .toBe("https://reddit.com.evil.test/r/sub/comments/1abcdef");
+  });
+
   it("collapses old., new., np. and redd.it forms", () => {
     const want = canonicalizeUrl("https://www.reddit.com/r/sub/comments/1abcdef/slug/");
     expect(canonicalizeUrl("https://old.reddit.com/r/sub/comments/1abcdef/slug/")).toBe(want);

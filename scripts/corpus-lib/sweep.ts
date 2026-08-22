@@ -97,7 +97,13 @@ function youtubeCanonical(u: URL, host: string): string | null {
   return null;
 }
 
-const REDDIT_HOSTS = new Set(["reddit.com", "old.reddit.com", "new.reddit.com", "np.reddit.com", "amp.reddit.com"]);
+// Any reddit subdomain, not an enumerated set: old./new./np./amp. are only the
+// well-known ones, and sh.reddit.com (the iOS share sheet -- the same one that
+// emits the utm_name/share_id params stripped above) and m.reddit.com are just
+// as common. Matches the idiom already used in src/modules/extractor/reddit.ts.
+// The leading-dot check is what keeps `reddit.com.evil.test` out.
+const isRedditHost = (host: string): boolean =>
+  host === "reddit.com" || host.endsWith(".reddit.com");
 
 // A Reddit thread reduced to its base36 post id. The subreddit, the title slug
 // and a trailing `/comment/<comment_id>` permalink are all decoration around
@@ -110,7 +116,7 @@ function redditCanonical(u: URL, host: string): string | null {
     const id = u.pathname.slice(1).split("/")[0];
     return /^[a-z0-9]+$/i.test(id) ? `https://reddit.com/comments/${id}` : null;
   }
-  if (!REDDIT_HOSTS.has(host)) return null;
+  if (!isRedditHost(host)) return null;
   const m = /^\/(?:r\/[^/]+\/)?comments\/([a-z0-9]+)/i.exec(u.pathname);
   return m ? `https://reddit.com/comments/${m[1]}` : null;
 }
