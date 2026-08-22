@@ -366,3 +366,40 @@ async function writeManifest(m: Manifest): Promise<void> {
     httpMetadata: { contentType: "application/json" },
   });
 }
+
+describe("similarity snapshot projection", () => {
+  const base = {
+    id: "rd_a",
+    url: "https://a.com/p",
+    url_hash: "a".repeat(64),
+    status: "ready" as const,
+    content_type: "text/html",
+    content_status: "stored" as const,
+    content_bytes: 10,
+    content_sha256: "b".repeat(64),
+    created_at: "2026-08-22T00:00:00.000Z",
+    updated_at: "2026-08-22T00:00:00.000Z",
+  };
+
+  it("carries the similarity snapshot onto the list row", () => {
+    const item = manifestToIndexItem(
+      { ...base, similarity: { count: 3, max: 0.9, mean: 0.7, computed_at: "2026-08-22T00:00:00.000Z" } } as never,
+      "readings/x",
+    );
+    expect(item.similarity).toEqual({ count: 3, max: 0.9, mean: 0.7, computed_at: "2026-08-22T00:00:00.000Z" });
+  });
+
+  it("omits it for readings written before the field existed", () => {
+    const item = manifestToIndexItem(base as never, "readings/x");
+    expect(item.similarity).toBeUndefined();
+    expect("similarity" in item).toBe(false);
+  });
+
+  it("preserves an empty neighbourhood as count 0 with no score", () => {
+    const item = manifestToIndexItem(
+      { ...base, similarity: { count: 0, computed_at: "2026-08-22T00:00:00.000Z" } } as never,
+      "readings/x",
+    );
+    expect(item.similarity).toEqual({ count: 0, computed_at: "2026-08-22T00:00:00.000Z" });
+  });
+});

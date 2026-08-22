@@ -4,7 +4,7 @@ import {
   readingStoreFor,
   type ReadingStore,
 } from "./modules/stores/reading-store";
-import { SimilarityStore } from "./modules/stores/similarity-store";
+import { SimilarityStore, summarizeSimilarity } from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
 import { extractFromUrl, type ExtractedContent } from "./modules/extractor";
 import { embed } from "./modules/embeddings";
@@ -88,9 +88,13 @@ export async function processReading(
     const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
       similarity.query(queryEmbed.embedding, 5),
     );
-    const similarContext: SimilarContext[] = similar
-      .filter((s) => s.id !== args.id)
+    // Exclude self once, then use the same neighbour set for both the prompt
+    // context and the measured snapshot, so the number and the LLM's verdict
+    // describe the same neighbourhood.
+    const neighbours = similar.filter((s) => s.id !== args.id);
+    const similarContext: SimilarContext[] = neighbours
       .map((s) => ({ id: s.id, url: s.url, title: s.title }));
+    const similaritySnapshot = summarizeSimilarity(neighbours, services.now());
 
     const llm = await runStage(
       attempt,
@@ -142,6 +146,7 @@ export async function processReading(
       people: llm.reading.people,
       orgs: llm.reading.orgs,
       novelty_verdict: llm.reading.novelty_verdict,
+      similarity: similaritySnapshot,
       connections: llm.reading.connections,
       summary_markdown: llm.reading.summary_markdown,
       content_type: extracted.content_type,

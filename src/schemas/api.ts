@@ -7,6 +7,7 @@ import {
   NoveltyVerdictSchema,
   ProcessingAttemptSchema,
   ProcessingAttemptSummarySchema,
+  SimilaritySnapshotSchema,
 } from "./manifest";
 
 const webUrl = () =>
@@ -87,6 +88,7 @@ export const ListIndexItemSchema = z.object({
   keywords: z.array(z.string()).optional(),
   status: ManifestStatusSchema,
   novelty_verdict: NoveltyVerdictSchema.optional(),
+  similarity: SimilaritySnapshotSchema.optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime().optional(),
   error: ManifestErrorSchema.optional(),

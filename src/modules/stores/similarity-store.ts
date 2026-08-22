@@ -19,6 +19,44 @@ export interface SimilarityMatch extends SimilarityMetadata {
   score: number;
 }
 
+// A measured snapshot of how close a reading sits to its nearest neighbours at
+// the moment it was summarized.
+//
+// The point is that this is a *number*, not a label. `novelty_verdict` asks an
+// LLM for a three-way judgement about closeness while the exact quantity is
+// already computed here and thrown away; as the corpus grows that verdict
+// decays toward the constant "familiar" and stops discriminating. A stored
+// score stays granular however large the library gets, and can be re-derived
+// from embeddings alone -- no summarization call.
+//
+// `computed_at` is load-bearing rather than decorative: this is a claim about a
+// *relationship*, stored on one node, so it goes stale whenever the corpus
+// changes around it. Stamping the measurement is what makes staleness
+// detectable instead of invisible.
+export interface SimilaritySnapshot {
+  // How many neighbours the score was computed over, after excluding self.
+  count: number;
+  // Omitted, rather than zeroed, when count is 0 -- "no neighbours" and
+  // "neighbours at cosine 0" are different facts and must not collapse.
+  max?: number;
+  mean?: number;
+  computed_at: string;
+}
+
+export function summarizeSimilarity(
+  matches: SimilarityMatch[],
+  computedAt: string,
+): SimilaritySnapshot {
+  if (matches.length === 0) return { count: 0, computed_at: computedAt };
+  const scores = matches.map((m) => m.score);
+  return {
+    count: scores.length,
+    max: Math.max(...scores),
+    mean: scores.reduce((a, b) => a + b, 0) / scores.length,
+    computed_at: computedAt,
+  };
+}
+
 const MIN_TOP_K = 1;
 const MAX_TOP_K = 50;
 
