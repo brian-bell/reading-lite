@@ -366,6 +366,37 @@ describe("writeOpenAIResults — success path", () => {
       message: /cannot summarize/i,
     },
     {
+      name: "thin-source reject_source",
+      line: {
+        custom_id: "rd_a",
+        response: {
+          status_code: 200,
+          body: {
+            ...openAIResponseBody(),
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      result: "reject_source",
+                      reason: "teaser of the URL, not the article",
+                      reading: null,
+                    }),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        error: null,
+      },
+      code: "OpenAISourceRejectedError",
+      message: /teaser of the URL, not the article/i,
+    },
+    {
       name: "incomplete response",
       line: {
         custom_id: "rd_a",

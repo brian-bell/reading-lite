@@ -232,6 +232,7 @@ function openAIParseErrorCode(error: unknown): string {
   if (error instanceof Error) {
     switch (error.name) {
       case "OpenAIRefusalError":
+      case "OpenAISourceRejectedError":
       case "OpenAIIncompleteResponseError":
       case "OpenAIOutputError":
       case "OpenAIResponseError":

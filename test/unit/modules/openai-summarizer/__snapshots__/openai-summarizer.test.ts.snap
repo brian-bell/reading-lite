@@ -26,101 +26,129 @@ Required fields:
 
 Be conservative on novelty: prefer "familiar" to "novel" when in doubt; prefer "duplicate" only when the prior reading is essentially the same piece.
 
-If the source is inadequate, refuse. Do not emit a reading_summary.",
+If the source is adequate, emit result "reading_summary" with the structured reading. If the source is inadequate, emit result "reject_source" with a reason and reading null. Do not invent a reading_summary for a teaser, metadata-only page, or a summary of the URL.",
   "prompt_cache_options": {
     "mode": "explicit",
   },
   "text": {
     "format": {
-      "name": "reading_summary",
+      "name": "summarize_outcome",
       "schema": {
         "additionalProperties": false,
         "properties": {
-          "connections": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "minLength": 1,
-                  "type": "string",
+          "reading": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "connections": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "id",
+                        "reason",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                  "keywords": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 15,
+                    "minItems": 3,
+                    "type": "array",
+                  },
+                  "novelty_verdict": {
+                    "enum": [
+                      "novel",
+                      "familiar",
+                      "duplicate",
+                    ],
+                    "type": "string",
+                  },
+                  "orgs": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                  "people": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                  "summary_markdown": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "tags": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 6,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                  "title": {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "tldr": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
                 },
-                "reason": {
-                  "minLength": 1,
-                  "type": "string",
-                },
+                "required": [
+                  "title",
+                  "tldr",
+                  "tags",
+                  "keywords",
+                  "people",
+                  "orgs",
+                  "novelty_verdict",
+                  "connections",
+                  "summary_markdown",
+                ],
+                "type": "object",
               },
-              "required": [
-                "id",
-                "reason",
-              ],
-              "type": "object",
-            },
-            "type": "array",
-          },
-          "keywords": {
-            "items": {
-              "minLength": 1,
-              "type": "string",
-            },
-            "maxItems": 15,
-            "minItems": 3,
-            "type": "array",
-          },
-          "novelty_verdict": {
-            "enum": [
-              "novel",
-              "familiar",
-              "duplicate",
+              {
+                "type": "null",
+              },
             ],
+          },
+          "reason": {
             "type": "string",
           },
-          "orgs": {
-            "items": {
-              "minLength": 1,
-              "type": "string",
-            },
-            "type": "array",
-          },
-          "people": {
-            "items": {
-              "minLength": 1,
-              "type": "string",
-            },
-            "type": "array",
-          },
-          "summary_markdown": {
-            "minLength": 1,
-            "type": "string",
-          },
-          "tags": {
-            "items": {
-              "minLength": 1,
-              "type": "string",
-            },
-            "maxItems": 6,
-            "minItems": 1,
-            "type": "array",
-          },
-          "title": {
-            "maxLength": 120,
-            "minLength": 1,
-            "type": "string",
-          },
-          "tldr": {
-            "minLength": 1,
+          "result": {
+            "enum": [
+              "reading_summary",
+              "reject_source",
+            ],
             "type": "string",
           },
         },
         "required": [
-          "title",
-          "tldr",
-          "tags",
-          "keywords",
-          "people",
-          "orgs",
-          "novelty_verdict",
-          "connections",
-          "summary_markdown",
+          "result",
+          "reason",
+          "reading",
         ],
         "type": "object",
       },

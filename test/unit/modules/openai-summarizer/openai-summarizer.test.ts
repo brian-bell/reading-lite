@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { READING_SUMMARY_JSON_SCHEMA } from "../../../../src/schemas/reading-summary";
 import {
   buildSummarizeRequestBody,
+  OPENAI_SUMMARIZE_OUTPUT_JSON_SCHEMA,
   OpenAIError,
   OpenAIIncompleteResponseError,
   OpenAIOutputError,
   OpenAIResponseError,
   OpenAIRefusalError,
+  OpenAISourceRejectedError,
   parseSummarizeResponse,
   summarizeReading,
 } from "../../../../src/modules/openai-summarizer";
@@ -78,9 +79,9 @@ describe("buildSummarizeRequestBody", () => {
       text: {
         format: {
           type: "json_schema",
-          name: "reading_summary",
+          name: "summarize_outcome",
           strict: true,
-          schema: READING_SUMMARY_JSON_SCHEMA,
+          schema: OPENAI_SUMMARIZE_OUTPUT_JSON_SCHEMA,
         },
       },
       input: [
@@ -101,7 +102,9 @@ describe("buildSummarizeRequestBody", () => {
       "full article body or a full transcript",
     );
     expect(body.instructions).toMatch(/summary or recap of the URL/i);
-    expect(body.instructions).toMatch(/If the source is inadequate, refuse/i);
+    expect(body.instructions).toMatch(
+      /emit result "reject_source" with a reason and reading null/i,
+    );
     expect(body.input[0].content[0].text).toContain("https://example.com/article");
     expect(body.input[0].content[0].text).toContain("Useful source text.");
     expect(body.input[0].content[0].text).toContain(
@@ -240,6 +243,34 @@ describe("buildSummarizeRequestBody", () => {
       cause: expect.any(SyntaxError),
     });
   });
+
+  it("surfaces a reject_source outcome as a source-rejected error", async () => {
+    const response = completedResponse();
+    response.output[0].content[0].text = JSON.stringify({
+      result: "reject_source",
+      reason: "placeholder, not an extraction",
+      reading: null,
+    });
+    const fetchFn = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    const error = await summarizeReading(input, {
+      fetch: fetchFn,
+      apiKey: "sk-openai",
+      model: "gpt-5.6-terra",
+      reasoningEffort: "low",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(OpenAISourceRejectedError);
+    expect(error).toMatchObject({
+      message: "placeholder, not an extraction",
+    });
+  });
 });
 
 describe("parseSummarizeResponse", () => {
@@ -261,6 +292,35 @@ describe("parseSummarizeResponse", () => {
     response.object = "not-a-response";
 
     expect(() => parseSummarizeResponse(response)).toThrow(OpenAIResponseError);
+  });
+
+  it("accepts a tagged reading_summary envelope", () => {
+    const response = completedResponse();
+    response.output[0].content[0].text = JSON.stringify({
+      result: "reading_summary",
+      reason: "",
+      reading: validSummary,
+    });
+
+    expect(parseSummarizeResponse(response)).toMatchObject({
+      reading: validSummary,
+    });
+  });
+
+  it("throws OpenAISourceRejectedError when the model rejects a thin source", () => {
+    const response = completedResponse();
+    response.output[0].content[0].text = JSON.stringify({
+      result: "reject_source",
+      reason: "metadata-only YouTube floor, no transcript",
+      reading: null,
+    });
+
+    expect(() => parseSummarizeResponse(response)).toThrow(
+      OpenAISourceRejectedError,
+    );
+    expect(() => parseSummarizeResponse(response)).toThrow(
+      "metadata-only YouTube floor, no transcript",
+    );
   });
 
   it("surfaces an explicit refusal", () => {

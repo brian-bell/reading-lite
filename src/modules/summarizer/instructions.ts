@@ -1,8 +1,9 @@
 import type { SummarizeReadingInput } from "./types";
 
 // Shared librarian policy for both summarizer providers. Provider-specific
-// wrappers (OpenAI refusal vs Anthropic reject_source) live next to the
-// request builders; this body is the cacheable source-adequacy contract.
+// reject channels (OpenAI summarize_outcome vs Anthropic reject_source) live
+// next to the request builders; this body is the cacheable source-adequacy
+// contract.
 export const LIBRARIAN_INSTRUCTIONS = `You are a personal librarian. The user has saved a URL to read. Your job is to produce a structured summary so the user can decide whether to re-read it later, find it again by topic, and see how it relates to the rest of their library.
 
 The extracted markdown is the source: a full article body or a full transcript. Summarize that source only. The URL and page title are citations, not the article. Do not reconstruct, recall, or invent the piece from the URL, the title, or prior knowledge of the URL.

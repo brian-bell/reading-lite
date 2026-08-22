@@ -19,7 +19,26 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
 const INSTRUCTIONS = `${LIBRARIAN_INSTRUCTIONS}
 
-If the source is inadequate, refuse. Do not emit a reading_summary.`;
+If the source is adequate, emit result "reading_summary" with the structured reading. If the source is inadequate, emit result "reject_source" with a reason and reading null. Do not invent a reading_summary for a teaser, metadata-only page, or a summary of the URL.`;
+
+// Strict Responses schema: a tagged outcome so thin sources can fail closed
+// instead of being forced into reading_summary. Native refusals stay reserved
+// for safety policy.
+export const OPENAI_SUMMARIZE_OUTPUT_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    result: {
+      type: "string",
+      enum: ["reading_summary", "reject_source"],
+    },
+    reason: { type: "string" },
+    reading: {
+      anyOf: [READING_SUMMARY_JSON_SCHEMA, { type: "null" }],
+    },
+  },
+  required: ["result", "reason", "reading"],
+} as const;
 
 export interface OpenAISummarizerDeps {
   fetch: typeof fetch;
@@ -50,6 +69,13 @@ export class OpenAIRefusalError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "OpenAIRefusalError";
+  }
+}
+
+export class OpenAISourceRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenAISourceRejectedError";
   }
 }
 
@@ -148,9 +174,9 @@ export function buildSummarizeRequestBody(
     text: {
       format: {
         type: "json_schema",
-        name: "reading_summary",
+        name: "summarize_outcome",
         strict: true,
-        schema: READING_SUMMARY_JSON_SCHEMA,
+        schema: OPENAI_SUMMARIZE_OUTPUT_JSON_SCHEMA,
       },
     },
     // Deliberate caching opt-out, not a misconfiguration: explicit mode with no
@@ -245,8 +271,9 @@ export function parseSummarizeResponse(value: unknown): OpenAISummarizeResult {
 
   let reading: ReadingSummary;
   try {
-    reading = ReadingSummarySchema.parse(JSON.parse(outputText[0]!.text));
+    reading = parseSummarizeOutputText(outputText[0]!.text);
   } catch (cause) {
+    if (cause instanceof OpenAISourceRejectedError) throw cause;
     throw new OpenAIOutputError(
       "OpenAI output_text was not a valid reading summary",
       { cause },
@@ -262,6 +289,29 @@ export function parseSummarizeResponse(value: unknown): OpenAISummarizeResult {
       cache_write_tokens: response.usage.input_tokens_details?.cache_write_tokens ?? 0,
     },
   };
+}
+
+function parseSummarizeOutputText(text: string): ReadingSummary {
+  const value: unknown = JSON.parse(text);
+  if (isRecord(value) && value.result === "reject_source") {
+    throw new OpenAISourceRejectedError(rejectSourceReason(value.reason));
+  }
+  if (isRecord(value) && value.result === "reading_summary") {
+    return ReadingSummarySchema.parse(value.reading);
+  }
+  // Bare reading summaries remain parseable so in-flight OpenAI batches
+  // submitted against the previous schema still commit.
+  return ReadingSummarySchema.parse(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function rejectSourceReason(reason: unknown): string {
+  return typeof reason === "string" && reason.trim().length > 0
+    ? reason.trim()
+    : "extracted source is not a full article or transcript";
 }
 
 function openAIErrorMessage(text: string, status: number): string {
