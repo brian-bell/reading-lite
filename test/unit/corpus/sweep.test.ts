@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeUrl,
   findDuplicateGroups,
+  invalidatedByDrop,
   planExplicitPair,
   planSweep,
   type SweepItem,
@@ -297,5 +298,62 @@ describe("planExplicitPair", () => {
     const plan = planExplicitPair(items, { drop: "rd_fail", keep: "rd_video" });
     expect(plan.errors).toEqual([]);
     expect(plan.readyDropCount).toBe(0);
+  });
+});
+
+describe("invalidatedByDrop", () => {
+  const keeper = { id: "rd_keep", url: "https://a.com" };
+
+  it("flags a keeper whose connections cite a dropped reading", () => {
+    const out = invalidatedByDrop(
+      keeper.id,
+      { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "same piece" }] },
+      new Set(["rd_gone"]),
+    );
+    expect(out.invalidated).toBe(true);
+    expect(out.staleConnections).toEqual(["rd_gone"]);
+  });
+
+  it("reports the verdict so the operator can see what is now wrong", () => {
+    const out = invalidatedByDrop(
+      keeper.id,
+      { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "x" }] },
+      new Set(["rd_gone"]),
+    );
+    expect(out.verdict).toBe("duplicate");
+  });
+
+  it("flags a keeper whose similarity snapshot counted a dropped neighbour", () => {
+    // The score was measured against a neighbourhood that included the copy
+    // just deleted, so the number is now wrong even with no stale connection.
+    const out = invalidatedByDrop(
+      keeper.id,
+      { novelty_verdict: "familiar", similarity: { count: 3, max: 0.99, computed_at: "2026-01-01T00:00:00.000Z" } },
+      new Set(["rd_gone"]),
+    );
+    expect(out.invalidated).toBe(true);
+    expect(out.staleSimilarity).toBe(true);
+  });
+
+  it("leaves a keeper alone when nothing references the dropped readings", () => {
+    const out = invalidatedByDrop(
+      keeper.id,
+      { novelty_verdict: "novel", connections: [{ id: "rd_other", reason: "x" }] },
+      new Set(["rd_gone"]),
+    );
+    expect(out.invalidated).toBe(false);
+  });
+
+  it("treats a keeper with no manifest data as not invalidated rather than guessing", () => {
+    expect(invalidatedByDrop(keeper.id, null, new Set(["rd_gone"])).invalidated).toBe(false);
+  });
+
+  it("lists every dropped id a keeper cites, not just the first", () => {
+    const out = invalidatedByDrop(
+      keeper.id,
+      { connections: [{ id: "rd_g1", reason: "x" }, { id: "rd_ok", reason: "y" }, { id: "rd_g2", reason: "z" }] },
+      new Set(["rd_g1", "rd_g2"]),
+    );
+    expect(out.staleConnections).toEqual(["rd_g1", "rd_g2"]);
   });
 });

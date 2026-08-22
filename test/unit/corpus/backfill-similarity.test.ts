@@ -98,3 +98,28 @@ describe("withSimilarity", () => {
     expect(out.similarity).toEqual({ count: 1, max: 0.5, mean: 0.5, computed_at: AT });
   });
 });
+
+describe("planBackfill --rescore", () => {
+  const scored = {
+    id: "rd_done",
+    url: "https://a.com",
+    status: "ready",
+    key_prefix: "readings/2026/x-rd_done",
+    similarity: { count: 2, computed_at: "2026-08-22T00:00:00.000Z" },
+  };
+
+  it("normally skips an already-scored reading", () => {
+    expect(planBackfill([scored] as never).targets).toEqual([]);
+  });
+
+  it("rescores it when asked, for a sweep keeper whose neighbourhood changed", () => {
+    const plan = planBackfill([scored] as never, { rescore: true });
+    expect(plan.targets.map((t) => t.id)).toEqual(["rd_done"]);
+    expect(plan.alreadyScored).toBe(0);
+  });
+
+  it("still refuses to score a non-ready reading, which owns no vector", () => {
+    const plan = planBackfill([{ ...scored, status: "failed" }] as never, { rescore: true });
+    expect(plan.targets).toEqual([]);
+  });
+});

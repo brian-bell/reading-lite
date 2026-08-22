@@ -40,7 +40,7 @@ export interface BackfillPlan {
 // Only `ready` readings own a vector, so only they can be scored this way.
 export function planBackfill(
   items: BackfillRow[],
-  opts: { only?: string[] } = {},
+  opts: { only?: string[]; rescore?: boolean } = {},
 ): BackfillPlan {
   const only = opts.only && opts.only.length > 0 ? new Set(opts.only) : null;
   let alreadyScored = 0;
@@ -53,7 +53,9 @@ export function planBackfill(
       continue;
     }
     // Resumability is just this check: a re-run skips what it already wrote.
-    if (it.similarity !== undefined) {
+    // `rescore` overrides it, for readings whose stored snapshot was measured
+    // against a neighbourhood that has since changed -- a corpus-sweep keeper.
+    if (it.similarity !== undefined && opts.rescore !== true) {
       alreadyScored++;
       continue;
     }

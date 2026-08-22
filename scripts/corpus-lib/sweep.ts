@@ -305,3 +305,65 @@ export function planExplicitPair(
     readyDropCount: drop!.status === "ready" ? 1 : 0,
   };
 }
+
+// What a sweep silently invalidated on the copy it kept.
+//
+// novelty_verdict and the similarity snapshot are both claims about a
+// *relationship*, computed once at summarize time and then frozen on one node.
+// Dropping a duplicate changes the corpus around the survivor, so both can go
+// wrong the moment the sweep finishes -- and nothing recomputes them.
+//
+// This is not hypothetical. Two keepers of an earlier sweep were left marked
+// "duplicate", each citing the copy that had just been deleted as its
+// justification: a verdict that was not merely stale but self-referential.
+//
+// Reporting is deliberately narrow. A keeper is flagged only when it actually
+// references a dropped reading -- a cited connection, or a similarity snapshot
+// measured while the dropped copy was still indexed -- rather than flagging
+// every keeper, which would train the operator to ignore the warning.
+export interface DropInvalidation {
+  id: string;
+  invalidated: boolean;
+  verdict?: string;
+  staleConnections: string[];
+  staleSimilarity: boolean;
+}
+
+export function invalidatedByDrop(
+  keeperId: string,
+  manifest: {
+    novelty_verdict?: string;
+    connections?: { id: string; reason: string }[];
+    similarity?: { count: number; max?: number; mean?: number; computed_at: string };
+  } | null,
+  droppedIds: Set<string>,
+): DropInvalidation {
+  const base: DropInvalidation = {
+    id: keeperId,
+    invalidated: false,
+    staleConnections: [],
+    staleSimilarity: false,
+  };
+  // No manifest means no evidence either way. Say nothing rather than guess:
+  // a false warning is worse than a missed one here, since the operator's
+  // remedy costs a rescore.
+  if (manifest === null) return base;
+
+  const staleConnections = (manifest.connections ?? [])
+    .map((c) => c.id)
+    .filter((id) => droppedIds.has(id));
+
+  // Any stored snapshot predates this drop by construction, and the dropped
+  // copies were the survivor's nearest neighbours -- that is why they grouped.
+  // So a snapshot that counted anything was measured against a neighbourhood
+  // this sweep just changed.
+  const staleSimilarity = (manifest.similarity?.count ?? 0) > 0;
+
+  return {
+    ...base,
+    ...(manifest.novelty_verdict === undefined ? {} : { verdict: manifest.novelty_verdict }),
+    staleConnections,
+    staleSimilarity,
+    invalidated: staleConnections.length > 0 || staleSimilarity,
+  };
+}

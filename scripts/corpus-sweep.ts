@@ -11,8 +11,9 @@
 //
 // Dry-run by default. Pass --execute to act. Read-only otherwise.
 
-import { planExplicitPair, planSweep, type SweepItem } from "./corpus-lib/sweep";
+import { invalidatedByDrop, planExplicitPair, planSweep, type SweepItem } from "./corpus-lib/sweep";
 import { shouldRewriteIndex } from "./corpus-lib/drop";
+import { readManifest } from "./corpus-lib/wrangler-r2";
 import {
   deleteObject,
   deleteVector,
@@ -227,6 +228,41 @@ async function main(): Promise<void> {
   await writeListIndex(kept as any, deps);
   console.log("\nindex/list.json rewritten.");
   console.log(`Done. deleted: ${deleted}, absent (skipped): ${absent}`);
+
+  await reportInvalidatedKeepers(plan.groups, dropIds, deps);
+}
+
+// A sweep changes the corpus around each keeper, so the keeper's frozen
+// novelty_verdict and similarity snapshot can be wrong the moment it finishes.
+// Nothing recomputes them, so at minimum say so.
+async function reportInvalidatedKeepers(
+  groups: { keeper: { id: string; key_prefix: string; url: string } }[],
+  dropIds: Set<string>,
+  deps: R2Deps,
+): Promise<void> {
+  const flagged = [];
+  for (const g of groups) {
+    const manifest = await readManifest(g.keeper.key_prefix, deps).catch(() => null);
+    const v = invalidatedByDrop(g.keeper.id, manifest, dropIds);
+    if (v.invalidated) flagged.push({ ...v, url: g.keeper.url });
+  }
+  if (flagged.length === 0) return;
+
+  console.log(`\n${flagged.length} keeper(s) now carry a stale relationship claim:`);
+  for (const f of flagged) {
+    const bits = [];
+    if (f.verdict) bits.push(`verdict "${f.verdict}"`);
+    if (f.staleConnections.length > 0) bits.push(`cites dropped ${f.staleConnections.join(", ")}`);
+    if (f.staleSimilarity) bits.push("similarity measured against a dropped neighbour");
+    console.log(`  ${f.id}  ${bits.join("; ")}`);
+    console.log(`      ${f.url}`);
+  }
+  console.log(
+    `\nRefresh the measured score without an LLM call (no re-summarization, no tag churn):\n` +
+    `  npm run corpus-backfill-similarity -- ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
+    `The novelty_verdict itself only refreshes on a reprocess, which DOES re-roll\n` +
+    `title and tags -- so weigh that before reprocessing purely to fix a label.`,
+  );
 }
 
 main().catch((e: unknown) => {

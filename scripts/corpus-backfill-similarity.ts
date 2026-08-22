@@ -32,6 +32,7 @@ interface Opts {
   remote: boolean;
   execute: boolean;
   limit?: number;
+  rescore: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
@@ -40,6 +41,7 @@ function parseArgs(argv: string[]): Opts {
     bucket: process.env.READING_LITE_BUCKET ?? "reading-lite",
     remote: true,
     execute: false,
+    rescore: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -51,6 +53,7 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--bucket") opts.bucket = argv[++i];
     else if (a === "--vectorize") opts.vectorizeIndex = argv[++i];
     else if (a === "--limit") opts.limit = Number(argv[++i]);
+    else if (a === "--rescore") opts.rescore = true;
     else if (a.startsWith("--")) {
       console.error(`unknown flag: ${a}`);
       process.exit(2);
@@ -72,6 +75,10 @@ reprocess and will not re-roll a summary.
 
 Resumable: readings that already carry a score are skipped, so a run interrupted
 part-way can simply be repeated. --limit caps how many are scored in one pass.
+
+--rescore recomputes readings that already carry a score. Use it after a
+corpus-sweep, which changes the corpus around each keeper and leaves its stored
+snapshot measured against a neighbour that no longer exists.
 
 Default is a DRY RUN. Add --execute to write.
 
@@ -113,7 +120,7 @@ async function main(): Promise<void> {
   const deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
 
   const items = await readListIndex(deps);
-  const plan = planBackfill(items as never, { only: opts.only });
+  const plan = planBackfill(items as never, { only: opts.only, rescore: opts.rescore });
   const targets = opts.limit === undefined ? plan.targets : plan.targets.slice(0, opts.limit);
 
   console.log(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
