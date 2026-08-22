@@ -142,11 +142,11 @@ re-extracts fetch-blocked ones locally. Dry-run (plan only) by default.
                     Refuses without the acknowledgment.
   --help            Show this message.
 
-Policy (per audit row): stranded/transient/5xx/summarize -> reprocess;
+Policy (per audit row): stranded/transient/5xx/summarize hiccups -> reprocess;
 fetch-blocked 403/429 + oversized -> local-extract + markdown import;
-dead links / paywalls / non-articles / teasers -> skip; reddit -> skip
-(import via the reddit-import skill — the worker/script can't clear Reddit's
-bot-challenge).`);
+dead links / paywalls / non-articles / teasers / thin-source rejects -> skip;
+reddit -> skip (reddit-import skill); thin YouTube floors -> skip
+(youtube-import skill).`);
 }
 
 async function main(): Promise<void> {

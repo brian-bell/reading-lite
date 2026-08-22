@@ -4,7 +4,7 @@ import {
   writeResults,
 } from "../../../../scripts/corpus-lib/batch/write-phase";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
-import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
+import { EMIT_READING_TOOL_NAME, REJECT_SOURCE_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type {
   OpenAISubmittedSidecar,
   Sidecar,
@@ -364,6 +364,37 @@ describe("writeOpenAIResults — success path", () => {
       },
       code: "OpenAIRefusalError",
       message: /cannot summarize/i,
+    },
+    {
+      name: "thin-source reject_source",
+      line: {
+        custom_id: "rd_a",
+        response: {
+          status_code: 200,
+          body: {
+            ...openAIResponseBody(),
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      result: "reject_source",
+                      reason: "teaser of the URL, not the article",
+                      reading: null,
+                    }),
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        error: null,
+      },
+      code: "OpenAISourceRejectedError",
+      message: /teaser of the URL, not the article/i,
     },
     {
       name: "incomplete response",
@@ -788,6 +819,40 @@ describe("writeResults — robustness", () => {
     expect(report.find((r) => r.id === "rd_a")?.status).toBe("failed");
     const m: Manifest = ManifestSchema.parse(JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!));
     expect(m.status).toBe("failed");
+    expect(m.error?.retryable).toBe(true);
+  });
+
+  it("marks a reject_source tool call as failed with SourceRejectedError", async () => {
+    const r2 = fakeR2();
+    const rejected: BatchResult = {
+      custom_id: "rd_a",
+      result: {
+        type: "succeeded",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "t",
+              name: REJECT_SOURCE_TOOL_NAME,
+              input: { reason: "teaser of the URL, not the article" },
+            },
+          ],
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      },
+    };
+    const report = await writeResults(
+      sidecar([sidecarTarget()]),
+      [rejected],
+      deps(r2, fakeVectorize()),
+    );
+    expect(report.find((r) => r.id === "rd_a")?.status).toBe("failed");
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect(m.status).toBe("failed");
+    expect(m.error?.code).toBe("SourceRejectedError");
+    expect(m.error?.message).toBe("teaser of the URL, not the article");
     expect(m.error?.retryable).toBe(true);
   });
 

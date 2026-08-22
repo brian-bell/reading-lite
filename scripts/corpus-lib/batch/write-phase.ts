@@ -88,7 +88,7 @@ export async function writeResults(
         customId: res.custom_id,
         result: {
           type: "failed",
-          code: "BadToolInputError",
+          code: anthropicParseErrorCode(error),
           message: error instanceof Error ? error.message : String(error),
         },
       };
@@ -232,6 +232,7 @@ function openAIParseErrorCode(error: unknown): string {
   if (error instanceof Error) {
     switch (error.name) {
       case "OpenAIRefusalError":
+      case "OpenAISourceRejectedError":
       case "OpenAIIncompleteResponseError":
       case "OpenAIOutputError":
       case "OpenAIResponseError":
@@ -239,6 +240,18 @@ function openAIParseErrorCode(error: unknown): string {
     }
   }
   return "OpenAIBatchStructuredOutputError";
+}
+
+function anthropicParseErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    switch (error.name) {
+      case "SourceRejectedError":
+      case "NoToolUseError":
+      case "BadToolInputError":
+        return error.name;
+    }
+  }
+  return "BadToolInputError";
 }
 
 function malformedOpenAIBatchLineMessage(

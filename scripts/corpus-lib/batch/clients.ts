@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
 
 // REST clients for the bulk path. The Anthropic Message Batches API runs the
-// forced-tool-use summarize asynchronously (50% cheaper, no rate-limit burst);
+// tool-use summarize asynchronously (50% cheaper, no rate-limit burst);
 // OpenAI embeddings stay realtime but coalesced (array input) to avoid a burst.
 // fetch is injected so tests stub it.
 

@@ -23,6 +23,19 @@ describe("reasonForFailure", () => {
     expect(reasonForFailure("OversizedResponseError", "", "https://a.com/x")).toMatch(/byte cap/);
     expect(reasonForFailure("BadToolInputError", "", "https://a.com/x")).toMatch(/Summarization failed/);
     expect(reasonForFailure("FetchTimeoutError", "", "https://a.com/x")).toMatch(/timed out/);
+    expect(
+      reasonForFailure("SourceRejectedError", "teaser of the URL", "https://a.com/x"),
+    ).toMatch(/Thin extraction — not a full article or transcript/);
+    expect(
+      reasonForFailure(
+        "OpenAISourceRejectedError",
+        "metadata-only YouTube floor, no transcript",
+        "https://www.youtube.com/watch?v=YtTWNzOtkxU",
+      ),
+    ).toMatch(/youtube-import/);
+    expect(
+      reasonForFailure("SourceRejectedError", "no transcript", "https://youtu.be/YtTWNzOtkxU"),
+    ).toMatch(/youtube-import/);
   });
 
   it("honors the per-url override map and reddit special-case", () => {
