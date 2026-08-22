@@ -7,6 +7,8 @@ import {
 import {
   SimilarityStore,
   SIMILAR_TOP_K,
+  SIMILARITY_FLOOR,
+  aboveFloor,
   excludeSelf,
   similarityStoreFor,
   summarizeSimilarity,
@@ -96,11 +98,18 @@ export async function processReading(
       // indexed and would otherwise consume a slot (see excludeSelf).
       similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
     );
-    // Exclude self once, then use the same neighbour set for both the prompt
-    // context and the measured snapshot, so the number and the LLM's verdict
-    // describe the same neighbourhood.
+    // Exclude self once. The snapshot then measures the UNFLOORED
+    // neighbourhood, while only the prompt context is floored.
+    //
+    // That split is deliberate. The snapshot is a measurement: for a novel
+    // reading whose nearest neighbour sits at 0.30, "nearest was 0.30" is the
+    // useful fact, and flooring first would throw it away and record count 0.
+    // The prompt is a judgement input: handing the model five distant titles
+    // under a heading that presupposes relatedness is what made everything look
+    // familiar, so those get dropped.
     const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
-    const similarContext: SimilarContext[] = neighbours.map((s) => ({
+    const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
+    const similarContext: SimilarContext[] = related.map((s) => ({
       id: s.id,
       url: s.url,
       ...(s.title === undefined ? {} : { title: s.title }),
