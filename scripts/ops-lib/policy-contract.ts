@@ -23,30 +23,38 @@ export interface PolicyContractViolation {
 // the help text is registry-rendered documentation, so an acknowledgement
 // flag that is not documented there does not exist as far as operators are
 // concerned.
-const HELP_REQUIREMENTS: { requirement: string; pattern: RegExp; detail: string }[] = [
+// Flag requirements match the flag name (unambiguous); the idempotency and
+// redaction guarantees must appear as these exact affirmative sentences —
+// substring keyword matching would also accept help text that *denies* the
+// requirement ("non-idempotent", "printed unredacted").
+export const POLICY_IDEMPOTENCY_PHRASE =
+  "Idempotent: re-running the same execute converges to the same policy state.";
+export const POLICY_REDACTION_PHRASE = "Tokens and secrets are never printed.";
+
+const HELP_REQUIREMENTS: { requirement: string; test: (help: string) => boolean; detail: string }[] = [
   {
     requirement: "explicit environment",
-    pattern: /--env\b/,
+    test: (help) => /--env\b/.test(help),
     detail: "must take an explicit, validated --env target (no default-to-production, no global env option)",
   },
   {
     requirement: "production confirmation",
-    pattern: /--confirm-production\b/,
+    test: (help) => /--confirm-production\b/.test(help),
     detail: "a production write must require --confirm-production in addition to --execute",
   },
   {
     requirement: "idempotency",
-    pattern: /idempotent/i,
-    detail: "the command must document that re-running an execute is safe (idempotent)",
+    test: (help) => help.includes(POLICY_IDEMPOTENCY_PHRASE),
+    detail: `help must carry the exact guarantee: "${POLICY_IDEMPOTENCY_PHRASE}"`,
   },
   {
     requirement: "redaction",
-    pattern: /never print|redact/i,
-    detail: "secrets and tokens must be documented as never printed (redacted) in plans or logs",
+    test: (help) => help.includes(POLICY_REDACTION_PHRASE),
+    detail: `help must carry the exact guarantee: "${POLICY_REDACTION_PHRASE}"`,
   },
   {
     requirement: "guard version acknowledgement",
-    pattern: /--acknowledge-guard-version\b/,
+    test: (help) => /--acknowledge-guard-version\b/.test(help),
     detail:
       "an execute must assert the guard version it was written against " +
       "(--acknowledge-guard-version <n>) so a stale automation cannot flip a newer policy",
@@ -61,8 +69,8 @@ export function policyContractViolations(command: AnyCommand): PolicyContractVio
       detail: "a policy command mutates system state and must be classified plan-first",
     });
   }
-  for (const { requirement, pattern, detail } of HELP_REQUIREMENTS) {
-    if (!pattern.test(command.helpText)) {
+  for (const { requirement, test, detail } of HELP_REQUIREMENTS) {
+    if (!test(command.helpText)) {
       violations.push({ requirement, detail });
     }
   }
@@ -91,6 +99,12 @@ export interface PolicyBehaviorOptions {
   // The guard version the injected deps present as current. The stale probe
   // acknowledges (currentGuardVersion - 1) and must be refused.
   currentGuardVersion: number;
+  // A known-valid mutation argv fragment for the command under test (its
+  // operation arguments, e.g. ["--policy", "disabled"]). Every probe starts
+  // from this valid baseline and varies exactly one safety guard, so a
+  // command cannot pass by rejecting probes for an unrelated missing
+  // operation argument. Empty when the command needs no operation args.
+  baselineArgv: string[];
 }
 
 export function policyRefusalProbes(
@@ -99,41 +113,42 @@ export function policyRefusalProbes(
   const current = String(opts.currentGuardVersion);
   const stale = String(opts.currentGuardVersion - 1);
   const future = String(opts.currentGuardVersion + 1);
+  const base = opts.baselineArgv;
   return [
     {
       requirement: "explicit environment",
       // An execute with no --env must be refused, never defaulted.
-      argv: ["--execute", "--acknowledge-guard-version", current],
+      argv: [...base, "--execute", "--acknowledge-guard-version", current],
     },
     {
       requirement: "explicit environment (invalid value)",
       // The target type is validated, not merely present — an unknown
       // environment must never resolve through a fallback.
-      argv: ["--execute", "--env", "typo", "--acknowledge-guard-version", current],
+      argv: [...base, "--execute", "--env", "typo", "--acknowledge-guard-version", current],
     },
     {
       requirement: "production confirmation",
-      argv: ["--execute", "--env", "production", "--acknowledge-guard-version", current],
+      argv: [...base, "--execute", "--env", "production", "--acknowledge-guard-version", current],
     },
     {
       requirement: "guard version acknowledgement",
-      argv: ["--execute", "--env", "staging"],
+      argv: [...base, "--execute", "--env", "staging"],
     },
     {
       requirement: "guard version acknowledgement (stale)",
       // Presence is not enough: acknowledging an outdated guard version must
       // be refused, or stale automation could flip a newer policy.
-      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", stale],
+      argv: [...base, "--execute", "--env", "staging", "--acknowledge-guard-version", stale],
     },
     {
       requirement: "guard version acknowledgement (future)",
       // Exact equality with the live version: a blanket high value must not
       // pre-acknowledge guard changes that have not happened yet.
-      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", future],
+      argv: [...base, "--execute", "--env", "staging", "--acknowledge-guard-version", future],
     },
     {
       requirement: "guard version acknowledgement (malformed)",
-      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", "not-a-version"],
+      argv: [...base, "--execute", "--env", "staging", "--acknowledge-guard-version", "not-a-version"],
     },
   ];
 }
@@ -149,7 +164,7 @@ export async function assertPolicyCommandBehavior(
   // and no write seam reached (the caller's write seams throw, and any
   // non-usage throw is recorded as a failure here).
   try {
-    const code = await command.run(["--env", "staging"], deps as never);
+    const code = await command.run([...opts.baselineArgv, "--env", "staging"], deps as never);
     if (code !== 0) {
       failures.push(`plan-first: mode-less invocation returned ${code} instead of a successful plan`);
     }

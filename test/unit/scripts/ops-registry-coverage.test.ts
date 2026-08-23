@@ -129,8 +129,9 @@ describe("policy command extension contract (reading-lite-s1k.9.4)", () => {
     safety: "plan-first" as const,
     helpText: `Usage: npm run ops -- system policy --env staging|production [options]
 
-Plans by default; --execute applies. Idempotent: re-running the same execute
-converges to the same policy state. Tokens and secrets are never printed.
+Plans by default; --execute applies.
+Idempotent: re-running the same execute converges to the same policy state.
+Tokens and secrets are never printed.
 
 Options:
   --env <name>                     Explicit target environment (required).
@@ -166,7 +167,7 @@ Options:
     },
   };
 
-  const GUARD_VERSION = { currentGuardVersion: 3 };
+  const GUARD_VERSION = { currentGuardVersion: 3, baselineArgv: ["--policy", "disabled"] };
 
   // Write seams must never be reached by any probe; reads the contract allows
   // (io, the current guard version) are provided.
