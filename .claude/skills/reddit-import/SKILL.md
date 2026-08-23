@@ -65,7 +65,7 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
    npm run ops -- import reddit "<canonicalRedditUrl>" --json .reddit-thread.tmp.json --execute
    ```
 
-   Use `--dry-run` first to show the rendered markdown without writing. Add
+   Omit `--execute` first to show the rendered markdown without writing. Add
    `--api-url <base>` / `--token <tok>` to target staging or pass a token
    explicitly. The tool prints the new reading id and a poll URL.
 

@@ -228,7 +228,7 @@ npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute \
 
 The default folder is `Computing` (top-level, i.e. under "Other Bookmarks").
 `--url` is the **full** readings endpoint (default `http://127.0.0.1:8787/api/readings`,
-or `READER_URL`). `--dry-run` prints the would-submit list without prompting or
+or `READER_URL`). Omitting `--execute` prints the would-submit list without prompting or
 POSTing. `--quick` skips the per-URL prompt; submission is always serial so the
 local index can't race itself. Token resolution mirrors `ops reading submit`:
 `--token` > `READER_API_TOKEN` env > `.dev.vars`.
@@ -363,7 +363,7 @@ a logged-in Chrome session to fetch the public `<thread>.json`, renders the post
 plus top comments to markdown with the same parser the Worker uses, and imports
 it via `POST /api/readings/import-markdown`. No Reddit app or OAuth credentials
 are needed. The skill wraps `ops import reddit <redditUrl> --json <saved.json>`,
-which also takes `--dry-run` to preview the markdown.
+which plans by default (omit `--execute`) to preview the markdown.
 
 ### YouTube
 

@@ -50,7 +50,8 @@ npm run ops -- reading-list process --file in.json --url http://127.0.0.1:8787/a
 
 Flags: `--file` (required, rewritten in place), `--out` (write elsewhere),
 `--url` (default `READER_URL` env, then `https://reading-lite.bbell.dev/api/readings`),
-`--token`, `--resubmit`, `--dry-run`, `--quick`.
+`--token`, `--resubmit`, `--execute` (submit and write back; omit it to plan),
+`--quick`.
 
 Prints a JSON summary to stdout (`selected`, `confirmed`, `queued`, `errors`,
 `skipped`). Exits non-zero if any submission errored.
@@ -78,5 +79,5 @@ npm run ops -- reading-list check --file list.json --execute   # promote freshly
 - The default endpoint is **production**, matching `check-reading-list`'s
   default production bucket. Use `--url` for a local worker, and make
   sure `--token` matches whichever environment you target.
-- Submitting triggers paid summarization on the server. Use `--dry-run` first;
+- Submitting triggers paid summarization on the server. Plan first (omit `--execute`);
   the default per-URL prompt is the safety rail — `--quick` removes it.

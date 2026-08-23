@@ -37,7 +37,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    and markdown size. If transcript shows `(none)`, the video has no captions or
    yt-dlp couldn't fetch them — the import still proceeds with description.
 
-2. **Import** by dropping `--dry-run`. Add `--api-url <base>` / `--token <tok>`
+2. **Import** by adding `--execute`. Add `--api-url <base>` / `--token <tok>`
    to target staging or pass a token explicitly:
 
    ```sh

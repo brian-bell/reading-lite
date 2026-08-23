@@ -61,7 +61,8 @@ npm run ops -- reading-list check --file in.json --bucket some-other-bucket --ex
 
 Flags: `--file` (required), `--out` (default: in place), `--bucket` (default
 `reading-lite`, or `READING_LITE_BUCKET` env), `--status <s>` (repeatable,
-default `ready`), `--any-status`, `--local` (read miniflare cache), `--dry-run`.
+default `ready`), `--any-status`, `--local` (read miniflare cache), `--execute`
+(write the annotated file; omit it to plan).
 
 The script prints a JSON summary to stdout:
 
@@ -70,7 +71,7 @@ The script prints a JSON summary to stdout:
   "file": "…", "out": "…", "bucket": "reading-lite",
   "match_statuses": ["ready"], "corpus_urls": 1234,
   "total": 52, "processed": 30, "unprocessed": 22, "missingUrl": 0,
-  "dry_run": false
+  "executed": true
 }
 ```
 
@@ -83,7 +84,7 @@ The script prints a JSON summary to stdout:
 
 ## Notes / gotchas
 
-- Use `--dry-run` first to sanity-check `corpus_urls` is non-zero — a zero there
+- Plan first (omit `--execute`) to sanity-check `corpus_urls` is non-zero — a zero there
   usually means wrong bucket or an unauthenticated wrangler session, not an
   empty corpus.
 - `index/list.json` is the worker's maintained list index. If it were ever
