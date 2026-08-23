@@ -212,7 +212,17 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
         deps.io.stderr(`  [plan ${a}] ${r.short} — ${recoveryAction(r).why}`);
       }
     }
-    deps.io.stderr("Rerun with --execute to act.");
+    // Plan output must invite only an execute that can succeed: the realtime
+    // execute path refuses a usr_ selector outright (token unverifiable — see
+    // the guard below), so point that case at --batch instead.
+    if (tenant.kind === "tenant") {
+      deps.io.stderr(
+        "Realtime --execute is unavailable for a tenant selector until token verification lands " +
+          "(reading-lite-1xk). Rerun with --batch --execute (and --sole-writer) to act.",
+      );
+    } else {
+      deps.io.stderr("Rerun with --execute to act.");
+    }
     printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, inProgress: 0, errors: 0, touched: [] });
     return 0;
   }

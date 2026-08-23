@@ -109,6 +109,27 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.err.join("\n")).toContain("was taken under tenant");
   });
 
+  it("plan mode under a usr_ tenant redirects to --batch instead of inviting a doomed execute", async () => {
+    const r = makeDeps();
+    const original = await r.deps.readFile("index.json");
+    r.deps.readFile = async () =>
+      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111"],
+      r.deps,
+    );
+    expect(code).toBe(0);
+    const text = r.err.join("\n");
+    // The read-only classification still prints…
+    expect(text).toContain("[plan reprocess] a.example/x");
+    // …but the follow-up is the one that can actually succeed: --execute on
+    // this path always refuses (token unverifiable), so don't invite it.
+    expect(text).not.toContain("Rerun with --execute to act.");
+    expect(text).toContain("--batch");
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.out.join("\n")).toContain('"executed": false');
+  });
+
   it("refuses a realtime execute under a usr_ tenant selector (token unverifiable)", async () => {
     const r = makeDeps();
     // Audit provenance matches the selector, so the refusal under test is the
