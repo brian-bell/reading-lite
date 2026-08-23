@@ -6,7 +6,7 @@ function read(path: string): string {
 }
 
 describe("checked-in summarizer provider configuration", () => {
-  it("uses medium OpenAI effort in production while local and staging stay low", () => {
+  it("uses medium OpenAI effort in staging and production; local stays low", () => {
     const wrangler = read("wrangler.toml");
 
     expect(
@@ -21,10 +21,15 @@ describe("checked-in summarizer provider configuration", () => {
       wrangler.match(
         /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       wrangler.match(
         /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"$/gm,
+      ),
+    ).toHaveLength(2);
+    expect(
+      wrangler.match(
+        /\[env\.staging\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"$/m,
       ),
     ).toHaveLength(1);
     expect(
@@ -47,15 +52,14 @@ describe("checked-in summarizer provider configuration", () => {
       'OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
 
-    for (const path of [".dev.vars.example", ".stg.vars.example"]) {
-      const example = read(path);
-      expect(example).toContain("SUMMARIZER_PROVIDER=openai");
-      expect(example).toContain(
-        "OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra",
-      );
-      expect(example).toContain(
-        "OPENAI_SUMMARIZATION_REASONING_EFFORT=low",
-      );
-    }
+    const devExample = read(".dev.vars.example");
+    expect(devExample).toContain("SUMMARIZER_PROVIDER=openai");
+    expect(devExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
+    expect(devExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=low");
+
+    const stgExample = read(".stg.vars.example");
+    expect(stgExample).toContain("SUMMARIZER_PROVIDER=openai");
+    expect(stgExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
+    expect(stgExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=medium");
   });
 });

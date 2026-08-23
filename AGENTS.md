@@ -85,8 +85,8 @@ targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
   `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
   `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
   Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
-  Checked-in defaults: OpenAI `gpt-5.6-terra`; production uses `medium`
-  effort, local and staging use `low`. Staging teardown's R2 emptying needs
+  Checked-in defaults: OpenAI `gpt-5.6-terra`; staging and production use
+  `medium` effort, local uses `low`. Staging teardown's R2 emptying needs
   `CORPUS_R2_*` creds in env or `.corpus.vars`.
 
 ## Conventions
