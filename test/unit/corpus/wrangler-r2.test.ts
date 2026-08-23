@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  deleteObject,
   isObjectNotFound,
   keysForReading,
   queryByVectorId,
+  readObject,
   vectorExists,
+  writeListIndex,
   type Runner,
 } from "../../../scripts/corpus-lib/wrangler-r2";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
@@ -31,6 +34,7 @@ describe("keysForReading", () => {
   const pointerKey = `index/by-url/${urlHash(url)}`;
   const deps = (opts: { manifest?: unknown; pointer?: unknown }) => ({
     bucket: "b",
+    keyRoot: "",
     remote: true,
     run: runner(opts),
   });
@@ -83,7 +87,7 @@ describe("keysForReading", () => {
       return { code: 1, stdout: "", stderr: "Internal Server Error (500)" };
     };
     await expect(
-      keysForReading(id, prefix, url, { bucket: "b", remote: true, run }),
+      keysForReading(id, prefix, url, { bucket: "b", keyRoot: "", remote: true, run }),
     ).rejects.toThrow();
   });
 
@@ -101,7 +105,7 @@ describe("keysForReading", () => {
       };
     };
     await expect(
-      keysForReading(id, prefix, url, { bucket: "b", remote: true, run }),
+      keysForReading(id, prefix, url, { bucket: "b", keyRoot: "", remote: true, run }),
     ).rejects.toThrow();
   });
 
@@ -219,5 +223,63 @@ describe("vectorExists", () => {
   it("throws when a zero exit yields neither JSON nor the known warning", async () => {
     const run: Runner = async () => ({ code: 0, stdout: "something unexpected", stderr: "" });
     await expect(vectorExists("idx", "rd_a", { run })).rejects.toThrow(/unexpected/i);
+  });
+});
+
+// reading-lite-s1k.4.3: the wrangler helpers address the bucket through the
+// tenant key root carried on R2Deps. Plan-level keys (what keysForReading
+// returns, what delete plans print) stay RELATIVE — the root is applied only
+// where a key becomes a bucket path, mirroring the worker's layout contract.
+describe("tenant-rooted R2Deps", () => {
+  const keyRoot = "u/usr_550e8400-e29b-41d4-a716-446655440000/";
+
+  function capture(): { calls: string[][]; run: Runner } {
+    const calls: string[][] = [];
+    const run: Runner = async (_cmd, args) => {
+      calls.push(args.map(String));
+      return { code: 0, stdout: "{}", stderr: "" };
+    };
+    return { calls, run };
+  }
+
+  it("prefixes reads and deletes with the key root", async () => {
+    const { calls, run } = capture();
+    const deps = { bucket: "b", remote: true, keyRoot, run };
+    await readObject("index/list.json", deps);
+    await deleteObject("readings/2026/06/18T000000Z-rd_a/manifest.json", deps);
+    expect(calls[0]![3]).toBe(`b/${keyRoot}index/list.json`);
+    expect(calls[1]![3]).toBe(`b/${keyRoot}readings/2026/06/18T000000Z-rd_a/manifest.json`);
+  });
+
+  it("writes index/list.json under the key root", async () => {
+    const { calls, run } = capture();
+    await writeListIndex([], { bucket: "b", remote: true, keyRoot, run });
+    const put = calls.find((c) => c[2] === "put");
+    expect(put?.[3]).toBe(`b/${keyRoot}index/list.json`);
+  });
+
+  it("roots the single-manifest put the same way", async () => {
+    const { calls, run } = capture();
+    const { putManifest } = await import("../../../scripts/corpus-lib/wrangler-put");
+    await putManifest("readings/2026/06/18T000000Z-rd_a", { id: "rd_a" }, {
+      bucket: "b", remote: true, keyRoot, run,
+    });
+    const put = calls.find((c) => c[2] === "put");
+    expect(put?.[3]).toBe(`b/${keyRoot}readings/2026/06/18T000000Z-rd_a/manifest.json`);
+  });
+
+  it("scopes a by-vector-id query to the tenant namespace when given", async () => {
+    const { calls, run } = capture();
+    await queryByVectorId("idx", "rd_a", 5, { run, namespace: "usr_x" });
+    expect(calls[0]).toContain("--namespace");
+    expect(calls[0]![calls[0]!.indexOf("--namespace") + 1]).toBe("usr_x");
+    await queryByVectorId("idx", "rd_a", 5, { run });
+    expect(calls[1]).not.toContain("--namespace");
+  });
+
+  it("keeps the global layout when the key root is empty", async () => {
+    const { calls, run } = capture();
+    await readObject("index/list.json", { bucket: "b", remote: true, keyRoot: "", run });
+    expect(calls[0]![3]).toBe("b/index/list.json");
   });
 });

@@ -32,26 +32,27 @@ A Cloudflare session that can read R2: `wrangler login`, or `CLOUDFLARE_API_TOKE
 
 ```bash
 # Plan first (reads + classifies, prints counts and paths, writes nothing).
-npm run ops -- corpus audit
+npm run ops -- corpus audit --tenant global
 
 # Fast inventory (one list.json read) into the current directory.
-npm run ops -- corpus audit --execute
+npm run ops -- corpus audit --tenant global --execute
 
 # Write somewhere specific.
-npm run ops -- corpus audit --out ~/Desktop/reading-lite-extracted --execute
+npm run ops -- corpus audit --tenant global --out ~/Desktop/reading-lite-extracted --execute
 
 # Also scan ready pragmaticengineer/substack readings for paywall teasers
 # (reads each one's content — slower).
-npm run ops -- corpus audit --teasers --execute
+npm run ops -- corpus audit --tenant global --teasers --execute
 
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
-npm run ops -- corpus audit --deep --execute
+npm run ops -- corpus audit --tenant global --deep --execute
 
 # An alternate R2 bucket, or the local miniflare cache.
-npm run ops -- corpus audit --bucket some-other-bucket --execute
-npm run ops -- corpus audit --local --execute
+npm run ops -- corpus audit --tenant global --bucket some-other-bucket --execute
+npm run ops -- corpus audit --tenant global --local --execute
 ```
 
+`--tenant` is required on every corpus command: `global` addresses the pre-tenant layout production data lives under today; a `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
 
 ## How categories are decided

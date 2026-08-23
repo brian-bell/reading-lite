@@ -85,7 +85,7 @@ Operator workflows live behind the unified plan-first CLI: `npm run ops --
 <group> <command> [options]`. Every command with durable side effects plans by
 default and acts only with `--execute`, e.g. `npm run ops -- deploy worker
 --env staging --execute`, `npm run ops -- founder bootstrap --email
-founder@example.com --execute`, `npm run ops -- corpus recover --index
+founder@example.com --execute`, `npm run ops -- corpus recover --tenant global --index
 ./index.json --execute`. See `docs/operations.md` or `--help` for the full
 matrix.
 
@@ -178,7 +178,7 @@ Pointers only — the details live in the named files' comments.
 - Turndown/linkedom quirks and the raw-DOM salvage path are documented in
   `src/modules/extractor/index.ts`.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.
-- Offline batch tools (`ops corpus ingest --execute`, `ops corpus recover --batch
+- Offline batch tools (`ops corpus ingest --tenant global --execute`, `ops corpus recover --tenant global --batch
   --execute`) refuse to submit without `--sole-writer` — pause/drain the
   realtime writer first (`scripts/corpus-lib/sole-writer.ts`). Both resume from
   sidecars and never recreate a batch; claim/release/crash-resume semantics are

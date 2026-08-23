@@ -10,6 +10,7 @@ import { runVectorBackfill, type VectorBackfillResult, type VectorBackfillRow } 
 import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 
 export interface CorpusBackfillVectorsDeps extends BaseDeps {
   r2: {
@@ -19,7 +20,7 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
   };
   // Execute-only: resolves credentials (throwing when absent, BEFORE any read
   // work) and returns the paid/write seams. Never called in plan mode.
-  makeWriters: (vectorizeIndex: string) => Promise<{
+  makeWriters: (vectorizeIndex: string, namespace: string | undefined) => Promise<{
     embedMany: (inputs: string[]) => Promise<{ embeddings: number[][] }>;
     upsert: (vectors: {
       id: string;
@@ -32,6 +33,7 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
 interface Opts {
   only: string[];
   bucket: string;
+  tenant?: string;
   vectorizeIndex?: string;
   remote: boolean;
   execute: boolean;
@@ -65,6 +67,7 @@ export function parseArgs(
       throw new UsageError("--local is unsupported: Vectorize has no local store");
     }
     else if (arg === "--bucket") opts.bucket = takeValue(arg, index++);
+    else if (arg === "--tenant") opts.tenant = takeValue(arg, index++);
     else if (arg === "--vectorize") opts.vectorizeIndex = takeValue(arg, index++);
     else if (arg === "--limit") {
       const raw = takeValue(arg, index++);
@@ -89,7 +92,8 @@ async function runCorpusBackfillVectors(
   const opts = parseArgs(argv);
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
   io.stdout(`Vectorize: ${vectorizeIndex}`);
@@ -107,7 +111,7 @@ async function runCorpusBackfillVectors(
   if (opts.execute) {
     // Awaited before any read so a missing credential fails the run up front,
     // matching the retired standalone script.
-    ({ embedMany, upsert } = await deps.makeWriters(vectorizeIndex));
+    ({ embedMany, upsert } = await deps.makeWriters(vectorizeIndex, tenant.namespace));
   }
 
   const result: VectorBackfillResult = await runVectorBackfill(
@@ -181,6 +185,7 @@ run that command with --execute.
 Options:
   --limit <n>         Cap how many vectors are restored this pass.
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --execute           Embed and upsert the missing vectors.
   --help              Show this message.
@@ -196,7 +201,7 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
       vectorExists: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id),
       readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
     },
-    makeWriters: async (vectorizeIndex) => {
+    makeWriters: async (vectorizeIndex, namespace) => {
       // Imports stay inside so plan mode and help never resolve credentials
       // or load client modules; the awaited call still fails a credential-less
       // execute before any read work happens.
@@ -221,6 +226,7 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
         accountId: required(["CORPUS_VECTORIZE_ACCOUNT_ID", "CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]),
         apiToken: required(["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]),
         index: vectorizeIndex,
+        ...(namespace === undefined ? {} : { namespace }),
       });
       return {
         embedMany: (inputs) => openai.embedMany(inputs),

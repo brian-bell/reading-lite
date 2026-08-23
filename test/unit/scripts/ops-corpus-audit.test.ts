@@ -59,9 +59,18 @@ function makeDeps(items: ListItem[] = ITEMS): {
 }
 
 describe("ops corpus audit", () => {
+  it("fails closed without --tenant", async () => {
+    const { deps, writes, listReads } = makeDeps();
+    await expect(corpusAuditCommand.run(["--out", "reports"], deps)).rejects.toThrow(
+      /--tenant is required/,
+    );
+    expect(listReads).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+  });
+
   it("plan mode reads and classifies but writes no report files", async () => {
     const { deps, out, writes, mkdirs } = makeDeps();
-    const code = await corpusAuditCommand.run(["--out", "reports"], deps);
+    const code = await corpusAuditCommand.run(["--tenant", "global", "--out", "reports"], deps);
     expect(code).toBe(0);
     expect(writes).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
@@ -77,7 +86,7 @@ describe("ops corpus audit", () => {
 
   it("--execute writes index.json and INDEX.md through the audit library", async () => {
     const { deps, writes, mkdirs } = makeDeps();
-    const code = await corpusAuditCommand.run(["--out", "reports", "--execute"], deps);
+    const code = await corpusAuditCommand.run(["--tenant", "global", "--out", "reports", "--execute"], deps);
     expect(code).toBe(0);
     expect(mkdirs).toEqual([path.resolve("reports")]);
     expect(writes.map((w) => w.path)).toEqual([
@@ -98,13 +107,13 @@ describe("ops corpus audit", () => {
 
   it("targets the requested bucket and honors --local", async () => {
     const { deps, listReads } = makeDeps();
-    await corpusAuditCommand.run(["--bucket", "reading-lite-staging", "--local"], deps);
+    await corpusAuditCommand.run(["--tenant", "global", "--bucket", "reading-lite-staging", "--local"], deps);
     expect(listReads).toEqual([{ bucket: "reading-lite-staging", remote: false }]);
   });
 
   it("rejects an unknown option before reading anything", async () => {
     const { deps, listReads } = makeDeps();
-    await expect(corpusAuditCommand.run(["--nope"], deps)).rejects.toThrowError(
+    await expect(corpusAuditCommand.run(["--tenant", "global", "--nope"], deps)).rejects.toThrowError(
       expect.objectContaining({ name: "Error", message: expect.stringContaining("--nope") }),
     );
     expect(listReads).toHaveLength(0);

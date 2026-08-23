@@ -8,6 +8,9 @@ import {
   r2KeyLayout,
 } from "../../../src/modules/stores/layout";
 
+// Relative-key spelling only: keys built here are handed to a tenant-rooted
+// client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
+// --tenant key root. This module never sees the root (s1k.4.3).
 const layout = r2KeyLayout();
 
 // URL-ownership preference when duplicate readings exist for one URL, mirroring

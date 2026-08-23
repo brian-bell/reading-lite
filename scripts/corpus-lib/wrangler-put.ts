@@ -9,6 +9,9 @@ import { join } from "node:path";
 import type { R2Deps, Runner } from "./wrangler-r2";
 import { MANIFEST_FILE, r2KeyLayout } from "../../src/modules/stores/layout";
 
+// Relative-key spelling only: keys built here are handed to a tenant-rooted
+// client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
+// --tenant key root. This module never sees the root (s1k.4.3).
 const layout = r2KeyLayout();
 
 const defaultRunner: Runner = (cmd, args) =>
@@ -29,7 +32,7 @@ export async function putManifest(keyPrefix: string, body: unknown, deps: R2Deps
   try {
     await writeFile(file, JSON.stringify(body), "utf8");
     const args = [
-      "r2", "object", "put", `${deps.bucket}/${layout.manifestKey(keyPrefix)}`,
+      "r2", "object", "put", `${deps.bucket}/${deps.keyRoot}${layout.manifestKey(keyPrefix)}`,
       "--file", file, "--content-type", "application/json",
     ];
     if (deps.remote !== false) args.push("--remote");

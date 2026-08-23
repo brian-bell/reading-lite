@@ -6,7 +6,11 @@ import { keysForDroppedReading } from "./delete-plan";
 import type { ListItem } from "./types";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 
-// Pre-tenant global layout; the tenant cutover re-roots this in one place.
+// Relative-key spelling only. The tenant root is NOT baked in here: every key
+// this module handles stays relative (plan output, delete plans, returned key
+// lists), and the root carried on R2Deps.keyRoot is applied at the single
+// point where a key becomes a bucket path (bucketPath below). Commands obtain
+// the root from a validated operator tenant selector (corpus-lib/tenant.ts).
 const layout = r2KeyLayout();
 
 export interface RunResult {
@@ -18,8 +22,20 @@ export type Runner = (cmd: string, args: string[]) => Promise<RunResult>;
 
 export interface R2Deps {
   bucket: string;
+  /**
+   * The tenant key root every bucket path is prefixed with: "" for the
+   * pre-tenant global layout, `u/{tenantId}/` for one tenant's namespace.
+   * Required — callers must resolve it from an explicit tenant selector
+   * (resolveOperatorTenant) rather than defaulting to the global root.
+   */
+  keyRoot: string;
   remote?: boolean;
   run?: Runner;
+}
+
+// The single point where a relative key becomes an absolute bucket path.
+function bucketPath(key: string, deps: R2Deps): string {
+  return `${deps.bucket}/${deps.keyRoot}${key}`;
 }
 
 // True when wrangler stderr signals the object genuinely does not exist (an R2
@@ -46,7 +62,7 @@ type GetOutcome =
 // the caller must not mistake for absence.
 async function getOutcome(key: string, deps: R2Deps): Promise<GetOutcome> {
   const run = deps.run ?? defaultRunner;
-  const args = ["r2", "object", "get", `${deps.bucket}/${key}`, "--pipe"];
+  const args = ["r2", "object", "get", bucketPath(key, deps), "--pipe"];
   if (deps.remote !== false) args.push("--remote");
   const { code, stdout, stderr } = await run("wrangler", args);
   if (code === 0) return { kind: "present", body: stdout };
@@ -108,7 +124,7 @@ export async function deleteObject(
   deps: R2Deps,
 ): Promise<"deleted" | "absent" | "error"> {
   const run = deps.run ?? defaultRunner;
-  const args = ["r2", "object", "delete", `${deps.bucket}/${key}`];
+  const args = ["r2", "object", "delete", bucketPath(key, deps)];
   if (deps.remote !== false) args.push("--remote");
   const { code, stderr } = await run("wrangler", args);
   if (code === 0) return "deleted";
@@ -147,13 +163,16 @@ export async function queryByVectorId(
   index: string,
   id: string,
   topK: number,
-  deps: Pick<R2Deps, "run"> = {},
+  deps: Pick<R2Deps, "run"> & { namespace?: string } = {},
 ): Promise<{ id: string; score: number }[] | null> {
   const run = deps.run ?? defaultRunner;
   const { code, stdout, stderr } = await run("wrangler", [
     "vectorize", "query", index,
     "--vector-id", id,
     "--top-k", String(topK),
+    // Tenant-namespaced queries (s1k.4.3): a namespaced query can only match
+    // vectors in that namespace, mirroring the worker's similarityStoreFor.
+    ...(deps.namespace === undefined ? [] : ["--namespace", deps.namespace]),
   ]);
   // A missing vector is NOT an error exit. Verified against wrangler 4.101:
   // an unknown vector id exits 0, prints no JSON, and writes
@@ -235,7 +254,7 @@ export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<v
   try {
     await writeFile(file, JSON.stringify({ version: 1, items }), "utf8");
     const args = [
-      "r2", "object", "put", `${deps.bucket}/${layout.listIndexKey()}`,
+      "r2", "object", "put", bucketPath(layout.listIndexKey(), deps),
       "--file", file, "--content-type", "application/json",
     ];
     if (deps.remote !== false) args.push("--remote");

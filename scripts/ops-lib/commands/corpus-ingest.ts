@@ -11,6 +11,8 @@
 
 import { parseArgs } from "node:util";
 import { resolveBatchConfig, type BatchConfig } from "../../corpus-lib/config";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { requireOperatorTenant } from "../tenant-flag";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../import-markdown-lib/parse";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import { selectEligibleArticles } from "../../corpus-lib/ingest-eligible";
@@ -29,7 +31,11 @@ export interface CorpusIngestDeps extends BaseDeps {
   readMarkdownDir: (dir: string) => Promise<MarkdownArticle[]>;
   loadSidecar: (path: string) => Promise<PersistedSidecar | null>;
   clearSidecar: (path: string) => Promise<void>;
-  resolveConfig: (flags: { bucket?: string; resumeProvider?: PersistedSidecar["provider"] }) => BatchConfig;
+  resolveConfig: (flags: {
+    bucket?: string;
+    resumeProvider?: PersistedSidecar["provider"];
+    tenant: OperatorTenant;
+  }) => BatchConfig;
   // Plan-mode ownership check: read-only R2 reads + in-memory id minting.
   planOwnership: (
     eligible: MarkdownArticle[],
@@ -48,6 +54,7 @@ const DEFAULT_SIDECAR = "./corpus-ingest.batch.json";
 
 interface Args {
   dir: string;
+  tenant?: string;
   execute: boolean;
   soleWriter: boolean;
   limit: number;
@@ -62,6 +69,7 @@ function parseIngestArgs(argv: string[]): Args {
       args: argv,
       options: {
         dir: { type: "string" },
+        tenant: { type: "string" },
         execute: { type: "boolean", default: false },
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
@@ -75,6 +83,7 @@ function parseIngestArgs(argv: string[]): Args {
   if (!values.dir) throw new UsageError("missing required --dir <path>");
   return {
     dir: values.dir,
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
     limit: parsePositiveInt(values.limit),
@@ -94,6 +103,7 @@ function parsePositiveInt(raw: string | undefined): number {
 
 async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<number> {
   const args = parseIngestArgs(argv);
+  const tenant = requireOperatorTenant(args.tenant);
   const { io } = deps;
 
   // Sole-writer preflight (issue #68): refuse a real submit unless the operator
@@ -134,6 +144,7 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
     cfg = deps.resolveConfig({
       ...(args.bucket === undefined ? {} : { bucket: args.bucket }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
+      tenant,
     });
   } catch (e) {
     if (args.execute) {
@@ -243,11 +254,11 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
     clearSidecar: async (p) => (await import("../../corpus-lib/batch/sidecar")).clearSidecar(p),
     resolveConfig: (flags) => resolveBatchConfig(flags),
     planOwnership: async (eligible, cfg) => {
-      const { makeR2Client } = await import("../../lib/cf-clients");
+      const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
       const { prepareFreshMarkdown } = await import("../../corpus-lib/batch/prepare-fresh-markdown");
       const { r2ReadDeps } = await import("../../corpus-lib/batch/r2-reads");
       const { mintReadingId } = await import("../../../src/services");
-      const r2 = makeR2Client(cfg.r2, globalThis.fetch);
+      const r2 = withKeyRoot(makeR2Client(cfg.r2, globalThis.fetch), cfg.keyRoot);
       return prepareFreshMarkdown(eligible, {
         ...r2ReadDeps(r2),
         newId: mintReadingId,
@@ -256,7 +267,7 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
     },
     executeBatch: async (eligible, cfg, opts) => {
       const { randomUUID } = await import("node:crypto");
-      const { makeR2Client, makeVectorizeClient } = await import("../../lib/cf-clients");
+      const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
       const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
         await import("../../corpus-lib/batch/clients");
       const { clearSidecar, loadInputJsonl, loadSidecar, saveInputJsonl, saveSidecar } =
@@ -267,7 +278,7 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
       return runFreshMarkdownBatch(eligible, {
         ...(opts.limit === undefined ? {} : { limit: opts.limit }),
-        r2: makeR2Client(cfg.r2, fetchFn),
+        r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
         vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
         ...(cfg.anthropicApiKey
           ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
@@ -323,6 +334,7 @@ Options:
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --sidecar <path> In-flight batch marker. Default: ${DEFAULT_SIDECAR}.
   --help           Show this message.
 

@@ -13,6 +13,8 @@
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { requireOperatorTenant } from "../tenant-flag";
 import {
   classifyOutcome,
   readingApiFor,
@@ -45,7 +47,11 @@ export interface CorpusRecoverDeps extends BaseDeps {
   batch: {
     loadSidecar: (path: string) => Promise<PersistedSidecar | null>;
     clearSidecar: (path: string) => Promise<void>;
-    resolveConfig: (flags: { bucket?: string; resumeProvider?: PersistedSidecar["provider"] }) => BatchConfig;
+    resolveConfig: (flags: {
+      bucket?: string;
+      resumeProvider?: PersistedSidecar["provider"];
+      tenant: OperatorTenant;
+    }) => BatchConfig;
     // Runs the whole batch pipeline (clients + sidecar seams wired in by
     // defaultDeps). The unit tests stub this boundary to cover routing.
     execute: (rows: AuditRow[], cfg: BatchConfig, scPath: string) => Promise<BatchRunResult>;
@@ -54,6 +60,7 @@ export interface CorpusRecoverDeps extends BaseDeps {
 
 interface Args {
   index: string;
+  tenant?: string;
   execute: boolean;
   only?: RecoveryAction;
   limit: number;
@@ -81,6 +88,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
       args: argv,
       options: {
         index: { type: "string" },
+        tenant: { type: "string" },
         execute: { type: "boolean", default: false },
         only: { type: "string" },
         limit: { type: "string" },
@@ -102,6 +110,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
   }
   return {
     index: values.index ?? "./index.json",
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     execute: values.execute === true,
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
@@ -161,6 +170,7 @@ function describeError(out: ReadingApiOutcome): string {
 
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
+  const tenant = requireOperatorTenant(args.tenant);
   const doc = JSON.parse(await deps.readFile(args.index)) as { rows: AuditRow[] };
   const rows = doc.rows ?? [];
   const plan = planByAction(rows);
@@ -176,7 +186,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   const actions: RecoveryAction[] = args.only ? [args.only] : ["reprocess", "local-extract"];
 
   if (args.batch) {
-    return runBatchMode(args, plan, actions, deps);
+    return runBatchMode(args, tenant, plan, actions, deps);
   }
 
   if (!args.execute) {
@@ -277,7 +287,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (args.monitor && touched.length > 0) {
     deps.io.stderr(`\nMonitoring ${touched.length} readings...`);
     for (let i = 0; i < 60; i++) {
-      const items = await deps.readListIndex({ bucket: args.bucket, remote: true });
+      const items = await deps.readListIndex({ bucket: args.bucket, keyRoot: tenant.keyRoot, remote: true });
       const t = tallyByIds(items, touched);
       const ts = new Date(deps.now()).toISOString().slice(11, 19);
       deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
@@ -294,6 +304,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
 // provider's Batch API. --wave is irrelevant here (no realtime burst to pace).
 async function runBatchMode(
   args: Args,
+  tenant: OperatorTenant,
   plan: Record<RecoveryAction, AuditRow[]>,
   actions: RecoveryAction[],
   deps: CorpusRecoverDeps,
@@ -343,6 +354,7 @@ async function runBatchMode(
     cfg = deps.batch.resolveConfig({
       ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
+      tenant,
     });
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
@@ -419,7 +431,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       execute: async (rows, cfg, scPath) => {
         const { randomUUID } = await import("node:crypto");
         const { runBatch } = await import("../../corpus-lib/batch/run");
-        const { makeR2Client, makeVectorizeClient } = await import("../../lib/cf-clients");
+        const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
         const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
           await import("../../corpus-lib/batch/clients");
         const { loadSidecar, saveSidecar, clearSidecar, saveInputJsonl, loadInputJsonl } =
@@ -430,7 +442,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const browserFetch = makeBrowserFetch(fetchFn);
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
         return runBatch(rows, {
-          r2: makeR2Client(cfg.r2, fetchFn),
+          r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
           vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
           ...(cfg.anthropicApiKey
             ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
@@ -474,6 +486,7 @@ Options:
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
   --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.

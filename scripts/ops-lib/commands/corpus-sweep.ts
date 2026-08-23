@@ -13,6 +13,7 @@ import {
 import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusSweepR2 {
@@ -30,6 +31,7 @@ export interface CorpusSweepDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   only: string[];
   keep: string[];
   drop?: string;
@@ -52,6 +54,7 @@ function parseSweepArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
     else if (a === "--keep") opts.keep.push(requireValue(argv[++i], a));
     else if (a === "--drop") opts.drop = requireValue(argv[++i], a);
@@ -70,7 +73,8 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   const opts = parseSweepArgs(argv);
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same
   // material but are genuinely different resources, so no canonicalization rule
@@ -302,6 +306,7 @@ Options:
   --keep <rd_ID>      Force the keeper for the group containing this id.
   --drop <rd_ID>      Operator-asserted pair mode (with exactly one --keep).
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --local             Use the local miniflare bucket (Vectorize is skipped).
   --execute           Apply the sweep.

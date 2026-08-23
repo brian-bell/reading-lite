@@ -10,6 +10,7 @@ import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 import { LIST_INDEX_KEY, READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDeleteOrphansR2 {
@@ -27,6 +28,7 @@ export interface CorpusDeleteOrphansDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   indexPath: string;
   bucket: string;
   remote: boolean;
@@ -46,6 +48,7 @@ function parseOrphanArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--index") opts.indexPath = requireValue(argv[++i], a);
     else if (a === "--ids") {
       opts.ids = requireValue(argv[++i], a).split(",").map((s) => s.trim()).filter(Boolean);
@@ -62,7 +65,8 @@ function requireValue(v: string | undefined, flag: string): string {
 async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansDeps): Promise<number> {
   const opts = parseOrphanArgs(argv);
   const { io, r2 } = deps;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   // Read list.json up front: it's the authoritative source of key_prefix for
   // --ids mode, and the diff is shown even in plan mode.
@@ -217,6 +221,7 @@ Options:
   --index <path>   Audit index.json. Default: index.json.
   --ids <a,b,c>    Remove exactly these reading ids instead of the audit set.
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --local          Use the local miniflare bucket.
   --execute        Perform the deletes and rewrite index/list.json.
   --help           Show this message.`,

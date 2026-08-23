@@ -22,6 +22,7 @@ import type { AuditRow, ListItem } from "../../corpus-lib/types";
 import * as wranglerR2 from "../../corpus-lib/wrangler-r2";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 
 export interface CorpusAuditDeps extends BaseDeps {
   r2: {
@@ -38,6 +39,7 @@ export interface CorpusAuditDeps extends BaseDeps {
 
 interface AuditArgs {
   bucket: string;
+  tenant?: string;
   out: string;
   remote: boolean;
   teasers: boolean;
@@ -52,6 +54,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
       args: argv,
       options: {
         bucket: { type: "string" },
+        tenant: { type: "string" },
         out: { type: "string" },
         local: { type: "boolean", default: false },
         teasers: { type: "boolean", default: false },
@@ -64,6 +67,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
   }
   return {
     bucket: resolveBucket(values.bucket),
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     out: values.out ?? ".",
     remote: values.local !== true,
     teasers: values.teasers === true,
@@ -103,7 +107,8 @@ async function deepenStrandedStages(rows: AuditRow[], r2: CorpusAuditDeps["r2"],
 
 async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<number> {
   const args = parseAuditArgs(argv);
-  const r2Deps: R2Deps = { bucket: args.bucket, remote: args.remote };
+  const tenant = requireOperatorTenant(args.tenant);
+  const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: tenant.keyRoot, remote: args.remote };
   const items = await deps.r2.readListIndex(r2Deps);
 
   const failed = buildFailedRows(items);
@@ -166,6 +171,7 @@ writes index.json + INDEX.md. Never writes to the corpus.
 
 Options:
   --bucket <name>   R2 bucket. Default: READING_LITE_BUCKET env, then reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --out <dir>       Output directory for index.json + INDEX.md. Default: cwd.
   --teasers         Also scan ready pragmaticengineer/substack readings for
                     paywall teasers (reads their content; slower).

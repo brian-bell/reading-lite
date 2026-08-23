@@ -17,11 +17,17 @@ import { SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 
 export interface CorpusBackfillR2 {
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
   readManifest: (keyPrefix: string, deps: R2Deps) => Promise<any | null>;
-  queryByVectorId: (index: string, id: string, topK: number) => Promise<{ id: string; score: number }[] | null>;
+  queryByVectorId: (
+    index: string,
+    id: string,
+    topK: number,
+    namespace?: string,
+  ) => Promise<{ id: string; score: number }[] | null>;
   putManifest: (keyPrefix: string, body: unknown, deps: R2Deps) => Promise<void>;
   writeListIndex: (items: ListItem[], deps: R2Deps) => Promise<void>;
 }
@@ -32,6 +38,7 @@ export interface CorpusBackfillDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   only: string[];
   bucket: string;
   vectorizeIndex?: string;
@@ -54,6 +61,7 @@ function parseBackfillArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
     else if (a === "--limit") opts.limit = parsePositiveInt(requireValue(argv[++i], a));
     else if (a === "--rescore") opts.rescore = true;
@@ -78,7 +86,8 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
   const opts = parseBackfillArgs(argv);
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   const items = await r2.readListIndex(r2Deps);
   const plan = planBackfill(items as never, { only: opts.only, rescore: opts.rescore });
@@ -126,7 +135,7 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
   try {
     for (const t of targets) {
       // Over-fetch by one: the reading's own vector always comes back first.
-      const matches = await r2.queryByVectorId(vectorizeIndex, t.id, SIMILAR_TOP_K + 1);
+      const matches = await r2.queryByVectorId(vectorizeIndex, t.id, SIMILAR_TOP_K + 1, tenant.namespace);
       if (matches === null) {
         noVector++;
         io.stderr(`  ! no vector indexed for ${t.id}  ${t.url}`);
@@ -241,6 +250,7 @@ Options:
   --limit <n>         Cap how many readings are scored this pass.
   --rescore           Recompute readings that already carry a score.
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --local             Use the local miniflare bucket.
   --execute           Write manifests and flush the list index.
@@ -250,8 +260,8 @@ Options:
     r2: {
       readListIndex: async (d) => (await import("../../corpus-lib/wrangler-r2")).readListIndex(d),
       readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
-      queryByVectorId: async (index, id, topK) =>
-        (await import("../../corpus-lib/wrangler-r2")).queryByVectorId(index, id, topK),
+      queryByVectorId: async (index, id, topK, namespace) =>
+        (await import("../../corpus-lib/wrangler-r2")).queryByVectorId(index, id, topK, { namespace }),
       putManifest: async (kp, body, d) => (await import("../../corpus-lib/wrangler-put")).putManifest(kp, body, d),
       writeListIndex: async (items, d) => (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items, d),
     },

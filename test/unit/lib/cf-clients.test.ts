@@ -3,6 +3,7 @@ import {
   dryRunR2,
   makeR2Client,
   makeVectorizeClient,
+  withKeyRoot,
 } from "../../../scripts/lib/cf-clients";
 
 const r2Config = {
@@ -208,5 +209,92 @@ describe("makeVectorizeClient", () => {
       fetchFn as unknown as typeof fetch,
     );
     await expect(vec.query([1], { topK: 1 })).rejects.toThrow(/Vectorize/);
+  });
+});
+
+// reading-lite-s1k.4.3: the batch pipeline speaks relative keys; the tenant
+// root is applied by wrapping the client, so every phase module stays
+// root-agnostic while all traffic is confined to one tenant's namespace.
+describe("withKeyRoot", () => {
+  const keyRoot = "u/usr_550e8400-e29b-41d4-a716-446655440000/";
+
+  function recordingClient(keys: string[] = []) {
+    const ops: string[] = [];
+    return {
+      ops,
+      client: {
+        put: async (key: string) => void ops.push(`put ${key}`),
+        putIfAbsent: async (key: string) => (ops.push(`putIfAbsent ${key}`), true),
+        get: async (key: string) => (ops.push(`get ${key}`), null),
+        head: async (key: string) => (ops.push(`head ${key}`), false),
+        delete: async (key: string) => void ops.push(`delete ${key}`),
+        listKeys: async () => keys,
+      },
+    };
+  }
+
+  it("prefixes every key-addressed operation with the root", async () => {
+    const { ops, client } = recordingClient();
+    const rooted = withKeyRoot(client, keyRoot);
+    await rooted.put("index/list.json", "x");
+    await rooted.putIfAbsent("index/by-url/abc", "x");
+    await rooted.get("readings/p/manifest.json");
+    await rooted.head("readings/p/raw.html");
+    await rooted.delete("readings/p/extracted.md");
+    expect(ops).toEqual([
+      `put ${keyRoot}index/list.json`,
+      `putIfAbsent ${keyRoot}index/by-url/abc`,
+      `get ${keyRoot}readings/p/manifest.json`,
+      `head ${keyRoot}readings/p/raw.html`,
+      `delete ${keyRoot}readings/p/extracted.md`,
+    ]);
+  });
+
+  it("lists only this tenant's keys, stripped back to relative form", async () => {
+    const { client } = recordingClient([
+      `${keyRoot}readings/a/manifest.json`,
+      `${keyRoot}index/list.json`,
+      "readings/global/manifest.json",
+      "u/usr_11111111-1111-4111-8111-111111111111/readings/b/manifest.json",
+    ]);
+    const rooted = withKeyRoot(client, keyRoot);
+    expect(await rooted.listKeys()).toEqual([
+      "readings/a/manifest.json",
+      "index/list.json",
+    ]);
+  });
+
+  it("is the identity for the global root", async () => {
+    const { client } = recordingClient(["readings/a/manifest.json"]);
+    expect(withKeyRoot(client, "")).toBe(client);
+  });
+});
+
+describe("tenant-namespaced Vectorize", () => {
+  const cfg = { accountId: "acct123", index: "idx", apiToken: "tok" };
+  const NS = "usr_550e8400-e29b-41d4-a716-446655440000";
+
+  it("stamps the namespace on upserted vectors and query bodies", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(JSON.stringify({ result: { matches: [] } }), { status: 200 }),
+    );
+    const client = makeVectorizeClient({ ...cfg, namespace: NS }, fetchFn as unknown as typeof fetch);
+    await client.upsert([{ id: "rd_a", values: [1], metadata: {} }]);
+    const upsertBody = String(fetchFn.mock.calls[0]![1]!.body);
+    expect(JSON.parse(upsertBody)).toMatchObject({ id: "rd_a", namespace: NS });
+    await client.query([1], { topK: 3 });
+    const queryBody = JSON.parse(String(fetchFn.mock.calls[1]![1]!.body));
+    expect(queryBody.namespace).toBe(NS);
+  });
+
+  it("omits the namespace for the global (pre-tenant) selection", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(JSON.stringify({ result: { matches: [] } }), { status: 200 }),
+    );
+    const client = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch);
+    await client.upsert([{ id: "rd_a", values: [1], metadata: {} }]);
+    expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body))).not.toHaveProperty("namespace");
+    await client.query([1], { topK: 3 });
+    expect(JSON.parse(String(fetchFn.mock.calls[1]![1]!.body))).not.toHaveProperty("namespace");
   });
 });
