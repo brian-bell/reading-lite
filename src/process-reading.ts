@@ -314,7 +314,19 @@ export async function markDeadLettered(
   tenant: TenantContext,
 ): Promise<void> {
   const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  const existing = await reader.readManifest(args.keyPrefix).catch(() => null);
+  // Only a read that successfully resolves to null is evidence of absence. A
+  // throwing read (R2 error, corrupt JSON, schema drift) is an object that may
+  // well exist — the DLQ message is acked either way, so skipping on a failed
+  // read would silently strand the reading; fall through and mark, as the
+  // pre-guard behavior did.
+  let existing: Manifest | null = null;
+  let confirmedAbsent = false;
+  try {
+    existing = await reader.readManifest(args.keyPrefix);
+    confirmedAbsent = existing === null;
+  } catch (e) {
+    console.error(e);
+  }
 
   // A manifest absent from the admitted tenant's namespace means this tenant
   // never owned the reading the job describes: activation always writes the
@@ -324,7 +336,7 @@ export async function markDeadLettered(
   // tenant's list (or resurrect deleted data), so the mark requires the
   // manifest to exist. A URL stranded this way stays recoverable: its damaged
   // by-url pointer is repaired by the next submit/import.
-  if (!existing) return;
+  if (confirmedAbsent) return;
 
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
@@ -341,7 +353,8 @@ export async function markDeadLettered(
   // re-submittable through its existing by-url ownership claim.
   // Strict active-only ownership: a newer attempt taking over (active flipped to
   // a different id) means this DLQ message is stale and must not clobber it.
-  if (!attemptOwnership(existing, args).isActive) return;
+  // (null here is the read-error path, where ownership cannot be judged.)
+  if (existing && !attemptOwnership(existing, args).isActive) return;
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
