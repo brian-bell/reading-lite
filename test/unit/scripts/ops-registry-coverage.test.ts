@@ -265,12 +265,22 @@ Options:
     ).rejects.toThrow(/non-usage error.*side-effect seam/);
   });
 
-  it("applies both halves to the registered policy command once it exists", async () => {
+  it("holds the registered policy command to the contract once it exists", async () => {
     const registered = defaultRegistry.commands.find(
       (c) => c.group === "system" && c.name === "policy",
     );
     if (!registered) return; // s1k.9.4 has not landed yet — nothing to check.
+    // The documentation half is dependency-free and checked here directly.
     assertPolicyCommandContract(registered);
-    await assertPolicyCommandBehavior(registered, inertDeps, GUARD_VERSION);
+    // The behavioral half needs the real command's read seams (live policy +
+    // guard-version reads are legitimate in plan mode), so s1k.9.4 must run
+    // assertPolicyCommandBehavior in its own suite with a dep factory whose
+    // READ seams work and WRITE seams throw — inertDeps here would false-fail
+    // a conforming D1-reading plan. This test fails until that suite exists.
+    const behavioralSuite = "test/unit/scripts/ops-system-policy.test.ts";
+    await expect(
+      fs.stat(path.join(repoRoot, behavioralSuite)),
+      `system policy is registered but ${behavioralSuite} (running assertPolicyCommandBehavior with its real read seams) is missing`,
+    ).resolves.toBeDefined();
   });
 });

@@ -27,6 +27,13 @@ export interface PolicyContractViolation {
 // redaction guarantees must appear as these exact affirmative sentences —
 // substring keyword matching would also accept help text that *denies* the
 // requirement ("non-idempotent", "printed unredacted").
+//
+// Ownership boundary: idempotency and redaction are *documented* obligations
+// here and *behaviorally verified* in s1k.9.4's own test suite. Verifying
+// them behaviorally requires a valid execute against real (or faked) policy
+// state — i.e. the policy command's design — which this epic deliberately
+// does not implement. The behavioral half of this contract is limited to what
+// is design-independent: refusals of unsafe invocations and plan-mode purity.
 export const POLICY_IDEMPOTENCY_PHRASE =
   "Idempotent: re-running the same execute converges to the same policy state.";
 export const POLICY_REDACTION_PHRASE = "Tokens and secrets are never printed.";
