@@ -74,7 +74,7 @@ cd web && npm install     # then: npm run dev, npm test, npm run build
 Deploy, staging-lifecycle, corpus, and founder-bootstrap scripts are all
 dry-run by default and take `--execute` to act, e.g. `npm run deploy -- --env
 staging --execute`, `npm run founder-bootstrap -- --email founder@example.com
---execute`, `npm run corpus-recover -- --index ./index.json --execute`. Make
+--execute`, `npm run ops -- corpus recover --index ./index.json --execute`. Make
 targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
 `docs/operations.md` or `--help` for the full matrix.
 
@@ -167,7 +167,7 @@ Pointers only — the details live in the named files' comments.
 - Turndown/linkedom quirks and the raw-DOM salvage path are documented in
   `src/modules/extractor/index.ts`.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.
-- Offline batch tools (`corpus-ingest --execute`, `corpus-recover --batch
+- Offline batch tools (`corpus-ingest --execute`, `ops corpus recover --batch
   --execute`) refuse to submit without `--sole-writer` — pause/drain the
   realtime writer first (`scripts/corpus-lib/sole-writer.ts`). Both resume from
   sidecars and never recreate a batch; claim/release/crash-resume semantics are
