@@ -129,7 +129,7 @@ VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.worker
 Clean up the throwaways afterwards, including `ready` ones:
 
 ```sh
-npm run corpus-audit -- --bucket reading-lite-staging
+npm run ops -- corpus audit --bucket reading-lite-staging --execute
 npm run corpus-drop -- "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
   --vectorize reading-lite-staging --execute
@@ -155,7 +155,7 @@ and a failed one preserves the ready manifest with
 
 | Script | What it does |
 |---|---|
-| `npm run corpus-audit` | read-only inventory of every non-ready reading, classified by failure reason |
+| `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
 | `npm run corpus-recover` | acts on an audit: reprocess or re-extract per a per-reason policy table |
 | `npm run corpus-drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run corpus-sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
@@ -184,7 +184,7 @@ through `POST /api/readings/:id/reprocess`, and `--batch` routes the same work
 through the offline provider Batch API path described below.
 
 ```sh
-npm run corpus-audit                       # writes index.json + INDEX.md
+npm run ops -- corpus audit --execute      # writes index.json + INDEX.md
 npm run corpus-recover -- --index ./index.json --execute
 ```
 

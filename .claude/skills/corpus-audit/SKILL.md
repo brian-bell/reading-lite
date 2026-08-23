@@ -31,25 +31,28 @@ A Cloudflare session that can read R2: `wrangler login`, or `CLOUDFLARE_API_TOKE
 ## Usage
 
 ```bash
+# Plan first (reads + classifies, prints counts and paths, writes nothing).
+npm run ops -- corpus audit
+
 # Fast inventory (one list.json read) into the current directory.
-npm run corpus-audit
+npm run ops -- corpus audit --execute
 
 # Write somewhere specific.
-npm run corpus-audit -- --out ~/Desktop/reading-lite-extracted
+npm run ops -- corpus audit --out ~/Desktop/reading-lite-extracted --execute
 
 # Also scan ready pragmaticengineer/substack readings for paywall teasers
 # (reads each one's content — slower).
-npm run corpus-audit -- --teasers
+npm run ops -- corpus audit --teasers --execute
 
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
-npm run corpus-audit -- --deep
+npm run ops -- corpus audit --deep --execute
 
 # An alternate R2 bucket, or the local miniflare cache.
-npm run corpus-audit -- --bucket some-other-bucket
-npm run corpus-audit -- --local
+npm run ops -- corpus audit --bucket some-other-bucket --execute
+npm run ops -- corpus audit --local --execute
 ```
 
-Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--deep`, `--local`, `--help`.
+Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
 
 ## How categories are decided
 - **Failed reason** comes from the manifest error code + the HTTP status embedded in `BadStatusError` messages, with a few hand-verified per-URL overrides (PDF, YouTube, confirmed dead links). Reddit URLs are flagged as needing the `.json` endpoint.
@@ -58,7 +61,7 @@ Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--o
 - **Teaser** (`--teasers` only): a `ready` pragmaticengineer/substack reading whose extracted content is short (< ~2.5 KB) or short-ish with a paywall-cutoff marker. Subscribe *footers* on full articles are deliberately not enough.
 
 ## Implementation
-- CLI: `scripts/corpus-audit.ts`
+- CLI: `scripts/ops-lib/commands/corpus-audit.ts` (via `scripts/ops.ts`)
 - Pure logic (tested): `scripts/corpus-lib/{reason,classify,policy,audit,render}.ts`
 - R2 reads (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
 - Tests: `test/unit/corpus/` (node project)

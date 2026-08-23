@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       parsed = JSON.parse(readFileSync(opts.indexPath, "utf8"));
     } catch (e) {
       console.error(`could not read audit index at ${opts.indexPath}: ${(e as Error).message}`);
-      console.error("run `npm run corpus-audit` first, or pass --index <path>.");
+      console.error("run `npm run ops -- corpus audit --execute` first, or pass --index <path>.");
       process.exit(1);
     }
     label = "orphan-dup readings";

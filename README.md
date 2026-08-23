@@ -226,11 +226,11 @@ src/
       list-index.ts             # index/list.json: CAS, search, ownership, rebuild
       similarity-store.ts       # Vectorize: upsert + query
 scripts/                        # operator CLIs — all dry-run by default
+  ops.ts, ops-lib/              # unified plan-first operator CLI (npm run ops -- <group> <command>)
   deploy.ts, deploy-web.ts      # wrangler / Pages deploy wrappers
   founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
   read-url.ts                   # POST a single URL
-  corpus-audit.ts               # inventory non-ready readings (read-only)
   corpus-recover.ts             # reprocess / re-extract them (--wave realtime, --batch offline)
   corpus-ingest.ts              # bulk-ingest a fresh .md dir via a provider Batch API
   corpus-drop.ts                # remove readings by URL or id
