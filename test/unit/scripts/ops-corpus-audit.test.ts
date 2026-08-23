@@ -90,6 +90,10 @@ describe("ops corpus audit", () => {
       expect.arrayContaining(["rd_failed", "rd_pending"]),
     );
     expect(writes[1].body).toContain("rd_failed");
+    // The report's remediation guidance must name the unified command — the
+    // standalone corpus-drop interface no longer exists.
+    expect(writes[1].body).toContain("npm run ops -- corpus drop <url> --execute");
+    expect(writes[1].body).not.toMatch(/`corpus-drop/);
   });
 
   it("targets the requested bucket and honors --local", async () => {

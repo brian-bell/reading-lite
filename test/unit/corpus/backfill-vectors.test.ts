@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runVectorBackfill } from "../../../scripts/corpus-lib/backfill-vectors";
-import { parseArgs } from "../../../scripts/corpus-backfill-vectors";
+import { parseArgs } from "../../../scripts/ops-lib/commands/corpus-backfill-vectors";
 
 const AT = "2026-08-22T00:00:00.000Z";
 

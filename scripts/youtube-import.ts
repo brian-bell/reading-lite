@@ -177,7 +177,7 @@ async function warnNoncanonicalOwners(
     `\nnote: found ${found.length} existing reading(s) under a noncanonical URL for this video.\n` +
       `This import claims the canonical ${canonicalUrl}, so those will NOT be replaced —\n` +
       `drop the stale variant(s) to avoid a duplicate:\n` +
-      found.map((f) => `  npm run corpus-drop -- ${shellQuote(f.url)} --execute   # ${f.id ?? "?"}\n`).join(""),
+      found.map((f) => `  npm run ops -- corpus drop ${shellQuote(f.url)} --execute   # ${f.id ?? "?"}\n`).join(""),
   );
 }
 
@@ -239,7 +239,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       `\nnote: ${body.source_url} already has a reading (${res.id ?? "?"}). Ready/pending owners are\n` +
         "returned as-is — to replace a worker-made floor-only reading with this richer import,\n" +
-        "drop it first: npm run corpus-drop -- \"" +
+        "drop it first: npm run ops -- corpus drop \"" +
         body.source_url +
         '" --execute\n',
     );

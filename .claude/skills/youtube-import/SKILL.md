@@ -53,7 +53,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    import, drop the old one first, then re-import:
 
    ```sh
-   npm run corpus-drop -- "<canonicalWatchUrl>" --execute
+   npm run ops -- corpus drop "<canonicalWatchUrl>" --execute
    npx tsx scripts/youtube-import.ts "<youtubeUrl>"
    ```
 

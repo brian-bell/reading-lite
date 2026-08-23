@@ -6,7 +6,15 @@
 
 import type { AnyCommand, CommandGroup } from "./contract";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { corpusBackfillSimilarityCommand } from "./commands/corpus-backfill-similarity";
+import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
+import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
+import { corpusDropCommand } from "./commands/corpus-drop";
+import { corpusIngestCommand } from "./commands/corpus-ingest";
+import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
+import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
+import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importMarkdownCommand } from "./commands/import-markdown";
 import { readingSubmitCommand } from "./commands/reading-submit";
 
@@ -24,6 +32,14 @@ export const defaultRegistry: Registry = {
   commands: [
     corpusAuditCommand,
     corpusRecoverCommand,
+    corpusIngestCommand,
+    corpusDropCommand,
+    corpusSweepCommand,
+    corpusDeleteOrphansCommand,
+    corpusBackfillSimilarityCommand,
+    corpusBackfillVectorsCommand,
+    corpusNormalizeTagsCommand,
+    corpusRebuildListCommand,
     readingSubmitCommand,
     importMarkdownCommand,
   ],
