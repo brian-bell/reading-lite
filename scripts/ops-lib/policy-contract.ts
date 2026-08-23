@@ -206,7 +206,13 @@ export async function assertPolicyCommandBehavior(
 ): Promise<void> {
   const failures: string[] = [];
 
-  if (executeControlDeps !== undefined) {
+  if (executeControlDeps === undefined) {
+    // The control is not skippable: without it, a blanket refusal of every
+    // --execute would pass all remaining probes vacuously.
+    failures.push(
+      "execute control: no executeControlDeps supplied — the valid-execute control cannot be skipped",
+    );
+  } else {
     const controlArgv = [
       ...opts.baselineArgv, "--execute", "--env", "staging",
       "--acknowledge-guard-version", String(opts.currentGuardVersion),
