@@ -5607,6 +5607,15 @@ describe("cross-tenant mutation matrix", () => {
     ).text();
     expect(founderAfter).toBe(founderBefore);
 
+    // The founder's by-url ownership slot is intact: the failing tenant's
+    // claim landed in its own namespace, not over the founder's.
+    const founderLookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(await founderLookup.json()).toEqual({ id: founderId });
+
     // The rolled-back reading is invisible from the founder's side.
     const founderCross = await apiRequest(app, TOKEN, `/api/readings/${otherId}`);
     expect(founderCross.status).toBe(404);
@@ -5665,18 +5674,17 @@ describe("cross-tenant mutation matrix", () => {
     );
     expect(await founderLookup.json()).toEqual({ id });
 
-    // The mark itself is confined to the admitted tenant: with no matching
-    // manifest in that namespace, markDeadLettered still writes a failed
-    // marker so the strand stays visible — as a row in the ADMITTED tenant's
-    // list, at the job's key prefix under that tenant's root, never the
-    // owner's.
+    // And the admitted tenant gains nothing either: a DLQ job whose manifest
+    // does not exist in the admitted tenant's namespace was never owned by
+    // that tenant, so the mark must not materialize the envelope's metadata
+    // (the owner's URL and reading id) as a visible row in that tenant's list.
     const otherList = (await (
       await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")
-    ).json()) as { readings: { id: string; status: string }[] };
-    expect(otherList.readings.map((r) => [r.id, r.status])).toEqual([[id, "failed"]]);
+    ).json()) as { readings: unknown[] };
+    expect(otherList.readings).toEqual([]);
     expect(
       await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/${found!.keyPrefix}/manifest.json`),
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
   it("concurrent two-tenant terminal commits keep list CAS and vectors per tenant", async () => {
