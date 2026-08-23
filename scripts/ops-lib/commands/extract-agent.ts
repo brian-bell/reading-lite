@@ -177,7 +177,10 @@ async function defaultBuildSessionDeps(
     bootId: await linuxBootId(),
     isProcessAlive,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    writeRunLine: opts.persist ? appendRunLine : async () => {},
+    writeRunLine: appendRunLine,
+    // Plan mode skips the whole report-lock + run-log block inside the
+    // session (no lock file, no append), not just the append callback.
+    persistReport: opts.persist,
     warn,
   };
 }

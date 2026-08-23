@@ -105,6 +105,29 @@ async function readLines(path: string): Promise<RunLine[]> {
 }
 
 describe("runSession", () => {
+  it("persistReport:false leaves no run log, no report lock, and no ping (plan mode)", async () => {
+    const { deps, fetchMock } = await makeDeps({ persistReport: false });
+    const result = await runSession({ execute: false }, deps);
+
+    expect(result).toMatchObject({ status: "ok", exitCode: 0 });
+    expect(result.summary?.dry_run).toBe(true);
+    expect(await exists(deps.config.runLogPath)).toBe(false);
+    expect(await exists(`${deps.config.runLogPath}.lock`)).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deps.submit).not.toHaveBeenCalled();
+  });
+
+  it("persistReport:false succeeds even when the run-log directory is unwritable", async () => {
+    const blocker = join(await mkdtemp(join(tmpdir(), "extract-agent-session-")), "not-a-dir-file");
+    await writeFile(blocker, "occupied", "utf-8");
+    const { deps } = await makeDeps(
+      { persistReport: false },
+      { runLogPath: join(blocker, "runs.jsonl") },
+    );
+    const result = await runSession({ execute: false }, deps);
+    expect(result).toMatchObject({ status: "ok", exitCode: 0 });
+  });
+
   it("reports and pings a completed execute run", async () => {
     const { deps, fetchMock } = await makeDeps({}, { healthcheckUrl: "https://hc.example/ping" });
     const result = await runSession({ execute: true }, deps);

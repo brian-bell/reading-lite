@@ -44,6 +44,12 @@ export interface SessionDeps extends RunDeps {
   sleep: (ms: number) => Promise<void>;
   writeRunLine: typeof appendRunLine;
   warn: (message: string) => void;
+  // When false, the whole report-lock + run-log block is skipped: no lock
+  // file, no directory creation, no append, no correction. The plan-first
+  // operator CLI sets this for mode-less runs, whose contract is that a plan
+  // persists nothing (and cannot fail on an unwritable run-log path).
+  // Default true — timer-driven and execute runs always report.
+  persistReport?: boolean;
 }
 
 export interface SessionResult {
@@ -133,58 +139,62 @@ export async function runSession(args: RunArgs, deps: SessionDeps): Promise<Sess
     }
 
     // The execution lock protects paid work; this shorter lock protects the
-    // shared log's rotate+append transaction. Every writer takes it, including
-    // dry runs and runs that yielded, so rotation stays bounded without racing
-    // the report from a just-finished execute run.
-    try {
-      reportLock = await acquireReportLock(deps);
-    } catch (e) {
-      deps.warn(
-        `extract-agent: failed to lock the run report at ${config.runLogPath}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-      return { status, exitCode: 1, summary };
-    }
-
-    const line = makeLine();
-
-    try {
-      await deps.writeRunLine(config.runLogPath, line, { maxBytes: config.runLogMaxBytes });
-    } catch (e) {
-      // The corpus work may well have succeeded, but a paid-action run with no
-      // evidence is exactly what the dead-man ping exists to catch: stay silent
-      // and let the window expire rather than claim a run we can't show.
-      deps.warn(
-        `extract-agent: failed to write the run report to ${config.runLogPath}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-      return { status, exitCode: 1, summary };
-    }
-
-    if (reportLock.acquired) {
+    // shared log's rotate+append transaction. Every *reporting* writer takes
+    // it, including dry runs and runs that yielded, so rotation stays bounded
+    // without racing the report from a just-finished execute run. A
+    // persistReport:false run (the CLI's plan mode) skips the whole block —
+    // no lock file, no append — because a plan must leave nothing behind.
+    if (deps.persistReport !== false) {
       try {
-        await reportLock.release();
-        reportLockReleased = true;
+        reportLock = await acquireReportLock(deps);
       } catch (e) {
-        // The first line was serialized correctly, but cleanup is now the
-        // terminal failure. Record a correction with one atomic append (an
-        // unlocked rotation would recreate the race this lock exists to stop),
-        // then route the execute run through failure monitoring.
-        reportLockReleased = true;
-        status = "crashed";
-        error = e;
-        deps.warn(`extract-agent: failed to release the report lock: ${e instanceof Error ? e.message : String(e)}`);
+        deps.warn(
+          `extract-agent: failed to lock the run report at ${config.runLogPath}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        return { status, exitCode: 1, summary };
+      }
+
+      const line = makeLine();
+
+      try {
+        await deps.writeRunLine(config.runLogPath, line, { maxBytes: config.runLogMaxBytes });
+      } catch (e) {
+        // The corpus work may well have succeeded, but a paid-action run with no
+        // evidence is exactly what the dead-man ping exists to catch: stay silent
+        // and let the window expire rather than claim a run we can't show.
+        deps.warn(
+          `extract-agent: failed to write the run report to ${config.runLogPath}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        return { status, exitCode: 1, summary };
+      }
+
+      if (reportLock.acquired) {
         try {
-          await appendRunLineCorrection(config.runLogPath, makeLine(), { maxBytes: config.runLogMaxBytes });
-        } catch (correctionError) {
-          deps.warn(
-            `extract-agent: failed to correct the run report at ${config.runLogPath}: ${
-              correctionError instanceof Error ? correctionError.message : String(correctionError)
-            }`,
-          );
-          return { status, exitCode: 1, summary };
+          await reportLock.release();
+          reportLockReleased = true;
+        } catch (e) {
+          // The first line was serialized correctly, but cleanup is now the
+          // terminal failure. Record a correction with one atomic append (an
+          // unlocked rotation would recreate the race this lock exists to stop),
+          // then route the execute run through failure monitoring.
+          reportLockReleased = true;
+          status = "crashed";
+          error = e;
+          deps.warn(`extract-agent: failed to release the report lock: ${e instanceof Error ? e.message : String(e)}`);
+          try {
+            await appendRunLineCorrection(config.runLogPath, makeLine(), { maxBytes: config.runLogMaxBytes });
+          } catch (correctionError) {
+            deps.warn(
+              `extract-agent: failed to correct the run report at ${config.runLogPath}: ${
+                correctionError instanceof Error ? correctionError.message : String(correctionError)
+              }`,
+            );
+            return { status, exitCode: 1, summary };
+          }
         }
       }
     }
