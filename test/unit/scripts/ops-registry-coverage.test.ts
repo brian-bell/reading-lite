@@ -202,6 +202,21 @@ Options:
     );
   });
 
+  it("behavioral probes fail a command that reaches a side-effect seam before validating", async () => {
+    // Writes first, validates never: the seam's throw must count as a probe
+    // failure, not as a refusal.
+    const writesFirst = {
+      ...conforming,
+      run: async (_argv: string[], deps: { applyPolicy: () => void }) => {
+        deps.applyPolicy();
+        return 0;
+      },
+    };
+    await expect(assertPolicyCommandBehavior(writesFirst as never, inertDeps)).rejects.toThrow(
+      /non-usage error.*side-effect seam/,
+    );
+  });
+
   it("applies both halves to the registered policy command once it exists", async () => {
     const registered = defaultRegistry.commands.find(
       (c) => c.name === "policy" || c.group === "system",

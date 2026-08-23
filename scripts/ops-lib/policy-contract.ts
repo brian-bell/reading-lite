@@ -11,7 +11,7 @@
 // coverage test runs the checker against a conforming fixture so the
 // extension point stays enforced before the real command lands.
 
-import type { AnyCommand } from "./contract";
+import { UsageError, type AnyCommand } from "./contract";
 
 export interface PolicyContractViolation {
   requirement: string;
@@ -109,16 +109,26 @@ export async function assertPolicyCommandBehavior(
   const failures: string[] = [];
   for (const probe of POLICY_REFUSAL_PROBES) {
     let refused = false;
+    let failure: string | undefined;
     try {
       const code = await command.run(probe.argv, deps as never);
       refused = code === 2;
-    } catch {
-      // Any throw (UsageError via the dispatcher, or a guard in run) counts as
-      // a refusal; what must never happen is a 0/1 return that acted.
-      refused = true;
+      if (!refused) failure = `returned ${code} instead of refusing`;
+    } catch (e) {
+      // Only the usage-refusal type counts. Any other throw — including the
+      // caller's side-effect seams firing — means the command reached work it
+      // must never reach on this invocation, and the probe fails loudly.
+      if (e instanceof UsageError) {
+        refused = true;
+      } else {
+        failure = `threw a non-usage error (${e instanceof Error ? e.message : String(e)})`;
+      }
     }
     if (!refused) {
-      failures.push(`${probe.requirement}: did not refuse \`${probe.argv.join(" ")}\``);
+      failures.push(
+        `${probe.requirement}: did not refuse \`${probe.argv.join(" ")}\`` +
+          (failure ? ` — ${failure}` : ""),
+      );
     }
   }
   if (failures.length > 0) {
