@@ -14,6 +14,7 @@ import { resolveDropTargets, shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDropR2 {
@@ -31,6 +32,7 @@ export interface CorpusDropDeps extends BaseDeps {
 interface Opts {
   selectors: string[];
   bucket: string;
+  tenant?: string;
   remote: boolean;
   execute: boolean;
   allowReady: boolean;
@@ -51,6 +53,7 @@ function parseDropArgs(argv: string[]): Opts {
     else if (a === "--allow-ready") opts.allowReady = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
     else if (a.startsWith("--")) throw new UsageError(`unknown flag: ${a}`);
     else opts.selectors.push(a);
@@ -76,7 +79,8 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
     throw new UsageError("--allow-ready requires --vectorize <index> so ready embeddings are removed");
   }
 
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const items = await r2.readListIndex(r2Deps);
 
   const resolved = resolveDropTargets(items, opts.selectors, { allowReady: opts.allowReady });
@@ -189,6 +193,7 @@ a CAS write, so a concurrent queue write could be lost.
 
 Options:
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index for ready-vector deletes (--allow-ready).
   --allow-ready       Permit dropping ready readings (staging cleanup only).
   --local             Use the local miniflare bucket.

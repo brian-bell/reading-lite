@@ -13,6 +13,8 @@ import {
 import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusSweepR2 {
@@ -21,7 +23,7 @@ export interface CorpusSweepR2 {
   keysForReading: (id: string, prefix: string, url: string, deps: R2Deps) => Promise<string[]>;
   deleteObject: (key: string, deps: R2Deps) => Promise<"deleted" | "absent" | "error">;
   deleteVector: (index: string, id: string) => Promise<"deleted" | "error">;
-  vectorExists: (index: string, id: string) => Promise<boolean>;
+  vectorExists: (index: string, id: string, namespace?: string) => Promise<boolean>;
   writeListIndex: (items: unknown[], deps: R2Deps) => Promise<void>;
 }
 
@@ -30,6 +32,7 @@ export interface CorpusSweepDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   only: string[];
   keep: string[];
   drop?: string;
@@ -52,6 +55,7 @@ function parseSweepArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
     else if (a === "--keep") opts.keep.push(requireValue(argv[++i], a));
     else if (a === "--drop") opts.drop = requireValue(argv[++i], a);
@@ -70,7 +74,8 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   const opts = parseSweepArgs(argv);
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same
   // material but are genuinely different resources, so no canonicalization rule
@@ -157,7 +162,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     if (!opts.remote) {
       io.stdout(`    skipping vector (--local: Vectorize has no local store)`);
     } else {
-      hasVector = await r2.vectorExists(vectorizeIndex, t.id);
+      hasVector = await r2.vectorExists(vectorizeIndex, t.id, tenant.namespace);
       if (hasVector) vectoredDrops.push({ id: t.id, created_at: t.created_at });
       else io.stdout(`    no vector indexed for ${t.id}`);
     }
@@ -223,7 +228,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   // The sweep has already deleted objects and rewritten the index by now, so
   // the report is strictly informational: never let it fail the command.
   try {
-    await reportInvalidatedKeepers(io, r2, plan.groups, dropIds, vectoredDrops, r2Deps);
+    await reportInvalidatedKeepers(io, r2, plan.groups, dropIds, vectoredDrops, r2Deps, tenant);
   } catch (e) {
     io.stderr(
       `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
@@ -243,6 +248,7 @@ async function reportInvalidatedKeepers(
   droppedIds: Set<string>,
   vectoredDrops: { id: string; created_at?: string }[],
   r2Deps: R2Deps,
+  tenant: OperatorTenant,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
@@ -263,7 +269,7 @@ async function reportInvalidatedKeepers(
   }
   io.stdout(
     `\nRefresh the measured score without an LLM call (no re-summarization, no tag churn):\n` +
-    `  npm run ops -- corpus backfill-similarity ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
+    `  npm run ops -- corpus backfill-similarity --tenant ${operatorTenantSelector(tenant)} ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
     `The novelty_verdict itself only refreshes on a reprocess, which DOES re-roll\n` +
     `title and tags -- so weigh that before reprocessing purely to fix a label.`,
   );
@@ -302,6 +308,7 @@ Options:
   --keep <rd_ID>      Force the keeper for the group containing this id.
   --drop <rd_ID>      Operator-asserted pair mode (with exactly one --keep).
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --local             Use the local miniflare bucket (Vectorize is skipped).
   --execute           Apply the sweep.
@@ -315,7 +322,8 @@ Options:
         (await import("../../corpus-lib/wrangler-r2")).keysForReading(id, prefix, url, d),
       deleteObject: async (key, d) => (await import("../../corpus-lib/wrangler-r2")).deleteObject(key, d),
       deleteVector: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).deleteVector(index, id),
-      vectorExists: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id),
+      vectorExists: async (index, id, namespace) =>
+        (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id, { namespace }),
       writeListIndex: async (items, d) =>
         (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
     },

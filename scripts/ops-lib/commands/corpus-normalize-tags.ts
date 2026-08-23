@@ -9,6 +9,7 @@ import { normalizeTags } from "../../../src/modules/tags";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 
 export interface CorpusNormalizeTagsR2 {
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -22,6 +23,7 @@ export interface CorpusNormalizeTagsDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   bucket: string;
   remote: boolean;
   execute: boolean;
@@ -39,6 +41,7 @@ function parseTagArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--limit") opts.limit = Number(requireValue(argv[++i], a));
     else throw new UsageError(`unknown flag: ${a}`);
   }
@@ -56,7 +59,8 @@ const same = (a: string[], b: string[]): boolean =>
 async function runCorpusNormalizeTags(argv: string[], deps: CorpusNormalizeTagsDeps): Promise<number> {
   const opts = parseTagArgs(argv);
   const { io, r2 } = deps;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const items = await r2.readListIndex(r2Deps);
 
   const changes = items
@@ -140,6 +144,7 @@ Plan by default, printing every tag rewrite it would make; --execute writes.
 Options:
   --limit <n>      Cap how many readings are rewritten this pass.
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --local          Use the local miniflare bucket.
   --execute        Write manifests and rewrite index/list.json.
   --help           Show this message.`,

@@ -91,9 +91,78 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
 }
 
 describe("ops corpus recover — realtime routing", () => {
+  it("fails closed without --tenant", async () => {
+    const r = makeDeps();
+    await expect(corpusRecoverCommand.run([], r.deps)).rejects.toThrow(/--tenant is required/);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.indexWrites).toHaveLength(0);
+    expect(r.batchExecutes).toHaveLength(0);
+  });
+
+  it("refuses an audit taken under a different tenant", async () => {
+    const r = makeDeps();
+    r.deps.readFile = async () =>
+      JSON.stringify({ tenant: "usr_11111111-1111-4111-8111-111111111111", rows: [] });
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--execute", "--token", "tok"], r.deps);
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("was taken under tenant");
+  });
+
+  it("plan mode under a usr_ tenant redirects to --batch instead of inviting a doomed execute", async () => {
+    const r = makeDeps();
+    const original = await r.deps.readFile("index.json");
+    r.deps.readFile = async () =>
+      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111"],
+      r.deps,
+    );
+    expect(code).toBe(0);
+    const text = r.err.join("\n");
+    // The read-only classification still prints…
+    expect(text).toContain("[plan reprocess] a.example/x");
+    // …but the follow-up is the one that can actually succeed: --execute on
+    // this path always refuses (token unverifiable), so don't invite it.
+    expect(text).not.toContain("Rerun with --execute to act.");
+    expect(text).toContain("--batch");
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.out.join("\n")).toContain('"executed": false');
+  });
+
+  it("refuses a realtime execute under a usr_ tenant selector (token unverifiable)", async () => {
+    const r = makeDeps();
+    // Audit provenance matches the selector, so the refusal under test is the
+    // token-verification one, not the provenance guard.
+    const original = await r.deps.readFile("index.json");
+    r.deps.readFile = async () =>
+      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--execute", "--token", "tok"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.imported).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("cannot verify that the bearer token belongs to tenant");
+  });
+
+  it("refuses to resume a batch sidecar under a different tenant", async () => {
+    const r = makeDeps();
+    r.deps.batch.loadSidecar = async () =>
+      ({ batchId: "batch_9", targets: [], provider: "openai", tenant: "usr_11111111-1111-4111-8111-111111111111" }) as never;
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "global", "--batch", "--execute", "--sole-writer"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.batchExecutes).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("belongs to tenant 'usr_11111111-1111-4111-8111-111111111111'");
+  });
+
   it("plan mode lists actions but makes no submissions or writes", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run([], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global"], r.deps);
     expect(code).toBe(0);
     expect(r.reprocessed).toHaveLength(0);
     expect(r.imported).toHaveLength(0);
@@ -108,7 +177,7 @@ describe("ops corpus recover — realtime routing", () => {
 
   it("--execute routes reprocess and local-extract rows and annotates the index", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--execute"], r.deps);
     expect(code).toBe(0);
     expect(r.reprocessed).toEqual(["rd_a"]);
     expect(r.imported).toEqual([{ source_url: "https://b.example/y", markdown: "# extracted body" }]);
@@ -121,7 +190,7 @@ describe("ops corpus recover — realtime routing", () => {
 
   it("--only reprocess restricts the execute path to that action", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--only", "reprocess", "--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--only", "reprocess", "--execute"], r.deps);
     expect(code).toBe(0);
     expect(r.reprocessed).toEqual(["rd_a"]);
     expect(r.imported).toHaveLength(0);
@@ -133,7 +202,7 @@ describe("ops corpus recover — realtime routing", () => {
       reprocess: async () => ({ kind: "http_error", status: 500, message: "boom" }),
       importMarkdown: async () => ({ kind: "http_error", status: 500, message: "boom" }),
     });
-    const code = await corpusRecoverCommand.run(["--only", "reprocess", "--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--only", "reprocess", "--execute"], r.deps);
     expect(code).toBe(1);
     expect(r.out.join("\n")).toContain('"errors": 1');
   });
@@ -145,7 +214,7 @@ describe("ops corpus recover — realtime routing", () => {
         ({ kind: "conflict", reason: "active_attempt", message: "reading already has an active attempt" }) as const,
       importMarkdown: async () => ({ kind: "initializing", id: "rd_race" }) as const,
     });
-    const code = await corpusRecoverCommand.run(["--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--execute"], r.deps);
     expect(code).toBe(0);
     const summary = r.out.join("\n");
     expect(summary).toContain('"in_progress": 2');
@@ -162,7 +231,7 @@ describe("ops corpus recover — realtime routing", () => {
       importMarkdown: async () =>
         ({ kind: "conflict", reason: "missing_markdown", message: "markdown content not available" }) as const,
     });
-    const code = await corpusRecoverCommand.run(["--only", "reprocess", "--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--only", "reprocess", "--execute"], r.deps);
     expect(code).toBe(1);
     const summary = r.out.join("\n");
     expect(summary).toContain('"errors": 1');
@@ -179,18 +248,18 @@ describe("ops corpus recover — realtime routing", () => {
         return JSON.stringify({ rows: [] });
       },
     });
-    await expect(corpusRecoverCommand.run(["--only", "everything"], r.deps)).rejects.toThrow(UsageError);
+    await expect(corpusRecoverCommand.run(["--tenant", "global", "--only", "everything"], r.deps)).rejects.toThrow(UsageError);
     expect(reads).toBe(0);
   });
 
   it("rejects an unknown flag as a usage error", async () => {
     const r = makeDeps();
-    await expect(corpusRecoverCommand.run(["--nope"], r.deps)).rejects.toThrow(UsageError);
+    await expect(corpusRecoverCommand.run(["--tenant", "global", "--nope"], r.deps)).rejects.toThrow(UsageError);
   });
 
   it("requires a token on the execute path", async () => {
     const r = makeDeps({ resolveApiTarget: () => ({ base: "https://api.test", token: "" }) });
-    await expect(corpusRecoverCommand.run(["--execute"], r.deps)).rejects.toThrow(UsageError);
+    await expect(corpusRecoverCommand.run(["--tenant", "global", "--execute"], r.deps)).rejects.toThrow(UsageError);
     expect(r.reprocessed).toHaveLength(0);
   });
 });
@@ -198,7 +267,7 @@ describe("ops corpus recover — realtime routing", () => {
 describe("ops corpus recover — batch routing", () => {
   it("plan mode reads the sidecar but resolves no config and submits nothing", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--batch"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch"], r.deps);
     expect(code).toBe(0);
     expect(r.sidecarLoads).toHaveLength(1);
     expect(r.configResolves).toHaveLength(0);
@@ -211,7 +280,7 @@ describe("ops corpus recover — batch routing", () => {
   it("plan mode announces a resume when a sidecar exists", async () => {
     const r = makeDeps();
     r.deps.batch.loadSidecar = async () => ({ batchId: "batch_9", targets: [{}, {}], provider: "openai" }) as never;
-    const code = await corpusRecoverCommand.run(["--batch"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch"], r.deps);
     expect(code).toBe(0);
     expect(r.err.join("\n")).toContain("would RESUME in-flight batch batch_9 (2 readings)");
     expect(r.batchExecutes).toHaveLength(0);
@@ -219,7 +288,7 @@ describe("ops corpus recover — batch routing", () => {
 
   it("--batch --execute refuses without --sole-writer", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--batch", "--execute"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch", "--execute"], r.deps);
     expect(code).toBe(2);
     expect(r.err.join("\n")).toContain("REFUSED");
     expect(r.configResolves).toHaveLength(0);
@@ -228,7 +297,7 @@ describe("ops corpus recover — batch routing", () => {
 
   it("--batch --execute --sole-writer routes reprocess + local-extract rows through the batch seam", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--batch", "--execute", "--sole-writer"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch", "--execute", "--sole-writer"], r.deps);
     // The stubbed report contains one failed row, so the command reports failure.
     expect(code).toBe(1);
     expect(r.batchExecutes).toHaveLength(1);
@@ -241,14 +310,19 @@ describe("ops corpus recover — batch routing", () => {
     r.deps.batch.loadSidecar = async () =>
       ({ batchId: "batch_9", targets: [], provider: "anthropic" }) as never;
     r.deps.batch.execute = async () => ({ report: [], dropped: [], resumed: true, batchId: "batch_9" });
-    const code = await corpusRecoverCommand.run(["--batch", "--execute", "--sole-writer"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch", "--execute", "--sole-writer"], r.deps);
     expect(code).toBe(0);
-    expect(r.configResolves).toEqual([{ resumeProvider: "anthropic" }]);
+    expect(r.configResolves).toEqual([
+      {
+        resumeProvider: "anthropic",
+        tenant: { kind: "global", keyRoot: "", namespace: undefined },
+      },
+    ]);
   });
 
   it("--limit caps how many rows enter the batch", async () => {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--batch", "--execute", "--sole-writer", "--limit", "1"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch", "--execute", "--sole-writer", "--limit", "1"], r.deps);
     expect(code).toBe(1);
     expect(r.batchExecutes[0].map((row) => row.reading_id)).toEqual(["rd_a"]);
   });

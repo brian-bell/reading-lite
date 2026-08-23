@@ -49,6 +49,12 @@ export interface VectorizeConfig {
   accountId: string;
   index: string;
   apiToken: string;
+  /**
+   * Tenant namespace for every upsert and query (reading-lite-s1k.4.3),
+   * matching the worker's similarityStoreFor. Omit for the global,
+   * pre-tenant namespace.
+   */
+  namespace?: string;
 }
 
 export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Client {
@@ -160,7 +166,9 @@ export function makeVectorizeClient(
   return {
     async upsert(vectors) {
       if (vectors.length === 0) return;
-      const ndjson = vectors.map((v) => JSON.stringify(v)).join("\n");
+      const ndjson = vectors
+        .map((v) => JSON.stringify(cfg.namespace === undefined ? v : { ...v, namespace: cfg.namespace }))
+        .join("\n");
       const res = await fetchFn(`${indexBase}/upsert`, {
         method: "POST",
         headers: {
@@ -182,6 +190,7 @@ export function makeVectorizeClient(
           vector,
           topK: opts.topK,
           returnMetadata: opts.returnMetadata ? "all" : "none",
+          ...(cfg.namespace === undefined ? {} : { namespace: cfg.namespace }),
         }),
       });
       if (!res.ok) {
@@ -191,6 +200,26 @@ export function makeVectorizeClient(
       const json = (await res.json()) as { result?: { matches?: VectorizeMatch[] } };
       return json.result?.matches ?? [];
     },
+  };
+}
+
+// A view of an R2Client confined to one tenant's key root (reading-lite-
+// s1k.4.3). The batch pipeline and its phase modules speak RELATIVE keys
+// (index/list.json, readings/…); wrapping the client is what maps them into a
+// tenant's namespace, so no phase module needs to know about tenancy. The
+// empty root is the pre-tenant global layout and returns the client unchanged.
+export function withKeyRoot(client: R2Client, keyRoot: string): R2Client {
+  if (keyRoot === "") return client;
+  return {
+    put: (key, body, opts) => client.put(`${keyRoot}${key}`, body, opts),
+    putIfAbsent: (key, body, opts) => client.putIfAbsent(`${keyRoot}${key}`, body, opts),
+    get: (key) => client.get(`${keyRoot}${key}`),
+    head: (key) => client.head(`${keyRoot}${key}`),
+    delete: (key) => client.delete(`${keyRoot}${key}`),
+    listKeys: async () =>
+      (await client.listKeys())
+        .filter((key) => key.startsWith(keyRoot))
+        .map((key) => key.slice(keyRoot.length)),
   };
 }
 

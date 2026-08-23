@@ -13,6 +13,7 @@ import { resolveBucket } from "../../corpus-lib/config";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
 
 export interface CorpusRebuildListR2 {
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -26,6 +27,7 @@ export interface CorpusRebuildListDeps extends BaseDeps {
 
 interface Args {
   bucket: string;
+  tenant?: string;
   remote: boolean;
   execute: boolean;
   soleWriter: boolean;
@@ -38,6 +40,7 @@ function parseRebuildArgs(argv: string[]): Args {
       args: argv,
       options: {
         bucket: { type: "string" },
+        tenant: { type: "string" },
         local: { type: "boolean", default: false },
         execute: { type: "boolean", default: false },
         "sole-writer": { type: "boolean", default: false },
@@ -48,6 +51,7 @@ function parseRebuildArgs(argv: string[]): Args {
   }
   return {
     bucket: resolveBucket(values.bucket),
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     remote: values.local !== true,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -57,7 +61,8 @@ function parseRebuildArgs(argv: string[]): Args {
 async function runCorpusRebuildList(argv: string[], deps: CorpusRebuildListDeps): Promise<number> {
   const args = parseRebuildArgs(argv);
   const { io, r2 } = deps;
-  const r2Deps: R2Deps = { bucket: args.bucket, remote: args.remote };
+  const tenant = requireOperatorTenant(args.tenant);
+  const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: tenant.keyRoot, remote: args.remote };
 
   const currentItems = await r2.readListIndex(r2Deps);
   const rows = [];
@@ -136,6 +141,7 @@ Plan by default. Deploy the new Worker before writing production.
 
 Options:
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --local          Read/write the local miniflare bucket.
   --execute        Write the rebuilt index (otherwise prints the plan).
   --sole-writer    Required with --execute: assert the realtime writer is

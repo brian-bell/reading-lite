@@ -7,6 +7,22 @@ Operator workflows run through the unified plan-first CLI: `npm run ops --
 <group> <command> [options]`. Every command with durable side effects prints a
 plan by default and acts only with `--execute`.
 
+Every `corpus` command additionally requires `--tenant <selector>` before it
+plans anything: `global` addresses the pre-tenant layout production data lives
+under today, and a `usr_…` tenant id addresses that tenant's `u/{tenantId}/`
+key namespace plus its Vectorize namespace (the same roots the worker derives
+from a validated `TenantContext`). There is no default — a missing or
+malformed selector is a usage error (exit 2) before any R2 or Vectorize
+traffic, so an operator can never act on the global corpus by omission.
+
+One caveat: `corpus recover`'s realtime path writes through the Reading API,
+where the acting tenant is the **bearer token's** principal — and the CLI
+cannot resolve a token to its tenant offline. A `usr_…` selector therefore
+**refuses** the realtime execute path (use `--batch`, which is scoped by
+`--tenant` end to end, or `--tenant global`, which matches the pre-cutover
+reality where every token acts on the global layout). Worker-side token
+verification that lifts this refusal is tracked as reading-lite-1xk.
+
 ## Environments
 
 | Environment | Worker | Bucket / Vectorize index | Notes |
@@ -22,8 +38,8 @@ accidental bare `wrangler deploy` clobbering production.
 `TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Leave it
 unset in local, staging, and production until the founder corpus is copied
 under that prefix (s1k.6). Workers-pool tests turn it on so two tenants can
-share a URL without colliding. Operator corpus scripts still talk to the
-global `readings/` and `index/` layout.
+share a URL without colliding. Operator corpus scripts address whichever root
+their required `--tenant` selector names — `global` until the migration.
 
 ### Secrets
 
@@ -130,8 +146,8 @@ VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.worker
 Clean up the throwaways afterwards, including `ready` ones:
 
 ```sh
-npm run ops -- corpus audit --bucket reading-lite-staging --execute
-npm run ops -- corpus drop "https://example.com/reading-lite-staging-123" \
+npm run ops -- corpus audit --tenant global --bucket reading-lite-staging --execute
+npm run ops -- corpus drop --tenant global "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
   --vectorize reading-lite-staging --execute
 ```
@@ -174,8 +190,8 @@ readings become searchable without a paid reprocess. Dry-run by default;
 `--execute` requires `--sole-writer` because the rewrite is a plain put.
 
 ```sh
-npm run ops -- corpus rebuild-list --bucket reading-lite
-npm run ops -- corpus rebuild-list --bucket reading-lite --execute --sole-writer
+npm run ops -- corpus rebuild-list --tenant global --bucket reading-lite
+npm run ops -- corpus rebuild-list --tenant global --bucket reading-lite --execute --sole-writer
 ```
 
 Deploy the new Worker **before** the production rewrite. An old Worker that
@@ -186,8 +202,8 @@ submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
 same work through the offline provider Batch API path described below.
 
 ```sh
-npm run ops -- corpus audit --execute      # writes index.json + INDEX.md
-npm run ops -- corpus recover --index ./index.json --execute
+npm run ops -- corpus audit --tenant global --execute      # writes index.json + INDEX.md
+npm run ops -- corpus recover --tenant global --index ./index.json --execute
 ```
 
 ### The extract-agent
@@ -274,7 +290,7 @@ pass `--email` to request notifications.
 
 `import-markdown` summarizes every file **realtime** through the Worker queue.
 For large backfills, `ops corpus ingest` runs the same directory through the
-configured provider's **Batch API**, and `ops corpus recover --batch` does the same
+configured provider's **Batch API**, and `ops corpus recover --tenant global --batch` does the same
 for readings already in the corpus. Both talk to R2 and Vectorize directly with
 `CORPUS_R2_*` credentials rather than through the HTTP API, and both need
 `CORPUS_CF_API_TOKEN` plus `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is
@@ -284,10 +300,10 @@ is no cross-provider fallback.
 
 ```sh
 # dry run (default): print the plan; with creds it also shows ownership skips
-npm run ops -- corpus ingest --dir ~/Documents/articles
+npm run ops -- corpus ingest --tenant global --dir ~/Documents/articles
 
 # for real — confirm the realtime writer is paused/drained first
-npm run ops -- corpus ingest --dir ~/Documents/articles \
+npm run ops -- corpus ingest --tenant global --dir ~/Documents/articles \
   --execute --sole-writer --bucket reading-lite
 ```
 
@@ -298,8 +314,8 @@ by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
 paths omit the realtime attempt-log fields (`last_attempt` and the per-attempt
 objects under the key prefix).
 
-**`--sole-writer` is enforced, not assumed.** `ops corpus ingest --execute` and
-`ops corpus recover --batch --execute` refuse to submit without it. Both batch paths
+**`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant global --execute` and
+`ops corpus recover --tenant global --batch --execute` refuse to submit without it. Both batch paths
 eagerly claim by-url slots (recover via a failed→pending flip that keeps its
 claim on failure, so the URL stays re-submittable), but that claim is
 defense-in-depth rather than a replacement for pausing the realtime writer. An

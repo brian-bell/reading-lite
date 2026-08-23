@@ -13,6 +13,8 @@
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
+import { requireOperatorTenant } from "../tenant-flag";
 import {
   classifyOutcome,
   readingApiFor,
@@ -45,7 +47,11 @@ export interface CorpusRecoverDeps extends BaseDeps {
   batch: {
     loadSidecar: (path: string) => Promise<PersistedSidecar | null>;
     clearSidecar: (path: string) => Promise<void>;
-    resolveConfig: (flags: { bucket?: string; resumeProvider?: PersistedSidecar["provider"] }) => BatchConfig;
+    resolveConfig: (flags: {
+      bucket?: string;
+      resumeProvider?: PersistedSidecar["provider"];
+      tenant: OperatorTenant;
+    }) => BatchConfig;
     // Runs the whole batch pipeline (clients + sidecar seams wired in by
     // defaultDeps). The unit tests stub this boundary to cover routing.
     execute: (rows: AuditRow[], cfg: BatchConfig, scPath: string) => Promise<BatchRunResult>;
@@ -54,6 +60,7 @@ export interface CorpusRecoverDeps extends BaseDeps {
 
 interface Args {
   index: string;
+  tenant?: string;
   execute: boolean;
   only?: RecoveryAction;
   limit: number;
@@ -81,6 +88,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
       args: argv,
       options: {
         index: { type: "string" },
+        tenant: { type: "string" },
         execute: { type: "boolean", default: false },
         only: { type: "string" },
         limit: { type: "string" },
@@ -102,6 +110,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
   }
   return {
     index: values.index ?? "./index.json",
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     execute: values.execute === true,
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
@@ -161,7 +170,22 @@ function describeError(out: ReadingApiOutcome): string {
 
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
-  const doc = JSON.parse(await deps.readFile(args.index)) as { rows: AuditRow[] };
+  const tenant = requireOperatorTenant(args.tenant);
+  const doc = JSON.parse(await deps.readFile(args.index)) as {
+    rows: AuditRow[];
+    tenant?: string;
+  };
+  // Audit provenance (s1k.4.3): recover acts only on an audit taken under the
+  // SAME tenant selector, else tenant A's audited URLs would be extracted and
+  // written under tenant B's namespace. Legacy audits (no stamp) are global.
+  const auditTenant = doc.tenant ?? "global";
+  if (auditTenant !== operatorTenantSelector(tenant)) {
+    deps.io.stderr(
+      `audit ${args.index} was taken under tenant '${auditTenant}' but --tenant is '${operatorTenantSelector(tenant)}'; ` +
+        "re-run corpus audit under the selected tenant, or pass the audit's tenant.",
+    );
+    return 1;
+  }
   const rows = doc.rows ?? [];
   const plan = planByAction(rows);
 
@@ -176,7 +200,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   const actions: RecoveryAction[] = args.only ? [args.only] : ["reprocess", "local-extract"];
 
   if (args.batch) {
-    return runBatchMode(args, plan, actions, deps);
+    return runBatchMode(args, tenant, plan, actions, deps);
   }
 
   if (!args.execute) {
@@ -188,7 +212,17 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
         deps.io.stderr(`  [plan ${a}] ${r.short} — ${recoveryAction(r).why}`);
       }
     }
-    deps.io.stderr("Rerun with --execute to act.");
+    // Plan output must invite only an execute that can succeed: the realtime
+    // execute path refuses a usr_ selector outright (token unverifiable — see
+    // the guard below), so point that case at --batch instead.
+    if (tenant.kind === "tenant") {
+      deps.io.stderr(
+        "Realtime --execute is unavailable for a tenant selector until token verification lands " +
+          "(reading-lite-1xk). Rerun with --batch --execute (and --sole-writer) to act.",
+      );
+    } else {
+      deps.io.stderr("Rerun with --execute to act.");
+    }
     printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, inProgress: 0, errors: 0, touched: [] });
     return 0;
   }
@@ -197,6 +231,28 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (!target.token) {
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
+  // The realtime path writes through the Reading API, where the acting tenant
+  // is the BEARER TOKEN's principal — the worker confines every write to that
+  // tenant regardless of --tenant, which scopes only this command's direct R2
+  // reads (--monitor). The CLI cannot resolve a token to its tenant offline
+  // (the mapping lives in the worker's control plane), so for a tenant
+  // selector the comparison cannot be made and the realtime path fails
+  // closed: submitting under an unverified token could import one tenant's
+  // audited content into another. --batch is scoped by --tenant end to end
+  // and stays available; reading-lite-1xk tracks the worker-side token
+  // verification that will lift this refusal. 'global' matches the
+  // pre-cutover reality where every token acts on the global layout.
+  if (tenant.kind === "tenant") {
+    deps.io.stderr(
+      `realtime recovery cannot verify that the bearer token belongs to tenant '${tenant.tenantId}'; ` +
+        "refusing to submit. Use --batch (scoped by --tenant end to end), or --tenant global. " +
+        "(reading-lite-1xk tracks worker-side token verification.)",
+    );
+    return 1;
+  }
+  deps.io.stderr(
+    "note: realtime API writes act as the bearer token's tenant; ensure the token matches --tenant.",
+  );
   const api = deps.makeApi(target);
 
   const touched: string[] = [];
@@ -277,7 +333,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (args.monitor && touched.length > 0) {
     deps.io.stderr(`\nMonitoring ${touched.length} readings...`);
     for (let i = 0; i < 60; i++) {
-      const items = await deps.readListIndex({ bucket: args.bucket, remote: true });
+      const items = await deps.readListIndex({ bucket: args.bucket, keyRoot: tenant.keyRoot, remote: true });
       const t = tallyByIds(items, touched);
       const ts = new Date(deps.now()).toISOString().slice(11, 19);
       deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
@@ -294,6 +350,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
 // provider's Batch API. --wave is irrelevant here (no realtime burst to pace).
 async function runBatchMode(
   args: Args,
+  tenant: OperatorTenant,
   plan: Record<RecoveryAction, AuditRow[]>,
   actions: RecoveryAction[],
   deps: CorpusRecoverDeps,
@@ -324,6 +381,17 @@ async function runBatchMode(
   const scPath = sidecarPath(args.index);
   const existing = await deps.batch.loadSidecar(scPath);
 
+  // Same tenant pinning as ops corpus ingest: an in-flight batch resumes only
+  // under the tenant selector it was submitted with (legacy sidecars = global).
+  const selector = operatorTenantSelector(tenant);
+  if (existing && (existing.tenant ?? "global") !== selector) {
+    deps.io.stderr(
+      `sidecar ${scPath} belongs to tenant '${existing.tenant ?? "global"}' but --tenant is '${selector}'; ` +
+        "resume with the sidecar's tenant, or clear the sidecar after reconciling the batch manually.",
+    );
+    return 1;
+  }
+
   if (!args.execute) {
     if (existing) {
       deps.io.stderr(`  [plan batch] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${scPath}`);
@@ -343,6 +411,7 @@ async function runBatchMode(
     cfg = deps.batch.resolveConfig({
       ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
+      tenant,
     });
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
@@ -419,7 +488,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       execute: async (rows, cfg, scPath) => {
         const { randomUUID } = await import("node:crypto");
         const { runBatch } = await import("../../corpus-lib/batch/run");
-        const { makeR2Client, makeVectorizeClient } = await import("../../lib/cf-clients");
+        const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
         const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
           await import("../../corpus-lib/batch/clients");
         const { loadSidecar, saveSidecar, clearSidecar, saveInputJsonl, loadInputJsonl } =
@@ -430,7 +499,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const browserFetch = makeBrowserFetch(fetchFn);
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
         return runBatch(rows, {
-          r2: makeR2Client(cfg.r2, fetchFn),
+          r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
           vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
           ...(cfg.anthropicApiKey
             ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
@@ -446,7 +515,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           now: () => new Date().toISOString(),
           sleep,
           loadSidecar: () => loadSidecar(scPath),
-          saveSidecar: (s) => saveSidecar(scPath, s),
+          // Stamp the tenant selector on every checkpoint (resume guard above).
+          saveSidecar: (s) => saveSidecar(scPath, { ...s, tenant: cfg.tenantSelector }),
           clearSidecar: () => clearSidecar(scPath),
           saveInputJsonl: (jsonl) => saveInputJsonl(scPath, jsonl),
           loadInputJsonl: () => loadInputJsonl(scPath),
@@ -474,6 +544,11 @@ Options:
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
   --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
+                       layout. Scopes this command's direct R2 reads and the batch
+                       path. Realtime API writes act as the bearer token's tenant,
+                       which the CLI cannot verify — so a usr_… selector refuses
+                       the realtime execute path (use --batch, or --tenant global).
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.

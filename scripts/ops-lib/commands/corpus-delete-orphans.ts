@@ -10,6 +10,8 @@ import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { LIST_INDEX_KEY, READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDeleteOrphansR2 {
@@ -27,6 +29,7 @@ export interface CorpusDeleteOrphansDeps extends BaseDeps {
 }
 
 interface Opts {
+  tenant?: string;
   indexPath: string;
   bucket: string;
   remote: boolean;
@@ -46,6 +49,7 @@ function parseOrphanArgs(argv: string[]): Opts {
     if (a === "--execute") opts.execute = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
+    else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--index") opts.indexPath = requireValue(argv[++i], a);
     else if (a === "--ids") {
       opts.ids = requireValue(argv[++i], a).split(",").map((s) => s.trim()).filter(Boolean);
@@ -62,7 +66,8 @@ function requireValue(v: string | undefined, flag: string): string {
 async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansDeps): Promise<number> {
   const opts = parseOrphanArgs(argv);
   const { io, r2 } = deps;
-  const r2Deps: R2Deps = { bucket: opts.bucket, remote: opts.remote };
+  const tenant = requireOperatorTenant(opts.tenant);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   // Read list.json up front: it's the authoritative source of key_prefix for
   // --ids mode, and the diff is shown even in plan mode.
@@ -99,10 +104,22 @@ async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansD
       parsed = JSON.parse(await deps.readFile(opts.indexPath));
     } catch (e) {
       io.stderr(`could not read audit index at ${opts.indexPath}: ${(e as Error).message}`);
-      io.stderr("run `npm run ops -- corpus audit --execute` first, or pass --index <path>.");
+      io.stderr(`run \`npm run ops -- corpus audit --tenant ${operatorTenantSelector(tenant)} --execute\` first, or pass --index <path>.`);
       return 1;
     }
     label = "orphan-dup readings";
+    // Audit provenance (s1k.4.3): same guard as corpus recover — deletion
+    // targets must come from an audit taken under the SAME tenant selector,
+    // else tenant A's rows would name paths to delete inside tenant B.
+    // Legacy audits (no stamp) are global.
+    const auditTenant = (parsed.tenant as string | undefined) ?? "global";
+    if (auditTenant !== operatorTenantSelector(tenant)) {
+      io.stderr(
+        `audit ${opts.indexPath} was taken under tenant '${auditTenant}' but --tenant is '${operatorTenantSelector(tenant)}'; ` +
+          "re-run corpus audit under the selected tenant.",
+      );
+      return 1;
+    }
     targets = (parsed.rows ?? [])
       .filter((r: any) => r.category === "pending" && r.class === "orphan-dup")
       .map((r: any) => ({ id: r.reading_id, prefix: r.key_prefix, url: r.url }));
@@ -217,6 +234,7 @@ Options:
   --index <path>   Audit index.json. Default: index.json.
   --ids <a,b,c>    Remove exactly these reading ids instead of the audit set.
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --local          Use the local miniflare bucket.
   --execute        Perform the deletes and rewrite index/list.json.
   --help           Show this message.`,

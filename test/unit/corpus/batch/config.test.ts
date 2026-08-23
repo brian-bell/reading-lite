@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { resolveBatchConfig } from "../../../../scripts/corpus-lib/config";
 
+const GLOBAL_TENANT = { kind: "global", keyRoot: "", namespace: undefined } as const;
+
 const full = {
   CORPUS_R2_ACCOUNT_ID: "acct",
   CORPUS_R2_ACCESS_KEY: "ak",
@@ -19,7 +21,7 @@ const full = {
 
 describe("resolveBatchConfig", () => {
   it("resolves r2, vectorize, keys, and model from env-like vars", () => {
-    const cfg = resolveBatchConfig({}, { vars: full });
+    const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: full });
     expect(cfg.r2).toEqual({ accountId: "acct", accessKeyId: "ak", secretAccessKey: "sk", bucket: "reading-lite" });
     expect(cfg.vectorize).toEqual({ accountId: "acct", index: "reading-lite", apiToken: "cf" });
     expect(cfg.anthropicApiKey).toBe("sk-ant");
@@ -42,7 +44,7 @@ describe("resolveBatchConfig", () => {
     void OPENAI_SUMMARIZATION_MODEL;
     void OPENAI_SUMMARIZATION_REASONING_EFFORT;
     void SUMMARIZER_PROVIDER;
-    const cfg = resolveBatchConfig({}, { vars: noModel });
+    const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: noModel });
     expect(cfg.anthropicModel).toBe("claude-sonnet-4-6");
     expect(cfg.openaiModel).toBe("gpt-5.6-terra");
     expect(cfg.openaiReasoningEffort).toBe("low");
@@ -52,13 +54,13 @@ describe("resolveBatchConfig", () => {
   it("accepts explicit Anthropic and rejects an invalid provider", () => {
     expect(
       resolveBatchConfig(
-        {},
+        { tenant: GLOBAL_TENANT },
         { vars: { ...full, SUMMARIZER_PROVIDER: "anthropic" } },
       ).summarizerProvider,
     ).toBe("anthropic");
     expect(() =>
       resolveBatchConfig(
-        {},
+        { tenant: GLOBAL_TENANT },
         { vars: { ...full, SUMMARIZER_PROVIDER: "other" } },
       ),
     ).toThrow(/invalid SUMMARIZER_PROVIDER: other/);
@@ -68,7 +70,7 @@ describe("resolveBatchConfig", () => {
     const { ANTHROPIC_API_KEY, ...openAIOnly } = full;
     void ANTHROPIC_API_KEY;
     expect(
-      resolveBatchConfig({}, { vars: openAIOnly }),
+      resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: openAIOnly }),
     ).toMatchObject({
       summarizerProvider: "openai",
       anthropicApiKey: "",
@@ -81,7 +83,7 @@ describe("resolveBatchConfig", () => {
     };
     void missingAnthropic;
     expect(() =>
-      resolveBatchConfig({}, { vars: anthropicMissing }),
+      resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: anthropicMissing }),
     ).toThrow(/ANTHROPIC_API_KEY/);
 
     const { OPENAI_API_KEY, ...missingEmbedding } = {
@@ -90,7 +92,7 @@ describe("resolveBatchConfig", () => {
     };
     void OPENAI_API_KEY;
     expect(() =>
-      resolveBatchConfig({}, { vars: missingEmbedding }),
+      resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: missingEmbedding }),
     ).toThrow(/OPENAI_API_KEY/);
   });
 
@@ -103,7 +105,7 @@ describe("resolveBatchConfig", () => {
     void ANTHROPIC_API_KEY;
     expect(
       resolveBatchConfig(
-        { resumeProvider: "openai" },
+        { resumeProvider: "openai", tenant: GLOBAL_TENANT },
         { vars: withoutAnthropic },
       ),
     ).toMatchObject({
@@ -114,7 +116,7 @@ describe("resolveBatchConfig", () => {
 
     expect(() =>
       resolveBatchConfig(
-        { resumeProvider: "anthropic" },
+        { resumeProvider: "anthropic", tenant: GLOBAL_TENANT },
         {
           vars: {
             ...withoutAnthropic,
@@ -129,7 +131,7 @@ describe("resolveBatchConfig", () => {
   it("ignores an irrelevant OpenAI effort for Anthropic but validates it for OpenAI", () => {
     expect(
       resolveBatchConfig(
-        {},
+        { tenant: GLOBAL_TENANT },
         {
           vars: {
             ...full,
@@ -141,7 +143,7 @@ describe("resolveBatchConfig", () => {
     ).toBe("low");
     expect(() =>
       resolveBatchConfig(
-        {},
+        { tenant: GLOBAL_TENANT },
         {
           vars: {
             ...full,
@@ -156,7 +158,7 @@ describe("resolveBatchConfig", () => {
   it("does not parse the current provider when a resume pins its own", () => {
     expect(
       resolveBatchConfig(
-        { resumeProvider: "openai" },
+        { resumeProvider: "openai", tenant: GLOBAL_TENANT },
         { vars: { ...full, SUMMARIZER_PROVIDER: "anthorpic" } },
       ).summarizerProvider,
     ).toBe("openai");
@@ -165,7 +167,7 @@ describe("resolveBatchConfig", () => {
   it("does not validate the current effort when an OpenAI resume pins its own effort", () => {
     expect(
       resolveBatchConfig(
-        { resumeProvider: "openai" },
+        { resumeProvider: "openai", tenant: GLOBAL_TENANT },
         {
           vars: {
             ...full,
@@ -179,7 +181,7 @@ describe("resolveBatchConfig", () => {
   it("lets --bucket override the configured bucket and defaults the index to it", () => {
     const { CORPUS_VECTORIZE_INDEX, ...noIndex } = full;
     void CORPUS_VECTORIZE_INDEX;
-    const cfg = resolveBatchConfig({ bucket: "reading-lite-alt" }, { vars: noIndex });
+    const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT, bucket: "reading-lite-alt" }, { vars: noIndex });
     expect(cfg.r2.bucket).toBe("reading-lite-alt");
     expect(cfg.vectorize.index).toBe("reading-lite-alt");
   });
@@ -188,12 +190,34 @@ describe("resolveBatchConfig", () => {
     // The CLI must pass an *absent* flag through (not a defaulted production
     // bucket), so a .corpus.vars pointing at an alternate bucket writes there.
     const alt = { ...full, CORPUS_R2_BUCKET: "reading-lite-alt", CORPUS_VECTORIZE_INDEX: "reading-lite-alt" };
-    const cfg = resolveBatchConfig({}, { vars: alt });
+    const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: alt });
     expect(cfg.r2.bucket).toBe("reading-lite-alt");
     expect(cfg.vectorize.index).toBe("reading-lite-alt");
   });
 
   it("throws listing all missing required fields", () => {
-    expect(() => resolveBatchConfig({}, { vars: { ANTHROPIC_API_KEY: "x" } })).toThrow(/CORPUS_R2_ACCOUNT_ID/);
+    expect(() => resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: { ANTHROPIC_API_KEY: "x" } })).toThrow(/CORPUS_R2_ACCOUNT_ID/);
+  });
+});
+
+// reading-lite-s1k.4.3: the tenant selection lands on the batch config as the
+// R2 key root every client is wrapped with and the Vectorize namespace.
+describe("resolveBatchConfig tenant scoping", () => {
+  it("derives keyRoot and vectorize namespace from a tenant selection", () => {
+    const tenantId = "usr_550e8400-e29b-41d4-a716-446655440000";
+    const cfg = resolveBatchConfig(
+      {
+        tenant: { kind: "tenant", tenantId, keyRoot: `u/${tenantId}/`, namespace: tenantId },
+      },
+      { vars: full },
+    );
+    expect(cfg.keyRoot).toBe(`u/${tenantId}/`);
+    expect(cfg.vectorize.namespace).toBe(tenantId);
+  });
+
+  it("keeps the global selection un-rooted and un-namespaced", () => {
+    const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: full });
+    expect(cfg.keyRoot).toBe("");
+    expect(cfg.vectorize).not.toHaveProperty("namespace");
   });
 });

@@ -39,6 +39,28 @@ async function tempPath() {
 }
 
 describe("batch sidecar I/O", () => {
+  it("round-trips the tenant selector stamp (s1k.4.3 resume pinning)", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const sidecar = {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_1",
+        model: "m",
+        processingStatus: "in_progress",
+        resultsUrl: null,
+        targets: [target],
+        tenant: "usr_550e8400-e29b-41d4-a716-446655440000",
+      } as Sidecar;
+      await saveSidecar(path, sidecar);
+      const loaded = await loadSidecar(path);
+      expect(loaded?.tenant).toBe("usr_550e8400-e29b-41d4-a716-446655440000");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("saves through a valid persisted sidecar and loads it back", async () => {
     const { dir, path } = await tempPath();
     try {
