@@ -21,7 +21,6 @@
     "import-markdown": "tsx scripts/import-markdown.ts",
     "reddit-import": "tsx scripts/reddit-import.ts",
     "youtube-import": "tsx scripts/youtube-import.ts",
-    "corpus-recover": "tsx scripts/corpus-recover.ts",
     "corpus-ingest": "tsx scripts/corpus-ingest.ts",
     "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
     "corpus-drop": "tsx scripts/corpus-drop.ts",

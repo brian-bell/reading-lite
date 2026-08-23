@@ -156,7 +156,7 @@ and a failed one preserves the ready manifest with
 | Script | What it does |
 |---|---|
 | `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
-| `npm run corpus-recover` | acts on an audit: reprocess or re-extract per a per-reason policy table |
+| `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
 | `npm run corpus-drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run corpus-sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run corpus-backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
@@ -179,13 +179,13 @@ npm run corpus-rebuild-list -- --bucket reading-lite --execute --sole-writer
 Deploy the new Worker **before** the production rewrite. An old Worker that
 later commits a terminal manifest would strip the new fields off that row.
 
-`corpus-recover` has two execution paths: `--wave` paces realtime submissions
-through `POST /api/readings/:id/reprocess`, and `--batch` routes the same work
-through the offline provider Batch API path described below.
+`ops corpus recover` has two execution paths: `--wave` paces realtime
+submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
+same work through the offline provider Batch API path described below.
 
 ```sh
 npm run ops -- corpus audit --execute      # writes index.json + INDEX.md
-npm run corpus-recover -- --index ./index.json --execute
+npm run ops -- corpus recover --index ./index.json --execute
 ```
 
 ### The extract-agent
@@ -272,7 +272,7 @@ pass `--email` to request notifications.
 
 `import-markdown` summarizes every file **realtime** through the Worker queue.
 For large backfills, `corpus-ingest` runs the same directory through the
-configured provider's **Batch API**, and `corpus-recover --batch` does the same
+configured provider's **Batch API**, and `ops corpus recover --batch` does the same
 for readings already in the corpus. Both talk to R2 and Vectorize directly with
 `CORPUS_R2_*` credentials rather than through the HTTP API, and both need
 `CORPUS_CF_API_TOKEN` plus `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is
@@ -297,7 +297,7 @@ paths omit the realtime attempt-log fields (`last_attempt` and the per-attempt
 objects under the key prefix).
 
 **`--sole-writer` is enforced, not assumed.** `corpus-ingest --execute` and
-`corpus-recover --batch --execute` refuse to submit without it. Both batch paths
+`ops corpus recover --batch --execute` refuse to submit without it. Both batch paths
 eagerly claim by-url slots (recover via a failed→pending flip that keeps its
 claim on failure, so the URL stays re-submittable), but that claim is
 defense-in-depth rather than a replacement for pausing the realtime writer. An
@@ -318,7 +318,7 @@ legacy failed ingest with a by-id pointer and list row but no by-url pointer is
 re-ingested in place instead of duplicated. Pending owners are skipped even past
 `PENDING_TTL_SECONDS`: this offline path cannot safely supersede a queue worker
 that may still be running, so a stranded pending is left to heal via the
-realtime API or `corpus-recover`.
+realtime API or `ops corpus recover`.
 
 **Sizing.** Before any fresh eager activation write, the batch path preflights
 the provider payload, resolves similar-reading context, then validates the final
