@@ -52,7 +52,14 @@ themselves — read those before changing a module.
   — upstream-integration seams.
 - `src/schemas/` — zod API + manifest contracts; `web/src/types.ts`
   hand-mirrors them.
-- `scripts/` — operator CLIs (deploys, staging lifecycle, corpus tools).
+- `scripts/ops.ts` + `scripts/ops-lib/` — the unified plan-first operator CLI:
+  typed registry, dispatcher with shared exit semantics (0 ok / 2 usage / 1
+  operational), native `run(argv, deps)` command modules under
+  `ops-lib/commands/`, and `ops-lib/policy-contract.ts` (the tested extension
+  contract for the future system-policy command, reading-lite-s1k.9.4).
+  `test/unit/scripts/ops-registry-coverage.test.ts` fails when a supported
+  workflow lacks a native command, safety classification, or help path.
+- `scripts/*-lib/` — shared logic behind the CLI commands.
   `scripts/corpus-lib/batch/` is the offline provider Batch API pipeline:
   `run.ts`'s header documents the shared phase ordering; the recover front-end
   is `prepare.ts`/`extract-phase.ts`/`activation-phase.ts`, the fresh-markdown

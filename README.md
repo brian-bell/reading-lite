@@ -182,8 +182,8 @@ The SPA carries its own hand-typed `web/src/types.ts` mirroring
 ## Ingesting readings
 
 Beyond the API and the SPA form, several node-side tools ingest in bulk. All are
-documented in [`docs/operations.md`](docs/operations.md#bulk-ingest); all are
-dry-run-friendly and resume from a local index.
+documented in [`docs/operations.md`](docs/operations.md#bulk-ingest); all plan
+by default (omit `--execute` to preview) and resume from a local index.
 
 ```sh
 npm run ops -- reading submit <url> --execute          # POST a single URL

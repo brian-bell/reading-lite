@@ -1,54 +1,162 @@
-// Registry coverage: every supported corpus workflow must have exactly one
-// native route under `ops corpus` with a safety classification and help, and
-// no retired top-level entry point may linger as an alternate interface.
-// Adding a corpus workflow means adding it to SUPPORTED_CORPUS_WORKFLOWS and
-// registering its command — this test fails when either side is missing.
+// Registry completeness: every supported operator workflow must have exactly
+// one native route with a safety classification, a working help path, and the
+// shared exit contract — and no retired interface may linger. Adding or
+// removing a workflow means updating SUPPORTED_WORKFLOWS alongside the
+// registry; this test fails when either side drifts.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { runCli } from "../../../scripts/ops-lib/cli";
+import type { CommandIo } from "../../../scripts/ops-lib/contract";
 import { defaultRegistry } from "../../../scripts/ops-lib/registry";
+import {
+  assertPolicyCommandContract,
+  policyContractViolations,
+} from "../../../scripts/ops-lib/policy-contract";
 
-const SUPPORTED_CORPUS_WORKFLOWS = [
-  "audit",
-  "recover",
-  "ingest",
-  "drop",
-  "sweep",
-  "delete-orphans",
-  "backfill-similarity",
-  "backfill-vectors",
-  "normalize-tags",
-  "rebuild-list",
-];
+// group -> commands. The complete supported operator surface.
+const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
+  corpus: [
+    "audit",
+    "recover",
+    "ingest",
+    "drop",
+    "sweep",
+    "delete-orphans",
+    "backfill-similarity",
+    "backfill-vectors",
+    "normalize-tags",
+    "rebuild-list",
+  ],
+  reading: ["submit"],
+  import: ["markdown", "bookmarks", "reddit", "youtube"],
+  "reading-list": ["check", "process"],
+  deploy: ["worker", "web"],
+  staging: ["setup", "teardown", "smoke"],
+  founder: ["bootstrap"],
+  extract: ["agent", "probe"],
+  eval: ["summarizer"],
+};
 
 const repoRoot = path.resolve(__dirname, "../../..");
 
-describe("ops registry coverage — corpus group", () => {
-  it("registers every supported corpus workflow with a safety classification", () => {
-    for (const name of SUPPORTED_CORPUS_WORKFLOWS) {
-      const cmd = defaultRegistry.commands.find((c) => c.group === "corpus" && c.name === name);
-      expect(cmd, `missing native command: corpus ${name}`).toBeDefined();
-      expect(["read-only", "plan-first"]).toContain(cmd!.safety);
-      expect(cmd!.helpText.length).toBeGreaterThan(0);
-      expect(cmd!.summary.length).toBeGreaterThan(0);
+function captureIo(): { io: CommandIo; out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  return { io: { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, out, err };
+}
+
+describe("ops registry completeness", () => {
+  it("registers exactly the supported workflows, each with a safety classification", () => {
+    const expected = Object.entries(SUPPORTED_WORKFLOWS)
+      .flatMap(([group, names]) => names.map((name) => `${group} ${name}`))
+      .sort();
+    const registered = defaultRegistry.commands.map((c) => `${c.group} ${c.name}`).sort();
+    expect(registered).toEqual(expected);
+    for (const cmd of defaultRegistry.commands) {
+      expect(["read-only", "plan-first"]).toContain(cmd.safety);
+      expect(cmd.summary.length).toBeGreaterThan(0);
+      expect(cmd.helpText.length).toBeGreaterThan(0);
     }
   });
 
-  it("registers no corpus command outside the supported list", () => {
-    const registered = defaultRegistry.commands.filter((c) => c.group === "corpus").map((c) => c.name);
-    expect(registered.sort()).toEqual([...SUPPORTED_CORPUS_WORKFLOWS].sort());
+  it("has a group entry for every command and no empty groups", () => {
+    const groupNames = defaultRegistry.groups.map((g) => g.name);
+    expect(new Set(groupNames).size).toBe(groupNames.length);
+    expect(groupNames.sort()).toEqual(Object.keys(SUPPORTED_WORKFLOWS).sort());
+    for (const group of defaultRegistry.groups) {
+      expect(defaultRegistry.commands.some((c) => c.group === group.name)).toBe(true);
+    }
   });
 
-  it("leaves no corpus package alias behind", async () => {
+  it("serves root, group, and command help for every registered command (exit 0)", async () => {
+    const root = captureIo();
+    expect(await runCli(["--help"], { io: root.io })).toBe(0);
+    for (const group of defaultRegistry.groups) {
+      const g = captureIo();
+      expect(await runCli([group.name, "--help"], { io: g.io })).toBe(0);
+      expect(g.out.join("\n")).toContain(group.name);
+    }
+    for (const cmd of defaultRegistry.commands) {
+      const c = captureIo();
+      expect(await runCli([cmd.group, cmd.name, "--help"], { io: c.io }), `${cmd.group} ${cmd.name} --help`).toBe(0);
+      const text = c.out.join("\n");
+      expect(text).toContain(cmd.summary);
+      // Root help lists the command with its safety label.
+      expect(root.out.join("\n")).toContain(cmd.name);
+    }
+  });
+
+  it("keeps the shared exit contract: unknown targets exit 2, read-only rejects --execute", async () => {
+    const unknownGroup = captureIo();
+    expect(await runCli(["nope"], { io: unknownGroup.io })).toBe(2);
+    const unknownCommand = captureIo();
+    expect(await runCli(["corpus", "nope"], { io: unknownCommand.io })).toBe(2);
+    for (const cmd of defaultRegistry.commands.filter((c) => c.safety === "read-only")) {
+      const { io } = captureIo();
+      expect(await runCli([cmd.group, cmd.name, "--execute"], { io }), `${cmd.group} ${cmd.name}`).toBe(2);
+    }
+  });
+
+  it("exposes ops as the only operator entry point in package.json", async () => {
     const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
-    const corpusAliases = Object.keys(pkg.scripts).filter((s) => s.startsWith("corpus-"));
-    expect(corpusAliases).toEqual([]);
+    const DEV_SCRIPTS = new Set(["dev", "dev:setup", "typecheck", "test", "test:quiet", "test:watch"]);
+    const operatorScripts = Object.keys(pkg.scripts).filter((s) => !DEV_SCRIPTS.has(s));
+    expect(operatorScripts).toEqual(["ops"]);
   });
 
-  it("leaves no top-level corpus entry-point script behind", async () => {
+  it("leaves no retired top-level operator entry point or Make wrapper behind", async () => {
     const entries = await fs.readdir(path.join(repoRoot, "scripts"));
-    const corpusScripts = entries.filter((e) => /^corpus-.*\.ts$/.test(e));
-    expect(corpusScripts).toEqual([]);
+    // Development-infrastructure scripts, not operator workflows.
+    const allowed = new Set(["ops.ts", "dev-setup.ts", "cloud-agent-install.ts", "test-quiet.mjs",
+      "control-plane-env.ts", "staging-env.ts"]);
+    const strays = entries.filter((e) => /\.(ts|mjs|js)$/.test(e) && !allowed.has(e));
+    expect(strays).toEqual([]);
+    await expect(fs.stat(path.join(repoRoot, "Makefile"))).rejects.toThrow();
+  });
+});
+
+describe("policy command extension contract (reading-lite-s1k.9.4)", () => {
+  const conforming = {
+    group: "system",
+    name: "policy",
+    summary: "stub",
+    safety: "plan-first" as const,
+    helpText: `Usage: npm run ops -- system policy --env staging|production [options]
+
+Plans by default; --execute applies. Idempotent: re-running the same execute
+converges to the same policy state. Tokens and secrets are never printed.
+
+Options:
+  --env <name>                     Explicit target environment (required).
+  --confirm-production             Required with --execute --env production.
+  --acknowledge-guard-version <n>  Assert the guard version this invocation
+                                   was written against.
+  --execute                        Apply the policy change.`,
+    defaultDeps: (io: never) => ({ io }),
+    run: async () => 0,
+  };
+
+  it("accepts a conforming plan-first policy command", () => {
+    expect(() => assertPolicyCommandContract(conforming as never)).not.toThrow();
+  });
+
+  it("rejects a command missing any required acknowledgement", () => {
+    const stripped = { ...conforming, helpText: "Usage: npm run ops -- system policy" };
+    const violations = policyContractViolations(stripped as never);
+    const requirements = violations.map((v) => v.requirement).sort();
+    expect(requirements).toEqual([
+      "explicit environment",
+      "guard version acknowledgement",
+      "idempotency",
+      "production confirmation",
+      "redaction",
+    ]);
+  });
+
+  it("rejects a non-plan-first policy command", () => {
+    const readOnly = { ...conforming, safety: "read-only" as const };
+    expect(policyContractViolations(readOnly as never).map((v) => v.requirement)).toContain("plan-first");
   });
 });
