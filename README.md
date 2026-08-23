@@ -186,9 +186,9 @@ documented in [`docs/operations.md`](docs/operations.md#bulk-ingest); all are
 dry-run-friendly and resume from a local index.
 
 ```sh
-npm run read -- <url>                                  # POST a single URL
+npm run ops -- reading submit <url> --execute          # POST a single URL
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
-npm run import-markdown  -- --dir ~/Documents/articles
+npm run ops -- import markdown --dir ~/Documents/articles --execute
 npm run corpus-ingest    -- --dir ~/Documents/articles  # provider Batch API
 ```
 
@@ -230,7 +230,6 @@ scripts/                        # operator CLIs — all dry-run by default
   deploy.ts, deploy-web.ts      # wrangler / Pages deploy wrappers
   founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
-  read-url.ts                   # POST a single URL
   corpus-ingest.ts              # bulk-ingest a fresh .md dir via a provider Batch API
   corpus-drop.ts                # remove readings by URL or id
   corpus-sweep.ts               # reconcile duplicate copies of one resource
@@ -240,7 +239,6 @@ scripts/                        # operator CLIs — all dry-run by default
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
   reddit-import.ts, youtube-import.ts                     # source-specific local extraction
   import-bookmarks.ts           # Chrome export → POST /api/readings
-  import-markdown.ts            # local .md → import-markdown
   check-corpus.ts               # mark a reading-list export against the corpus
   process-reading-list.ts       # submit unprocessed reading-list entries
   summarizer-eval.ts            # compare summarizer providers / effort levels
