@@ -157,6 +157,19 @@ export function policyRefusalProbes(
       requirement: "guard version acknowledgement (malformed)",
       argv: [...base, "--execute", "--env", "staging", "--acknowledge-guard-version", "not-a-version"],
     },
+    {
+      requirement: "guard version acknowledgement (confirmed production, missing)",
+      // Guard-version enforcement must hold for production too: a confirmed
+      // production execute with no acknowledgement is still refused.
+      argv: [...base, "--execute", "--env", "production", "--confirm-production"],
+    },
+    {
+      requirement: "guard version acknowledgement (confirmed production, stale)",
+      argv: [
+        ...base, "--execute", "--env", "production", "--confirm-production",
+        "--acknowledge-guard-version", stale,
+      ],
+    },
   ];
 }
 
