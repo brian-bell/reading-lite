@@ -139,7 +139,7 @@ Options:
                                    was written against.
   --execute                        Apply the policy change.`,
     defaultDeps: (io: never) => ({ io }),
-    run: async (argv: string[]) => {
+    run: async (argv: string[], deps: { currentGuardVersion: number }) => {
       const flag = (name: string) => argv.includes(name);
       const value = (name: string) => {
         const i = argv.indexOf(name);
@@ -151,17 +151,24 @@ Options:
         if (env === "production" && !flag("--confirm-production")) {
           throw new UsageError("--confirm-production is required for production");
         }
-        if (!value("--acknowledge-guard-version")) {
-          throw new UsageError("--acknowledge-guard-version is required");
+        const acknowledged = value("--acknowledge-guard-version");
+        if (!acknowledged) throw new UsageError("--acknowledge-guard-version is required");
+        if (Number(acknowledged) !== deps.currentGuardVersion) {
+          throw new UsageError(
+            `guard version ${acknowledged} is stale (current: ${deps.currentGuardVersion})`,
+          );
         }
       }
       return 0;
     },
   };
 
-  // Side-effect seams must never be reached by a refusal probe.
+  const GUARD_VERSION = { currentGuardVersion: 3 };
+
+  // Write seams must never be reached by any probe; reads the contract allows
+  // (io, the current guard version) are provided.
   const inertDeps = new Proxy(
-    { io: { stdout: () => {}, stderr: () => {} } },
+    { io: { stdout: () => {}, stderr: () => {} }, currentGuardVersion: 3 },
     {
       get(target, prop) {
         if (prop in target) return (target as Record<string | symbol, unknown>)[prop];
@@ -172,7 +179,9 @@ Options:
 
   it("accepts a conforming plan-first policy command, documentation and behavior", async () => {
     expect(() => assertPolicyCommandContract(conforming as never)).not.toThrow();
-    await expect(assertPolicyCommandBehavior(conforming as never, inertDeps)).resolves.toBeUndefined();
+    await expect(
+      assertPolicyCommandBehavior(conforming as never, inertDeps, GUARD_VERSION),
+    ).resolves.toBeUndefined();
   });
 
   it("rejects a command missing any required acknowledgement", () => {
@@ -197,9 +206,44 @@ Options:
     // Documented perfectly, enforces nothing — exactly the false assurance the
     // behavioral half exists to reject.
     const documentedOnly = { ...conforming, run: async () => 0 };
-    await expect(assertPolicyCommandBehavior(documentedOnly as never, inertDeps)).rejects.toThrow(
-      /did not refuse/,
-    );
+    await expect(
+      assertPolicyCommandBehavior(documentedOnly as never, inertDeps, GUARD_VERSION),
+    ).rejects.toThrow(/did not refuse/);
+  });
+
+  it("behavioral probes catch a command that mutates when --execute is absent", async () => {
+    const actsInPlanMode = {
+      ...conforming,
+      run: async (argv: string[], deps: { applyPolicy: () => void }) => {
+        if (!argv.includes("--execute")) deps.applyPolicy();
+        return 0;
+      },
+    };
+    await expect(
+      assertPolicyCommandBehavior(actsInPlanMode as never, inertDeps, GUARD_VERSION),
+    ).rejects.toThrow(/plan-first.*side-effect seam/s);
+  });
+
+  it("behavioral probes catch a command that accepts a stale guard version", async () => {
+    const presenceOnly = {
+      ...conforming,
+      run: async (argv: string[]) => {
+        if (argv.includes("--execute")) {
+          if (!argv.includes("--env")) throw new UsageError("--env is required");
+          if (argv.includes("production") && !argv.includes("--confirm-production")) {
+            throw new UsageError("--confirm-production required");
+          }
+          if (!argv.includes("--acknowledge-guard-version")) {
+            throw new UsageError("--acknowledge-guard-version required");
+          }
+          // Never compares the acknowledged version — the gap under test.
+        }
+        return 0;
+      },
+    };
+    await expect(
+      assertPolicyCommandBehavior(presenceOnly as never, inertDeps, GUARD_VERSION),
+    ).rejects.toThrow(/guard version acknowledgement \(stale\)/);
   });
 
   it("behavioral probes fail a command that reaches a side-effect seam before validating", async () => {
@@ -212,17 +256,17 @@ Options:
         return 0;
       },
     };
-    await expect(assertPolicyCommandBehavior(writesFirst as never, inertDeps)).rejects.toThrow(
-      /non-usage error.*side-effect seam/,
-    );
+    await expect(
+      assertPolicyCommandBehavior(writesFirst as never, inertDeps, GUARD_VERSION),
+    ).rejects.toThrow(/non-usage error.*side-effect seam/);
   });
 
   it("applies both halves to the registered policy command once it exists", async () => {
     const registered = defaultRegistry.commands.find(
-      (c) => c.name === "policy" || c.group === "system",
+      (c) => c.group === "system" && c.name === "policy",
     );
     if (!registered) return; // s1k.9.4 has not landed yet — nothing to check.
     assertPolicyCommandContract(registered);
-    await assertPolicyCommandBehavior(registered, inertDeps);
+    await assertPolicyCommandBehavior(registered, inertDeps, GUARD_VERSION);
   });
 });

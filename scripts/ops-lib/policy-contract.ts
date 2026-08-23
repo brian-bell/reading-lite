@@ -80,34 +80,70 @@ export function assertPolicyCommandContract(command: AnyCommand): void {
 }
 
 // Behavioral probes: documentation alone is not the contract — the command's
-// run seam must actually refuse each unsafe invocation. Every probe is an
-// invocation a conforming policy command MUST reject as usage (throw
-// UsageError or return 2) before any injected side-effect seam runs, so these
-// are checkable without implementing any policy behavior. The caller supplies
-// deps whose side-effect seams throw (or record) so a probe that reaches one
-// fails loudly.
-export const POLICY_REFUSAL_PROBES: { requirement: string; argv: string[] }[] = [
-  {
-    requirement: "explicit environment",
-    // An execute with no --env must be refused, never defaulted.
-    argv: ["--execute", "--acknowledge-guard-version", "1"],
-  },
-  {
-    requirement: "production confirmation",
-    argv: ["--execute", "--env", "production", "--acknowledge-guard-version", "1"],
-  },
-  {
-    requirement: "guard version acknowledgement",
-    argv: ["--execute", "--env", "staging"],
-  },
-];
+// run seam must actually behave. The caller supplies deps whose WRITE seams
+// throw (read seams may work — a plan is allowed to read); any probe that
+// reaches a write seam fails loudly. The deps must also carry the current
+// guard version (`currentGuardVersion`) so the stale-acknowledgement probe is
+// checkable: the s1k.9.4 command is expected to resolve the live guard
+// version through its deps and compare. All of this is checkable without
+// implementing any policy behavior.
+export interface PolicyBehaviorOptions {
+  // The guard version the injected deps present as current. The stale probe
+  // acknowledges (currentGuardVersion - 1) and must be refused.
+  currentGuardVersion: number;
+}
+
+export function policyRefusalProbes(
+  opts: PolicyBehaviorOptions,
+): { requirement: string; argv: string[] }[] {
+  const current = String(opts.currentGuardVersion);
+  const stale = String(opts.currentGuardVersion - 1);
+  return [
+    {
+      requirement: "explicit environment",
+      // An execute with no --env must be refused, never defaulted.
+      argv: ["--execute", "--acknowledge-guard-version", current],
+    },
+    {
+      requirement: "production confirmation",
+      argv: ["--execute", "--env", "production", "--acknowledge-guard-version", current],
+    },
+    {
+      requirement: "guard version acknowledgement",
+      argv: ["--execute", "--env", "staging"],
+    },
+    {
+      requirement: "guard version acknowledgement (stale)",
+      // Presence is not enough: acknowledging an outdated guard version must
+      // be refused, or stale automation could flip a newer policy.
+      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", stale],
+    },
+  ];
+}
 
 export async function assertPolicyCommandBehavior(
   command: AnyCommand,
   deps: unknown,
+  opts: PolicyBehaviorOptions,
 ): Promise<void> {
   const failures: string[] = [];
-  for (const probe of POLICY_REFUSAL_PROBES) {
+
+  // Plan-first: a mode-less invocation must succeed as a pure plan — exit 0
+  // and no write seam reached (the caller's write seams throw, and any
+  // non-usage throw is recorded as a failure here).
+  try {
+    const code = await command.run(["--env", "staging"], deps as never);
+    if (code !== 0) {
+      failures.push(`plan-first: mode-less invocation returned ${code} instead of a successful plan`);
+    }
+  } catch (e) {
+    failures.push(
+      `plan-first: mode-less invocation threw (${e instanceof Error ? e.message : String(e)}) — ` +
+        "a plan must succeed without reaching any write seam",
+    );
+  }
+
+  for (const probe of policyRefusalProbes(opts)) {
     let refused = false;
     let failure: string | undefined;
     try {
@@ -116,8 +152,8 @@ export async function assertPolicyCommandBehavior(
       if (!refused) failure = `returned ${code} instead of refusing`;
     } catch (e) {
       // Only the usage-refusal type counts. Any other throw — including the
-      // caller's side-effect seams firing — means the command reached work it
-      // must never reach on this invocation, and the probe fails loudly.
+      // caller's write seams firing — means the command reached work it must
+      // never reach on this invocation, and the probe fails loudly.
       if (e instanceof UsageError) {
         refused = true;
       } else {
