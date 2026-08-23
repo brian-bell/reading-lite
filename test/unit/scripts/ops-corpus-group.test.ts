@@ -171,6 +171,22 @@ describe("ops corpus sweep", () => {
     );
   });
 
+  it("probes vector existence under the selected tenant namespace", async () => {
+    const { deps } = makeDeps(DUP_ITEMS);
+    const probes: Array<string | undefined> = [];
+    deps.r2.vectorExists = async (_index, _id, namespace) => {
+      probes.push(namespace);
+      return true;
+    };
+    const code = await corpusSweepCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(probes.length).toBeGreaterThan(0);
+    expect(new Set(probes)).toEqual(new Set(["usr_11111111-1111-4111-8111-111111111111"]));
+  });
+
   it("--drop requires exactly one --keep and no other selectors", async () => {
     const { deps } = makeDeps(DUP_ITEMS);
     await expect(corpusSweepCommand.run(["--tenant", "global", "--drop", "rd_dup"], deps)).rejects.toThrow(UsageError);
@@ -231,6 +247,19 @@ describe("ops corpus delete-orphans", () => {
       corpusDeleteOrphansCommand.run(["--ids", "rd_orphan", "--execute"], deps),
     ).rejects.toThrow(/--tenant is required/);
     expect(calls.deletes).toHaveLength(0);
+  });
+
+  it("refuses an audit taken under a different tenant", async () => {
+    const { deps, calls, lines } = makeDeps();
+    deps.readFile = async () =>
+      JSON.stringify({ tenant: "usr_11111111-1111-4111-8111-111111111111", rows: [] });
+    const code = await corpusDeleteOrphansCommand.run(
+      ["--tenant", "global", "--index", "index.json", "--execute"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(calls.deletes).toHaveLength(0);
+    expect(lines.join("\n")).toContain("was taken under tenant");
   });
 
   it("refuses a ready id", async () => {

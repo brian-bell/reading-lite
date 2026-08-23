@@ -23,7 +23,7 @@ export interface CorpusSweepR2 {
   keysForReading: (id: string, prefix: string, url: string, deps: R2Deps) => Promise<string[]>;
   deleteObject: (key: string, deps: R2Deps) => Promise<"deleted" | "absent" | "error">;
   deleteVector: (index: string, id: string) => Promise<"deleted" | "error">;
-  vectorExists: (index: string, id: string) => Promise<boolean>;
+  vectorExists: (index: string, id: string, namespace?: string) => Promise<boolean>;
   writeListIndex: (items: unknown[], deps: R2Deps) => Promise<void>;
 }
 
@@ -162,7 +162,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     if (!opts.remote) {
       io.stdout(`    skipping vector (--local: Vectorize has no local store)`);
     } else {
-      hasVector = await r2.vectorExists(vectorizeIndex, t.id);
+      hasVector = await r2.vectorExists(vectorizeIndex, t.id, tenant.namespace);
       if (hasVector) vectoredDrops.push({ id: t.id, created_at: t.created_at });
       else io.stdout(`    no vector indexed for ${t.id}`);
     }
@@ -322,7 +322,8 @@ Options:
         (await import("../../corpus-lib/wrangler-r2")).keysForReading(id, prefix, url, d),
       deleteObject: async (key, d) => (await import("../../corpus-lib/wrangler-r2")).deleteObject(key, d),
       deleteVector: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).deleteVector(index, id),
-      vectorExists: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id),
+      vectorExists: async (index, id, namespace) =>
+        (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id, { namespace }),
       writeListIndex: async (items, d) =>
         (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
     },

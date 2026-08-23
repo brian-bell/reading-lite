@@ -108,6 +108,18 @@ async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansD
       return 1;
     }
     label = "orphan-dup readings";
+    // Audit provenance (s1k.4.3): same guard as corpus recover — deletion
+    // targets must come from an audit taken under the SAME tenant selector,
+    // else tenant A's rows would name paths to delete inside tenant B.
+    // Legacy audits (no stamp) are global.
+    const auditTenant = (parsed.tenant as string | undefined) ?? "global";
+    if (auditTenant !== operatorTenantSelector(tenant)) {
+      io.stderr(
+        `audit ${opts.indexPath} was taken under tenant '${auditTenant}' but --tenant is '${operatorTenantSelector(tenant)}'; ` +
+          "re-run corpus audit under the selected tenant.",
+      );
+      return 1;
+    }
     targets = (parsed.rows ?? [])
       .filter((r: any) => r.category === "pending" && r.class === "orphan-dup")
       .map((r: any) => ({ id: r.reading_id, prefix: r.key_prefix, url: r.url }));
