@@ -230,8 +230,6 @@ scripts/                        # operator tooling — plan-first, --execute to 
                                 #   deploy, staging, founder, corpus, reading,
                                 #   import, and reading-list groups
   dev-setup.ts                  # local npm run dev bootstrap
-  extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
-  summarizer-eval.ts            # compare summarizer providers / effort levels
   corpus-lib/, lib/, *-lib/     # shared logic behind the CLIs above;
                                 #   corpus-lib/batch/ is the provider Batch API pipeline
 test/
