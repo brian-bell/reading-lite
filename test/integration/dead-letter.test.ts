@@ -4,7 +4,7 @@ import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-rea
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
 import { manifestToIndexItem } from "../../src/modules/stores/reading-store";
-import { founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
+import { FOUNDER_TENANT_ID, founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
 
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
@@ -85,6 +85,60 @@ describe("markDeadLettered", () => {
 
     // Failed readings must stay re-submittable: no by-url pointer.
     expect(await reader.readByUrlPointer("d".repeat(64))).toBeNull();
+  });
+
+  it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {
+    const reader = testReadingStore(env);
+
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+
+    // No manifest, no list row: a confirmed-absent manifest means this tenant
+    // never owned the reading the job describes (mismatched envelope, or a
+    // reading deleted while the message sat in the retry pipeline).
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(READING_ID)).toBeNull();
+  });
+
+  it("still marks when the manifest read fails transiently — an error is not confirmed absence", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+
+    // The manifest exists, but the ownership-guard read hits a one-off R2
+    // error. The DLQ message is acked either way, so treating the error as
+    // absence would silently strand the reading; the mark must fall through
+    // and still land.
+    const manifestKey = `u/${FOUNDER_TENANT_ID}/${KEY_PREFIX}/manifest.json`;
+    const bucket = env.READINGS_BUCKET;
+    let threw = false;
+    const flaky = {
+      get: async (key: string, opts?: unknown) => {
+        if (key === manifestKey && !threw) {
+          threw = true;
+          throw new Error("transient R2 read failure");
+        }
+        return bucket.get(key, opts as never);
+      },
+      put: bucket.put.bind(bucket),
+      delete: bucket.delete.bind(bucket),
+      head: bucket.head.bind(bucket),
+      list: bucket.list.bind(bucket),
+    } as unknown as R2Bucket;
+
+    await markDeadLettered(
+      args(),
+      { ...(env as unknown as Env), READINGS_BUCKET: flaky },
+      services(),
+      founderTenant(),
+    );
+
+    expect(threw).toBe(true);
+    const after = await reader.readManifest(KEY_PREFIX);
+    expect(after?.status).toBe("failed");
+    expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
+    const item = await reader.findListIndexItem(READING_ID);
+    expect(item?.status).toBe("failed");
   });
 
   it("rolls back to the preserved ready snapshot when a reprocess of a ready reading is dead-lettered", async () => {

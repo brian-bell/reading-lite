@@ -305,7 +305,8 @@ export class QueueRetriesExhaustedError extends Error {
 // Convert a dead-lettered message into a visible, retryable `failed` manifest.
 // Reuses markFailed so a reprocess of a previously-`ready` reading rolls back to
 // its preserved snapshot rather than nuking good data, and the list index stays
-// in sync. Best-effort: any read here is tolerated as absent.
+// in sync. The mark requires the manifest to exist in the admitted tenant's
+// namespace and the attempt to still be active — see the guards below.
 export async function markDeadLettered(
   args: ProcessReadingArgs,
   env: Env,
@@ -313,7 +314,29 @@ export async function markDeadLettered(
   tenant: TenantContext,
 ): Promise<void> {
   const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  const existing = await reader.readManifest(args.keyPrefix).catch(() => null);
+  // Only a read that successfully resolves to null is evidence of absence. A
+  // throwing read (R2 error, corrupt JSON, schema drift) is an object that may
+  // well exist — the DLQ message is acked either way, so skipping on a failed
+  // read would silently strand the reading; fall through and mark, as the
+  // pre-guard behavior did.
+  let existing: Manifest | null = null;
+  let confirmedAbsent = false;
+  try {
+    existing = await reader.readManifest(args.keyPrefix);
+    confirmedAbsent = existing === null;
+  } catch (e) {
+    console.error(e);
+  }
+
+  // A manifest absent from the admitted tenant's namespace means this tenant
+  // never owned the reading the job describes: activation always writes the
+  // pending manifest before enqueueing, so absence signals a mismatched
+  // envelope or a reading an operator has since deleted. Writing a marker here
+  // would materialize envelope-controlled metadata as a visible row in the
+  // tenant's list (or resurrect deleted data), so the mark requires the
+  // manifest to exist. A URL stranded this way stays recoverable: its damaged
+  // by-url pointer is repaired by the next submit/import.
+  if (confirmedAbsent) return;
 
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
@@ -321,8 +344,7 @@ export async function markDeadLettered(
   // it back to `ready`), this dead-lettered message is stale: marking it failed
   // — and especially rolling back to its preserveReadyManifest snapshot — would
   // clobber the newer attempt's data. Only act if we still own the active
-  // attempt. (A missing manifest still gets a failed marker so the strand stays
-  // visible.)
+  // attempt.
   //
   // This narrows, but doesn't fully close, the window: a brand-new reprocess
   // landing between this read and markFailed's write would still be clobbered.
@@ -331,6 +353,7 @@ export async function markDeadLettered(
   // re-submittable through its existing by-url ownership claim.
   // Strict active-only ownership: a newer attempt taking over (active flipped to
   // a different id) means this DLQ message is stale and must not clobber it.
+  // (null here is the read-error path, where ownership cannot be judged.)
   if (existing && !attemptOwnership(existing, args).isActive) return;
 
   const attempt = newProcessingAttempt(args, services);

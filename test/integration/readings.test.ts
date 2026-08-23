@@ -6,8 +6,9 @@ import {
   type ProcessReadingEnvelopeV1,
 } from "../../src/control-plane/envelope";
 import { createApp } from "../../src/router";
-import type { Env } from "../../src/index";
+import { handleDeadLetter, type Env } from "../../src/index";
 import {
+  markDeadLettered,
   processReading,
   type ProcessReadingArgs,
 } from "../../src/process-reading";
@@ -21,9 +22,11 @@ import {
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
+  OTHER_TOKEN_ID,
   OTHER_TOKEN_SECRET,
   founderTenant,
   insertSecondTenant,
+  otherTenant,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -5365,6 +5368,60 @@ describe("CORS", () => {
   });
 });
 
+// Shared fixture + assertion helpers for the cross-tenant matrices
+// (s1k.4.1 read paths, s1k.4.2 mutation paths): the founder owns one ready
+// reading at `url`; the second tenant is inserted and owns nothing.
+const UNKNOWN_ID = "rd_0000000000";
+
+async function seedFounderReading(url: string) {
+  await insertSecondTenant(env as unknown as Env);
+  const idCounter = { n: 0 };
+  const services = makeServices(makeStubFetch(), idCounter);
+  const app = createApp({ services });
+  const ctx = createExecutionContext();
+  const submit = await app.fetch(
+    new Request("http://t/api/readings", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ url, email: false }),
+    }),
+    env,
+    ctx,
+  );
+  expect(submit.status).toBe(202);
+  const { id } = (await submit.json()) as { id: string };
+  await drainQueue(services);
+  await waitOnExecutionContext(ctx);
+  return { app, services, idCounter, id };
+}
+
+function apiRequest(
+  app: ReturnType<typeof createApp>,
+  token: string,
+  path: string,
+  init: RequestInit = {},
+) {
+  return app.request(
+    path,
+    { ...init, headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) } },
+    env,
+  );
+}
+
+// The isolation contract, stated as an equality: for the other tenant the
+// cross-tenant request and the unknown-resource request are the same response.
+async function expectSameAsUnknown(
+  app: ReturnType<typeof createApp>,
+  crossPath: string,
+  unknownPath: string,
+  init: RequestInit = {},
+) {
+  const cross = await apiRequest(app, OTHER_TOKEN_SECRET, crossPath, init);
+  const unknown = await apiRequest(app, OTHER_TOKEN_SECRET, unknownPath, init);
+  expect(unknown.status).toBe(404);
+  expect([cross.status, await cross.text()]).toEqual([unknown.status, await unknown.text()]);
+}
+
 // reading-lite-s1k.4.1: the cross-tenant read matrix. Every hosted read path
 // must make another tenant's reading indistinguishable from one that never
 // existed — same status, byte-identical body — while the owner still sees it.
@@ -5374,50 +5431,10 @@ describe("CORS", () => {
 describe("cross-tenant read-path matrix", () => {
   const OWNED_URL = "https://example.com/matrix-owned";
   const NEVER_SUBMITTED_URL = "https://example.com/matrix-never-submitted";
-  const UNKNOWN_ID = "rd_0000000000";
-
-  async function seedFounderReading() {
-    await insertSecondTenant(env as unknown as Env);
-    const idCounter = { n: 0 };
-    const services = makeServices(makeStubFetch(), idCounter);
-    const app = createApp({ services });
-    const ctx = createExecutionContext();
-    const submit = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url: OWNED_URL, email: false }),
-      }),
-      env,
-      ctx,
-    );
-    expect(submit.status).toBe(202);
-    const { id } = (await submit.json()) as { id: string };
-    await drainQueue(services);
-    await waitOnExecutionContext(ctx);
-    return { app, services, idCounter, id };
-  }
-
-  function get(app: ReturnType<typeof createApp>, token: string, path: string) {
-    return app.request(path, { headers: { authorization: `Bearer ${token}` } }, env);
-  }
-
-  // The isolation contract, stated as an equality: for the other tenant the
-  // cross-tenant request and the unknown-resource request are the same response.
-  async function expectSameAsUnknown(
-    app: ReturnType<typeof createApp>,
-    crossPath: string,
-    unknownPath: string,
-  ) {
-    const cross = await get(app, OTHER_TOKEN_SECRET, crossPath);
-    const unknown = await get(app, OTHER_TOKEN_SECRET, unknownPath);
-    expect(unknown.status).toBe(404);
-    expect([cross.status, await cross.text()]).toEqual([unknown.status, await unknown.text()]);
-  }
 
   it("lookup resolves an owned URL for its owner only", async () => {
-    const { app, id } = await seedFounderReading();
-    const owner = await get(app, TOKEN, `/api/readings/lookup?url=${encodeURIComponent(OWNED_URL)}`);
+    const { app, id } = await seedFounderReading(OWNED_URL);
+    const owner = await apiRequest(app, TOKEN, `/api/readings/lookup?url=${encodeURIComponent(OWNED_URL)}`);
     expect(owner.status).toBe(200);
     expect(await owner.json()).toEqual({ id });
     await expectSameAsUnknown(
@@ -5433,8 +5450,8 @@ describe("cross-tenant read-path matrix", () => {
     ["content raw", "/content/raw"],
     ["diagnostics", "/diagnostics"],
   ])("%s answers a cross-tenant id exactly like an unknown id", async (_route, suffix) => {
-    const { app, id } = await seedFounderReading();
-    const owner = await get(app, TOKEN, `/api/readings/${id}${suffix}`);
+    const { app, id } = await seedFounderReading(OWNED_URL);
+    const owner = await apiRequest(app, TOKEN, `/api/readings/${id}${suffix}`);
     expect(owner.status).toBe(200);
     await owner.text();
     await expectSameAsUnknown(
@@ -5445,13 +5462,13 @@ describe("cross-tenant read-path matrix", () => {
   });
 
   it("list and q-search never surface another tenant's readings", async () => {
-    const { app, id } = await seedFounderReading();
+    const { app, id } = await seedFounderReading(OWNED_URL);
     const ownerSearch = (await (
-      await get(app, TOKEN, "/api/readings?q=Test%20Article")
+      await apiRequest(app, TOKEN, "/api/readings?q=Test%20Article")
     ).json()) as { readings: { id: string }[] };
     expect(ownerSearch.readings.map((r) => r.id)).toEqual([id]);
 
-    const otherList = (await (await get(app, OTHER_TOKEN_SECRET, "/api/readings")).json()) as {
+    const otherList = (await (await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")).json()) as {
       readings: unknown[];
       has_more: boolean;
     };
@@ -5459,13 +5476,13 @@ describe("cross-tenant read-path matrix", () => {
     expect(otherList.has_more).toBe(false);
 
     const otherSearch = (await (
-      await get(app, OTHER_TOKEN_SECRET, "/api/readings?q=Test%20Article")
+      await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings?q=Test%20Article")
     ).json()) as { readings: unknown[] };
     expect(otherSearch.readings).toEqual([]);
   });
 
   it("stale-attempt annotation stays tenant-local", async () => {
-    const { app, idCounter } = await seedFounderReading();
+    const { app, idCounter } = await seedFounderReading(OWNED_URL);
     // A second founder submission that is never drained stays pending; jumping
     // the injected clock past PENDING_TTL_SECONDS makes it stale at read time.
     const ctx = createExecutionContext();
@@ -5483,7 +5500,7 @@ describe("cross-tenant read-path matrix", () => {
     await waitOnExecutionContext(ctx);
     idCounter.n += 400; // now() advances 1s per tick; TTL defaults to 300s
 
-    const owner = (await (await get(app, TOKEN, `/api/readings/${staleId}`)).json()) as {
+    const owner = (await (await apiRequest(app, TOKEN, `/api/readings/${staleId}`)).json()) as {
       status: string;
       error?: { code: string };
     };
@@ -5493,5 +5510,236 @@ describe("cross-tenant read-path matrix", () => {
     expect(owner.error?.code).toBe("stale_active_attempt");
 
     await expectSameAsUnknown(app, `/api/readings/${staleId}`, `/api/readings/${UNKNOWN_ID}`);
+  });
+});
+
+// reading-lite-s1k.4.2: the cross-tenant mutation matrix. Hosted mutation and
+// recovery paths must not let one tenant claim, read, or mutate another
+// tenant's ownership slot or artifacts.
+describe("cross-tenant mutation matrix", () => {
+  it("reprocess answers a cross-tenant id like an unknown id and mutates nothing", async () => {
+    const { app, id } = await seedFounderReading("https://example.com/mutation-reprocess");
+    await expectSameAsUnknown(
+      app,
+      `/api/readings/${id}/reprocess`,
+      `/api/readings/${UNKNOWN_ID}/reprocess`,
+      { method: "POST" },
+    );
+    // The cross-tenant attempt changed nothing: the owner's reading is still
+    // ready, and the owner can still activate a reprocess on it.
+    const detail = await apiRequest(app, TOKEN, `/api/readings/${id}`);
+    expect(((await detail.json()) as { status: string }).status).toBe("ready");
+    const owner = await apiRequest(app, TOKEN, `/api/readings/${id}/reprocess`, { method: "POST" });
+    expect(owner.status).toBe(202);
+    await owner.text();
+  });
+
+  it("import-markdown lands in the importer's own slot, never the other owner's", async () => {
+    const url = "https://example.com/mutation-import";
+    const { app, id: founderId } = await seedFounderReading(url);
+    const founderBefore = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${founderId}`)
+    ).json()) as { status: string; updated_at: string };
+    expect(founderBefore.status).toBe("ready");
+
+    // The other tenant imports the same URL: a fresh claim in its own
+    // namespace, not a hit on the founder's existing ownership slot.
+    const imported = await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings/import-markdown", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source_url: url, markdown: "# Other tenant copy" }),
+    });
+    expect(imported.status).toBe(202);
+    const { id: otherId } = (await imported.json()) as { id: string };
+    expect(otherId).not.toBe(founderId);
+
+    // The founder's reading and by-url ownership are untouched.
+    const founderAfter = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${founderId}`)
+    ).json()) as { status: string; updated_at: string };
+    expect(founderAfter).toEqual(founderBefore);
+    const founderLookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(await founderLookup.json()).toEqual({ id: founderId });
+
+    // And the other tenant's own lookup resolves its own copy.
+    const otherLookup = await apiRequest(
+      app,
+      OTHER_TOKEN_SECRET,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(otherLookup.status).toBe(200);
+    expect(await otherLookup.json()).toEqual({ id: otherId });
+  });
+
+  it("activation rollback after a queue failure stays inside the failing tenant", async () => {
+    const url = "https://example.com/mutation-rollback";
+    const { app, id: founderId } = await seedFounderReading(url);
+    const founderBefore = await (
+      await apiRequest(app, TOKEN, `/api/readings/${founderId}`)
+    ).text();
+
+    // The other tenant's submit claims its own slot, then the queue send fails
+    // and the rollback-to-failed funnel runs — entirely in its namespace.
+    installRejectingQueueStub();
+    const submit = await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url, email: false }),
+    });
+    expect(submit.status).toBe(503);
+    const { id: otherId } = (await submit.json()) as { id: string };
+    expect(otherId).toBeDefined();
+    expect(otherId).not.toBe(founderId);
+
+    // The rolled-back failed manifest is visible to its own tenant…
+    const rolled = (await (
+      await apiRequest(app, OTHER_TOKEN_SECRET, `/api/readings/${otherId}`)
+    ).json()) as { status: string };
+    expect(rolled.status).toBe("failed");
+
+    // …and the founder's reading is byte-identical to before the failure.
+    const founderAfter = await (
+      await apiRequest(app, TOKEN, `/api/readings/${founderId}`)
+    ).text();
+    expect(founderAfter).toBe(founderBefore);
+
+    // The founder's by-url ownership slot is intact: the failing tenant's
+    // claim landed in its own namespace, not over the founder's.
+    const founderLookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(await founderLookup.json()).toEqual({ id: founderId });
+
+    // The rolled-back reading is invisible from the founder's side.
+    const founderCross = await apiRequest(app, TOKEN, `/api/readings/${otherId}`);
+    expect(founderCross.status).toBe(404);
+    expect(await founderCross.json()).toEqual({ error: "not found" });
+  });
+
+  it("a dead-lettered job admitted under another tenant cannot mutate the owner's reading", async () => {
+    const url = "https://example.com/mutation-dlq";
+    const { app, services, id } = await seedFounderReading(url);
+    const founderBefore = await (await apiRequest(app, TOKEN, `/api/readings/${id}`)).text();
+
+    // An envelope whose tenant context does not match the job it carries: the
+    // job describes the founder's reading, but the envelope authenticates the
+    // OTHER tenant's token. Drive it through the production dead-letter
+    // boundary — parse, admission against D1, then the mark — wired exactly
+    // like the worker's queue() handler.
+    const founderStore = testReadingStore(env as unknown as Env, founderTenant());
+    const found = await founderStore.loadReadingById(id);
+    expect(found).not.toBeNull();
+    const envelope: ProcessReadingEnvelopeV1 = {
+      version: 1,
+      tenant: { tenantId: otherTenant().tenantId },
+      actor: { kind: "api_token", credentialId: OTHER_TOKEN_ID },
+      job: {
+        id,
+        url,
+        urlHash: await sha256Hex(url),
+        createdAt: found!.manifest.created_at,
+        keyPrefix: found!.keyPrefix,
+        trigger: "reprocess",
+      },
+    };
+    const ack = vi.fn();
+    await handleDeadLetter(
+      { body: envelope, ack, retry: vi.fn() } as unknown as Message<unknown>,
+      {
+        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        nowMs: Date.now(),
+        mark: (body, tenant) => markDeadLettered(body, env as unknown as Env, services, tenant),
+      },
+    );
+    expect(ack).toHaveBeenCalled();
+
+    // The founder's reading, list, and by-url ownership are byte-identical to
+    // before: nothing the admitted tenant did reached the owner's namespace.
+    const founderAfter = await (await apiRequest(app, TOKEN, `/api/readings/${id}`)).text();
+    expect(founderAfter).toBe(founderBefore);
+    const founderList = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
+      readings: { id: string; status: string }[];
+    };
+    expect(founderList.readings.map((r) => [r.id, r.status])).toEqual([[id, "ready"]]);
+    const founderLookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(await founderLookup.json()).toEqual({ id });
+
+    // And the admitted tenant gains nothing either: a DLQ job whose manifest
+    // does not exist in the admitted tenant's namespace was never owned by
+    // that tenant, so the mark must not materialize the envelope's metadata
+    // (the owner's URL and reading id) as a visible row in that tenant's list.
+    const otherList = (await (
+      await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")
+    ).json()) as { readings: unknown[] };
+    expect(otherList.readings).toEqual([]);
+    expect(
+      await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/${found!.keyPrefix}/manifest.json`),
+    ).toBeNull();
+  });
+
+  it("concurrent two-tenant terminal commits keep list CAS and vectors per tenant", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const stub = installVectorizeStub();
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+
+    async function submit(token: string, url: string) {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request("http://t/api/readings", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ url, email: false }),
+        }),
+        env,
+        ctx,
+      );
+      expect(res.status).toBe(202);
+      const { id } = (await res.json()) as { id: string };
+      await waitOnExecutionContext(ctx);
+      return id;
+    }
+
+    const founderId = await submit(TOKEN, "https://example.com/concurrent-founder");
+    const otherId = await submit(OTHER_TOKEN_SECRET, "https://example.com/concurrent-other");
+
+    // Drain the two envelopes CONCURRENTLY: the tenants' terminal commits (list
+    // CAS + vector upsert) interleave, and each must land only in its own
+    // tenant's list.json and namespace.
+    const envelopes = queuedEnvelopes.splice(0);
+    queuedJobs.splice(0);
+    await Promise.all(
+      envelopes.map((envelope) =>
+        consumeProcessReadingMessage(
+          { body: envelope, ack() {} },
+          {
+            db: fromD1((env as unknown as Env).CONTROL_PLANE),
+            nowMs: Date.now(),
+            process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
+          },
+        ),
+      ),
+    );
+
+    const founderList = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
+      readings: { id: string; status: string }[];
+    };
+    const otherList = (await (
+      await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")
+    ).json()) as { readings: { id: string; status: string }[] };
+    expect(founderList.readings.map((r) => [r.id, r.status])).toEqual([[founderId, "ready"]]);
+    expect(otherList.readings.map((r) => [r.id, r.status])).toEqual([[otherId, "ready"]]);
+    expect(stub.vectors.get(founderId)?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(otherId)?.namespace).toBe(OTHER_TENANT_ID);
   });
 });
