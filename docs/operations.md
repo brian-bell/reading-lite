@@ -229,7 +229,7 @@ The default folder is `Computing` (top-level, i.e. under "Other Bookmarks").
 `--url` is the **full** readings endpoint (default `http://127.0.0.1:8787/api/readings`,
 or `READER_URL`). `--dry-run` prints the would-submit list without prompting or
 POSTing. `--quick` skips the per-URL prompt; submission is always serial so the
-local index can't race itself. Token resolution mirrors `npm run read`:
+local index can't race itself. Token resolution mirrors `ops reading submit`:
 `--token` > `READER_API_TOKEN` env > `.dev.vars`.
 
 Transport-level fetch failures retry twice (250 ms / 500 ms); errors surface
@@ -255,9 +255,9 @@ markdown as both raw content and `extracted.md`, then reuse the normal
 embedding, similarity, summary, Vectorize, manifest, and list-index pipeline.
 
 ```sh
-npm run import-markdown -- --dir ~/Documents/articles --dry-run   # no token needed
-npm run import-markdown -- --dir ~/Documents/articles             # local dev
-npm run import-markdown -- --dir ~/Documents/articles \
+npm run ops -- import markdown --dir ~/Documents/articles           # plan, no token needed
+npm run ops -- import markdown --dir ~/Documents/articles --execute  # local dev
+npm run ops -- import markdown --dir ~/Documents/articles --execute \
   --url https://reading-lite.bbell.dev/api/readings/import-markdown
 ```
 

@@ -7,6 +7,8 @@
 import type { AnyCommand, CommandGroup } from "./contract";
 import { corpusAuditCommand } from "./commands/corpus-audit";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
+import { importMarkdownCommand } from "./commands/import-markdown";
+import { readingSubmitCommand } from "./commands/reading-submit";
 
 export interface Registry {
   groups: CommandGroup[];
@@ -16,9 +18,13 @@ export interface Registry {
 export const defaultRegistry: Registry = {
   groups: [
     { name: "corpus", summary: "Corpus maintenance and repair" },
+    { name: "reading", summary: "Single-reading operations against the reading API" },
+    { name: "import", summary: "Bulk imports into the reading API" },
   ],
   commands: [
     corpusAuditCommand,
     corpusRecoverCommand,
+    readingSubmitCommand,
+    importMarkdownCommand,
   ],
 };
