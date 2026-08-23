@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
+import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
 
 // REST clients for the bulk path. The Anthropic Message Batches API runs the
 // tool-use summarize asynchronously (50% cheaper, no rate-limit burst);
@@ -11,7 +12,6 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const OPENAI_FILES_URL = "https://api.openai.com/v1/files";
 const OPENAI_BATCHES_URL = "https://api.openai.com/v1/batches";
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
-const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 
 export interface AnthropicBatchRequest {
   custom_id: string;
