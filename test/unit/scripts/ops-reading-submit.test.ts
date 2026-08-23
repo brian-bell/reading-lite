@@ -97,6 +97,17 @@ describe("ops reading submit", () => {
     expect(err.join("\n")).toContain("timed out");
   });
 
+  it("rejects malformed or non-positive polling durations", async () => {
+    const { deps, requests } = makeDeps();
+    await expect(
+      readingSubmitCommand.run(["https://example.com/a", "--timeout-ms", "nope"], deps),
+    ).rejects.toThrow(UsageError);
+    await expect(
+      readingSubmitCommand.run(["https://example.com/a", "--poll-ms", "-1"], deps),
+    ).rejects.toThrow(UsageError);
+    expect(requests).toHaveLength(0);
+  });
+
   it("requires a URL", async () => {
     const { deps } = makeDeps();
     await expect(readingSubmitCommand.run([], deps)).rejects.toThrow(UsageError);

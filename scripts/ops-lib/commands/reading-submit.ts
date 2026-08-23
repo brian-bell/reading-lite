@@ -53,10 +53,21 @@ function parseSubmitArgs(argv: string[]): Args {
     url,
     base: values.base,
     token: values.token,
-    pollMs: Number(values["poll-ms"] ?? 1500),
-    timeoutMs: Number(values["timeout-ms"] ?? 120_000),
+    pollMs: parsePositiveMs(values["poll-ms"], "poll-ms", 1500),
+    timeoutMs: parsePositiveMs(values["timeout-ms"], "timeout-ms", 120_000),
     execute: values.execute === true,
   };
+}
+
+// A malformed duration must not skip polling (NaN deadline) or tight-loop the
+// API (non-positive delay) — reject it as a usage error instead.
+function parsePositiveMs(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new UsageError(`--${name} must be a positive number of milliseconds (got "${raw}")`);
+  }
+  return n;
 }
 
 async function runReadingSubmit(argv: string[], deps: ReadingSubmitDeps): Promise<number> {
