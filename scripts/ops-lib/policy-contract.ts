@@ -102,6 +102,20 @@ export function assertPolicyCommandContract(command: AnyCommand): void {
 // checkable: the s1k.9.4 command is expected to resolve the live guard
 // version through its deps and compare. All of this is checkable without
 // implementing any policy behavior.
+// A registered policy command must carry its own contract-deps factory so the
+// registry coverage suite can execute the behavioral checker against the real
+// definition — no external wiring, no trust in a conventionally named test
+// file. The factory returns deps whose READ seams work (a plan may read live
+// policy and guard-version state — faked is fine) and whose WRITE seams
+// throw, plus the probe options (current guard version, valid baseline argv).
+export interface PolicyContractCapable {
+  makeContractDeps: () => { deps: unknown; options: PolicyBehaviorOptions };
+}
+
+export function isPolicyContractCapable(command: AnyCommand): command is AnyCommand & PolicyContractCapable {
+  return typeof (command as Partial<PolicyContractCapable>).makeContractDeps === "function";
+}
+
 export interface PolicyBehaviorOptions {
   // The guard version the injected deps present as current. The stale probe
   // acknowledges (currentGuardVersion - 1) and must be refused.

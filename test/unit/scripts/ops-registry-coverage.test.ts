@@ -13,6 +13,7 @@ import { defaultRegistry } from "../../../scripts/ops-lib/registry";
 import {
   assertPolicyCommandBehavior,
   assertPolicyCommandContract,
+  isPolicyContractCapable,
   policyContractViolations,
 } from "../../../scripts/ops-lib/policy-contract";
 import { UsageError } from "../../../scripts/ops-lib/contract";
@@ -272,27 +273,17 @@ Options:
     if (!registered) return; // s1k.9.4 has not landed yet — nothing to check.
     // The documentation half is dependency-free and checked here directly.
     assertPolicyCommandContract(registered);
-    // The behavioral half needs the real command's read seams (live policy +
-    // guard-version reads are legitimate in plan mode), so s1k.9.4 must run
-    // assertPolicyCommandBehavior in its own suite with a dep factory whose
-    // READ seams work and WRITE seams throw — inertDeps here would false-fail
-    // a conforming D1-reading plan. This test fails until that suite exists.
-    const behavioralSuite = "test/unit/scripts/ops-system-policy.test.ts";
-    const source = await fs
-      .readFile(path.join(repoRoot, behavioralSuite), "utf8")
-      .catch(() => null);
+    // The behavioral half executes right here, against the registered
+    // definition, using the contract-deps factory the command itself must
+    // carry (read seams live — faked policy state is fine — write seams
+    // throwing). No conventionally named external suite is trusted.
     expect(
-      source,
-      `system policy is registered but ${behavioralSuite} (running assertPolicyCommandBehavior with its real read seams) is missing`,
-    ).not.toBeNull();
-    // The suite sits inside the vitest node glob, so once it imports and
-    // invokes the behavioral checker against the registered command it
-    // executes on every run; this guard keeps it from being an empty stub.
-    expect(source, `${behavioralSuite} must invoke assertPolicyCommandBehavior`).toContain(
-      "assertPolicyCommandBehavior",
-    );
-    expect(source, `${behavioralSuite} must exercise the registered system policy command`).toMatch(
-      /system.*policy/s,
-    );
+      isPolicyContractCapable(registered),
+      "the registered system policy command must expose makeContractDeps() so this suite can execute the behavioral contract against it",
+    ).toBe(true);
+    if (isPolicyContractCapable(registered)) {
+      const { deps, options } = registered.makeContractDeps();
+      await assertPolicyCommandBehavior(registered, deps, options);
+    }
   });
 });
