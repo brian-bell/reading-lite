@@ -105,7 +105,9 @@ Options:
       const r2Config = resolveStagingR2Config(DEFAULT_STAGING_RESOURCES);
       const client = makeR2Client(r2Config);
       return {
-        empty: () => emptyR2Bucket(client, DEFAULT_STAGING_RESOURCES.bucket),
+        empty: async () => {
+          await emptyR2Bucket(client, DEFAULT_STAGING_RESOURCES.bucket);
+        },
       };
     },
   }),
