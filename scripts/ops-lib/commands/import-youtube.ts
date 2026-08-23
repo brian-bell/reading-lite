@@ -116,7 +116,10 @@ async function warnNoncanonicalOwners(
     `\nnote: found ${found.length} existing reading(s) under a noncanonical URL for this video.\n` +
       `This import claims the canonical ${canonicalUrl}, so those will NOT be replaced —\n` +
       `drop the stale variant(s) to avoid a duplicate:\n` +
-      found.map((f) => `  npm run ops -- corpus drop --tenant global ${shellQuote(f.url)} --execute   # ${f.id ?? "?"}`).join("\n"),
+      // The lookup ran as the caller's token, so the duplicate belongs to that
+      // token's tenant — which this CLI cannot resolve. Emit a placeholder the
+      // operator must fill in rather than an executable global command.
+      found.map((f) => `  npm run ops -- corpus drop --tenant <tenant> ${shellQuote(f.url)} --execute   # ${f.id ?? "?"}`).join("\n"),
   );
 }
 
@@ -174,7 +177,7 @@ async function runImportYoutube(argv: string[], deps: ImportYoutubeDeps): Promis
     io.stderr(
       `\nnote: ${body.source_url} already has a reading (${res.id ?? "?"}). Ready/pending owners are\n` +
         "returned as-is — to replace a worker-made floor-only reading with this richer import,\n" +
-        'drop it first: npm run ops -- corpus drop --tenant global "' +
+        'drop it first: npm run ops -- corpus drop --tenant <tenant> "' +
         body.source_url +
         '" --execute',
     );

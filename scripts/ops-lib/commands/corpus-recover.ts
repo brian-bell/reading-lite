@@ -210,11 +210,24 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   // The realtime path writes through the Reading API, where the acting tenant
   // is the BEARER TOKEN's principal — the worker confines every write to that
   // tenant regardless of --tenant, which scopes only this command's direct R2
-  // reads (--monitor). The CLI cannot resolve a token to its tenant offline,
-  // so surface the coupling loudly instead of pretending to verify it
-  // (worker-side verification is reading-lite tracked follow-up work).
+  // reads (--monitor). The CLI cannot resolve a token to its tenant offline
+  // (the mapping lives in the worker's control plane), so for a tenant
+  // selector the comparison cannot be made and the realtime path fails
+  // closed: submitting under an unverified token could import one tenant's
+  // audited content into another. --batch is scoped by --tenant end to end
+  // and stays available; reading-lite-1xk tracks the worker-side token
+  // verification that will lift this refusal. 'global' matches the
+  // pre-cutover reality where every token acts on the global layout.
+  if (tenant.kind === "tenant") {
+    deps.io.stderr(
+      `realtime recovery cannot verify that the bearer token belongs to tenant '${tenant.tenantId}'; ` +
+        "refusing to submit. Use --batch (scoped by --tenant end to end), or --tenant global. " +
+        "(reading-lite-1xk tracks worker-side token verification.)",
+    );
+    return 1;
+  }
   deps.io.stderr(
-    `note: realtime API writes act as the bearer token's tenant; --tenant '${operatorTenantSelector(tenant)}' scopes only this command's R2 reads. Ensure the token belongs to that tenant.`,
+    "note: realtime API writes act as the bearer token's tenant; ensure the token matches --tenant.",
   );
   const api = deps.makeApi(target);
 
@@ -509,8 +522,9 @@ Options:
   --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
                        layout. Scopes this command's direct R2 reads and the batch
-                       path; realtime API writes act as the bearer token's tenant —
-                       make sure the token belongs to the selected tenant.
+                       path. Realtime API writes act as the bearer token's tenant,
+                       which the CLI cannot verify — so a usr_… selector refuses
+                       the realtime execute path (use --batch, or --tenant global).
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.

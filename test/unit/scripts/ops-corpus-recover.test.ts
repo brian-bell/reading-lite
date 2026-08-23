@@ -99,6 +99,18 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.batchExecutes).toHaveLength(0);
   });
 
+  it("refuses a realtime execute under a usr_ tenant selector (token unverifiable)", async () => {
+    const r = makeDeps();
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--execute", "--token", "tok"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.imported).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("cannot verify that the bearer token belongs to tenant");
+  });
+
   it("refuses to resume a batch sidecar under a different tenant", async () => {
     const r = makeDeps();
     r.deps.batch.loadSidecar = async () =>

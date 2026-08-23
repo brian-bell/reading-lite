@@ -16,11 +16,12 @@ malformed selector is a usage error (exit 2) before any R2 or Vectorize
 traffic, so an operator can never act on the global corpus by omission.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
-where the acting tenant is the **bearer token's** principal — the worker
-confines those writes to the token's tenant regardless of `--tenant`, which
-scopes only the command's direct R2 reads and the batch path. Make sure the
-token belongs to the selected tenant; the command prints a reminder on every
-realtime execute.
+where the acting tenant is the **bearer token's** principal — and the CLI
+cannot resolve a token to its tenant offline. A `usr_…` selector therefore
+**refuses** the realtime execute path (use `--batch`, which is scoped by
+`--tenant` end to end, or `--tenant global`, which matches the pre-cutover
+reality where every token acts on the global layout). Worker-side token
+verification that lifts this refusal is tracked as reading-lite-1xk.
 
 ## Environments
 
