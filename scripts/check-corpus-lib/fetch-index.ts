@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { LIST_INDEX_KEY } from "../../src/modules/stores/layout";
 
 export interface RunResult {
   code: number;
@@ -10,14 +11,14 @@ export type Runner = (cmd: string, args: string[]) => Promise<RunResult>;
 
 export interface FetchIndexDeps {
   bucket: string;
-  // "index/list.json" by default; the worker's LIST_INDEX_KEY.
+  // The layout module's LIST_INDEX_KEY by default.
   key?: string;
   // --remote reads the real R2 bucket rather than the local miniflare cache.
   remote?: boolean;
   run?: Runner;
 }
 
-const DEFAULT_KEY = "index/list.json";
+const DEFAULT_KEY = LIST_INDEX_KEY;
 
 // Reads the corpus index straight out of R2 via wrangler. Returns the raw
 // JSON text; parsing is the caller's job (parseListIndex). Throws with

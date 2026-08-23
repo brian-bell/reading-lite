@@ -11,8 +11,6 @@ import type { TenantContext } from "../../control-plane/ids";
 import { parseTenantId } from "../../control-plane/ids";
 import {
   ListIndexStore,
-  MANIFEST_FILE,
-  READINGS_PREFIX,
   manifestToIndexItem,
   type ListIndexCasDeps,
   type ListIndexStoreOptions,
@@ -20,6 +18,11 @@ import {
   type ListManifestsResult,
   type FindManifestByUrlOptions,
 } from "./list-index";
+import { r2KeyLayout, type R2KeyLayout } from "./layout";
+
+// The R2 key vocabulary is single-homed in layout.ts; buildKeyPrefix is
+// re-exported so existing call sites keep importing it from ReadingStore.
+export { buildKeyPrefix } from "./layout";
 
 // Re-exported so existing call sites keep importing the list-index surface from
 // ReadingStore while the implementation lives in list-index.ts.
@@ -76,25 +79,6 @@ export interface StoredManifest {
   etag: string;
 }
 
-// MANIFEST_FILE and READINGS_PREFIX are owned by list-index.ts (the manifest
-// scan + rebuild lives there) and imported above to keep the R2 layout
-// single-homed.
-const EXTRACTED_FILE = "extracted.md";
-const RAW_PREFIX = "raw.";
-const ATTEMPTS_PREFIX = "attempts/";
-const BY_URL_PREFIX = "index/by-url/";
-const BY_ID_PREFIX = "index/by-id/";
-
-export function buildKeyPrefix(id: string, createdAtIso: string): string {
-  // Compact UTC timestamp: 2026-04-26T20:00:00.000Z → 2026/04/26T200000Z
-  const m = createdAtIso.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/,
-  );
-  if (!m) throw new Error(`buildKeyPrefix: invalid ISO timestamp: ${createdAtIso}`);
-  const [, y, mo, d, h, mi, s] = m;
-  return `${READINGS_PREFIX}${y}/${mo}/${d}T${h}${mi}${s}Z-${id}`;
-}
-
 export interface RawObject {
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
@@ -114,35 +98,31 @@ export class ReadingStore {
   // ranking, rebuild) lives in its own module; ReadingStore composes one and
   // delegates its public index methods so existing call sites are unchanged.
   private readonly listIndex: ListIndexStore;
-  private readonly keyRoot: string;
+  private readonly layout: R2KeyLayout;
 
   constructor(
     private readonly bucket: R2Bucket,
     opts: ReadingStoreOptions = {},
   ) {
-    this.keyRoot = opts.keyRoot ?? "";
+    this.layout = r2KeyLayout(opts.keyRoot ?? "");
     this.listIndex = new ListIndexStore(bucket, opts);
   }
 
-  private objectKey(relative: string): string {
-    return `${this.keyRoot}${relative}`;
-  }
-
   async writeManifest(keyPrefix: string, manifest: Manifest): Promise<void> {
-    await this.bucket.put(this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`), JSON.stringify(manifest), {
+    await this.bucket.put(this.layout.manifestKey(keyPrefix), JSON.stringify(manifest), {
       httpMetadata: { contentType: "application/json" },
     });
   }
 
   async readManifest(keyPrefix: string): Promise<Manifest | null> {
-    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`));
+    const obj = await this.bucket.get(this.layout.manifestKey(keyPrefix));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ManifestSchema.parse(json);
   }
 
   async readManifestWithEtag(keyPrefix: string): Promise<StoredManifest | null> {
-    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`));
+    const obj = await this.bucket.get(this.layout.manifestKey(keyPrefix));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return {
@@ -157,7 +137,7 @@ export class ReadingStore {
     manifest: Manifest,
   ): Promise<boolean> {
     const written = await this.bucket.put(
-      this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`),
+      this.layout.manifestKey(keyPrefix),
       JSON.stringify(manifest),
       {
         httpMetadata: { contentType: "application/json" },
@@ -173,13 +153,13 @@ export class ReadingStore {
     bytes: Uint8Array,
     contentType: string,
   ): Promise<void> {
-    await this.bucket.put(this.objectKey(`${keyPrefix}/${RAW_PREFIX}${ext}`), bytes, {
+    await this.bucket.put(this.layout.rawKey(keyPrefix, ext), bytes, {
       httpMetadata: { contentType },
     });
   }
 
   async readRaw(keyPrefix: string, ext: string): Promise<RawObject | null> {
-    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${RAW_PREFIX}${ext}`));
+    const obj = await this.bucket.get(this.layout.rawKey(keyPrefix, ext));
     if (!obj) return null;
     return {
       arrayBuffer: () => obj.arrayBuffer(),
@@ -191,13 +171,13 @@ export class ReadingStore {
   }
 
   async writeExtracted(keyPrefix: string, markdown: string): Promise<void> {
-    await this.bucket.put(this.objectKey(`${keyPrefix}/${EXTRACTED_FILE}`), markdown, {
+    await this.bucket.put(this.layout.extractedKey(keyPrefix), markdown, {
       httpMetadata: { contentType: "text/markdown; charset=utf-8" },
     });
   }
 
   async readExtracted(keyPrefix: string): Promise<RawObject | null> {
-    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${EXTRACTED_FILE}`));
+    const obj = await this.bucket.get(this.layout.extractedKey(keyPrefix));
     if (!obj) return null;
     return {
       arrayBuffer: () => obj.arrayBuffer(),
@@ -210,7 +190,7 @@ export class ReadingStore {
 
   async writeAttempt(keyPrefix: string, attempt: ProcessingAttempt): Promise<void> {
     await this.bucket.put(
-      this.objectKey(`${keyPrefix}/${ATTEMPTS_PREFIX}${attempt.id}.json`),
+      this.layout.attemptKey(keyPrefix, attempt.id),
       JSON.stringify(attempt),
       {
         httpMetadata: { contentType: "application/json" },
@@ -219,7 +199,7 @@ export class ReadingStore {
   }
 
   async listAttempts(keyPrefix: string, limit = 20): Promise<ProcessingAttempt[]> {
-    const prefix = this.objectKey(`${keyPrefix}/${ATTEMPTS_PREFIX}`);
+    const prefix = this.layout.attemptsPrefix(keyPrefix);
     // Two-phase listing: first collect all keys + their R2 upload times, then
     // GET only the top `limit` by upload time. Upload time correlates with
     // started_at strongly enough for diagnostic ordering, and bounding the
@@ -279,7 +259,10 @@ export class ReadingStore {
   }
 
   async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {
-    const list = await this.bucket.list({ prefix: this.objectKey(`${keyPrefix}/`), limit: 1000 });
+    const list = await this.bucket.list({
+      prefix: this.layout.readingObjectsPrefix(keyPrefix),
+      limit: 1000,
+    });
     return list.objects.map((obj) => ({
       key: obj.key,
       size: obj.size,
@@ -292,7 +275,7 @@ export class ReadingStore {
     pointer: ByUrlPointer,
     opts: { ifNotExists?: boolean } = {},
   ): Promise<void> {
-    const key = this.objectKey(`${BY_URL_PREFIX}${urlHash}`);
+    const key = this.layout.byUrlKey(urlHash);
     const putOpts: R2PutOptions = {
       httpMetadata: { contentType: "application/json" },
     };
@@ -302,14 +285,14 @@ export class ReadingStore {
   }
 
   async readByUrlPointer(urlHash: string): Promise<ByUrlPointer | null> {
-    const obj = await this.bucket.get(this.objectKey(`${BY_URL_PREFIX}${urlHash}`));
+    const obj = await this.bucket.get(this.layout.byUrlKey(urlHash));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ByUrlPointerSchema.parse(json);
   }
 
   async readByUrlPointerWithEtag(urlHash: string): Promise<StoredByUrlPointer | null> {
-    const obj = await this.bucket.get(this.objectKey(`${BY_URL_PREFIX}${urlHash}`));
+    const obj = await this.bucket.get(this.layout.byUrlKey(urlHash));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return {
@@ -324,7 +307,7 @@ export class ReadingStore {
     pointer: ByUrlPointer,
   ): Promise<boolean> {
     const result = await this.bucket.put(
-      this.objectKey(`${BY_URL_PREFIX}${urlHash}`),
+      this.layout.byUrlKey(urlHash),
       JSON.stringify(pointer),
       {
         httpMetadata: { contentType: "application/json" },
@@ -335,13 +318,13 @@ export class ReadingStore {
   }
 
   async writeByIdPointer(id: string, pointer: ByUrlPointer): Promise<void> {
-    await this.bucket.put(this.objectKey(`${BY_ID_PREFIX}${id}`), JSON.stringify(pointer), {
+    await this.bucket.put(this.layout.byIdKey(id), JSON.stringify(pointer), {
       httpMetadata: { contentType: "application/json" },
     });
   }
 
   async readByIdPointer(id: string): Promise<ByUrlPointer | null> {
-    const obj = await this.bucket.get(this.objectKey(`${BY_ID_PREFIX}${id}`));
+    const obj = await this.bucket.get(this.layout.byIdKey(id));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ByUrlPointerSchema.parse(json);

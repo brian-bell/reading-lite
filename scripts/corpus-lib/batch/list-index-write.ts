@@ -1,7 +1,6 @@
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client } from "../../lib/cf-clients";
-
-const LIST_INDEX_KEY = "index/list.json";
+import { LIST_INDEX_KEY } from "../../../src/modules/stores/layout";
 
 export interface ListIndexWriteDeps {
   r2: Pick<R2Client, "get" | "put">;

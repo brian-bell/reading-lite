@@ -1,8 +1,14 @@
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../src/schemas/manifest";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { ByUrlLookup, ByUrlPointer } from "./prepare-fresh-markdown";
+import {
+  LIST_INDEX_KEY,
+  MANIFEST_FILE,
+  READINGS_PREFIX,
+  r2KeyLayout,
+} from "../../../src/modules/stores/layout";
 
-const LIST_INDEX_KEY = "index/list.json";
+const layout = r2KeyLayout();
 
 // URL-ownership preference when duplicate readings exist for one URL, mirroring
 // ListIndexStore's OWNERSHIP_RANK: a ready reading owns the URL over a pending
@@ -22,8 +28,7 @@ export interface R2Lister extends R2Getter {
   listKeys(): Promise<string[]>;
 }
 
-const READINGS_PREFIX = "readings/";
-const MANIFEST_SUFFIX = "/manifest.json";
+const MANIFEST_SUFFIX = `/${MANIFEST_FILE}`;
 
 // The minimal owner row the cold lookup ranks over. Index rows read the manifest
 // lazily during verification; rebuilt rows already hold it (the scan read it).
@@ -44,7 +49,7 @@ interface OwnerRow {
 // input; for an offline bulk run we degrade to "damaged" so one bad pointer can
 // be reported without aborting the whole ingest.
 export async function getByUrl(r2: R2Getter, urlHash: string): Promise<ByUrlLookup | null> {
-  const raw = await r2.get(`index/by-url/${urlHash}`);
+  const raw = await r2.get(layout.byUrlKey(urlHash));
   if (!raw) return null;
   let parsed: Partial<ByUrlPointer>;
   try {
@@ -57,7 +62,7 @@ export async function getByUrl(r2: R2Getter, urlHash: string): Promise<ByUrlLook
 }
 
 export async function readManifest(r2: R2Getter, keyPrefix: string): Promise<Manifest | null> {
-  const raw = await r2.get(`${keyPrefix}/manifest.json`);
+  const raw = await r2.get(layout.manifestKey(keyPrefix));
   return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
 }
 

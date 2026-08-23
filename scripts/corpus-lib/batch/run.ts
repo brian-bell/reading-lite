@@ -20,6 +20,7 @@ import {
 } from "./submit-phase";
 import { prepareOpenAIBatchPayload } from "./openai-payload";
 import { pollUntilEnded } from "./poll-phase";
+import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import {
   writeOpenAIResults,
   writeResults,
@@ -35,6 +36,8 @@ import type {
 import type { ActivationResult } from "./activation-phase";
 import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 import { reconcileOpenAIPreSubmitSidecar } from "./openai-reconcile";
+
+const layout = r2KeyLayout();
 
 export interface BatchRunDeps {
   r2: R2Client;
@@ -349,7 +352,7 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
         readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
       });
       const extracted = await extractTargets(prepared.targets, {
-        loadExtracted: (kp) => deps.r2.get(`${kp}/extracted.md`),
+        loadExtracted: (kp) => deps.r2.get(layout.extractedKey(kp)),
         extract: deps.extract,
       });
       return {
