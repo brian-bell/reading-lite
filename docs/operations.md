@@ -220,9 +220,9 @@ Ingests URLs from a Chrome bookmark export, asking `Y/n/q` before each URL
 (Enter or `y` submits, `n` skips, `q` aborts).
 
 ```sh
-npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
-npm run import-bookmarks -- --file ~/Downloads/bookmarks.html --quick
-npm run import-bookmarks -- --file ~/Downloads/bookmarks.html \
+npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute
+npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute --quick
+npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute \
   --folder "Computing/AI/MCP" --url https://reading-lite.bbell.dev/api/readings
 ```
 
@@ -362,7 +362,7 @@ deliberately lands `failed`. Use the **`reddit-import`** skill instead: it drive
 a logged-in Chrome session to fetch the public `<thread>.json`, renders the post
 plus top comments to markdown with the same parser the Worker uses, and imports
 it via `POST /api/readings/import-markdown`. No Reddit app or OAuth credentials
-are needed. The skill wraps `scripts/reddit-import.ts <redditUrl> --json <saved.json>`,
+are needed. The skill wraps `ops import reddit <redditUrl> --json <saved.json>`,
 which also takes `--dry-run` to preview the markdown.
 
 ### YouTube
@@ -382,7 +382,7 @@ residential IP and uses `yt-dlp` for the transcript, then imports the rich
 markdown through the same parsers the Worker uses. Requires `yt-dlp` on PATH.
 
 ```sh
-npx tsx scripts/youtube-import.ts "<youtubeUrl>"   # --dry-run to preview
+npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to preview
 ```
 
 ## Seeding local R2

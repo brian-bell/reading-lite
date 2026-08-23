@@ -36,16 +36,16 @@ from `check-reading-list`.)
 
 ```bash
 # Preview which entries would be submitted (no POST, no write).
-npm run process-reading-list -- --file ~/Desktop/chrome-reading-list.json --dry-run
+npm run ops -- reading-list process --file ~/Desktop/chrome-reading-list.json
 
 # Interactive: prompts Y/n/q before each URL, writes back in place.
-npm run process-reading-list -- --file ~/Desktop/chrome-reading-list.json
+npm run ops -- reading-list process --file ~/Desktop/chrome-reading-list.json --execute
 
 # Fire everything without prompting.
-npm run process-reading-list -- --file ~/Desktop/chrome-reading-list.json --quick
+npm run ops -- reading-list process --file ~/Desktop/chrome-reading-list.json --execute --quick
 
 # Submit to a local dev worker instead of production.
-npm run process-reading-list -- --file in.json --url http://127.0.0.1:8787/api/readings
+npm run ops -- reading-list process --file in.json --url http://127.0.0.1:8787/api/readings --execute
 ```
 
 Flags: `--file` (required, rewritten in place), `--out` (write elsewhere),
@@ -58,15 +58,15 @@ Prints a JSON summary to stdout (`selected`, `confirmed`, `queued`, `errors`,
 ## Typical loop
 
 ```bash
-npm run check-corpus -- --file list.json            # mark processed true/false
-npm run process-reading-list -- --file list.json    # submit the false ones
+npm run ops -- reading-list check --file list.json --execute   # mark processed true/false
+npm run ops -- reading-list process --file list.json --execute # submit the false ones
 # …wait for the queue to drain…
-npm run check-corpus -- --file list.json            # promote freshly-ready ones
+npm run ops -- reading-list check --file list.json --execute   # promote freshly-ready ones
 ```
 
 ## Implementation
 
-- CLI: `scripts/process-reading-list.ts`
+- CLI: `scripts/ops-lib/commands/reading-list-process.ts` (via `scripts/ops.ts`)
 - Selection (pure, tested): `scripts/process-reading-list-lib/select.ts`
 - Write-back (pure, tested): `scripts/process-reading-list-lib/annotate.ts`
 - Reuses `scripts/import-bookmarks-lib/submit.ts` (POST + retry + classification)

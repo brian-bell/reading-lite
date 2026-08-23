@@ -44,19 +44,19 @@ reading-lite API token is needed — this path does not hit the HTTP API.
 
 ```bash
 # Default: production bucket, ready-only, rewrites the file in place.
-npm run check-corpus -- --file ~/Desktop/chrome-reading-list.json
+npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json --execute
 
 # Preview the counts without writing.
-npm run check-corpus -- --file ~/Desktop/chrome-reading-list.json --dry-run
+npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json
 
 # Write to a new file instead of in place.
-npm run check-corpus -- --file in.json --out annotated.json
+npm run ops -- reading-list check --file in.json --out annotated.json --execute
 
 # Count anything present in the corpus (pending/failed too).
-npm run check-corpus -- --file in.json --any-status
+npm run ops -- reading-list check --file in.json --any-status --execute
 
 # An alternate R2 bucket.
-npm run check-corpus -- --file in.json --bucket some-other-bucket
+npm run ops -- reading-list check --file in.json --bucket some-other-bucket --execute
 ```
 
 Flags: `--file` (required), `--out` (default: in place), `--bucket` (default
@@ -76,7 +76,7 @@ The script prints a JSON summary to stdout:
 
 ## Implementation
 
-- CLI: `scripts/check-corpus.ts`
+- CLI: `scripts/ops-lib/commands/reading-list-check.ts` (via `scripts/ops.ts`)
 - Corpus logic (pure, unit-tested): `scripts/check-corpus-lib/corpus.ts`
 - Wrangler R2 read (injectable runner): `scripts/check-corpus-lib/fetch-index.ts`
 - Tests: `test/unit/check-corpus/` (node project in `vitest.workspace.ts`)

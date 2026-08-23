@@ -187,7 +187,7 @@ dry-run-friendly and resume from a local index.
 
 ```sh
 npm run ops -- reading submit <url> --execute          # POST a single URL
-npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
+npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute
 npm run ops -- import markdown --dir ~/Documents/articles --execute
 npm run ops -- corpus ingest --dir ~/Documents/articles --execute --sole-writer  # provider Batch API
 ```

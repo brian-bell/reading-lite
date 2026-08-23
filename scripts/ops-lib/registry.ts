@@ -15,7 +15,12 @@ import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
 import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
+import { importBookmarksCommand } from "./commands/import-bookmarks";
 import { importMarkdownCommand } from "./commands/import-markdown";
+import { importRedditCommand } from "./commands/import-reddit";
+import { importYoutubeCommand } from "./commands/import-youtube";
+import { readingListCheckCommand } from "./commands/reading-list-check";
+import { readingListProcessCommand } from "./commands/reading-list-process";
 import { readingSubmitCommand } from "./commands/reading-submit";
 
 export interface Registry {
@@ -27,7 +32,8 @@ export const defaultRegistry: Registry = {
   groups: [
     { name: "corpus", summary: "Corpus maintenance and repair" },
     { name: "reading", summary: "Single-reading operations against the reading API" },
-    { name: "import", summary: "Bulk imports into the reading API" },
+    { name: "import", summary: "Imports into the reading API" },
+    { name: "reading-list", summary: "Reading-list JSON export triage and submission" },
   ],
   commands: [
     corpusAuditCommand,
@@ -42,5 +48,10 @@ export const defaultRegistry: Registry = {
     corpusRebuildListCommand,
     readingSubmitCommand,
     importMarkdownCommand,
+    importBookmarksCommand,
+    importRedditCommand,
+    importYoutubeCommand,
+    readingListCheckCommand,
+    readingListProcessCommand,
   ],
 };

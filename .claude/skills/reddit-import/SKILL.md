@@ -62,7 +62,7 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
    becomes the reading's `source_url` / ownership key:
 
    ```sh
-   npx tsx scripts/reddit-import.ts "<canonicalRedditUrl>" --json .reddit-thread.tmp.json
+   npm run ops -- import reddit "<canonicalRedditUrl>" --json .reddit-thread.tmp.json --execute
    ```
 
    Use `--dry-run` first to show the rendered markdown without writing. Add
@@ -90,7 +90,7 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
 
 ## Implementation
 
-- CLI: `scripts/reddit-import.ts`; parser glue (tested):
+- CLI: `scripts/ops-lib/commands/import-reddit.ts`; parser glue (tested):
   `scripts/reddit-import-lib/parse.ts` (`buildRedditImport`).
 - Markdown rendering: `redditListingToMarkdown` + `isRedditThreadUrl` in
   `src/modules/extractor/reddit.ts` (shared with the worker).
