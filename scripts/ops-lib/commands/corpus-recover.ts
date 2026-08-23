@@ -13,7 +13,7 @@
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
-import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
   classifyOutcome,
@@ -207,6 +207,15 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (!target.token) {
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
+  // The realtime path writes through the Reading API, where the acting tenant
+  // is the BEARER TOKEN's principal — the worker confines every write to that
+  // tenant regardless of --tenant, which scopes only this command's direct R2
+  // reads (--monitor). The CLI cannot resolve a token to its tenant offline,
+  // so surface the coupling loudly instead of pretending to verify it
+  // (worker-side verification is reading-lite tracked follow-up work).
+  deps.io.stderr(
+    `note: realtime API writes act as the bearer token's tenant; --tenant '${operatorTenantSelector(tenant)}' scopes only this command's R2 reads. Ensure the token belongs to that tenant.`,
+  );
   const api = deps.makeApi(target);
 
   const touched: string[] = [];
@@ -335,6 +344,17 @@ async function runBatchMode(
   const scPath = sidecarPath(args.index);
   const existing = await deps.batch.loadSidecar(scPath);
 
+  // Same tenant pinning as ops corpus ingest: an in-flight batch resumes only
+  // under the tenant selector it was submitted with (legacy sidecars = global).
+  const selector = operatorTenantSelector(tenant);
+  if (existing && (existing.tenant ?? "global") !== selector) {
+    deps.io.stderr(
+      `sidecar ${scPath} belongs to tenant '${existing.tenant ?? "global"}' but --tenant is '${selector}'; ` +
+        "resume with the sidecar's tenant, or clear the sidecar after reconciling the batch manually.",
+    );
+    return 1;
+  }
+
   if (!args.execute) {
     if (existing) {
       deps.io.stderr(`  [plan batch] would RESUME in-flight batch ${existing.batchId} (${existing.targets.length} readings) from ${scPath}`);
@@ -458,7 +478,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           now: () => new Date().toISOString(),
           sleep,
           loadSidecar: () => loadSidecar(scPath),
-          saveSidecar: (s) => saveSidecar(scPath, s),
+          // Stamp the tenant selector on every checkpoint (resume guard above).
+          saveSidecar: (s) => saveSidecar(scPath, { ...s, tenant: cfg.tenantSelector }),
           clearSidecar: () => clearSidecar(scPath),
           saveInputJsonl: (jsonl) => saveInputJsonl(scPath, jsonl),
           loadInputJsonl: () => loadInputJsonl(scPath),
@@ -486,7 +507,10 @@ Options:
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
   --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
+  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
+                       layout. Scopes this command's direct R2 reads and the batch
+                       path; realtime API writes act as the bearer token's tenant —
+                       make sure the token belongs to the selected tenant.
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.

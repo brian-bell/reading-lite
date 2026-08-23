@@ -14,6 +14,7 @@ import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusSweepR2 {
@@ -227,7 +228,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   // The sweep has already deleted objects and rewritten the index by now, so
   // the report is strictly informational: never let it fail the command.
   try {
-    await reportInvalidatedKeepers(io, r2, plan.groups, dropIds, vectoredDrops, r2Deps);
+    await reportInvalidatedKeepers(io, r2, plan.groups, dropIds, vectoredDrops, r2Deps, tenant);
   } catch (e) {
     io.stderr(
       `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
@@ -247,6 +248,7 @@ async function reportInvalidatedKeepers(
   droppedIds: Set<string>,
   vectoredDrops: { id: string; created_at?: string }[],
   r2Deps: R2Deps,
+  tenant: OperatorTenant,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
@@ -267,7 +269,7 @@ async function reportInvalidatedKeepers(
   }
   io.stdout(
     `\nRefresh the measured score without an LLM call (no re-summarization, no tag churn):\n` +
-    `  npm run ops -- corpus backfill-similarity ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
+    `  npm run ops -- corpus backfill-similarity --tenant ${operatorTenantSelector(tenant)} ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
     `The novelty_verdict itself only refreshes on a reprocess, which DOES re-roll\n` +
     `title and tags -- so weigh that before reprocessing purely to fix a label.`,
   );

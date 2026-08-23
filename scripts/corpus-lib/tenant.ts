@@ -24,6 +24,11 @@ export type ResolveOperatorTenantResult =
   | { ok: true; tenant: OperatorTenant }
   | { ok: false; reason: string };
 
+/** The CLI spelling that reproduces this selection: 'global' or the usr_… id. */
+export function operatorTenantSelector(tenant: OperatorTenant): string {
+  return tenant.kind === "global" ? "global" : tenant.tenantId;
+}
+
 export function resolveOperatorTenant(
   selector: string | undefined,
 ): ResolveOperatorTenantResult {

@@ -1,4 +1,4 @@
-import type { OperatorTenant } from "./tenant";
+import { operatorTenantSelector, type OperatorTenant } from "./tenant";
 import { loadDotVars } from "../lib/dotvars";
 import type { R2Config, VectorizeConfig } from "../lib/cf-clients";
 import {
@@ -47,6 +47,8 @@ export interface BatchConfig {
    * "" for the pre-tenant global layout, u/{tenantId}/ for one tenant.
    */
   keyRoot: string;
+  /** The validated --tenant selector ('global' or usr_…), for sidecar stamping. */
+  tenantSelector: string;
   vectorize: VectorizeConfig;
   anthropicApiKey: string;
   anthropicModel: string;
@@ -106,6 +108,7 @@ export function resolveBatchConfig(
   return {
     r2: { accountId, accessKeyId, secretAccessKey, bucket },
     keyRoot: flags.tenant.keyRoot,
+    tenantSelector: operatorTenantSelector(flags.tenant),
     vectorize: {
       accountId: vars.CORPUS_VECTORIZE_ACCOUNT_ID ?? accountId,
       index: vars.CORPUS_VECTORIZE_INDEX ?? bucket,

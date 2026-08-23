@@ -23,6 +23,7 @@ import * as wranglerR2 from "../../corpus-lib/wrangler-r2";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector } from "../../corpus-lib/tenant";
 
 export interface CorpusAuditDeps extends BaseDeps {
   r2: {
@@ -154,6 +155,7 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
       failed, pending, teasers, tally,
       new Date(deps.now()).toISOString().slice(0, 10),
       failedOrphanDups,
+      operatorTenantSelector(tenant),
     ),
   );
   deps.io.stdout(JSON.stringify(summary, null, 2));

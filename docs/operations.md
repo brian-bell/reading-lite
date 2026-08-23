@@ -15,6 +15,13 @@ from a validated `TenantContext`). There is no default — a missing or
 malformed selector is a usage error (exit 2) before any R2 or Vectorize
 traffic, so an operator can never act on the global corpus by omission.
 
+One caveat: `corpus recover`'s realtime path writes through the Reading API,
+where the acting tenant is the **bearer token's** principal — the worker
+confines those writes to the token's tenant regardless of `--tenant`, which
+scopes only the command's direct R2 reads and the batch path. Make sure the
+token belongs to the selected tenant; the command prints a reminder on every
+realtime execute.
+
 ## Environments
 
 | Environment | Worker | Bucket / Vectorize index | Notes |
@@ -30,8 +37,8 @@ accidental bare `wrangler deploy` clobbering production.
 `TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Leave it
 unset in local, staging, and production until the founder corpus is copied
 under that prefix (s1k.6). Workers-pool tests turn it on so two tenants can
-share a URL without colliding. Operator corpus scripts still talk to the
-global `readings/` and `index/` layout.
+share a URL without colliding. Operator corpus scripts address whichever root
+their required `--tenant` selector names — `global` until the migration.
 
 ### Secrets
 
@@ -139,7 +146,7 @@ Clean up the throwaways afterwards, including `ready` ones:
 
 ```sh
 npm run ops -- corpus audit --tenant global --bucket reading-lite-staging --execute
-npm run ops -- corpus drop "https://example.com/reading-lite-staging-123" \
+npm run ops -- corpus drop --tenant global "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
   --vectorize reading-lite-staging --execute
 ```

@@ -11,6 +11,7 @@ import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { LIST_INDEX_KEY, READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDeleteOrphansR2 {
@@ -103,7 +104,7 @@ async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansD
       parsed = JSON.parse(await deps.readFile(opts.indexPath));
     } catch (e) {
       io.stderr(`could not read audit index at ${opts.indexPath}: ${(e as Error).message}`);
-      io.stderr("run `npm run ops -- corpus audit --execute` first, or pass --index <path>.");
+      io.stderr(`run \`npm run ops -- corpus audit --tenant ${operatorTenantSelector(tenant)} --execute\` first, or pass --index <path>.`);
       return 1;
     }
     label = "orphan-dup readings";

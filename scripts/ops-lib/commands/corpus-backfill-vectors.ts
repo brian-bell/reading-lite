@@ -11,6 +11,7 @@ import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector } from "../../corpus-lib/tenant";
 
 export interface CorpusBackfillVectorsDeps extends BaseDeps {
   r2: {
@@ -153,7 +154,7 @@ async function runCorpusBackfillVectors(
     if (result.restoredIds.length > 0) {
       const ids = result.restoredIds.join(" ");
       io.stdout("After Vectorize exposes the mutations, plan:");
-      io.stdout(`  npm run ops -- corpus backfill-similarity ${ids} --bucket ${opts.bucket} --vectorize ${vectorizeIndex}`);
+      io.stdout(`  npm run ops -- corpus backfill-similarity --tenant ${operatorTenantSelector(tenant)} ${ids} --bucket ${opts.bucket} --vectorize ${vectorizeIndex}`);
       io.stdout("Then add --execute to write the similarity snapshots.");
     }
   }

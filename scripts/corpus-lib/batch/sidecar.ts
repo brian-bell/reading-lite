@@ -66,6 +66,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("activating"),
       batchId: z.literal(""),
@@ -78,6 +79,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("creating"),
       batchId: z.literal(""),
@@ -90,6 +92,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("submitted"),
       batchId: z.string().min(1),
@@ -102,6 +105,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("openai"),
       phase: z.literal("activating"),
       runId: z.string().min(1),
@@ -118,6 +122,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("openai"),
       phase: z.literal("uploading"),
       runId: z.string().min(1),
@@ -134,6 +139,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("openai"),
       phase: z.literal("creating"),
       runId: z.string().min(1),
@@ -150,6 +156,7 @@ const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
+      tenant: z.string().min(1).optional(),
       provider: z.literal("openai"),
       phase: z.literal("submitted"),
       runId: z.string().min(1),

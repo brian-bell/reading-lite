@@ -99,6 +99,19 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.batchExecutes).toHaveLength(0);
   });
 
+  it("refuses to resume a batch sidecar under a different tenant", async () => {
+    const r = makeDeps();
+    r.deps.batch.loadSidecar = async () =>
+      ({ batchId: "batch_9", targets: [], provider: "openai", tenant: "usr_11111111-1111-4111-8111-111111111111" }) as never;
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "global", "--batch", "--execute", "--sole-writer"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.batchExecutes).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("belongs to tenant 'usr_11111111-1111-4111-8111-111111111111'");
+  });
+
   it("plan mode lists actions but makes no submissions or writes", async () => {
     const r = makeDeps();
     const code = await corpusRecoverCommand.run(["--tenant", "global"], r.deps);

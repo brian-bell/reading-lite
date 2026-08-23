@@ -10,6 +10,9 @@ export function renderIndexMarkdown(
   tally: StatusTally,
   generatedDate: string,
   failedOrphanDups: AuditRow[] = [],
+  // The audit's validated --tenant selector, echoed into copy-paste commands
+  // so a follow-up drop targets the same corpus the audit read.
+  tenantSelector = "global",
 ): string {
   const stranded = pending.filter((p) => p.class === "stranded");
   const orphan = pending.filter((p) => p.class === "orphan-dup");
@@ -27,7 +30,7 @@ export function renderIndexMarkdown(
   md += `## Failed (${failed.length})\n\n| URL | Reason | Code @ stage | × | Reading ID |\n|---|---|---|---|---|\n`;
   for (const r of failed) md += `| ${esc(r.short)} | ${esc(r.reason)} | ${r.code} @ ${r.stage} | ${r.attempts} | ${r.reading_id} |\n`;
 
-  md += `\n## Failed — orphan duplicates (${failedOrphanDups.length})\n\nFailed copies of a url that **already has a \`ready\` reading** — cosmetic cruft, not real failures. The ready copy owns the by-url pointer + embedding, so drop these with \`npm run ops -- corpus drop <url> --execute\` (it keeps the ready copy). \`× N\` is the failed-copy count per url.\n\n| URL | Reason | × | Reading ID |\n|---|---|---|---|\n`;
+  md += `\n## Failed — orphan duplicates (${failedOrphanDups.length})\n\nFailed copies of a url that **already has a \`ready\` reading** — cosmetic cruft, not real failures. The ready copy owns the by-url pointer + embedding, so drop these with \`npm run ops -- corpus drop --tenant ${tenantSelector} <url> --execute\` (it keeps the ready copy). \`× N\` is the failed-copy count per url.\n\n| URL | Reason | × | Reading ID |\n|---|---|---|---|\n`;
   for (const r of failedOrphanDups) md += `| ${esc(r.short)} | ${esc(r.reason)} | ${r.attempts} | ${r.reading_id} |\n`;
 
   md += `\n## Pending — stranded (${stranded.length})\n\nReprocess candidates — stuck before completion, never reached a terminal state.\n\n| URL | Stuck at | Age (d) | Trigger | × | Reading ID |\n|---|---|---|---|---|---|\n`;

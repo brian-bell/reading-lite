@@ -11,7 +11,7 @@
 
 import { parseArgs } from "node:util";
 import { resolveBatchConfig, type BatchConfig } from "../../corpus-lib/config";
-import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../import-markdown-lib/parse";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
@@ -118,6 +118,19 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
   // carries every target needed to poll + write, so a resume must not depend on
   // the source markdown directory (see the resume rationale in the batch docs).
   const existing = await deps.loadSidecar(args.sidecar);
+
+  // A sidecar records the tenant its batch was submitted under. Resuming it
+  // with a different --tenant would poll the original provider batch and write
+  // its terminal state into the newly selected namespace — refuse instead.
+  // Legacy sidecars (no tenant field) were all written under the global layout.
+  const selector = operatorTenantSelector(tenant);
+  if (existing && (existing.tenant ?? "global") !== selector) {
+    io.stderr(
+      `sidecar ${args.sidecar} belongs to tenant '${existing.tenant ?? "global"}' but --tenant is '${selector}'; ` +
+        "resume with the sidecar's tenant, or clear the sidecar after reconciling the batch manually.",
+    );
+    return 1;
+  }
 
   const articles = existing ? [] : await deps.readMarkdownDir(args.dir);
   const { plan, oversized, eligible } = selectEligibleArticles(articles);
@@ -298,7 +311,9 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
         now: () => new Date().toISOString(),
         sleep,
         loadSidecar: () => loadSidecar(opts.sidecar),
-        saveSidecar: (s) => saveSidecar(opts.sidecar, s),
+        // Stamp the tenant selector on every checkpoint so a resume can refuse
+        // a mismatched --tenant (the sidecar guard in runCorpusIngest).
+        saveSidecar: (s) => saveSidecar(opts.sidecar, { ...s, tenant: cfg.tenantSelector }),
         clearSidecar: () => clearSidecar(opts.sidecar),
         saveInputJsonl: (jsonl) => saveInputJsonl(opts.sidecar, jsonl),
         loadInputJsonl: () => loadInputJsonl(opts.sidecar),

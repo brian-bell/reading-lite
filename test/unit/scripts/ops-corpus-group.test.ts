@@ -569,6 +569,31 @@ describe("ops corpus ingest", () => {
     ).rejects.toThrow(/--tenant is required/);
   });
 
+  it("refuses to resume a sidecar under a different tenant", async () => {
+    const { deps, calls, lines } = makeDeps();
+    deps.loadSidecar = async () =>
+      ({ batchId: "b1", targets: [], provider: "openai", tenant: "usr_11111111-1111-4111-8111-111111111111" }) as never;
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(calls.executes).toBe(0);
+    expect(lines.join("\n")).toContain("belongs to tenant 'usr_11111111-1111-4111-8111-111111111111'");
+  });
+
+  it("resumes a legacy sidecar (no tenant field) under the global selector", async () => {
+    const { deps, calls } = makeDeps();
+    deps.loadSidecar = async () =>
+      ({ batchId: "b1", targets: [], provider: "openai" }) as never;
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(calls.executes).toBe(1);
+  });
+
   it("rejects a malformed --limit", async () => {
     const { deps } = makeDeps();
     await expect(corpusIngestCommand.run(["--tenant", "global", "--dir", "/md", "--limit", "zero"], deps)).rejects.toThrow(UsageError);

@@ -102,6 +102,14 @@ interface AnthropicSidecarV2 {
   version: 2;
   provider: "anthropic";
   model: string;
+  /**
+   * The operator tenant selector this batch was submitted under ('global' or
+   * usr_…). Stamped by the command's saveSidecar seam; resumes refuse a
+   * mismatched selector so an interrupted batch can never be re-targeted at a
+   * different tenant's namespace. Absent on legacy sidecars, which were all
+   * written under the global layout.
+   */
+  tenant?: string;
 }
 
 export interface Sidecar extends AnthropicSidecarV2 {
@@ -141,6 +149,8 @@ interface OpenAISidecarV2 {
   runId: string;
   model: string;
   reasoningEffort: OpenAIReasoningEffort;
+  /** See AnthropicSidecarV2.tenant. */
+  tenant?: string;
 }
 
 export interface OpenAIActivatingSidecar extends OpenAISidecarV2 {
