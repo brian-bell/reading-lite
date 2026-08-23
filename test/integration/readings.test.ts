@@ -6,7 +6,7 @@ import {
   type ProcessReadingEnvelopeV1,
 } from "../../src/control-plane/envelope";
 import { createApp } from "../../src/router";
-import type { Env } from "../../src/index";
+import { handleDeadLetter, type Env } from "../../src/index";
 import {
   markDeadLettered,
   processReading,
@@ -22,6 +22,7 @@ import {
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
+  OTHER_TOKEN_ID,
   OTHER_TOKEN_SECRET,
   founderTenant,
   insertSecondTenant,
@@ -5612,34 +5613,70 @@ describe("cross-tenant mutation matrix", () => {
     expect(await founderCross.json()).toEqual({ error: "not found" });
   });
 
-  it("a dead-lettered job processed under another tenant cannot mutate the owner's reading", async () => {
+  it("a dead-lettered job admitted under another tenant cannot mutate the owner's reading", async () => {
     const url = "https://example.com/mutation-dlq";
     const { app, services, id } = await seedFounderReading(url);
     const founderBefore = await (await apiRequest(app, TOKEN, `/api/readings/${id}`)).text();
 
     // An envelope whose tenant context does not match the job it carries: the
-    // job describes the founder's reading, but the consumer admits the other
-    // tenant. The tenant-rooted store must confine every write to that tenant.
+    // job describes the founder's reading, but the envelope authenticates the
+    // OTHER tenant's token. Drive it through the production dead-letter
+    // boundary — parse, admission against D1, then the mark — wired exactly
+    // like the worker's queue() handler.
     const founderStore = testReadingStore(env as unknown as Env, founderTenant());
     const found = await founderStore.loadReadingById(id);
     expect(found).not.toBeNull();
-    const args: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash: await sha256Hex(url),
-      createdAt: found!.manifest.created_at,
-      keyPrefix: found!.keyPrefix,
-      trigger: "reprocess",
+    const envelope: ProcessReadingEnvelopeV1 = {
+      version: 1,
+      tenant: { tenantId: otherTenant().tenantId },
+      actor: { kind: "api_token", credentialId: OTHER_TOKEN_ID },
+      job: {
+        id,
+        url,
+        urlHash: await sha256Hex(url),
+        createdAt: found!.manifest.created_at,
+        keyPrefix: found!.keyPrefix,
+        trigger: "reprocess",
+      },
     };
-    await markDeadLettered(args, env as unknown as Env, services, otherTenant());
+    const ack = vi.fn();
+    await handleDeadLetter(
+      { body: envelope, ack, retry: vi.fn() } as unknown as Message<unknown>,
+      {
+        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        nowMs: Date.now(),
+        mark: (body, tenant) => markDeadLettered(body, env as unknown as Env, services, tenant),
+      },
+    );
+    expect(ack).toHaveBeenCalled();
 
-    // The founder's reading, list, and lookup are byte-identical to before.
+    // The founder's reading, list, and by-url ownership are byte-identical to
+    // before: nothing the admitted tenant did reached the owner's namespace.
     const founderAfter = await (await apiRequest(app, TOKEN, `/api/readings/${id}`)).text();
     expect(founderAfter).toBe(founderBefore);
     const founderList = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
       readings: { id: string; status: string }[];
     };
     expect(founderList.readings.map((r) => [r.id, r.status])).toEqual([[id, "ready"]]);
+    const founderLookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(await founderLookup.json()).toEqual({ id });
+
+    // The mark itself is confined to the admitted tenant: with no matching
+    // manifest in that namespace, markDeadLettered still writes a failed
+    // marker so the strand stays visible — as a row in the ADMITTED tenant's
+    // list, at the job's key prefix under that tenant's root, never the
+    // owner's.
+    const otherList = (await (
+      await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")
+    ).json()) as { readings: { id: string; status: string }[] };
+    expect(otherList.readings.map((r) => [r.id, r.status])).toEqual([[id, "failed"]]);
+    expect(
+      await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/${found!.keyPrefix}/manifest.json`),
+    ).not.toBeNull();
   });
 
   it("concurrent two-tenant terminal commits keep list CAS and vectors per tenant", async () => {
