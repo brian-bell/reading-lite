@@ -13,7 +13,12 @@
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
-import type { ApiResult } from "../../corpus-lib/api";
+import {
+  classifyOutcome,
+  readingApiFor,
+  type ReadingApi,
+  type ReadingApiOutcome,
+} from "../../lib/reading-api";
 import { planByAction, recoveryAction } from "../../corpus-lib/policy";
 import { shouldPauseAfter } from "../../corpus-lib/throttle";
 import { tallyByIds } from "../../corpus-lib/audit";
@@ -30,14 +35,8 @@ export interface CorpusRecoverDeps extends BaseDeps {
   readFile: (path: string) => Promise<string>;
   writeFile: (path: string, body: string) => Promise<void>;
   resolveApiTarget: (flags: { url?: string; token?: string }) => ApiTarget;
-  api: {
-    reprocessReading: (id: string, deps: { base: string; token: string; fetch: typeof fetch }) => Promise<ApiResult>;
-    importMarkdown: (
-      body: { source_url: string; markdown: string; title?: string },
-      deps: { base: string; token: string; fetch: typeof fetch },
-    ) => Promise<ApiResult>;
-  };
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: ApiTarget) => Pick<ReadingApi, "reprocess" | "importMarkdown">;
   // Realtime local-extract (browser-header fetch wired in by defaultDeps).
   extract: (url: string) => Promise<ExtractedContent>;
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -132,11 +131,32 @@ function parsePositive(raw: string | undefined, name: string, fallback: number, 
 
 function printSummary(
   io: CommandIo,
-  s: { executed: boolean; reprocessed: number; extracted: number; errors: number; touched: string[] },
+  s: { executed: boolean; reprocessed: number; extracted: number; inProgress: number; errors: number; touched: string[] },
 ): void {
   io.stdout(JSON.stringify({
-    executed: s.executed, reprocessed: s.reprocessed, extracted: s.extracted, errors: s.errors, touched: s.touched.length,
+    executed: s.executed, reprocessed: s.reprocessed, extracted: s.extracted,
+    in_progress: s.inProgress, errors: s.errors, touched: s.touched.length,
   }, null, 2));
+}
+
+// An initializing owner or an active-attempt conflict means work is already in
+// flight for this reading — the recover run should report it as in progress
+// and move on, not count it as a failure. Other conflicts (missing_markdown —
+// the only one a force reprocess can produce besides active_attempt) are real
+// failures and fall through to the error bucket.
+function isInProgress(out: ReadingApiOutcome): boolean {
+  return (
+    out.kind === "initializing" ||
+    (out.kind === "conflict" && out.reason === "active_attempt")
+  );
+}
+
+function isAccepted(out: ReadingApiOutcome): boolean {
+  return out.kind === "activated" || out.kind === "existing";
+}
+
+function describeError(out: ReadingApiOutcome): string {
+  return classifyOutcome(out).error ?? out.kind;
 }
 
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
@@ -169,7 +189,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
       }
     }
     deps.io.stderr("Rerun with --execute to act.");
-    printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, errors: 0, touched: [] });
+    printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, inProgress: 0, errors: 0, touched: [] });
     return 0;
   }
 
@@ -177,11 +197,12 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (!target.token) {
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
-  const api = { ...target, fetch: deps.fetch };
+  const api = deps.makeApi(target);
 
   const touched: string[] = [];
   let reprocessed = 0;
   let extracted = 0;
+  let inProgress = 0;
   let errors = 0;
   // One cap across the whole batch — --limit bounds total writes, not per-action.
   let remaining = args.limit;
@@ -203,10 +224,17 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
       if (remaining <= 0) break;
       remaining--;
       await paceBeforeSubmit();
-      const res = await deps.api.reprocessReading(r.reading_id, api);
-      if (res.outcome === "error") { errors++; (r as any).result = `reprocess error: ${res.error}`; }
-      else { reprocessed++; submitted++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.outcome}`; }
-      deps.io.stderr(`  reprocess ${r.short} -> ${res.outcome}${res.error ? " " + res.error : ""}`);
+      const res = await api.reprocess(r.reading_id, { force: true });
+      if (isAccepted(res)) {
+        reprocessed++; submitted++; touched.push(r.reading_id); (r as any).result = `reprocess: ${res.kind}`;
+        deps.io.stderr(`  reprocess ${r.short} -> ${res.kind}`);
+      } else if (isInProgress(res)) {
+        inProgress++; (r as any).result = `reprocess skipped: in progress (${res.kind})`;
+        deps.io.stderr(`  reprocess ${r.short} -> in progress (${res.kind})`);
+      } else {
+        errors++; (r as any).result = `reprocess error: ${describeError(res)}`;
+        deps.io.stderr(`  reprocess ${r.short} -> error ${describeError(res)}`);
+      }
     }
   }
 
@@ -222,13 +250,21 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
           continue;
         }
         await paceBeforeSubmit();
-        const res = await deps.api.importMarkdown(
+        const res = await api.importMarkdown(
           { source_url: r.url, markdown: ex.markdown, ...(ex.title ? { title: ex.title } : {}) },
-          api,
         );
-        if (res.outcome === "error") { errors++; (r as any).result = `import error: ${res.error}`; }
-        else { extracted++; submitted++; if (res.id) touched.push(res.id); (r as any).result = `local-extract+import: ${res.outcome} ${res.id ?? ""}`; }
-        deps.io.stderr(`  local-extract ${r.short} -> import ${res.outcome}${res.id ? " " + res.id : ""}`);
+        const resId = "id" in res && typeof res.id === "string" ? res.id : undefined;
+        if (isAccepted(res)) {
+          extracted++; submitted++; if (resId) touched.push(resId);
+          (r as any).result = `local-extract+import: ${res.kind} ${resId ?? ""}`;
+          deps.io.stderr(`  local-extract ${r.short} -> import ${res.kind}${resId ? " " + resId : ""}`);
+        } else if (isInProgress(res)) {
+          inProgress++; (r as any).result = `import skipped: in progress (${res.kind})`;
+          deps.io.stderr(`  local-extract ${r.short} -> import in progress (${res.kind})`);
+        } else {
+          errors++; (r as any).result = `import error: ${describeError(res)}`;
+          deps.io.stderr(`  local-extract ${r.short} -> import error ${describeError(res)}`);
+        }
       } catch (e) {
         errors++; (r as any).result = `local-extract threw: ${e instanceof Error ? e.message : String(e)}`;
         deps.io.stderr(`  local-extract ${r.short} -> ERROR ${(e as Error).message}`);
@@ -250,7 +286,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
     }
   }
 
-  printSummary(deps.io, { executed: true, reprocessed, extracted, errors, touched });
+  printSummary(deps.io, { executed: true, reprocessed, extracted, inProgress, errors, touched });
   return errors > 0 ? 1 : 0;
 }
 
@@ -298,7 +334,7 @@ async function runBatchMode(
       deps.io.stderr(`  [plan batch] would submit ${batchRows.length} reading(s) in one batch`);
     }
     deps.io.stderr("Rerun with --execute (and --sole-writer) to act.");
-    printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, errors: 0, touched: [] });
+    printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, inProgress: 0, errors: 0, touched: [] });
     return 0;
   }
 
@@ -354,17 +390,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       await fs.writeFile(p, body);
     },
     resolveApiTarget,
-    api: {
-      reprocessReading: async (id, apiDeps) => {
-        const { reprocessReading } = await import("../../corpus-lib/api");
-        return reprocessReading(id, apiDeps);
-      },
-      importMarkdown: async (body, apiDeps) => {
-        const { importMarkdown } = await import("../../corpus-lib/api");
-        return importMarkdown(body, apiDeps);
-      },
-    },
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
     extract: async (url) => {
       const { extractFromUrl } = await import("../../../src/modules/extractor/index");
       const { makeBrowserFetch } = await import("../../corpus-lib/browser-fetch");

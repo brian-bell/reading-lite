@@ -17,6 +17,7 @@ import { parseBookmarksHtml } from "../../import-bookmarks-lib/parse";
 import { collectLinks, selectFolder } from "../../import-bookmarks-lib/select";
 import type { SubmitOpts, SubmitResult, SubmitSummary } from "../../import-bookmarks-lib/submit";
 import { createPrompter, type Prompter } from "../../import-bookmarks-lib/confirm";
+import { apiBaseFromEndpoint, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ImportBookmarksDeps extends BaseDeps {
@@ -26,7 +27,8 @@ export interface ImportBookmarksDeps extends BaseDeps {
   submitAll: (urls: string[], opts: SubmitOpts) => Promise<SubmitSummary>;
   // Interactive per-URL confirmation — constructed only on the execute path.
   createPrompter: () => Prompter;
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: { base: string; token: string }) => ReadingApi;
   resolveToken: (flag?: string) => string;
   now: () => number;
 }
@@ -128,9 +130,7 @@ async function runImportBookmarks(argv: string[], deps: ImportBookmarksDeps): Pr
   let summary;
   try {
     summary = await deps.submitAll(unseen, {
-      fetch: deps.fetch,
-      destinationUrl: args.destinationUrl,
-      token,
+      api: deps.makeApi({ base: apiBaseFromEndpoint(args.destinationUrl), token }),
       beforeSubmit: prompter
         ? async (ctx) => {
             const decision = await prompter.ask(
@@ -243,7 +243,7 @@ Options:
     saveIndex: async (p, index) => (await import("../../import-bookmarks-lib/index-store")).saveIndex(p, index),
     submitAll: async (urls, opts) => (await import("../../import-bookmarks-lib/submit")).submitAll(urls, opts),
     createPrompter: () => createPrompter(),
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
     resolveToken: (flag) =>
       flag ?? process.env.READER_API_TOKEN ?? loadDotVars(".dev.vars").READER_API_TOKEN ?? "",
     now: () => Date.now(),

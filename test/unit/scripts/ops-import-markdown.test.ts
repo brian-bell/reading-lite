@@ -47,9 +47,12 @@ function makeDeps(articles: MarkdownArticle[], overrides: Partial<ImportMarkdown
       }
       return { total: arts.length, new: arts.length, existing: 0, errors: 0 };
     },
-    fetch: (() => {
-      throw new Error("network must not be touched directly");
-    }) as unknown as typeof fetch,
+    makeApi: () =>
+      ({
+        importMarkdown: async () => {
+          throw new Error("network must not be touched directly");
+        },
+      }) as unknown as import("../../../scripts/lib/reading-api").ReadingApi,
     resolveToken: () => SECRET,
     now: () => Date.parse("2026-08-22T12:00:00Z"),
     ...overrides,

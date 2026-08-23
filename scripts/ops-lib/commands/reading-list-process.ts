@@ -13,6 +13,7 @@ import type { ReadingListEntry } from "../../check-corpus-lib/corpus";
 import type { Prompter } from "../../import-bookmarks-lib/confirm";
 import { createPrompter } from "../../import-bookmarks-lib/confirm";
 import type { SubmitOpts, SubmitResult, SubmitSummary } from "../../import-bookmarks-lib/submit";
+import { apiBaseFromEndpoint, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { createResultSink } from "../../process-reading-list-lib/persist";
 import { selectUnprocessed } from "../../process-reading-list-lib/select";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
@@ -23,7 +24,8 @@ export interface ReadingListProcessDeps extends BaseDeps {
   writeFileAtomic: (path: string, body: string) => Promise<void>;
   submitAll: (urls: string[], opts: SubmitOpts) => Promise<SubmitSummary>;
   createPrompter: () => Prompter;
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: { base: string; token: string }) => ReadingApi;
   resolveToken: (flag?: string) => string;
   now: () => number;
 }
@@ -126,9 +128,7 @@ async function runReadingListProcess(argv: string[], deps: ReadingListProcessDep
   let errorsExit = 0;
   try {
     await deps.submitAll(urls, {
-      fetch: deps.fetch,
-      destinationUrl: args.destinationUrl,
-      token,
+      api: deps.makeApi({ base: apiBaseFromEndpoint(args.destinationUrl), token }),
       beforeSubmit: prompter
         ? async (ctx) => {
             const decision = await prompter.ask(`[${ctx.index}/${ctx.total}] ${ctx.url}\n  submit? [Y/n/q]`);
@@ -232,7 +232,7 @@ Options:
     },
     submitAll: async (urls, opts) => (await import("../../import-bookmarks-lib/submit")).submitAll(urls, opts),
     createPrompter: () => createPrompter(),
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
     resolveToken: (flag) =>
       flag ?? process.env.READER_API_TOKEN ?? loadDotVars(".dev.vars").READER_API_TOKEN ?? "",
     now: () => Date.now(),

@@ -103,3 +103,19 @@ submit, a markdown import, or a lookup. It lives in
   `annotateStale` / `annotateStaleIndexItem` in `router.ts` are thin adapters
   that read the TTL from env and apply the verdict onto the manifest / index-item
   shape.
+
+## Operator surface
+
+- **Reading API client** — the operator tools' one way of speaking to the
+  reading API: `readingApiFor({ base, token, fetch })` in
+  `scripts/lib/reading-api.ts`. It is the inverse of
+  the router's `toHttp`: responses decode back into the **intake outcome**
+  vocabulary (`activated` | `existing` | `initializing` | `conflict` |
+  `not_found` | `unavailable`) plus the client-only `http_error` and
+  `transport_error`, so a 409
+  initializing owner is never miscounted as a failure. The client owns transport
+  retry — submit/import/lookup retry through the by-url claim's idempotency;
+  **reprocess never auto-retries**, because a delivered-then-retried reprocess
+  activates and bills a second attempt — and `waitTerminal` polling to a
+  terminal manifest. Loop orchestration (serial iteration, skip/quit prompts,
+  run summaries) stays with the individual tools.

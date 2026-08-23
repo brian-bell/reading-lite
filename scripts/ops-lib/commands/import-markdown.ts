@@ -30,6 +30,7 @@ import type {
   MarkdownSubmitArticle,
   MarkdownSubmitOpts,
 } from "../../import-markdown-lib/submit";
+import { apiBaseFromEndpoint, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ImportMarkdownDeps extends BaseDeps {
@@ -41,7 +42,8 @@ export interface ImportMarkdownDeps extends BaseDeps {
     dir: string,
   ) => Promise<ProcessedMove[]>;
   submitAll: (articles: MarkdownSubmitArticle[], opts: MarkdownSubmitOpts) => Promise<MarkdownSubmitSummary>;
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: { base: string; token: string }) => ReadingApi;
   resolveToken: (flag?: string) => string;
   now: () => number;
 }
@@ -197,9 +199,7 @@ async function runImportMarkdown(argv: string[], deps: ImportMarkdownDeps): Prom
       ...(article.title === undefined ? {} : { title: article.title }),
     })),
     {
-      fetch: deps.fetch,
-      destinationUrl: args.destinationUrl,
-      token,
+      api: deps.makeApi({ base: apiBaseFromEndpoint(args.destinationUrl), token }),
       email: args.email,
       onResult: async (r) => {
         logResult(deps.io, r);
@@ -408,7 +408,7 @@ new/existing response, so interrupted runs are resumable.`,
       const { submitMarkdownAll } = await import("../../import-markdown-lib/submit");
       return submitMarkdownAll(articles, opts);
     },
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
     resolveToken: (flag) =>
       flag ?? process.env.READER_API_TOKEN ?? loadDotVars(".dev.vars").READER_API_TOKEN ?? "",
     now: () => Date.now(),

@@ -50,19 +50,16 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
       indexWrites.push({ path, body });
     },
     resolveApiTarget: () => ({ base: "https://api.test", token: "tok" }),
-    api: {
-      reprocessReading: async (id) => {
+    makeApi: () => ({
+      reprocess: async (id: string) => {
         reprocessed.push(id);
-        return { outcome: "new", id };
+        return { kind: "activated", id } as const;
       },
-      importMarkdown: async (body) => {
+      importMarkdown: async (body: { source_url: string; markdown: string }) => {
         imported.push({ source_url: body.source_url, markdown: body.markdown });
-        return { outcome: "new", id: "rd_new" };
+        return { kind: "activated", id: "rd_new" } as const;
       },
-    },
-    fetch: (() => {
-      throw new Error("network must not be touched");
-    }) as unknown as typeof fetch,
+    }),
     extract: async () => ({
       content_status: "captured", content_type: "text/html",
       markdown: "# extracted body", title: "T",
@@ -117,8 +114,8 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.imported).toEqual([{ source_url: "https://b.example/y", markdown: "# extracted body" }]);
     expect(r.indexWrites).toHaveLength(1);
     const doc = JSON.parse(r.indexWrites[0].body);
-    expect(doc.rows[0].result).toBe("reprocess: new");
-    expect(doc.rows[1].result).toContain("local-extract+import: new");
+    expect(doc.rows[0].result).toBe("reprocess: activated");
+    expect(doc.rows[1].result).toContain("local-extract+import: activated");
     expect(r.out.join("\n")).toContain('"executed": true');
   });
 
@@ -132,9 +129,46 @@ describe("ops corpus recover — realtime routing", () => {
 
   it("returns 1 when a submission errors", async () => {
     const r = makeDeps();
-    r.deps.api.reprocessReading = async () => ({ outcome: "error", error: "500 boom" });
+    r.deps.makeApi = () => ({
+      reprocess: async () => ({ kind: "http_error", status: 500, message: "boom" }),
+      importMarkdown: async () => ({ kind: "http_error", status: 500, message: "boom" }),
+    });
     const code = await corpusRecoverCommand.run(["--only", "reprocess", "--execute"], r.deps);
     expect(code).toBe(1);
+    expect(r.out.join("\n")).toContain('"errors": 1');
+  });
+
+  it("counts an active-attempt conflict or initializing owner as in progress, not an error", async () => {
+    const r = makeDeps();
+    r.deps.makeApi = () => ({
+      reprocess: async () =>
+        ({ kind: "conflict", reason: "active_attempt", message: "reading already has an active attempt" }) as const,
+      importMarkdown: async () => ({ kind: "initializing", id: "rd_race" }) as const,
+    });
+    const code = await corpusRecoverCommand.run(["--execute"], r.deps);
+    expect(code).toBe(0);
+    const summary = r.out.join("\n");
+    expect(summary).toContain('"in_progress": 2');
+    expect(summary).toContain('"errors": 0');
+    const doc = JSON.parse(r.indexWrites[0].body);
+    expect(doc.rows[0].result).toContain("in progress");
+  });
+
+  it("counts a missing-markdown conflict as an error — force reprocess bypasses the attempt check", async () => {
+    const r = makeDeps();
+    r.deps.makeApi = () => ({
+      reprocess: async () =>
+        ({ kind: "conflict", reason: "missing_markdown", message: "markdown content not available" }) as const,
+      importMarkdown: async () =>
+        ({ kind: "conflict", reason: "missing_markdown", message: "markdown content not available" }) as const,
+    });
+    const code = await corpusRecoverCommand.run(["--only", "reprocess", "--execute"], r.deps);
+    expect(code).toBe(1);
+    const summary = r.out.join("\n");
+    expect(summary).toContain('"errors": 1');
+    expect(summary).toContain('"in_progress": 0');
+    const doc = JSON.parse(r.indexWrites[0].body);
+    expect(doc.rows[0].result).toContain("markdown content not available");
   });
 
   it("rejects an invalid --only before reading the audit file", async () => {

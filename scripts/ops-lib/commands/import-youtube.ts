@@ -27,7 +27,7 @@ import {
 } from "../../../src/modules/extractor/youtube";
 import { buildYoutubeImport } from "../../youtube-import-lib/parse";
 import { resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
-import type { ApiResult, LookupResult } from "../../corpus-lib/api";
+import { classifyOutcome, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ImportYoutubeDeps extends BaseDeps {
@@ -37,15 +37,8 @@ export interface ImportYoutubeDeps extends BaseDeps {
   // are cleaned inside.
   fetchTranscript: (watchUrl: string, io: CommandIo) => string | undefined;
   resolveApiTarget: (flags: { url?: string; token?: string }) => ApiTarget;
-  importMarkdown: (
-    body: { source_url: string; markdown: string; title?: string },
-    deps: { base: string; token: string; fetch: typeof fetch },
-  ) => Promise<ApiResult>;
-  lookupReading: (
-    url: string,
-    deps: { base: string; token: string; fetch: typeof fetch },
-  ) => Promise<LookupResult>;
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: ApiTarget) => Pick<ReadingApi, "importMarkdown" | "lookup">;
 }
 
 interface Args {
@@ -103,15 +96,19 @@ async function warnNoncanonicalOwners(
   videoId: string,
   canonicalUrl: string,
   passedUrl: string,
-  api: { base: string; token: string; fetch: typeof fetch },
+  api: Pick<ReadingApi, "lookup">,
 ): Promise<void> {
   const candidates = new Set<string>([...youtubeWatchUrlVariants(videoId), passedUrl]);
   candidates.delete(canonicalUrl); // the canonical owner is handled by the import itself
 
   const found: { url: string; id?: string }[] = [];
   for (const candidate of candidates) {
-    const hit = await deps.lookupReading(candidate, api);
-    if (hit.found) found.push({ url: candidate, id: hit.id });
+    const hit = await api.lookup(candidate);
+    // Both kinds mean the URL has an owner (initializing = pointer claimed,
+    // manifest still being written) — either way, warn about the duplicate.
+    if (hit.kind === "existing" || hit.kind === "initializing") {
+      found.push({ url: candidate, ...(hit.id === undefined ? {} : { id: hit.id }) });
+    }
   }
   if (found.length === 0) return;
 
@@ -164,16 +161,16 @@ async function runImportYoutube(argv: string[], deps: ImportYoutubeDeps): Promis
   if (!target.token) {
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
-  const api = { ...target, fetch: deps.fetch };
+  const api = deps.makeApi(target);
 
   await warnNoncanonicalOwners(deps, videoId, body.source_url, args.url, api);
 
-  const res = await deps.importMarkdown(body, api);
-  if (res.outcome === "error") {
+  const res = classifyOutcome(await api.importMarkdown(body));
+  if (res.classification === "error") {
     io.stderr(`import failed: ${res.error}`);
     return 1;
   }
-  if (res.outcome === "existing") {
+  if (res.classification === "existing") {
     io.stderr(
       `\nnote: ${body.source_url} already has a reading (${res.id ?? "?"}). Ready/pending owners are\n` +
         "returned as-is — to replace a worker-made floor-only reading with this richer import,\n" +
@@ -185,9 +182,9 @@ async function runImportYoutube(argv: string[], deps: ImportYoutubeDeps): Promis
 
   const id = res.id ?? "(unknown)";
   io.stdout(
-    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2),
+    JSON.stringify({ outcome: res.classification, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2),
   );
-  io.stderr(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/api/readings/${id}`);
+  io.stderr(`\nimported (${res.classification}) to ${target.base} — poll ${target.base}/api/readings/${id}`);
   return 0;
 }
 
@@ -274,9 +271,7 @@ Examples:
       }
     },
     resolveApiTarget,
-    importMarkdown: async (body, apiDeps) => (await import("../../corpus-lib/api")).importMarkdown(body, apiDeps),
-    lookupReading: async (url, apiDeps) => (await import("../../corpus-lib/api")).lookupReading(url, apiDeps),
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
   }),
   run: runImportYoutube,
 };

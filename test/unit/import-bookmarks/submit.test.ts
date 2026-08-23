@@ -1,23 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { submitAll, type SubmitResult } from "../../../scripts/import-bookmarks-lib/submit";
+import type { ReadingApiOutcome } from "../../../scripts/lib/reading-api";
 
-const DEST = "http://localhost:8787/api/readings";
-
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+// The loop owns orchestration only; HTTP mechanics (auth, retry, decoding)
+// live behind the injected Reading API client and are tested with it.
+function apiStub(outcomes: ReadingApiOutcome[]) {
+  let i = 0;
+  return {
+    submit: vi.fn(async (_url: string) => outcomes[Math.min(i++, outcomes.length - 1)]!),
+  };
 }
 
 describe("submitAll", () => {
-  it("classifies 202/200/4xx and skips non-http schemes", async () => {
-    const fetchMock = vi.fn<typeof fetch>();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse(202, { id: "rd_new", status: "pending" }))
-      .mockResolvedValueOnce(jsonResponse(200, { id: "rd_old", status: "ready" }))
-      .mockResolvedValueOnce(jsonResponse(500, { error: "boom" }));
-
+  it("classifies activated/existing/error outcomes and skips non-http schemes", async () => {
+    const api = apiStub([
+      { kind: "activated", id: "rd_new" },
+      { kind: "existing", id: "rd_old" },
+      { kind: "http_error", status: 500, message: "boom" },
+    ]);
     const results: SubmitResult[] = [];
     const summary = await submitAll(
       [
@@ -27,17 +27,10 @@ describe("submitAll", () => {
         "chrome://settings",
         "javascript:void(0)",
       ],
-      {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
-        onResult: async (r) => {
-          results.push(r);
-        },
-      },
+      { api, onResult: async (r) => void results.push(r) },
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(api.submit).toHaveBeenCalledTimes(3);
     expect(summary).toMatchObject({ new: 1, existing: 1, errors: 1, skipped: 2 });
 
     const byUrl = Object.fromEntries(results.map((r) => [r.url, r]));
@@ -51,123 +44,57 @@ describe("submitAll", () => {
     expect(byUrl["javascript:void(0)"]!.classification).toBe("skipped");
   });
 
-  it("classifies network errors as 'error' after exhausting retries", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      throw new TypeError("network down");
-    });
+  it("counts an initializing owner as existing, not an error", async () => {
+    const api = apiStub([{ kind: "initializing", id: "rd_racing" }]);
     const results: SubmitResult[] = [];
-    const summary = await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      destinationUrl: DEST,
-      token: "tok",
-      onResult: async (r) => {
-        results.push(r);
-      },
+    const summary = await submitAll(["https://racing.test/"], {
+      api,
+      onResult: async (r) => void results.push(r),
     });
-    expect(summary.errors).toBe(1);
-    expect(results[0]!.classification).toBe("error");
-    expect(results[0]!.error).toMatch(/network down/);
-    expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 retries
+    expect(summary).toMatchObject({ existing: 1, errors: 0 });
+    expect(results[0]!.classification).toBe("existing");
+    expect(results[0]!.id).toBe("rd_racing");
   });
 
-  it("surfaces the cause chain in the error message", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      const inner = Object.assign(new Error("Other side closed"), { code: "UND_ERR_SOCKET" });
-      throw Object.assign(new TypeError("fetch failed"), { cause: inner });
-    });
+  it("counts a transport_error as an error with its message", async () => {
+    const api = apiStub([
+      { kind: "transport_error", message: "fetch failed / UND_ERR_SOCKET: Other side closed" },
+    ]);
     const results: SubmitResult[] = [];
-    await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      destinationUrl: DEST,
-      token: "tok",
-      onResult: async (r) => {
-        results.push(r);
-      },
+    const summary = await submitAll(["https://x.test/"], {
+      api,
+      onResult: async (r) => void results.push(r),
     });
+    expect(summary.errors).toBe(1);
     expect(results[0]!.error).toBe("fetch failed / UND_ERR_SOCKET: Other side closed");
   });
 
-  it("retries on transport error and recovers if a subsequent attempt succeeds", async () => {
-    let calls = 0;
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      calls += 1;
-      if (calls < 3) throw new TypeError("fetch failed");
-      return jsonResponse(202, { id: "rd_x", status: "pending" });
-    });
-    const summary = await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      destinationUrl: DEST,
-      token: "tok",
-      onResult: async () => {},
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(summary).toMatchObject({ new: 1, errors: 0 });
-  });
-
-  it("does not retry on HTTP error status (4xx/5xx is the worker, not a transport blip)", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(503, { error: "down" }));
-    const summary = await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      destinationUrl: DEST,
-      token: "tok",
-      onResult: async () => {},
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(summary).toMatchObject({ errors: 1 });
-  });
-
-  it("POSTs to the destination URL with bearer auth and a JSON body", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse(202, { id: "rd_x", status: "pending" }),
-    );
-    await submitAll(["https://x.test/"], {
-      fetch: fetchMock,
-      destinationUrl: "https://reading-lite.bbell.dev/api/readings",
-      token: "tok-abc",
-      onResult: async () => {},
-    });
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://reading-lite.bbell.dev/api/readings");
-    expect(init?.method).toBe("POST");
-    const headers = new Headers(init?.headers);
-    expect(headers.get("authorization")).toBe("Bearer tok-abc");
-    expect(headers.get("content-type")).toBe("application/json");
-    expect(JSON.parse(String(init?.body))).toEqual({ url: "https://x.test/" });
-  });
-
-  it("processes URLs serially (one fetch in flight at a time)", async () => {
+  it("processes URLs serially (one submit in flight at a time)", async () => {
     let inFlight = 0;
     let peak = 0;
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      inFlight += 1;
-      peak = Math.max(peak, inFlight);
-      await new Promise((r) => setTimeout(r, 5));
-      inFlight -= 1;
-      return jsonResponse(202, { id: "rd_x", status: "pending" });
-    });
+    const api = {
+      submit: vi.fn(async (): Promise<ReadingApiOutcome> => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        return { kind: "activated", id: "rd_x" };
+      }),
+    };
     await submitAll(
       Array.from({ length: 5 }, (_, i) => `https://${i}.test/`),
-      {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
-        onResult: async () => {},
-      },
+      { api, onResult: async () => {} },
     );
     expect(peak).toBe(1);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(api.submit).toHaveBeenCalledTimes(5);
   });
 
   it("calls onResult once per URL with index/total set", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () =>
-      jsonResponse(202, { id: "rd_x", status: "pending" }),
-    );
+    const api = apiStub([{ kind: "activated", id: "rd_x" }]);
     const indices: number[] = [];
     const totals: number[] = [];
     await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
-      fetch: fetchMock,
-      destinationUrl: DEST,
-      token: "tok",
+      api,
       onResult: async (r) => {
         indices.push(r.index);
         totals.push(r.total);
@@ -179,48 +106,36 @@ describe("submitAll", () => {
 
   describe("beforeSubmit hook", () => {
     it("submits when the hook returns 'submit'", async () => {
-      const fetchMock = vi.fn<typeof fetch>(async () =>
-        jsonResponse(202, { id: "rd_x", status: "pending" }),
-      );
+      const api = apiStub([{ kind: "activated", id: "rd_x" }]);
       const summary = await submitAll(["https://a.test/", "https://b.test/"], {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
+        api,
         beforeSubmit: async () => "submit",
         onResult: async () => {},
       });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(api.submit).toHaveBeenCalledTimes(2);
       expect(summary).toMatchObject({ new: 2, skipped: 0, errors: 0 });
     });
 
-    it("counts a 'skip' decision as skipped without calling fetch", async () => {
-      const fetchMock = vi.fn<typeof fetch>(async () =>
-        jsonResponse(202, { id: "rd_x", status: "pending" }),
-      );
+    it("counts a 'skip' decision as skipped without submitting", async () => {
+      const api = apiStub([{ kind: "activated", id: "rd_x" }]);
       const decisions = ["submit", "skip", "submit"] as const;
       let i = 0;
       const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
+        api,
         beforeSubmit: async () => decisions[i++]!,
         onResult: async () => {},
       });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(api.submit).toHaveBeenCalledTimes(2);
       expect(summary).toMatchObject({ new: 2, skipped: 1, errors: 0 });
     });
 
     it("stops processing when the hook returns 'quit'", async () => {
-      const fetchMock = vi.fn<typeof fetch>(async () =>
-        jsonResponse(202, { id: "rd_x", status: "pending" }),
-      );
+      const api = apiStub([{ kind: "activated", id: "rd_x" }]);
       const decisions = ["submit", "quit", "submit"] as const;
       let i = 0;
       const calls: string[] = [];
       const summary = await submitAll(["https://a.test/", "https://b.test/", "https://c.test/"], {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
+        api,
         beforeSubmit: async (ctx) => {
           calls.push(ctx.url);
           return decisions[i++]!;
@@ -228,19 +143,15 @@ describe("submitAll", () => {
         onResult: async () => {},
       });
       expect(calls).toEqual(["https://a.test/", "https://b.test/"]);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(api.submit).toHaveBeenCalledTimes(1);
       expect(summary).toMatchObject({ new: 1, skipped: 0, errors: 0 });
     });
 
     it("skips non-http URLs without calling the hook", async () => {
-      const fetchMock = vi.fn<typeof fetch>(async () =>
-        jsonResponse(202, { id: "rd_x", status: "pending" }),
-      );
+      const api = apiStub([{ kind: "activated", id: "rd_x" }]);
       const seen: string[] = [];
       const summary = await submitAll(["chrome://settings", "https://x.test/"], {
-        fetch: fetchMock,
-        destinationUrl: DEST,
-        token: "tok",
+        api,
         beforeSubmit: async (ctx) => {
           seen.push(ctx.url);
           return "submit";
