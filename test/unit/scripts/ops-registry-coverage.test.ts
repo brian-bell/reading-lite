@@ -278,9 +278,21 @@ Options:
     // READ seams work and WRITE seams throw — inertDeps here would false-fail
     // a conforming D1-reading plan. This test fails until that suite exists.
     const behavioralSuite = "test/unit/scripts/ops-system-policy.test.ts";
-    await expect(
-      fs.stat(path.join(repoRoot, behavioralSuite)),
+    const source = await fs
+      .readFile(path.join(repoRoot, behavioralSuite), "utf8")
+      .catch(() => null);
+    expect(
+      source,
       `system policy is registered but ${behavioralSuite} (running assertPolicyCommandBehavior with its real read seams) is missing`,
-    ).resolves.toBeDefined();
+    ).not.toBeNull();
+    // The suite sits inside the vitest node glob, so once it imports and
+    // invokes the behavioral checker against the registered command it
+    // executes on every run; this guard keeps it from being an empty stub.
+    expect(source, `${behavioralSuite} must invoke assertPolicyCommandBehavior`).toContain(
+      "assertPolicyCommandBehavior",
+    );
+    expect(source, `${behavioralSuite} must exercise the registered system policy command`).toMatch(
+      /system.*policy/s,
+    );
   });
 });
