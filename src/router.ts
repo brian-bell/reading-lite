@@ -2,35 +2,19 @@ import { Hono } from "hono";
 import type { Env } from "./index";
 import { corsMiddleware, requirePrincipal, requireScope, type AppBindings } from "./middleware";
 import {
-  newAttemptId,
-  newAttemptSummary,
-  newReadingArgs,
-  type ProcessReadingArgs,
-  type ProcessReadingSource,
-} from "./process-reading";
-import {
   ListReadingsQuerySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
 } from "./schemas/api";
-import type {
-  ByUrlPointer,
-  Manifest,
-  ProcessingAttemptSummary,
-} from "./schemas/manifest";
-import {
-  PointerExistsError,
-  readingStoreFor,
-  ReadingStore,
-} from "./modules/stores/reading-store";
+import { readingStoreFor, ReadingStore } from "./modules/stores/reading-store";
 import { similarityStoreFor } from "./modules/stores/similarity-store";
-import { OwnerResolutionContentionError, ReadingClaim } from "./modules/reading-claim";
-import { defaultServices, sha256Hex, type Services } from "./services";
-import { activateAttempt, type SubmitJsonResult } from "./attempt-activation";
+import { ReadingClaim } from "./modules/reading-claim";
+import { defaultServices, type Services } from "./services";
+import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
-import { stalenessOf } from "./modules/staleness";
+import { applyStaleness } from "./modules/staleness";
 
 export interface AppOptions {
   services?: Services;
@@ -38,6 +22,16 @@ export interface AppOptions {
 
 function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
   return readingStoreFor(env.READINGS_BUCKET, { tenantId: principal.tenantId }, env);
+}
+
+function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Services): ReadingIntake {
+  return readingIntakeFor({
+    reader: storeForPrincipal(env, principal),
+    queue: env.READING_JOBS ?? null,
+    services,
+    pendingTtlSeconds: pendingTtlSeconds(env),
+    principal,
+  });
 }
 
 export function createApp(opts: AppOptions = {}) {
@@ -48,12 +42,6 @@ export function createApp(opts: AppOptions = {}) {
 
   app.onError((err, c) => {
     console.error(err);
-    // Bounded ownership-resolution contention is retryable, not an internal
-    // fault — surface it as 503 (mirroring claimByUrlSlot's own exhaustion)
-    // rather than letting the generic 500 mask a "retry me" condition.
-    if (err instanceof OwnerResolutionContentionError) {
-      return c.json({ error: "could not resolve url ownership under contention" }, 503);
-    }
     return c.json({ error: "internal" }, 500);
   });
 
@@ -71,41 +59,10 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    const url = parsed.data.url;
-    const email = parsed.data.email ?? true;
-
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const claim = new ReadingClaim(reader, services);
-    const owner = await claim.resolveOwner(url);
-    switch (owner.kind) {
-      case "owned": {
-        const result = await submitResultForOwnedReading(
-          reader,
-          c.env,
-          services,
-          owner.pointer,
-          owner.manifest,
-          { email, principal: c.get("principal") },
-        );
-        return c.json(result.body, result.status);
-      }
-      case "initializing": {
-        const result = initializingResponse(owner.pointer.id);
-        return c.json(result.body, result.status);
-      }
-      case "unclaimed": {
-        const result = await createNewReadingForSubmit(
-          reader,
-          c.env,
-          services,
-          claim,
-          url,
-          email,
-          { replaceEtag: owner.replaceEtag, principal: c.get("principal") },
-        );
-        return c.json(result.body, result.status);
-      }
-    }
+    const intake = intakeFor(c.env, c.get("principal"), services);
+    const out = await intake.submit(parsed.data.url, { email: parsed.data.email ?? true });
+    const res = toHttp(out);
+    return c.json(res.body, res.status);
   });
 
   app.post("/api/readings/import-markdown", requireScope("readings:import"), async (c) => {
@@ -114,49 +71,13 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-
-    const url = parsed.data.source_url;
-    const markdown = parsed.data.markdown;
-    const title = parsed.data.title;
-    const email = parsed.data.email ?? false;
-
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const claim = new ReadingClaim(reader, services);
-    const owner = await claim.resolveOwner(url);
-    switch (owner.kind) {
-      case "owned": {
-        const result = await markdownImportResultForOwnedReading(
-          reader,
-          c.env,
-          services,
-          owner.pointer,
-          owner.manifest,
-          markdown,
-          title,
-          email,
-          c.get("principal"),
-        );
-        return c.json(result.body, result.status);
-      }
-      case "initializing": {
-        const result = initializingResponse(owner.pointer.id);
-        return c.json(result.body, result.status);
-      }
-      case "unclaimed": {
-        const result = await createNewReadingForMarkdownImport(
-          reader,
-          c.env,
-          services,
-          claim,
-          url,
-          markdown,
-          title,
-          email,
-          { replaceEtag: owner.replaceEtag, principal: c.get("principal") },
-        );
-        return c.json(result.body, result.status);
-      }
-    }
+    const intake = intakeFor(c.env, c.get("principal"), services);
+    const out = await intake.importMarkdown(parsed.data.source_url, parsed.data.markdown, {
+      title: parsed.data.title,
+      email: parsed.data.email ?? false,
+    });
+    const res = toHttp(out);
+    return c.json(res.body, res.status);
   });
 
   app.get("/api/readings", requireScope("readings:read"), async (c) => {
@@ -167,7 +88,9 @@ export function createApp(opts: AppOptions = {}) {
     const { q, tag, offset, limit } = parsed.data;
     const reader = storeForPrincipal(c.env, c.get("principal"));
     const out = await reader.listManifests({ q, tag, offset, limit });
-    const annotated = out.readings.map((item) => annotateStaleIndexItem(item, c.env, services));
+    const annotated = out.readings.map((item) =>
+      applyStaleness(item, pendingTtlSeconds(c.env), services.now()),
+    );
     return c.json({
       readings: annotated,
       limit,
@@ -194,8 +117,8 @@ export function createApp(opts: AppOptions = {}) {
       case "owned":
         return c.json({ id: owner.pointer.id });
       case "initializing": {
-        const result = initializingResponse(owner.pointer.id);
-        return c.json(result.body, result.status);
+        const res = toHttp({ kind: "initializing", id: owner.pointer.id });
+        return c.json(res.body, res.status);
       }
       case "unclaimed":
         return c.json({ error: "not found" }, 404);
@@ -230,11 +153,12 @@ export function createApp(opts: AppOptions = {}) {
     const indexItem = await reader.findListIndexItem(id);
     const objects = await reader.listReadingObjects(ptr.key_prefix);
     const attempts = await reader.listAttempts(ptr.key_prefix, 20);
+    const ttl = pendingTtlSeconds(c.env);
     return c.json({
       id,
       key_prefix: ptr.key_prefix,
-      manifest: annotateStale(manifest, c.env, services),
-      index_item: indexItem ? annotateStaleIndexItem(indexItem, c.env, services) : null,
+      manifest: applyStaleness(manifest, ttl, services.now()),
+      index_item: indexItem ? applyStaleness(indexItem, ttl, services.now()) : null,
       pointers: {
         by_id: {
           exists: true,
@@ -264,25 +188,14 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-
-    const id = c.req.param("id");
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const found = await reader.loadReadingById(id);
-    if (!found) return c.json({ error: "not found" }, 404);
-    const result = await enqueueReprocess(
-      reader,
-      c.env,
-      services,
-      found.keyPrefix,
-      found.manifest,
-      {
-        force: parsed.data.force,
-        email: parsed.data.email ?? false,
-        source: parsed.data.source,
-        principal: c.get("principal"),
-      },
-    );
-    return c.json(result.body, result.status);
+    const intake = intakeFor(c.env, c.get("principal"), services);
+    const out = await intake.reprocess(c.req.param("id"), {
+      force: parsed.data.force,
+      email: parsed.data.email ?? false,
+      source: parsed.data.source,
+    });
+    const res = toHttp(out);
+    return c.json(res.body, res.status);
   });
 
   app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
@@ -290,7 +203,7 @@ export function createApp(opts: AppOptions = {}) {
     const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
-    return c.json(annotateStale(found.manifest, c.env, services));
+    return c.json(applyStaleness(found.manifest, pendingTtlSeconds(c.env), services.now()));
   });
 
   app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
@@ -326,439 +239,68 @@ export function createApp(opts: AppOptions = {}) {
   return app;
 }
 
-async function submitResultForOwnedReading(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  pointer: ByUrlPointer,
-  manifest: Manifest,
-  opts: { email: boolean; principal: AuthenticatedPrincipal },
-): Promise<SubmitJsonResult> {
-  await reader.writeByIdPointer(pointer.id, pointer);
-  const effectiveManifest = annotateStale(manifest, env, services);
-  if (effectiveManifest.status !== "failed") {
-    return { body: effectiveManifest, status: 200 };
+// The 503 bodies the SPA and operator tooling match on — one message per
+// retryable `unavailable` reason, byte-identical to the pre-intake router.
+const UNAVAILABLE_MESSAGES: Record<
+  Extract<IntakeOutcome, { kind: "unavailable" }>["reason"],
+  string
+> = {
+  queue_unbound: "queue binding READING_JOBS is not configured",
+  claim_contention: "could not claim url ownership under contention",
+  owner_resolution_contention: "could not resolve url ownership under contention",
+  activation_failed: "reading setup failed",
+  queue_send_failed: "queue send failed",
+};
+
+// The single outcome → HTTP mapping. Reading intake is HTTP-free; everything
+// status-code- or body-shaped about submit/import/reprocess lives here.
+function toHttp(out: IntakeOutcome): {
+  body: unknown;
+  status: 200 | 202 | 404 | 409 | 503;
+} {
+  switch (out.kind) {
+    case "activated":
+      return {
+        body: {
+          id: out.id,
+          status: out.status,
+          poll: `/api/readings/${out.id}`,
+          attempt_id: out.attemptId,
+        },
+        status: 202,
+      };
+    case "existing":
+      return { body: out.manifest, status: 200 };
+    case "initializing":
+      return {
+        body: {
+          error: "reading owner is still initializing",
+          id: out.id,
+          poll: `/api/readings/${out.id}`,
+        },
+        status: 409,
+      };
+    case "conflict":
+      return {
+        body: {
+          error:
+            out.reason === "active_attempt"
+              ? "reading already has an active attempt"
+              : "markdown content not available",
+        },
+        status: 409,
+      };
+    case "not_found":
+      return { body: { error: "not found" }, status: 404 };
+    case "unavailable":
+      return {
+        body: {
+          error: UNAVAILABLE_MESSAGES[out.reason],
+          ...("id" in out && out.id !== undefined ? { id: out.id } : {}),
+        },
+        status: 503,
+      };
   }
-  return enqueueReprocess(reader, env, services, pointer.key_prefix, effectiveManifest, {
-    email: opts.email,
-    principal: opts.principal,
-  });
-}
-
-async function createNewReadingForSubmit(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  claim: ReadingClaim,
-  url: string,
-  email: boolean,
-  opts: { replaceEtag?: string; principal: AuthenticatedPrincipal },
-): Promise<SubmitJsonResult> {
-  const args = await newReadingArgs(url, services);
-  const attemptStartedAt = services.now();
-  const attemptId = newAttemptId(services);
-  const activeAttempt = newAttemptSummary(attemptId, "submit", attemptStartedAt);
-  const pendingManifest: Manifest = {
-    id: args.id,
-    url,
-    url_hash: args.urlHash,
-    source_type: "url",
-    status: "pending",
-    active_attempt: activeAttempt,
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: args.createdAt,
-    updated_at: args.createdAt,
-  };
-  if (!env.READING_JOBS) {
-    return {
-      body: { error: "queue binding READING_JOBS is not configured" },
-      status: 503,
-    };
-  }
-  const queue = env.READING_JOBS;
-
-  const pointer = { id: args.id, key_prefix: args.keyPrefix };
-  const claimed = await claimByUrlSlot(reader, claim, url, args.urlHash, pointer, {
-    replaceEtag: opts.replaceEtag,
-    onOwned: (res) =>
-      submitResultForOwnedReading(reader, env, services, res.pointer, res.manifest, {
-        email,
-        principal: opts.principal,
-      }),
-  });
-  if (!claimed.ok) return claimed.result;
-
-  return activateAttempt(reader, queue, services, {
-    keyPrefix: args.keyPrefix,
-    manifest: pendingManifest,
-    writeByIdPointer: true,
-    rollbackManifest: pendingManifest,
-    rollbackAttempt: activeAttempt,
-    queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "submit", email },
-    principal: opts.principal,
-  });
-}
-
-// Bounds the claim → re-resolve retry when a concurrent submit wins the by-url
-// slot from under us. The original protocol recursed without limit; the resolver
-// converges in practice within one or two reads, so a small cap is a safety net
-// against pathological contention rather than a tuning knob.
-const CLAIM_MAX_ATTEMPTS = 4;
-
-type ClaimSlotResult =
-  | { ok: true }
-  | { ok: false; result: SubmitJsonResult };
-
-// Claims the by-url slot for a freshly-minted reading, retrying through the
-// resolver when a concurrent writer wins the race. Returns `{ ok: true }` once
-// the slot is ours to write into, or `{ ok: false, result }` to defer to the
-// winning owner (`onOwned`), report a still-initializing owner (409), or give up
-// under persistent contention (503 — distinct from a settled owner, so the
-// client retries rather than polling a reading that was never written).
-async function claimByUrlSlot(
-  reader: ReadingStore,
-  claim: ReadingClaim,
-  url: string,
-  urlHash: string,
-  pointer: ByUrlPointer,
-  opts: {
-    replaceEtag?: string;
-    onOwned: (res: { pointer: ByUrlPointer; manifest: Manifest }) => Promise<SubmitJsonResult>;
-  },
-): Promise<ClaimSlotResult> {
-  let replaceEtag = opts.replaceEtag;
-  for (let attempt = 0; attempt < CLAIM_MAX_ATTEMPTS; attempt++) {
-    try {
-      if (replaceEtag) {
-        const replaced = await reader.replaceByUrlPointerIfCurrent(urlHash, replaceEtag, pointer);
-        if (!replaced) throw new PointerExistsError(urlHash);
-      } else {
-        await reader.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
-      }
-      return { ok: true };
-    } catch (err) {
-      if (!(err instanceof PointerExistsError)) throw err;
-      // Lost the slot — re-resolve and defer to whoever now owns it, or retry
-      // the claim against the (possibly damaged) pointer they left behind.
-      const res = await claim.resolveOwner(url);
-      if (res.kind === "owned") return { ok: false, result: await opts.onOwned(res) };
-      if (res.kind === "initializing") {
-        return { ok: false, result: initializingResponse(res.pointer.id) };
-      }
-      replaceEtag = res.replaceEtag;
-    }
-  }
-  return {
-    ok: false,
-    result: {
-      body: { error: "could not claim url ownership under contention" },
-      status: 503,
-    },
-  };
-}
-
-function initializingResponse(id: string): SubmitJsonResult {
-  return {
-    body: {
-      error: "reading owner is still initializing",
-      id,
-      poll: `/api/readings/${id}`,
-    },
-    status: 409,
-  };
-}
-
-async function markdownImportResultForOwnedReading(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  pointer: ByUrlPointer,
-  manifest: Manifest,
-  markdown: string,
-  title: string | undefined,
-  email: boolean,
-  principal: AuthenticatedPrincipal,
-): Promise<SubmitJsonResult> {
-  const effective = annotateStale(manifest, env, services);
-  if (effective.status !== "failed") return { body: effective, status: 200 };
-  return enqueueMarkdownImport(
-    reader,
-    env,
-    services,
-    pointer,
-    effective,
-    markdown,
-    title,
-    email,
-    principal,
-  );
-}
-
-async function enqueueReprocess(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  keyPrefix: string,
-  manifest: Manifest,
-  opts: {
-    force?: boolean;
-    email: boolean;
-    source?: Extract<ProcessReadingSource, { kind: "markdown" }>;
-    principal: AuthenticatedPrincipal;
-  },
-): Promise<SubmitJsonResult> {
-  const effectiveManifest = annotateStale(manifest, env, services);
-  if (effectiveManifest.active_attempt?.status === "running" && !opts.force) {
-    return { body: { error: "reading already has an active attempt" }, status: 409 };
-  }
-  if (!env.READING_JOBS) {
-    return {
-      body: { error: "queue binding READING_JOBS is not configured" },
-      status: 503,
-    };
-  }
-  const queue = env.READING_JOBS;
-
-  const attemptStartedAt = services.now();
-  const attemptId = newAttemptId(services);
-  const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
-  // A request-supplied markdown source wins over the stored-markdown synthesis:
-  // the caller is handing us better content than R2 holds, so we never read
-  // extracted.md (and the "markdown content not available" 409 below can only
-  // fire for a no-source reprocess of a markdown reading).
-  let source: ProcessReadingSource | undefined = opts.source;
-  if (source === undefined && effectiveManifest.source_type === "markdown") {
-    const extracted = await reader.readExtracted(keyPrefix);
-    if (!extracted) {
-      return { body: { error: "markdown content not available" }, status: 409 };
-    }
-    source = {
-      kind: "markdown",
-      markdown: await extracted.text(),
-      ...(effectiveManifest.title === undefined ? {} : { title: effectiveManifest.title }),
-    };
-  }
-  const args: ProcessReadingArgs = {
-    id: effectiveManifest.id,
-    url: effectiveManifest.url,
-    urlHash: effectiveManifest.url_hash,
-    createdAt: effectiveManifest.created_at,
-    keyPrefix,
-    source,
-    attemptId,
-    attemptStartedAt,
-    trigger: "reprocess",
-    preserveReadyManifest: effectiveManifest.status === "ready" ? effectiveManifest : undefined,
-    // Legacy manifests omit source_type and are treated as URL-backed by the
-    // no-source path above, so snapshot that same effective default.
-    sourceTypeOnFailure: effectiveManifest.source_type ?? "url",
-    email: opts.email,
-  };
-  const nextManifest = manifestForActiveAttempt(effectiveManifest, activeAttempt, services);
-
-  return activateAttempt(reader, queue, services, {
-    keyPrefix,
-    manifest: nextManifest,
-    writeByIdPointer: false,
-    rollbackManifest: effectiveManifest,
-    rollbackAttempt: activeAttempt,
-    queueMessage: args,
-    principal: opts.principal,
-  });
-}
-
-async function createNewReadingForMarkdownImport(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  claim: ReadingClaim,
-  url: string,
-  markdown: string,
-  title: string | undefined,
-  email: boolean,
-  opts: { replaceEtag?: string; principal: AuthenticatedPrincipal },
-): Promise<SubmitJsonResult> {
-  const source: ProcessReadingSource = {
-    kind: "markdown",
-    markdown,
-    ...(title === undefined ? {} : { title }),
-  };
-  const args = await newReadingArgs(url, services, source);
-  const attemptStartedAt = services.now();
-  const attemptId = newAttemptId(services);
-  const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
-  const markdownBytes = new TextEncoder().encode(markdown);
-  const pendingManifest: Manifest = {
-    id: args.id,
-    url,
-    url_hash: args.urlHash,
-    source_type: "markdown",
-    status: "pending",
-    active_attempt: activeAttempt,
-    ...(title === undefined ? {} : { title }),
-    content_type: "text/markdown; charset=utf-8",
-    content_status: "captured",
-    content_bytes: markdownBytes.byteLength,
-    content_sha256: await sha256Hex(markdown),
-    created_at: args.createdAt,
-    updated_at: args.createdAt,
-  };
-  if (!env.READING_JOBS) {
-    return {
-      body: { error: "queue binding READING_JOBS is not configured" },
-      status: 503,
-    };
-  }
-  const queue = env.READING_JOBS;
-
-  const pointer = { id: args.id, key_prefix: args.keyPrefix };
-  const claimed = await claimByUrlSlot(reader, claim, url, args.urlHash, pointer, {
-    replaceEtag: opts.replaceEtag,
-    onOwned: (res) =>
-      markdownImportResultForOwnedReading(
-        reader,
-        env,
-        services,
-        res.pointer,
-        res.manifest,
-        markdown,
-        title,
-        email,
-        opts.principal,
-      ),
-  });
-  if (!claimed.ok) return claimed.result;
-
-  return activateAttempt(reader, queue, services, {
-    keyPrefix: args.keyPrefix,
-    manifest: pendingManifest,
-    writeByIdPointer: true,
-    artifacts: {
-      rawExt: "md",
-      rawBytes: markdownBytes,
-      rawContentType: "text/markdown; charset=utf-8",
-      extractedMarkdown: markdown,
-    },
-    rollbackManifest: pendingManifest,
-    rollbackAttempt: activeAttempt,
-    queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "import", email },
-    principal: opts.principal,
-  });
-}
-
-async function enqueueMarkdownImport(
-  reader: ReadingStore,
-  env: Env,
-  services: Services,
-  pointer: ByUrlPointer,
-  manifest: Manifest,
-  markdown: string,
-  title: string | undefined,
-  email: boolean,
-  principal: AuthenticatedPrincipal,
-): Promise<SubmitJsonResult> {
-  const effectiveManifest = annotateStale(manifest, env, services);
-  if (
-    effectiveManifest.status !== "failed" &&
-    effectiveManifest.active_attempt?.status === "running"
-  ) {
-    return { body: { error: "reading already has an active attempt" }, status: 409 };
-  }
-  if (!env.READING_JOBS) {
-    return {
-      body: { error: "queue binding READING_JOBS is not configured" },
-      status: 503,
-    };
-  }
-  const queue = env.READING_JOBS;
-
-  const attemptStartedAt = services.now();
-  const attemptId = newAttemptId(services);
-  const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
-  const markdownTitle = title ?? effectiveManifest.title;
-  const markdownBytes = new TextEncoder().encode(markdown);
-  const source: ProcessReadingSource = {
-    kind: "markdown",
-    markdown,
-    ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
-  };
-  const args: ProcessReadingArgs = {
-    id: effectiveManifest.id,
-    url: effectiveManifest.url,
-    urlHash: effectiveManifest.url_hash,
-    createdAt: effectiveManifest.created_at,
-    keyPrefix: pointer.key_prefix,
-    source,
-    attemptId,
-    attemptStartedAt,
-    trigger: "import",
-    email,
-  };
-  const manifestWithoutError: Manifest = { ...effectiveManifest };
-  delete manifestWithoutError.error;
-  delete manifestWithoutError.active_attempt;
-  const pendingManifest: Manifest = {
-    ...manifestWithoutError,
-    source_type: "markdown",
-    status: "pending",
-    active_attempt: activeAttempt,
-    ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
-    content_type: "text/markdown; charset=utf-8",
-    content_status: "captured",
-    content_bytes: markdownBytes.byteLength,
-    content_sha256: await sha256Hex(markdown),
-    updated_at: attemptStartedAt,
-  };
-
-  return activateAttempt(reader, queue, services, {
-    keyPrefix: pointer.key_prefix,
-    manifest: pendingManifest,
-    writeByIdPointer: true,
-    artifacts: {
-      rawExt: "md",
-      rawBytes: markdownBytes,
-      rawContentType: "text/markdown; charset=utf-8",
-      extractedMarkdown: markdown,
-    },
-    rollbackManifest: pendingManifest,
-    rollbackAttempt: activeAttempt,
-    queueMessage: args,
-    principal,
-  });
-}
-
-function manifestForActiveAttempt(
-  manifest: Manifest,
-  activeAttempt: ProcessingAttemptSummary,
-  services: Services,
-): Manifest {
-  if (manifest.status === "ready") {
-    return {
-      ...manifest,
-      active_attempt: activeAttempt,
-      updated_at: services.now(),
-    };
-  }
-
-  return {
-    id: manifest.id,
-    url: manifest.url,
-    url_hash: manifest.url_hash,
-    source_type: manifest.source_type,
-    status: "pending",
-    active_attempt: activeAttempt,
-    last_attempt: manifest.last_attempt,
-    title: manifest.title,
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: manifest.created_at,
-    updated_at: services.now(),
-  };
 }
 
 function extFromContentType(contentType: string): string {
@@ -769,52 +311,6 @@ function extFromContentType(contentType: string): string {
   if (major === "application/json") return "json";
   if (major.startsWith("text/")) return "txt";
   return "bin";
-}
-
-function annotateStale(manifest: Manifest, env: Env, services: Services): Manifest {
-  const verdict = stalenessOf(manifest, pendingTtlSeconds(env), services.now());
-  if (verdict.expiredActiveAttempt) {
-    const next: Manifest = {
-      ...manifest,
-      active_attempt: undefined,
-      last_attempt: verdict.expiredActiveAttempt,
-      updated_at: verdict.expiredActiveAttempt.finished_at ?? services.now(),
-    };
-    if (manifest.status === "pending") {
-      return { ...next, status: "failed", error: verdict.expiredActiveAttempt.error };
-    }
-    return next;
-  }
-
-  if (verdict.pendingError) {
-    return { ...manifest, status: "failed", error: verdict.pendingError };
-  }
-  return manifest;
-}
-
-function annotateStaleIndexItem(
-  item: import("./schemas/api").ListIndexItem,
-  env: Env,
-  services: Services,
-): import("./schemas/api").ListIndexItem {
-  const verdict = stalenessOf(item, pendingTtlSeconds(env), services.now());
-  if (verdict.expiredActiveAttempt) {
-    const next: import("./schemas/api").ListIndexItem = {
-      ...item,
-      active_attempt: undefined,
-      last_attempt: verdict.expiredActiveAttempt,
-      updated_at: verdict.expiredActiveAttempt.finished_at ?? services.now(),
-    };
-    if (item.status === "pending") {
-      return { ...next, status: "failed", error: verdict.expiredActiveAttempt.error };
-    }
-    return next;
-  }
-
-  if (verdict.pendingError) {
-    return { ...item, status: "failed", error: verdict.pendingError };
-  }
-  return item;
 }
 
 function pendingTtlSeconds(env: Env): number {

@@ -92,7 +92,7 @@ const BUILDINGS = [
     variant: "stack",
     blurb:
       "Canonical eager write-and-enqueue: optional artifacts → pending manifest → by-id pointer → list index row → queue.send. Throw before send rolls back to failed (503).",
-    cites: ["src/attempt-activation.ts", "src/attempt-ownership.ts"],
+    cites: ["src/intake/activation.ts", "src/attempt-ownership.ts"],
     payload: `AttemptActivation {\n  manifest (pending),\n  queueMessage: ProcessReadingArgs,\n  artifacts? (import paths)\n}`,
   },
   {
@@ -267,7 +267,7 @@ const BUILDINGS = [
     zone: "control",
     variant: "kiosk",
     blurb:
-      "Read-time annotation only: running attempt or pending past PENDING_TTL_SECONDS surfaces as failed without a write. Router adapters annotateStale / annotateStaleIndexItem.",
+      "Read-time annotation only: running attempt or pending past PENDING_TTL_SECONDS surfaces as failed without a write. Single-homed applyStaleness serves router read paths and Reading intake.",
     cites: ["src/modules/staleness.ts", "src/router.ts"],
     payload: `stalenessOf(record, now, ttl)\n→ surface status "failed"`,
   },
@@ -288,12 +288,12 @@ const FLOWS = {
   submit: {
     title: "1 · Submit & claim",
     summary:
-      "SPA POSTs a URL. Router resolves ownership (ReadingClaim). Unclaimed URLs get an eager by-url pointer, then activateAttempt writes pending state and enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
+      "SPA POSTs a URL. Reading intake resolves ownership (ReadingClaim). Unclaimed URLs get an eager by-url pointer (claimSlot), then activateAttempt writes pending state and enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
     cites: [
       "web/src/api.ts",
       "src/router.ts",
       "src/modules/reading-claim.ts",
-      "src/attempt-activation.ts",
+      "src/intake/activation.ts",
     ],
     kind: "control",
     nodes: ["spa", "worker", "claim", "activate", "r2", "queue"],
@@ -502,7 +502,7 @@ const FLOWS = {
       {
         from: "worker",
         to: "staleness",
-        label: "annotateStale",
+        label: "applyStaleness",
         payload: `read-time only`,
       },
     ],

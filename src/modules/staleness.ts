@@ -1,10 +1,9 @@
 import type { ManifestError, ManifestStatus, ProcessingAttemptSummary } from "../schemas/manifest";
 
 /**
- * The minimal record shape the stale-annotation rule decides over. Both the
- * manifest path (`annotateStale`) and the index-item path
- * (`annotateStaleIndexItem`) in `router.ts` are structurally compatible with
- * this interface and pass their records directly.
+ * The minimal record shape the stale-annotation rule decides over. Manifests
+ * and list-index items are both structurally compatible with this interface
+ * and pass their records directly.
  */
 export interface StaleInput {
   status: ManifestStatus;
@@ -13,6 +12,15 @@ export interface StaleInput {
   /** Fallback reference for older index entries that predate `updated_at`. */
   created_at?: string;
   active_attempt?: ProcessingAttemptSummary;
+}
+
+/**
+ * The record shape {@link applyStaleness} rewrites: {@link StaleInput} plus the
+ * fields the verdict lands on. `Manifest` and `ListIndexItem` both satisfy it.
+ */
+export interface ApplyStalenessRecord extends StaleInput {
+  last_attempt?: ProcessingAttemptSummary;
+  error?: ManifestError;
 }
 
 /**
@@ -59,6 +67,38 @@ export function stalenessOf(input: StaleInput, ttlSeconds: number, nowIso: strin
   }
 
   return { expiredActiveAttempt: null, pendingError: null };
+}
+
+/**
+ * The apply half of the rule, single-homed with the verdict so the manifest
+ * path and the index-item path can never drift: an expired running attempt is
+ * cleared into `last_attempt` (flipping a pending record to `failed`); a stale
+ * pending record with no attempt fails with `stale_pending`. Fresh records are
+ * returned unchanged. Read-time only — callers never write the result back.
+ */
+export function applyStaleness<T extends ApplyStalenessRecord>(
+  record: T,
+  ttlSeconds: number,
+  nowIso: string,
+): T {
+  const verdict = stalenessOf(record, ttlSeconds, nowIso);
+  if (verdict.expiredActiveAttempt) {
+    const next: T = {
+      ...record,
+      active_attempt: undefined,
+      last_attempt: verdict.expiredActiveAttempt,
+      updated_at: verdict.expiredActiveAttempt.finished_at ?? nowIso,
+    };
+    if (record.status === "pending") {
+      return { ...next, status: "failed", error: verdict.expiredActiveAttempt.error };
+    }
+    return next;
+  }
+
+  if (verdict.pendingError) {
+    return { ...record, status: "failed", error: verdict.pendingError };
+  }
+  return record;
 }
 
 export function isBatchOwnedPending(input: StaleInput): boolean {

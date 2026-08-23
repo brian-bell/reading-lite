@@ -419,3 +419,111 @@ describe("ReadingClaim.resolveOwner", () => {
     cas.mockRestore();
   });
 });
+
+// The bounded slot-claim loop, moved behind the Owner-resolution seam from the
+// router (where it was claimByUrlSlot). Returns a claim outcome instead of
+// taking a callback, so pointer-CAS internals (replaceEtag, PointerExistsError)
+// never cross the seam to Reading intake.
+describe("ReadingClaim.claimSlot", () => {
+  const FRESH_POINTER = { id: "rd_NEW", key_prefix: buildKeyPrefix("rd_NEW", NOW) };
+
+  it("claims a free slot and writes the pointer", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/free-slot";
+    const urlHash = await sha256Hex(url);
+
+    const out = await claim.claimSlot(url, FRESH_POINTER);
+
+    expect(out).toEqual({ kind: "claimed" });
+    await expect(store.readByUrlPointer(urlHash)).resolves.toEqual(FRESH_POINTER);
+  });
+
+  it("CAS-overwrites a damaged pointer when given its replaceEtag", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/damaged-etag";
+    const urlHash = await sha256Hex(url);
+    // Damaged: points at a manifest that never existed, older than the grace window.
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    const resolved = await claim.resolveOwner(url);
+    expect(resolved.kind).toBe("unclaimed");
+    const replaceEtag = resolved.kind === "unclaimed" ? resolved.replaceEtag : undefined;
+    expect(replaceEtag).toBeDefined();
+
+    const out = await claim.claimSlot(url, FRESH_POINTER, { replaceEtag });
+
+    expect(out).toEqual({ kind: "claimed" });
+    await expect(store.readByUrlPointer(urlHash)).resolves.toEqual(FRESH_POINTER);
+  });
+
+  it("converges onto a damaged pointer without a replaceEtag by re-resolving", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/damaged-cold";
+    const urlHash = await sha256Hex(url);
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+
+    // First write attempt loses (ifNotExists), re-resolve hands back the etag,
+    // second attempt CAS-replaces it.
+    const out = await claim.claimSlot(url, FRESH_POINTER);
+
+    expect(out).toEqual({ kind: "claimed" });
+    await expect(store.readByUrlPointer(urlHash)).resolves.toEqual(FRESH_POINTER);
+  });
+
+  it("defers to a valid owner that won the race", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/lost-race";
+    const winner = await writeReading(store, url, { id: "rd_WINNER", status: "ready" });
+    await store.writeByUrlPointer(winner.urlHash, {
+      id: winner.id,
+      key_prefix: winner.keyPrefix,
+    });
+
+    const out = await claim.claimSlot(url, FRESH_POINTER);
+
+    expect(out).toEqual({
+      kind: "owned",
+      pointer: { id: winner.id, key_prefix: winner.keyPrefix },
+      manifest: winner.manifest,
+    });
+    // The winner's pointer is untouched.
+    await expect(store.readByUrlPointer(winner.urlHash)).resolves.toEqual({
+      id: winner.id,
+      key_prefix: winner.keyPrefix,
+    });
+  });
+
+  it("reports a still-initializing winner (fresh pointer, no manifest yet)", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/initializing";
+    const urlHash = await sha256Hex(url);
+    // Fresh pointer (key_prefix timestamp == NOW) whose manifest is not written yet.
+    const winnerPointer = { id: "rd_FRESH", key_prefix: buildKeyPrefix("rd_FRESH", NOW) };
+    await store.writeByUrlPointer(urlHash, winnerPointer);
+
+    const out = await claim.claimSlot(url, FRESH_POINTER);
+
+    expect(out).toEqual({ kind: "initializing", pointer: winnerPointer });
+  });
+
+  it("gives up as contended when every CAS attempt loses", async () => {
+    const { store, claim } = newClaim();
+    const url = "https://example.com/claim-contended";
+    const urlHash = await sha256Hex(url);
+    await store.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    const cas = vi.spyOn(store, "replaceByUrlPointerIfCurrent").mockResolvedValue(false);
+
+    const out = await claim.claimSlot(url, FRESH_POINTER);
+
+    expect(out).toEqual({ kind: "contended" });
+    cas.mockRestore();
+  });
+});

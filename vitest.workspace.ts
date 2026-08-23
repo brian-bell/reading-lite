@@ -21,7 +21,7 @@ export default [
         "test/unit/stores/**/*.test.ts",
         "test/unit/modules/**/*.test.ts",
         "test/unit/process-reading/**/*.test.ts",
-        "test/unit/attempt-activation/**/*.test.ts",
+        "test/unit/intake/**/*.test.ts",
         "test/unit/reading-visibility/**/*.test.ts",
       ],
       setupFiles: ["./test/apply-control-plane.ts"],

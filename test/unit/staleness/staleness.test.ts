@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isBatchOwnedPending, stalenessOf, type StaleInput } from "../../../src/modules/staleness";
-import type { ProcessingAttemptSummary } from "../../../src/schemas/manifest";
+import {
+  applyStaleness,
+  isBatchOwnedPending,
+  stalenessOf,
+  type StaleInput,
+} from "../../../src/modules/staleness";
+import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
+import type { ListIndexItem } from "../../../src/schemas/api";
 
 const TTL = 300;
 const NOW = "2024-01-01T01:00:00.000Z";
@@ -157,5 +163,81 @@ describe("stalenessOf", () => {
       const verdict = stalenessOf(input, TTL, NOW);
       expect(verdict).toEqual({ expiredActiveAttempt: null, pendingError: null });
     });
+  });
+});
+
+// The verdict-application half of the rule, single-homed here so the manifest
+// path and the index-item path can never drift (previously two adapters in
+// router.ts).
+describe("applyStaleness", () => {
+  function manifest(overrides: Partial<Manifest> = {}): Manifest {
+    return {
+      id: "rd_A",
+      url: "https://example.com/a",
+      url_hash: "a".repeat(64),
+      source_type: "url",
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: ONE_HOUR_AGO,
+      updated_at: ONE_HOUR_AGO,
+      ...overrides,
+    };
+  }
+
+  it("flips a pending manifest with an expired running attempt to failed", () => {
+    const input = manifest({ updated_at: NOW, active_attempt: runningAttempt() });
+    const out = applyStaleness(input, TTL, NOW);
+    expect(out.status).toBe("failed");
+    expect(out.active_attempt).toBeUndefined();
+    expect(out.last_attempt).toMatchObject({
+      id: "att_1",
+      status: "failed",
+      finished_at: NOW,
+    });
+    expect(out.error).toMatchObject({ code: "stale_active_attempt" });
+    expect(out.updated_at).toBe(NOW);
+  });
+
+  it("clears an expired attempt on a ready manifest without changing status", () => {
+    const input = manifest({ status: "ready", updated_at: NOW, active_attempt: runningAttempt() });
+    const out = applyStaleness(input, TTL, NOW);
+    expect(out.status).toBe("ready");
+    expect(out.active_attempt).toBeUndefined();
+    expect(out.last_attempt).toMatchObject({ status: "failed" });
+    expect(out.error).toBeUndefined();
+  });
+
+  it("flips a stale pending manifest with no active attempt to failed", () => {
+    const input = manifest();
+    const out = applyStaleness(input, TTL, NOW);
+    expect(out.status).toBe("failed");
+    expect(out.error).toEqual({ code: "stale_pending", message: `pending > ${TTL}s` });
+  });
+
+  it("returns a fresh record unchanged", () => {
+    const input = manifest({ updated_at: ONE_MINUTE_AGO });
+    expect(applyStaleness(input, TTL, NOW)).toEqual(input);
+  });
+
+  it("applies to the list-index item shape too, preserving its extra fields", () => {
+    const item: ListIndexItem = {
+      id: "rd_B",
+      key_prefix: "readings/2024/01/01T000000Z-rd_B",
+      url: "https://example.com/b",
+      status: "pending",
+      created_at: ONE_HOUR_AGO,
+      updated_at: NOW,
+      tags: ["t1"],
+      active_attempt: runningAttempt(),
+    };
+    const out = applyStaleness(item, TTL, NOW);
+    expect(out.status).toBe("failed");
+    expect(out.key_prefix).toBe(item.key_prefix);
+    expect(out.tags).toEqual(["t1"]);
+    expect(out.active_attempt).toBeUndefined();
+    expect(out.last_attempt).toMatchObject({ id: "att_1", status: "failed" });
   });
 });

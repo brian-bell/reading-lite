@@ -1,17 +1,26 @@
-import { envelopeFromPrincipal, type ProcessReadingEnvelopeV1 } from "./control-plane/envelope";
-import type { AuthenticatedPrincipal } from "./control-plane/principal";
-import type { ProcessReadingArgs } from "./process-reading";
-import type { Manifest, ProcessingAttemptSummary } from "./schemas/manifest";
-import { manifestToIndexItem, ReadingStore } from "./modules/stores/reading-store";
-import type { Services } from "./services";
+import { envelopeFromPrincipal, type ProcessReadingEnvelopeV1 } from "../control-plane/envelope";
+import type { AuthenticatedPrincipal } from "../control-plane/principal";
+import type { ProcessReadingArgs } from "../process-reading";
+import type { Manifest, ProcessingAttemptSummary } from "../schemas/manifest";
+import { manifestToIndexItem, ReadingStore } from "../modules/stores/reading-store";
+import type { Services } from "../services";
 
-// The JSON envelope returned by every submit/import/reprocess activation path.
-// Lives here (rather than router.ts) because activateAttempt is the canonical
-// producer of the 202/503 activation results; router.ts re-imports it.
-export type SubmitJsonResult = {
-  body: unknown;
-  status: 200 | 202 | 409 | 503;
-};
+// The activation half of the IntakeOutcome union (see ./index.ts, which
+// composes it): every activation either activates the attempt or reports the
+// slot unavailable after the rollback funnel ran. HTTP-free — the router maps
+// `activated` to 202 and `unavailable` to 503.
+export type ActivationOutcome =
+  | {
+      kind: "activated";
+      id: string;
+      status: Manifest["status"];
+      attemptId: string;
+    }
+  | {
+      kind: "unavailable";
+      reason: "activation_failed" | "queue_send_failed";
+      id: string;
+    };
 
 // Raw bytes + extracted markdown captured eagerly on the import paths. Absent on
 // submit/reprocess, where the queue consumer fetches and extracts the source.
@@ -24,9 +33,9 @@ export interface ActivationArtifacts {
 
 export interface AttemptActivation {
   keyPrefix: string;
-  // The pending/next manifest to write. The 202 response is DERIVED from it:
-  //   { id: manifest.id, status: manifest.status,
-  //     attempt_id: manifest.active_attempt!.id }
+  // The pending/next manifest to write. The `activated` outcome is DERIVED
+  // from it: { id: manifest.id, status: manifest.status,
+  //            attemptId: manifest.active_attempt!.id }
   manifest: Manifest;
   // Submit + both import paths write the by-id pointer; reprocess does not.
   writeByIdPointer: boolean;
@@ -43,16 +52,16 @@ export interface AttemptActivation {
 // The write-side mirror of commitTerminalManifest: owns the canonical
 // eager-write → enqueue ordering and the two-stage failure funnel shared by
 // submit, reprocess, and both markdown-import paths. The by-url claim happens in
-// the caller (router) *before* this runs; activation only writes into a slot it
-// already owns. A throw anywhere before the queue send rolls the slot back to a
-// failed (retryable) manifest and reports 503.
+// the caller (Reading intake) *before* this runs; activation only writes into a
+// slot it already owns. A throw anywhere before the queue send rolls the slot
+// back to a failed (retryable) manifest and reports `unavailable`.
 export async function activateAttempt(
   reader: ReadingStore,
   queue: Queue<ProcessReadingEnvelopeV1>,
   services: Services,
   a: AttemptActivation,
-): Promise<SubmitJsonResult> {
-  let failureMessage = "reading setup failed";
+): Promise<ActivationOutcome> {
+  let failureReason: "activation_failed" | "queue_send_failed" = "activation_failed";
   try {
     if (a.artifacts) {
       await reader.writeRaw(
@@ -71,7 +80,7 @@ export async function activateAttempt(
       });
     }
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(a.manifest, a.keyPrefix));
-    failureMessage = "queue send failed";
+    failureReason = "queue_send_failed";
     await queue.send(envelopeFromPrincipal(a.principal, a.queueMessage));
   } catch (err) {
     console.error(err);
@@ -83,17 +92,14 @@ export async function activateAttempt(
       err,
       services,
     );
-    return { body: { error: failureMessage, id: a.manifest.id }, status: 503 };
+    return { kind: "unavailable", reason: failureReason, id: a.manifest.id };
   }
 
   return {
-    body: {
-      id: a.manifest.id,
-      status: a.manifest.status,
-      poll: `/api/readings/${a.manifest.id}`,
-      attempt_id: a.manifest.active_attempt!.id,
-    },
-    status: 202,
+    kind: "activated",
+    id: a.manifest.id,
+    status: a.manifest.status,
+    attemptId: a.manifest.active_attempt!.id,
   };
 }
 

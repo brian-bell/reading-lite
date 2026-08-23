@@ -36,10 +36,13 @@ submit, a markdown import, or a lookup. It lives in
   has no live pointer, e.g. a pre-index Backlite row or a copy dropped from
   `index/list.json`. A **deep scan** (full `readings/` rebuild) is the strongest
   recovery; resolution deep-scans exactly when an existing pointer needs repair.
-- **Claiming the slot** (`claimByUrlSlot` in the router) — a freshly-minted
-  reading takes the by-url slot, retrying through `resolveOwner` when a
-  concurrent submit wins the race: it defers to that winner or retries against
-  the pointer they left. Bounded — it converges or gives up, never recurses
+- **Claiming the slot** (`ReadingClaim.claimSlot`) — a freshly-minted reading
+  takes the by-url slot, retrying through `resolveOwner` when a concurrent
+  submit wins the race. Returns a claim outcome (`claimed` | `owned` |
+  `initializing` | `contended`) rather than taking a callback, so pointer-CAS
+  internals (`replaceEtag`, `PointerExistsError`) never cross the seam to
+  **Reading intake** — the caller switches on the outcome and defers to the
+  winning owner in place. Bounded — it converges or gives up, never recurses
   without limit.
 
 ## Reading lifecycle
@@ -49,14 +52,25 @@ submit, a markdown import, or a lookup. It lives in
   the SPA hand-mirrors it in `web/src/types.ts`.
 - **Attempt** — one processing run (`submit` | `reprocess` | `import`). The
   manifest carries an `active_attempt` while running and a `last_attempt` after.
+- **Reading intake** — the write-side front door for a reading: `submit` |
+  `importMarkdown` | `reprocess`, each returning an **intake outcome**
+  (`activated` | `existing` | `initializing` | `conflict` | `not_found` |
+  `unavailable`) that the router — a thin HTTP adapter — maps onto statuses.
+  Owns the claim → pending-manifest → **attempt activation** ordering for all
+  three verbs; lives in `src/intake/`. HTTP never crosses the seam: zod body
+  parsing and the email defaults stay in the router, and intake takes
+  already-typed inputs plus narrow deps (tenant-scoped store, queue-or-null,
+  services, pending TTL). `GET /lookup` is read-path and stays outside intake.
 - **Attempt activation** — the eager write-and-enqueue counterpart to the
-  **terminal write**, owned by `activateAttempt` in `src/attempt-activation.ts`.
-  The router claims the by-url slot, then `activateAttempt` writes artifacts (raw
+  **terminal write** and the lower half of **Reading intake**, owned by
+  `activateAttempt` in `src/intake/activation.ts` (internal to intake — the
+  router no longer imports it). Intake claims the by-url slot, then
+  `activateAttempt` writes artifacts (raw
   + extracted, import paths only) → manifest → by-id pointer (all but reprocess)
   → list index → queue message under one canonical ordering. Any throw before the
   send rolls the slot back to a `failed` (retryable `QueueSendError`) manifest and
-  returns 503. Same lockstep discipline as `commitTerminalManifest` on the
-  terminal side.
+  reports `unavailable` (503). Same lockstep discipline as
+  `commitTerminalManifest` on the terminal side.
 - **List index** — `{tenantRoot}index/list.json`, maintained on every terminal
   write (idempotent on `id`) so list/search never go stale. Each tenant has its
   own CAS object; a deep scan lists only that tenant's `readings/` prefix.
