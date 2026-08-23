@@ -231,10 +231,6 @@ scripts/                        # operator CLIs — all dry-run by default
   founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
-  reddit-import.ts, youtube-import.ts                     # source-specific local extraction
-  import-bookmarks.ts           # Chrome export → POST /api/readings
-  check-corpus.ts               # mark a reading-list export against the corpus
-  process-reading-list.ts       # submit unprocessed reading-list entries
   summarizer-eval.ts            # compare summarizer providers / effort levels
   run-with-vars.ts              # overlay a dotenv file onto env, then run a command
   corpus-lib/, lib/, *-lib/     # shared logic behind the CLIs above;
