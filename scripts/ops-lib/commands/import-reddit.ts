@@ -13,17 +13,14 @@ import { parseArgs } from "node:util";
 import { buildRedditImport } from "../../reddit-import-lib/parse";
 import { isRedditThreadUrl } from "../../../src/modules/extractor/reddit";
 import { resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
-import type { ApiResult } from "../../corpus-lib/api";
+import { classifyOutcome, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ImportRedditDeps extends BaseDeps {
   readFile: (path: string) => Promise<string>;
   resolveApiTarget: (flags: { url?: string; token?: string }) => ApiTarget;
-  importMarkdown: (
-    body: { source_url: string; markdown: string; title?: string },
-    deps: { base: string; token: string; fetch: typeof fetch },
-  ) => Promise<ApiResult>;
-  fetch: typeof fetch;
+  // Constructed only on the execute path (plan mode never touches the network).
+  makeApi: (target: ApiTarget) => Pick<ReadingApi, "importMarkdown">;
 }
 
 interface Args {
@@ -101,17 +98,17 @@ async function runImportReddit(argv: string[], deps: ImportRedditDeps): Promise<
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
 
-  const res = await deps.importMarkdown(body, { ...target, fetch: deps.fetch });
-  if (res.outcome === "error") {
+  const res = classifyOutcome(await deps.makeApi(target).importMarkdown(body));
+  if (res.classification === "error") {
     io.stderr(`import failed: ${res.error}`);
     return 1;
   }
 
   const id = res.id ?? "(unknown)";
   io.stdout(
-    JSON.stringify({ outcome: res.outcome, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2),
+    JSON.stringify({ outcome: res.classification, id, poll: res.id ? `${target.base}/api/readings/${id}` : undefined }, null, 2),
   );
-  io.stderr(`\nimported (${res.outcome}) to ${target.base} — poll ${target.base}/api/readings/${id}`);
+  io.stderr(`\nimported (${res.classification}) to ${target.base} — poll ${target.base}/api/readings/${id}`);
   return 0;
 }
 
@@ -144,8 +141,7 @@ Examples:
       return fs.readFile(p, "utf8");
     },
     resolveApiTarget,
-    importMarkdown: async (body, apiDeps) => (await import("../../corpus-lib/api")).importMarkdown(body, apiDeps),
-    fetch: globalThis.fetch,
+    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
   }),
   run: runImportReddit,
 };

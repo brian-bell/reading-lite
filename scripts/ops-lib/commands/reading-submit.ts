@@ -9,6 +9,7 @@
 
 import { parseArgs } from "node:util";
 import { loadDotVars } from "../../lib/dotvars";
+import { classifyOutcome, readingApiFor } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ReadingSubmitDeps extends BaseDeps {
@@ -87,53 +88,32 @@ async function runReadingSubmit(argv: string[], deps: ReadingSubmitDeps): Promis
     throw new UsageError("missing token. pass --token, set READER_API_TOKEN in env, or add it to .dev.vars.");
   }
 
-  const headers = {
-    authorization: `Bearer ${target.token}`,
-    "content-type": "application/json",
-  };
-
-  const postRes = await deps.fetch(`${target.base}/api/readings`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ url: args.url }),
+  const api = readingApiFor({
+    base: target.base,
+    token: target.token,
+    fetch: deps.fetch,
+    sleep: deps.sleep,
+    now: deps.now,
   });
-  const postBody = (await postRes.json()) as Record<string, unknown>;
-  if (postRes.status !== 202 && postRes.status !== 200) {
-    deps.io.stderr(`POST /api/readings -> ${postRes.status}`);
-    deps.io.stderr(JSON.stringify(postBody, null, 2));
-    return 1;
-  }
 
-  const id = typeof postBody.id === "string" ? postBody.id : undefined;
-  if (!id) {
-    deps.io.stderr("response missing id");
-    deps.io.stderr(JSON.stringify(postBody, null, 2));
-    return 1;
-  }
-
-  if (postRes.status === 200) {
-    deps.io.stdout(JSON.stringify(postBody, null, 2));
+  const res = await api.submit(args.url);
+  if (res.kind === "existing") {
+    deps.io.stdout(JSON.stringify(res.manifest ?? { id: res.id }, null, 2));
     return 0;
   }
-
-  deps.io.stderr(`pending id=${id}, polling /api/readings/${id} ...`);
-  const deadline = deps.now() + args.timeoutMs;
-  while (deps.now() < deadline) {
-    await deps.sleep(args.pollMs);
-    const r = await deps.fetch(`${target.base}/api/readings/${id}`, { headers });
-    if (r.status !== 200) {
-      deps.io.stderr(`GET /api/readings/${id} -> ${r.status}`);
-      continue;
-    }
-    const m = (await r.json()) as Record<string, unknown>;
-    const status = m.status;
-    if (status === "ready" || status === "failed") {
-      deps.io.stdout(JSON.stringify(m, null, 2));
-      return status === "failed" ? 1 : 0;
-    }
+  if (res.kind !== "activated") {
+    deps.io.stderr(`POST /api/readings failed: ${classifyOutcome(res).error ?? res.kind}`);
+    return 1;
   }
-  deps.io.stderr(`timed out after ${args.timeoutMs}ms; reading still pending.`);
-  return 1;
+
+  deps.io.stderr(`pending id=${res.id}, polling /api/readings/${res.id} ...`);
+  const terminal = await api.waitTerminal(res.id, { pollMs: args.pollMs, timeoutMs: args.timeoutMs });
+  if (terminal.kind === "timeout") {
+    deps.io.stderr(`timed out after ${args.timeoutMs}ms; reading still pending.`);
+    return 1;
+  }
+  deps.io.stdout(JSON.stringify(terminal.manifest, null, 2));
+  return terminal.kind === "failed" ? 1 : 0;
 }
 
 export const readingSubmitCommand: CommandDefinition<ReadingSubmitDeps> = {

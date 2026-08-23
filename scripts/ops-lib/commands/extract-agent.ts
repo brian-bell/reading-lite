@@ -122,6 +122,7 @@ async function defaultBuildSessionDeps(
   const { extractReddit } = await import("../../extract-agent-lib/reddit");
   const { extractStatic } = await import("../../extract-agent-lib/static-tier");
   const { makeImportSubmitter } = await import("../../extract-agent-lib/submit");
+  const { readingApiFor } = await import("../../lib/reading-api");
   const { loadDotVars } = await import("../../lib/dotvars");
 
   const config = resolveAgentConfig({
@@ -163,7 +164,7 @@ async function defaultBuildSessionDeps(
     extract: (url) => extractStatic(url, { fetch, lookup, maxBytes: config.fetchMaxBytes }),
     reddit: (url) => extractReddit(url, { fetch, lookup, maxBytes: config.fetchMaxBytes }),
     render: (url) => extractHeadless(url, { renderPage, lookup, maxBytes: config.fetchMaxBytes }),
-    submit: makeImportSubmitter({ ...config.api, fetch, email: config.email }),
+    submit: makeImportSubmitter({ api: readingApiFor({ ...config.api, fetch }), email: config.email }),
     loadState: () => loadSidecar(config.statePath, { warn }),
     // Plan mode persists nothing: sidecar and run-log writes become no-ops
     // while reads stay live so back-off state still shapes the plan.

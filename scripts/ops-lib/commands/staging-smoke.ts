@@ -6,6 +6,7 @@
 
 import { parseArgs } from "node:util";
 import { loadDotVars } from "../../lib/dotvars";
+import { classifyOutcome, readingApiFor, type ReadingApiOutcome } from "../../lib/reading-api";
 import { parseSummarizerProvider } from "../../../src/modules/summarizer";
 import {
   isAttemptTerminal,
@@ -83,6 +84,16 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     "Content-Type": "application/json",
   };
 
+  // Intake verbs and terminal polling go through the Reading API client; the
+  // read-path checks below (diagnostics, list) keep this local helper.
+  const api = readingApiFor({
+    base: args.base,
+    token,
+    fetch: deps.fetch,
+    sleep: deps.sleep,
+    now: deps.now,
+  });
+
   const request = async (path: string, init?: RequestInit): Promise<JsonObject> => {
     const response = await deps.fetch(`${args.base}${path}`, {
       ...init,
@@ -101,20 +112,27 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     return body as JsonObject;
   };
 
-  const waitTerminal = async (id: string): Promise<JsonObject> => {
-    for (let attempt = 0; attempt < 90; attempt++) {
-      const manifest = await request(`/api/readings/${encodeURIComponent(id)}`);
-      if (manifest.status === "ready" || manifest.status === "failed") {
-        return manifest;
-      }
-      await deps.sleep(2_000);
+  // A smoke submit/import must land an accepted owner; anything else aborts
+  // the run with the decoded reason.
+  const acceptedId = (out: ReadingApiOutcome, label: string): string => {
+    if ((out.kind === "activated" || out.kind === "existing") && typeof out.id === "string") {
+      return out.id;
     }
-    throw new Error(`reading ${id} did not become terminal`);
+    throw new Error(`${label} was not accepted: ${classifyOutcome(out).error ?? out.kind}`);
+  };
+
+  const waitTerminal = async (id: string): Promise<JsonObject> => {
+    const out = await api.waitTerminal(id, { pollMs: 2_000, timeoutMs: 180_000 });
+    if (out.kind === "timeout") throw new Error(`reading ${id} did not become terminal`);
+    return out.manifest as unknown as JsonObject;
   };
   const waitAttemptTerminal = async (id: string, attemptId: string): Promise<JsonObject> => {
     for (let attempt = 0; attempt < 90; attempt++) {
-      const manifest = await request(`/api/readings/${encodeURIComponent(id)}`);
-      if (isAttemptTerminal(manifest, attemptId)) return manifest;
+      const res = await api.getReading(id);
+      if (res.kind === "manifest") {
+        const manifest = res.manifest as unknown as JsonObject;
+        if (isAttemptTerminal(manifest, attemptId)) return manifest;
+      }
       await deps.sleep(2_000);
     }
     throw new Error(`attempt ${attemptId} for reading ${id} did not become terminal`);
@@ -136,12 +154,6 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
       : new Error(`diagnostics for ${id} did not converge`);
   };
 
-  const idFrom = (body: JsonObject, label: string): string => {
-    if (typeof body.id !== "string") {
-      throw new Error(`${label} response did not include an id`);
-    }
-    return body.id;
-  };
   const assertProvider = (manifest: JsonObject, label: string): void => {
     const usage = manifest.usage as JsonObject | undefined;
     const summarization = usage?.summarization as JsonObject | undefined;
@@ -152,14 +164,12 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     }
   };
 
-  const submitted = await request("/api/readings", {
-    method: "POST",
-    body: JSON.stringify({
-      url: `https://www.rfc-editor.org/rfc/rfc1149.html?reading-lite-${marker}`,
+  const submittedId = acceptedId(
+    await api.submit(`https://www.rfc-editor.org/rfc/rfc1149.html?reading-lite-${marker}`, {
       email: false,
     }),
-  });
-  const submittedId = idFrom(submitted, "submit");
+    "submit",
+  );
   io.stderr(`submit ${submittedId}: waiting`);
   const submittedManifest = await waitTerminal(submittedId);
   if (submittedManifest.status !== "ready") {
@@ -167,9 +177,8 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   }
   assertProvider(submittedManifest, "submit");
 
-  const imported = await request("/api/readings/import-markdown", {
-    method: "POST",
-    body: JSON.stringify({
+  const importedId = acceptedId(
+    await api.importMarkdown({
       source_url: `https://eval.invalid/staging/${marker}/import`,
       title: `Staging ${args.provider} import`,
       markdown:
@@ -177,8 +186,8 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
         `This synthetic article marks ${marker}. Rowan Vale measured a 27 percent reduction in water use after replacing a timer with soil-moisture control. The test lasted six weeks and did not measure winter performance.`,
       email: false,
     }),
-  });
-  const importedId = idFrom(imported, "import");
+    "import",
+  );
   io.stderr(`import ${importedId}: waiting`);
   const importedManifest = await waitTerminal(importedId);
   if (importedManifest.status !== "ready") {
@@ -187,19 +196,17 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   assertProvider(importedManifest, "import");
 
   const beforeReprocessUpdatedAt = submittedManifest.updated_at;
-  const reprocessed = await request(
-    `/api/readings/${encodeURIComponent(submittedId)}/reprocess`,
-    {
-      method: "POST",
-      body: JSON.stringify({ force: true }),
-    },
-  );
-  idFrom(reprocessed, "reprocess");
-  if (typeof reprocessed.attempt_id !== "string") {
+  const reprocessed = await api.reprocess(submittedId, { force: true });
+  if (reprocessed.kind !== "activated") {
+    throw new Error(
+      `reprocess was not accepted: ${classifyOutcome(reprocessed).error ?? reprocessed.kind}`,
+    );
+  }
+  if (typeof reprocessed.attemptId !== "string") {
     throw new Error("reprocess response did not include an attempt_id");
   }
   io.stderr(`reprocess ${submittedId}: waiting`);
-  const reprocessedManifest = await waitAttemptTerminal(submittedId, reprocessed.attempt_id);
+  const reprocessedManifest = await waitAttemptTerminal(submittedId, reprocessed.attemptId);
   if (
     reprocessedManifest.status !== "ready" ||
     reprocessedManifest.updated_at === beforeReprocessUpdatedAt
@@ -208,14 +215,10 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   }
   assertProvider(reprocessedManifest, "reprocess");
 
-  const failed = await request("/api/readings", {
-    method: "POST",
-    body: JSON.stringify({
-      url: `https://${marker}.invalid/unreachable`,
-      email: false,
-    }),
-  });
-  const failedId = idFrom(failed, "failure submit");
+  const failedId = acceptedId(
+    await api.submit(`https://${marker}.invalid/unreachable`, { email: false }),
+    "failure submit",
+  );
   io.stderr(`failure ${failedId}: waiting`);
   const failedManifest = await waitTerminal(failedId);
   if (failedManifest.status !== "failed") {

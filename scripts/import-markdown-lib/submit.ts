@@ -1,3 +1,5 @@
+import { classifyOutcome, type ReadingApi } from "../lib/reading-api";
+
 export type MarkdownClassification = "new" | "existing" | "error";
 
 export interface MarkdownSubmitArticle {
@@ -25,9 +27,9 @@ export interface MarkdownSubmitSummary {
 }
 
 export interface MarkdownSubmitOpts {
-  fetch: typeof fetch;
-  destinationUrl: string;
-  token: string;
+  // HTTP mechanics (auth, transport retry, outcome decoding) live behind the
+  // Reading API client; this loop owns orchestration only.
+  api: Pick<ReadingApi, "importMarkdown">;
   email: boolean;
   onResult: (result: MarkdownSubmitResult) => Promise<void> | void;
 }
@@ -45,7 +47,19 @@ export async function submitMarkdownAll(
 
   for (let i = 0; i < articles.length; i++) {
     const article = articles[i]!;
-    const result = await processOne(article, i + 1, articles.length, opts);
+    const outcome = await opts.api.importMarkdown({
+      source_url: article.sourceUrl,
+      markdown: article.markdown,
+      email: opts.email,
+      ...(article.title === undefined ? {} : { title: article.title }),
+    });
+    const result: MarkdownSubmitResult = {
+      index: i + 1,
+      total: articles.length,
+      sourceUrl: article.sourceUrl,
+      filePath: article.filePath,
+      ...classifyOutcome(outcome),
+    };
     summary[counterFor(result.classification)] += 1;
     await opts.onResult(result);
   }
@@ -53,104 +67,8 @@ export async function submitMarkdownAll(
   return summary;
 }
 
-async function processOne(
-  article: MarkdownSubmitArticle,
-  index: number,
-  total: number,
-  opts: MarkdownSubmitOpts,
-): Promise<MarkdownSubmitResult> {
-  try {
-    const body = {
-      source_url: article.sourceUrl,
-      markdown: article.markdown,
-      email: opts.email,
-      ...(article.title === undefined ? {} : { title: article.title }),
-    };
-    const res = await postWithRetry(
-      opts.destinationUrl,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${opts.token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-      },
-      opts.fetch,
-    );
-    if (res.status === 202 || res.status === 200) {
-      const responseBody = (await res.json().catch(() => ({}))) as { id?: unknown };
-      const id = typeof responseBody.id === "string" ? responseBody.id : undefined;
-      return {
-        index,
-        total,
-        sourceUrl: article.sourceUrl,
-        filePath: article.filePath,
-        classification: res.status === 202 ? "new" : "existing",
-        id,
-      };
-    }
-
-    const snippet = await res.text().catch(() => "");
-    return {
-      index,
-      total,
-      sourceUrl: article.sourceUrl,
-      filePath: article.filePath,
-      classification: "error",
-      error: `${res.status} ${snippet.slice(0, 200)}`.trim(),
-    };
-  } catch (err) {
-    return {
-      index,
-      total,
-      sourceUrl: article.sourceUrl,
-      filePath: article.filePath,
-      classification: "error",
-      error: formatFetchError(err),
-    };
-  }
-}
-
 function counterFor(c: MarkdownClassification): keyof Omit<MarkdownSubmitSummary, "total"> {
   if (c === "new") return "new";
   if (c === "existing") return "existing";
   return "errors";
-}
-
-async function postWithRetry(
-  url: string,
-  init: RequestInit,
-  fetchFn: typeof fetch,
-  retries = 2,
-  baseDelayMs = 250,
-): Promise<Response> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fetchFn(url, init);
-    } catch (err) {
-      lastErr = err;
-      if (attempt === retries) break;
-      await new Promise((r) => setTimeout(r, baseDelayMs * (1 << attempt)));
-    }
-  }
-  throw lastErr;
-}
-
-function formatFetchError(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const parts: string[] = [err.message];
-  let cause: unknown = (err as { cause?: unknown }).cause;
-  while (cause) {
-    if (cause instanceof Error) {
-      const code = (cause as { code?: string }).code;
-      parts.push(code ? `${code}: ${cause.message}` : cause.message);
-      cause = (cause as { cause?: unknown }).cause;
-    } else {
-      parts.push(String(cause));
-      break;
-    }
-  }
-  return parts.join(" / ");
 }

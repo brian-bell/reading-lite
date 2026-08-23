@@ -50,9 +50,12 @@ describe("ops import bookmarks", () => {
         state.prompts++;
         return { ask: async () => "yes" as const, close: () => {} };
       },
-      fetch: (() => {
-        throw new Error("no direct network");
-      }) as unknown as typeof fetch,
+      makeApi: () =>
+        ({
+          submit: async () => {
+            throw new Error("no direct network");
+          },
+        }) as unknown as import("../../../scripts/lib/reading-api").ReadingApi,
       resolveToken: () => SECRET,
       now: () => Date.parse("2026-08-22T12:00:00Z"),
     };
@@ -121,13 +124,12 @@ describe("ops import reddit", () => {
       io: cio,
       readFile: async () => REDDIT_JSON,
       resolveApiTarget: () => ({ base: "https://api.test", token: SECRET }),
-      importMarkdown: async (body) => {
-        state.imports.push(body.source_url);
-        return { outcome: "new", id: "rd_x" };
-      },
-      fetch: (() => {
-        throw new Error("no direct network");
-      }) as unknown as typeof fetch,
+      makeApi: () => ({
+        importMarkdown: async (body: { source_url: string }) => {
+          state.imports.push(body.source_url);
+          return { kind: "activated", id: "rd_x" } as const;
+        },
+      }),
     };
     return { deps, out, err, state };
   }
@@ -174,17 +176,16 @@ describe("ops import youtube", () => {
         return "the transcript";
       },
       resolveApiTarget: () => ({ base: "https://api.test", token: SECRET }),
-      importMarkdown: async (body) => {
-        state.imports.push(body.source_url);
-        return { outcome: "new", id: "rd_y" };
-      },
-      lookupReading: async (url) => {
-        state.lookups.push(url);
-        return { found: false };
-      },
-      fetch: (() => {
-        throw new Error("no direct network");
-      }) as unknown as typeof fetch,
+      makeApi: () => ({
+        importMarkdown: async (body: { source_url: string }) => {
+          state.imports.push(body.source_url);
+          return { kind: "activated", id: "rd_y" } as const;
+        },
+        lookup: async (url: string) => {
+          state.lookups.push(url);
+          return { kind: "not_found" } as const;
+        },
+      }),
     };
     return { deps, out, err, state };
   }
@@ -285,9 +286,12 @@ describe("ops reading-list process", () => {
         state.prompts++;
         return { ask: async () => "yes" as const, close: () => {} };
       },
-      fetch: (() => {
-        throw new Error("no direct network");
-      }) as unknown as typeof fetch,
+      makeApi: () =>
+        ({
+          submit: async () => {
+            throw new Error("no direct network");
+          },
+        }) as unknown as import("../../../scripts/lib/reading-api").ReadingApi,
       resolveToken: () => SECRET,
       now: () => Date.parse("2026-08-22T12:00:00Z"),
     };

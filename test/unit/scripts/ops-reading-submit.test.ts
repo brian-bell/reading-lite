@@ -4,6 +4,22 @@ import { UsageError } from "../../../scripts/ops-lib/contract";
 
 const SECRET = "sk-super-secret-token";
 
+// waitTerminal parses manifests for real, so terminal fixtures must satisfy
+// ManifestSchema.
+const manifest = (status: "pending" | "ready" | "failed") =>
+  JSON.stringify({
+    id: "rd_1",
+    url: "https://example.com/a",
+    url_hash: "a".repeat(64),
+    status,
+    content_type: "text/html",
+    content_status: "captured",
+    content_bytes: 10,
+    content_sha256: "b".repeat(64),
+    created_at: "2026-08-22T11:00:00.000Z",
+    updated_at: "2026-08-22T11:05:00.000Z",
+  });
+
 function makeDeps(overrides: Partial<ReadingSubmitDeps> = {}): {
   deps: ReadingSubmitDeps;
   out: string[];
@@ -21,7 +37,7 @@ function makeDeps(overrides: Partial<ReadingSubmitDeps> = {}): {
       if (init?.method === "POST") {
         return new Response(JSON.stringify({ id: "rd_1", status: "pending" }), { status: 202 });
       }
-      return new Response(JSON.stringify({ id: "rd_1", status: "ready" }), { status: 200 });
+      return new Response(manifest("ready"), { status: 200 });
     }) as unknown as typeof fetch,
     resolveTarget: (flags) => ({ base: flags.base ?? "https://api.test", token: flags.token ?? SECRET }),
     sleep: async () => {},
@@ -69,7 +85,7 @@ describe("ops reading submit", () => {
       fetch: (async (_url: string, init?: RequestInit) =>
         init?.method === "POST"
           ? new Response(JSON.stringify({ id: "rd_1" }), { status: 202 })
-          : new Response(JSON.stringify({ id: "rd_1", status: "failed" }), { status: 200 })
+          : new Response(manifest("failed"), { status: 200 })
       ) as unknown as typeof fetch,
     });
     expect(await readingSubmitCommand.run(["https://example.com/a", "--execute"], deps)).toBe(1);
@@ -90,7 +106,7 @@ describe("ops reading submit", () => {
       fetch: (async (_url: string, init?: RequestInit) =>
         init?.method === "POST"
           ? new Response(JSON.stringify({ id: "rd_1" }), { status: 202 })
-          : new Response(JSON.stringify({ id: "rd_1", status: "pending" }), { status: 200 })
+          : new Response(manifest("pending"), { status: 200 })
       ) as unknown as typeof fetch,
     });
     expect(await readingSubmitCommand.run(["https://example.com/a", "--execute"], deps)).toBe(1);
