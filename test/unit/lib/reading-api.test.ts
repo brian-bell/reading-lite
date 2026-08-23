@@ -225,6 +225,16 @@ describe("readingApiFor", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("submit rejects an id-only 200 because intake writes must return a valid manifest", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(200, { id: "rd_owner" }));
+
+    await expect(apiWith(fetchMock).submit("https://x.test/")).resolves.toEqual({
+      kind: "http_error",
+      status: 200,
+      message: "200 response was not a valid manifest",
+    });
+  });
+
   it("reprocess POSTs force and encodes the id into the path", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse(202, { id: "rd_1", status: "pending", attempt_id: "at_2" }),
@@ -267,6 +277,21 @@ describe("readingApiFor", () => {
       markdown: "# hi",
       title: "Hi",
       email: false,
+    });
+  });
+
+  it("importMarkdown rejects an id-only 200 because intake writes must return a valid manifest", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(200, { id: "rd_owner" }));
+
+    await expect(
+      apiWith(fetchMock).importMarkdown({
+        source_url: "https://x.test/",
+        markdown: "# hi",
+      }),
+    ).resolves.toEqual({
+      kind: "http_error",
+      status: 200,
+      message: "200 response was not a valid manifest",
     });
   });
 

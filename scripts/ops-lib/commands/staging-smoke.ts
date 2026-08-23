@@ -132,6 +132,15 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
       if (res.kind === "manifest") {
         const manifest = res.manifest as unknown as JsonObject;
         if (isAttemptTerminal(manifest, attemptId)) return manifest;
+      } else if (
+        res.kind === "http_error" &&
+        res.status !== 408 &&
+        res.status !== 429 &&
+        res.status < 500
+      ) {
+        throw new Error(
+          `GET /api/readings/${encodeURIComponent(id)}: HTTP ${res.status} ${res.message}`.trim(),
+        );
       }
       await deps.sleep(2_000);
     }

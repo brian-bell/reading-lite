@@ -198,6 +198,81 @@ describe("ops staging smoke", () => {
     const deps = stagingSmokeCommand.defaultDeps(cio);
     await expect(stagingSmokeCommand.run([], deps)).rejects.toThrow(UsageError);
   });
+
+  it("aborts attempt polling immediately when the reading GET is unauthorized", async () => {
+    const { io: cio } = io();
+    let submittedReads = 0;
+    let sleeps = 0;
+    const manifest = (id: string) => ({
+      id,
+      url: `https://example.test/${id}`,
+      url_hash: "a".repeat(64),
+      status: "ready",
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "b".repeat(64),
+      created_at: "2026-08-01T00:00:00.000Z",
+      updated_at: "2026-08-01T00:05:00.000Z",
+      usage: {
+        summarization: {
+          provider: "openai",
+          model: "gpt-test",
+          input_tokens: 1,
+          output_tokens: 1,
+          reasoning_tokens: 0,
+          cached_input_tokens: 0,
+          cache_write_tokens: 0,
+        },
+        openai_embedding_tokens: 1,
+      },
+    });
+    const fetchMock = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.endsWith("/api/readings")) {
+        return new Response(JSON.stringify({ id: "rd_submit", attempt_id: "at_submit" }), {
+          status: 202,
+        });
+      }
+      if (init?.method === "POST" && url.endsWith("/api/readings/import-markdown")) {
+        return new Response(JSON.stringify({ id: "rd_import", attempt_id: "at_import" }), {
+          status: 202,
+        });
+      }
+      if (init?.method === "POST" && url.endsWith("/api/readings/rd_submit/reprocess")) {
+        return new Response(JSON.stringify({ id: "rd_submit", attempt_id: "at_reprocess" }), {
+          status: 202,
+        });
+      }
+      if (url.endsWith("/api/readings/rd_import")) {
+        return new Response(JSON.stringify(manifest("rd_import")), { status: 200 });
+      }
+      if (url.endsWith("/api/readings/rd_submit")) {
+        submittedReads += 1;
+        if (submittedReads === 1) {
+          return new Response(JSON.stringify(manifest("rd_submit")), { status: 200 });
+        }
+        return new Response("unauthorized", { status: 401 });
+      }
+      throw new Error(`unexpected request: ${init?.method ?? "GET"} ${url}`);
+    }) as typeof fetch;
+    const deps: StagingSmokeDeps = {
+      io: cio,
+      fetch: fetchMock,
+      sleep: async () => {
+        sleeps += 1;
+      },
+      now: () => Date.parse("2026-08-23T12:00:00Z"),
+      writeFile: async () => {},
+      resolveToken: () => "tok",
+    };
+
+    await expect(
+      stagingSmokeCommand.run(["--provider", "openai", "--execute"], deps),
+    ).rejects.toThrow("GET /api/readings/rd_submit: HTTP 401 unauthorized");
+    expect(sleeps).toBe(0);
+    expect(submittedReads).toBe(2);
+  });
 });
 
 describe("ops founder bootstrap", () => {

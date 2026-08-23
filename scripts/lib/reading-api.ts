@@ -187,7 +187,10 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
     "content-type": "application/json",
   };
 
-  async function decodeResponse(res: Response): Promise<ReadingApiOutcome> {
+  async function decodeResponse(
+    res: Response,
+    requireManifest: boolean,
+  ): Promise<ReadingApiOutcome> {
     // A body-stream failure (socket died mid-read) is a transport failure:
     // let it throw so `request` retries the idempotent verbs.
     const text = await res.text();
@@ -197,7 +200,15 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
     } catch {
       body = text;
     }
-    return decodeIntakeResponse(res.status, body);
+    const outcome = decodeIntakeResponse(res.status, body);
+    if (requireManifest && outcome.kind === "existing" && outcome.manifest === undefined) {
+      return {
+        kind: "http_error",
+        status: res.status,
+        message: "200 response was not a valid manifest",
+      };
+    }
+    return outcome;
   }
 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -216,10 +227,11 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
     url: string,
     init: RequestInit,
     retries: number,
+    requireManifest = true,
   ): Promise<ReadingApiOutcome> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await decodeResponse(await deps.fetch(url, init));
+        return await decodeResponse(await deps.fetch(url, init), requireManifest);
       } catch (err) {
         if (attempt >= retries) {
           return { kind: "transport_error", message: formatFetchError(err) };
@@ -274,6 +286,7 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
         `${deps.base}/api/readings/lookup?url=${encodeURIComponent(url)}`,
         { headers },
         TRANSPORT_RETRIES,
+        false,
       );
     },
 
