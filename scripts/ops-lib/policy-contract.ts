@@ -182,17 +182,41 @@ export async function assertPolicyCommandBehavior(
 
   // Plan-first: a mode-less invocation must succeed as a pure plan — exit 0
   // and no write seam reached (the caller's write seams throw, and any
-  // non-usage throw is recorded as a failure here).
-  try {
-    const code = await command.run([...opts.baselineArgv, "--env", "staging"], deps as never);
-    if (code !== 0) {
-      failures.push(`plan-first: mode-less invocation returned ${code} instead of a successful plan`);
+  // non-usage throw is recorded as a failure here). Both environments are
+  // probed: production plans must be exactly as pure as staging plans.
+  for (const env of ["staging", "production"]) {
+    try {
+      const code = await command.run([...opts.baselineArgv, "--env", env], deps as never);
+      if (code !== 0) {
+        failures.push(`plan-first (${env}): mode-less invocation returned ${code} instead of a successful plan`);
+      }
+    } catch (e) {
+      failures.push(
+        `plan-first (${env}): mode-less invocation threw (${e instanceof Error ? e.message : String(e)}) — ` +
+          "a plan must succeed without reaching any write seam",
+      );
     }
-  } catch (e) {
-    failures.push(
-      `plan-first: mode-less invocation threw (${e instanceof Error ? e.message : String(e)}) — ` +
-        "a plan must succeed without reaching any write seam",
-    );
+  }
+
+  // The explicit-environment rule binds plans too: a missing or unknown --env
+  // must be refused as usage (never defaulted), still without reaching a
+  // write seam.
+  for (const [label, argv] of [
+    ["plan without --env", [...opts.baselineArgv]],
+    ["plan with invalid --env", [...opts.baselineArgv, "--env", "typo"]],
+  ] as const) {
+    try {
+      const code = await command.run(argv as string[], deps as never);
+      if (code !== 2) {
+        failures.push(`explicit environment: ${label} returned ${code} instead of refusing`);
+      }
+    } catch (e) {
+      if (!(e instanceof UsageError)) {
+        failures.push(
+          `explicit environment: ${label} threw a non-usage error (${e instanceof Error ? e.message : String(e)})`,
+        );
+      }
+    }
   }
 
   for (const probe of policyRefusalProbes(opts)) {
