@@ -212,6 +212,24 @@ Options:
     ).rejects.toThrow(/execute control/);
   });
 
+  it("execute control catches a command that blanket-refuses production executes", async () => {
+    const stagingOnly = {
+      ...conforming,
+      run: async (argv: string[], deps: { currentGuardVersion: number }) => {
+        if (argv.includes("--execute") && argv.includes("production")) {
+          throw new UsageError("production is not supported");
+        }
+        return conforming.run(argv, deps);
+      },
+    };
+    await expect(
+      assertPolicyCommandBehavior(stagingOnly as never, inertDeps, GUARD_VERSION, {
+        io: { stdout: () => {}, stderr: () => {} },
+        currentGuardVersion: 3,
+      }),
+    ).rejects.toThrow(/execute control \(production\)/);
+  });
+
   it("rejects a command missing any required acknowledgement", () => {
     const stripped = { ...conforming, helpText: "Usage: npm run ops -- system policy" };
     const violations = policyContractViolations(stripped as never);

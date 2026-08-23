@@ -112,10 +112,11 @@ export interface PolicyContractCapable {
   makeContractDeps: () => {
     deps: unknown;
     options: PolicyBehaviorOptions;
-    // Deps for the execute-control probe: write seams RECORD (over faked
-    // state) instead of throwing, so one fully-valid staging execute can
-    // succeed. This is what proves the refusal probes are discriminating — a
-    // command that blanket-refuses every --execute must fail the control.
+    // Deps for the execute-control probes: write seams RECORD (over faked
+    // state) instead of throwing, so a fully-valid execute can succeed in
+    // staging and in confirmed production. This is what proves the refusal
+    // probes are discriminating — a command that blanket-refuses every
+    // --execute, or refuses production outright, must fail a control.
     executeControlDeps: unknown;
   };
 }
@@ -199,9 +200,10 @@ export async function assertPolicyCommandBehavior(
   command: AnyCommand,
   deps: unknown,
   opts: PolicyBehaviorOptions,
-  // Deps under which one fully-valid staging execute must SUCCEED (write
-  // seams recording over faked state). Without this control a command could
-  // pass every refusal probe by unconditionally rejecting --execute.
+  // Deps under which a fully-valid execute must SUCCEED in each environment
+  // (write seams recording over faked state). Without these controls a
+  // command could pass every refusal probe by unconditionally rejecting
+  // --execute, or by rejecting production specifically.
   executeControlDeps?: unknown,
 ): Promise<void> {
   const failures: string[] = [];
@@ -213,22 +215,42 @@ export async function assertPolicyCommandBehavior(
       "execute control: no executeControlDeps supplied — the valid-execute control cannot be skipped",
     );
   } else {
-    const controlArgv = [
-      ...opts.baselineArgv, "--execute", "--env", "staging",
-      "--acknowledge-guard-version", String(opts.currentGuardVersion),
+    // One control per environment. Staging alone is not enough: every
+    // production probe is deliberately invalid, so a command that supports
+    // staging but rejects production outright would pass them all. The
+    // production control is the fully-valid counterpart — confirmed, with the
+    // current guard version — and must succeed.
+    const controls: { env: string; argv: string[] }[] = [
+      {
+        env: "staging",
+        argv: [
+          ...opts.baselineArgv, "--execute", "--env", "staging",
+          "--acknowledge-guard-version", String(opts.currentGuardVersion),
+        ],
+      },
+      {
+        env: "production",
+        argv: [
+          ...opts.baselineArgv, "--execute", "--env", "production", "--confirm-production",
+          "--acknowledge-guard-version", String(opts.currentGuardVersion),
+        ],
+      },
     ];
-    try {
-      const code = await command.run(controlArgv, executeControlDeps as never);
-      if (code !== 0) {
+    for (const control of controls) {
+      try {
+        const code = await command.run(control.argv, executeControlDeps as never);
+        if (code !== 0) {
+          failures.push(
+            `execute control (${control.env}): a fully-valid ${control.env} execute returned ${code} — ` +
+              "refusal probes are meaningless if every execute is rejected",
+          );
+        }
+      } catch (e) {
         failures.push(
-          `execute control: a fully-valid staging execute returned ${code} — ` +
-            "refusal probes are meaningless if every execute is rejected",
+          `execute control (${control.env}): a fully-valid ${control.env} execute threw ` +
+            `(${e instanceof Error ? e.message : String(e)})`,
         );
       }
-    } catch (e) {
-      failures.push(
-        `execute control: a fully-valid staging execute threw (${e instanceof Error ? e.message : String(e)})`,
-      );
     }
   }
 
