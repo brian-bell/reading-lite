@@ -11,9 +11,11 @@ import { runCli } from "../../../scripts/ops-lib/cli";
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 import { defaultRegistry } from "../../../scripts/ops-lib/registry";
 import {
+  assertPolicyCommandBehavior,
   assertPolicyCommandContract,
   policyContractViolations,
 } from "../../../scripts/ops-lib/policy-contract";
+import { UsageError } from "../../../scripts/ops-lib/contract";
 
 // group -> commands. The complete supported operator surface.
 const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
@@ -118,6 +120,8 @@ describe("ops registry completeness", () => {
 });
 
 describe("policy command extension contract (reading-lite-s1k.9.4)", () => {
+  // A minimal conforming stub: it implements the *refusals* the contract
+  // demands (which any policy command must have) without any policy behavior.
   const conforming = {
     group: "system",
     name: "policy",
@@ -135,11 +139,40 @@ Options:
                                    was written against.
   --execute                        Apply the policy change.`,
     defaultDeps: (io: never) => ({ io }),
-    run: async () => 0,
+    run: async (argv: string[]) => {
+      const flag = (name: string) => argv.includes(name);
+      const value = (name: string) => {
+        const i = argv.indexOf(name);
+        return i >= 0 ? argv[i + 1] : undefined;
+      };
+      if (flag("--execute")) {
+        const env = value("--env");
+        if (!env) throw new UsageError("--env is required");
+        if (env === "production" && !flag("--confirm-production")) {
+          throw new UsageError("--confirm-production is required for production");
+        }
+        if (!value("--acknowledge-guard-version")) {
+          throw new UsageError("--acknowledge-guard-version is required");
+        }
+      }
+      return 0;
+    },
   };
 
-  it("accepts a conforming plan-first policy command", () => {
+  // Side-effect seams must never be reached by a refusal probe.
+  const inertDeps = new Proxy(
+    { io: { stdout: () => {}, stderr: () => {} } },
+    {
+      get(target, prop) {
+        if (prop in target) return (target as Record<string | symbol, unknown>)[prop];
+        throw new Error(`side-effect seam ${String(prop)} reached during a refusal probe`);
+      },
+    },
+  );
+
+  it("accepts a conforming plan-first policy command, documentation and behavior", async () => {
     expect(() => assertPolicyCommandContract(conforming as never)).not.toThrow();
+    await expect(assertPolicyCommandBehavior(conforming as never, inertDeps)).resolves.toBeUndefined();
   });
 
   it("rejects a command missing any required acknowledgement", () => {
@@ -158,5 +191,23 @@ Options:
   it("rejects a non-plan-first policy command", () => {
     const readOnly = { ...conforming, safety: "read-only" as const };
     expect(policyContractViolations(readOnly as never).map((v) => v.requirement)).toContain("plan-first");
+  });
+
+  it("behavioral probes catch a command whose run ignores its documented guards", async () => {
+    // Documented perfectly, enforces nothing — exactly the false assurance the
+    // behavioral half exists to reject.
+    const documentedOnly = { ...conforming, run: async () => 0 };
+    await expect(assertPolicyCommandBehavior(documentedOnly as never, inertDeps)).rejects.toThrow(
+      /did not refuse/,
+    );
+  });
+
+  it("applies both halves to the registered policy command once it exists", async () => {
+    const registered = defaultRegistry.commands.find(
+      (c) => c.name === "policy" || c.group === "system",
+    );
+    if (!registered) return; // s1k.9.4 has not landed yet — nothing to check.
+    assertPolicyCommandContract(registered);
+    await assertPolicyCommandBehavior(registered, inertDeps);
   });
 });

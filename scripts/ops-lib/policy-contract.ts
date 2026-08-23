@@ -78,3 +78,53 @@ export function assertPolicyCommandContract(command: AnyCommand): void {
     );
   }
 }
+
+// Behavioral probes: documentation alone is not the contract — the command's
+// run seam must actually refuse each unsafe invocation. Every probe is an
+// invocation a conforming policy command MUST reject as usage (throw
+// UsageError or return 2) before any injected side-effect seam runs, so these
+// are checkable without implementing any policy behavior. The caller supplies
+// deps whose side-effect seams throw (or record) so a probe that reaches one
+// fails loudly.
+export const POLICY_REFUSAL_PROBES: { requirement: string; argv: string[] }[] = [
+  {
+    requirement: "explicit environment",
+    // An execute with no --env must be refused, never defaulted.
+    argv: ["--execute", "--acknowledge-guard-version", "1"],
+  },
+  {
+    requirement: "production confirmation",
+    argv: ["--execute", "--env", "production", "--acknowledge-guard-version", "1"],
+  },
+  {
+    requirement: "guard version acknowledgement",
+    argv: ["--execute", "--env", "staging"],
+  },
+];
+
+export async function assertPolicyCommandBehavior(
+  command: AnyCommand,
+  deps: unknown,
+): Promise<void> {
+  const failures: string[] = [];
+  for (const probe of POLICY_REFUSAL_PROBES) {
+    let refused = false;
+    try {
+      const code = await command.run(probe.argv, deps as never);
+      refused = code === 2;
+    } catch {
+      // Any throw (UsageError via the dispatcher, or a guard in run) counts as
+      // a refusal; what must never happen is a 0/1 return that acted.
+      refused = true;
+    }
+    if (!refused) {
+      failures.push(`${probe.requirement}: did not refuse \`${probe.argv.join(" ")}\``);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `policy command "${command.group} ${command.name}" fails behavioral probes:\n` +
+        failures.map((f) => `  - ${f}`).join("\n"),
+    );
+  }
+}
