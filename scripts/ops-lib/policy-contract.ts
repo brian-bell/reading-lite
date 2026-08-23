@@ -109,7 +109,15 @@ export function assertPolicyCommandContract(command: AnyCommand): void {
 // policy and guard-version state — faked is fine) and whose WRITE seams
 // throw, plus the probe options (current guard version, valid baseline argv).
 export interface PolicyContractCapable {
-  makeContractDeps: () => { deps: unknown; options: PolicyBehaviorOptions };
+  makeContractDeps: () => {
+    deps: unknown;
+    options: PolicyBehaviorOptions;
+    // Deps for the execute-control probe: write seams RECORD (over faked
+    // state) instead of throwing, so one fully-valid staging execute can
+    // succeed. This is what proves the refusal probes are discriminating — a
+    // command that blanket-refuses every --execute must fail the control.
+    executeControlDeps: unknown;
+  };
 }
 
 export function isPolicyContractCapable(command: AnyCommand): command is AnyCommand & PolicyContractCapable {
@@ -191,8 +199,32 @@ export async function assertPolicyCommandBehavior(
   command: AnyCommand,
   deps: unknown,
   opts: PolicyBehaviorOptions,
+  // Deps under which one fully-valid staging execute must SUCCEED (write
+  // seams recording over faked state). Without this control a command could
+  // pass every refusal probe by unconditionally rejecting --execute.
+  executeControlDeps?: unknown,
 ): Promise<void> {
   const failures: string[] = [];
+
+  if (executeControlDeps !== undefined) {
+    const controlArgv = [
+      ...opts.baselineArgv, "--execute", "--env", "staging",
+      "--acknowledge-guard-version", String(opts.currentGuardVersion),
+    ];
+    try {
+      const code = await command.run(controlArgv, executeControlDeps as never);
+      if (code !== 0) {
+        failures.push(
+          `execute control: a fully-valid staging execute returned ${code} — ` +
+            "refusal probes are meaningless if every execute is rejected",
+        );
+      }
+    } catch (e) {
+      failures.push(
+        `execute control: a fully-valid staging execute threw (${e instanceof Error ? e.message : String(e)})`,
+      );
+    }
+  }
 
   // Plan-first: a mode-less invocation must succeed as a pure plan — exit 0
   // and no write seam reached (the caller's write seams throw, and any

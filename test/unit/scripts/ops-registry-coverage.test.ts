@@ -185,8 +185,31 @@ Options:
   it("accepts a conforming plan-first policy command, documentation and behavior", async () => {
     expect(() => assertPolicyCommandContract(conforming as never)).not.toThrow();
     await expect(
-      assertPolicyCommandBehavior(conforming as never, inertDeps, GUARD_VERSION),
+      assertPolicyCommandBehavior(
+        conforming as never,
+        inertDeps,
+        GUARD_VERSION,
+        // Execute-control deps: writes allowed (recording), so the valid
+        // staging execute in the control probe can succeed.
+        { io: { stdout: () => {}, stderr: () => {} }, currentGuardVersion: 3 },
+      ),
     ).resolves.toBeUndefined();
+  });
+
+  it("execute control catches a command that blanket-refuses every --execute", async () => {
+    const refusesEverything = {
+      ...conforming,
+      run: async (argv: string[], deps: { currentGuardVersion: number }) => {
+        if (argv.includes("--execute")) throw new UsageError("execute disabled");
+        return conforming.run(argv, deps);
+      },
+    };
+    await expect(
+      assertPolicyCommandBehavior(refusesEverything as never, inertDeps, GUARD_VERSION, {
+        io: { stdout: () => {}, stderr: () => {} },
+        currentGuardVersion: 3,
+      }),
+    ).rejects.toThrow(/execute control/);
   });
 
   it("rejects a command missing any required acknowledgement", () => {
@@ -282,8 +305,8 @@ Options:
       "the registered system policy command must expose makeContractDeps() so this suite can execute the behavioral contract against it",
     ).toBe(true);
     if (isPolicyContractCapable(registered)) {
-      const { deps, options } = registered.makeContractDeps();
-      await assertPolicyCommandBehavior(registered, deps, options);
+      const { deps, options, executeControlDeps } = registered.makeContractDeps();
+      await assertPolicyCommandBehavior(registered, deps, options, executeControlDeps);
     }
   });
 });
