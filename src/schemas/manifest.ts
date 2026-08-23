@@ -151,6 +151,7 @@ export const SimilaritySnapshotSchema = z
     computed_at: z.string().datetime(),
   })
   .strip();
+export type SimilaritySnapshot = z.infer<typeof SimilaritySnapshotSchema>;
 
 export const ManifestSchema = z
   .object({

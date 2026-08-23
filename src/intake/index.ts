@@ -8,16 +8,16 @@ import { applyStaleness } from "../modules/staleness";
 import { ReadingStore } from "../modules/stores/reading-store";
 import {
   newAttemptId,
-  newAttemptSummary,
   newReadingArgs,
   type ProcessReadingArgs,
   type ProcessReadingSource,
 } from "../process-reading";
-import type {
-  ByUrlPointer,
-  Manifest,
-  ProcessingAttemptSummary,
-} from "../schemas/manifest";
+import {
+  importPending,
+  reprocessPending,
+  submitPending,
+} from "../modules/manifest-drafting";
+import type { ByUrlPointer, Manifest } from "../schemas/manifest";
 import { sha256Hex, type Services } from "../services";
 import { activateAttempt, type ActivationOutcome } from "./activation";
 
@@ -167,21 +167,11 @@ export class ReadingIntake {
     const args = await newReadingArgs(url, this.deps.services);
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
-    const activeAttempt = newAttemptSummary(attemptId, "submit", attemptStartedAt);
-    const pendingManifest: Manifest = {
-      id: args.id,
-      url,
-      url_hash: args.urlHash,
-      source_type: "url",
-      status: "pending",
-      active_attempt: activeAttempt,
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: args.createdAt,
-      updated_at: args.createdAt,
-    };
+    // ProcessReadingArgs satisfies ReadingIdentity structurally.
+    const { manifest: pendingManifest, attempt: activeAttempt } = submitPending(
+      args,
+      { attemptId, startedAt: attemptStartedAt },
+    );
     const queue = this.deps.queue;
     if (!queue) return { kind: "unavailable", reason: "queue_unbound" };
 
@@ -226,13 +216,27 @@ export class ReadingIntake {
 
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
-    const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
-    const markdownTitle = opts.title ?? effective.title;
     const markdownBytes = new TextEncoder().encode(markdown);
+    const { manifest: pendingManifest, attempt: activeAttempt } = importPending(
+      {
+        id: effective.id,
+        url: effective.url,
+        urlHash: effective.url_hash,
+        createdAt: effective.created_at,
+      },
+      { attemptId, startedAt: attemptStartedAt },
+      {
+        bytes: markdownBytes.byteLength,
+        sha256: await sha256Hex(markdown),
+        ...(opts.title === undefined ? {} : { title: opts.title }),
+      },
+      { over: effective },
+    );
     const source: ProcessReadingSource = {
       kind: "markdown",
       markdown,
-      ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
+      // The drafted title already resolved the supplied-vs-prior fallback.
+      ...(pendingManifest.title === undefined ? {} : { title: pendingManifest.title }),
     };
     const args: ProcessReadingArgs = {
       id: effective.id,
@@ -245,21 +249,6 @@ export class ReadingIntake {
       attemptStartedAt,
       trigger: "import",
       email: opts.email,
-    };
-    const manifestWithoutError: Manifest = { ...effective };
-    delete manifestWithoutError.error;
-    delete manifestWithoutError.active_attempt;
-    const pendingManifest: Manifest = {
-      ...manifestWithoutError,
-      source_type: "markdown",
-      status: "pending",
-      active_attempt: activeAttempt,
-      ...(markdownTitle === undefined ? {} : { title: markdownTitle }),
-      content_type: "text/markdown; charset=utf-8",
-      content_status: "captured",
-      content_bytes: markdownBytes.byteLength,
-      content_sha256: await sha256Hex(markdown),
-      updated_at: attemptStartedAt,
     };
 
     return activateAttempt(this.deps.reader, queue, this.deps.services, {
@@ -295,23 +284,16 @@ export class ReadingIntake {
     const args = await newReadingArgs(url, this.deps.services, source);
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
-    const activeAttempt = newAttemptSummary(attemptId, "import", attemptStartedAt);
     const markdownBytes = new TextEncoder().encode(markdown);
-    const pendingManifest: Manifest = {
-      id: args.id,
-      url,
-      url_hash: args.urlHash,
-      source_type: "markdown",
-      status: "pending",
-      active_attempt: activeAttempt,
-      ...(opts.title === undefined ? {} : { title: opts.title }),
-      content_type: "text/markdown; charset=utf-8",
-      content_status: "captured",
-      content_bytes: markdownBytes.byteLength,
-      content_sha256: await sha256Hex(markdown),
-      created_at: args.createdAt,
-      updated_at: args.createdAt,
-    };
+    const { manifest: pendingManifest, attempt: activeAttempt } = importPending(
+      args,
+      { attemptId, startedAt: attemptStartedAt },
+      {
+        bytes: markdownBytes.byteLength,
+        sha256: await sha256Hex(markdown),
+        ...(opts.title === undefined ? {} : { title: opts.title }),
+      },
+    );
     const queue = this.deps.queue;
     if (!queue) return { kind: "unavailable", reason: "queue_unbound" };
 
@@ -359,7 +341,11 @@ export class ReadingIntake {
 
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
-    const activeAttempt = newAttemptSummary(attemptId, "reprocess", attemptStartedAt);
+    const { manifest: nextManifest, attempt: activeAttempt } = reprocessPending(
+      effective,
+      { attemptId, startedAt: attemptStartedAt },
+      this.deps.services.now(),
+    );
     // A request-supplied markdown source wins over the stored-markdown synthesis:
     // the caller is handing us better content than R2 holds, so we never read
     // extracted.md (and the missing_markdown conflict below can only fire for a
@@ -392,8 +378,6 @@ export class ReadingIntake {
       sourceTypeOnFailure: effective.source_type ?? "url",
       email: opts.email,
     };
-    const nextManifest = manifestForActiveAttempt(effective, activeAttempt, this.deps.services);
-
     return activateAttempt(this.deps.reader, queue, this.deps.services, {
       keyPrefix,
       manifest: nextManifest,
@@ -404,35 +388,4 @@ export class ReadingIntake {
       principal: this.deps.principal,
     });
   }
-}
-
-function manifestForActiveAttempt(
-  manifest: Manifest,
-  activeAttempt: ProcessingAttemptSummary,
-  services: Services,
-): Manifest {
-  if (manifest.status === "ready") {
-    return {
-      ...manifest,
-      active_attempt: activeAttempt,
-      updated_at: services.now(),
-    };
-  }
-
-  return {
-    id: manifest.id,
-    url: manifest.url,
-    url_hash: manifest.url_hash,
-    source_type: manifest.source_type,
-    status: "pending",
-    active_attempt: activeAttempt,
-    last_attempt: manifest.last_attempt,
-    title: manifest.title,
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: manifest.created_at,
-    updated_at: services.now(),
-  };
 }

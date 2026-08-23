@@ -42,6 +42,10 @@ themselves — read those before changing a module.
 - `src/modules/reading-claim.ts` — by-url ownership via
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` — the read-time stale-annotation rule.
+- `src/modules/manifest-drafting.ts` — the pure constructors for every Manifest
+  the system writes: pending drafts for the intake verbs, the queue-send
+  rollback, and the terminal builders shared with the offline batch write phase
+  (see CONTEXT.md "Manifest drafting").
 - `src/modules/stores/` — `reading-store.ts` (R2 codecs), `list-index.ts`
   (the `index/list.json` CAS subsystem), `similarity-store.ts` (Vectorize).
 - `src/modules/{summarizer,openai-summarizer,anthropic,extractor,embeddings,email,http-retry}`

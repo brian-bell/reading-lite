@@ -22,6 +22,11 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
+import {
+  failedManifest,
+  readyManifest,
+  rollForward,
+} from "./modules/manifest-drafting";
 import { normalizeTags } from "./modules/tags";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
@@ -156,48 +161,35 @@ export async function processReading(
       }),
     );
 
-    let finalManifest: Manifest = {
-      id: args.id,
-      url: args.url,
-      url_hash: args.urlHash,
-      source_type: sourceTypeForArgs(args),
-      status: "ready",
-      title: llm.reading.title,
-      tldr: llm.reading.tldr,
-      tags: normalizeTags(llm.reading.tags),
-      keywords: llm.reading.keywords,
-      people: llm.reading.people,
-      orgs: llm.reading.orgs,
-      novelty_verdict: llm.reading.novelty_verdict,
-      similarity: similaritySnapshot,
-      connections: llm.reading.connections,
-      summary_markdown: llm.reading.summary_markdown,
-      content_type: extracted.content_type,
-      content_status: extracted.content_status,
-      content_bytes: extracted.content_bytes,
-      extracted_bytes: extracted.markdown
-        ? new TextEncoder().encode(extracted.markdown).byteLength
-        : undefined,
-      content_sha256: extracted.content_sha256,
-      fetched_at: services.now(),
-      created_at: args.createdAt,
-      updated_at: services.now(),
-      last_attempt: summarizeAttempt(attempt),
-      usage: {
-        summarization: llm.usage,
-        openai_embedding_tokens:
-          queryEmbed.usage.total_tokens + tldrEmbed.usage.total_tokens,
-      },
-    };
-
     attempt.status = "succeeded";
     attempt.finished_at = services.now();
     attempt.error = undefined;
-    finalManifest = {
-      ...finalManifest,
-      updated_at: services.now(),
-      last_attempt: summarizeAttempt(attempt),
-    };
+    // ProcessReadingArgs satisfies ReadingIdentity structurally, and the full
+    // ProcessingAttempt is stripped to its summary by the drafter's parse.
+    const finalManifest = readyManifest(
+      {
+        identity: args,
+        sourceType: sourceTypeForArgs(args),
+        summary: llm.reading,
+        similarity: similaritySnapshot,
+        content: {
+          content_type: extracted.content_type,
+          content_status: extracted.content_status,
+          content_bytes: extracted.content_bytes,
+          content_sha256: extracted.content_sha256,
+          ...(extracted.markdown
+            ? { extracted_bytes: new TextEncoder().encode(extracted.markdown).byteLength }
+            : {}),
+        },
+        usage: {
+          summarization: llm.usage,
+          openai_embedding_tokens:
+            queryEmbed.usage.total_tokens + tldrEmbed.usage.total_tokens,
+        },
+        attempt,
+      },
+      services.now(),
+    );
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
     const { published } = await commitTerminalManifest(
@@ -364,14 +356,8 @@ async function markFailed(
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
     // a pending+running manifest for the reprocess attempt. On failure we roll
-    // forward to that snapshot, clear active_attempt, and stamp last_attempt
-    // with the failed reprocess so the user keeps the previously-ready data.
-    const manifest: Manifest = {
-      ...args.preserveReadyManifest,
-      active_attempt: undefined,
-      last_attempt: summarizeAttempt(attempt),
-      updated_at: services.now(),
-    };
+    // forward to that snapshot so the user keeps the previously-ready data.
+    const manifest = rollForward(args.preserveReadyManifest, attempt, services.now());
     // similarity: null → list-only visibility (the failure-path asymmetry).
     await commitTerminalManifest(reader, null, args, manifest, {
       claimMissingPointer: false,
@@ -382,21 +368,13 @@ async function markFailed(
   }
 
   const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
-  const manifest: Manifest = {
-    id: args.id,
-    url: args.url,
-    url_hash: args.urlHash,
-    source_type: sourceTypeOnFailure,
-    status: "failed",
-    error,
-    content_type: "application/octet-stream",
-    content_status: "failed",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: args.createdAt,
-    updated_at: services.now(),
-    last_attempt: summarizeAttempt(attempt),
-  };
+  // content omitted → the empty-content placeholder with content_status
+  // "failed": on this path extraction may never have happened.
+  const manifest = failedManifest(
+    args,
+    { sourceType: sourceTypeOnFailure, error, attempt },
+    services.now(),
+  );
   // We're already on the failure path inside the queue consumer — a transient
   // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
   // either way). The defensive write logs and moves on; the index TTL annotator
@@ -685,7 +663,7 @@ export function newAttemptId(services: Services): string {
   return `at_${services.newId()}`;
 }
 
-export function newAttemptSummary(
+function newAttemptSummary(
   id: string,
   trigger: ProcessingAttemptTrigger,
   startedAt: string,
@@ -716,19 +694,6 @@ function newProcessingAttempt(args: ProcessReadingArgs, services: Services): Pro
       },
     ],
   };
-}
-
-function summarizeAttempt(attempt: ProcessingAttempt): ProcessingAttemptSummary {
-  const summary: ProcessingAttemptSummary = {
-    id: attempt.id,
-    trigger: attempt.trigger,
-    status: attempt.status,
-    started_at: attempt.started_at,
-  };
-  if (attempt.stage) summary.stage = attempt.stage;
-  if (attempt.finished_at) summary.finished_at = attempt.finished_at;
-  if (attempt.error) summary.error = attempt.error;
-  return summary;
 }
 
 async function runStage<T>(

@@ -1,12 +1,16 @@
 import {
-  ManifestSchema,
   type Manifest,
   type ManifestError,
   type SummarizationUsage,
 } from "../../../src/schemas/manifest";
 import type { ReadingSummary } from "../../../src/schemas/reading-summary";
 import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
-import { normalizeTags } from "../../../src/modules/tags";
+import {
+  failedManifest,
+  readyManifest,
+  rollForward,
+  type ContentFacts,
+} from "../../../src/modules/manifest-drafting";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
@@ -337,11 +341,19 @@ async function writeNormalizedResults(
     const embedding = embeddings[i]!;
     // Mirror process-reading.ts: openai_embedding_tokens = query + tldr embed.
     const embeddingTokens = target.queryEmbedTokens + (tldrTokens[i] ?? 0);
-    const manifest = buildReadyManifest(
-      target,
-      reading,
-      usage,
-      embeddingTokens,
+    // SidecarTarget satisfies ReadingIdentity structurally. attempt: null is
+    // the explicit statement that the sidecar carries no attempt identity
+    // (reading-lite-1cm mints one at prepare time).
+    const manifest = readyManifest(
+      {
+        identity: target,
+        sourceType: target.sourceType,
+        summary: reading,
+        ...(target.similarity === undefined ? {} : { similarity: target.similarity }),
+        content: contentFactsOf(target),
+        usage: { summarization: usage, openai_embedding_tokens: embeddingTokens },
+        attempt: null,
+      },
       deps.now(),
     );
     successes.push({ target, manifest });
@@ -373,8 +385,12 @@ async function writeNormalizedResults(
   //    write is idempotent for the recover path (same id → same key_prefix).
   for (const { target, error } of failures) {
     const manifest = target.preserveReadyManifest
-      ? rolledForward(target.preserveReadyManifest, deps.now())
-      : buildFailedManifest(target, error, deps.now());
+      ? rollForward(target.preserveReadyManifest, null, deps.now())
+      : failedManifest(
+          target,
+          { sourceType: target.sourceType, error, attempt: null, content: contentFactsOf(target) },
+          deps.now(),
+        );
     await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
     await deps.r2.put(
       `index/by-id/${target.id}`,
@@ -396,69 +412,16 @@ async function writeNormalizedResults(
   return report;
 }
 
-function buildReadyManifest(
-  target: SidecarTarget,
-  reading: ReadingSummary,
-  usage: SummarizationUsage,
-  embeddingTokens: number,
-  now: string,
-): Manifest {
-  const m: Manifest = {
-    id: target.id,
-    url: target.url,
-    url_hash: target.urlHash,
-    source_type: target.sourceType,
-    status: "ready",
-    title: reading.title,
-    tldr: reading.tldr,
-    tags: normalizeTags(reading.tags),
-    keywords: reading.keywords,
-    people: reading.people,
-    orgs: reading.orgs,
-    novelty_verdict: reading.novelty_verdict,
-    ...(target.similarity === undefined ? {} : { similarity: target.similarity }),
-    connections: reading.connections,
-    summary_markdown: reading.summary_markdown,
+// The camelCase sidecar fields → the snake_case ContentFacts the shared
+// drafter takes. The single place batch pays its casing toll.
+function contentFactsOf(target: SidecarTarget): ContentFacts {
+  return {
     content_type: target.contentType,
-    content_status: target.contentStatus as Manifest["content_status"],
+    content_status: target.contentStatus as ContentFacts["content_status"],
     content_bytes: target.contentBytes,
     content_sha256: target.contentSha256,
     ...(target.extractedBytes === undefined ? {} : { extracted_bytes: target.extractedBytes }),
-    fetched_at: now,
-    created_at: target.createdAt,
-    updated_at: now,
-    usage: {
-      summarization: usage,
-      // Query (similar-phase) + tldr (here) embedding tokens, attributed
-      // per-reading from the coalesced OpenAI calls. Mirrors process-reading.ts.
-      openai_embedding_tokens: embeddingTokens,
-    },
   };
-  return ManifestSchema.parse(m);
-}
-
-function buildFailedManifest(target: SidecarTarget, error: ManifestError, now: string): Manifest {
-  const m: Manifest = {
-    id: target.id,
-    url: target.url,
-    url_hash: target.urlHash,
-    source_type: target.sourceType,
-    status: "failed",
-    error,
-    content_type: target.contentType,
-    content_status: target.contentStatus as Manifest["content_status"],
-    content_bytes: target.contentBytes,
-    content_sha256: target.contentSha256,
-    ...(target.extractedBytes === undefined ? {} : { extracted_bytes: target.extractedBytes }),
-    created_at: target.createdAt,
-    updated_at: now,
-  };
-  return ManifestSchema.parse(m);
-}
-
-function rolledForward(preserved: Manifest, now: string): Manifest {
-  // Keep the previously-ready data; clear any active attempt and restamp.
-  return ManifestSchema.parse({ ...preserved, active_attempt: undefined, updated_at: now });
 }
 
 async function releaseByUrlIfOwned(target: SidecarTarget, deps: WriteDeps): Promise<void> {
@@ -526,6 +489,8 @@ function vectorMetadata(m: Manifest): Record<string, string | number | boolean |
   };
   if (m.title) out.title = m.title;
   if (m.tldr) out.tldr = m.tldr;
-  if (m.tags) out.tags = normalizeTags(m.tags);
+  // Tags on a drafted ready manifest are already canonical (readyManifest
+  // normalizes them).
+  if (m.tags) out.tags = m.tags;
   return out;
 }

@@ -2,6 +2,7 @@ import { envelopeFromPrincipal, type ProcessReadingEnvelopeV1 } from "../control
 import type { AuthenticatedPrincipal } from "../control-plane/principal";
 import type { ProcessReadingArgs } from "../process-reading";
 import type { Manifest, ProcessingAttemptSummary } from "../schemas/manifest";
+import { queueSendRollback } from "../modules/manifest-drafting";
 import { manifestToIndexItem, ReadingStore } from "../modules/stores/reading-store";
 import type { Services } from "../services";
 
@@ -111,49 +112,7 @@ async function writeFailedActivationManifest(
   err: unknown,
   services: Services,
 ): Promise<void> {
-  const failedManifest = manifestForQueueSendFailure(manifest, activeAttempt, err, services);
+  const failedManifest = queueSendRollback(manifest, activeAttempt, err, services.now());
   await reader.writeManifest(keyPrefix, failedManifest);
   await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failedManifest, keyPrefix));
-}
-
-function manifestForQueueSendFailure(
-  manifest: Manifest,
-  activeAttempt: ProcessingAttemptSummary,
-  err: unknown,
-  services: Services,
-): Manifest {
-  const failedAt = services.now();
-  const error = {
-    code: "QueueSendError",
-    message: err instanceof Error ? err.message : "queue send failed",
-    stage: "queued" as const,
-    failed_at: failedAt,
-    retryable: true,
-  };
-  const failedAttempt: ProcessingAttemptSummary = {
-    ...activeAttempt,
-    status: "failed",
-    stage: "queued",
-    finished_at: failedAt,
-    error,
-  };
-
-  if (manifest.status === "ready") {
-    return {
-      ...manifest,
-      active_attempt: undefined,
-      last_attempt: failedAttempt,
-      updated_at: failedAt,
-    };
-  }
-
-  return {
-    ...manifest,
-    status: "failed",
-    active_attempt: undefined,
-    last_attempt: failedAttempt,
-    error,
-    ...(manifest.status === "pending" ? { content_status: "failed" as const } : {}),
-    updated_at: failedAt,
-  };
 }
