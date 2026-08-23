@@ -16,12 +16,7 @@
     "test": "vitest run",
     "test:quiet": "node scripts/test-quiet.mjs",
     "test:watch": "vitest",
-    "import-bookmarks": "tsx scripts/import-bookmarks.ts",
-    "reddit-import": "tsx scripts/reddit-import.ts",
-    "youtube-import": "tsx scripts/youtube-import.ts",
     "summarizer-eval": "tsx scripts/summarizer-eval.ts",
-    "check-corpus": "tsx scripts/check-corpus.ts",
-    "process-reading-list": "tsx scripts/process-reading-list.ts",
     "extract-agent": "tsx scripts/extract-agent.ts",
     "extract-agent:probe": "tsx scripts/extract-agent-probe.ts",
     "founder-bootstrap": "tsx scripts/founder-bootstrap.ts"

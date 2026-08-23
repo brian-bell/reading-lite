@@ -30,18 +30,18 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    and runs yt-dlp, but does not POST):
 
    ```sh
-   npx tsx scripts/youtube-import.ts "<youtubeUrl>" --dry-run
+   npm run ops -- import youtube "<youtubeUrl>"
    ```
 
    The header line reports the resolved `source_url`, title, transcript length,
    and markdown size. If transcript shows `(none)`, the video has no captions or
    yt-dlp couldn't fetch them — the import still proceeds with description.
 
-2. **Import** by dropping `--dry-run`. Add `--api-url <base>` / `--token <tok>`
+2. **Import** by adding `--execute`. Add `--api-url <base>` / `--token <tok>`
    to target staging or pass a token explicitly:
 
    ```sh
-   npx tsx scripts/youtube-import.ts "<youtubeUrl>"
+   npm run ops -- import youtube "<youtubeUrl>" --execute
    ```
 
    The tool prints the reading id and a poll URL. The reading processes through
@@ -54,7 +54,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 
    ```sh
    npm run ops -- corpus drop "<canonicalWatchUrl>" --execute
-   npx tsx scripts/youtube-import.ts "<youtubeUrl>"
+   npm run ops -- import youtube "<youtubeUrl>" --execute
    ```
 
    The import always claims the **canonical** watch URL, but a thin reading may
@@ -85,7 +85,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 
 ## Implementation
 
-- CLI: `scripts/youtube-import.ts` (fetches oEmbed + watch page, shells out to
+- CLI: `scripts/ops-lib/commands/import-youtube.ts` (fetches oEmbed + watch page, shells out to
   yt-dlp for the transcript). Parser glue (tested):
   `scripts/youtube-import-lib/parse.ts` (`buildYoutubeImport`).
 - Markdown rendering + URL parsing: `src/modules/extractor/youtube.ts`
