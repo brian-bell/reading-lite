@@ -1,8 +1,8 @@
 # Copy to .stg.vars and fill in. .stg.vars is gitignored.
 #
 # Used by:
-#   make deploy-worker ENV=stg [EXECUTE=1]
-#   make deploy-web ENV=stg [EXECUTE=1]
+#   npm run ops -- deploy worker --env staging [--execute]
+#   npm run ops -- deploy web --branch staging [--execute]
 #   BASE=<staging-url> READER_API_TOKEN=<staging-token> ./scripts/manual/idempotency-smoke.sh a
 #
 # Secrets still need to be set in Cloudflare with:
@@ -11,7 +11,7 @@
 # When SUMMARIZER_PROVIDER=anthropic:
 #   wrangler secret put ANTHROPIC_API_KEY --env staging
 #
-# founder-bootstrap reads AUTH_ROOT_SECRET and READER_API_TOKEN from this
+# `ops founder bootstrap` reads AUTH_ROOT_SECRET and READER_API_TOKEN from this
 # file (or the process environment), not from Wrangler secrets. The
 # AUTH_ROOT_SECRET here must match the Worker secret. READER_API_TOKEN is
 # imported as the founder bearer and is not a runtime Worker fallback.

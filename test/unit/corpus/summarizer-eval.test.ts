@@ -12,7 +12,7 @@ import {
   isAttemptTerminal,
   summarizeDiagnostics,
   validateStagingSmokeTarget,
-} from "../../../scripts/staging-provider-smoke-lib";
+} from "../../../scripts/lib/staging-provider-smoke-lib";
 
 const strongReading: ReadingSummary = {
   title: "Project Lantern cuts tail latency",

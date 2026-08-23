@@ -1,12 +1,14 @@
-#!/usr/bin/env tsx
+// Founder-bootstrap library: argument parsing, the idempotent bootstrap run,
+// and the wrangler-backed D1 adapter. The operator entry point is
+// `ops founder bootstrap` (scripts/ops-lib/commands/founder-bootstrap.ts);
+// dev-setup and cloud-agent-install reuse the same run function.
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
-import { bootstrapFounder, signupModeForEnv, type SignupMode } from "../src/control-plane/bootstrap";
-import { parseAuthRootKeyVersion, parseAuthRootSecret } from "../src/control-plane/crypto";
-import { redactEmail } from "../src/control-plane/email";
-import type { ControlPlaneDb, SqlStatement } from "../src/control-plane/db";
-import { loadDotVars } from "./lib/dotvars";
+import { bootstrapFounder, signupModeForEnv, type SignupMode } from "../../src/control-plane/bootstrap";
+import { parseAuthRootKeyVersion, parseAuthRootSecret } from "../../src/control-plane/crypto";
+import { redactEmail } from "../../src/control-plane/email";
+import type { ControlPlaneDb, SqlStatement } from "../../src/control-plane/db";
+import { loadDotVars } from "./dotvars";
 
 export type BootstrapEnvName = "local" | "staging" | "production";
 
@@ -30,13 +32,13 @@ export interface FounderBootstrapDeps {
 
 const ENV_NAMES = new Set<BootstrapEnvName>(["local", "staging", "production"]);
 
-const DATABASE_BY_ENV: Record<BootstrapEnvName, string> = {
+export const DATABASE_BY_ENV: Record<BootstrapEnvName, string> = {
   local: "reading-lite-control-dev",
   staging: "reading-lite-control-staging",
   production: "reading-lite-control",
 };
 
-const DOTVARS_BY_ENV: Record<BootstrapEnvName, string> = {
+export const DOTVARS_BY_ENV: Record<BootstrapEnvName, string> = {
   local: ".dev.vars",
   staging: ".stg.vars",
   production: ".prd.vars",
@@ -225,66 +227,9 @@ function runWrangler(args: string[]): Promise<{ stdout: string; stderr: string; 
   });
 }
 
-function printUsage(): void {
-  process.stderr.write(`Usage: npm run founder-bootstrap -- [--email <addr>] [--env local|staging|production] [--execute] [--confirm-production]
-
-Idempotently creates or resolves the founder user, default settings,
-explicit placeholder tenant limits, and imports READER_API_TOKEN as a
-90-day legacy-format API token. Dry-run by default.
-
-  --email                  Founder address. Default: FOUNDER_EMAIL.
-  --env                    local (default), staging, or production.
-  --execute                Apply writes. Otherwise prints the plan.
-  --confirm-production     Required with --execute --env production.
-  --help                   Show this message.
-
-Credentials: AUTH_ROOT_SECRET and READER_API_TOKEN from the environment
-or .dev.vars / .stg.vars / .prd.vars. Apply D1 migrations first:
-
-  wrangler d1 migrations apply reading-lite-control-dev --local
-  wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
-  wrangler d1 migrations apply reading-lite-control --env production --remote
-`);
-}
-
-function resolveEnvVars(env: BootstrapEnvName): Record<string, string | undefined> {
+export function resolveEnvVars(env: BootstrapEnvName): Record<string, string | undefined> {
   return {
     ...loadDotVars(DOTVARS_BY_ENV[env]),
     ...process.env,
   };
-}
-
-async function main(): Promise<void> {
-  let args: FounderBootstrapCliArgs;
-  try {
-    args = parseFounderBootstrapArgs();
-  } catch (error) {
-    if (error instanceof HelpRequested) {
-      printUsage();
-      process.exit(0);
-    }
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    printUsage();
-    process.exit(2);
-  }
-
-  const result = await runFounderBootstrap(args, {
-    envVars: resolveEnvVars(args.env),
-    nowMs: Date.now(),
-    write: (line) => void process.stderr.write(line),
-    openDb: async (env) =>
-      makeWranglerD1({
-        database: DATABASE_BY_ENV[env],
-        local: env === "local",
-        ...(env === "local" ? {} : { wranglerEnv: env }),
-      }),
-  });
-  process.exit(result.exitCode);
-}
-
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
 }

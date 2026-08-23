@@ -4,7 +4,7 @@ import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import {
   parseFounderBootstrapArgs,
   runFounderBootstrap,
-} from "../../../scripts/founder-bootstrap";
+} from "../../../scripts/lib/founder-bootstrap";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

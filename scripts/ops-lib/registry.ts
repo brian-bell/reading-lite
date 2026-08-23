@@ -6,6 +6,12 @@
 
 import type { AnyCommand, CommandGroup } from "./contract";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { deployWebCommand } from "./commands/deploy-web";
+import { deployWorkerCommand } from "./commands/deploy-worker";
+import { founderBootstrapCommand } from "./commands/founder-bootstrap";
+import { stagingSetupCommand } from "./commands/staging-setup";
+import { stagingSmokeCommand } from "./commands/staging-smoke";
+import { stagingTeardownCommand } from "./commands/staging-teardown";
 import { corpusBackfillSimilarityCommand } from "./commands/corpus-backfill-similarity";
 import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
 import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
@@ -34,6 +40,9 @@ export const defaultRegistry: Registry = {
     { name: "reading", summary: "Single-reading operations against the reading API" },
     { name: "import", summary: "Imports into the reading API" },
     { name: "reading-list", summary: "Reading-list JSON export triage and submission" },
+    { name: "deploy", summary: "Worker and Pages deployment" },
+    { name: "staging", summary: "Staging environment lifecycle and smoke checks" },
+    { name: "founder", summary: "Founder control-plane bootstrap" },
   ],
   commands: [
     corpusAuditCommand,
@@ -53,5 +62,11 @@ export const defaultRegistry: Registry = {
     importYoutubeCommand,
     readingListCheckCommand,
     readingListProcessCommand,
+    deployWorkerCommand,
+    deployWebCommand,
+    stagingSetupCommand,
+    stagingTeardownCommand,
+    stagingSmokeCommand,
+    founderBootstrapCommand,
   ],
 };

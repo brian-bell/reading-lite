@@ -7,10 +7,6 @@
   "scripts": {
     "dev": "npm run dev:setup && wrangler dev",
     "dev:setup": "tsx scripts/dev-setup.ts",
-    "deploy": "tsx scripts/deploy.ts",
-    "deploy:web": "tsx scripts/deploy-web.ts",
-    "staging:setup": "tsx scripts/staging-setup.ts",
-    "staging:teardown": "tsx scripts/staging-teardown.ts",
     "ops": "tsx scripts/ops.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -18,8 +14,7 @@
     "test:watch": "vitest",
     "summarizer-eval": "tsx scripts/summarizer-eval.ts",
     "extract-agent": "tsx scripts/extract-agent.ts",
-    "extract-agent:probe": "tsx scripts/extract-agent-probe.ts",
-    "founder-bootstrap": "tsx scripts/founder-bootstrap.ts"
+    "extract-agent:probe": "tsx scripts/extract-agent-probe.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",

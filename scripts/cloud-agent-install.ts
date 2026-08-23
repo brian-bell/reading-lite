@@ -3,7 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { runFounderBootstrap } from "./founder-bootstrap";
+import { runFounderBootstrap } from "./lib/founder-bootstrap";
 
 export interface CloudAgentInstallDeps {
   cwd?: string;
@@ -94,7 +94,7 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
         nowMs: Date.now(),
         write: (line) => log(`[founder-bootstrap] ${line.trimEnd()}`),
         openDb: async () => {
-          const { makeWranglerD1 } = await import("./founder-bootstrap");
+          const { makeWranglerD1 } = await import("./lib/founder-bootstrap");
           return makeWranglerD1({ database: "reading-lite-control-staging", local: false, wranglerEnv: "staging" });
         },
       },

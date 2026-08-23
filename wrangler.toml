@@ -9,7 +9,7 @@
 #   * staging           — deployed Cloudflare resources isolated from prod,
 #                         used for end-to-end manual smoke tests that need Queue,
 #                         R2, and Vectorize.
-#   * production        — used by `npm run deploy` / `make deploy-worker ENV=prd`,
+#   * production        — used by `npm run ops -- deploy worker --env production`,
 #                         served at reading-lite.bbell.dev.
 #
 # Local dev:
@@ -91,7 +91,7 @@ database_id = "00000000-0000-0000-0000-000000000001"
 migrations_dir = "migrations"
 
 # ---- staging ----
-# Deploy with `npm run deploy -- --env staging --execute`.
+# Deploy with `npm run ops -- deploy worker --env staging --execute`.
 # Environments do NOT inherit top-level [vars] / bindings — repeat them here.
 
 [env.staging]
@@ -149,7 +149,7 @@ database_id = "a29af3ca-280c-443e-9edd-7acec745698c"
 migrations_dir = "migrations"
 
 # ---- production ----
-# Deploy with `npm run deploy -- --execute` (which passes --env production).
+# Deploy with `npm run ops -- deploy worker --env production --execute`.
 # Environments do NOT inherit top-level [vars] / bindings — repeat them here.
 
 [env.production]

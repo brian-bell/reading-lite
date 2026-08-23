@@ -3,8 +3,9 @@
 Deploying, ingesting in bulk, and repairing the corpus. `README.md` covers the
 architecture and the HTTP API; this document is the operator runbook.
 
-Every mutating script in `scripts/` is **dry-run by default** and needs
-`--execute` to act. Make targets wrap the same scripts and use `EXECUTE=1`.
+Operator workflows run through the unified plan-first CLI: `npm run ops --
+<group> <command> [options]`. Every command with durable side effects prints a
+plan by default and acts only with `--execute`.
 
 ## Environments
 
@@ -60,7 +61,7 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against D1. `make deploy-worker` does not create the database, apply
+against D1. `ops deploy worker` does not create the database, apply
 migrations, or import the founder token, and `--execute` refuses placeholder
 `CONTROL_PLANE` `database_id` values in `wrangler.toml`.
 
@@ -72,27 +73,27 @@ wrangler d1 create reading-lite-control-staging
 # replace [env.staging] CONTROL_PLANE database_id in wrangler.toml
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
 wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
-npm run founder-bootstrap -- --email founder@example.com --env staging --execute
-make deploy-worker ENV=stg EXECUTE=1
-make deploy-web    ENV=stg EXECUTE=1
+npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
+npm run ops -- deploy worker --env staging --execute
+npm run ops -- deploy web --branch staging --execute
 ```
 
 Production is the same sequence with `reading-lite-control`, `--env production`,
 `.prd.vars`, and:
 
 ```sh
-npm run founder-bootstrap -- --email founder@example.com --env production \
+npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
-make deploy-worker ENV=prd EXECUTE=1
-make deploy-web    ENV=prd EXECUTE=1
+npm run ops -- deploy worker --env production --execute
+npm run ops -- deploy web --branch main --execute
 ```
 
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 
-`make` refuses a deployed upload with `ENV=dev`. The underlying scripts are
-`npm run deploy -- --env staging --execute` and `npm run deploy:web -- --execute`
-(which targets production). `SKIP_BUILD=1` reuses an existing SPA build.
+`ops deploy worker` targets only staging and production (`--env`), so a dev
+Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
+an existing SPA build.
 
 Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
 bootstrap of `dev-local-token`).
@@ -110,8 +111,8 @@ idempotent — "already exists" on setup and "already gone" on teardown are
 treated as success, while unexpected Wrangler or R2 API failures stop the run.
 
 ```sh
-npm run staging:setup -- --execute      # or: make staging-setup EXECUTE=1
-npm run staging:teardown -- --execute   # or: make staging-teardown EXECUTE=1
+npm run ops -- staging setup --execute
+npm run ops -- staging teardown --execute
 ```
 
 Teardown removes Queue consumers before deleting the Worker, then deletes the
