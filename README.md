@@ -189,7 +189,7 @@ dry-run-friendly and resume from a local index.
 npm run ops -- reading submit <url> --execute          # POST a single URL
 npm run import-bookmarks -- --file ~/Downloads/bookmarks.html
 npm run ops -- import markdown --dir ~/Documents/articles --execute
-npm run corpus-ingest    -- --dir ~/Documents/articles  # provider Batch API
+npm run ops -- corpus ingest --dir ~/Documents/articles --execute --sole-writer  # provider Batch API
 ```
 
 Reddit and YouTube need a local extraction step — the Worker is blocked from
@@ -230,12 +230,6 @@ scripts/                        # operator CLIs — all dry-run by default
   deploy.ts, deploy-web.ts      # wrangler / Pages deploy wrappers
   founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
-  corpus-ingest.ts              # bulk-ingest a fresh .md dir via a provider Batch API
-  corpus-drop.ts                # remove readings by URL or id
-  corpus-sweep.ts               # reconcile duplicate copies of one resource
-  corpus-backfill-similarity.ts # score readings written before the field existed
-  corpus-normalize-tags.ts      # rewrite stored tags into canonical hyphenated form
-  corpus-delete-orphans.ts      # remove orphan-dup pending readings, consistently
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
   reddit-import.ts, youtube-import.ts                     # source-specific local extraction
   import-bookmarks.ts           # Chrome export → POST /api/readings

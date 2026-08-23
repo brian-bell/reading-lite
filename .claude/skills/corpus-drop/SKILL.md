@@ -61,18 +61,18 @@ put, not a CAS write, so a concurrent queue write could be lost.
 
 ```bash
 # Dry run (default): see exactly what would be deleted.
-npm run corpus-drop -- https://example.com/dead-link
-npm run corpus-drop -- rd_ABC123
+npm run ops -- corpus drop https://example.com/dead-link
+npm run ops -- corpus drop rd_ABC123
 
 # Multiple selectors, mixing URLs and ids.
-npm run corpus-drop -- rd_ABC https://a.com/x https://b.com/y
+npm run ops -- corpus drop rd_ABC https://a.com/x https://b.com/y
 
 # Apply.
-npm run corpus-drop -- https://example.com/dead-link --execute
+npm run ops -- corpus drop https://example.com/dead-link --execute
 
 # Alternate bucket / local miniflare cache.
-npm run corpus-drop -- rd_ABC --bucket some-other-bucket --execute
-npm run corpus-drop -- rd_ABC --local --execute
+npm run ops -- corpus drop rd_ABC --bucket some-other-bucket --execute
+npm run ops -- corpus drop rd_ABC --local --execute
 ```
 
 Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`),
@@ -84,7 +84,7 @@ The default run prints every object it would delete and the `list.json` diff and
 changes nothing. Confirm the target set, then re-run with `--execute`.
 
 ## Implementation
-- CLI: `scripts/corpus-drop.ts`
+- CLI: `scripts/ops-lib/commands/corpus-drop.ts` (via `scripts/ops.ts`)
 - Pure resolver (tested): `scripts/corpus-lib/drop.ts`
 - R2 read/delete/put (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
 - Tests: `test/unit/corpus/drop.test.ts` (node project)

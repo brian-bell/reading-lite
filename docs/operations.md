@@ -130,7 +130,7 @@ Clean up the throwaways afterwards, including `ready` ones:
 
 ```sh
 npm run ops -- corpus audit --bucket reading-lite-staging --execute
-npm run corpus-drop -- "https://example.com/reading-lite-staging-123" \
+npm run ops -- corpus drop "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
   --vectorize reading-lite-staging --execute
 ```
@@ -157,23 +157,24 @@ and a failed one preserves the ready manifest with
 |---|---|
 | `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
 | `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
-| `npm run corpus-drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
-| `npm run corpus-sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
-| `npm run corpus-backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run corpus-normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
-| `npm run corpus-rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
-| `npm run corpus-delete-orphans` | remove orphan-duplicate pending readings consistently |
-| `npm run corpus-ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
+| `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
+| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
+| `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
+| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
+| `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
+| `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
+| `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
+| `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
-`corpus-rebuild-list` re-projects every indexed manifest through
+`ops corpus rebuild-list` re-projects every indexed manifest through
 `manifestToIndexItem` and writes `index/list.json`. Use it after deploying a
 Worker that added list-row fields (keywords, for `q` search) so existing
 readings become searchable without a paid reprocess. Dry-run by default;
 `--execute` requires `--sole-writer` because the rewrite is a plain put.
 
 ```sh
-npm run corpus-rebuild-list -- --bucket reading-lite
-npm run corpus-rebuild-list -- --bucket reading-lite --execute --sole-writer
+npm run ops -- corpus rebuild-list --bucket reading-lite
+npm run ops -- corpus rebuild-list --bucket reading-lite --execute --sole-writer
 ```
 
 Deploy the new Worker **before** the production rewrite. An old Worker that
@@ -271,7 +272,7 @@ pass `--email` to request notifications.
 ### Provider Batch APIs
 
 `import-markdown` summarizes every file **realtime** through the Worker queue.
-For large backfills, `corpus-ingest` runs the same directory through the
+For large backfills, `ops corpus ingest` runs the same directory through the
 configured provider's **Batch API**, and `ops corpus recover --batch` does the same
 for readings already in the corpus. Both talk to R2 and Vectorize directly with
 `CORPUS_R2_*` credentials rather than through the HTTP API, and both need
@@ -282,10 +283,10 @@ is no cross-provider fallback.
 
 ```sh
 # dry run (default): print the plan; with creds it also shows ownership skips
-npm run corpus-ingest -- --dir ~/Documents/articles
+npm run ops -- corpus ingest --dir ~/Documents/articles
 
 # for real — confirm the realtime writer is paused/drained first
-npm run corpus-ingest -- --dir ~/Documents/articles \
+npm run ops -- corpus ingest --dir ~/Documents/articles \
   --execute --sole-writer --bucket reading-lite
 ```
 
@@ -296,7 +297,7 @@ by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
 paths omit the realtime attempt-log fields (`last_attempt` and the per-attempt
 objects under the key prefix).
 
-**`--sole-writer` is enforced, not assumed.** `corpus-ingest --execute` and
+**`--sole-writer` is enforced, not assumed.** `ops corpus ingest --execute` and
 `ops corpus recover --batch --execute` refuse to submit without it. Both batch paths
 eagerly claim by-url slots (recover via a failed→pending flip that keeps its
 claim on failure, so the URL stays re-submittable), but that claim is

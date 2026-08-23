@@ -19,20 +19,12 @@
     "import-bookmarks": "tsx scripts/import-bookmarks.ts",
     "reddit-import": "tsx scripts/reddit-import.ts",
     "youtube-import": "tsx scripts/youtube-import.ts",
-    "corpus-ingest": "tsx scripts/corpus-ingest.ts",
-    "corpus-delete-orphans": "tsx scripts/corpus-delete-orphans.ts",
-    "corpus-drop": "tsx scripts/corpus-drop.ts",
-    "corpus-sweep": "tsx scripts/corpus-sweep.ts",
-    "corpus-backfill-similarity": "tsx scripts/corpus-backfill-similarity.ts",
-    "corpus-backfill-vectors": "tsx scripts/corpus-backfill-vectors.ts",
-    "corpus-rebuild-list": "tsx scripts/corpus-rebuild-list.ts",
     "summarizer-eval": "tsx scripts/summarizer-eval.ts",
     "check-corpus": "tsx scripts/check-corpus.ts",
     "process-reading-list": "tsx scripts/process-reading-list.ts",
     "extract-agent": "tsx scripts/extract-agent.ts",
     "extract-agent:probe": "tsx scripts/extract-agent-probe.ts",
-    "founder-bootstrap": "tsx scripts/founder-bootstrap.ts",
-    "corpus-normalize-tags": "tsx scripts/corpus-normalize-tags.ts"
+    "founder-bootstrap": "tsx scripts/founder-bootstrap.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.5.0",

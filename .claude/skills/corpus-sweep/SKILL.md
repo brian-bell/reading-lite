@@ -75,7 +75,7 @@ conference talk. No canonicalization rule can pair those, and none should —
 mis-group unrelated readings. The assertion has to come from you:
 
 ```bash
-npm run corpus-sweep -- --drop rd_TWEET --keep rd_VIDEO --execute
+npm run ops -- corpus sweep --drop rd_TWEET --keep rd_VIDEO --execute
 ```
 
 This builds a normal one-group plan, so it keeps every safety property the
@@ -93,17 +93,17 @@ video never makes — and the drop is irreversible short of re-importing.
 
 ```bash
 # Report every duplicate group in the corpus (read-only).
-npm run corpus-sweep
+npm run ops -- corpus sweep
 
 # Plan one known duplicate — by reading id, or by any URL spelling of it.
-npm run corpus-sweep -- rd_PQ132K3HK5
-npm run corpus-sweep -- https://youtu.be/0oXOOlqVu5M
+npm run ops -- corpus sweep rd_PQ132K3HK5
+npm run ops -- corpus sweep https://youtu.be/0oXOOlqVu5M
 
 # Apply.
-npm run corpus-sweep -- rd_PQ132K3HK5 --execute
+npm run ops -- corpus sweep rd_PQ132K3HK5 --execute
 
 # Keep the copy the ranking would not have picked.
-npm run corpus-sweep -- rd_A --keep rd_B --execute
+npm run ops -- corpus sweep rd_A --keep rd_B --execute
 ```
 
 Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
@@ -132,7 +132,7 @@ reading.
 To refresh the measured score (no LLM call, no re-summarization, no tag churn):
 
 ```bash
-npm run corpus-backfill-similarity -- rd_KEEPER --rescore --execute
+npm run ops -- corpus backfill-similarity rd_KEEPER --rescore --execute
 ```
 
 The `novelty_verdict` label itself only refreshes on a **reprocess**, which
@@ -155,7 +155,7 @@ and vector it would delete — and changes nothing. Confirm the keeper choices,
 then re-run with `--execute`.
 
 ## Implementation
-- CLI: `scripts/corpus-sweep.ts`
+- CLI: `scripts/ops-lib/commands/corpus-sweep.ts` (via `scripts/ops.ts`)
 - Pure planner (tested): `scripts/corpus-lib/sweep.ts`
 - R2/Vectorize read/delete/put: `scripts/corpus-lib/wrangler-r2.ts`
 - Tests: `test/unit/corpus/sweep.test.ts` (node project)
