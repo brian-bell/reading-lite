@@ -71,6 +71,20 @@ submit, a markdown import, or a lookup. It lives in
   send rolls the slot back to a `failed` (retryable `QueueSendError`) manifest and
   reports `unavailable` (503). Same lockstep discipline as
   `commitTerminalManifest` on the terminal side.
+- **Manifest drafting** — the pure constructors for every Manifest the system
+  writes, in `src/modules/manifest-drafting.ts` (a vocabulary module below
+  intake, `processReading`, and the offline batch write phase, like
+  `attempt-ownership.ts`). Pending drafts for the three intake verbs (the verb
+  stamps the attempt trigger — a submit draft cannot carry an import attempt),
+  the queue-send rollback, and the terminal builders (`ready` | `failed` |
+  roll-forward) shared by the realtime and offline pipelines. The empty-content
+  placeholder convention and the parse-on-return guarantee (every drafted
+  Manifest passes `ManifestSchema`) live behind this seam. The module drafts,
+  it does not decide: rollback-target choice, ownership gating, and every write
+  stay with callers. Terminal builders take `attempt: summary | null` — null is
+  the writer's explicit statement that no identifiable **attempt** ran (today's
+  offline batch, whose sidecars carry no attempt identity); attempt identity is
+  never fabricated.
 - **List index** — `{tenantRoot}index/list.json`, maintained on every terminal
   write (idempotent on `id`) so list/search never go stale. Each tenant has its
   own CAS object; a deep scan lists only that tenant's `readings/` prefix.
