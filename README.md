@@ -225,14 +225,13 @@ src/
       reading-store.ts          # R2: manifest, raw, extracted, by-url + by-id
       list-index.ts             # index/list.json: CAS, search, ownership, rebuild
       similarity-store.ts       # Vectorize: upsert + query
-scripts/                        # operator CLIs — all dry-run by default
-  ops.ts, ops-lib/              # unified plan-first operator CLI (npm run ops -- <group> <command>)
-  deploy.ts, deploy-web.ts      # wrangler / Pages deploy wrappers
-  founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
-  staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
+scripts/                        # operator tooling — plan-first, --execute to act
+  ops.ts, ops-lib/              # unified operator CLI (npm run ops -- <group> <command>):
+                                #   deploy, staging, founder, corpus, reading,
+                                #   import, and reading-list groups
+  dev-setup.ts                  # local npm run dev bootstrap
   extract-agent.ts              # local residential-IP re-extraction of fetch-blocked readings
   summarizer-eval.ts            # compare summarizer providers / effort levels
-  run-with-vars.ts              # overlay a dotenv file onto env, then run a command
   corpus-lib/, lib/, *-lib/     # shared logic behind the CLIs above;
                                 #   corpus-lib/batch/ is the provider Batch API pipeline
 test/

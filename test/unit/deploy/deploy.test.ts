@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildWranglerArgs, parseDeployEnv } from "../../../scripts/deploy";
-import { buildWranglerPagesArgs } from "../../../scripts/deploy-web";
+import { buildWranglerArgs, parseDeployEnv } from "../../../scripts/ops-lib/commands/deploy-worker";
+import { buildWranglerPagesArgs } from "../../../scripts/ops-lib/commands/deploy-web";
 
 describe("Worker deploy wrapper", () => {
   it("builds a dry-run production deploy by default-compatible args", () => {

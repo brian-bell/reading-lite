@@ -35,7 +35,7 @@ themselves — read those before changing a module.
 - `src/attempt-ownership.ts` — the shared ownership verdict + attempt args
   shapes (the low layer under `process-reading.ts` and `reading-visibility.ts`).
 - `src/control-plane/` — D1 auth: branded IDs, HKDF/HMAC crypto,
-  `AuthenticatedPrincipal`, founder bootstrap (`scripts/founder-bootstrap.ts`),
+  `AuthenticatedPrincipal`, founder bootstrap (`scripts/lib/founder-bootstrap.ts`),
   and bearer authentication via `requirePrincipal` in `src/middleware.ts`.
   Runtime auth does not fall back to `READER_API_TOKEN`; that secret is imported
   once as a legacy-format token.
@@ -71,12 +71,13 @@ npm run typecheck
 cd web && npm install     # then: npm run dev, npm test, npm run build
 ```
 
-Deploy, staging-lifecycle, corpus, and founder-bootstrap scripts are all
-dry-run by default and take `--execute` to act, e.g. `npm run deploy -- --env
-staging --execute`, `npm run founder-bootstrap -- --email founder@example.com
---execute`, `npm run ops -- corpus recover --index ./index.json --execute`. Make
-targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
-`docs/operations.md` or `--help` for the full matrix.
+Operator workflows live behind the unified plan-first CLI: `npm run ops --
+<group> <command> [options]`. Every command with durable side effects plans by
+default and acts only with `--execute`, e.g. `npm run ops -- deploy worker
+--env staging --execute`, `npm run ops -- founder bootstrap --email
+founder@example.com --execute`, `npm run ops -- corpus recover --index
+./index.json --execute`. See `docs/operations.md` or `--help` for the full
+matrix.
 
 ## Environments
 
@@ -85,7 +86,7 @@ targets wrap the same scripts (`make deploy-worker ENV=stg EXECUTE=1`). See
   nothing.
 - Staging (`[env.staging]`, `reading-lite-staging`) and production
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
-  are fully isolated; `staging:setup`/`staging:teardown` are idempotent and
+  are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
   hard-coded to staging names.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
@@ -187,7 +188,8 @@ the Cursor dashboard (not in git):
 
 Staging founder state already lives in D1 after the first bootstrap; re-run is
 only needed after credential rotation. Set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` to
-run `founder-bootstrap --env staging --execute` on every install (idempotent).
+run the staging founder bootstrap (`ops founder bootstrap --env staging
+--execute` equivalent) on every install (idempotent).
 
 ## Working Locally
 

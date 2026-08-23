@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { runFounderBootstrap } from "./founder-bootstrap";
+import { runFounderBootstrap } from "./lib/founder-bootstrap";
 import { loadDotVars } from "./lib/dotvars";
 
 const LOCAL_D1 = "reading-lite-control-dev";
@@ -40,7 +40,7 @@ export async function runDevSetup(deps: DevSetupDeps = {}): Promise<number> {
       nowMs: Date.now(),
       write: () => {},
       openDb: async () => {
-        const { makeWranglerD1 } = await import("./founder-bootstrap");
+        const { makeWranglerD1 } = await import("./lib/founder-bootstrap");
         return makeWranglerD1({ database: LOCAL_D1, local: true });
       },
     },
