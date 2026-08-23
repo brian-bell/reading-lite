@@ -5364,3 +5364,134 @@ describe("CORS", () => {
     expect(res.status).toBe(403);
   });
 });
+
+// reading-lite-s1k.4.1: the cross-tenant read matrix. Every hosted read path
+// must make another tenant's reading indistinguishable from one that never
+// existed — same status, byte-identical body — while the owner still sees it.
+// A route that 404s for everyone would pass the cross checks vacuously, so
+// each case first proves the owner-visible positive before comparing the
+// cross-tenant response against the unknown-resource response.
+describe("cross-tenant read-path matrix", () => {
+  const OWNED_URL = "https://example.com/matrix-owned";
+  const NEVER_SUBMITTED_URL = "https://example.com/matrix-never-submitted";
+  const UNKNOWN_ID = "rd_0000000000";
+
+  async function seedFounderReading() {
+    await insertSecondTenant(env as unknown as Env);
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: OWNED_URL, email: false }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+    return { app, services, idCounter, id };
+  }
+
+  function get(app: ReturnType<typeof createApp>, token: string, path: string) {
+    return app.request(path, { headers: { authorization: `Bearer ${token}` } }, env);
+  }
+
+  // The isolation contract, stated as an equality: for the other tenant the
+  // cross-tenant request and the unknown-resource request are the same response.
+  async function expectSameAsUnknown(
+    app: ReturnType<typeof createApp>,
+    crossPath: string,
+    unknownPath: string,
+  ) {
+    const cross = await get(app, OTHER_TOKEN_SECRET, crossPath);
+    const unknown = await get(app, OTHER_TOKEN_SECRET, unknownPath);
+    expect(unknown.status).toBe(404);
+    expect([cross.status, await cross.text()]).toEqual([unknown.status, await unknown.text()]);
+  }
+
+  it("lookup resolves an owned URL for its owner only", async () => {
+    const { app, id } = await seedFounderReading();
+    const owner = await get(app, TOKEN, `/api/readings/lookup?url=${encodeURIComponent(OWNED_URL)}`);
+    expect(owner.status).toBe(200);
+    expect(await owner.json()).toEqual({ id });
+    await expectSameAsUnknown(
+      app,
+      `/api/readings/lookup?url=${encodeURIComponent(OWNED_URL)}`,
+      `/api/readings/lookup?url=${encodeURIComponent(NEVER_SUBMITTED_URL)}`,
+    );
+  });
+
+  it.each([
+    ["detail", ""],
+    ["content", "/content"],
+    ["content raw", "/content/raw"],
+    ["diagnostics", "/diagnostics"],
+  ])("%s answers a cross-tenant id exactly like an unknown id", async (_route, suffix) => {
+    const { app, id } = await seedFounderReading();
+    const owner = await get(app, TOKEN, `/api/readings/${id}${suffix}`);
+    expect(owner.status).toBe(200);
+    await owner.text();
+    await expectSameAsUnknown(
+      app,
+      `/api/readings/${id}${suffix}`,
+      `/api/readings/${UNKNOWN_ID}${suffix}`,
+    );
+  });
+
+  it("list and q-search never surface another tenant's readings", async () => {
+    const { app, id } = await seedFounderReading();
+    const ownerSearch = (await (
+      await get(app, TOKEN, "/api/readings?q=Test%20Article")
+    ).json()) as { readings: { id: string }[] };
+    expect(ownerSearch.readings.map((r) => r.id)).toEqual([id]);
+
+    const otherList = (await (await get(app, OTHER_TOKEN_SECRET, "/api/readings")).json()) as {
+      readings: unknown[];
+      has_more: boolean;
+    };
+    expect(otherList.readings).toEqual([]);
+    expect(otherList.has_more).toBe(false);
+
+    const otherSearch = (await (
+      await get(app, OTHER_TOKEN_SECRET, "/api/readings?q=Test%20Article")
+    ).json()) as { readings: unknown[] };
+    expect(otherSearch.readings).toEqual([]);
+  });
+
+  it("stale-attempt annotation stays tenant-local", async () => {
+    const { app, idCounter } = await seedFounderReading();
+    // A second founder submission that is never drained stays pending; jumping
+    // the injected clock past PENDING_TTL_SECONDS makes it stale at read time.
+    const ctx = createExecutionContext();
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/matrix-stale", email: false }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    const { id: staleId } = (await submit.json()) as { id: string };
+    await waitOnExecutionContext(ctx);
+    idCounter.n += 400; // now() advances 1s per tick; TTL defaults to 300s
+
+    const owner = (await (await get(app, TOKEN, `/api/readings/${staleId}`)).json()) as {
+      status: string;
+      error?: { code: string };
+    };
+    expect(owner.status).toBe("failed");
+    // Submit leaves a running active attempt on the pending manifest, so the
+    // read-time verdict is the expired-attempt annotation.
+    expect(owner.error?.code).toBe("stale_active_attempt");
+
+    await expectSameAsUnknown(app, `/api/readings/${staleId}`, `/api/readings/${UNKNOWN_ID}`);
+  });
+});
