@@ -19,11 +19,15 @@ themselves — read those before changing a module.
 
 - `src/index.ts` — Worker fetch + queue handlers (main queue → `processReading`,
   DLQ → `markDeadLettered`).
-- `src/router.ts` — HTTP API: auth, idempotent submit/import/reprocess, lookup,
-  diagnostics, content streaming. Reprocess prefers request Markdown over
-  stored-Markdown synthesis; supplied Markdown bypasses `extracted.md`.
-- `src/attempt-activation.ts` — `activateAttempt`: the eager write-and-enqueue
-  ordering plus the shared rollback-to-failed funnel.
+- `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
+  `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
+  Reading intake.
+- `src/intake/` — Reading intake, the write-side front door: `submit` /
+  `importMarkdown` / `reprocess` own the claim → pending-manifest → activation
+  ordering and return HTTP-free `IntakeOutcome`s. Reprocess prefers request
+  Markdown over stored-Markdown synthesis; supplied Markdown bypasses
+  `extracted.md`. `activation.ts` inside it is `activateAttempt`: the eager
+  write-and-enqueue ordering plus the shared rollback-to-failed funnel.
 - `src/process-reading.ts` — background pipeline, attempt logging, terminal
   manifest commits, failure handling.
 - `src/reading-visibility.ts` — list-row + Vectorize-vector lockstep and the

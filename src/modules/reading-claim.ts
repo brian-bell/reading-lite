@@ -27,6 +27,26 @@ const MISSING_MANIFEST_OWNER_GRACE_MS = 5 * 60 * 1000;
 // unbounded recursion this resolver replaces.
 const DEFAULT_MAX_ATTEMPTS = 8;
 
+// Bounds the claim → re-resolve retry when a concurrent submit wins the by-url
+// slot from under us. The resolver converges in practice within one or two
+// reads, so a small cap is a safety net against pathological contention rather
+// than a tuning knob.
+const CLAIM_MAX_ATTEMPTS = 4;
+
+/**
+ * The outcome of {@link ReadingClaim.claimSlot}: the slot is ours (`claimed`),
+ * a concurrent writer won and settled (`owned`), won but has not written its
+ * manifest yet (`initializing`), or the loop never converged (`contended` —
+ * the caller reports retryable contention, mirroring the resolver's own 503
+ * mapping). Pointer-CAS internals (etags, `PointerExistsError`) stay behind
+ * this seam.
+ */
+export type ClaimSlotOutcome =
+  | { kind: "claimed" }
+  | { kind: "owned"; pointer: ByUrlPointer; manifest: Manifest }
+  | { kind: "initializing"; pointer: ByUrlPointer }
+  | { kind: "contended" };
+
 /**
  * The outcome of resolving "who owns this URL?".
  *
@@ -172,6 +192,50 @@ export class ReadingClaim {
     }
 
     throw new OwnerResolutionContentionError(this.maxAttempts);
+  }
+
+  /**
+   * Claim the by-url slot for a freshly-minted reading, retrying through
+   * {@link resolveOwner} when a concurrent writer wins the race. Pass
+   * `replaceEtag` when a prior resolution reported a damaged pointer occupying
+   * the slot (it is CAS-overwritten rather than created `ifNotExists`).
+   * Bounded: converges or reports `contended`, never recurses without limit.
+   */
+  async claimSlot(
+    url: string,
+    pointer: ByUrlPointer,
+    opts: { replaceEtag?: string } = {},
+  ): Promise<ClaimSlotOutcome> {
+    const urlHash = await sha256Hex(url);
+    let replaceEtag = opts.replaceEtag;
+    for (let attempt = 0; attempt < CLAIM_MAX_ATTEMPTS; attempt++) {
+      try {
+        if (replaceEtag) {
+          const replaced = await this.store.replaceByUrlPointerIfCurrent(
+            urlHash,
+            replaceEtag,
+            pointer,
+          );
+          if (!replaced) throw new PointerExistsError(urlHash);
+        } else {
+          await this.store.writeByUrlPointer(urlHash, pointer, { ifNotExists: true });
+        }
+        return { kind: "claimed" };
+      } catch (err) {
+        if (!(err instanceof PointerExistsError)) throw err;
+        // Lost the slot — re-resolve and defer to whoever now owns it, or retry
+        // the claim against the (possibly damaged) pointer they left behind.
+        const res = await this.resolveOwner(url);
+        if (res.kind === "owned") {
+          return { kind: "owned", pointer: res.pointer, manifest: res.manifest };
+        }
+        if (res.kind === "initializing") {
+          return { kind: "initializing", pointer: res.pointer };
+        }
+        replaceEtag = res.replaceEtag;
+      }
+    }
+    return { kind: "contended" };
   }
 }
 

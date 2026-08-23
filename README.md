@@ -201,9 +201,10 @@ both — via the `reddit-import` and `youtube-import` skills. See
 ```
 src/
   index.ts                      # worker entry: fetch handler + queue consumer + Env types
-  router.ts                     # Hono app: routes; POST enqueues a READING_JOBS message
+  router.ts                     # Hono app: routes + the IntakeOutcome -> HTTP mapping
   middleware.ts                 # bearer auth + CORS allowlist
-  attempt-activation.ts         # eager write-and-enqueue ordering + rollback funnel
+  intake/                       # Reading intake: submit/importMarkdown/reprocess verbs;
+                                #   activation.ts = eager write-and-enqueue + rollback funnel
   process-reading.ts            # processReading pipeline (runs in the queue consumer)
   reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
   attempt-ownership.ts          # shared ownership verdict + attempt arg shapes

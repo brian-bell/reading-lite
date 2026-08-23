@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateAttempt,
   type AttemptActivation,
-} from "../../../src/attempt-activation";
+} from "../../../src/intake/activation";
 import { ReadingStore } from "../../../src/modules/stores/reading-store";
 import type { ProcessReadingEnvelopeV1 } from "../../../src/control-plane/envelope";
 import { createApiTokenPrincipal } from "../../../src/control-plane/principal";
@@ -121,15 +121,17 @@ beforeEach(clearBucket);
 afterEach(clearBucket);
 
 describe("activateAttempt", () => {
-  it("submit shape: writes manifest, by-id pointer, index, sends, returns 202 derived from manifest", async () => {
+  it("submit shape: writes manifest, by-id pointer, index, sends, returns activated derived from manifest", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const { queue, sent } = captureQueue();
 
     const result = await activateAttempt(reader, queue, services(), baseActivation());
 
     expect(result).toEqual({
-      body: { id: ID, status: "pending", poll: `/api/readings/${ID}`, attempt_id: ATTEMPT_ID },
-      status: 202,
+      kind: "activated",
+      id: ID,
+      status: "pending",
+      attemptId: ATTEMPT_ID,
     });
     await expect(reader.readManifest(KEY_PREFIX)).resolves.toMatchObject({ id: ID, status: "pending" });
     await expect(reader.readByIdPointer(ID)).resolves.toEqual({ id: ID, key_prefix: KEY_PREFIX });
@@ -156,7 +158,7 @@ describe("activateAttempt", () => {
       baseActivation({ writeByIdPointer: false }),
     );
 
-    expect(result.status).toBe(202);
+    expect(result.kind).toBe("activated");
     await expect(reader.readManifest(KEY_PREFIX)).resolves.toMatchObject({ id: ID });
     await expect(reader.readByIdPointer(ID)).resolves.toBeNull();
     expect(sent).toHaveLength(1);
@@ -206,7 +208,7 @@ describe("activateAttempt", () => {
       }),
     );
 
-    expect(result.status).toBe(202);
+    expect(result.kind).toBe("activated");
     expect(order).toEqual(["raw", "extracted", "manifest", "byId", "index", "send"]);
     const extracted = await reader.readExtracted(KEY_PREFIX);
     expect(await extracted?.text()).toBe(markdown);
@@ -242,7 +244,7 @@ describe("activateAttempt", () => {
       }),
     );
 
-    expect(result).toEqual({ body: { error: "queue send failed", id: ID }, status: 503 });
+    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
     const manifest = await reader.readManifest(KEY_PREFIX);
     expect(manifest).toMatchObject({
       status: "failed",
@@ -253,7 +255,7 @@ describe("activateAttempt", () => {
     consoleErr.mockRestore();
   });
 
-  it("setup failure: a pre-send write throw returns 503 'reading setup failed' and commits a failed manifest", async () => {
+  it("setup failure: a pre-send write throw reports unavailable(activation_failed) and commits a failed manifest", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const { queue, sent } = captureQueue();
     const byIdKey = `index/by-id/${ID}`;
@@ -272,7 +274,7 @@ describe("activateAttempt", () => {
 
     const result = await activateAttempt(reader, queue, services(), baseActivation());
 
-    expect(result).toEqual({ body: { error: "reading setup failed", id: ID }, status: 503 });
+    expect(result).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
     expect(sent).toHaveLength(0);
     const manifest = await reader.readManifest(KEY_PREFIX);
     expect(manifest).toMatchObject({
@@ -287,13 +289,13 @@ describe("activateAttempt", () => {
     consoleErr.mockRestore();
   });
 
-  it("queue-send failure: a rejecting queue returns 503 'queue send failed' and commits a failed manifest", async () => {
+  it("queue-send failure: a rejecting queue reports unavailable(queue_send_failed) and commits a failed manifest", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await activateAttempt(reader, rejectingQueue(), services(), baseActivation());
 
-    expect(result).toEqual({ body: { error: "queue send failed", id: ID }, status: 503 });
+    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
     const manifest = await reader.readManifest(KEY_PREFIX);
     expect(manifest).toMatchObject({
       status: "failed",
@@ -320,7 +322,7 @@ describe("activateAttempt", () => {
       }),
     );
 
-    expect(result.status).toBe(503);
+    expect(result.kind).toBe("unavailable");
     const manifest = await reader.readManifest(KEY_PREFIX);
     expect(manifest?.status).toBe("ready");
     expect(manifest?.active_attempt).toBeUndefined();
@@ -329,7 +331,7 @@ describe("activateAttempt", () => {
     consoleErr.mockRestore();
   });
 
-  it("response derives status: a ready 'next' manifest returns status 'ready' in the 202 body", async () => {
+  it("response derives status: a ready 'next' manifest returns status 'ready' in the activated outcome", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const { queue } = captureQueue();
 
@@ -344,8 +346,10 @@ describe("activateAttempt", () => {
     );
 
     expect(result).toEqual({
-      body: { id: ID, status: "ready", poll: `/api/readings/${ID}`, attempt_id: ATTEMPT_ID },
-      status: 202,
+      kind: "activated",
+      id: ID,
+      status: "ready",
+      attemptId: ATTEMPT_ID,
     });
   });
 });

@@ -362,7 +362,7 @@ export class ReadingStore {
 
   // The list-index methods below delegate to the composed ListIndexStore. They
   // preserve the existing ReadingStore call surface (process-reading.ts,
-  // attempt-activation.ts, reading-visibility.ts, router.ts, reading-claim.ts)
+  // intake/, reading-visibility.ts, router.ts, reading-claim.ts)
   // while the implementation — CAS loop, ownership ranking, search, rebuild —
   // lives in list-index.ts.
   async readListIndex(): Promise<ListIndex | null> {
