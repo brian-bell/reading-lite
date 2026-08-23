@@ -8,6 +8,9 @@ import type { AnyCommand, CommandGroup } from "./contract";
 import { corpusAuditCommand } from "./commands/corpus-audit";
 import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
+import { evalSummarizerCommand } from "./commands/eval-summarizer";
+import { extractAgentCommand } from "./commands/extract-agent";
+import { extractProbeCommand } from "./commands/extract-probe";
 import { founderBootstrapCommand } from "./commands/founder-bootstrap";
 import { stagingSetupCommand } from "./commands/staging-setup";
 import { stagingSmokeCommand } from "./commands/staging-smoke";
@@ -43,6 +46,8 @@ export const defaultRegistry: Registry = {
     { name: "deploy", summary: "Worker and Pages deployment" },
     { name: "staging", summary: "Staging environment lifecycle and smoke checks" },
     { name: "founder", summary: "Founder control-plane bootstrap" },
+    { name: "extract", summary: "Local extraction agent and probe" },
+    { name: "eval", summary: "Summarizer quality evaluation" },
   ],
   commands: [
     corpusAuditCommand,
@@ -68,5 +73,8 @@ export const defaultRegistry: Registry = {
     stagingTeardownCommand,
     stagingSmokeCommand,
     founderBootstrapCommand,
+    extractAgentCommand,
+    extractProbeCommand,
+    evalSummarizerCommand,
   ],
 };

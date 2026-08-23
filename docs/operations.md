@@ -193,7 +193,7 @@ npm run ops -- corpus recover --index ./index.json --execute
 ### The extract-agent
 
 Some sites hard-block Cloudflare datacenter egress, so the Worker's
-`fetch_source` fails where a residential IP succeeds. `npm run extract-agent`
+`fetch_source` fails where a residential IP succeeds. `ops extract agent`
 polls the reading API for `fetch_source`-failed readings and re-extracts them
 locally: an SSRF-guarded static tier with browser headers, falling back to a
 headless Playwright render when the static tier is challenged or finds no real
@@ -201,13 +201,13 @@ article, plus an anonymous Reddit thread-JSON path. Successful markdown re-enter
 through `POST /api/readings/import-markdown`.
 
 ```sh
-npm run extract-agent -- [--dry-run|--execute] [--limit N] [--only <id|url>] [--verbose]
+npm run ops -- extract agent [--execute] [--limit N] [--only <id|url>] [--verbose]
 ```
 
-Every submit is a paid action, so runs are dry-run by default and capped per
-run. A lockfile prevents two overlapping runs from double-submitting, each run
-appends a JSON line to the run log, and a completed `--execute` run pings a
-dead-man healthcheck. Configuration lives in `.extract-agent.vars` (gitignored)
+Every submit is a paid action, so runs plan by default and are capped per
+run. Plan mode persists nothing; on `--execute` a lockfile prevents two
+overlapping runs from double-submitting, the run appends a JSON line to the
+run log, and a completed run pings a dead-man healthcheck. Configuration lives in `.extract-agent.vars` (gitignored)
 or the environment; the knobs are documented in
 `scripts/extract-agent-lib/config.ts`. Reddit threads that answer with a
 challenge are recorded as durable `manual` outcomes and left for the
