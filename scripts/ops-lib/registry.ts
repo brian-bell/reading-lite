@@ -6,6 +6,7 @@
 
 import type { AnyCommand, CommandGroup } from "./contract";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { corpusRecoverCommand } from "./commands/corpus-recover";
 
 export interface Registry {
   groups: CommandGroup[];
@@ -18,5 +19,6 @@ export const defaultRegistry: Registry = {
   ],
   commands: [
     corpusAuditCommand,
+    corpusRecoverCommand,
   ],
 };

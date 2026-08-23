@@ -13,7 +13,7 @@ acts with `--execute`.
 ## Workflow (always)
 
 1. Run `corpus-audit` first to produce a fresh `index.json`.
-2. Run `corpus-recover` **without `--execute`** to print the plan.
+2. Run `ops corpus recover` **without `--execute`** to print the plan.
 3. **Show the plan to the user and get confirmation** (it spends money / mutates prod).
 4. Run with `--execute` (optionally `--monitor`).
 5. Re-run `corpus-audit` to verify.
@@ -67,10 +67,10 @@ What it does, end to end (`scripts/corpus-lib/batch/`):
 
 ```bash
 # Dry-run the batch plan (no writes, no spend).
-npm run corpus-recover -- --index .../index.json --batch
+npm run ops -- corpus recover --index .../index.json --batch
 
 # Execute the batch (submit → poll → write). Embeddings stay realtime.
-npm run corpus-recover -- --index .../index.json --batch --execute
+npm run ops -- corpus recover --index .../index.json --batch --execute
 ```
 
 - **Resume:** the in-flight batch is recorded in `<index>.batch.json`. If a poll
@@ -96,17 +96,17 @@ npm run corpus-recover -- --index .../index.json --batch --execute
 
 ```bash
 # 1. Plan only (no writes) — review before doing anything.
-npm run corpus-recover -- --index ~/Desktop/reading-lite-extracted/index.json
+npm run ops -- corpus recover --index ~/Desktop/reading-lite-extracted/index.json
 
 # 2. Execute everything in the plan, then watch the queue drain.
-npm run corpus-recover -- --index .../index.json --execute --monitor
+npm run ops -- corpus recover --index .../index.json --execute --monitor
 
 # Restrict to one action, or cap the batch.
-npm run corpus-recover -- --index .../index.json --only reprocess --execute
-npm run corpus-recover -- --index .../index.json --only local-extract --limit 5 --execute
+npm run ops -- corpus recover --index .../index.json --only reprocess --execute
+npm run ops -- corpus recover --index .../index.json --only local-extract --limit 5 --execute
 
 # Point at a local worker.
-npm run corpus-recover -- --index .../index.json --url http://127.0.0.1:8787 --execute
+npm run ops -- corpus recover --index .../index.json --url http://127.0.0.1:8787 --execute
 ```
 
 Flags: `--index` (default `./index.json`), `--execute`, `--only reprocess|local-extract`, `--limit <n>`, `--url`, `--token`, `--bucket` (for `--monitor`), `--monitor`, `--batch` (bulk Message Batch path), `--help`.
@@ -119,7 +119,7 @@ Outcomes are written back into the `index.json` rows (`result` field). Prints a 
 - Reprocessed/imported readings still go through the serial queue — use `--monitor`, or re-run `corpus-audit` after a few minutes, to confirm they reached `ready`.
 
 ## Implementation
-- CLI: `scripts/corpus-recover.ts`
+- CLI: `scripts/ops-lib/commands/corpus-recover.ts` (via `scripts/ops.ts`)
 - Policy (tested): `scripts/corpus-lib/policy.ts`; API client: `scripts/corpus-lib/api.ts`
 - Reuses the worker's `extractFromUrl` (`src/modules/extractor`) for local extraction.
 - Bulk path: `scripts/corpus-lib/batch/` (clients, prepare/extract/similar/submit/poll/write phases, `run` orchestrator, `sidecar`); shared CF clients in `scripts/lib/cf-clients.ts`; batch config in `scripts/corpus-lib/config.ts` (`resolveBatchConfig`).

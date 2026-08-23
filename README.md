@@ -231,7 +231,6 @@ scripts/                        # operator CLIs — all dry-run by default
   founder-bootstrap.ts, dev-setup.ts  # D1 founder token import; local npm run dev
   staging-setup.ts, staging-teardown.ts, staging-provider-smoke.ts
   read-url.ts                   # POST a single URL
-  corpus-recover.ts             # reprocess / re-extract them (--wave realtime, --batch offline)
   corpus-ingest.ts              # bulk-ingest a fresh .md dir via a provider Batch API
   corpus-drop.ts                # remove readings by URL or id
   corpus-sweep.ts               # reconcile duplicate copies of one resource
