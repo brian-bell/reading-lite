@@ -14,7 +14,11 @@ import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } fro
 
 export interface StagingTeardownDeps extends BaseDeps {
   runWranglerCommands: (commands: WranglerCommand[]) => Promise<number>;
-  emptyStagingBucket: () => Promise<void>;
+  // Resolves and validates the CORPUS_R2_* credentials, returning the
+  // bucket-empty step. Called BEFORE any destructive command so a missing
+  // .corpus.vars fails the run while staging is still intact, rather than
+  // after the Worker/queues/D1 are already gone.
+  resolveBucketEmptier: () => Promise<{ empty: () => Promise<void> }>;
 }
 
 async function runStagingTeardown(argv: string[], deps: StagingTeardownDeps): Promise<number> {
@@ -56,10 +60,15 @@ async function runStagingTeardown(argv: string[], deps: StagingTeardownDeps): Pr
     return 0;
   }
 
+  // Credential preflight before anything is deleted: the bucket-empty step
+  // runs late, but its configuration must fail early or a missing
+  // .corpus.vars would strand a half-torn-down staging environment.
+  const bucketEmptier = await deps.resolveBucketEmptier();
+
   const beforeCode = await deps.runWranglerCommands(beforeBucketDelete);
   if (beforeCode !== 0) return beforeCode;
 
-  await deps.emptyStagingBucket();
+  await bucketEmptier.empty();
 
   return deps.runWranglerCommands([bucketDelete]);
 }
@@ -88,11 +97,16 @@ Options:
       const { runWranglerCommands } = await import("../../staging-env");
       return runWranglerCommands(commands);
     },
-    emptyStagingBucket: async () => {
+    resolveBucketEmptier: async () => {
       const { emptyR2Bucket, resolveStagingR2Config } = await import("../../staging-env");
       const { makeR2Client } = await import("../../lib/cf-clients");
+      // Throws here — before any wrangler delete has run — when the
+      // CORPUS_R2_* credentials are missing or malformed.
       const r2Config = resolveStagingR2Config(DEFAULT_STAGING_RESOURCES);
-      await emptyR2Bucket(makeR2Client(r2Config), DEFAULT_STAGING_RESOURCES.bucket);
+      const client = makeR2Client(r2Config);
+      return {
+        empty: () => emptyR2Bucket(client, DEFAULT_STAGING_RESOURCES.bucket),
+      };
     },
   }),
   run: runStagingTeardown,

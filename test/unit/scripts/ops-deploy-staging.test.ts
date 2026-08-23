@@ -128,7 +128,7 @@ describe("ops staging setup / teardown", () => {
     expect(runs).toHaveLength(1);
   });
 
-  it("teardown plans without acting, then executes commands → empty bucket → bucket delete", async () => {
+  it("teardown plans without acting, then executes preflight → commands → empty bucket → bucket delete", async () => {
     const order: string[] = [];
     const { io: cio } = io();
     const deps: StagingTeardownDeps = {
@@ -137,15 +137,38 @@ describe("ops staging setup / teardown", () => {
         order.push(`wrangler:${commands.length}`);
         return 0;
       },
-      emptyStagingBucket: async () => {
-        order.push("empty-bucket");
+      resolveBucketEmptier: async () => {
+        order.push("resolve-creds");
+        return {
+          empty: async () => {
+            order.push("empty-bucket");
+          },
+        };
       },
     };
     expect(await stagingTeardownCommand.run([], deps)).toBe(0);
     expect(order).toHaveLength(0);
     expect(await stagingTeardownCommand.run(["--execute"], deps)).toBe(0);
+    expect(order[0]).toBe("resolve-creds");
     expect(order.at(-2)).toBe("empty-bucket");
     expect(order.at(-1)).toBe("wrangler:1");
+  });
+
+  it("teardown refuses to delete anything when the R2 credentials are missing", async () => {
+    const order: string[] = [];
+    const { io: cio } = io();
+    const deps: StagingTeardownDeps = {
+      io: cio,
+      runWranglerCommands: async () => {
+        order.push("wrangler");
+        return 0;
+      },
+      resolveBucketEmptier: async () => {
+        throw new Error("missing CORPUS_R2_ACCOUNT_ID");
+      },
+    };
+    await expect(stagingTeardownCommand.run(["--execute"], deps)).rejects.toThrow("CORPUS_R2_ACCOUNT_ID");
+    expect(order).toHaveLength(0);
   });
 });
 
