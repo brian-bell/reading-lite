@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { keysForDroppedReading } from "./delete-plan";
 import type { ListItem } from "./types";
+import { r2KeyLayout } from "../../src/modules/stores/layout";
+
+// Pre-tenant global layout; the tenant cutover re-roots this in one place.
+const layout = r2KeyLayout();
 
 export interface RunResult {
   code: number;
@@ -75,26 +79,26 @@ export async function readObjectStrict(key: string, deps: R2Deps): Promise<strin
 }
 
 export async function readListIndex(deps: R2Deps): Promise<ListItem[]> {
-  const raw = await readObject("index/list.json", deps);
-  if (raw === null) throw new Error(`could not read index/list.json from bucket ${deps.bucket}`);
+  const raw = await readObject(layout.listIndexKey(), deps);
+  if (raw === null) throw new Error(`could not read ${layout.listIndexKey()} from bucket ${deps.bucket}`);
   const parsed: unknown = JSON.parse(raw);
   const items = (parsed as { items?: unknown }).items;
-  if (!Array.isArray(items)) throw new Error("index/list.json has no items array");
+  if (!Array.isArray(items)) throw new Error(`${layout.listIndexKey()} has no items array`);
   return items as ListItem[];
 }
 
 export async function readManifest(keyPrefix: string, deps: R2Deps): Promise<any | null> {
-  const raw = await readObject(`${keyPrefix}/manifest.json`, deps);
+  const raw = await readObject(layout.manifestKey(keyPrefix), deps);
   return raw === null ? null : JSON.parse(raw);
 }
 
 export async function readAttempt(keyPrefix: string, attemptId: string, deps: R2Deps): Promise<any | null> {
-  const raw = await readObject(`${keyPrefix}/attempts/${attemptId}.json`, deps);
+  const raw = await readObject(layout.attemptKey(keyPrefix, attemptId), deps);
   return raw === null ? null : JSON.parse(raw);
 }
 
 export async function readExtracted(keyPrefix: string, deps: R2Deps): Promise<string | null> {
-  return readObject(`${keyPrefix}/extracted.md`, deps);
+  return readObject(layout.extractedKey(keyPrefix), deps);
 }
 
 // Deletes one object. wrangler exits 0 even for an absent key, so we classify
@@ -231,12 +235,12 @@ export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<v
   try {
     await writeFile(file, JSON.stringify({ version: 1, items }), "utf8");
     const args = [
-      "r2", "object", "put", `${deps.bucket}/index/list.json`,
+      "r2", "object", "put", `${deps.bucket}/${layout.listIndexKey()}`,
       "--file", file, "--content-type", "application/json",
     ];
     if (deps.remote !== false) args.push("--remote");
     const { code, stderr } = await run("wrangler", args);
-    if (code !== 0) throw new Error(`put index/list.json failed: ${stderr.trim()}`);
+    if (code !== 0) throw new Error(`put ${layout.listIndexKey()} failed: ${stderr.trim()}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

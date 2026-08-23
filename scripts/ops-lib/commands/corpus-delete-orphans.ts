@@ -10,6 +10,7 @@ import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { LIST_INDEX_KEY, READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDeleteOrphansR2 {
   // Lenient list read: null when index/list.json is absent or unreadable.
@@ -65,9 +66,9 @@ async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansD
 
   // Read list.json up front: it's the authoritative source of key_prefix for
   // --ids mode, and the diff is shown even in plan mode.
-  const listRaw = await r2.readObject("index/list.json", r2Deps);
+  const listRaw = await r2.readObject(LIST_INDEX_KEY, r2Deps);
   if (listRaw === null) {
-    io.stderr("could not read index/list.json — aborting.");
+    io.stderr(`could not read ${LIST_INDEX_KEY} — aborting.`);
     return 1;
   }
   const listObj = JSON.parse(listRaw);
@@ -117,7 +118,7 @@ async function runCorpusDeleteOrphans(argv: string[], deps: CorpusDeleteOrphansD
   for (const o of targets) {
     if (
       !o.id || !o.prefix || typeof o.url !== "string" ||
-      !o.prefix.startsWith("readings/") || !o.prefix.endsWith(o.id)
+      !o.prefix.startsWith(READINGS_PREFIX) || !o.prefix.endsWith(o.id)
     ) {
       io.stderr(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(o)}`);
       return 1;

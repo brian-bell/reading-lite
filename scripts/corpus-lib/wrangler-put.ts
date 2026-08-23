@@ -7,6 +7,9 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { R2Deps, Runner } from "./wrangler-r2";
+import { MANIFEST_FILE, r2KeyLayout } from "../../src/modules/stores/layout";
+
+const layout = r2KeyLayout();
 
 const defaultRunner: Runner = (cmd, args) =>
   new Promise((resolve, reject) => {
@@ -22,11 +25,11 @@ const defaultRunner: Runner = (cmd, args) =>
 export async function putManifest(keyPrefix: string, body: unknown, deps: R2Deps): Promise<void> {
   const run = deps.run ?? defaultRunner;
   const dir = await mkdtemp(join(tmpdir(), "corpus-manifest-"));
-  const file = join(dir, "manifest.json");
+  const file = join(dir, MANIFEST_FILE);
   try {
     await writeFile(file, JSON.stringify(body), "utf8");
     const args = [
-      "r2", "object", "put", `${deps.bucket}/${keyPrefix}/manifest.json`,
+      "r2", "object", "put", `${deps.bucket}/${layout.manifestKey(keyPrefix)}`,
       "--file", file, "--content-type", "application/json",
     ];
     if (deps.remote !== false) args.push("--remote");
