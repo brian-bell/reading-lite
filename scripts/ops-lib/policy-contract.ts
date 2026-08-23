@@ -98,11 +98,18 @@ export function policyRefusalProbes(
 ): { requirement: string; argv: string[] }[] {
   const current = String(opts.currentGuardVersion);
   const stale = String(opts.currentGuardVersion - 1);
+  const future = String(opts.currentGuardVersion + 1);
   return [
     {
       requirement: "explicit environment",
       // An execute with no --env must be refused, never defaulted.
       argv: ["--execute", "--acknowledge-guard-version", current],
+    },
+    {
+      requirement: "explicit environment (invalid value)",
+      // The target type is validated, not merely present — an unknown
+      // environment must never resolve through a fallback.
+      argv: ["--execute", "--env", "typo", "--acknowledge-guard-version", current],
     },
     {
       requirement: "production confirmation",
@@ -117,6 +124,16 @@ export function policyRefusalProbes(
       // Presence is not enough: acknowledging an outdated guard version must
       // be refused, or stale automation could flip a newer policy.
       argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", stale],
+    },
+    {
+      requirement: "guard version acknowledgement (future)",
+      // Exact equality with the live version: a blanket high value must not
+      // pre-acknowledge guard changes that have not happened yet.
+      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", future],
+    },
+    {
+      requirement: "guard version acknowledgement (malformed)",
+      argv: ["--execute", "--env", "staging", "--acknowledge-guard-version", "not-a-version"],
     },
   ];
 }

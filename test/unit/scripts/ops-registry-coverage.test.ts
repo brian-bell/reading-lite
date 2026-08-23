@@ -148,6 +148,9 @@ Options:
       if (flag("--execute")) {
         const env = value("--env");
         if (!env) throw new UsageError("--env is required");
+        if (env !== "staging" && env !== "production") {
+          throw new UsageError(`unknown --env ${env}`);
+        }
         if (env === "production" && !flag("--confirm-production")) {
           throw new UsageError("--confirm-production is required for production");
         }
