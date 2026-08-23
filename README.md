@@ -108,7 +108,7 @@ Vars in `wrangler.toml` are non-secret and set per environment:
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
 | `SUMMARIZER_PROVIDER` | `openai` | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
 | `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
-| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` (`medium` in production) | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` (`medium` in staging and production) | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
 | `EMAIL_TO` | `""` | Recipient for notification emails. |
