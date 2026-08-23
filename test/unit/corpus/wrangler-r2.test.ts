@@ -277,6 +277,21 @@ describe("tenant-rooted R2Deps", () => {
     expect(calls[1]).not.toContain("--namespace");
   });
 
+  it("vectorExists matches on the vector's namespace, not just its id", async () => {
+    const NS = "usr_550e8400-e29b-41d4-a716-446655440000";
+    const run = (namespace?: string): Runner => async () => ({
+      code: 0,
+      stdout: JSON.stringify([{ id: "rd_a", ...(namespace === undefined ? {} : { namespace }) }]),
+      stderr: "",
+    });
+    // A legacy un-namespaced vector exists for the global selection only.
+    expect(await vectorExists("idx", "rd_a", { run: run() })).toBe(true);
+    expect(await vectorExists("idx", "rd_a", { run: run(), namespace: NS })).toBe(false);
+    // A tenant-namespaced vector exists for that tenant only.
+    expect(await vectorExists("idx", "rd_a", { run: run(NS), namespace: NS })).toBe(true);
+    expect(await vectorExists("idx", "rd_a", { run: run(NS) })).toBe(false);
+  });
+
   it("keeps the global layout when the key root is empty", async () => {
     const { calls, run } = capture();
     await readObject("index/list.json", { bucket: "b", remote: true, keyRoot: "", run });

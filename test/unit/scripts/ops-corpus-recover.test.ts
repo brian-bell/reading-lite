@@ -99,8 +99,23 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.batchExecutes).toHaveLength(0);
   });
 
+  it("refuses an audit taken under a different tenant", async () => {
+    const r = makeDeps();
+    r.deps.readFile = async () =>
+      JSON.stringify({ tenant: "usr_11111111-1111-4111-8111-111111111111", rows: [] });
+    const code = await corpusRecoverCommand.run(["--tenant", "global", "--execute", "--token", "tok"], r.deps);
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("was taken under tenant");
+  });
+
   it("refuses a realtime execute under a usr_ tenant selector (token unverifiable)", async () => {
     const r = makeDeps();
+    // Audit provenance matches the selector, so the refusal under test is the
+    // token-verification one, not the provenance guard.
+    const original = await r.deps.readFile("index.json");
+    r.deps.readFile = async () =>
+      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
     const code = await corpusRecoverCommand.run(
       ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--execute", "--token", "tok"],
       r.deps,

@@ -102,6 +102,8 @@ describe("ops corpus audit", () => {
     // The report's remediation guidance must name the unified command — the
     // standalone corpus-drop interface no longer exists.
     expect(writes[1].body).toContain("npm run ops -- corpus drop --tenant global <url> --execute");
+    // Provenance stamp: corpus recover refuses an audit from another tenant.
+    expect(JSON.parse(writes[0].body)).toMatchObject({ tenant: "global" });
     expect(writes[1].body).not.toMatch(/`corpus-drop/);
   });
 

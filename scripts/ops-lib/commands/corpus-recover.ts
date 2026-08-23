@@ -171,7 +171,21 @@ function describeError(out: ReadingApiOutcome): string {
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
   const tenant = requireOperatorTenant(args.tenant);
-  const doc = JSON.parse(await deps.readFile(args.index)) as { rows: AuditRow[] };
+  const doc = JSON.parse(await deps.readFile(args.index)) as {
+    rows: AuditRow[];
+    tenant?: string;
+  };
+  // Audit provenance (s1k.4.3): recover acts only on an audit taken under the
+  // SAME tenant selector, else tenant A's audited URLs would be extracted and
+  // written under tenant B's namespace. Legacy audits (no stamp) are global.
+  const auditTenant = doc.tenant ?? "global";
+  if (auditTenant !== operatorTenantSelector(tenant)) {
+    deps.io.stderr(
+      `audit ${args.index} was taken under tenant '${auditTenant}' but --tenant is '${operatorTenantSelector(tenant)}'; ` +
+        "re-run corpus audit under the selected tenant, or pass the audit's tenant.",
+    );
+    return 1;
+  }
   const rows = doc.rows ?? [];
   const plan = planByAction(rows);
 

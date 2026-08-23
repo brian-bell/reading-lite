@@ -147,7 +147,13 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
   await deps.mkdir(outDir);
   await deps.writeFile(
     jsonPath,
-    JSON.stringify({ generated: "corpus non-ready inventory", totals: tally, rows }, null, 2) + "\n",
+    JSON.stringify(
+      // `tenant` is provenance: corpus recover refuses to act on an audit taken
+      // under a different selector (legacy unstamped audits read as global).
+      { generated: "corpus non-ready inventory", tenant: operatorTenantSelector(tenant), totals: tally, rows },
+      null,
+      2,
+    ) + "\n",
   );
   await deps.writeFile(
     mdPath,

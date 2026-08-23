@@ -224,7 +224,7 @@ const VECTOR_IDS_NOT_FOUND = /does not contain vectors corresponding/i;
 export async function vectorExists(
   index: string,
   id: string,
-  deps: Pick<R2Deps, "run"> = {},
+  deps: Pick<R2Deps, "run"> & { namespace?: string } = {},
 ): Promise<boolean> {
   const run = deps.run ?? defaultRunner;
   const { code, stdout, stderr } = await run("wrangler", [
@@ -239,7 +239,12 @@ export async function vectorExists(
     throw new Error(`unexpected vectorize get-vectors output for ${id}: ${stdout.trim().slice(0, 120)}`);
   }
   try {
-    return (JSON.parse(stdout.slice(start)) as unknown[]).length > 0;
+    const vectors = JSON.parse(stdout.slice(start)) as Array<{ namespace?: string }>;
+    // A vector id is unique per index, but its NAMESPACE decides which tenant
+    // can see it (s1k.4.3): a legacy un-namespaced vector does not exist for a
+    // tenant selection, and vice versa — treating it as present would make a
+    // backfill skip the re-upsert that moves it into the right namespace.
+    return vectors.some((v) => v.namespace === deps.namespace);
   } catch {
     throw new Error(`could not parse vectorize get-vectors output for ${id}`);
   }

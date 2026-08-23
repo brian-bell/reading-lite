@@ -16,7 +16,7 @@ import { operatorTenantSelector } from "../../corpus-lib/tenant";
 export interface CorpusBackfillVectorsDeps extends BaseDeps {
   r2: {
     readListIndex: (deps: R2Deps) => Promise<VectorBackfillRow[]>;
-    vectorExists: (index: string, id: string) => Promise<boolean>;
+    vectorExists: (index: string, id: string, namespace?: string) => Promise<boolean>;
     readManifest: (keyPrefix: string, deps: R2Deps) => Promise<unknown>;
   };
   // Execute-only: resolves credentials (throwing when absent, BEFORE any read
@@ -123,7 +123,7 @@ async function runCorpusBackfillVectors(
     },
     {
       readListIndex: async () => r2.readListIndex(r2Deps),
-      vectorExists: (id) => r2.vectorExists(vectorizeIndex, id),
+      vectorExists: (id) => r2.vectorExists(vectorizeIndex, id, tenant.namespace),
       readManifest: (keyPrefix) => r2.readManifest(keyPrefix, r2Deps),
       embedMany,
       upsert: upsert as never,
@@ -199,7 +199,8 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
     r2: {
       readListIndex: async (d) =>
         (await (await import("../../corpus-lib/wrangler-r2")).readListIndex(d)) as VectorBackfillRow[],
-      vectorExists: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id),
+      vectorExists: async (index, id, namespace) =>
+        (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id, { namespace }),
       readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
     },
     makeWriters: async (vectorizeIndex, namespace) => {
