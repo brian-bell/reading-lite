@@ -32,18 +32,29 @@ import type { BatchResult } from "../../scripts/corpus-lib/batch/clients";
 import type { Sidecar, SidecarTarget } from "../../scripts/corpus-lib/batch/types";
 
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
-// has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per test.
+// has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per
+// test. The stub honours `namespace` the way Vectorize does — a query only
+// matches vectors stored in the same namespace (undefined being a namespace of
+// its own) — because wrangler.test.toml runs with TENANT_DATA_PLANE=1 and the
+// tenant-isolation tests rely on that segmentation being real.
 type AnyMock = ReturnType<typeof vi.fn>;
 function installVectorizeStub(): {
   upsert: AnyMock;
   query: AnyMock;
   deleteByIds: AnyMock;
-  vectors: Map<string, { values: number[]; metadata: Record<string, unknown> }>;
+  vectors: Map<string, { values: number[]; namespace?: string; metadata: Record<string, unknown> }>;
 } {
-  const vectors = new Map<string, { values: number[]; metadata: Record<string, unknown> }>();
+  const vectors = new Map<
+    string,
+    { values: number[]; namespace?: string; metadata: Record<string, unknown> }
+  >();
   const upsert = vi.fn(async (vs: VectorizeVector[]) => {
     for (const v of vs) {
-      vectors.set(v.id, { values: v.values as number[], metadata: (v.metadata ?? {}) as Record<string, unknown> });
+      vectors.set(v.id, {
+        values: v.values as number[],
+        ...(v.namespace === undefined ? {} : { namespace: v.namespace }),
+        metadata: (v.metadata ?? {}) as Record<string, unknown>,
+      });
     }
     return { mutationId: "m" } as VectorizeAsyncMutation;
   });
@@ -54,6 +65,7 @@ function installVectorizeStub(): {
   const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
     const k = opts.topK ?? 5;
     const matches = Array.from(vectors.entries())
+      .filter(([, v]) => v.namespace === opts.namespace)
       .slice(0, k)
       .map(([id, v]) => ({ id, score: 0.9, values: v.values, metadata: v.metadata }));
     return { count: matches.length, matches } as unknown as VectorizeMatches;
@@ -126,6 +138,11 @@ function makeStubFetch(opts: {
   source?: { status?: number; body?: string; contentType?: string };
   embedding?: number[];
   toolInput?: Record<string, unknown>;
+  // Derive the summarizer's structured output from the request it was sent,
+  // instead of returning the canned `toolInput`. Lets a test make connections
+  // a faithful echo of the neighbours the prompt actually cited, so a
+  // cross-tenant similarity leak surfaces in the terminal manifest.
+  toolInputFromRequest?: (requestBody: string) => Record<string, unknown>;
   anthropicStatus?: number;
   anthropicBody?: unknown;
   resendStatus?: number;
@@ -148,8 +165,16 @@ function makeStubFetch(opts: {
     connections: [],
     summary_markdown: "summary body",
   };
-  const fetchFn = vi.fn<typeof fetch>(async (input, _init) => {
+  const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const requestBody = async () =>
+      typeof init?.body === "string"
+        ? init.body
+        : input instanceof Request
+          ? await input.clone().text()
+          : "";
+    const summaryToolInput = async () =>
+      opts.toolInputFromRequest ? opts.toolInputFromRequest(await requestBody()) : toolInput;
     if (url.startsWith("https://api.openai.com/v1/embeddings")) {
       return new Response(
         JSON.stringify({
@@ -174,7 +199,7 @@ function makeStubFetch(opts: {
               content: [
                 {
                   type: "output_text",
-                  text: JSON.stringify(toolInput),
+                  text: JSON.stringify(await summaryToolInput()),
                   annotations: [],
                 },
               ],
@@ -202,7 +227,7 @@ function makeStubFetch(opts: {
         role: "assistant",
         model: "claude-sonnet-4-6",
         stop_reason: "tool_use",
-        content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: toolInput }],
+        content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: await summaryToolInput() }],
         usage: { input_tokens: 100, output_tokens: 50 },
       };
       return new Response(JSON.stringify(body), {
@@ -452,6 +477,107 @@ describe("two-tenant save-to-ready lifecycle", () => {
     expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/by-url/${urlHash}`)).not.toBeNull();
     expect(await env.READINGS_BUCKET.head(`u/${FOUNDER_TENANT_ID}/index/list.json`)).not.toBeNull();
     expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/list.json`)).not.toBeNull();
+  });
+
+  it("keeps similarity, novelty, and connections private to the active tenant", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const stub = installVectorizeStub();
+    const READING_ID_RE = /rd_[0-9A-HJ-NP-Z]{10}/g;
+    // The summarizer echoes back exactly the neighbour ids its prompt cited, so
+    // the terminal manifest's connections are a faithful record of what the
+    // model was shown: a cross-tenant vector reaching the prompt would land the
+    // other tenant's rd_ id in connections and fail the assertions below.
+    const fetchFn = makeStubFetch({
+      toolInputFromRequest: (requestBody) => {
+        const cited = Array.from(new Set(requestBody.match(READING_ID_RE) ?? []));
+        return {
+          title: "Test Article",
+          tldr: "A short summary.",
+          tags: ["test"],
+          keywords: ["test", "article", "integration"],
+          people: [],
+          orgs: [],
+          novelty_verdict: cited.length > 0 ? "familiar" : "novel",
+          connections: cited.map((id) => ({ id, reason: "covers the same ground" })),
+          summary_markdown: "summary body",
+        };
+      },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+
+    async function submitAndDrain(token: string, url: string) {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request("http://t/api/readings", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ url, email: false }),
+        }),
+        env,
+        ctx,
+      );
+      expect(res.status).toBe(202);
+      const { id } = (await res.json()) as { id: string };
+      await drainQueue(services);
+      await waitOnExecutionContext(ctx);
+      const detail = await app.request(
+        `/api/readings/${id}`,
+        { headers: { authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(detail.status).toBe(200);
+      return (await detail.json()) as {
+        id: string;
+        status: string;
+        novelty_verdict?: string;
+        connections?: Array<{ id: string; reason: string }>;
+        similarity?: { count: number };
+      };
+    }
+
+    // Founder builds a two-reading library; the second must cite the first,
+    // proving in-tenant similarity still flows (isolation is not "nobody sees
+    // anything").
+    const founderFirst = await submitAndDrain(TOKEN, "https://example.com/private-sim-founder-1");
+    const founderSecond = await submitAndDrain(TOKEN, "https://example.com/private-sim-founder-2");
+    expect(founderFirst.status).toBe("ready");
+    expect(founderFirst.similarity?.count).toBe(0);
+    expect(founderFirst.novelty_verdict).toBe("novel");
+    expect(founderFirst.connections).toEqual([]);
+    expect(founderSecond.status).toBe("ready");
+    expect(founderSecond.similarity?.count).toBe(1);
+    expect(founderSecond.novelty_verdict).toBe("familiar");
+    expect(founderSecond.connections).toEqual([
+      { id: founderFirst.id, reason: "covers the same ground" },
+    ]);
+
+    // The other tenant's first save: the stub scores every same-namespace
+    // vector at 0.9 (well above SIMILARITY_FLOOR), so if the founder's two
+    // vectors were visible they would be cited. They must not be: the reading
+    // comes back novel, unconnected, with an empty measured neighbourhood.
+    const otherFirst = await submitAndDrain(OTHER_TOKEN_SECRET, "https://example.com/private-sim-other-1");
+    expect(otherFirst.status).toBe("ready");
+    expect(otherFirst.similarity?.count).toBe(0);
+    expect(otherFirst.novelty_verdict).toBe("novel");
+    expect(otherFirst.connections).toEqual([]);
+
+    // Stronger than the manifest checks: the other tenant's summarize request
+    // must not mention any reading id at all — the founder's library never
+    // reaches the prompt even as sub-floor context.
+    const summarizeBodies = fetchFn.mock.calls
+      .filter(([input]) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return url.startsWith("https://api.openai.com/v1/responses");
+      })
+      .map(([, init]) => (typeof init?.body === "string" ? init.body : ""));
+    expect(summarizeBodies).toHaveLength(3);
+    expect(summarizeBodies[2]!.match(READING_ID_RE)).toBeNull();
+
+    // Every vector landed in its tenant's namespace.
+    expect(stub.vectors.get(founderFirst.id)?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(founderSecond.id)?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(otherFirst.id)?.namespace).toBe(OTHER_TENANT_ID);
   });
 });
 
@@ -4779,8 +4905,12 @@ describe("GET /api/readings/lookup", () => {
 describe("POST /api/readings/similar", () => {
   it("calls Vectorize and returns mapped items", async () => {
     const stub = installVectorizeStub();
+    // Seeded in the founder namespace: the route queries tenant-scoped
+    // (TENANT_DATA_PLANE=1 in wrangler.test.toml), so an unscoped vector
+    // would rightly be invisible to it.
     stub.vectors.set("rd_seed", {
       values: new Array(1536).fill(0.1),
+      namespace: FOUNDER_TENANT_ID,
       metadata: { url: "https://example.com/seed", title: "Seed", created_at: "2026-04-25T00:00:00.000Z" },
     });
     const app = createApp({ services: makeServices(makeStubFetch()) });
