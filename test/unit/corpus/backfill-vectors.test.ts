@@ -133,6 +133,27 @@ describe("runVectorBackfill", () => {
     ]);
   });
 
+  it("reports an unreadable manifest and continues scanning later candidates", async () => {
+    const result = await runVectorBackfill(
+      { execute: false },
+      {
+        readListIndex: async () => [readyRow("rd_corrupt"), readyRow("rd_good")],
+        vectorExists: async () => false,
+        readManifest: async (keyPrefix) => {
+          if (keyPrefix.endsWith("rd_corrupt")) throw new SyntaxError("bad JSON");
+          return readyManifest("rd_good");
+        },
+        embedMany: vi.fn(),
+        upsert: vi.fn(),
+      },
+    );
+
+    expect(result.problems).toEqual([
+      { id: "rd_corrupt", kind: "manifest_invalid" },
+    ]);
+    expect(result.eligible.map((target) => target.id)).toEqual(["rd_good"]);
+  });
+
   it("refuses an embedding response that cannot map one 1536-dimensional vector to every target", async () => {
     const upsert = vi.fn();
 
@@ -223,6 +244,32 @@ describe("runVectorBackfill", () => {
     expect(embedMany).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
   });
+
+  it("does not embed a target whose manifest becomes unreadable during execute revalidation", async () => {
+    const embedMany = vi.fn();
+    const upsert = vi.fn();
+    const readManifest = vi.fn()
+      .mockResolvedValueOnce(readyManifest())
+      .mockRejectedValueOnce(new SyntaxError("bad JSON"));
+
+    const result = await runVectorBackfill(
+      { execute: true },
+      {
+        readListIndex: async () => [readyRow()],
+        vectorExists: async () => false,
+        readManifest,
+        embedMany,
+        upsert,
+      },
+    );
+
+    expect(result.problems).toEqual([
+      { id: "rd_a", kind: "manifest_invalid" },
+    ]);
+    expect(result.eligible).toEqual([]);
+    expect(embedMany).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
 });
 
 describe("corpus-backfill-vectors CLI", () => {
@@ -237,16 +284,21 @@ describe("corpus-backfill-vectors CLI", () => {
     });
     expect(
       parseArgs(
-        ["rd_a", "rd_b", "--bucket", "reading-lite-staging", "--vectorize", "vec-stg", "--limit", "2", "--local", "--execute"],
+        ["rd_a", "rd_b", "--bucket", "reading-lite-staging", "--vectorize", "vec-stg", "--limit", "2", "--execute"],
         {},
       ),
     ).toEqual({
       only: ["rd_a", "rd_b"],
       bucket: "reading-lite-staging",
       vectorizeIndex: "vec-stg",
-      remote: false,
+      remote: true,
       execute: true,
       limit: 2,
     });
+  });
+
+  it("rejects --local because this Vectorize repair has no local index", () => {
+    expect(() => parseArgs(["--local"], {})).toThrow(/Vectorize has no local store/i);
+    expect(() => parseArgs(["--local", "--execute"], {})).toThrow(/Vectorize has no local store/i);
   });
 });

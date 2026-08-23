@@ -105,6 +105,17 @@ function checkCandidate(
   };
 }
 
+async function readCandidate(
+  row: VectorBackfillRow,
+  deps: Pick<VectorBackfillDeps, "readManifest">,
+): Promise<CandidateCheck> {
+  try {
+    return checkCandidate(row, await deps.readManifest(row.key_prefix));
+  } catch {
+    return { ok: false, kind: "manifest_invalid" };
+  }
+}
+
 export async function runVectorBackfill(
   opts: VectorBackfillOptions,
   deps: VectorBackfillDeps,
@@ -133,7 +144,7 @@ export async function runVectorBackfill(
       continue;
     }
 
-    const checked = checkCandidate(row, await deps.readManifest(row.key_prefix));
+    const checked = await readCandidate(row, deps);
     if (!checked.ok) {
       problems.push({ id: row.id, kind: checked.kind });
       continue;
@@ -154,7 +165,7 @@ export async function runVectorBackfill(
       continue;
     }
     const row = rowById.get(target.id)!;
-    const current = checkCandidate(row, await deps.readManifest(target.keyPrefix));
+    const current = await readCandidate(row, deps);
     if (current.ok) {
       revalidated.push(current.target);
     } else {

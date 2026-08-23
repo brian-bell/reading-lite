@@ -43,7 +43,9 @@ export function parseArgs(
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (arg === "--execute") opts.execute = true;
-    else if (arg === "--local") opts.remote = false;
+    else if (arg === "--local") {
+      throw new Error("--local is unsupported: Vectorize has no local store");
+    }
     else if (arg === "--bucket") opts.bucket = takeValue(arg, index++);
     else if (arg === "--vectorize") opts.vectorizeIndex = takeValue(arg, index++);
     else if (arg === "--limit") {
@@ -66,11 +68,13 @@ function printHelp(): void {
   console.log(`corpus-backfill-vectors - restore missing vectors from stored TL;DRs.
 
 Usage:
-  npm run corpus-backfill-vectors -- [rd_ID...] [--limit N] [--bucket B] [--vectorize IDX] [--local] [--execute]
+  npm run corpus-backfill-vectors -- [rd_ID...] [--limit N] [--bucket B] [--vectorize IDX] [--execute]
 
 Eligible readings have a ready list row, a confirmed Vectorize miss, and a
 valid ready manifest with a non-empty TL;DR. The parsed manifest supplies the
 embedding input and metadata. The command never rewrites a manifest or list row.
+Vectorize has no local store, so --local is rejected rather than touching the
+remote index during an operation presented as local.
 
 Dry-run is the default and makes no OpenAI request or external write. --execute
 uses ${OPENAI_EMBEDDING_MODEL} and upserts 1536-dimensional vectors with url,
