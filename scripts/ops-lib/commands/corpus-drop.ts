@@ -14,6 +14,7 @@ import { resolveDropTargets, shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDropR2 {
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -90,7 +91,7 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   for (const t of targets) {
     if (
       !t.id || !t.prefix || typeof t.url !== "string" ||
-      !t.prefix.startsWith("readings/") || !t.prefix.endsWith(t.id)
+      !t.prefix.startsWith(READINGS_PREFIX) || !t.prefix.endsWith(t.id)
     ) {
       io.stderr(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(t)}`);
       return 1;

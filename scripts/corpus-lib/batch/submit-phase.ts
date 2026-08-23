@@ -1,4 +1,5 @@
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
+import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import type {
   AnthropicBatchClient,
@@ -18,6 +19,8 @@ import type {
   SidecarTarget,
   SummarizeTarget,
 } from "./types";
+
+const layout = r2KeyLayout();
 
 export interface SubmitDeps {
   model: string;
@@ -303,13 +306,13 @@ async function persistFreshContent(
   const { target, fresh } = st.extracted;
   if (!fresh || st.extracted.contentAlreadyWritten) return;
   await putObject(
-    `${target.keyPrefix}/raw.${extToken(fresh.content_type)}`,
+    layout.rawKey(target.keyPrefix, extToken(fresh.content_type)),
     fresh.raw,
     fresh.content_type,
   );
   if (fresh.markdown) {
     await putObject(
-      `${target.keyPrefix}/extracted.md`,
+      layout.extractedKey(target.keyPrefix),
       fresh.markdown,
       "text/markdown; charset=utf-8",
     );

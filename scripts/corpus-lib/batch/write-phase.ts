@@ -19,6 +19,9 @@ import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
+import { r2KeyLayout } from "../../../src/modules/stores/layout";
+
+const layout = r2KeyLayout();
 
 export interface WriteDeps {
   r2: R2Client;
@@ -367,10 +370,10 @@ async function writeNormalizedResults(
 
   // 2. Write the success manifests + pointers.
   for (const { target, manifest } of successes) {
-    await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
+    await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
     const pointer = serializeReadingPointer(target.id, target.keyPrefix);
-    await deps.r2.put(`index/by-url/${target.urlHash}`, pointer, { contentType: "application/json" });
-    await deps.r2.put(`index/by-id/${target.id}`, pointer, { contentType: "application/json" });
+    await deps.r2.put(layout.byUrlKey(target.urlHash), pointer, { contentType: "application/json" });
+    await deps.r2.put(layout.byIdKey(target.id), pointer, { contentType: "application/json" });
     touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
     report.push({ id: target.id, status: "ready" });
   }
@@ -391,9 +394,9 @@ async function writeNormalizedResults(
           { sourceType: target.sourceType, error, attempt: null, content: contentFactsOf(target) },
           deps.now(),
         );
-    await deps.r2.put(`${target.keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
+    await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
     await deps.r2.put(
-      `index/by-id/${target.id}`,
+      layout.byIdKey(target.id),
       serializeReadingPointer(target.id, target.keyPrefix),
       { contentType: "application/json" },
     );
@@ -425,7 +428,7 @@ function contentFactsOf(target: SidecarTarget): ContentFacts {
 }
 
 async function releaseByUrlIfOwned(target: SidecarTarget, deps: WriteDeps): Promise<void> {
-  const key = `index/by-url/${target.urlHash}`;
+  const key = layout.byUrlKey(target.urlHash);
   const raw = await deps.r2.get(key);
   if (raw === null) return;
 

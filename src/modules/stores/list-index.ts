@@ -10,13 +10,10 @@ import {
 } from "../../schemas/api";
 import { sha256Hex } from "../../services";
 
-// R2 layout this module reads: the list index object, plus the manifests it
-// scans/parses to rebuild and to resolve URL ownership. `ReadingStore` imports
-// these so the object layout stays single-homed (reading-store.ts → list-index.ts,
-// no back-edge).
-export const LIST_INDEX_KEY = "index/list.json";
-export const MANIFEST_FILE = "manifest.json";
-export const READINGS_PREFIX = "readings/";
+// The R2 key vocabulary is single-homed in layout.ts; re-exported here so
+// existing importers of the list-index surface keep working.
+import { MANIFEST_FILE, r2KeyLayout, type R2KeyLayout } from "./layout";
+export { LIST_INDEX_KEY, MANIFEST_FILE, READINGS_PREFIX } from "./layout";
 
 export interface ListManifestsResult {
   readings: ListIndexItem[];
@@ -102,13 +99,13 @@ interface ResolvedCasDeps {
 // composes one and delegates its public index methods here.
 export class ListIndexStore {
   private readonly cas: ResolvedCasDeps;
-  private readonly keyRoot: string;
+  private readonly layout: R2KeyLayout;
 
   constructor(
     private readonly bucket: R2Bucket,
     opts: ListIndexStoreOptions = {},
   ) {
-    this.keyRoot = opts.keyRoot ?? "";
+    this.layout = r2KeyLayout(opts.keyRoot ?? "");
     this.cas = {
       maxAttempts: opts.maxAttempts ?? 8,
       baseDelayMs: opts.baseDelayMs ?? 20,
@@ -117,19 +114,8 @@ export class ListIndexStore {
     };
   }
 
-  private objectKey(relative: string): string {
-    return `${this.keyRoot}${relative}`;
-  }
-
-  private relativeKey(objectKey: string): string {
-    if (this.keyRoot !== "" && objectKey.startsWith(this.keyRoot)) {
-      return objectKey.slice(this.keyRoot.length);
-    }
-    return objectKey;
-  }
-
   private listIndexKey(): string {
-    return this.objectKey(LIST_INDEX_KEY);
+    return this.layout.listIndexKey();
   }
 
   async readListIndex(): Promise<ListIndex | null> {
@@ -310,7 +296,7 @@ export class ListIndexStore {
   // manifests directly (rather than depending on ReadingStore) to keep the
   // dependency graph acyclic.
   private async readManifest(keyPrefix: string): Promise<Manifest | null> {
-    const obj = await this.bucket.get(this.objectKey(`${keyPrefix}/${MANIFEST_FILE}`));
+    const obj = await this.bucket.get(this.layout.manifestKey(keyPrefix));
     if (!obj) return null;
     const json: unknown = JSON.parse(await obj.text());
     return ManifestSchema.parse(json);
@@ -325,7 +311,7 @@ export class ListIndexStore {
     let complete = true;
     do {
       const list = await this.bucket.list({
-        prefix: this.objectKey(READINGS_PREFIX),
+        prefix: this.layout.readingsPrefix(),
         limit: 1000,
         ...(cursor ? { cursor } : {}),
       });
@@ -345,7 +331,7 @@ export class ListIndexStore {
       const json: unknown = JSON.parse(await obj.text());
       const parsed = ManifestSchema.safeParse(json);
       if (!parsed.success) continue;
-      const keyPrefix = this.relativeKey(key.slice(0, -("/" + MANIFEST_FILE).length));
+      const keyPrefix = this.layout.relativeKey(key.slice(0, -("/" + MANIFEST_FILE).length));
       items.push(manifestToIndexItem(parsed.data, keyPrefix));
     }
     return { items, complete };

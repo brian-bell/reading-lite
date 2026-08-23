@@ -5,6 +5,7 @@ import type { R2Client } from "../../lib/cf-clients";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 import { getByUrl } from "./r2-reads";
+import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import type {
   ActivatingSidecar,
   ExtractedTarget,
@@ -13,6 +14,8 @@ import type {
 } from "./types";
 import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 import type { WriteReportRow } from "./write-phase";
+
+const layout = r2KeyLayout();
 
 export interface ActivationDeps {
   r2: Pick<R2Client, "get" | "put" | "putIfAbsent" | "delete">;
@@ -61,7 +64,7 @@ export async function activateFreshTargets(
     }
 
     const pointer = serializeReadingPointer(target.target.readingId, target.target.keyPrefix);
-    const pointerKey = `index/by-url/${target.target.urlHash}`;
+    const pointerKey = layout.byUrlKey(target.target.urlHash);
 
     if (policy.kind === "create-new") {
       const claimed = await deps.r2.putIfAbsent(pointerKey, pointer, { contentType: "application/json" });
@@ -149,7 +152,7 @@ export async function activateRecoverTargets(
 
   for (const target of targets) {
     const { readingId: id, keyPrefix, url, urlHash } = target.target;
-    const pointerKey = `index/by-url/${urlHash}`;
+    const pointerKey = layout.byUrlKey(urlHash);
     const pointer = serializeReadingPointer(id, keyPrefix);
 
     const lookup = await getByUrl(deps.r2, urlHash);
@@ -219,8 +222,8 @@ async function commitPendingActivation(
 ): Promise<ListIndexItem> {
   const { readingId: id, keyPrefix } = target.target;
   await writeFreshContent(target, r2);
-  await r2.put(`${keyPrefix}/manifest.json`, JSON.stringify(manifest), { contentType: "application/json" });
-  await r2.put(`index/by-id/${id}`, serializeReadingPointer(id, keyPrefix), { contentType: "application/json" });
+  await r2.put(layout.manifestKey(keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
+  await r2.put(layout.byIdKey(id), serializeReadingPointer(id, keyPrefix), { contentType: "application/json" });
   return manifestToIndexItem(manifest, keyPrefix);
 }
 
@@ -368,7 +371,7 @@ async function releaseClaimIfOwned(
 ): Promise<void> {
   const current = await getByUrl(r2, urlHash);
   if (current && current !== "damaged" && current.id === id && current.key_prefix === keyPrefix) {
-    await r2.delete(`index/by-url/${urlHash}`);
+    await r2.delete(layout.byUrlKey(urlHash));
   }
 }
 
@@ -378,11 +381,11 @@ async function writeFreshContent(
 ): Promise<void> {
   const fresh = target.fresh;
   if (!fresh) return;
-  await r2.put(`${target.target.keyPrefix}/raw.${extToken(fresh.content_type)}`, fresh.raw, {
+  await r2.put(layout.rawKey(target.target.keyPrefix, extToken(fresh.content_type)), fresh.raw, {
     contentType: fresh.content_type,
   });
   if (fresh.markdown) {
-    await r2.put(`${target.target.keyPrefix}/extracted.md`, fresh.markdown, {
+    await r2.put(layout.extractedKey(target.target.keyPrefix), fresh.markdown, {
       contentType: "text/markdown; charset=utf-8",
     });
   }
@@ -392,7 +395,7 @@ async function readManifest(
   r2: Pick<R2Client, "get">,
   keyPrefix: string,
 ): Promise<Manifest | null> {
-  const raw = await r2.get(`${keyPrefix}/manifest.json`);
+  const raw = await r2.get(layout.manifestKey(keyPrefix));
   return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
 }
 

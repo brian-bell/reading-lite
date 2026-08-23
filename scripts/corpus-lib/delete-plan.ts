@@ -13,6 +13,9 @@
 // never when it is absent.
 
 import { urlHash } from "./url-hash";
+import { r2KeyLayout } from "../../src/modules/stores/layout";
+
+const layout = r2KeyLayout();
 
 const COMMON_RAW_EXTS = ["html", "txt", "json", "pdf", "bin", "md"];
 
@@ -42,17 +45,17 @@ export async function keysForDroppedReading(
   deps: DeletePlanDeps,
 ): Promise<string[]> {
   const keys = new Set<string>([
-    `${keyPrefix}/manifest.json`,
-    `${keyPrefix}/extracted.md`,
-    `index/by-id/${id}`,
+    layout.manifestKey(keyPrefix),
+    layout.extractedKey(keyPrefix),
+    layout.byIdKey(id),
   ]);
-  for (const ext of COMMON_RAW_EXTS) keys.add(`${keyPrefix}/raw.${ext}`);
+  for (const ext of COMMON_RAW_EXTS) keys.add(layout.rawKey(keyPrefix, ext));
 
   const m = (await deps.readManifest(keyPrefix)) as Record<string, any> | null;
   if (m) {
     for (const k of ["active_attempt", "last_attempt"]) {
       const at = m?.[k]?.id;
-      if (typeof at === "string") keys.add(`${keyPrefix}/attempts/${at}.json`);
+      if (typeof at === "string") keys.add(layout.attemptKey(keyPrefix, at));
     }
   }
 
@@ -83,7 +86,7 @@ export async function byUrlPointerKeyIfOwned(
   url: string,
   readObject: (key: string) => Promise<string | null>,
 ): Promise<string | null> {
-  const key = `index/by-url/${urlHash(url)}`;
+  const key = layout.byUrlKey(urlHash(url));
   const raw = await readObject(key);
   if (raw === null) return null;
   let pointer: unknown;

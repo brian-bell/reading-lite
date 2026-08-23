@@ -13,6 +13,7 @@ import {
 import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusSweepR2 {
   readListIndex: (deps: R2Deps) => Promise<unknown[]>;
@@ -108,7 +109,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   for (const t of targets) {
     if (
       !t.id || !t.key_prefix || typeof t.url !== "string" ||
-      !t.key_prefix.startsWith("readings/") || !t.key_prefix.endsWith(t.id)
+      !t.key_prefix.startsWith(READINGS_PREFIX) || !t.key_prefix.endsWith(t.id)
     ) {
       io.stderr(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(t)}`);
       return 1;
