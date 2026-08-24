@@ -150,6 +150,18 @@ export function tenantNamespace(
   return tenantId;
 }
 
+// The tenant-scoped VECTOR ID (ADR 0002): inside a tenant namespace a vector
+// is stored as `{tenantId}:{readingId}` so the namespace-blind deleteByIds
+// cannot address another tenant's vector; without a namespace (the pre-tenant
+// layout) the id is the bare reading id. Single-homed here so the worker store
+// and the founder-migration tooling (scripts/corpus-lib/founder-migration.ts)
+// spell the same contract. The store itself starts composing/stripping this
+// prefix as part of the s1k.6 gate-flip work; migrated vectors are written
+// with it from the start.
+export function tenantVectorId(namespace: string | undefined, readingId: string): string {
+  return namespace === undefined ? readingId : `${namespace}:${readingId}`;
+}
+
 export function similarityStoreFor(
   index: VectorizeIndex,
   tenant: TenantContext,
