@@ -5,7 +5,11 @@ import type { Env } from "../../src/index";
 import type { ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
-import { decodeIntakeResponse } from "../../scripts/lib/reading-api";
+import {
+  decodeIntakeResponse,
+  decodeWhoamiResponse,
+  readingApiFor,
+} from "../../scripts/lib/reading-api";
 import { testReadingStore } from "../helpers/tenant-fixtures";
 
 // Contract test for the operator-side Reading API client: the pure
@@ -128,5 +132,65 @@ describe("decodeIntakeResponse against the live router", () => {
     expect(out.kind).toBe("unavailable");
     if (out.kind !== "unavailable") return;
     expect(out.message).toContain("READING_JOBS");
+  });
+});
+
+describe("decodeWhoamiResponse against the live router", () => {
+  it("200 whoami decodes to the token's tenant identity", async () => {
+    const app = createApp({ services: services() });
+    const res = await app.request(
+      "/api/whoami",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const out = decodeWhoamiResponse(res.status, await res.json());
+    expect(out.kind).toBe("identity");
+    if (out.kind !== "identity") return;
+    expect(out.tenantId).toMatch(/^usr_/);
+    expect(out.userId).toBe(out.tenantId);
+    expect(out.principal).toBe("api_token");
+    // wrangler.test.toml runs the Workers pool with TENANT_DATA_PLANE=1.
+    expect(out.tenantDataPlane).toBe(true);
+  });
+
+  it("401 without a bearer decodes to http_error, never identity", async () => {
+    const app = createApp({ services: services() });
+    const res = await app.request("/api/whoami", {}, env);
+    expect(res.status).toBe(401);
+    const out = decodeWhoamiResponse(res.status, await res.json());
+    expect(out).toEqual({ kind: "http_error", status: 401, message: "unauthorized" });
+  });
+});
+
+describe("expectedTenant pin against the live router", () => {
+  function clientFor(expectedTenant: string) {
+    const app = createApp({ services: services() });
+    return readingApiFor({
+      base: "http://t",
+      token: TOKEN,
+      expectedTenant,
+      fetch: ((input: string, init?: RequestInit) =>
+        app.request(input, init, env)) as unknown as typeof fetch,
+    });
+  }
+
+  it("a mismatched pin is rejected per write with 412, never silently accepted", async () => {
+    // The Workers pool runs with TENANT_DATA_PLANE=1, so the acting layout is
+    // the token's tenant — a 'global' pin must fail on the mutation itself.
+    const out = await clientFor("global").reprocess(mintReadingId(), { force: true });
+    expect(out).toEqual({
+      kind: "http_error",
+      status: 412,
+      message: "expected tenant mismatch",
+    });
+  });
+
+  it("a matching pin passes through to normal route handling", async () => {
+    const who = await clientFor("anything").whoami(); // whoami ignores the pin
+    expect(who.kind).toBe("identity");
+    if (who.kind !== "identity") return;
+    const out = await clientFor(who.tenantId).reprocess(mintReadingId(), { force: true });
+    expect(out).toEqual({ kind: "not_found" });
   });
 });

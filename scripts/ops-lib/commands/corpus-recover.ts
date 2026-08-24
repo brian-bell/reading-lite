@@ -22,6 +22,7 @@ import {
   type ReadingApiOutcome,
 } from "../../lib/reading-api";
 import { planByAction, recoveryAction } from "../../corpus-lib/policy";
+import { verifyRealtimeTenant } from "../../corpus-lib/realtime-tenant";
 import { shouldPauseAfter } from "../../corpus-lib/throttle";
 import { tallyByIds } from "../../corpus-lib/audit";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
@@ -38,7 +39,10 @@ export interface CorpusRecoverDeps extends BaseDeps {
   writeFile: (path: string, body: string) => Promise<void>;
   resolveApiTarget: (flags: { url?: string; token?: string }) => ApiTarget;
   // Constructed only on the execute path (plan mode never touches the network).
-  makeApi: (target: ApiTarget) => Pick<ReadingApi, "reprocess" | "importMarkdown">;
+  makeApi: (
+    target: ApiTarget,
+    opts?: { expectedTenant?: string },
+  ) => Pick<ReadingApi, "reprocess" | "importMarkdown" | "whoami">;
   // Realtime local-extract (browser-header fetch wired in by defaultDeps).
   extract: (url: string) => Promise<ExtractedContent>;
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -212,17 +216,10 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
         deps.io.stderr(`  [plan ${a}] ${r.short} — ${recoveryAction(r).why}`);
       }
     }
-    // Plan output must invite only an execute that can succeed: the realtime
-    // execute path refuses a usr_ selector outright (token unverifiable — see
-    // the guard below), so point that case at --batch instead.
-    if (tenant.kind === "tenant") {
-      deps.io.stderr(
-        "Realtime --execute is unavailable for a tenant selector until token verification lands " +
-          "(reading-lite-1xk). Rerun with --batch --execute (and --sole-writer) to act.",
-      );
-    } else {
-      deps.io.stderr("Rerun with --execute to act.");
-    }
+    deps.io.stderr(
+      "Rerun with --execute to act. Realtime --execute first verifies the bearer token's " +
+        "tenant against --tenant via GET /api/whoami and refuses on mismatch.",
+    );
     printSummary(deps.io, { executed: false, reprocessed: 0, extracted: 0, inProgress: 0, errors: 0, touched: [] });
     return 0;
   }
@@ -231,29 +228,21 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (!target.token) {
     throw new UsageError("missing reading API token (pass --token, set READER_API_TOKEN, or .prd.vars)");
   }
-  // The realtime path writes through the Reading API, where the acting tenant
-  // is the BEARER TOKEN's principal — the worker confines every write to that
-  // tenant regardless of --tenant, which scopes only this command's direct R2
-  // reads (--monitor). The CLI cannot resolve a token to its tenant offline
-  // (the mapping lives in the worker's control plane), so for a tenant
-  // selector the comparison cannot be made and the realtime path fails
-  // closed: submitting under an unverified token could import one tenant's
-  // audited content into another. --batch is scoped by --tenant end to end
-  // and stays available; reading-lite-1xk tracks the worker-side token
-  // verification that will lift this refusal. 'global' matches the
-  // pre-cutover reality where every token acts on the global layout.
-  if (tenant.kind === "tenant") {
-    deps.io.stderr(
-      `realtime recovery cannot verify that the bearer token belongs to tenant '${tenant.tenantId}'; ` +
-        "refusing to submit. Use --batch (scoped by --tenant end to end), or --tenant global. " +
-        "(reading-lite-1xk tracks worker-side token verification.)",
-    );
+  // Realtime API writes act as the BEARER TOKEN's tenant, not --tenant (which
+  // scopes only this command's direct R2 reads). Ask the worker who the token
+  // is and refuse any selector/principal/gate combination where writes would
+  // land somewhere other than the selected layout — the matrix lives in
+  // verifyRealtimeTenant (realtime-tenant.ts, reading-lite-1xk). The
+  // expectedTenant pin then re-asserts the verified layout on every
+  // subsequent write (x-expected-tenant), so a gate flip or rolling deploy
+  // mid-run is rejected by the worker atomically, not just at this preflight.
+  const api = deps.makeApi(target, { expectedTenant: operatorTenantSelector(tenant) });
+  const verdict = verifyRealtimeTenant(tenant, await api.whoami());
+  if (!verdict.ok) {
+    deps.io.stderr(verdict.reason);
     return 1;
   }
-  deps.io.stderr(
-    "note: realtime API writes act as the bearer token's tenant; ensure the token matches --tenant.",
-  );
-  const api = deps.makeApi(target);
+  deps.io.stderr(verdict.note);
 
   const touched: string[] = [];
   let reprocessed = 0;
@@ -459,7 +448,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       await fs.writeFile(p, body);
     },
     resolveApiTarget,
-    makeApi: (target) => readingApiFor({ ...target, fetch: globalThis.fetch }),
+    makeApi: (target, opts) =>
+      readingApiFor({ ...target, fetch: globalThis.fetch, ...(opts ?? {}) }),
     extract: async (url) => {
       const { extractFromUrl } = await import("../../../src/modules/extractor/index");
       const { makeBrowserFetch } = await import("../../corpus-lib/browser-fetch");
@@ -547,8 +537,10 @@ Options:
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
                        layout. Scopes this command's direct R2 reads and the batch
                        path. Realtime API writes act as the bearer token's tenant,
-                       which the CLI cannot verify — so a usr_… selector refuses
-                       the realtime execute path (use --batch, or --tenant global).
+                       so realtime --execute first verifies the token against the
+                       selector via GET /api/whoami and refuses on mismatch (a
+                       usr_… selector also requires the worker's tenant data-plane
+                       gate to be on; 'global' requires it off).
   --url <url>       Reading API base. Default: READER_URL, then production.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.

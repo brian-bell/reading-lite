@@ -4,6 +4,7 @@
 // into the intake-outcome vocabulary instead of flattening to "error", so a
 // 409 initializing owner is never miscounted as a failure.
 
+import { EXPECTED_TENANT_HEADER, GetWhoamiResponseSchema } from "../../src/schemas/api";
 import { ManifestSchema, type Manifest } from "../../src/schemas/manifest";
 
 export type ReadingApiOutcome =
@@ -94,6 +95,40 @@ export type ReadingFetchOutcome =
   | { kind: "http_error"; status: number; message: string }
   | { kind: "transport_error"; message: string };
 
+// GET /api/whoami: whose tenant does this bearer token act as, and is the
+// tenant data-plane gate on? A 404 is significant to callers — it means the
+// worker predates the endpoint — so it stays an http_error with its status.
+export type WhoamiOutcome =
+  | {
+      kind: "identity";
+      tenantId: string;
+      userId: string;
+      principal: "api_token" | "session";
+      tenantDataPlane: boolean;
+    }
+  | { kind: "http_error"; status: number; message: string }
+  | { kind: "transport_error"; message: string };
+
+// Pure decode of a whoami response, parsed against the worker's own schema at
+// the seam (stored-contract drift surfaces as http_error, never a bad object).
+export function decodeWhoamiResponse(status: number, body: unknown): WhoamiOutcome {
+  if (status !== 200) {
+    const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    return { kind: "http_error", status, message: messageFrom(body, b) };
+  }
+  const parsed = GetWhoamiResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    return { kind: "http_error", status, message: "200 response was not a valid whoami body" };
+  }
+  return {
+    kind: "identity",
+    tenantId: parsed.data.tenant_id,
+    userId: parsed.data.user_id,
+    principal: parsed.data.principal,
+    tenantDataPlane: parsed.data.tenant_data_plane,
+  };
+}
+
 export type WaitTerminalOutcome =
   | { kind: "ready"; manifest: Manifest }
   | { kind: "failed"; manifest: Manifest }
@@ -142,6 +177,13 @@ export interface ReadingApiDeps {
   base: string;
   token: string;
   fetch: typeof fetch;
+  /**
+   * Layout pin sent as x-expected-tenant on every request ('global' or
+   * usr_…). The worker rejects with 412 any request that would act on a
+   * different layout, making a whoami preflight's verdict atomic with each
+   * write instead of point-in-time. Omit for no pin.
+   */
+  expectedTenant?: string;
   /** Injectable for tests; drives retry backoff and waitTerminal polling. */
   sleep?: (ms: number) => Promise<void>;
   /** Injectable for tests; drives the waitTerminal deadline. */
@@ -168,6 +210,8 @@ export interface ReadingApi {
   }): Promise<ReadingApiOutcome>;
   /** Read-only owner resolution; an `existing`/`initializing` kind means the URL has an owner. */
   lookup(url: string): Promise<ReadingApiOutcome>;
+  /** The bearer token's own tenant identity and the data-plane gate state. */
+  whoami(): Promise<WhoamiOutcome>;
   /** One GET of the reading's manifest, parsed against ManifestSchema. */
   getReading(id: string): Promise<ReadingFetchOutcome>;
   /**
@@ -185,6 +229,9 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
   const headers = {
     authorization: `Bearer ${deps.token}`,
     "content-type": "application/json",
+    ...(deps.expectedTenant === undefined
+      ? {}
+      : { [EXPECTED_TENANT_HEADER]: deps.expectedTenant }),
   };
 
   async function decodeResponse(
@@ -288,6 +335,29 @@ export function readingApiFor(deps: ReadingApiDeps): ReadingApi {
         TRANSPORT_RETRIES,
         false,
       );
+    },
+
+    async whoami() {
+      // Read-only and idempotent, so transport retries are safe (same
+      // rationale as lookup).
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await deps.fetch(`${deps.base}/api/whoami`, { headers });
+          const text = await res.text();
+          let body: unknown;
+          try {
+            body = text ? JSON.parse(text) : {};
+          } catch {
+            body = text;
+          }
+          return decodeWhoamiResponse(res.status, body);
+        } catch (err) {
+          if (attempt >= TRANSPORT_RETRIES) {
+            return { kind: "transport_error", message: formatFetchError(err) };
+          }
+          await sleep(RETRY_BASE_DELAY_MS * (1 << attempt));
+        }
+      }
     },
 
     async getReading(id) {

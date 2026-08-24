@@ -237,3 +237,88 @@ describe("api token scope matrix", () => {
     expect(imported.status).not.toBe(401);
   });
 });
+
+describe("GET /api/whoami", () => {
+  async function whoami(authorization?: string, envOverride?: Partial<Env>) {
+    const app = createApp({ services: services() });
+    const ctx = createExecutionContext();
+    const headers = new Headers();
+    if (authorization) headers.set("authorization", authorization);
+    const res = await app.fetch(
+      new Request("http://t/api/whoami", { headers }),
+      { ...(env as unknown as Env), ...envOverride },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  it("requires bearer auth", async () => {
+    expect((await whoami()).status).toBe(401);
+    expect((await whoami("Bearer wrong")).status).toBe(401);
+  });
+
+  it("returns the bearer token's own tenant identity, uncacheable", async () => {
+    const res = await whoami(`Bearer ${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.tenant_id).toBe(await founderUserId());
+    expect(body.user_id).toBe(body.tenant_id);
+    expect(body.principal).toBe("api_token");
+    // wrangler.test.toml runs the Workers pool with TENANT_DATA_PLANE=1.
+    expect(body.tenant_data_plane).toBe(true);
+  });
+
+  it("reports the data-plane gate off when TENANT_DATA_PLANE is unset", async () => {
+    const res = await whoami(`Bearer ${TOKEN}`, { TENANT_DATA_PLANE: undefined });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.tenant_data_plane).toBe(false);
+  });
+
+  it("answers any authenticated principal regardless of scopes", async () => {
+    const secret = await insertScopedToken("whoami-no-scopes", []);
+    const res = await whoami(`Bearer ${secret}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.tenant_id).toBe(await founderUserId());
+  });
+});
+
+describe("x-expected-tenant layout pin", () => {
+  async function readings(expected: string | undefined, envOverride?: Partial<Env>) {
+    const app = createApp({ services: services() });
+    const ctx = createExecutionContext();
+    const headers = new Headers({ authorization: `Bearer ${TOKEN}` });
+    if (expected !== undefined) headers.set("x-expected-tenant", expected);
+    const res = await app.fetch(
+      new Request("http://t/api/readings", { headers }),
+      { ...(env as unknown as Env), ...envOverride },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  // wrangler.test.toml runs the Workers pool with TENANT_DATA_PLANE=1, so the
+  // acting layout is the principal's tenant namespace.
+  it("rejects a pin naming a layout the request would not act on", async () => {
+    const gateOn = await readings("global");
+    expect(gateOn.status).toBe(412);
+    expect(gateOn.headers.get("cache-control")).toBe("no-store");
+    const body = (await gateOn.json()) as Record<string, unknown>;
+    expect(body.error).toBe("expected tenant mismatch");
+    expect(body.acting_tenant).toBe(await founderUserId());
+
+    const gateOff = await readings(await founderUserId(), { TENANT_DATA_PLANE: undefined });
+    expect(gateOff.status).toBe(412);
+    expect(((await gateOff.json()) as Record<string, unknown>).acting_tenant).toBe("global");
+  });
+
+  it("passes a pin matching the acting layout, and requests with no pin", async () => {
+    expect((await readings(await founderUserId())).status).toBe(200);
+    expect((await readings("global", { TENANT_DATA_PLANE: undefined })).status).toBe(200);
+    expect((await readings(undefined)).status).toBe(200);
+  });
+});
