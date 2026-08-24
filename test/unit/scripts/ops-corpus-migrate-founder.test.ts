@@ -30,15 +30,32 @@ const LIST_DOC = {
   ],
 };
 
+// The manifest the ready row projects: the plan reads it back and requires the
+// row's id/url/status to match, so the fixture must be a real manifest.
+const READY_MANIFEST = {
+  id: "rd_ready",
+  url: "https://a.example/x",
+  url_hash: urlHash("https://a.example/x"),
+  status: "ready",
+  content_type: "text/html",
+  content_status: "captured",
+  content_bytes: 4,
+  content_sha256: "a".repeat(64),
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-01T00:00:00.000Z",
+};
+
+const READY_POINTER = { id: "rd_ready", key_prefix: READY_PREFIX };
+
 function sourceObjects(): Map<string, { body: string; contentType: string }> {
   return new Map([
     ["index/list.json", { body: JSON.stringify(LIST_DOC), contentType: "application/json" }],
-    ["index/by-id/rd_ready", { body: '{"id":"rd_ready"}', contentType: "application/json" }],
+    ["index/by-id/rd_ready", { body: JSON.stringify(READY_POINTER), contentType: "application/json" }],
     [
       `index/by-url/${urlHash("https://a.example/x")}`,
-      { body: '{"id":"rd_ready"}', contentType: "application/json" },
+      { body: JSON.stringify(READY_POINTER), contentType: "application/json" },
     ],
-    [`${READY_PREFIX}/manifest.json`, { body: "{}", contentType: "application/json" }],
+    [`${READY_PREFIX}/manifest.json`, { body: JSON.stringify(READY_MANIFEST), contentType: "application/json" }],
     [`${READY_PREFIX}/extracted.md`, { body: "# hi", contentType: "text/markdown" }],
     [`${READY_PREFIX}/raw.html`, { body: "<html/>", contentType: "text/html" }],
     [`${READY_PREFIX}/attempts/at_1.json`, { body: "{}", contentType: "application/json" }],
@@ -202,6 +219,48 @@ describe("ops corpus migrate-founder — plan mode", () => {
       expect(doc.vectors).toEqual([]);
     }
   });
+
+  it("refuses to certify a corpus whose list row contradicts its manifest", async () => {
+    // A schema-valid but stale row: it says failed, so no vector is planned,
+    // while the manifest says ready and the legacy vector exists. Presence
+    // checks alone would report this corpus fully migrated and lose the vector.
+    const h = makeHarness();
+    h.objects.set("index/list.json", {
+      body: JSON.stringify({
+        version: 1,
+        items: [{ ...LIST_DOC.items[0], status: "failed" }],
+      }),
+      contentType: "application/json",
+    });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(1);
+    const text = h.err.join("\n");
+    expect(text).toContain("row_manifest_mismatch");
+    expect(text).toContain("status ready");
+    expect(JSON.parse(h.out.join("\n")).vectors).toEqual([]);
+  });
+
+  it("refuses to certify a by-id pointer that is unparseable or aimed elsewhere", async () => {
+    for (const body of [
+      '{"id":"rd_ready"}',
+      JSON.stringify({ id: "rd_other", key_prefix: READY_PREFIX }),
+      JSON.stringify({ id: "rd_ready", key_prefix: "readings/2020/01/01T000000Z-rd_ready" }),
+    ]) {
+      const h = makeHarness();
+      h.objects.set("index/by-id/rd_ready", { body, contentType: "application/json" });
+      const code = await run(["--tenant", TENANT], h);
+      expect(code).toBe(1);
+      expect(h.err.join("\n")).toContain("row_by_id_pointer_invalid");
+    }
+  });
+
+  it("refuses to certify a manifest that is present but does not parse", async () => {
+    const h = makeHarness();
+    h.objects.set(`${READY_PREFIX}/manifest.json`, { body: "{}", contentType: "application/json" });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(1);
+    expect(h.err.join("\n")).toContain("row_manifest_unreadable");
+  });
 });
 
 describe("ops corpus migrate-founder — execute", () => {
@@ -250,6 +309,28 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(code).toBe(0);
     expect(h.puts).toHaveLength(putsBefore);
     expect(h.upserts).toHaveLength(upsertsBefore);
+  });
+
+  it("repairs a tenant vector that carries the right values but lost its legacy metadata", async () => {
+    // An earlier partial upsert: correct embedding and stamp, but none of the
+    // url/title metadata SimilarityStore.query reads back. Certifying that
+    // would leave namespaced queries returning nameless neighbours.
+    const h = makeHarness();
+    h.vectors.set(`${TENANT}:rd_ready`, {
+      id: `${TENANT}:rd_ready`,
+      values: [0.1, 0.2],
+      metadata: { tenant_id: TENANT },
+      namespace: TENANT,
+    });
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    expect(h.upserts).toEqual([
+      {
+        id: `${TENANT}:rd_ready`,
+        namespace: TENANT,
+        metadata: { url: "https://a.example/x", title: "X", tenant_id: TENANT },
+      },
+    ]);
   });
 
   it("--limit interrupts the pass and a rerun resumes to completion", async () => {
@@ -309,7 +390,7 @@ describe("ops corpus migrate-founder — execute", () => {
     h.objects.set(damaged, { body: "WRONG", contentType: "application/json" });
     const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(code).toBe(0);
-    expect(h.objects.get(damaged)?.body).toBe('{"id":"rd_ready"}');
+    expect(h.objects.get(damaged)?.body).toBe(JSON.stringify(READY_POINTER));
   });
 
   it("copies an unrecognized stray key (zero loss) but withholds certification", async () => {

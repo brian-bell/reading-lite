@@ -1,5 +1,6 @@
 // Founder-corpus migration planning (reading-lite-s1k.6.1). Pure functions:
-// given one bucket listing, the source list index, and which tenant vectors
+// given one bucket listing, the source list index, what each row's manifest
+// and by-id pointer actually contain (RowEvidence), and which tenant vectors
 // already exist, derive the EXACT migration plan — every R2 copy, every
 // vector upsert, every retained legacy object, and every problem that must be
 // resolved before cutover. No I/O; the command wires clients around this.
@@ -17,10 +18,11 @@
 // vectors are retained; ADR 0001's cutover deletes legacy state only after
 // rehearsal, reconciliation, observation, and sign-off.
 //
-// Because plan status derives from live listings (dest presence with equal
-// size+etag; tenant-vector presence), re-planning after an execute IS the
-// reconciliation: a fully migrated corpus plans zero pending work and zero
-// problems (isFullyMigrated).
+// Because plan status derives from live state (dest presence with equal
+// size+etag; tenant-vector values, metadata and stamp; each row's manifest and
+// pointer content), re-planning after an execute IS the reconciliation: a
+// fully migrated corpus plans zero pending work and zero problems
+// (isFullyMigrated).
 
 import {
   ATTEMPTS_PREFIX,
@@ -76,6 +78,9 @@ export interface MigrationProblem {
     | "row_missing_manifest"
     | "row_missing_by_id_pointer"
     | "row_missing_by_url_pointer"
+    | "row_manifest_unreadable"
+    | "row_manifest_mismatch"
+    | "row_by_id_pointer_invalid"
     | "manifest_not_in_list_index"
     | "missing_list_index"
     | "invalid_list_index"
@@ -119,12 +124,53 @@ export interface FounderMigrationInput {
   tenantVectors: ReadonlyMap<string, StoredVector>;
   // Stored legacy (un-namespaced) vectors keyed by bare reading id.
   legacyVectors: ReadonlyMap<string, StoredVector>;
+  // What reading each row's manifest and by-id pointer actually CONTAIN,
+  // keyed by row id. See RowEvidence.
+  rowEvidence: ReadonlyMap<string, RowEvidence>;
+}
+
+// The content half of the per-row expectations. Key presence in the listing
+// proves an object exists; it cannot prove the object says what the list index
+// claims — and every downstream consequence of the migration reads content:
+// the vector plan reads `status`, detail/content lookups hop through the by-id
+// pointer's `key_prefix`. A row whose manifest is actually `ready` while the
+// row says `failed` would migrate with no vector planned and still certify, so
+// the plan requires the manifest's list projection (manifestToIndexItem's
+// id/url/status, all copied verbatim from the manifest) and the pointer's
+// target to agree with the row before certifying.
+//
+// Callers gather this by reading and STRICTLY parsing both objects, and only
+// for rows whose objects the listing actually has — absence is already
+// row_missing_manifest / row_missing_by_id_pointer, and must not be reported
+// twice under a second kind.
+export interface RowEvidence {
+  // The manifest's list projection, or why it could not be read/parsed.
+  manifest?: { id: string; url: string; status: string };
+  manifest_error?: string;
+  // The parsed by-id pointer ({id, key_prefix}), or why it could not be
+  // read/parsed.
+  pointer?: { id: string; key_prefix: string };
+  pointer_error?: string;
 }
 
 // A migrated vector is only trusted when it carries the same embedding as the
-// legacy vector it claims to migrate and the ADR 0002 tenant_id stamp. A
-// mismatch (stale earlier attempt, partial write, wrong stamp) is repaired by
-// re-planning it as pending — the re-upsert overwrites it.
+// legacy vector it claims to migrate, the ADR 0002 tenant_id stamp, AND all of
+// the legacy metadata. The metadata is not decorative: SimilarityStore.query
+// reads url/title/tldr/tags/created_at straight off the matched vector, so a
+// copy that kept the embedding but dropped or staled its metadata answers
+// namespaced queries with nameless neighbours and starves the summarizer's
+// context — while reconciling as migrated. This is exactly what the execute
+// path writes ({...legacy.metadata, tenant_id}), so anything less is a stale
+// earlier attempt or a partial write, repaired by re-planning it as pending —
+// the re-upsert overwrites it.
+function sameMetadataValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) &&
+      a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  return a === b;
+}
+
 function migratedVectorMatches(
   tenantVec: StoredVector,
   legacyVec: StoredVector,
@@ -132,7 +178,22 @@ function migratedVectorMatches(
 ): boolean {
   if (tenantVec.metadata?.tenant_id !== tenantId) return false;
   if (tenantVec.values.length !== legacyVec.values.length) return false;
-  return tenantVec.values.every((v, i) => v === legacyVec.values[i]);
+  if (!tenantVec.values.every((v, i) => v === legacyVec.values[i])) return false;
+  // Equality, not containment: a field the legacy vector no longer carries is
+  // just as stale as a dropped one — query would return it, and the re-upsert
+  // (legacy metadata + stamp, nothing else) is what removes it. tenant_id is
+  // excluded from both sides because the migration adds it; its value is
+  // already checked above.
+  const legacyMeta = legacyVec.metadata ?? {};
+  const tenantMeta = tenantVec.metadata ?? {};
+  const migratedKeys = (meta: Record<string, unknown>): string[] =>
+    Object.keys(meta).filter((key) => key !== "tenant_id").sort();
+  const legacyKeys = migratedKeys(legacyMeta);
+  const tenantKeys = migratedKeys(tenantMeta);
+  if (legacyKeys.length !== tenantKeys.length) return false;
+  return legacyKeys.every(
+    (key, i) => tenantKeys[i] === key && sameMetadataValue(tenantMeta[key], legacyMeta[key]),
+  );
 }
 
 export function founderKeyRoot(tenantId: string): string {
@@ -245,16 +306,63 @@ export function planFounderMigration(input: FounderMigrationInput): FounderMigra
     }
   }
   for (const row of input.listRows) {
-    if (!sourceKeys.has(`${row.key_prefix}/${MANIFEST_FILE}`)) {
+    const evidence = input.rowEvidence.get(row.id);
+    const manifestKey = `${row.key_prefix}/${MANIFEST_FILE}`;
+    if (!sourceKeys.has(manifestKey)) {
       problems.push({
         kind: "row_missing_manifest",
-        detail: `list row ${row.id} has no ${row.key_prefix}/${MANIFEST_FILE}`,
+        detail: `list row ${row.id} has no ${manifestKey}`,
       });
+    } else if (evidence?.manifest === undefined) {
+      problems.push({
+        kind: "row_manifest_unreadable",
+        detail: `${manifestKey} could not be read as a manifest: ${
+          evidence?.manifest_error ?? "not read"
+        }`,
+      });
+    } else {
+      // The vector plan reads `status` off the ROW; a row that misprojects its
+      // manifest silently drops (or invents) that reading's vector, so the
+      // disagreement must block until the index is rebuilt.
+      const drift: string[] = [];
+      if (evidence.manifest.id !== row.id) drift.push(`id ${evidence.manifest.id}`);
+      if (evidence.manifest.url !== row.url) drift.push(`url ${evidence.manifest.url}`);
+      if (evidence.manifest.status !== row.status) drift.push(`status ${evidence.manifest.status}`);
+      if (drift.length > 0) {
+        problems.push({
+          kind: "row_manifest_mismatch",
+          detail:
+            `list row ${row.id} (url ${row.url}, status ${row.status}) disagrees with ` +
+            `${manifestKey}: ${drift.join(", ")} — the vector plan follows the row, so ` +
+            "rebuild the list index first (corpus rebuild-list --tenant global)",
+        });
+      }
     }
-    if (!sourceKeys.has(`${BY_ID_PREFIX}${row.id}`)) {
+    const pointerKey = `${BY_ID_PREFIX}${row.id}`;
+    if (!sourceKeys.has(pointerKey)) {
       problems.push({
         kind: "row_missing_by_id_pointer",
-        detail: `list row ${row.id} has no ${BY_ID_PREFIX}${row.id}`,
+        detail: `list row ${row.id} has no ${pointerKey}`,
+      });
+    } else if (evidence?.pointer === undefined) {
+      problems.push({
+        kind: "row_by_id_pointer_invalid",
+        detail: `${pointerKey} could not be read as a by-id pointer: ${
+          evidence?.pointer_error ?? "not read"
+        }`,
+      });
+    } else if (
+      evidence.pointer.id !== row.id ||
+      evidence.pointer.key_prefix !== row.key_prefix
+    ) {
+      // The pointer copies verbatim under the tenant root, so a pointer aimed
+      // at the wrong reading resolves the wrong manifest — or none — for every
+      // detail and content lookup after cutover.
+      problems.push({
+        kind: "row_by_id_pointer_invalid",
+        detail:
+          `${pointerKey} targets ${evidence.pointer.id} at ${evidence.pointer.key_prefix}, ` +
+          `not list row ${row.id} at ${row.key_prefix}`,
       });
     }
     // Presence, not ownership: duplicate-URL rows legitimately share one

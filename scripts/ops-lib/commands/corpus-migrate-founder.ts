@@ -4,8 +4,9 @@
 // namespace as `{tenantId}:{readingId}` (ADR 0002), retaining all legacy
 // state. Plan-first: the default mode prints the exact plan — every copy,
 // every vector upsert, every retained legacy object, every problem — and,
-// because plan status derives from live listings, re-planning after an
-// execute IS the reconciliation check. --execute (with --sole-writer) copies
+// because plan status derives from live state (listings, per-row manifest and
+// pointer content, vector contents), re-planning after an execute IS the
+// reconciliation check. --execute (with --sole-writer) copies
 // and upserts resumably: progress checkpoints into a tenant-stamped state
 // file whose per-object sha256 entries are the hash half of the
 // reconciliation contract. Nothing is ever deleted; rollback before the gate
@@ -15,13 +16,15 @@
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { ListIndexSchema } from "../../../src/schemas/api";
-import { LIST_INDEX_KEY } from "../../../src/modules/stores/layout";
+import { ByUrlPointerSchema, ManifestSchema } from "../../../src/schemas/manifest";
+import { BY_ID_PREFIX, LIST_INDEX_KEY, MANIFEST_FILE } from "../../../src/modules/stores/layout";
 import { resolveBucket } from "../../corpus-lib/config";
 import {
   executeBlockingProblems,
   isFullyMigrated,
   planFounderMigration,
   type FounderMigrationPlan,
+  type RowEvidence,
 } from "../../corpus-lib/founder-migration";
 import {
   loadMigrationState,
@@ -42,6 +45,9 @@ import { requireOperatorTenant } from "../tenant-flag";
 
 const GET_BY_IDS_CHUNK = 50;
 const CHECKPOINT_EVERY = 25;
+// Evidence gathering is two GETs per list row on every plan, preflight, and
+// reconciliation pass, so it runs concurrently rather than serially.
+const EVIDENCE_CONCURRENCY = 8;
 // Vectorize mutations are asynchronous: an upsert enqueues and only becomes
 // visible to get_by_ids once the index processes it. Reconciliation therefore
 // retries with a delay while the only deficiency is vectors this pass just
@@ -140,6 +146,58 @@ function parseListRows(
   }
 }
 
+function firstLine(e: unknown): string {
+  return e instanceof Error ? (e.message.split("\n")[0] ?? e.message) : String(e);
+}
+
+// The content half of the per-row expectations (RowEvidence): read and
+// STRICTLY parse each row's manifest and by-id pointer against the worker's
+// own contracts, so the plan can require them to agree with the row rather
+// than merely exist. Only rows whose objects the listing has are read —
+// absence is already row_missing_manifest / row_missing_by_id_pointer, and
+// must not surface twice under a content kind.
+async function gatherRowEvidence(
+  r2: Pick<R2InventoryClient, "get">,
+  rows: ListItem[],
+  presentKeys: ReadonlySet<string>,
+): Promise<Map<string, RowEvidence>> {
+  const evidence = new Map<string, RowEvidence>();
+  let next = 0;
+  const readOne = async (key: string): Promise<unknown> => {
+    const body = await r2.get(key);
+    if (body === null) throw new Error("listed but unreadable");
+    return JSON.parse(body);
+  };
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < rows.length; i = next++) {
+      const row = rows[i]!;
+      const ev: RowEvidence = {};
+      const manifestKey = `${row.key_prefix}/${MANIFEST_FILE}`;
+      if (presentKeys.has(manifestKey)) {
+        try {
+          const m = ManifestSchema.parse(await readOne(manifestKey));
+          ev.manifest = { id: m.id, url: m.url, status: m.status };
+        } catch (e) {
+          ev.manifest_error = firstLine(e);
+        }
+      }
+      const pointerKey = `${BY_ID_PREFIX}${row.id}`;
+      if (presentKeys.has(pointerKey)) {
+        try {
+          ev.pointer = ByUrlPointerSchema.parse(await readOne(pointerKey));
+        } catch (e) {
+          ev.pointer_error = firstLine(e);
+        }
+      }
+      evidence.set(row.id, ev);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(EVIDENCE_CONCURRENCY, rows.length) }, worker),
+  );
+  return evidence;
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -160,6 +218,8 @@ async function gatherPlan(
   if (body === null && objects.some((o) => o.key === LIST_INDEX_KEY)) {
     error = `${LIST_INDEX_KEY} is listed but unreadable`;
   }
+  const sourceKeys = new Set(objects.map((o) => o.key).filter((k) => !k.startsWith("u/")));
+  const rowEvidence = await gatherRowEvidence(clients.r2, rows, sourceKeys);
   const readyIds = rows.filter((r) => r.status === "ready").map((r) => r.id);
   const probeIds = readyIds.flatMap((id) => [id, `${tenantId}:${id}`]);
   const stored: StoredVector[] = [];
@@ -170,6 +230,7 @@ async function gatherPlan(
     tenantId,
     objects,
     listRows: rows,
+    rowEvidence,
     ...(error === undefined ? {} : { listIndexError: error }),
     tenantVectors: new Map(
       stored.filter((v) => v.namespace === tenantId).map((v) => [v.id, v]),
@@ -551,8 +612,11 @@ size and etag, every vector upsert, every retained legacy object, and every
 problem — plus the cutover/rollback prerequisites. It writes nothing, locally
 or remotely. Because copy/vector status derives from live listings, rerunning
 plan after an execute is the reconciliation check: "fully migrated" means
-every source object exists at its tenant key with equal size and etag and
-every ready row's vector exists in the tenant namespace.
+every source object exists at its tenant key with equal size and etag, every
+ready row's tenant-namespace vector carries the legacy embedding and metadata
+plus its tenant_id stamp, and every row agrees with the manifest and by-id
+pointer it names (a stale list row would silently skip that reading's vector,
+so it blocks — repair with corpus rebuild-list --tenant global).
 
 --execute (requires --sole-writer) copies pending objects (computing each
 object's sha256 into the state file — the hash record for reconciliation) and

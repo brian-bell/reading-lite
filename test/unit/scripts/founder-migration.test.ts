@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  executeBlockingProblems,
   founderKeyRoot,
   isFullyMigrated,
   planFounderMigration,
   type FounderMigrationInput,
+  type RowEvidence,
 } from "../../../scripts/corpus-lib/founder-migration";
 import type { ListItem } from "../../../scripts/corpus-lib/types";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
@@ -21,6 +23,20 @@ const ROWS: ListItem[] = [
 
 function obj(key: string, size = 10, etag = `e-${key}`) {
   return { key, size, etag };
+}
+
+// Evidence that agrees with ROWS: each manifest projects the row's own
+// id/url/status, each by-id pointer targets the row's own key prefix.
+function agreeingEvidence(): Map<string, RowEvidence> {
+  return new Map(
+    ROWS.map((row) => [
+      row.id,
+      {
+        manifest: { id: row.id, url: row.url, status: row.status },
+        pointer: { id: row.id, key_prefix: row.key_prefix },
+      },
+    ]),
+  );
 }
 
 const LEGACY_VECTOR = {
@@ -58,8 +74,15 @@ function input(overrides: Partial<FounderMigrationInput> = {}): FounderMigration
     listRows: ROWS,
     tenantVectors: new Map(),
     legacyVectors: new Map([["rd_ready", LEGACY_VECTOR]]),
+    rowEvidence: agreeingEvidence(),
     ...overrides,
   };
+}
+
+function withEvidence(id: string, evidence: RowEvidence): Map<string, RowEvidence> {
+  const map = agreeingEvidence();
+  map.set(id, evidence);
+  return map;
 }
 
 describe("planFounderMigration", () => {
@@ -222,6 +245,157 @@ describe("planFounderMigration", () => {
     const plan = planFounderMigration(input({ objects }));
     const kinds = plan.problems.map((p) => p.kind).sort();
     expect(kinds).toEqual(["missing_list_index", "row_missing_by_id_pointer", "row_missing_manifest"]);
+  });
+
+  it("blocks a row whose manifest contradicts its list projection — the vector plan would skip it", () => {
+    // The stale-row case the whole vector plan hangs on: the row says failed,
+    // so no vector is planned, while the manifest says ready and the legacy
+    // vector is real. Key presence alone would certify this corpus.
+    const plan = planFounderMigration(
+      input({
+        rowEvidence: withEvidence("rd_failed", {
+          manifest: { id: "rd_failed", url: "https://b.example/y", status: "ready" },
+          pointer: { id: "rd_failed", key_prefix: FAILED_PREFIX },
+        }),
+      }),
+    );
+    expect(plan.vectors.map((v) => v.reading_id)).toEqual(["rd_ready"]);
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "row_manifest_mismatch",
+        detail: expect.stringContaining("status ready"),
+      }),
+    ]);
+    expect(isFullyMigrated(plan)).toBe(false);
+    expect(executeBlockingProblems(plan)).toHaveLength(1);
+  });
+
+  it("blocks on a manifest whose id or url drifted from its row", () => {
+    const plan = planFounderMigration(
+      input({
+        rowEvidence: withEvidence("rd_ready", {
+          manifest: { id: "rd_other", url: "https://elsewhere.example/z", status: "ready" },
+          pointer: { id: "rd_ready", key_prefix: READY_PREFIX },
+        }),
+      }),
+    );
+    const mismatch = plan.problems.find((p) => p.kind === "row_manifest_mismatch");
+    expect(mismatch?.detail).toContain("rd_other");
+    expect(mismatch?.detail).toContain("https://elsewhere.example/z");
+  });
+
+  it("blocks on a manifest that is present but unreadable", () => {
+    const plan = planFounderMigration(
+      input({
+        rowEvidence: withEvidence("rd_ready", {
+          manifest_error: "did not parse as a manifest: invalid status",
+          pointer: { id: "rd_ready", key_prefix: READY_PREFIX },
+        }),
+      }),
+    );
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "row_manifest_unreadable",
+        detail: expect.stringContaining("invalid status"),
+      }),
+    ]);
+  });
+
+  it("blocks a by-id pointer that resolves to a different reading or key prefix", () => {
+    for (const pointer of [
+      { id: "rd_other", key_prefix: READY_PREFIX },
+      { id: "rd_ready", key_prefix: "readings/2020/01/01T000000Z-rd_ready" },
+    ]) {
+      const plan = planFounderMigration(input({ rowEvidence: withEvidence("rd_ready", { manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready" }, pointer }) }));
+      expect(plan.problems).toEqual([
+        expect.objectContaining({
+          kind: "row_by_id_pointer_invalid",
+          detail: expect.stringContaining("rd_ready"),
+        }),
+      ]);
+      expect(isFullyMigrated(plan)).toBe(false);
+    }
+  });
+
+  it("blocks a by-id pointer that is present but unparseable", () => {
+    const plan = planFounderMigration(
+      input({
+        rowEvidence: withEvidence("rd_ready", {
+          manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready" },
+          pointer_error: "did not parse as a by-id pointer: key_prefix required",
+        }),
+      }),
+    );
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "row_by_id_pointer_invalid",
+        detail: expect.stringContaining("key_prefix required"),
+      }),
+    ]);
+  });
+
+  it("does not double-report content problems for an object that is simply missing", () => {
+    // row_missing_manifest / row_missing_by_id_pointer already cover absence;
+    // the content checks only run on objects the listing actually has.
+    const objects = SOURCE_OBJECTS.filter(
+      (o) => o.key !== `${FAILED_PREFIX}/manifest.json` && o.key !== "index/by-id/rd_failed",
+    );
+    const evidence = agreeingEvidence();
+    evidence.delete("rd_failed");
+    const plan = planFounderMigration(input({ objects, rowEvidence: evidence }));
+    expect(plan.problems.map((p) => p.kind).sort()).toEqual([
+      "row_missing_by_id_pointer",
+      "row_missing_manifest",
+    ]);
+  });
+
+  it("re-plans a tenant vector that dropped the legacy metadata query depends on", () => {
+    // Same values and stamp, but the url/title/tldr/tags a namespaced query
+    // reads back are gone — reconciliation must repair it, not certify it.
+    const legacy = {
+      id: "rd_ready",
+      values: [0.1, 0.2],
+      metadata: { url: "https://a.example/x", title: "X", tags: ["a", "b"] },
+    };
+    const cases = [
+      // Dropped, staled, and shortened relative to the legacy metadata …
+      { url: "https://a.example/x", tenant_id: TENANT },
+      { url: "https://a.example/x", title: "STALE", tags: ["a", "b"], tenant_id: TENANT },
+      { url: "https://a.example/x", title: "X", tags: ["a"], tenant_id: TENANT },
+      // … and a field the legacy vector no longer has: query still returns it,
+      // and the re-upsert (legacy metadata + stamp) is what removes it.
+      { ...legacy.metadata, tldr: "stale summary", tenant_id: TENANT },
+    ];
+    for (const metadata of cases) {
+      const plan = planFounderMigration(
+        input({
+          legacyVectors: new Map([["rd_ready", legacy]]),
+          tenantVectors: new Map([[`${TENANT}:rd_ready`, { ...goodTenantVector(), metadata }]]),
+        }),
+      );
+      expect(plan.vectors[0]?.status).toBe("pending");
+    }
+  });
+
+  it("counts a tenant vector carrying the full legacy metadata plus the stamp as migrated", () => {
+    const legacy = {
+      id: "rd_ready",
+      values: [0.1, 0.2],
+      metadata: { url: "https://a.example/x", title: "X", tags: ["a", "b"] },
+    };
+    const plan = planFounderMigration(
+      input({
+        legacyVectors: new Map([["rd_ready", legacy]]),
+        tenantVectors: new Map([
+          [
+            `${TENANT}:rd_ready`,
+            { ...goodTenantVector(), metadata: { ...legacy.metadata, tenant_id: TENANT } },
+          ],
+        ]),
+      }),
+    );
+    expect(plan.vectors[0]?.status).toBe("upserted");
+    expect(plan.problems).toEqual([]);
   });
 
   it("an empty source layout never reconciles as migrated", () => {

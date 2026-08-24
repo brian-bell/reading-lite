@@ -226,13 +226,23 @@ npm run ops -- corpus migrate-founder --tenant usr_…
 npm run ops -- corpus migrate-founder --tenant usr_… --execute --sole-writer
 
 # Reconcile: plan again — "fully migrated" means every source object exists
-# at its tenant key with equal size/etag and every ready row has its
-# namespaced vector.
+# at its tenant key with equal size/etag, every ready row has its namespaced
+# vector carrying the legacy embedding and metadata, and every row agrees
+# with the manifest and by-id pointer it names.
 npm run ops -- corpus migrate-founder --tenant usr_…
 ```
 
+Certification is a content check, not a presence check: the plan parses each
+row's `manifest.json` and by-id pointer and blocks when they disagree with
+the row (`row_manifest_mismatch`, `row_by_id_pointer_invalid`). A stale
+`index/list.json` row is the case that matters — the vector plan follows the
+row's `status`, so a row saying `failed` over a `ready` manifest would migrate
+with no vector planned. Repair those with `corpus rebuild-list --tenant
+global`, then re-plan.
+
 Both modes need the `CORPUS_R2_*` + `CORPUS_CF_API_TOKEN` credentials (plan
-reads live listings and vector state). `--limit` caps work per pass for
+reads live listings, per-row manifest/pointer content, and vector state).
+`--limit` caps work per pass for
 interrupted-run rehearsal; the tenant-stamped state file refuses resumes
 under a different tenant, bucket, or index. Cutover ordering: pause/drain
 the realtime writer, run to full reconciliation, deploy worker-side tenant
