@@ -1,6 +1,6 @@
 # ADR 0001: Tenant control plane
 
-- **Status:** Accepted
+- **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23)
 - **Date:** 2026-08-16
 - **Decision owners:** Brian Bell
 - **Bead:** `reading-lite-s1k.1`
@@ -430,6 +430,12 @@ reading store.
 
 Vector identities and metadata are redundantly tenant-scoped:
 
+> **Amended by ADR 0002:** the isolation primary is the Vectorize
+> *namespace*, not a metadata filter, and no `tenant_id` metadata index is
+> created. The tenant-prefixed vector ID and the `tenant_id` metadata stamp
+> below stand; the "exact filter required" and index-readiness requirements
+> do not. See ADR 0002 for the current contract.
+
 ```text
 vector id:  {tenantId}:{readingId}
 metadata:   tenant_id = {tenantId}
@@ -667,7 +673,8 @@ Controls:
 - no implicit founder/default tenant;
 - tenant-scoped store construction;
 - tenant prefixes on every R2 reading/index path;
-- tenant in both Vectorize ID and required metadata filter;
+- tenant in Vectorize namespace, vector ID, and metadata stamp (ADR 0002;
+  originally "ID and required metadata filter");
 - account and API-token rechecks before paid queue work;
 - unknown/cross-tenant IDs are indistinguishable; and
 - two-user route, queue, recovery, DLQ, and operator-path tests as later WS-A
@@ -770,11 +777,13 @@ In one maintenance window:
 
 1. disable writes and paid work, then drain queues;
 2. record counts, hashes, D1 bookmark, R2 inventory, and vector inventory;
-3. create the Vectorize `tenant_id` string metadata index and block until its
-   readiness is verified;
+3. ~~create the Vectorize `tenant_id` string metadata index and block until
+   its readiness is verified~~ — deleted by ADR 0002: namespaces need no
+   provisioning, so there is no Vectorize deployment prerequisite;
 4. copy, rather than move, all founder R2 objects to `u/{founderTenantId}/...`;
-5. upsert new tenant-prefixed vectors with mandatory tenant metadata while
-   retaining legacy vectors;
+5. upsert `{founderTenantId}:{readingId}` vectors into the founder namespace
+   with `tenant_id` metadata while retaining legacy un-namespaced bare-ID
+   vectors (amended by ADR 0002);
 6. reconcile objects, hashes, pointers, list rows, attempts, connections, and
    vectors;
 7. activate tenant-only hosted paths; and
