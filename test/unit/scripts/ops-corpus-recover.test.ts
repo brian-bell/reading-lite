@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { corpusRecoverCommand, type CorpusRecoverDeps } from "../../../scripts/ops-lib/commands/corpus-recover";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import type { AuditRow } from "../../../scripts/corpus-lib/types";
+import type { WhoamiOutcome } from "../../../scripts/lib/reading-api";
+
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
+const OTHER_TENANT = "usr_22222222-2222-4222-8222-222222222222";
+
+function identity(tenantId: string, tenantDataPlane: boolean): WhoamiOutcome {
+  return { kind: "identity", tenantId, userId: tenantId, principal: "api_token", tenantDataPlane };
+}
 
 // One row per routing class: stranded pending -> reprocess, 403 -> local-extract,
 // dead link -> skip.
@@ -32,6 +40,11 @@ interface Recorded {
   batchExecutes: AuditRow[][];
   sidecarLoads: string[];
   configResolves: unknown[];
+  // Mutable box: tests set `.result` to steer the realtime tenant check.
+  // Default is the pre-cutover reality (gate off, some token) so the
+  // established global-selector tests run unchanged.
+  whoami: { result: WhoamiOutcome };
+  apiOpts: ({ expectedTenant?: string } | undefined)[];
 }
 
 function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
@@ -43,6 +56,8 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
   const batchExecutes: AuditRow[][] = [];
   const sidecarLoads: string[] = [];
   const configResolves: unknown[] = [];
+  const whoami = { result: identity(TENANT, false) };
+  const apiOpts: ({ expectedTenant?: string } | undefined)[] = [];
   const deps: CorpusRecoverDeps = {
     io: { stdout: (t) => out.push(t), stderr: (t) => err.push(t) },
     readFile: async () => JSON.stringify({ rows: ROWS }),
@@ -50,16 +65,20 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
       indexWrites.push({ path, body });
     },
     resolveApiTarget: () => ({ base: "https://api.test", token: "tok" }),
-    makeApi: () => ({
-      reprocess: async (id: string) => {
-        reprocessed.push(id);
-        return { kind: "activated", id } as const;
-      },
-      importMarkdown: async (body: { source_url: string; markdown: string }) => {
-        imported.push({ source_url: body.source_url, markdown: body.markdown });
-        return { kind: "activated", id: "rd_new" } as const;
-      },
-    }),
+    makeApi: (_target, opts) => {
+      apiOpts.push(opts);
+      return {
+        whoami: async () => whoami.result,
+        reprocess: async (id: string) => {
+          reprocessed.push(id);
+          return { kind: "activated", id } as const;
+        },
+        importMarkdown: async (body: { source_url: string; markdown: string }) => {
+          imported.push({ source_url: body.source_url, markdown: body.markdown });
+          return { kind: "activated", id: "rd_new" } as const;
+        },
+      };
+    },
     extract: async () => ({
       content_status: "captured", content_type: "text/html",
       markdown: "# extracted body", title: "T",
@@ -87,7 +106,7 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
     },
     ...overrides,
   };
-  return { deps, out, err, reprocessed, imported, indexWrites, batchExecutes, sidecarLoads, configResolves };
+  return { deps, out, err, reprocessed, imported, indexWrites, batchExecutes, sidecarLoads, configResolves, whoami, apiOpts };
 }
 
 describe("ops corpus recover — realtime routing", () => {
@@ -109,42 +128,103 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.err.join("\n")).toContain("was taken under tenant");
   });
 
-  it("plan mode under a usr_ tenant redirects to --batch instead of inviting a doomed execute", async () => {
+  it("plan mode announces that execute verifies the token, and makes no whoami call", async () => {
     const r = makeDeps();
     const original = await r.deps.readFile("index.json");
     r.deps.readFile = async () =>
-      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
-    const code = await corpusRecoverCommand.run(
-      ["--tenant", "usr_11111111-1111-4111-8111-111111111111"],
-      r.deps,
-    );
+      JSON.stringify({ ...JSON.parse(original), tenant: TENANT });
+    // Plan mode never touches the network: a whoami call would throw here.
+    r.deps.makeApi = () => {
+      throw new Error("plan mode must not construct the API client");
+    };
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT], r.deps);
     expect(code).toBe(0);
     const text = r.err.join("\n");
-    // The read-only classification still prints…
     expect(text).toContain("[plan reprocess] a.example/x");
-    // …but the follow-up is the one that can actually succeed: --execute on
-    // this path always refuses (token unverifiable), so don't invite it.
-    expect(text).not.toContain("Rerun with --execute to act.");
-    expect(text).toContain("--batch");
+    expect(text).toContain("Rerun with --execute to act.");
+    expect(text).toContain("whoami");
     expect(r.reprocessed).toHaveLength(0);
     expect(r.out.join("\n")).toContain('"executed": false');
   });
 
-  it("refuses a realtime execute under a usr_ tenant selector (token unverifiable)", async () => {
+  // The realtime execute matrix (verifyRealtimeTenant): API writes act as the
+  // bearer token's tenant, so the selector must match what the worker reports.
+  // Audit provenance is stamped to match the selector in each case so the
+  // behavior under test is the token verification, not the provenance guard.
+  function withAuditTenant(r: ReturnType<typeof makeDeps>, tenant: string): void {
+    const rows = ROWS;
+    r.deps.readFile = async () => JSON.stringify({ tenant, rows });
+  }
+
+  it("realtime execute proceeds for a usr_ selector when whoami matches and the gate is on", async () => {
     const r = makeDeps();
-    // Audit provenance matches the selector, so the refusal under test is the
-    // token-verification one, not the provenance guard.
-    const original = await r.deps.readFile("index.json");
-    r.deps.readFile = async () =>
-      JSON.stringify({ ...JSON.parse(original), tenant: "usr_11111111-1111-4111-8111-111111111111" });
+    withAuditTenant(r, TENANT);
+    r.whoami.result = identity(TENANT, true);
     const code = await corpusRecoverCommand.run(
-      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--execute", "--token", "tok"],
+      ["--tenant", TENANT, "--execute", "--token", "tok"],
+      r.deps,
+    );
+    expect(code).toBe(0);
+    expect(r.reprocessed).toEqual(["rd_a"]);
+    expect(r.err.join("\n")).toContain("verified: bearer token acts as tenant");
+    // The verified layout is also pinned onto every subsequent write.
+    expect(r.apiOpts).toEqual([{ expectedTenant: TENANT }]);
+  });
+
+  it("realtime execute refuses a usr_ selector when the token belongs to another tenant", async () => {
+    const r = makeDeps();
+    withAuditTenant(r, TENANT);
+    r.whoami.result = identity(OTHER_TENANT, true);
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", TENANT, "--execute", "--token", "tok"],
       r.deps,
     );
     expect(code).toBe(1);
     expect(r.reprocessed).toHaveLength(0);
     expect(r.imported).toHaveLength(0);
-    expect(r.err.join("\n")).toContain("cannot verify that the bearer token belongs to tenant");
+    expect(r.err.join("\n")).toContain(`acts as tenant '${OTHER_TENANT}'`);
+  });
+
+  it("realtime execute refuses a usr_ selector while the data-plane gate is off", async () => {
+    const r = makeDeps();
+    withAuditTenant(r, TENANT);
+    r.whoami.result = identity(TENANT, false);
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", TENANT, "--execute", "--token", "tok"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("gate is off");
+  });
+
+  it("realtime execute refuses a global selector once the data-plane gate is on", async () => {
+    const r = makeDeps();
+    r.whoami.result = identity(TENANT, true);
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", "global", "--execute", "--token", "tok"],
+      r.deps,
+    );
+    expect(code).toBe(1);
+    expect(r.reprocessed).toHaveLength(0);
+    expect(r.err.join("\n")).toContain("never the global layout");
+  });
+
+  it("realtime execute fails closed when whoami is unavailable (old worker or transport)", async () => {
+    for (const result of [
+      { kind: "http_error", status: 404, message: "not found" },
+      { kind: "transport_error", message: "ECONNRESET" },
+    ] satisfies WhoamiOutcome[]) {
+      const r = makeDeps();
+      r.whoami.result = result;
+      const code = await corpusRecoverCommand.run(
+        ["--tenant", "global", "--execute", "--token", "tok"],
+        r.deps,
+      );
+      expect(code).toBe(1);
+      expect(r.reprocessed).toHaveLength(0);
+      expect(r.imported).toHaveLength(0);
+    }
   });
 
   it("refuses to resume a batch sidecar under a different tenant", async () => {
@@ -186,6 +266,7 @@ describe("ops corpus recover — realtime routing", () => {
     expect(doc.rows[0].result).toBe("reprocess: activated");
     expect(doc.rows[1].result).toContain("local-extract+import: activated");
     expect(r.out.join("\n")).toContain('"executed": true');
+    expect(r.apiOpts).toEqual([{ expectedTenant: "global" }]);
   });
 
   it("--only reprocess restricts the execute path to that action", async () => {
@@ -199,6 +280,7 @@ describe("ops corpus recover — realtime routing", () => {
   it("returns 1 when a submission errors", async () => {
     const r = makeDeps();
     r.deps.makeApi = () => ({
+      whoami: async () => r.whoami.result,
       reprocess: async () => ({ kind: "http_error", status: 500, message: "boom" }),
       importMarkdown: async () => ({ kind: "http_error", status: 500, message: "boom" }),
     });
@@ -210,6 +292,7 @@ describe("ops corpus recover — realtime routing", () => {
   it("counts an active-attempt conflict or initializing owner as in progress, not an error", async () => {
     const r = makeDeps();
     r.deps.makeApi = () => ({
+      whoami: async () => r.whoami.result,
       reprocess: async () =>
         ({ kind: "conflict", reason: "active_attempt", message: "reading already has an active attempt" }) as const,
       importMarkdown: async () => ({ kind: "initializing", id: "rd_race" }) as const,
@@ -226,6 +309,7 @@ describe("ops corpus recover — realtime routing", () => {
   it("counts a missing-markdown conflict as an error — force reprocess bypasses the attempt check", async () => {
     const r = makeDeps();
     r.deps.makeApi = () => ({
+      whoami: async () => r.whoami.result,
       reprocess: async () =>
         ({ kind: "conflict", reason: "missing_markdown", message: "markdown content not available" }) as const,
       importMarkdown: async () =>

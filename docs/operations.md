@@ -16,12 +16,21 @@ malformed selector is a usage error (exit 2) before any R2 or Vectorize
 traffic, so an operator can never act on the global corpus by omission.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
-where the acting tenant is the **bearer token's** principal — and the CLI
-cannot resolve a token to its tenant offline. A `usr_…` selector therefore
-**refuses** the realtime execute path (use `--batch`, which is scoped by
-`--tenant` end to end, or `--tenant global`, which matches the pre-cutover
-reality where every token acts on the global layout). Worker-side token
-verification that lifts this refusal is tracked as reading-lite-1xk.
+where the acting tenant is the **bearer token's** principal, not `--tenant`.
+Before submitting, a realtime `--execute` therefore asks the worker who the
+token is (authenticated `GET /api/whoami`, which also reports whether the
+tenant data-plane gate is on) and fails closed on any mismatch: a `usr_…`
+selector requires the gate on and the token's tenant equal to the selector;
+`global` requires the gate off (with it on, every API write lands in the
+token's tenant namespace, never the global layout). The verified layout is
+then pinned onto every write via the `x-expected-tenant` header, which the
+worker checks atomically per request — so a gate flip or rolling deploy
+mid-run rejects later writes (412) instead of silently re-routing them. (The
+pin protects only once every serving worker version enforces it: never flip
+`TENANT_DATA_PLANE` in the same deploy that ships the pin — automatic under
+the s1k.6 sequencing, where the flip comes well after.)
+`--batch` is scoped by `--tenant` end to end and needs no verification.
+(reading-lite-1xk)
 
 ## Environments
 

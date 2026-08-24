@@ -7,6 +7,7 @@ import {
 } from "./control-plane/crypto";
 import { fromD1 } from "./control-plane/db";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
+import { EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
 
 export type AppBindings = {
@@ -46,6 +47,33 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
 
     c.set("principal", verdict.principal);
     c.header("Cache-Control", "no-store");
+    await next();
+    return undefined;
+  };
+};
+
+// Enforces the optional x-expected-tenant layout pin (reading-lite-1xk): when
+// the header is present, the request proceeds only if the layout it names is
+// the one this request would act on — the principal's tenant namespace with
+// the data-plane gate on, the pre-tenant global layout with it off. The check
+// runs on the same request as the mutation it guards, so no gate flip or
+// rolling deploy between a whoami preflight and a write can silently re-route
+// the write. 412 mirrors its Precondition-Failed semantics.
+export const requireExpectedTenant = (): MiddlewareHandler<AppBindings> => {
+  return async (c, next) => {
+    const expected = c.req.header(EXPECTED_TENANT_HEADER);
+    if (expected !== undefined) {
+      const principal = c.get("principal");
+      const acting =
+        c.env.TENANT_DATA_PLANE === "1" ? String(principal.tenantId) : "global";
+      if (expected !== acting) {
+        return jsonNoStore(
+          c,
+          { error: "expected tenant mismatch", acting_tenant: acting },
+          412,
+        );
+      }
+    }
     await next();
     return undefined;
   };
@@ -97,9 +125,9 @@ function rootFromEnv(secret: string, versionRaw: string | undefined): AuthRoot {
 }
 
 function jsonNoStore(
-  c: { json: (body: unknown, status: 401 | 403 | 500) => Response },
+  c: { json: (body: unknown, status: 401 | 403 | 412 | 500) => Response },
   body: unknown,
-  status: 401 | 403 | 500,
+  status: 401 | 403 | 412 | 500,
 ): Response {
   const res = c.json(body, status);
   res.headers.set("Cache-Control", "no-store");

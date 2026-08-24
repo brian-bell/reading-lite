@@ -50,6 +50,30 @@ export const PostReadingReprocessBodySchema = z
   .default({ force: false });
 export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;
 
+// GET /api/whoami: the authenticated principal's own identity, so operator
+// tooling can verify which tenant a bearer token acts as before submitting
+// writes through the API (reading-lite-1xk). `tenant_data_plane` reports
+// whether TENANT_DATA_PLANE=1 — with the gate off every write lands on the
+// pre-tenant global layout, with it on every write lands under the principal's
+// tenant namespace, and the caller cannot soundly plan writes without knowing
+// which.
+export const GetWhoamiResponseSchema = z.object({
+  tenant_id: z.string(),
+  user_id: z.string(),
+  principal: z.enum(["api_token", "session"]),
+  tenant_data_plane: z.boolean(),
+});
+export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
+
+// Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
+// whoami preflight is point-in-time — the gate could flip, or a rolling deploy
+// could route a later write to a different worker version. A client that sends
+// this header binds its expectation to each request instead: the worker
+// compares it against the layout the request would actually act on and rejects
+// a mismatch with 412 before touching any store. Absent header = no pin
+// (existing clients are unaffected).
+export const EXPECTED_TENANT_HEADER = "x-expected-tenant";
+
 export const EMBEDDING_DIM = 1536;
 
 export const PostReadingsSimilarBodySchema = z.object({

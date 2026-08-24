@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import type { Env } from "./index";
-import { corsMiddleware, requirePrincipal, requireScope, type AppBindings } from "./middleware";
+import {
+  corsMiddleware,
+  requireExpectedTenant,
+  requirePrincipal,
+  requireScope,
+  type AppBindings,
+} from "./middleware";
 import {
   ListReadingsQuerySchema,
   PostReadingReprocessBodySchema,
@@ -50,8 +56,23 @@ export function createApp(opts: AppOptions = {}) {
   const authNowMs = () => Date.parse(services.now());
 
   // Everything below requires bearer auth.
-  app.use("/api/readings", requirePrincipal(authNowMs));
-  app.use("/api/readings/*", requirePrincipal(authNowMs));
+  app.use("/api/whoami", requirePrincipal(authNowMs));
+  app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
+
+  // The principal's own identity — no scope gate: every authenticated caller
+  // may learn who it is. Operator tooling uses this to verify that a bearer
+  // token acts as the tenant the operator selected before submitting writes
+  // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
+  app.get("/api/whoami", (c) => {
+    const principal = c.get("principal");
+    return c.json({
+      tenant_id: String(principal.tenantId),
+      user_id: String(principal.userId),
+      principal: principal.kind,
+      tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
+    });
+  });
 
   app.post("/api/readings", requireScope("readings:write"), async (c) => {
     const json = await c.req.json().catch(() => null);
