@@ -18,6 +18,7 @@ import { ListIndexSchema } from "../../../src/schemas/api";
 import { LIST_INDEX_KEY } from "../../../src/modules/stores/layout";
 import { resolveBucket } from "../../corpus-lib/config";
 import {
+  executeBlockingProblems,
   isFullyMigrated,
   planFounderMigration,
   type FounderMigrationPlan,
@@ -254,12 +255,26 @@ async function runCorpusMigrateFounder(
     printPrerequisites(io);
     if (isFullyMigrated(plan)) {
       io.stderr("Fully migrated: reconciliation holds; safe to proceed with the gate-flip prerequisites.");
-    } else if (plan.problems.length === 0) {
-      io.stderr("Rerun with --execute --sole-writer to copy (writes the resumable state file).");
-    } else {
-      io.stderr("Resolve the problems above before executing.");
+      return 0;
     }
-    return plan.problems.length > 0 ? 1 : 0;
+    const blocking = executeBlockingProblems(plan);
+    if (blocking.length > 0) {
+      io.stderr("Resolve the problems above before executing.");
+      return 1;
+    }
+    if (plan.problems.length > 0) {
+      // Only execute-handled problems remain: mismatched destinations are
+      // overwritten with the source bytes, and unrecognized keys are still
+      // copied (zero lost objects) — though stray keys block certification
+      // until dispositioned (delete the junk or extend the layout vocabulary).
+      io.stderr(
+        "The problems above are handled by --execute: destination mismatches are re-copied, " +
+          "and unrecognized keys are still copied. Rerun with --execute --sole-writer.",
+      );
+      return plan.problems.some((p) => p.kind === "unrecognized_key") ? 1 : 0;
+    }
+    io.stderr("Rerun with --execute --sole-writer to copy (writes the resumable state file).");
+    return 0;
   }
 
   const verdict = soleWriterGuard({
@@ -270,12 +285,12 @@ async function runCorpusMigrateFounder(
   if (verdict.message) io.stderr(verdict.message);
   if (!verdict.proceed) return 2;
 
-  // Execute enforces its own preflight: every problem except
-  // destination_mismatch (which the copy loop itself repairs by overwriting
-  // the destination with the source bytes) means the inventory or vector plan
-  // cannot be trusted, and copying thousands of objects on a broken premise
-  // helps nobody. Abort before any remote or state write.
-  const fatal = plan.problems.filter((p) => p.kind !== "destination_mismatch");
+  // Execute enforces its own preflight: an execute-blocking problem means the
+  // inventory or vector plan cannot be trusted, and copying thousands of
+  // objects on a broken premise helps nobody. Abort before any remote or
+  // state write. (Mismatched destinations and unrecognized keys are HANDLED
+  // by executing — see executeBlockingProblems.)
+  const fatal = executeBlockingProblems(plan);
   if (fatal.length > 0) {
     for (const p of fatal) io.stderr(`  ! ${p.kind}: ${p.detail}`);
     io.stderr("Preflight failed: resolve the problems above, then re-run. Nothing was written.");
@@ -463,11 +478,13 @@ async function runCorpusMigrateFounder(
     return 0;
   }
   io.stderr(
-    upsertedNow > 0 && reconciled.problems.length === 0 && reconciled.counts.pending_copies === 0
-      ? "Vectors may still be propagating (asynchronous mutations) — rerun plan mode later to confirm reconciliation."
-      : args.limit === Infinity && errors === 0
-        ? "Not yet fully migrated — rerun to continue (the state file resumes this run)."
-        : "Pass incomplete — rerun to continue (the state file resumes this run).",
+    reconciled.problems.length > 0
+      ? "Certification blocked by the problems above — resolve them, then re-plan to certify."
+      : upsertedNow > 0 && reconciled.counts.pending_copies === 0
+        ? "Vectors may still be propagating (asynchronous mutations) — rerun plan mode later to confirm reconciliation."
+        : args.limit === Infinity && errors === 0
+          ? "Not yet fully migrated — rerun to continue (the state file resumes this run)."
+          : "Pass incomplete — rerun to continue (the state file resumes this run).",
   );
   return 1;
 }

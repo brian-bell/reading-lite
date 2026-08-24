@@ -349,6 +349,22 @@ export function planFounderMigration(input: FounderMigrationInput): FounderMigra
   };
 }
 
+// Problems come in two classes. Execute-blocking problems mean the inventory
+// or vector plan cannot be trusted, so an execute must abort before writing.
+// The other two kinds are handled BY executing: a destination_mismatch is
+// repaired when the copy loop overwrites the destination with the source
+// bytes, and an unrecognized_key is still copied (zero lost objects) — though
+// both remain problems for certification (isFullyMigrated) until the corpus
+// matches and the operator has dispositioned any stray keys.
+const EXECUTE_HANDLED_PROBLEMS: ReadonlySet<MigrationProblem["kind"]> = new Set([
+  "destination_mismatch",
+  "unrecognized_key",
+]);
+
+export function executeBlockingProblems(plan: FounderMigrationPlan): MigrationProblem[] {
+  return plan.problems.filter((p) => !EXECUTE_HANDLED_PROBLEMS.has(p.kind));
+}
+
 // The reconciliation verdict: re-planning after an execute must show nothing
 // pending and nothing wrong. This is the s1k.6 "counts and hashes reconcile
 // with zero lost readings" gate in plan form — etag equality per object plus

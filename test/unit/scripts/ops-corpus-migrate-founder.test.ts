@@ -166,6 +166,27 @@ describe("ops corpus migrate-founder — plan mode", () => {
     expect(h.err.join("\n")).toContain("missing_legacy_vector");
   });
 
+  it("invites execute when destination mismatches are the only problems — execute is their repair", async () => {
+    const h = makeHarness();
+    h.objects.set(`u/${TENANT}/index/by-id/rd_ready`, { body: "WRONG", contentType: "application/json" });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    const text = h.err.join("\n");
+    expect(text).toContain("destination_mismatch");
+    expect(text).toContain("--execute");
+    expect(text).not.toContain("Resolve the problems above before executing");
+  });
+
+  it("reports an unrecognized key as copyable but certification-blocking", async () => {
+    const h = makeHarness();
+    h.objects.set("tmp/stray.txt", { body: "junk", contentType: "text/plain" });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(1);
+    const text = h.err.join("\n");
+    expect(text).toContain("unrecognized_key");
+    expect(text).toContain("still copied");
+  });
+
   it("blocks on a malformed or drifted list index instead of planning an empty corpus", async () => {
     const statusDrift = JSON.stringify({
       version: 1,
@@ -289,6 +310,18 @@ describe("ops corpus migrate-founder — execute", () => {
     const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(code).toBe(0);
     expect(h.objects.get(damaged)?.body).toBe('{"id":"rd_ready"}');
+  });
+
+  it("copies an unrecognized stray key (zero loss) but withholds certification", async () => {
+    const h = makeHarness();
+    h.objects.set("tmp/stray.txt", { body: "junk", contentType: "text/plain" });
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(1);
+    // The stray key IS copied — zero lost objects — alongside the 7 known ones.
+    expect(h.objects.get(`u/${TENANT}/tmp/stray.txt`)?.body).toBe("junk");
+    expect(h.puts).toHaveLength(8);
+    expect(h.stateOnDisk.value?.reconciled_at).toBeUndefined();
+    expect(h.err.join("\n")).toContain("Certification blocked");
   });
 
   it("revokes a stale reconciled_at when a resumed pass finds new unmigrated work", async () => {
