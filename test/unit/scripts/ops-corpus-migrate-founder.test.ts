@@ -73,6 +73,9 @@ interface Harness {
   savedStates: MigrationState[];
   stateOnDisk: { value: MigrationState | null };
   sleeps: number[];
+  // Read traffic, so the certification cost of a pass is observable.
+  gets: string[];
+  lists: { n: number };
 }
 
 // In-memory bucket + vector index. Etags are derived from bodies, so a copied
@@ -95,16 +98,23 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
   const savedStates: MigrationState[] = [];
   const stateOnDisk: { value: MigrationState | null } = { value: null };
   const sleeps: number[] = [];
+  const gets: string[] = [];
+  const lists = { n: 0 };
 
   const clients = (namespace: string): MigrateFounderClients => ({
     r2: {
-      listObjects: async () =>
+      listObjects: async () => (
+        lists.n++,
         [...objects.entries()].map(([key, o]) => ({
           key,
           size: o.body.length,
           etag: `etag-${o.body.length}-${o.body.slice(0, 8)}`,
-        })),
-      get: async (key) => objects.get(key)?.body ?? null,
+        }))
+      ),
+      get: async (key) => {
+        gets.push(key);
+        return objects.get(key)?.body ?? null;
+      },
       getBytes: async (key) => {
         const o = objects.get(key);
         if (!o) return null;
@@ -143,7 +153,10 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
       sleeps.push(ms);
     },
   };
-  return { deps, out, err, objects, vectors, puts, upserts, savedStates, stateOnDisk, sleeps };
+  return {
+    deps, out, err, objects, vectors, puts, upserts, savedStates, stateOnDisk,
+    sleeps, gets, lists,
+  };
 }
 
 const run = (argv: string[], h: Harness) => corpusMigrateFounderCommand.run(argv, h.deps);
@@ -260,6 +273,114 @@ describe("ops corpus migrate-founder — plan mode", () => {
     const code = await run(["--tenant", TENANT], h);
     expect(code).toBe(1);
     expect(h.err.join("\n")).toContain("row_manifest_unreadable");
+  });
+});
+
+describe("ops corpus migrate-founder — certification cost", () => {
+  const evidenceGets = (h: Harness) =>
+    h.gets.filter((k) => k.endsWith("/manifest.json") || k.startsWith("index/by-id/"));
+
+  it("reads each row's manifest and pointer once on a cold plan", async () => {
+    const h = makeHarness();
+    await run(["--tenant", TENANT], h);
+    expect(evidenceGets(h)).toEqual([`${READY_PREFIX}/manifest.json`, "index/by-id/rd_ready"]);
+    expect(h.err.join("\n")).toContain("2 object reads, 0 served from");
+  });
+
+  it("serves an unchanged corpus from the state file's etag cache instead of re-reading", async () => {
+    const h = makeHarness();
+    await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(h.stateOnDisk.value?.evidence?.rd_ready?.manifest?.id).toBe("rd_ready");
+    h.gets.length = 0;
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(evidenceGets(h)).toEqual([]);
+    expect(h.err.join("\n")).toContain("0 object reads, 2 served from");
+  });
+
+  it("re-reads a row whose manifest actually changed, and only that row", async () => {
+    const h = makeHarness();
+    await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    // Same key, different bytes — the listing etag moves, so the cached parse
+    // is stale and must not be trusted.
+    h.objects.set(`${READY_PREFIX}/manifest.json`, {
+      body: JSON.stringify({ ...READY_MANIFEST, status: "failed" }),
+      contentType: "application/json",
+    });
+    h.gets.length = 0;
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(1);
+    expect(evidenceGets(h)).toEqual([`${READY_PREFIX}/manifest.json`]);
+    expect(h.err.join("\n")).toContain("row_manifest_mismatch");
+  });
+
+  it("still catches a list row that goes stale while its manifest sits untouched", async () => {
+    // The cache holds EVIDENCE, never a verdict: the manifest's etag has not
+    // moved, so it is served from cache — and the row comparison still runs
+    // live against the rewritten index and blocks. A cached verdict would
+    // have certified this corpus and lost the reading's vector.
+    const h = makeHarness();
+    await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    h.objects.set("index/list.json", {
+      body: JSON.stringify({ version: 1, items: [{ ...LIST_DOC.items[0], status: "failed" }] }),
+      contentType: "application/json",
+    });
+    h.gets.length = 0;
+    h.out.length = 0;
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(1);
+    expect(evidenceGets(h)).toEqual([]);
+    const text = h.err.join("\n");
+    expect(text).toContain("row_manifest_mismatch");
+    expect(text).toContain("status ready");
+    expect(JSON.parse(h.out.join("\n")).vectors).toEqual([]);
+  });
+
+  it("ignores a cache from a different tenant, bucket, or index rather than failing", async () => {
+    const h = makeHarness();
+    await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    h.stateOnDisk.value = { ...h.stateOnDisk.value!, bucket: "some-other-bucket" };
+    h.gets.length = 0;
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(evidenceGets(h)).toHaveLength(2);
+  });
+
+  it("plan mode tolerates an unreadable state file — the cache is an optimization, not a premise", async () => {
+    const h = makeHarness();
+    h.deps.loadState = async () => {
+      throw new Error("failed to load migration state: unexpected token");
+    };
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(evidenceGets(h)).toHaveLength(2);
+  });
+
+  it("gathers the R2 inventory once per phase however long vectors take to appear", async () => {
+    const h = makeHarness();
+    const inner = h.deps.makeClients;
+    let revealAfter = 0;
+    h.deps.makeClients = async (opts) => {
+      const c = await inner(opts);
+      const getByIds = c.vectorize.getByIds;
+      c.vectorize = {
+        ...c.vectorize,
+        getByIds: async (ids) => {
+          const res = await getByIds(ids);
+          if (h.upserts.length === 0) return res;
+          if (revealAfter++ < 3) return res.filter((v) => v.namespace === undefined);
+          return res;
+        },
+      };
+      return c;
+    };
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    // Three lag retries, but only the preflight and post-copy inventories.
+    expect(h.sleeps).toEqual([5000, 5000, 5000]);
+    expect(h.lists.n).toBe(2);
+    expect(h.gets.filter((k) => k === "index/list.json")).toHaveLength(2);
+    expect(evidenceGets(h)).toEqual([`${READY_PREFIX}/manifest.json`, "index/by-id/rd_ready"]);
   });
 });
 

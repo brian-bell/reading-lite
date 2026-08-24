@@ -20,6 +20,9 @@ index.json
 *.batch.json
 *.batch.input.jsonl
 *.input.jsonl
+# Founder-migration ledgers. The evidence cache records each reading's URL and
+# title-bearing manifest projection, so this is corpus content too.
+*.state.json
 # The reconcile lock and its rename-and-reclaim artifacts; the lock file
 # lives at `<sidecar>.lock`, and reclaim leaves `<sidecar>.lock.broken.*`.
 *.batch.json.lock

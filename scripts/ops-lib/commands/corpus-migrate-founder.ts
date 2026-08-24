@@ -23,6 +23,7 @@ import {
   executeBlockingProblems,
   isFullyMigrated,
   planFounderMigration,
+  type FounderMigrationInput,
   type FounderMigrationPlan,
   type RowEvidence,
 } from "../../corpus-lib/founder-migration";
@@ -30,12 +31,14 @@ import {
   loadMigrationState,
   newMigrationState,
   saveMigrationState,
+  type CachedRowEvidence,
   type MigrationState,
 } from "../../corpus-lib/migration-state";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import type { ListItem } from "../../corpus-lib/types";
 import type {
   R2InventoryClient,
+  R2ObjectMeta,
   StoredVector,
   VectorizeAdminClient,
   VectorizeUpsertVector,
@@ -150,20 +153,39 @@ function firstLine(e: unknown): string {
   return e instanceof Error ? (e.message.split("\n")[0] ?? e.message) : String(e);
 }
 
+export type RowEvidenceCache = Record<string, CachedRowEvidence>;
+
 // The content half of the per-row expectations (RowEvidence): read and
 // STRICTLY parse each row's manifest and by-id pointer against the worker's
 // own contracts, so the plan can require them to agree with the row rather
 // than merely exist. Only rows whose objects the listing has are read —
 // absence is already row_missing_manifest / row_missing_by_id_pointer, and
 // must not surface twice under a content kind.
+//
+// Reads are skipped for objects the listing shows at the etag a previous pass
+// already parsed (`cache`), which is what makes repeat plan and reconciliation
+// passes over an unmoved corpus nearly free. Only successful parses are
+// cached: a malformed object is rare, blocks anyway, and is not worth a
+// negative-cache entry. The returned cache is rebuilt from the CURRENT rows,
+// so entries for rows the index no longer has drop out rather than accumulate.
 async function gatherRowEvidence(
   r2: Pick<R2InventoryClient, "get">,
   rows: ListItem[],
-  presentKeys: ReadonlySet<string>,
-): Promise<Map<string, RowEvidence>> {
+  present: ReadonlyMap<string, string>,
+  cache: RowEvidenceCache,
+): Promise<{
+  evidence: Map<string, RowEvidence>;
+  cache: RowEvidenceCache;
+  reads: number;
+  hits: number;
+}> {
   const evidence = new Map<string, RowEvidence>();
+  const nextCache: RowEvidenceCache = {};
+  let reads = 0;
+  let hits = 0;
   let next = 0;
   const readOne = async (key: string): Promise<unknown> => {
+    reads++;
     const body = await r2.get(key);
     if (body === null) throw new Error("listed but unreadable");
     return JSON.parse(body);
@@ -171,31 +193,57 @@ async function gatherRowEvidence(
   const worker = async (): Promise<void> => {
     for (let i = next++; i < rows.length; i = next++) {
       const row = rows[i]!;
+      const cached = cache[row.id];
       const ev: RowEvidence = {};
+      const fresh: CachedRowEvidence = {};
+
       const manifestKey = `${row.key_prefix}/${MANIFEST_FILE}`;
-      if (presentKeys.has(manifestKey)) {
-        try {
-          const m = ManifestSchema.parse(await readOne(manifestKey));
-          ev.manifest = { id: m.id, url: m.url, status: m.status };
-        } catch (e) {
-          ev.manifest_error = firstLine(e);
+      const manifestEtag = present.get(manifestKey);
+      if (manifestEtag !== undefined) {
+        if (cached?.manifest?.etag === manifestEtag) {
+          hits++;
+          const { id, url, status } = cached.manifest;
+          ev.manifest = { id, url, status };
+          fresh.manifest = cached.manifest;
+        } else {
+          try {
+            const m = ManifestSchema.parse(await readOne(manifestKey));
+            ev.manifest = { id: m.id, url: m.url, status: m.status };
+            fresh.manifest = { etag: manifestEtag, ...ev.manifest };
+          } catch (e) {
+            ev.manifest_error = firstLine(e);
+          }
         }
       }
+
       const pointerKey = `${BY_ID_PREFIX}${row.id}`;
-      if (presentKeys.has(pointerKey)) {
-        try {
-          ev.pointer = ByUrlPointerSchema.parse(await readOne(pointerKey));
-        } catch (e) {
-          ev.pointer_error = firstLine(e);
+      const pointerEtag = present.get(pointerKey);
+      if (pointerEtag !== undefined) {
+        if (cached?.pointer?.etag === pointerEtag) {
+          hits++;
+          const { id, key_prefix } = cached.pointer;
+          ev.pointer = { id, key_prefix };
+          fresh.pointer = cached.pointer;
+        } else {
+          try {
+            ev.pointer = ByUrlPointerSchema.parse(await readOne(pointerKey));
+            fresh.pointer = { etag: pointerEtag, ...ev.pointer };
+          } catch (e) {
+            ev.pointer_error = firstLine(e);
+          }
         }
       }
+
       evidence.set(row.id, ev);
+      if (fresh.manifest !== undefined || fresh.pointer !== undefined) {
+        nextCache[row.id] = fresh;
+      }
     }
   };
   await Promise.all(
     Array.from({ length: Math.min(EVIDENCE_CONCURRENCY, rows.length) }, worker),
   );
-  return evidence;
+  return { evidence, cache: nextCache, reads, hits };
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -204,42 +252,141 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
-// One inventory pass: bucket listing, source list rows, and which vectors
-// (legacy bare-id and tenant-prefixed) the index already holds for the ready
-// rows. Read-only; runs identically for plan, execute preflight, and the
-// post-execute reconciliation.
-async function gatherPlan(
+// Everything the plan needs from R2: the bucket listing, the source list
+// rows, and each row's manifest/pointer content. Read-only.
+//
+// Held separately from the vector probe because the two move on different
+// clocks. R2 is authoritative the moment a copy returns, while Vectorize
+// mutations are asynchronous — so reconciliation re-probes vectors several
+// times while the bucket sits still underneath it (nothing writes to the
+// SOURCE layout during a migration: copies only ever write under the tenant
+// root, and --execute requires the realtime writer paused). Re-deriving this
+// half per retry would re-list and re-read the whole corpus to learn nothing.
+interface R2Inventory {
+  objects: R2ObjectMeta[];
+  rows: ListItem[];
+  listIndexError?: string;
+  rowEvidence: Map<string, RowEvidence>;
+  evidenceCache: RowEvidenceCache;
+  evidenceReads: number;
+  evidenceHits: number;
+}
+
+async function gatherR2Inventory(
   clients: MigrateFounderClients,
-  tenantId: string,
-): Promise<{ plan: FounderMigrationPlan; rows: ListItem[] }> {
+  cache: RowEvidenceCache,
+): Promise<R2Inventory> {
   const objects = await clients.r2.listObjects();
   const body = await clients.r2.get(LIST_INDEX_KEY);
   let { rows, error } = parseListRows(body);
   if (body === null && objects.some((o) => o.key === LIST_INDEX_KEY)) {
     error = `${LIST_INDEX_KEY} is listed but unreadable`;
   }
-  const sourceKeys = new Set(objects.map((o) => o.key).filter((k) => !k.startsWith("u/")));
-  const rowEvidence = await gatherRowEvidence(clients.r2, rows, sourceKeys);
+  const source = new Map(
+    objects.filter((o) => !o.key.startsWith("u/")).map((o) => [o.key, o.etag]),
+  );
+  const gathered = await gatherRowEvidence(clients.r2, rows, source, cache);
+  return {
+    objects,
+    rows,
+    ...(error === undefined ? {} : { listIndexError: error }),
+    rowEvidence: gathered.evidence,
+    evidenceCache: gathered.cache,
+    evidenceReads: gathered.reads,
+    evidenceHits: gathered.hits,
+  };
+}
+
+// Which vectors (legacy bare-id and tenant-prefixed) the index holds for the
+// ready rows. The half that reconciliation retries.
+async function probeVectors(
+  clients: MigrateFounderClients,
+  tenantId: string,
+  rows: ListItem[],
+): Promise<Pick<FounderMigrationInput, "tenantVectors" | "legacyVectors">> {
   const readyIds = rows.filter((r) => r.status === "ready").map((r) => r.id);
   const probeIds = readyIds.flatMap((id) => [id, `${tenantId}:${id}`]);
   const stored: StoredVector[] = [];
   for (const ids of chunk(probeIds, GET_BY_IDS_CHUNK)) {
     stored.push(...(await clients.vectorize.getByIds(ids)));
   }
-  const plan = planFounderMigration({
-    tenantId,
-    objects,
-    listRows: rows,
-    rowEvidence,
-    ...(error === undefined ? {} : { listIndexError: error }),
+  return {
     tenantVectors: new Map(
       stored.filter((v) => v.namespace === tenantId).map((v) => [v.id, v]),
     ),
     legacyVectors: new Map(
       stored.filter((v) => v.namespace === undefined).map((v) => [v.id, v]),
     ),
+  };
+}
+
+// One full pass: R2 inventory plus a vector probe.
+async function gatherPlan(
+  clients: MigrateFounderClients,
+  tenantId: string,
+  cache: RowEvidenceCache,
+): Promise<{ plan: FounderMigrationPlan; inventory: R2Inventory }> {
+  const inventory = await gatherR2Inventory(clients, cache);
+  const plan = planFromInventory(
+    tenantId,
+    inventory,
+    await probeVectors(clients, tenantId, inventory.rows),
+  );
+  return { plan, inventory };
+}
+
+function planFromInventory(
+  tenantId: string,
+  inventory: R2Inventory,
+  vectors: Pick<FounderMigrationInput, "tenantVectors" | "legacyVectors">,
+): FounderMigrationPlan {
+  return planFounderMigration({
+    tenantId,
+    objects: inventory.objects,
+    listRows: inventory.rows,
+    rowEvidence: inventory.rowEvidence,
+    ...(inventory.listIndexError === undefined
+      ? {}
+      : { listIndexError: inventory.listIndexError }),
+    ...vectors,
   });
-  return { plan, rows };
+}
+
+// A read-only peek at the state file, purely for the evidence cache. Never
+// throws and never refuses: a missing, unreadable, or foreign state file just
+// means no cache and every row is read fresh. The execute path loads the same
+// file again for the actual resume, where those cases ARE hard failures —
+// keeping the two apart is what lets plan mode stay a command that reads.
+async function peekEvidenceCache(
+  deps: CorpusMigrateFounderDeps,
+  args: Args,
+  tenantId: string,
+): Promise<RowEvidenceCache> {
+  let state: MigrationState | null;
+  try {
+    state = await deps.loadState(args.state);
+  } catch {
+    return {};
+  }
+  if (!state) return {};
+  const sameTarget =
+    state.tenant === tenantId &&
+    state.bucket === args.bucket &&
+    state.vectorize === args.vectorize;
+  return sameTarget ? (state.evidence ?? {}) : {};
+}
+
+// Certification reads two objects per row, so say what that cost — and what
+// the state file's cache saved. A run reporting many reads on an unchanged
+// corpus means the cache is not being reused (no state file, a different
+// --state path, or a foreign one).
+function printEvidenceCost(io: CommandIo, inventory: R2Inventory): void {
+  if (inventory.rows.length === 0) return;
+  io.stderr(
+    `Verified ${inventory.rows.length} row(s) against their manifest and by-id pointer ` +
+      `(${inventory.evidenceReads} object read${inventory.evidenceReads === 1 ? "" : "s"}, ` +
+      `${inventory.evidenceHits} served from the state file's etag cache).`,
+  );
 }
 
 function printSummary(io: CommandIo, plan: FounderMigrationPlan, mode: string): void {
@@ -308,7 +455,12 @@ async function runCorpusMigrateFounder(
     };
   }
 
-  const { plan } = await gatherPlan(clients, tenantId);
+  const { plan, inventory } = await gatherPlan(
+    clients,
+    tenantId,
+    await peekEvidenceCache(deps, args, tenantId),
+  );
+  printEvidenceCost(io, inventory);
 
   if (!args.execute) {
     io.stdout(JSON.stringify({ mode: "plan", bucket: args.bucket, vectorize: args.vectorize, ...plan }, null, 2));
@@ -377,6 +529,9 @@ async function runCorpusMigrateFounder(
       startedAt: deps.now(),
     });
   }
+  // Carry this pass's verification forward even if the run is interrupted
+  // before reconciliation: the next one re-reads only what actually moved.
+  state.evidence = inventory.evidenceCache;
 
   let errors = 0;
 
@@ -489,9 +644,22 @@ async function runCorpusMigrateFounder(
   // zero problems against the actual bucket and index contents. Freshly
   // upserted vectors may lag get_by_ids visibility (asynchronous mutations),
   // so when that is the only deficiency, wait and re-probe before concluding.
+  //
+  // The R2 half is gathered ONCE for the whole loop. Only Vectorize is
+  // eventually consistent here — the bucket is quiescent (source objects are
+  // never written, destinations were written synchronously above, and the
+  // realtime writer is paused), so re-listing and re-reading the corpus per
+  // retry would burn the whole inventory to re-learn an unchanged answer.
+  const reconInventory = await gatherR2Inventory(clients, inventory.evidenceCache);
+  printEvidenceCost(io, reconInventory);
+  state.evidence = reconInventory.evidenceCache;
   let reconciled: FounderMigrationPlan;
   for (let attempt = 0; ; attempt++) {
-    ({ plan: reconciled } = await gatherPlan(clients, tenantId));
+    reconciled = planFromInventory(
+      tenantId,
+      reconInventory,
+      await probeVectors(clients, tenantId, reconInventory.rows),
+    );
     const onlyVectorLag =
       upsertedNow > 0 &&
       !isFullyMigrated(reconciled) &&
@@ -610,7 +778,7 @@ legacy objects and vectors are always retained; this command never deletes.
 Plan (default) prints the exact migration as JSON on stdout — every copy with
 size and etag, every vector upsert, every retained legacy object, and every
 problem — plus the cutover/rollback prerequisites. It writes nothing, locally
-or remotely. Because copy/vector status derives from live listings, rerunning
+or remotely (it reads the --state file for its evidence cache, never writes it). Because copy/vector status derives from live listings, rerunning
 plan after an execute is the reconciliation check: "fully migrated" means
 every source object exists at its tenant key with equal size and etag, every
 ready row's tenant-namespace vector carries the legacy embedding and metadata
@@ -630,7 +798,11 @@ Options:
                      always the global layout; 'global' is rejected).
   --bucket <name>    R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --vectorize <idx>  Vectorize index. Default: the bucket name.
-  --state <path>     Resumable state file. Default: ./founder-migration.state.json.
+  --state <path>     Resumable state file, and the etag cache for the per-row
+                     manifest/pointer checks. Pass the same path to plan and
+                     execute so repeat passes re-read only what moved; plan
+                     reads it and never writes it.
+                     Default: ./founder-migration.state.json.
   --limit <n>        Cap copies and vector upserts this pass (rehearsing
                      interrupted-run resume).
   --execute          Copy and upsert (plan is the default).

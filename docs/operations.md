@@ -240,6 +240,17 @@ row's `status`, so a row saying `failed` over a `ready` manifest would migrate
 with no vector planned. Repair those with `corpus rebuild-list --tenant
 global`, then re-plan.
 
+That costs two reads per row the first time. After that the state file caches
+each parse against the object's etag, so passes over an unmoved corpus read
+nothing — every pass prints `Verified N row(s) … (R object reads, C served
+from the state file's etag cache)`, and a high `R` on a corpus you have not
+touched means the cache is not being reused (no state file yet, or a
+different `--state` path). Pass the same `--state` to plan and execute to
+keep it warm. Plan mode reads that file and never writes it. The cache holds
+what the objects *said*, never whether they passed: the row comparison always
+re-runs against the live `index/list.json`, so a row that goes stale while
+its manifest sits untouched is still caught.
+
 Both modes need the `CORPUS_R2_*` + `CORPUS_CF_API_TOKEN` credentials (plan
 reads live listings, per-row manifest/pointer content, and vector state).
 `--limit` caps work per pass for
