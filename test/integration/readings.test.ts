@@ -1860,8 +1860,12 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const staleId = "rd_STALE";
     const staleCreatedAt = "2026-04-26T19:00:00.000Z";
     const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
-    vector.vectors.set(staleId, {
+    // Seeded under the tenant-prefixed id + namespace, the way a gate-on
+    // writer stores it — the has() assertion below only proves the cleanup
+    // removed it if this key is the one the delete path addresses.
+    vector.vectors.set(tenantVectorId(FOUNDER_TENANT_ID, staleId), {
       values: new Array(1536).fill(0.42),
+      namespace: FOUNDER_TENANT_ID,
       metadata: { url, title: "Old stale vector" },
     });
     await reader.appendOrReplaceListIndexItem({
