@@ -155,9 +155,9 @@ export function tenantNamespace(
 // cannot address another tenant's vector; without a namespace (the pre-tenant
 // layout) the id is the bare reading id. Single-homed here so the worker store
 // and the founder-migration tooling (scripts/corpus-lib/founder-migration.ts)
-// spell the same contract. The store itself starts composing/stripping this
-// prefix as part of the s1k.6 gate-flip work; migrated vectors are written
-// with it from the start.
+// spell the same contract. The store composes it on upsert/delete and strips
+// it from query matches, so callers only ever see bare reading ids; migrated
+// vectors are written with it from the start.
 export function tenantVectorId(namespace: string | undefined, readingId: string): string {
   return namespace === undefined ? readingId : `${namespace}:${readingId}`;
 }
@@ -183,18 +183,25 @@ export class SimilarityStore {
     if (embedding.length !== EMBEDDING_DIM) {
       throw new WrongEmbeddingDimensionError(embedding.length);
     }
+    // ADR 0002's audit layer: every namespaced vector carries a tenant_id
+    // stamp, matching what the founder migration writes. Reconciliation
+    // (founder-migration.ts) rejects a prefixed vector without the stamp once
+    // its legacy source is gone, so an unstamped realtime reprocess would
+    // block re-certification of an already-migrated corpus.
+    const stamped =
+      this.namespace === undefined ? metadata : { ...metadata, tenant_id: this.namespace };
     await this.index.upsert([
       {
-        id,
+        id: tenantVectorId(this.namespace, id),
         values: embedding,
         ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
-        metadata: metadata as unknown as Record<string, VectorizeVectorMetadata>,
+        metadata: stamped as unknown as Record<string, VectorizeVectorMetadata>,
       },
     ]);
   }
 
   async delete(id: string): Promise<void> {
-    await this.index.deleteByIds([id]);
+    await this.index.deleteByIds([tenantVectorId(this.namespace, id)]);
   }
 
   async query(embedding: number[], topK: number): Promise<SimilarityMatch[]> {
@@ -207,10 +214,14 @@ export class SimilarityStore {
       returnMetadata: true,
       ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
     });
+    const ownPrefix = this.namespace === undefined ? undefined : `${this.namespace}:`;
     return result.matches.map((m) => {
       const md = (m.metadata ?? {}) as Partial<SimilarityMetadata>;
       const out: SimilarityMatch = {
-        id: m.id,
+        id:
+          ownPrefix !== undefined && m.id.startsWith(ownPrefix)
+            ? m.id.slice(ownPrefix.length)
+            : m.id,
         score: m.score,
         url: typeof md.url === "string" ? md.url : "",
       };
