@@ -35,8 +35,8 @@ import {
   READINGS_PREFIX,
 } from "../../src/modules/stores/layout";
 import { tenantVectorId } from "../../src/modules/stores/similarity-store";
+import type { ListIndexItem } from "../../src/schemas/api";
 import type { R2ObjectMeta, StoredVector } from "../lib/cf-clients";
-import type { ListItem } from "./types";
 import { urlHash } from "./url-hash";
 
 // Any tenant data-plane root, not just this migration's destination: source
@@ -81,6 +81,7 @@ export interface MigrationProblem {
     | "row_manifest_unreadable"
     | "row_manifest_mismatch"
     | "row_by_id_pointer_invalid"
+    | "by_url_pointer_invalid"
     | "manifest_not_in_list_index"
     | "missing_list_index"
     | "invalid_list_index"
@@ -113,10 +114,10 @@ export interface FounderMigrationInput {
   // The full bucket listing, absolute keys (both roots).
   objects: R2ObjectMeta[];
   // Parsed source index/list.json rows. Callers must parse the document
-  // STRICTLY and report a failure via listIndexError instead of passing [] —
-  // a silently-empty row set would plan zero vectors and reconcile a
-  // half-migrated corpus as complete.
-  listRows: ListItem[];
+  // STRICTLY (the worker's own ListIndexSchema) and report a failure via
+  // listIndexError instead of passing [] — a silently-empty row set would
+  // plan zero vectors and reconcile a half-migrated corpus as complete.
+  listRows: ListIndexItem[];
   // Why the list index could not be trusted (unparseable, schema drift,
   // listed-but-unreadable). Blocks the plan.
   listIndexError?: string;
@@ -127,28 +128,50 @@ export interface FounderMigrationInput {
   // What reading each row's manifest and by-id pointer actually CONTAIN,
   // keyed by row id. See RowEvidence.
   rowEvidence: ReadonlyMap<string, RowEvidence>;
+  // What each by-url slot actually CONTAINS, keyed by the slot's url hash.
+  // See ByUrlSlotEvidence.
+  byUrlEvidence: ReadonlyMap<string, ByUrlSlotEvidence>;
 }
 
 // The content half of the per-row expectations. Key presence in the listing
 // proves an object exists; it cannot prove the object says what the list index
 // claims — and every downstream consequence of the migration reads content:
 // the vector plan reads `status`, detail/content lookups hop through the by-id
-// pointer's `key_prefix`. A row whose manifest is actually `ready` while the
+// pointer's `key_prefix`, and the list rows themselves are what GET
+// /api/readings serves. A row whose manifest is actually `ready` while the
 // row says `failed` would migrate with no vector planned and still certify, so
-// the plan requires the manifest's list projection (manifestToIndexItem's
-// id/url/status, all copied verbatim from the manifest) and the pointer's
-// target to agree with the row before certifying.
+// the plan requires the manifest's COMPLETE list projection
+// (manifestToIndexItem — every field, not just id/url/status: a row with a
+// stale title or tldr copies byte-identically and would otherwise certify out
+// of sync with its manifest) and the pointer's target to agree with the row
+// before certifying.
 //
 // Callers gather this by reading and STRICTLY parsing both objects, and only
 // for rows whose objects the listing actually has — absence is already
 // row_missing_manifest / row_missing_by_id_pointer, and must not be reported
 // twice under a second kind.
 export interface RowEvidence {
-  // The manifest's list projection, or why it could not be read/parsed.
-  manifest?: { id: string; url: string; status: string };
+  // The manifest's full list projection (manifestToIndexItem minus the
+  // key_prefix, which names where the manifest was read from rather than what
+  // it contains), or why it could not be read/parsed.
+  manifest?: ManifestListProjection;
   manifest_error?: string;
   // The parsed by-id pointer ({id, key_prefix}), or why it could not be
   // read/parsed.
+  pointer?: { id: string; key_prefix: string };
+  pointer_error?: string;
+}
+
+export type ManifestListProjection = Omit<ListIndexItem, "key_prefix">;
+
+// The content half of the per-slot by-url expectations, keyed by url hash.
+// Presence alone cannot certify a slot: `ReadingClaim.resolveOwner` parses the
+// pointer before any repair logic runs, so a malformed slot throws on every
+// submit and lookup for that URL with no self-heal — and it would copy
+// verbatim into the tenant root. Callers gather this by strictly parsing each
+// by-url object the listing has (absence is already
+// row_missing_by_url_pointer).
+export interface ByUrlSlotEvidence {
   pointer?: { id: string; key_prefix: string };
   pointer_error?: string;
 }
@@ -169,6 +192,48 @@ function sameMetadataValue(a: unknown, b: unknown): boolean {
       a.length === b.length && a.every((v, i) => v === b[i]);
   }
   return a === b;
+}
+
+// Structural equality over the JSON-shaped values a list projection carries
+// (strings, arrays, nested error/attempt/similarity objects). Field order is
+// irrelevant; presence is not — a field only one side carries is drift.
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) &&
+      a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
+  }
+  if (typeof a === "object" && typeof b === "object" && a !== null && b !== null) {
+    const aKeys = Object.keys(a).sort();
+    const bKeys = Object.keys(b).sort();
+    return aKeys.length === bKeys.length &&
+      aKeys.every((key, i) =>
+        bKeys[i] === key &&
+        deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+      );
+  }
+  return false;
+}
+
+// Which projected fields disagree between the manifest's list projection and
+// the row, over the union of both sides' fields — the row serves whatever it
+// stored, so a field the manifest dropped is as stale as one it changed.
+function projectionDrift(projection: ManifestListProjection, row: ListIndexItem): string[] {
+  const { key_prefix: _ignored, ...rowFields } = row;
+  const keys = [...new Set([...Object.keys(projection), ...Object.keys(rowFields)])].sort();
+  const drift: string[] = [];
+  for (const key of keys) {
+    const manifestValue = (projection as Record<string, unknown>)[key];
+    if (deepEqual(manifestValue, (rowFields as Record<string, unknown>)[key])) continue;
+    drift.push(
+      typeof manifestValue === "string"
+        ? `${key} ${manifestValue}`
+        : manifestValue === undefined
+          ? `${key} absent from the manifest`
+          : `${key} ${JSON.stringify(manifestValue)}`,
+    );
+  }
+  return drift;
 }
 
 function migratedVectorMatches(
@@ -321,13 +386,12 @@ export function planFounderMigration(input: FounderMigrationInput): FounderMigra
         }`,
       });
     } else {
-      // The vector plan reads `status` off the ROW; a row that misprojects its
-      // manifest silently drops (or invents) that reading's vector, so the
-      // disagreement must block until the index is rebuilt.
-      const drift: string[] = [];
-      if (evidence.manifest.id !== row.id) drift.push(`id ${evidence.manifest.id}`);
-      if (evidence.manifest.url !== row.url) drift.push(`url ${evidence.manifest.url}`);
-      if (evidence.manifest.status !== row.status) drift.push(`status ${evidence.manifest.status}`);
+      // The vector plan reads `status` off the ROW, and the list rows are
+      // what readers are served; a row that misprojects its manifest silently
+      // drops (or invents) that reading's vector — or serves a stale
+      // title/tldr forever — so any disagreement across the FULL projection
+      // must block until the index is rebuilt.
+      const drift = projectionDrift(evidence.manifest, row);
       if (drift.length > 0) {
         problems.push({
           kind: "row_manifest_mismatch",
@@ -365,17 +429,63 @@ export function planFounderMigration(input: FounderMigrationInput): FounderMigra
           `not list row ${row.id} at ${row.key_prefix}`,
       });
     }
-    // Presence, not ownership: duplicate-URL rows legitimately share one
-    // pointer owned by whichever copy claimed it, so the check is that the
-    // row's URL slot exists at all — a URL with no pointer anywhere would
-    // break lookup and dedup identically after cutover, and must be repaired
-    // (a submit re-claims it) before the corpus is certified.
+    // Duplicate-URL rows legitimately share one pointer owned by whichever
+    // copy claimed it, so the per-row check is only that the row's URL slot
+    // exists at all — a URL with no pointer anywhere would break lookup and
+    // dedup identically after cutover, and must be repaired (a submit
+    // re-claims it) before the corpus is certified. What the slot CONTAINS is
+    // certified once per slot below.
     if (!sourceKeys.has(`${BY_URL_PREFIX}${urlHash(row.url)}`)) {
       problems.push({
         kind: "row_missing_by_url_pointer",
         detail: `list row ${row.id} has no ${BY_URL_PREFIX}{sha256} pointer for ${row.url}`,
       });
     }
+  }
+
+  // Every by-url slot the source has must parse and target a list row whose
+  // URL actually hashes to that slot (ANY such row — duplicate-URL rows share
+  // one owner). The slot copies verbatim, and resolveOwner parses it before
+  // any repair logic runs, so a malformed slot throws on every submit and
+  // lookup for its URL after cutover with no self-heal — while a mis-targeted
+  // or dangling slot is stray ownership state the operator must disposition
+  // (re-claim via submit, or drop) before the corpus is certified. Content is
+  // only checked for slots the listing has: absence is already
+  // row_missing_by_url_pointer.
+  const rowsByUrlHash = new Map<string, ListIndexItem[]>();
+  for (const row of input.listRows) {
+    const hash = urlHash(row.url);
+    const group = rowsByUrlHash.get(hash);
+    if (group) group.push(row);
+    else rowsByUrlHash.set(hash, [row]);
+  }
+  for (const key of [...sourceKeys].sort()) {
+    if (!key.startsWith(BY_URL_PREFIX)) continue;
+    const hash = key.slice(BY_URL_PREFIX.length);
+    const evidence = input.byUrlEvidence.get(hash);
+    if (evidence?.pointer === undefined) {
+      problems.push({
+        kind: "by_url_pointer_invalid",
+        detail: `${key} could not be read as a by-url pointer: ${
+          evidence?.pointer_error ?? "not read"
+        }`,
+      });
+      continue;
+    }
+    const pointer = evidence.pointer;
+    const owners = rowsByUrlHash.get(hash) ?? [];
+    if (owners.some((row) => row.id === pointer.id && row.key_prefix === pointer.key_prefix)) {
+      continue;
+    }
+    problems.push({
+      kind: "by_url_pointer_invalid",
+      detail:
+        owners.length === 0
+          ? `${key} targets ${pointer.id} at ${pointer.key_prefix}, but no list row's URL ` +
+            "hashes to this slot — a dangling ownership pointer"
+          : `${key} targets ${pointer.id} at ${pointer.key_prefix}, not any list row owning ` +
+            `${owners[0]!.url}`,
+    });
   }
 
   // Ready rows own the corpus's vectors (non-ready rows never completed an

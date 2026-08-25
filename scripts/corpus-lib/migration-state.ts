@@ -21,12 +21,20 @@
 import { promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
+import { ListIndexItemSchema } from "../../src/schemas/api";
 
 const CopiedObjectSchema = z
   .object({
     from: z.string().min(1),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
     size: z.number().int().nonnegative(),
+    // The destination etag the sha256 describes. Certification requires it to
+    // match the destination's CURRENT listing etag — the link that keeps a
+    // stale entry (bytes rewritten outside this command between runs) from
+    // certifying a hash of older bytes, at zero read cost. Optional only for
+    // entries written before it existed; those re-plan as stale and the
+    // backfill recomputes them.
+    etag: z.string().min(1).optional(),
     copied_at: z.string(),
   })
   .strict();
@@ -51,14 +59,12 @@ const MigratedVectorSchema = z
 // the same content identity the copy plan already trusts for size+etag.
 const CachedRowEvidenceSchema = z
   .object({
-    manifest: z
-      .object({
-        etag: z.string().min(1),
-        id: z.string().min(1),
-        url: z.string().min(1),
-        status: z.string().min(1),
-      })
-      .strict()
+    // The manifest's FULL list projection (manifestToIndexItem minus
+    // key_prefix, which names where it was read from) — certification
+    // compares every projected field against the row, so the cache must carry
+    // them all.
+    manifest: ListIndexItemSchema.omit({ key_prefix: true })
+      .extend({ etag: z.string().min(1) })
       .optional(),
     pointer: z
       .object({
@@ -72,6 +78,18 @@ const CachedRowEvidenceSchema = z
   .strict();
 
 export type CachedRowEvidence = z.infer<typeof CachedRowEvidenceSchema>;
+
+// The by-url slot half of the evidence cache, keyed by url hash. Same rules:
+// evidence, never a verdict — the slot-vs-rows comparison reruns live.
+const CachedByUrlPointerSchema = z
+  .object({
+    etag: z.string().min(1),
+    id: z.string().min(1),
+    key_prefix: z.string().min(1),
+  })
+  .strict();
+
+export type CachedByUrlPointer = z.infer<typeof CachedByUrlPointerSchema>;
 
 export const MigrationStateSchema = z
   .object({
@@ -87,6 +105,8 @@ export const MigrationStateSchema = z
     // Keyed by list-row id. Optional: a pre-cache state file still loads, and
     // an absent or stale entry only costs the two reads it would have saved.
     evidence: z.record(CachedRowEvidenceSchema).optional(),
+    // Keyed by url hash — the by-url slot cache. Optional, same rules.
+    by_url: z.record(CachedByUrlPointerSchema).optional(),
     reconciled_at: z.string().optional(),
   })
   .strict();
@@ -112,7 +132,19 @@ export function newMigrationState(opts: {
 
 export async function loadMigrationState(path: string): Promise<MigrationState | null> {
   try {
-    return MigrationStateSchema.parse(JSON.parse(await fs.readFile(path, "utf8")));
+    const json: unknown = JSON.parse(await fs.readFile(path, "utf8"));
+    const parsed = MigrationStateSchema.safeParse(json);
+    if (parsed.success) return parsed.data;
+    // The evidence caches are an optimization, never a premise: a file whose
+    // LEDGER is sound but whose cache predates a schema change (or is
+    // otherwise undecodable) must still resume — dropping the cache only
+    // costs the reads it would have saved. Anything else stays a hard error.
+    if (typeof json === "object" && json !== null) {
+      const { evidence: _evidence, by_url: _byUrl, ...rest } = json as Record<string, unknown>;
+      const stripped = MigrationStateSchema.safeParse(rest);
+      if (stripped.success) return stripped.data;
+    }
+    throw parsed.error;
   } catch (e) {
     if (typeof e === "object" && e && "code" in e && (e as { code?: string }).code === "ENOENT") {
       return null;

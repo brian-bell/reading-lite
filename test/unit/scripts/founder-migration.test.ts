@@ -4,10 +4,11 @@ import {
   founderKeyRoot,
   isFullyMigrated,
   planFounderMigration,
+  type ByUrlSlotEvidence,
   type FounderMigrationInput,
   type RowEvidence,
 } from "../../../scripts/corpus-lib/founder-migration";
-import type { ListItem } from "../../../scripts/corpus-lib/types";
+import type { ListIndexItem } from "../../../src/schemas/api";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
 
 const TENANT = "usr_11111111-1111-4111-8111-111111111111";
@@ -16,7 +17,7 @@ const ROOT = `u/${TENANT}/`;
 const READY_PREFIX = "readings/2026/01/01T000000Z-rd_ready";
 const FAILED_PREFIX = "readings/2026/02/02T000000Z-rd_failed";
 
-const ROWS: ListItem[] = [
+const ROWS: ListIndexItem[] = [
   { id: "rd_ready", url: "https://a.example/x", status: "ready", created_at: "2026-01-01T00:00:00Z", key_prefix: READY_PREFIX },
   { id: "rd_failed", url: "https://b.example/y", status: "failed", created_at: "2026-02-02T00:00:00Z", key_prefix: FAILED_PREFIX },
 ];
@@ -25,16 +26,24 @@ function obj(key: string, size = 10, etag = `e-${key}`) {
   return { key, size, etag };
 }
 
-// Evidence that agrees with ROWS: each manifest projects the row's own
-// id/url/status, each by-id pointer targets the row's own key prefix.
-function agreeingEvidence(): Map<string, RowEvidence> {
+// Evidence that agrees with ROWS: each manifest projects the row's own full
+// list projection, each by-id pointer targets the row's own key prefix.
+function agreeingEvidence(rows: ListIndexItem[] = ROWS): Map<string, RowEvidence> {
   return new Map(
-    ROWS.map((row) => [
-      row.id,
-      {
-        manifest: { id: row.id, url: row.url, status: row.status },
-        pointer: { id: row.id, key_prefix: row.key_prefix },
-      },
+    rows.map((row) => {
+      const { key_prefix, ...projection } = row;
+      return [row.id, { manifest: projection, pointer: { id: row.id, key_prefix } }];
+    }),
+  );
+}
+
+// By-url slot evidence that agrees with ROWS: each URL's slot targets the row
+// that owns it.
+function agreeingByUrlEvidence(rows: ListIndexItem[] = ROWS): Map<string, ByUrlSlotEvidence> {
+  return new Map(
+    rows.map((row) => [
+      urlHash(row.url),
+      { pointer: { id: row.id, key_prefix: row.key_prefix } },
     ]),
   );
 }
@@ -75,6 +84,7 @@ function input(overrides: Partial<FounderMigrationInput> = {}): FounderMigration
     tenantVectors: new Map(),
     legacyVectors: new Map([["rd_ready", LEGACY_VECTOR]]),
     rowEvidence: agreeingEvidence(),
+    byUrlEvidence: agreeingByUrlEvidence(),
     ...overrides,
   };
 }
@@ -254,7 +264,7 @@ describe("planFounderMigration", () => {
     const plan = planFounderMigration(
       input({
         rowEvidence: withEvidence("rd_failed", {
-          manifest: { id: "rd_failed", url: "https://b.example/y", status: "ready" },
+          manifest: { id: "rd_failed", url: "https://b.example/y", status: "ready", created_at: "2026-02-02T00:00:00Z" },
           pointer: { id: "rd_failed", key_prefix: FAILED_PREFIX },
         }),
       }),
@@ -274,7 +284,7 @@ describe("planFounderMigration", () => {
     const plan = planFounderMigration(
       input({
         rowEvidence: withEvidence("rd_ready", {
-          manifest: { id: "rd_other", url: "https://elsewhere.example/z", status: "ready" },
+          manifest: { id: "rd_other", url: "https://elsewhere.example/z", status: "ready", created_at: "2026-01-01T00:00:00Z" },
           pointer: { id: "rd_ready", key_prefix: READY_PREFIX },
         }),
       }),
@@ -282,6 +292,112 @@ describe("planFounderMigration", () => {
     const mismatch = plan.problems.find((p) => p.kind === "row_manifest_mismatch");
     expect(mismatch?.detail).toContain("rd_other");
     expect(mismatch?.detail).toContain("https://elsewhere.example/z");
+  });
+
+  it("blocks a row whose manifest projection drifted beyond id/url/status — stale title or tldr", () => {
+    // The list rows are what readers are served; a byte-identical copy of a
+    // row whose title/tldr went stale would otherwise certify out of sync
+    // with its manifest. Both directions are drift: a field the manifest
+    // dropped is as stale as one it changed.
+    const staleTitle = withEvidence("rd_ready", {
+      manifest: {
+        id: "rd_ready", url: "https://a.example/x", status: "ready",
+        created_at: "2026-01-01T00:00:00Z", title: "Fresh title", tldr: "Fresh summary",
+      },
+      pointer: { id: "rd_ready", key_prefix: READY_PREFIX },
+    });
+    const plan = planFounderMigration(input({ rowEvidence: staleTitle }));
+    const mismatch = plan.problems.find((p) => p.kind === "row_manifest_mismatch");
+    expect(mismatch?.detail).toContain("title Fresh title");
+    expect(mismatch?.detail).toContain("tldr Fresh summary");
+    expect(isFullyMigrated(plan)).toBe(false);
+
+    const rowsWithTitle = ROWS.map((row) =>
+      row.id === "rd_ready" ? { ...row, title: "Stale row title" } : row,
+    );
+    const dropped = planFounderMigration(
+      input({ listRows: rowsWithTitle, rowEvidence: agreeingEvidence() }),
+    );
+    const droppedMismatch = dropped.problems.find((p) => p.kind === "row_manifest_mismatch");
+    expect(droppedMismatch?.detail).toContain("title absent from the manifest");
+  });
+
+  it("blocks a by-url pointer that is unparseable — resolveOwner throws on it with no self-heal", () => {
+    const byUrl = agreeingByUrlEvidence();
+    byUrl.set(urlHash("https://a.example/x"), { pointer_error: "Unexpected token in JSON" });
+    const plan = planFounderMigration(input({ byUrlEvidence: byUrl }));
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "by_url_pointer_invalid",
+        detail: expect.stringContaining("Unexpected token in JSON"),
+      }),
+    ]);
+    expect(executeBlockingProblems(plan)).toHaveLength(1);
+    expect(isFullyMigrated(plan)).toBe(false);
+  });
+
+  it("blocks a by-url pointer that targets a reading which does not own the slot's URL", () => {
+    const byUrl = agreeingByUrlEvidence();
+    byUrl.set(urlHash("https://a.example/x"), {
+      pointer: { id: "rd_failed", key_prefix: FAILED_PREFIX },
+    });
+    const plan = planFounderMigration(input({ byUrlEvidence: byUrl }));
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "by_url_pointer_invalid",
+        detail: expect.stringContaining("rd_failed"),
+      }),
+    ]);
+  });
+
+  it("lets duplicate-URL rows share one by-url slot owned by either copy", () => {
+    const shared = "https://c.example/z";
+    const prefixA = "readings/2026/03/03T000000Z-rd_dupa";
+    const prefixB = "readings/2026/04/04T000000Z-rd_dupb";
+    const rows: ListIndexItem[] = [
+      { id: "rd_dupa", url: shared, status: "failed", created_at: "2026-03-03T00:00:00Z", key_prefix: prefixA },
+      { id: "rd_dupb", url: shared, status: "failed", created_at: "2026-04-04T00:00:00Z", key_prefix: prefixB },
+    ];
+    const objects = [
+      obj("index/list.json"),
+      obj("index/by-id/rd_dupa"),
+      obj("index/by-id/rd_dupb"),
+      obj(`index/by-url/${urlHash(shared)}`),
+      obj(`${prefixA}/manifest.json`),
+      obj(`${prefixB}/manifest.json`),
+    ];
+    // The slot is owned by whichever copy claimed it — either row certifies.
+    for (const owner of rows) {
+      const plan = planFounderMigration(
+        input({
+          objects,
+          listRows: rows,
+          rowEvidence: agreeingEvidence(rows),
+          byUrlEvidence: new Map([
+            [urlHash(shared), { pointer: { id: owner.id, key_prefix: owner.key_prefix } }],
+          ]),
+          legacyVectors: new Map(),
+        }),
+      );
+      expect(plan.problems).toEqual([]);
+    }
+  });
+
+  it("flags a dangling by-url slot no list row's URL hashes to", () => {
+    const dangling = obj(`index/by-url/${urlHash("https://gone.example/dropped")}`);
+    const byUrl = agreeingByUrlEvidence();
+    byUrl.set(urlHash("https://gone.example/dropped"), {
+      pointer: { id: "rd_gone", key_prefix: "readings/2020/01/01T000000Z-rd_gone" },
+    });
+    const plan = planFounderMigration(
+      input({ objects: [...SOURCE_OBJECTS, dangling], byUrlEvidence: byUrl }),
+    );
+    expect(plan.problems).toEqual([
+      expect.objectContaining({
+        kind: "by_url_pointer_invalid",
+        detail: expect.stringContaining("dangling"),
+      }),
+    ]);
   });
 
   it("blocks on a manifest that is present but unreadable", () => {
@@ -306,7 +422,7 @@ describe("planFounderMigration", () => {
       { id: "rd_other", key_prefix: READY_PREFIX },
       { id: "rd_ready", key_prefix: "readings/2020/01/01T000000Z-rd_ready" },
     ]) {
-      const plan = planFounderMigration(input({ rowEvidence: withEvidence("rd_ready", { manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready" }, pointer }) }));
+      const plan = planFounderMigration(input({ rowEvidence: withEvidence("rd_ready", { manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready", created_at: "2026-01-01T00:00:00Z" }, pointer }) }));
       expect(plan.problems).toEqual([
         expect.objectContaining({
           kind: "row_by_id_pointer_invalid",
@@ -321,7 +437,7 @@ describe("planFounderMigration", () => {
     const plan = planFounderMigration(
       input({
         rowEvidence: withEvidence("rd_ready", {
-          manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready" },
+          manifest: { id: "rd_ready", url: "https://a.example/x", status: "ready", created_at: "2026-01-01T00:00:00Z" },
           pointer_error: "did not parse as a by-id pointer: key_prefix required",
         }),
       }),

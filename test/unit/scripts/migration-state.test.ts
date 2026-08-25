@@ -57,9 +57,23 @@ describe("migration state ledger", () => {
           id: "rd_a",
           url: "https://a.example/x",
           status: "ready",
+          created_at: "2026-01-01T00:00:00Z",
+          title: "A title",
+          tldr: "A summary",
+          tags: ["t"],
         },
         pointer: { etag: "etag-b", id: "rd_a", key_prefix: "readings/2026/01/01T000000Z-rd_a" },
       },
+    };
+    state.by_url = {
+      ["a".repeat(64)]: { etag: "etag-c", id: "rd_a", key_prefix: "readings/2026/01/01T000000Z-rd_a" },
+    };
+    state.copies["u/usr/readings/2026/01/01T000000Z-rd_a/manifest.json"] = {
+      from: "readings/2026/01/01T000000Z-rd_a/manifest.json",
+      sha256: "b".repeat(64),
+      size: 12,
+      etag: "etag-d",
+      copied_at: "2026-08-24T00:00:00.000Z",
     };
     await saveMigrationState(path, state);
     expect(await loadMigrationState(path)).toEqual(state);
@@ -85,6 +99,35 @@ describe("migration state ledger", () => {
       }),
     );
     expect((await loadMigrationState(legacy))?.evidence).toBeUndefined();
+  });
+
+  it("drops an undecodable evidence cache on load instead of failing the resume", async () => {
+    // The caches are an optimization, never a premise: a ledger whose
+    // evidence predates a schema change (here the pre-projection three-field
+    // manifest shape) must still resume — losing the cache only costs reads.
+    const { writeFile } = await import("node:fs/promises");
+    const path = join(dir, "stale-evidence.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        tenant: TENANT,
+        bucket: "reading-lite",
+        vectorize: "reading-lite",
+        started_at: "2026-08-24T00:00:00.000Z",
+        copies: {
+          "u/usr/x": { from: "x", sha256: "c".repeat(64), size: 1, copied_at: "t" },
+        },
+        vectors: {},
+        evidence: {
+          rd_a: { manifest: { etag: "e", id: "rd_a", url: "https://a.example/x", status: "ready" } },
+        },
+      }),
+    );
+    const loaded = await loadMigrationState(path);
+    expect(loaded?.copies["u/usr/x"]?.sha256).toBe("c".repeat(64));
+    expect(loaded?.evidence).toBeUndefined();
+    expect(loaded?.by_url).toBeUndefined();
   });
 
   it("returns null for a missing file but throws loudly on a corrupt one", async () => {

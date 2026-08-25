@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   corpusMigrateFounderCommand,
@@ -24,7 +25,10 @@ const LIST_DOC = {
       id: "rd_ready",
       url: "https://a.example/x",
       status: "ready",
-      created_at: "2026-01-01T00:00:00Z",
+      // Copied verbatim from the manifest by the writer, and now certified
+      // field-for-field against it.
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
       key_prefix: READY_PREFIX,
     },
   ],
@@ -267,6 +271,26 @@ describe("ops corpus migrate-founder — plan mode", () => {
     }
   });
 
+  it("refuses to certify a by-url slot that is malformed or targets a non-owner", async () => {
+    // resolveOwner parses the slot before any repair runs, so a malformed
+    // slot 500s every submit/lookup for its URL after cutover — and it would
+    // have copied verbatim and certified under a presence-only check.
+    for (const body of [
+      "not json",
+      JSON.stringify({ id: "rd_other", key_prefix: "readings/2020/01/01T000000Z-rd_other" }),
+    ]) {
+      const h = makeHarness();
+      h.objects.set(`index/by-url/${urlHash("https://a.example/x")}`, {
+        body,
+        contentType: "application/json",
+      });
+      const code = await run(["--tenant", TENANT], h);
+      expect(code).toBe(1);
+      expect(h.err.join("\n")).toContain("by_url_pointer_invalid");
+      expect(h.err.join("\n")).toContain("Resolve the problems above before executing");
+    }
+  });
+
   it("refuses to certify a manifest that is present but does not parse", async () => {
     const h = makeHarness();
     h.objects.set(`${READY_PREFIX}/manifest.json`, { body: "{}", contentType: "application/json" });
@@ -278,24 +302,37 @@ describe("ops corpus migrate-founder — plan mode", () => {
 
 describe("ops corpus migrate-founder — certification cost", () => {
   const evidenceGets = (h: Harness) =>
-    h.gets.filter((k) => k.endsWith("/manifest.json") || k.startsWith("index/by-id/"));
+    h.gets.filter(
+      (k) =>
+        k.endsWith("/manifest.json") || k.startsWith("index/by-id/") || k.startsWith("index/by-url/"),
+    );
 
-  it("reads each row's manifest and pointer once on a cold plan", async () => {
+  it("reads each row's manifest and pointer, and each by-url slot, once on a cold plan", async () => {
     const h = makeHarness();
     await run(["--tenant", TENANT], h);
-    expect(evidenceGets(h)).toEqual([`${READY_PREFIX}/manifest.json`, "index/by-id/rd_ready"]);
-    expect(h.err.join("\n")).toContain("2 object reads, 0 served from");
+    expect(evidenceGets(h)).toEqual([
+      `${READY_PREFIX}/manifest.json`,
+      "index/by-id/rd_ready",
+      `index/by-url/${urlHash("https://a.example/x")}`,
+    ]);
+    expect(h.err.join("\n")).toContain("3 object reads, 0 served from");
   });
 
   it("serves an unchanged corpus from the state file's etag cache instead of re-reading", async () => {
     const h = makeHarness();
     await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(h.stateOnDisk.value?.evidence?.rd_ready?.manifest?.id).toBe("rd_ready");
+    expect(h.stateOnDisk.value?.evidence?.rd_ready?.manifest?.updated_at).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(
+      h.stateOnDisk.value?.by_url?.[urlHash("https://a.example/x")]?.id,
+    ).toBe("rd_ready");
     h.gets.length = 0;
     const code = await run(["--tenant", TENANT], h);
     expect(code).toBe(0);
     expect(evidenceGets(h)).toEqual([]);
-    expect(h.err.join("\n")).toContain("0 object reads, 2 served from");
+    expect(h.err.join("\n")).toContain("0 object reads, 3 served from");
   });
 
   it("re-reads a row whose manifest actually changed, and only that row", async () => {
@@ -343,7 +380,7 @@ describe("ops corpus migrate-founder — certification cost", () => {
     h.gets.length = 0;
     const code = await run(["--tenant", TENANT], h);
     expect(code).toBe(0);
-    expect(evidenceGets(h)).toHaveLength(2);
+    expect(evidenceGets(h)).toHaveLength(3);
   });
 
   it("plan mode tolerates an unreadable state file — the cache is an optimization, not a premise", async () => {
@@ -353,7 +390,7 @@ describe("ops corpus migrate-founder — certification cost", () => {
     };
     const code = await run(["--tenant", TENANT], h);
     expect(code).toBe(0);
-    expect(evidenceGets(h)).toHaveLength(2);
+    expect(evidenceGets(h)).toHaveLength(3);
   });
 
   it("gathers the R2 inventory once per phase however long vectors take to appear", async () => {
@@ -380,7 +417,11 @@ describe("ops corpus migrate-founder — certification cost", () => {
     expect(h.sleeps).toEqual([5000, 5000, 5000]);
     expect(h.lists.n).toBe(2);
     expect(h.gets.filter((k) => k === "index/list.json")).toHaveLength(2);
-    expect(evidenceGets(h)).toEqual([`${READY_PREFIX}/manifest.json`, "index/by-id/rd_ready"]);
+    expect(evidenceGets(h)).toEqual([
+      `${READY_PREFIX}/manifest.json`,
+      "index/by-id/rd_ready",
+      `index/by-url/${urlHash("https://a.example/x")}`,
+    ]);
   });
 });
 
@@ -530,10 +571,11 @@ describe("ops corpus migrate-founder — execute", () => {
     const h = makeHarness();
     await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
-    // The global writer ran since certification: two new objects appear, and
-    // a limited resume copies only one of them.
-    h.objects.set("index/by-id/rd_new", { body: "{}", contentType: "application/json" });
-    h.objects.set("index/by-url/ffff", { body: "{}", contentType: "application/json" });
+    // The global writer ran since certification: two new attempt objects
+    // appear (content-neutral for certification), and a limited resume copies
+    // only one of them.
+    h.objects.set(`${READY_PREFIX}/attempts/at_2.json`, { body: "{}", contentType: "application/json" });
+    h.objects.set(`${READY_PREFIX}/attempts/at_3.json`, { body: "{}", contentType: "application/json" });
     const code = await run(["--tenant", TENANT, "--execute", "--sole-writer", "--limit", "1"], h);
     expect(code).toBe(1);
     expect(h.stateOnDisk.value?.reconciled_at).toBeUndefined();
@@ -562,6 +604,38 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(final.copies[lostCopy]?.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(final.vectors.rd_ready?.tenant_vector_id).toBe(`${TENANT}:rd_ready`);
     expect(final.reconciled_at).toBeDefined();
+  });
+
+  it("re-verifies a stale ledger entry against the destination before re-certifying", async () => {
+    // Source and destination rewritten identically outside this command
+    // between runs: the corpus reconciles (destination matches source), but
+    // the ledger's sha256 describes the OLD bytes. Presence alone would
+    // re-certify that hash; the recorded etag no longer matches the listing,
+    // so the entry re-plans as stale and the backfill recomputes it.
+    const h = makeHarness();
+    await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    const key = `${READY_PREFIX}/extracted.md`;
+    const dest = `u/${TENANT}/${key}`;
+    const oldSha = h.stateOnDisk.value!.copies[dest]!.sha256;
+    h.objects.set(key, { body: "# changed", contentType: "text/markdown" });
+    h.objects.set(dest, { body: "# changed", contentType: "text/markdown" });
+    // A pre-etag ledger entry is stale the same way: no recorded etag, so it
+    // cannot vouch for the current bytes.
+    const manifestDest = `u/${TENANT}/${READY_PREFIX}/manifest.json`;
+    delete h.stateOnDisk.value!.copies[manifestDest]!.etag;
+    const putsBefore = h.puts.length;
+
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    // Recomputed from the destination bytes, not re-copied.
+    expect(h.puts).toHaveLength(putsBefore);
+    expect(h.err.join("\n")).toContain("Backfilled 2 ledger entries");
+    const entry = h.stateOnDisk.value!.copies[dest]!;
+    expect(entry.sha256).not.toBe(oldSha);
+    expect(entry.sha256).toBe(createHash("sha256").update("# changed").digest("hex"));
+    expect(entry.etag).toBe("etag-9-# change");
+    expect(h.stateOnDisk.value!.copies[manifestDest]!.etag).toBeDefined();
+    expect(h.stateOnDisk.value!.reconciled_at).toBeDefined();
   });
 
   it("waits out asynchronous Vectorize visibility before concluding reconciliation", async () => {

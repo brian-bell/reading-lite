@@ -15,14 +15,21 @@
 
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
-import { ListIndexSchema } from "../../../src/schemas/api";
+import { ListIndexSchema, type ListIndexItem } from "../../../src/schemas/api";
 import { ByUrlPointerSchema, ManifestSchema } from "../../../src/schemas/manifest";
-import { BY_ID_PREFIX, LIST_INDEX_KEY, MANIFEST_FILE } from "../../../src/modules/stores/layout";
+import { manifestToIndexItem } from "../../../src/modules/stores/list-index";
+import {
+  BY_ID_PREFIX,
+  BY_URL_PREFIX,
+  LIST_INDEX_KEY,
+  MANIFEST_FILE,
+} from "../../../src/modules/stores/layout";
 import { resolveBucket } from "../../corpus-lib/config";
 import {
   executeBlockingProblems,
   isFullyMigrated,
   planFounderMigration,
+  type ByUrlSlotEvidence,
   type FounderMigrationInput,
   type FounderMigrationPlan,
   type RowEvidence,
@@ -31,11 +38,11 @@ import {
   loadMigrationState,
   newMigrationState,
   saveMigrationState,
+  type CachedByUrlPointer,
   type CachedRowEvidence,
   type MigrationState,
 } from "../../corpus-lib/migration-state";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
-import type { ListItem } from "../../corpus-lib/types";
 import type {
   R2InventoryClient,
   R2ObjectMeta,
@@ -135,10 +142,10 @@ function parseMigrateArgs(argv: string[]): Args {
 // rather than read as an empty or smaller corpus.
 function parseListRows(
   body: string | null,
-): { rows: ListItem[]; error?: string } {
+): { rows: ListIndexItem[]; error?: string } {
   if (body === null) return { rows: [] };
   try {
-    return { rows: ListIndexSchema.parse(JSON.parse(body)).items as ListItem[] };
+    return { rows: ListIndexSchema.parse(JSON.parse(body)).items };
   } catch (e) {
     return {
       rows: [],
@@ -170,7 +177,7 @@ export type RowEvidenceCache = Record<string, CachedRowEvidence>;
 // so entries for rows the index no longer has drop out rather than accumulate.
 async function gatherRowEvidence(
   r2: Pick<R2InventoryClient, "get">,
-  rows: ListItem[],
+  rows: ListIndexItem[],
   present: ReadonlyMap<string, string>,
   cache: RowEvidenceCache,
 ): Promise<{
@@ -202,14 +209,18 @@ async function gatherRowEvidence(
       if (manifestEtag !== undefined) {
         if (cached?.manifest?.etag === manifestEtag) {
           hits++;
-          const { id, url, status } = cached.manifest;
-          ev.manifest = { id, url, status };
+          const { etag: _etag, ...projection } = cached.manifest;
+          ev.manifest = projection;
           fresh.manifest = cached.manifest;
         } else {
           try {
             const m = ManifestSchema.parse(await readOne(manifestKey));
-            ev.manifest = { id: m.id, url: m.url, status: m.status };
-            fresh.manifest = { etag: manifestEtag, ...ev.manifest };
+            // The writer's own projection, in full — certification compares
+            // every projected field against the row, not just id/url/status.
+            const { key_prefix: _keyPrefix, ...projection }: ListIndexItem =
+              manifestToIndexItem(m, row.key_prefix);
+            ev.manifest = projection;
+            fresh.manifest = { etag: manifestEtag, ...projection };
           } catch (e) {
             ev.manifest_error = firstLine(e);
           }
@@ -246,6 +257,61 @@ async function gatherRowEvidence(
   return { evidence, cache: nextCache, reads, hits };
 }
 
+export type ByUrlPointerCache = Record<string, CachedByUrlPointer>;
+
+// The content half of the per-slot by-url expectations: strictly parse every
+// by-url slot the listing has, so certification can require each slot to
+// target a row that owns its URL rather than merely exist (a malformed slot
+// throws in resolveOwner before any repair runs — no self-heal). Same
+// etag-addressed cache discipline as gatherRowEvidence: one read per slot on
+// the first pass, nearly free afterwards.
+async function gatherByUrlEvidence(
+  r2: Pick<R2InventoryClient, "get">,
+  present: ReadonlyMap<string, string>,
+  cache: ByUrlPointerCache,
+): Promise<{
+  evidence: Map<string, ByUrlSlotEvidence>;
+  cache: ByUrlPointerCache;
+  reads: number;
+  hits: number;
+}> {
+  const slots = [...present.keys()].filter((key) => key.startsWith(BY_URL_PREFIX)).sort();
+  const evidence = new Map<string, ByUrlSlotEvidence>();
+  const nextCache: ByUrlPointerCache = {};
+  let reads = 0;
+  let hits = 0;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < slots.length; i = next++) {
+      const key = slots[i]!;
+      const hash = key.slice(BY_URL_PREFIX.length);
+      const etag = present.get(key)!;
+      const cached = cache[hash];
+      if (cached?.etag === etag) {
+        hits++;
+        const { id, key_prefix } = cached;
+        evidence.set(hash, { pointer: { id, key_prefix } });
+        nextCache[hash] = cached;
+        continue;
+      }
+      try {
+        reads++;
+        const body = await r2.get(key);
+        if (body === null) throw new Error("listed but unreadable");
+        const pointer = ByUrlPointerSchema.parse(JSON.parse(body));
+        evidence.set(hash, { pointer });
+        nextCache[hash] = { etag, ...pointer };
+      } catch (e) {
+        evidence.set(hash, { pointer_error: firstLine(e) });
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(EVIDENCE_CONCURRENCY, slots.length) }, worker),
+  );
+  return { evidence, cache: nextCache, reads, hits };
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -264,17 +330,25 @@ function chunk<T>(items: T[], size: number): T[][] {
 // half per retry would re-list and re-read the whole corpus to learn nothing.
 interface R2Inventory {
   objects: R2ObjectMeta[];
-  rows: ListItem[];
+  rows: ListIndexItem[];
   listIndexError?: string;
   rowEvidence: Map<string, RowEvidence>;
   evidenceCache: RowEvidenceCache;
+  byUrlEvidence: Map<string, ByUrlSlotEvidence>;
+  byUrlCache: ByUrlPointerCache;
   evidenceReads: number;
   evidenceHits: number;
 }
 
+// Both halves of the state file's etag-addressed evidence cache.
+export interface EvidenceCaches {
+  rows: RowEvidenceCache;
+  byUrl: ByUrlPointerCache;
+}
+
 async function gatherR2Inventory(
   clients: MigrateFounderClients,
-  cache: RowEvidenceCache,
+  caches: EvidenceCaches,
 ): Promise<R2Inventory> {
   const objects = await clients.r2.listObjects();
   const body = await clients.r2.get(LIST_INDEX_KEY);
@@ -285,15 +359,18 @@ async function gatherR2Inventory(
   const source = new Map(
     objects.filter((o) => !o.key.startsWith("u/")).map((o) => [o.key, o.etag]),
   );
-  const gathered = await gatherRowEvidence(clients.r2, rows, source, cache);
+  const gathered = await gatherRowEvidence(clients.r2, rows, source, caches.rows);
+  const byUrl = await gatherByUrlEvidence(clients.r2, source, caches.byUrl);
   return {
     objects,
     rows,
     ...(error === undefined ? {} : { listIndexError: error }),
     rowEvidence: gathered.evidence,
     evidenceCache: gathered.cache,
-    evidenceReads: gathered.reads,
-    evidenceHits: gathered.hits,
+    byUrlEvidence: byUrl.evidence,
+    byUrlCache: byUrl.cache,
+    evidenceReads: gathered.reads + byUrl.reads,
+    evidenceHits: gathered.hits + byUrl.hits,
   };
 }
 
@@ -302,7 +379,7 @@ async function gatherR2Inventory(
 async function probeVectors(
   clients: MigrateFounderClients,
   tenantId: string,
-  rows: ListItem[],
+  rows: ListIndexItem[],
 ): Promise<Pick<FounderMigrationInput, "tenantVectors" | "legacyVectors">> {
   const readyIds = rows.filter((r) => r.status === "ready").map((r) => r.id);
   const probeIds = readyIds.flatMap((id) => [id, `${tenantId}:${id}`]);
@@ -324,9 +401,9 @@ async function probeVectors(
 async function gatherPlan(
   clients: MigrateFounderClients,
   tenantId: string,
-  cache: RowEvidenceCache,
+  caches: EvidenceCaches,
 ): Promise<{ plan: FounderMigrationPlan; inventory: R2Inventory }> {
-  const inventory = await gatherR2Inventory(clients, cache);
+  const inventory = await gatherR2Inventory(clients, caches);
   const plan = planFromInventory(
     tenantId,
     inventory,
@@ -345,6 +422,7 @@ function planFromInventory(
     objects: inventory.objects,
     listRows: inventory.rows,
     rowEvidence: inventory.rowEvidence,
+    byUrlEvidence: inventory.byUrlEvidence,
     ...(inventory.listIndexError === undefined
       ? {}
       : { listIndexError: inventory.listIndexError }),
@@ -361,19 +439,22 @@ async function peekEvidenceCache(
   deps: CorpusMigrateFounderDeps,
   args: Args,
   tenantId: string,
-): Promise<RowEvidenceCache> {
+): Promise<EvidenceCaches> {
+  const empty: EvidenceCaches = { rows: {}, byUrl: {} };
   let state: MigrationState | null;
   try {
     state = await deps.loadState(args.state);
   } catch {
-    return {};
+    return empty;
   }
-  if (!state) return {};
+  if (!state) return empty;
   const sameTarget =
     state.tenant === tenantId &&
     state.bucket === args.bucket &&
     state.vectorize === args.vectorize;
-  return sameTarget ? (state.evidence ?? {}) : {};
+  return sameTarget
+    ? { rows: state.evidence ?? {}, byUrl: state.by_url ?? {} }
+    : empty;
 }
 
 // Certification reads two objects per row, so say what that cost — and what
@@ -383,7 +464,7 @@ async function peekEvidenceCache(
 function printEvidenceCost(io: CommandIo, inventory: R2Inventory): void {
   if (inventory.rows.length === 0) return;
   io.stderr(
-    `Verified ${inventory.rows.length} row(s) against their manifest and by-id pointer ` +
+    `Verified ${inventory.rows.length} row(s) against their manifest, by-id pointer, and by-url slot ` +
       `(${inventory.evidenceReads} object read${inventory.evidenceReads === 1 ? "" : "s"}, ` +
       `${inventory.evidenceHits} served from the state file's etag cache).`,
   );
@@ -532,18 +613,25 @@ async function runCorpusMigrateFounder(
   // Carry this pass's verification forward even if the run is interrupted
   // before reconciliation: the next one re-reads only what actually moved.
   state.evidence = inventory.evidenceCache;
+  state.by_url = inventory.byUrlCache;
 
   let errors = 0;
 
-  // Ledger backfill: a crash in the window between a successful remote write
-  // and its next checkpoint leaves the object (or vector) live but absent
-  // from the ledger — the plan marks it done, the resume filter skips it, and
-  // the sha256/vector record would be missing forever. Rebuild those entries
-  // from the destination objects before continuing, so a resumed run's ledger
-  // is as complete as the corpus it certifies.
+  // Ledger backfill, for entries that are missing OR stale. Missing: a crash
+  // in the window between a successful remote write and its next checkpoint
+  // leaves the object (or vector) live but absent from the ledger — the plan
+  // marks it done, the resume filter skips it, and the sha256/vector record
+  // would be missing forever. Stale: an entry whose recorded etag is not the
+  // etag the destination lists NOW describes older bytes (source and
+  // destination rewritten outside this command between runs, or an entry
+  // predating the etag field) — certifying it would advertise a hash ledger
+  // of bytes that no longer exist. Rebuild both classes from the destination
+  // objects before continuing, so a resumed run's ledger is as complete and
+  // current as the corpus it certifies. (`copy.etag` is the source etag; a
+  // "copied" status already proves the destination lists the same etag.)
   let backfilled = 0;
   for (const copy of plan.copies) {
-    if (copy.status !== "copied" || state.copies[copy.to] !== undefined) continue;
+    if (copy.status !== "copied" || state.copies[copy.to]?.etag === copy.etag) continue;
     const got = await clients.r2.getBytes(copy.to);
     if (got === null) {
       errors++;
@@ -554,6 +642,7 @@ async function runCorpusMigrateFounder(
       from: copy.from,
       sha256: createHash("sha256").update(got.body).digest("hex"),
       size: got.body.length,
+      etag: copy.etag,
       copied_at: deps.now(),
     };
     backfilled++;
@@ -567,7 +656,7 @@ async function runCorpusMigrateFounder(
     backfilled++;
   }
   if (backfilled > 0) {
-    io.stderr(`Backfilled ${backfilled} ledger entr${backfilled === 1 ? "y" : "ies"} for writes that predate their checkpoint.`);
+    io.stderr(`Backfilled ${backfilled} ledger entr${backfilled === 1 ? "y" : "ies"} missing or stale in the checkpoint.`);
     await deps.saveState(args.state, state);
   }
 
@@ -588,6 +677,7 @@ async function runCorpusMigrateFounder(
       from: copy.from,
       sha256: createHash("sha256").update(got.body).digest("hex"),
       size: got.body.length,
+      etag: copy.etag,
       copied_at: deps.now(),
     };
     copiedNow++;
@@ -650,9 +740,13 @@ async function runCorpusMigrateFounder(
   // never written, destinations were written synchronously above, and the
   // realtime writer is paused), so re-listing and re-reading the corpus per
   // retry would burn the whole inventory to re-learn an unchanged answer.
-  const reconInventory = await gatherR2Inventory(clients, inventory.evidenceCache);
+  const reconInventory = await gatherR2Inventory(clients, {
+    rows: inventory.evidenceCache,
+    byUrl: inventory.byUrlCache,
+  });
   printEvidenceCost(io, reconInventory);
   state.evidence = reconInventory.evidenceCache;
+  state.by_url = reconInventory.byUrlCache;
   let reconciled: FounderMigrationPlan;
   for (let attempt = 0; ; attempt++) {
     reconciled = planFromInventory(
@@ -674,18 +768,21 @@ async function runCorpusMigrateFounder(
     await deps.sleep(RECONCILE_DELAY_MS);
   }
   // reconciled_at certifies the ledger as well as the corpus: every copied
-  // object must carry its sha256 entry and every migrated vector its record.
-  // The backfill above makes this hold; the guard keeps a future gap from
-  // silently certifying an incomplete ledger.
+  // object must carry a sha256 entry recorded AT the etag the destination
+  // lists now — presence alone would let an entry from an earlier run certify
+  // a hash of older bytes — and every migrated vector its record. The
+  // backfill above makes this hold; the guard keeps a future gap from
+  // silently certifying an incomplete or stale ledger. (`c.etag` is the
+  // source etag, which a "copied" status proves the destination shares.)
   const ledgerComplete =
-    reconciled.copies.every((c) => c.status !== "copied" || state.copies[c.to] !== undefined) &&
+    reconciled.copies.every((c) => c.status !== "copied" || state.copies[c.to]?.etag === c.etag) &&
     reconciled.vectors.every((v) => v.status !== "upserted" || state.vectors[v.reading_id] !== undefined);
   const certified = isFullyMigrated(reconciled) && ledgerComplete;
   if (certified) {
     state.reconciled_at = deps.now();
   } else {
     if (isFullyMigrated(reconciled)) {
-      io.stderr("  ! corpus reconciles but the ledger is missing entries — rerun to backfill them.");
+      io.stderr("  ! corpus reconciles but the ledger has missing or stale entries — rerun to backfill them.");
     }
     // The certificate must never outlive the state it certified: a resumed
     // pass that finds new work (e.g. the global writer ran since the last
