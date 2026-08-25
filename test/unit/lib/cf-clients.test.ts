@@ -129,6 +129,41 @@ describe("makeR2Client", () => {
     expect(second.url).toContain("continuation-token=next+token");
   });
 
+  it("lists object metadata with sizes and unquoted etags, honoring a prefix", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?>
+        <ListBucketResult>
+          <IsTruncated>false</IsTruncated>
+          <Contents><Key>index/list.json</Key><Size>120</Size><ETag>&quot;abc123&quot;</ETag></Contents>
+          <Contents><Key>readings/a/manifest.json</Key><Size>456</Size><ETag>&quot;def456&quot;</ETag></Contents>
+        </ListBucketResult>`,
+        { status: 200 },
+      ),
+    );
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(r2.listObjects("index/")).resolves.toEqual([
+      { key: "index/list.json", size: 120, etag: "abc123" },
+      { key: "readings/a/manifest.json", size: 456, etag: "def456" },
+    ]);
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.url).toContain("prefix=index%2F");
+  });
+
+  it("getBytes round-trips binary bodies with their content type", async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } }),
+    );
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    const out = await r2.getBytes("readings/a/raw.pdf");
+    expect(out?.contentType).toBe("application/pdf");
+    expect([...(out?.body ?? [])]).toEqual([...bytes]);
+
+    const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
+    expect(await makeR2Client(r2Config, missFetch as unknown as typeof fetch).getBytes("k")).toBeNull();
+  });
+
   it("deletes object keys", async () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
     const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
@@ -209,6 +244,61 @@ describe("makeVectorizeClient", () => {
       fetchFn as unknown as typeof fetch,
     );
     await expect(vec.query([1], { topK: 1 })).rejects.toThrow(/Vectorize/);
+  });
+
+  it("fetches stored vectors by id, tolerating both result shapes", async () => {
+    const vectors = [
+      { id: "rd_a", values: [0.1], metadata: { url: "https://x" } },
+      { id: "usr_1:rd_a", values: [0.1], namespace: "usr_1" },
+    ];
+    for (const result of [vectors, { vectors }]) {
+      const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+        new Response(JSON.stringify({ result, success: true }), { status: 200 }),
+      );
+      const vec = makeVectorizeClient(
+        { accountId: "acct123", index: "reading-lite", apiToken: "cf-token" },
+        fetchFn as unknown as typeof fetch,
+      );
+      const out = await vec.getByIds(["rd_a", "usr_1:rd_a"]);
+      expect(out).toEqual(vectors);
+      const [url, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
+      expect(url).toContain("/indexes/reading-lite/get_by_ids");
+      expect(JSON.parse(init.body as string)).toEqual({ ids: ["rd_a", "usr_1:rd_a"] });
+    }
+  });
+
+  it("getByIds normalizes a null namespace to absent — unnamespaced means undefined", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(
+        JSON.stringify({
+          result: [
+            { id: "rd_a", values: [0.1], namespace: null, metadata: { url: "https://x" } },
+            { id: "usr_1:rd_a", values: [0.1], namespace: "usr_1" },
+          ],
+          success: true,
+        }),
+        { status: 200 },
+      ),
+    );
+    const vec = makeVectorizeClient(
+      { accountId: "a", index: "i", apiToken: "t" },
+      fetchFn as unknown as typeof fetch,
+    );
+    const out = await vec.getByIds(["rd_a", "usr_1:rd_a"]);
+    expect(out[0]).toEqual({ id: "rd_a", values: [0.1], metadata: { url: "https://x" } });
+    expect("namespace" in out[0]!).toBe(false);
+    expect(out[1]?.namespace).toBe("usr_1");
+  });
+
+  it("getByIds with no ids makes no request; errors throw", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("no", { status: 500 }));
+    const vec = makeVectorizeClient(
+      { accountId: "a", index: "i", apiToken: "t" },
+      fetchFn as unknown as typeof fetch,
+    );
+    expect(await vec.getByIds([])).toEqual([]);
+    expect(fetchFn).not.toHaveBeenCalled();
+    await expect(vec.getByIds(["rd_a"])).rejects.toThrow(/get_by_ids/);
   });
 });
 

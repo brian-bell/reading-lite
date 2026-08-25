@@ -18,6 +18,29 @@ export interface R2Client {
   listKeys(): Promise<string[]>;
 }
 
+export interface R2ObjectMeta {
+  key: string;
+  size: number;
+  // The S3 ETag with its surrounding quotes stripped. For single-part objects
+  // (everything this corpus writes) it is the content MD5, so source/dest
+  // equality is a byte-identity check.
+  etag: string;
+}
+
+export interface R2ObjectBody {
+  body: Uint8Array;
+  contentType: string | null;
+}
+
+// The inventory-grade superset the founder migration needs (reading-lite-
+// s1k.6.1): size/etag listings for exact copy plans and byte-faithful reads
+// for binary-safe copies. A separate interface so the many in-memory R2Client
+// fakes in tests keep compiling; makeR2Client always returns the superset.
+export interface R2InventoryClient extends R2Client {
+  listObjects(prefix?: string): Promise<R2ObjectMeta[]>;
+  getBytes(key: string): Promise<R2ObjectBody | null>;
+}
+
 export interface VectorizeUpsertVector {
   id: string;
   values: number[];
@@ -36,6 +59,22 @@ export interface VectorizeClient {
     vector: number[],
     opts: { topK: number; returnMetadata?: boolean },
   ): Promise<VectorizeMatch[]>;
+}
+
+export interface StoredVector {
+  id: string;
+  values: number[];
+  metadata?: Record<string, unknown>;
+  namespace?: string;
+}
+
+// Superset for the founder migration (reading-lite-s1k.6.1): fetch stored
+// vectors by id so legacy vectors can be re-upserted into the tenant
+// namespace without a paid re-embed. get_by_ids addresses vectors by their
+// index-unique id regardless of namespace, which is exactly what lets one
+// call probe legacy (bare-id) and migrated (tenant-prefixed) vectors at once.
+export interface VectorizeAdminClient extends VectorizeClient {
+  getByIds(ids: string[]): Promise<StoredVector[]>;
 }
 
 export interface R2Config {
@@ -57,7 +96,7 @@ export interface VectorizeConfig {
   namespace?: string;
 }
 
-export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Client {
+export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2InventoryClient {
   const aws = new AwsClient({
     accessKeyId: cfg.accessKeyId,
     secretAccessKey: cfg.secretAccessKey,
@@ -117,29 +156,55 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2Cl
       }
     },
     async listKeys() {
-      const keys: string[] = [];
-      let continuationToken: string | undefined;
-      do {
-        const params = new URLSearchParams({
-          "list-type": "2",
-          "max-keys": "1000",
-        });
-        if (continuationToken) params.set("continuation-token", continuationToken);
-        const res = await signedBucketFetch(params, { method: "GET" });
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(`R2 LIST failed: ${res.status} ${text}`);
-        }
-        const xml = await res.text();
-        keys.push(...extractXmlTags(xml, "Key").map(decodeXmlEntities));
-        const isTruncated = extractXmlTags(xml, "IsTruncated")[0] === "true";
-        continuationToken = isTruncated
-          ? decodeXmlEntities(extractXmlTags(xml, "NextContinuationToken")[0] ?? "")
-          : undefined;
-      } while (continuationToken);
-      return keys;
+      return (await listObjects()).map((o) => o.key);
+    },
+    listObjects,
+    async getBytes(key) {
+      const res = await signedFetch(key, { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
+      }
+      return {
+        body: new Uint8Array(await res.arrayBuffer()),
+        contentType: res.headers.get("content-type"),
+      };
     },
   };
+
+  async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
+    const objects: R2ObjectMeta[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const params = new URLSearchParams({
+        "list-type": "2",
+        "max-keys": "1000",
+      });
+      if (prefix) params.set("prefix", prefix);
+      if (continuationToken) params.set("continuation-token", continuationToken);
+      const res = await signedBucketFetch(params, { method: "GET" });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`R2 LIST failed: ${res.status} ${text}`);
+      }
+      const xml = await res.text();
+      for (const block of extractXmlTags(xml, "Contents")) {
+        const key = extractXmlTags(block, "Key")[0];
+        if (key === undefined) continue;
+        objects.push({
+          key: decodeXmlEntities(key),
+          size: Number(extractXmlTags(block, "Size")[0] ?? "0"),
+          etag: decodeXmlEntities(extractXmlTags(block, "ETag")[0] ?? "").replace(/"/g, ""),
+        });
+      }
+      const isTruncated = extractXmlTags(xml, "IsTruncated")[0] === "true";
+      continuationToken = isTruncated
+        ? decodeXmlEntities(extractXmlTags(xml, "NextContinuationToken")[0] ?? "")
+        : undefined;
+    } while (continuationToken);
+    return objects;
+  }
 }
 
 function extractXmlTags(xml: string, tag: string): string[] {
@@ -160,7 +225,7 @@ function decodeXmlEntities(s: string): string {
 export function makeVectorizeClient(
   cfg: VectorizeConfig,
   fetchFn: typeof fetch = fetch,
-): VectorizeClient {
+): VectorizeAdminClient {
   const indexBase = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/vectorize/v2/indexes/${cfg.index}`;
   const authHeader = `Bearer ${cfg.apiToken}`;
   return {
@@ -199,6 +264,32 @@ export function makeVectorizeClient(
       }
       const json = (await res.json()) as { result?: { matches?: VectorizeMatch[] } };
       return json.result?.matches ?? [];
+    },
+    async getByIds(ids) {
+      if (ids.length === 0) return [];
+      const res = await fetchFn(`${indexBase}/get_by_ids`, {
+        method: "POST",
+        headers: { authorization: authHeader, "content-type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Vectorize get_by_ids failed: ${res.status} ${text}`);
+      }
+      // The v2 result is the vector array; tolerate a {vectors: []} wrapper.
+      type WireVector = Omit<StoredVector, "namespace"> & { namespace?: string | null };
+      const json = (await res.json()) as {
+        result?: WireVector[] | { vectors?: WireVector[] };
+      };
+      const raw = json.result;
+      const vectors = Array.isArray(raw) ? raw : raw?.vectors ?? [];
+      // The API serializes an unnamespaced vector's namespace as null (or
+      // omits it); normalize here so consumers can rely on `undefined`
+      // meaning "legacy, no namespace" without null-vs-absent case analysis.
+      return vectors.map(({ namespace, ...rest }) => ({
+        ...rest,
+        ...(namespace == null ? {} : { namespace }),
+      }));
     },
   };
 }

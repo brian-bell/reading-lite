@@ -191,6 +191,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
+| `npm run ops -- corpus migrate-founder` | copy the global layout into the founder tenant namespace and re-upsert vectors (plan doubles as the reconciliation check) |
 
 `ops corpus rebuild-list` re-projects every indexed manifest through
 `manifestToIndexItem` and writes `index/list.json`. Use it after deploying a
@@ -214,6 +215,61 @@ same work through the offline provider Batch API path described below.
 npm run ops -- corpus audit --tenant global --execute      # writes index.json + INDEX.md
 npm run ops -- corpus recover --tenant global --index ./index.json --execute
 ```
+
+### Founder corpus migration (s1k.6)
+
+`ops corpus migrate-founder` moves the pre-tenant corpus into the founder's
+tenant namespace as a **copy, never a move**: every global-layout object is
+copied byte-identically to `u/{tenantId}/{same key}` (stored `key_prefix`
+values are root-relative, so no object body changes), and every ready
+reading's vector is re-read by id and re-upserted into the tenant namespace
+as `{tenantId}:{readingId}` with `tenant_id` metadata (ADR 0002) — no paid
+re-embedding. Legacy objects and vectors are always retained; the command
+never deletes anything.
+
+```sh
+# Exact dry-run: every copy (size+etag), every vector upsert, every problem.
+npm run ops -- corpus migrate-founder --tenant usr_… 
+
+# Copy + migrate vectors, resumably (state file records per-object sha256):
+npm run ops -- corpus migrate-founder --tenant usr_… --execute --sole-writer
+
+# Reconcile: plan again — "fully migrated" means every source object exists
+# at its tenant key with equal size/etag, every ready row has its namespaced
+# vector carrying the legacy embedding and metadata, and every row agrees
+# with the manifest and by-id pointer it names.
+npm run ops -- corpus migrate-founder --tenant usr_…
+```
+
+Certification is a content check, not a presence check: the plan parses each
+row's `manifest.json` and by-id pointer and blocks when they disagree with
+the row (`row_manifest_mismatch`, `row_by_id_pointer_invalid`). A stale
+`index/list.json` row is the case that matters — the vector plan follows the
+row's `status`, so a row saying `failed` over a `ready` manifest would migrate
+with no vector planned. Repair those with `corpus rebuild-list --tenant
+global`, then re-plan.
+
+That costs two reads per row the first time. After that the state file caches
+each parse against the object's etag, so passes over an unmoved corpus read
+nothing — every pass prints `Verified N row(s) … (R object reads, C served
+from the state file's etag cache)`, and a high `R` on a corpus you have not
+touched means the cache is not being reused (no state file yet, or a
+different `--state` path). Pass the same `--state` to plan and execute to
+keep it warm. Plan mode reads that file and never writes it. The cache holds
+what the objects *said*, never whether they passed: the row comparison always
+re-runs against the live `index/list.json`, so a row that goes stale while
+its manifest sits untouched is still caught.
+
+Both modes need the `CORPUS_R2_*` + `CORPUS_CF_API_TOKEN` credentials (plan
+reads live listings, per-row manifest/pointer content, and vector state).
+`--limit` caps work per pass for
+interrupted-run rehearsal; the tenant-stamped state file refuses resumes
+under a different tenant, bucket, or index. Cutover ordering: pause/drain
+the realtime writer, run to full reconciliation, deploy worker-side tenant
+vector-id support, and only then set `TENANT_DATA_PLANE=1`. Rollback before
+the flip is "don't flip"; after, unset the gate and redeploy the prior
+Worker — legacy state survives until post-observation sign-off (ADR 0001,
+founder data cutover).
 
 ### The extract-agent
 
