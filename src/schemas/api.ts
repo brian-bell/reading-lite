@@ -155,6 +155,19 @@ export const LookupResponseSchema = z.object({
 });
 export type LookupResponse = z.infer<typeof LookupResponseSchema>;
 
+// The purge report DELETE /api/readings/:id returns. `vector_delete_requested`
+// records that a Vectorize delete was issued (deleteByIds does not report
+// whether the vector existed); `by_url_released` is false when the by-url slot
+// belongs to a different (surviving) reading and was deliberately left alone.
+export const DeleteReadingResponseSchema = z.object({
+  id: z.string().min(1),
+  vector_delete_requested: z.boolean(),
+  list_row_removed: z.boolean(),
+  by_url_released: z.boolean(),
+  objects_deleted: z.number().int().nonnegative(),
+});
+export type DeleteReadingResponse = z.infer<typeof DeleteReadingResponseSchema>;
+
 export const ReadingObjectInfoSchema = z.object({
   key: z.string().min(1),
   size: z.number().int().nonnegative(),

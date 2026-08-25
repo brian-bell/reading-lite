@@ -139,6 +139,7 @@ and does not fall back to the secret itself.
 | `GET /api/readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
 | `GET /api/readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
+| `DELETE /api/readings/:id` | Purges the reading everywhere: Vectorize vector, `index/list.json` row, by-url ownership pointer (only when this reading owns it — an orphan-duplicate's slot belongs to its surviving copy and is left alone), every R2 object under the reading's prefix, and the by-id pointer last, so a partially-failed purge can be re-issued to completion. Requires the `readings:delete` scope. 409 while an attempt is running (stale attempts past the pending TTL don't block); 404 for unknown ids. Returns a purge report `{ id, vector_delete_requested, list_row_removed, by_url_released, objects_deleted }`. Other readings' `connections` may still name the deleted id; those links 404 until swept. |
 | `POST /api/readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
 
 List filtering is server-side against a denormalized `index/list.json` in R2,

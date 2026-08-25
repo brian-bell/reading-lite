@@ -17,7 +17,7 @@ describe("AuthenticatedPrincipal", () => {
       tenantId: USER,
       userId: USER,
       tokenId: TOKEN,
-      scopes: ["readings:read", "readings:write", "readings:import"],
+      scopes: [...API_SCOPES],
     });
     expect(principal).toEqual({
       kind: "api_token",

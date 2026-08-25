@@ -32,6 +32,12 @@ themselves — read those before changing a module.
   manifest commits, failure handling.
 - `src/reading-visibility.ts` — list-row + Vectorize-vector lockstep and the
   owner gate protecting it.
+- `src/reading-purge.ts` — `DELETE /api/readings/:id`: visibility-first purge
+  ordering (vector → owned by-url pointer → list row → objects → final sweep →
+  by-id last) behind the `readings:delete` scope; inbound `connections` stay
+  dangling. The consumer's purge guard (`missingManifestStillLive` in
+  `process-reading.ts`) keeps stale queue messages from recreating purged
+  state.
 - `src/attempt-ownership.ts` — the shared ownership verdict + attempt args
   shapes (the low layer under `process-reading.ts` and `reading-visibility.ts`).
 - `src/control-plane/` — D1 auth: branded IDs, HKDF/HMAC crypto,

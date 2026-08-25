@@ -137,7 +137,7 @@ function jsonNoStore(
 function corsHeaders(origin: string): Record<string, string> {
   return {
     "access-control-allow-origin": origin,
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
     "access-control-allow-headers": "authorization, content-type",
     "access-control-max-age": "86400",
     "vary": "origin",

@@ -62,6 +62,11 @@ export async function processReading(
   const retry = retryDepsFromEnv(env);
 
   try {
+    // A purged reading must not get ANY object recreated — not even this
+    // attempt log — so a stale queued message for it is dropped whole, before
+    // any write or upstream spend. Conflict/takeover cases below still log
+    // their attempt for diagnostics.
+    if (await readingWasPurged(reader, args)) return;
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
     validateProcessingCredentials({
@@ -607,6 +612,11 @@ async function terminalWriteState(
 ): Promise<TerminalWriteState> {
   const stored = await reader.readManifestWithEtag(args.keyPrefix);
   const manifest = stored?.manifest ?? null;
+  // A missing manifest is writable only while the reading still exists (a
+  // liveness witness survives); after a purge nothing may be recreated. See
+  // missingManifestStillLive.
+  const missingButLive =
+    manifest === null && (await missingManifestStillLive(reader, args));
   const owner = attemptOwnership(manifest, args);
   const activeAttemptMatches =
     owner.isActive || owner.isLegacyPending || (opts.allowLastAttempt === true && owner.isLast);
@@ -637,11 +647,44 @@ async function terminalWriteState(
   }
 
   return {
-    canWriteManifest: activeAttemptMatches || !manifest,
+    canWriteManifest: activeAttemptMatches || missingButLive,
     canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
     canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
     ...(stored ? { manifestEtag: stored.etag } : {}),
   };
+}
+
+// The liveness witnesses consulted when a manifest is ABSENT: the by-id
+// pointer (DELETE /api/readings/:id removes it last, precisely so it outlives
+// everything else) and the reading's own list row (a stale legacy job whose
+// manifest was never written still owns a row + vector it must be allowed to
+// write-then-clean — see the stale-job tests). When neither survives, the
+// reading was purged, and recreating any object for it would resurrect
+// deleted data — the same absent-manifest rule markDeadLettered applies to
+// the DLQ.
+async function missingManifestStillLive(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  if ((await reader.readByIdPointer(args.id)) !== null) return true;
+  return (await reader.findListIndexItem(args.id)) !== null;
+}
+
+// True only for a CONFIRMED-absent manifest with no surviving liveness
+// witness. A throwing manifest read is an object that may well exist and is
+// never treated as absence.
+async function readingWasPurged(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<boolean> {
+  let manifestAbsent = false;
+  try {
+    manifestAbsent = (await reader.readManifest(args.keyPrefix)) === null;
+  } catch (e) {
+    console.error(e);
+  }
+  if (!manifestAbsent) return false;
+  return !(await missingManifestStillLive(reader, args));
 }
 
 async function readingCanWriteAttemptArtifacts(
@@ -649,7 +692,11 @@ async function readingCanWriteAttemptArtifacts(
   args: ProcessReadingArgs,
 ): Promise<boolean> {
   const manifest = await reader.readManifest(args.keyPrefix);
-  if (!manifest) return true;
+  if (!manifest) {
+    // The manifest vanished (or never existed): writable only while the
+    // reading still exists at all — see missingManifestStillLive.
+    return missingManifestStillLive(reader, args);
+  }
   const owner = attemptOwnership(manifest, args);
   return owner.isActive || owner.isLegacyPending;
 }

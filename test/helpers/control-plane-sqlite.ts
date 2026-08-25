@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import type { ControlPlaneDb, SqlStatement } from "../../src/control-plane/db";
 
-const MIGRATION = path.join(process.cwd(), "migrations", "0001_control_plane_auth.sql");
+// Apply every migration in filename order, the same way D1 does, so Node-pool
+// tests exercise the schema the Worker actually runs against.
+const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
 
 export function fromBetterSqlite(sqlite: Database.Database): ControlPlaneDb {
   return {
@@ -30,6 +32,11 @@ export function openMigratedControlPlane(): {
 } {
   const sqlite = new Database(":memory:");
   sqlite.pragma("foreign_keys = ON");
-  sqlite.exec(readFileSync(MIGRATION, "utf8"));
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+  for (const file of files) {
+    sqlite.exec(readFileSync(path.join(MIGRATIONS_DIR, file), "utf8"));
+  }
   return { sqlite, db: fromBetterSqlite(sqlite) };
 }

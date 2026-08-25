@@ -5750,3 +5750,237 @@ describe("cross-tenant mutation matrix", () => {
     expect(stub.vectors.get(tenantVectorId(OTHER_TENANT_ID, otherId))?.namespace).toBe(OTHER_TENANT_ID);
   });
 });
+
+// DELETE /api/readings/:id — the purge endpoint (reading-lite-qmy). The
+// contract under test: after a successful delete nothing about the reading is
+// visible (list, detail, lookup, vector) or resurrectable (resubmitting the
+// URL mints a fresh reading), a by-url pointer owned by a DIFFERENT reading
+// survives, and a partially-purged reading can be re-deleted to completion.
+describe("DELETE /api/readings/:id (purge)", () => {
+  it("purges a ready reading everywhere and frees the URL for a fresh submit", async () => {
+    const stub = installVectorizeStub();
+    const url = "https://example.com/delete-ready";
+    const { app, id } = await seedFounderReading(url);
+    const urlHash = await sha256Hex(url);
+
+    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(true);
+    const diag = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
+    ).json()) as { key_prefix: string };
+
+    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    expect(await del.json()).toEqual({
+      id,
+      vector_delete_requested: true,
+      list_row_removed: true,
+      by_url_released: true,
+      objects_deleted: expect.any(Number),
+    });
+
+    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(false);
+    const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
+      readings: unknown[];
+    };
+    expect(list.readings).toEqual([]);
+    expect((await apiRequest(app, TOKEN, `/api/readings/${id}`)).status).toBe(404);
+    expect(
+      (await apiRequest(app, TOKEN, `/api/readings/lookup?url=${encodeURIComponent(url)}`)).status,
+    ).toBe(404);
+    const leftover = await env.READINGS_BUCKET.list({
+      prefix: founderObjectKey(`${diag.key_prefix}/`),
+    });
+    expect(leftover.objects).toEqual([]);
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
+
+    // Idempotent target: once purged, the id answers like it never existed.
+    expect(
+      (await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" })).status,
+    ).toBe(404);
+
+    // The by-url slot is free again: a resubmit mints a fresh reading.
+    const resubmit = await apiRequest(app, TOKEN, "/api/readings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url, email: false }),
+    });
+    expect(resubmit.status).toBe(202);
+    const { id: freshId } = (await resubmit.json()) as { id: string };
+    expect(freshId).not.toBe(id);
+  });
+
+  it("refuses to purge while an attempt is running and leaves the reading intact", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const submit = await apiRequest(app, TOKEN, "/api/readings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/delete-pending", email: false }),
+    });
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+
+    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(409);
+    expect(await del.json()).toEqual({ error: "reading already has an active attempt" });
+
+    const detail = await apiRequest(app, TOKEN, `/api/readings/${id}`);
+    expect(detail.status).toBe(200);
+    expect(((await detail.json()) as { status: string }).status).toBe("pending");
+
+    // Once the attempt finishes, the purge goes through.
+    await drainQueue(services);
+    expect(
+      (await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" })).status,
+    ).toBe(200);
+  });
+
+  it("never deletes a by-url pointer owned by a different reading", async () => {
+    const url = "https://example.com/delete-orphan-dup";
+    const { app, id: survivorId } = await seedFounderReading(url);
+    const urlHash = await sha256Hex(url);
+    const reader = testReadingStore(env);
+
+    // An orphan-duplicate failed copy of the same URL: manifest, by-id pointer,
+    // and list row of its own, but the by-url slot belongs to the survivor.
+    const orphanId = "rd_ORPHANDUP";
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const orphanPrefix = buildKeyPrefix(orphanId, createdAt);
+    const orphan: Manifest = {
+      id: orphanId,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(orphanPrefix, orphan);
+    await reader.writeByIdPointer(orphanId, { id: orphanId, key_prefix: orphanPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(orphan, orphanPrefix));
+
+    const del = await apiRequest(app, TOKEN, `/api/readings/${orphanId}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(false);
+
+    // The survivor still owns its URL and stays fully visible; the orphan is gone.
+    const lookup = await apiRequest(
+      app,
+      TOKEN,
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id: survivorId });
+    expect((await apiRequest(app, TOKEN, `/api/readings/${survivorId}`)).status).toBe(200);
+    expect((await apiRequest(app, TOKEN, `/api/readings/${orphanId}`)).status).toBe(404);
+  });
+
+  it("completes a partial purge whose manifest is already gone", async () => {
+    const stub = installVectorizeStub();
+    const url = "https://example.com/delete-partial";
+    const { app, id } = await seedFounderReading(url);
+    const urlHash = await sha256Hex(url);
+    const diag = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
+    ).json()) as { key_prefix: string };
+
+    // Simulate a crashed earlier purge: the manifest object is gone but the
+    // vector, list row, pointers, and other objects remain.
+    await env.READINGS_BUCKET.delete(founderObjectKey(`${diag.key_prefix}/manifest.json`));
+
+    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    // The URL comes from the surviving list row, so the pointer still releases.
+    expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(true);
+
+    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(false);
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
+    const leftover = await env.READINGS_BUCKET.list({
+      prefix: founderObjectKey(`${diag.key_prefix}/`),
+    });
+    expect(leftover.objects).toEqual([]);
+    const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
+      readings: unknown[];
+    };
+    expect(list.readings).toEqual([]);
+  });
+
+  it("drops a stale queued attempt for a purged reading without recreating any object", async () => {
+    const stub = installVectorizeStub();
+    const idCounter = { n: 0 };
+    const services = makeServices(makeStubFetch(), idCounter);
+    const app = createApp({ services });
+    const submit = await apiRequest(app, TOKEN, "/api/readings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/delete-stale-queued", email: false }),
+    });
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+    const diag = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
+    ).json()) as { key_prefix: string };
+
+    // The message stays queued while the clock passes PENDING_TTL_SECONDS, so
+    // the attempt reads stale and the purge is allowed through the 409 gate.
+    idCounter.n += 400;
+    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+
+    // The stale message now lands: the consumer must drop it whole — no
+    // attempt log, no artifacts, no manifest, no vector, no list row.
+    await drainQueue(services);
+    const leftover = await env.READINGS_BUCKET.list({
+      prefix: founderObjectKey(`${diag.key_prefix}/`),
+    });
+    expect(leftover.objects).toEqual([]);
+    expect(stub.vectors.size).toBe(0);
+    const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
+      readings: unknown[];
+    };
+    expect(list.readings).toEqual([]);
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
+  });
+
+  it("purges a reading whose manifest is corrupt", async () => {
+    const url = "https://example.com/delete-corrupt";
+    const { app, id } = await seedFounderReading(url);
+    const urlHash = await sha256Hex(url);
+    const diag = (await (
+      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
+    ).json()) as { key_prefix: string };
+    await env.READINGS_BUCKET.put(
+      founderObjectKey(`${diag.key_prefix}/manifest.json`),
+      "definitely not json",
+    );
+
+    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    // The URL falls back to the list row, so the owned pointer still releases.
+    expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(true);
+    const leftover = await env.READINGS_BUCKET.list({
+      prefix: founderObjectKey(`${diag.key_prefix}/`),
+    });
+    expect(leftover.objects).toEqual([]);
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
+  });
+
+  it("answers a cross-tenant id like an unknown id and purges nothing", async () => {
+    const stub = installVectorizeStub();
+    const { app, id } = await seedFounderReading("https://example.com/delete-cross-tenant");
+    await expectSameAsUnknown(app, `/api/readings/${id}`, `/api/readings/${UNKNOWN_ID}`, {
+      method: "DELETE",
+    });
+    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(true);
+    const detail = await apiRequest(app, TOKEN, `/api/readings/${id}`);
+    expect(((await detail.json()) as { status: string }).status).toBe("ready");
+  });
+});

@@ -19,6 +19,7 @@ import { similarityStoreFor } from "./modules/stores/similarity-store";
 import { ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
+import { purgeReading } from "./reading-purge";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { applyStaleness } from "./modules/staleness";
 
@@ -217,6 +218,29 @@ export function createApp(opts: AppOptions = {}) {
     });
     const res = toHttp(out);
     return c.json(res.body, res.status);
+  });
+
+  app.delete("/api/readings/:id", requireScope("readings:delete"), async (c) => {
+    const id = c.req.param("id");
+    const principal = c.get("principal");
+    const reader = storeForPrincipal(c.env, principal);
+    // Null without a Vectorize binding (local dev): the purge is R2-only there,
+    // matching the rest of the router's degrade-in-dev stance.
+    const similarity = c.env.READINGS_INDEX
+      ? similarityStoreFor(c.env.READINGS_INDEX, { tenantId: principal.tenantId }, c.env)
+      : null;
+    const out = await purgeReading({ reader, similarity }, id, {
+      pendingTtlSeconds: pendingTtlSeconds(c.env),
+      now: services.now(),
+    });
+    switch (out.kind) {
+      case "not_found":
+        return c.json({ error: "not found" }, 404);
+      case "conflict":
+        return c.json({ error: "reading already has an active attempt" }, 409);
+      case "purged":
+        return c.json(out.report, 200);
+    }
   });
 
   app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
