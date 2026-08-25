@@ -14,7 +14,7 @@ import {
 } from "../../src/process-reading";
 import { ReadingVisibility } from "../../src/reading-visibility";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import { SimilarityStore } from "../../src/modules/stores/similarity-store";
+import { SimilarityStore, tenantVectorId } from "../../src/modules/stores/similarity-store";
 import {
   buildKeyPrefix,
   manifestToIndexItem,
@@ -577,10 +577,11 @@ describe("two-tenant save-to-ready lifecycle", () => {
     expect(summarizeBodies).toHaveLength(3);
     expect(summarizeBodies[2]!.match(READING_ID_RE)).toBeNull();
 
-    // Every vector landed in its tenant's namespace.
-    expect(stub.vectors.get(founderFirst.id)?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(founderSecond.id)?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(otherFirst.id)?.namespace).toBe(OTHER_TENANT_ID);
+    // Every vector landed in its tenant's namespace, under its tenant-prefixed
+    // id (ADR 0002).
+    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderFirst.id))?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderSecond.id))?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(tenantVectorId(OTHER_TENANT_ID, otherFirst.id))?.namespace).toBe(OTHER_TENANT_ID);
   });
 });
 
@@ -1895,8 +1896,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     });
     await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
     expect(vector.upsert).not.toHaveBeenCalled();
-    expect(vector.deleteByIds).toHaveBeenCalledWith([staleId]);
-    expect(vector.vectors.has(staleId)).toBe(false);
+    expect(vector.deleteByIds).toHaveBeenCalledWith([tenantVectorId(FOUNDER_TENANT_ID, staleId)]);
+    expect(vector.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, staleId))).toBe(false);
   });
 
   it("keeps the vector when cleanup runs against a pending manifest carrying a foreign last_attempt", async () => {
@@ -4908,10 +4909,12 @@ describe("GET /api/readings/lookup", () => {
 describe("POST /api/readings/similar", () => {
   it("calls Vectorize and returns mapped items", async () => {
     const stub = installVectorizeStub();
-    // Seeded in the founder namespace: the route queries tenant-scoped
+    // Seeded in the founder namespace under the tenant-prefixed id, exactly as
+    // the founder migration writes it: the route queries tenant-scoped
     // (TENANT_DATA_PLANE=1 in wrangler.test.toml), so an unscoped vector
-    // would rightly be invisible to it.
-    stub.vectors.set("rd_seed", {
+    // would rightly be invisible to it — and the bare `rd_seed` asserted below
+    // proves the store strips its own prefix from matches.
+    stub.vectors.set(tenantVectorId(FOUNDER_TENANT_ID, "rd_seed"), {
       values: new Array(1536).fill(0.1),
       namespace: FOUNDER_TENANT_ID,
       metadata: { url: "https://example.com/seed", title: "Seed", created_at: "2026-04-25T00:00:00.000Z" },
@@ -5739,7 +5742,7 @@ describe("cross-tenant mutation matrix", () => {
     ).json()) as { readings: { id: string; status: string }[] };
     expect(founderList.readings.map((r) => [r.id, r.status])).toEqual([[founderId, "ready"]]);
     expect(otherList.readings.map((r) => [r.id, r.status])).toEqual([[otherId, "ready"]]);
-    expect(stub.vectors.get(founderId)?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(otherId)?.namespace).toBe(OTHER_TENANT_ID);
+    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderId))?.namespace).toBe(FOUNDER_TENANT_ID);
+    expect(stub.vectors.get(tenantVectorId(OTHER_TENANT_ID, otherId))?.namespace).toBe(OTHER_TENANT_ID);
   });
 });
