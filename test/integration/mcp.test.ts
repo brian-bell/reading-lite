@@ -14,7 +14,12 @@ import {
 } from "../../src/modules/stores/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
 import { CONTENT_CHUNK_BYTES } from "../../src/mcp/format";
-import { founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
+import {
+  founderTenant,
+  insertSecondTenant,
+  OTHER_TOKEN_SECRET,
+  testReadingStore,
+} from "../helpers/tenant-fixtures";
 
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
@@ -615,5 +620,52 @@ describe("POST /mcp", () => {
     expect(write.payload.http_status).toBe(403);
     expect(write.payload.error).toBe("bad or missing token");
     assertNoTokenLeak(write.rpc);
+  });
+
+  it("other-tenant get_reading, list_readings, and reprocess_reading match unknown-id", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const id = "rd_OWNED0001";
+    const unknownId = "rd_0000000000";
+    await seedReady({
+      id,
+      url: "https://example.com/mcp-owned",
+      title: "Owned by founder",
+      tldr: "Founder-only",
+      markdown: "# Owned\n\nbody",
+    });
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const owner = await callTool(app, "get_reading", { id });
+    expect(owner.rpc.result?.isError).not.toBe(true);
+    expect(owner.payload.id).toBe(id);
+
+    const otherGet = await callTool(app, "get_reading", { id }, { token: OTHER_TOKEN_SECRET });
+    const unknownGet = await callTool(app, "get_reading", { id: unknownId }, { token: OTHER_TOKEN_SECRET });
+    expect(unknownGet.rpc.result?.isError).toBe(true);
+    expect(otherGet.rpc.result).toEqual(unknownGet.rpc.result);
+
+    const otherList = await callTool(app, "list_readings", {}, { token: OTHER_TOKEN_SECRET });
+    expect(otherList.rpc.result?.isError).not.toBe(true);
+    expect(otherList.payload.readings).toEqual([]);
+    expect(otherList.payload.has_more).toBe(false);
+
+    const otherReprocess = await callTool(
+      app,
+      "reprocess_reading",
+      { id },
+      { token: OTHER_TOKEN_SECRET },
+    );
+    const unknownReprocess = await callTool(
+      app,
+      "reprocess_reading",
+      { id: unknownId },
+      { token: OTHER_TOKEN_SECRET },
+    );
+    expect(unknownReprocess.rpc.result?.isError).toBe(true);
+    expect(otherReprocess.rpc.result).toEqual(unknownReprocess.rpc.result);
+
+    const stillOwned = await callTool(app, "get_reading", { id });
+    expect(stillOwned.rpc.result?.isError).not.toBe(true);
+    expect(stillOwned.payload.status).toBe("ready");
   });
 });
