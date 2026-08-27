@@ -168,7 +168,6 @@ Pointers only — the details live in the named files' comments.
   `--var` and defaults to `--env production`; the gate flip is
   `wrangler deploy --env production --var TENANT_DATA_PLANE:1`. Copy, never
   move; restore missing vectors with `corpus backfill-vectors`, not reprocess.
-
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
   delay, manifest stays pending; other errors → failed manifest + ack.
   Exhausted retries hit the DLQ, where `markDeadLettered` writes a retryable
