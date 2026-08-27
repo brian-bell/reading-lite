@@ -760,7 +760,7 @@ async function runCorpusMigrateFounder(
     const onlyVectorLag =
       upsertedNow > 0 &&
       !isFullyMigrated(reconciled) &&
-      reconciled.problems.length === 0 &&
+      certificationProblems(reconciled).length === 0 &&
       reconciled.counts.pending_copies === 0 &&
       reconciled.counts.pending_vectors > 0;
     if (!onlyVectorLag || attempt >= RECONCILE_RETRIES) break;
@@ -807,13 +807,15 @@ async function runCorpusMigrateFounder(
     return 0;
   }
   io.stderr(
-    certificationProblems(reconciled).length > 0
-      ? "Certification blocked by the problems above — resolve them, then re-plan to certify."
-      : upsertedNow > 0 && reconciled.counts.pending_copies === 0
+    reconciled.counts.pending_copies > 0 || reconciled.counts.pending_vectors > 0
+      ? upsertedNow > 0 && reconciled.counts.pending_copies === 0
         ? "Vectors may still be propagating (asynchronous mutations) — rerun plan mode later to confirm reconciliation."
         : args.limit === Infinity && errors === 0
           ? "Not yet fully migrated — rerun to continue (the state file resumes this run)."
-          : "Pass incomplete — rerun to continue (the state file resumes this run).",
+          : "Pass incomplete — rerun to continue (the state file resumes this run)."
+      : certificationProblems(reconciled).length > 0
+        ? "Certification blocked by the problems above — resolve them, then re-plan to certify."
+        : "Pass incomplete — rerun to continue (the state file resumes this run).",
   );
   return 1;
 }

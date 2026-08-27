@@ -747,6 +747,35 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
   });
 
+  it("still waits for Vectorize lag when another tenant's objects share the bucket", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const inner = h.deps.makeClients;
+    let revealAfter = 0;
+    h.deps.makeClients = async (opts) => {
+      const c = await inner(opts);
+      const getByIds = c.vectorize.getByIds;
+      c.vectorize = {
+        ...c.vectorize,
+        getByIds: async (ids) => {
+          const res = await getByIds(ids);
+          if (h.upserts.length === 0) return res;
+          if (revealAfter++ < 1) return res.filter((v) => v.namespace === undefined);
+          return res;
+        },
+      };
+      return c;
+    };
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    expect(h.sleeps).toEqual([5000]);
+    expect(h.err.join("\n")).toContain("not yet visible");
+    expect(h.err.join("\n")).toContain("Fully migrated");
+  });
+
   it("refuses to resume a state file stamped for a different tenant or bucket", async () => {
     const h = makeHarness();
     h.stateOnDisk.value = newMigrationState({
