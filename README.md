@@ -12,6 +12,8 @@ Pages-hosted SPA. Deployed and in personal use at
 
 - [`docs/operations.md`](docs/operations.md) — deploy, staging lifecycle, bulk
   ingest, corpus repair
+- [`docs/founder-cutover.md`](docs/founder-cutover.md) — production founder
+  corpus copy and `TENANT_DATA_PLANE` flip
 - [`docs/system-map/`](docs/system-map/README.md) — interactive architecture map
 - [`docs/product/`](docs/product/reading-lite-scope.md) — product brief and scope
 - [`docs/decisions/`](docs/decisions/0001-tenant-control-plane.md) — architecture
