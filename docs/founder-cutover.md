@@ -36,9 +36,9 @@ All of these must already be true. None of them are this window's job.
 1. Staging rehearsal finished: copy, `--limit` resume, full reconcile, gate
    on, tenant-path verification, gate off, legacy intact, queue resumed.
 2. The migrate-founder tooling on this branch is **on `main` and deployed to
-   the operator laptop** (R2 REST fallback, `foreign_tenant_object`
-   informational, Vectorize `get_by_ids` chunk of 20, lag wait that ignores
-   informational notes). Do not run production against an older command.
+   the operator laptop** (`foreign_tenant_object` informational, Vectorize
+   `get_by_ids` chunk of 20, lag wait that ignores informational notes). Do
+   not run production against an older command.
 3. Production Worker already serves `tenantVectorId` compose/strip and
    `x-expected-tenant`. **Do not** ship that pin in the same deploy as the
    gate flip (ADR 0001 / operations.md). Confirm with a production
@@ -79,7 +79,8 @@ live listings and vectors):
 | Need | Names |
 |---|---|
 | Account | `CLOUDFLARE_ACCOUNT_ID` or `CORPUS_R2_ACCOUNT_ID` |
-| R2 + Vectorize | `CLOUDFLARE_API_TOKEN` or `CORPUS_CF_API_TOKEN`, **or** S3 `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY` |
+| R2 | S3 `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY` (always required; no token fallback) |
+| Vectorize | `CLOUDFLARE_API_TOKEN` or `CORPUS_CF_API_TOKEN` |
 | Missing-vector repair only | `OPENAI_API_KEY` (text-embedding-3-small). migrate-founder itself does not embed. |
 | API checks | production `READER_API_TOKEN` |
 
@@ -432,7 +433,6 @@ bucket/index `reading-lite-staging`, founder
 
 Tooling the rehearsal required, which production must have:
 
-- R2 REST when S3 keys are absent (`CLOUDFLARE_API_TOKEN`)
 - `foreign_tenant_object` does not block execute or certification
 - Vectorize `get_by_ids` in chunks of 20 (50 trips API `40007`)
 - Lag wait uses `certificationProblems` so foreign-tenant notes do not skip it
