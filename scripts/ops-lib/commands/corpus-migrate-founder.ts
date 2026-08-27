@@ -54,7 +54,7 @@ import type {
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 
-const GET_BY_IDS_CHUNK = 50;
+const GET_BY_IDS_CHUNK = 20; // Vectorize get_by_ids max; 50 trips 40007
 const CHECKPOINT_EVERY = 25;
 // Evidence gathering is two GETs per list row on every plan, preflight, and
 // reconciliation pass, so it runs concurrently rather than serially.

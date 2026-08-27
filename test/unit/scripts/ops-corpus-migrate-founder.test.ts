@@ -133,8 +133,12 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
       },
     },
     vectorize: {
-      getByIds: async (ids) =>
-        ids.map((id) => vectors.get(id)).filter((v): v is StoredVector => v !== undefined),
+      getByIds: async (ids) => {
+        if (ids.length > 20) {
+          throw new Error(`too many ids in payload; max id count is 20, got ${ids.length}`);
+        }
+        return ids.map((id) => vectors.get(id)).filter((v): v is StoredVector => v !== undefined);
+      },
       upsert: async (vs) => {
         for (const v of vs) {
           upserts.push({ id: v.id, namespace, metadata: v.metadata });
@@ -211,6 +215,43 @@ describe("ops corpus migrate-founder — plan mode", () => {
     expect(h.err.join("\n")).toContain("foreign_tenant_object");
     expect(h.err.join("\n")).toContain("Rerun with --execute --sole-writer");
     expect(h.err.join("\n")).not.toContain("Resolve the problems above before executing");
+  });
+
+  it("chunks Vectorize get_by_ids at the API's 20-id cap", async () => {
+    // 11 extra ready rows → 12 ready × (legacy + prefixed) = 24 ids, which a
+    // chunk of 50 would send in one payload and Vectorize would 400.
+    const h = makeHarness();
+    const items = [...LIST_DOC.items];
+    for (let i = 0; i < 11; i++) {
+      const id = `rd_extra${i}`;
+      const url = `https://a.example/extra-${i}`;
+      const prefix = `readings/2026/01/01T000000Z-${id}`;
+      items.push({
+        id,
+        url,
+        status: "ready",
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+        key_prefix: prefix,
+      });
+      h.objects.set("index/list.json", { body: JSON.stringify({ version: 1, items }), contentType: "application/json" });
+      h.objects.set(`index/by-id/${id}`, {
+        body: JSON.stringify({ id, key_prefix: prefix }),
+        contentType: "application/json",
+      });
+      h.objects.set(`index/by-url/${urlHash(url)}`, {
+        body: JSON.stringify({ id, key_prefix: prefix }),
+        contentType: "application/json",
+      });
+      h.objects.set(`${prefix}/manifest.json`, {
+        body: JSON.stringify({ ...READY_MANIFEST, id, url, url_hash: urlHash(url) }),
+        contentType: "application/json",
+      });
+      h.vectors.set(id, { id, values: [0.1, 0.2], metadata: { url } });
+    }
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(JSON.parse(h.out.join("\n")).vectors).toHaveLength(12);
   });
 
   it("invites execute when destination mismatches are the only problems — execute is their repair", async () => {
