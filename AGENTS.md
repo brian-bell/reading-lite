@@ -21,7 +21,10 @@ themselves — read those before changing a module.
   DLQ → `markDeadLettered`).
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
-  Reading intake.
+  Reading intake. Also mounts `POST /mcp`.
+- `src/mcp/` — Streamable HTTP MCP connector: origin guard, tool handlers, and
+  internal dispatch into the authenticated HTTP API so Cursor/Grok Bot search
+  the corpus through named tools instead of raw curl.
 - `src/intake/` — Reading intake, the write-side front door: `submit` /
   `importMarkdown` / `reprocess` own the claim → pending-manifest → activation
   ordering and return HTTP-free `IntakeOutcome`s. Reprocess prefers request

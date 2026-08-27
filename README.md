@@ -105,6 +105,7 @@ Vars in `wrangler.toml` are non-secret and set per environment:
 | Var | Default | Purpose |
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | `""` | Comma-separated origin allowlist for browser callers. Empty disables CORS preflight. |
+| `MCP_ALLOWED_ORIGINS` | `https://reading-lite.bbell.dev` | Comma-separated Origin allowlist for `POST /mcp`. Requests with no Origin (non-browser MCP clients) pass; unknown Origins are 403. |
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
@@ -132,6 +133,7 @@ and does not fall back to the secret itself.
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
+| `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
 | `POST /api/readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
 | `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
 | `GET /api/readings` | Newest-first list. Query: `q` (substring across title/tldr/url/keywords, case-insensitive), `tag` (exact, case-insensitive, tags only), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
@@ -160,6 +162,34 @@ tokens plus a provider-discriminated summarization usage object.
 To diagnose a failed or stuck reading, retry one, or repair the corpus in bulk,
 see [`docs/operations.md`](docs/operations.md).
 
+## MCP connector
+
+`POST /mcp` is a stateless Streamable HTTP MCP server for Cursor and Grok Bot.
+Tools dispatch internally into the authenticated HTTP API with the caller's
+Bearer token — they never re-fetch `reading-lite.bbell.dev` over the network.
+
+Tools (reads first; writes mutate the corpus): `list_readings`, `search_readings`,
+`get_reading`, `get_reading_content`, `submit_url`, `import_markdown`,
+`reprocess_reading`, `get_diagnostics`. List/search return metadata only; full
+extracted markdown is opt-in by id. After a successful import the tool result
+includes a markdown link to `https://reading-lite.bbell.dev/readings/<id>`.
+
+Cursor `mcp.json` / Grok Bot custom connector (same shape). Use the existing
+`reading-lite.bearerToken` value — never commit it:
+
+```json
+{
+  "name": "reading-lite",
+  "url": "https://reading-lite.bbell.dev/mcp",
+  "headers": { "Authorization": "Bearer <token>" }
+}
+```
+
+Local `wrangler dev` serves the same path at `http://127.0.0.1:8787/mcp`.
+Stdio-only clients can bridge with `npx mcp-remote https://reading-lite.bbell.dev/mcp`.
+Operator notes (origin var, production route) live in
+[`docs/operations.md`](docs/operations.md#mcp-connector).
+
 ## Web SPA
 
 A small React SPA in `web/` renders the list (with search + tag chips),
@@ -176,8 +206,8 @@ cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 
 Vite proxies `/api` and `/health` to the Worker so requests are same-origin in
 development. In production the SPA is served from Cloudflare Pages on the same
-custom domain as the Worker, with Worker routes scoped to `/api/*` and `/health`
-so Pages handles every other path.
+custom domain as the Worker, with Worker routes scoped to `/api/*`, `/health`,
+and `/mcp*` so Pages handles every other path.
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring
 `src/schemas/manifest.ts` — keep them in sync when the Worker schema changes.
@@ -205,6 +235,7 @@ both — via the `reddit-import` and `youtube-import` skills. See
 src/
   index.ts                      # worker entry: fetch handler + queue consumer + Env types
   router.ts                     # Hono app: routes + the IntakeOutcome -> HTTP mapping
+  mcp/                          # Streamable HTTP MCP connector (POST /mcp tools)
   middleware.ts                 # bearer auth + CORS allowlist
   intake/                       # Reading intake: submit/importMarkdown/reprocess verbs;
                                 #   activation.ts = eager write-and-enqueue + rollback funnel

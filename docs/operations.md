@@ -38,7 +38,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
 | staging | `reading-lite-staging` | `reading-lite-staging` | `workers_dev` URL |
-| production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` |
+| production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` + `/mcp*` |
 
 Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -129,8 +129,35 @@ Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
 bootstrap of `dev-local-token`).
 
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
-Worker routes are scoped to `/api/*` and `/health` so Pages handles every other
+Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path.
+
+### MCP connector
+
+`POST /mcp` is a Streamable HTTP MCP endpoint on the Worker. Cursor and Grok Bot
+add it as a remote connector with a static `Authorization: Bearer <token>`
+header (the same token as `reading-lite.bearerToken` / founder bootstrap).
+There is no OAuth. Tools call the existing `/api/readings*` routes internally;
+the token is never echoed in tool results.
+
+Production needs the dedicated `reading-lite.bbell.dev/mcp*` Worker route so
+Pages does not serve SPA HTML at `/mcp`. Staging uses the `workers.dev` URL
+(`https://reading-lite-staging.<account>.workers.dev/mcp`) with no extra route.
+
+`MCP_ALLOWED_ORIGINS` (wrangler var, default `https://reading-lite.bbell.dev`)
+is the Origin allowlist. Requests with no `Origin` pass (non-browser clients).
+Unknown Origins are 403.
+
+Smoke the handshake after a worker deploy:
+
+```sh
+TOKEN=$(grep ^READER_API_TOKEN= .stg.vars | cut -d= -f2-)
+curl -sS https://reading-lite-staging.bellbm.workers.dev/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ### Staging lifecycle
 

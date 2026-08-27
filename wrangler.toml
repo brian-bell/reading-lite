@@ -55,6 +55,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
 CORS_ALLOWED_ORIGINS = ""
+MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -100,6 +101,7 @@ workers_dev = true
 
 [env.staging.vars]
 CORS_ALLOWED_ORIGINS = ""
+MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -157,6 +159,7 @@ name = "reading-lite"
 
 [env.production.vars]
 CORS_ALLOWED_ORIGINS = ""
+MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -229,7 +232,7 @@ database_name = "reading-lite-control"
 database_id = "23c5298d-42b0-42fc-8a77-bef441ee712e"
 migrations_dir = "migrations"
 
-# Worker routes scoped to API paths only; Pages (attached to the same custom
+# Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.
 [[env.production.routes]]
 pattern = "reading-lite.bbell.dev/api/*"
@@ -237,4 +240,8 @@ zone_name = "bbell.dev"
 
 [[env.production.routes]]
 pattern = "reading-lite.bbell.dev/health"
+zone_name = "bbell.dev"
+
+[[env.production.routes]]
+pattern = "reading-lite.bbell.dev/mcp*"
 zone_name = "bbell.dev"
