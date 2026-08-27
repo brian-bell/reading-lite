@@ -163,11 +163,11 @@ matrix.
 
 Pointers only — the details live in the named files' comments.
 
-- Production founder cutover procedure, constants, and credentials are in
-  `docs/founder-cutover.md`. `ops deploy worker` cannot pass `--var`, so the
-  gate flip is a raw `wrangler deploy` invocation — see that doc for the
-  command.
-
+- Production founder cutover is `docs/founder-cutover.md`. Default
+  `--bucket` is production `reading-lite`. `ops deploy worker` cannot pass
+  `--var` and defaults to `--env production`; the gate flip is
+  `wrangler deploy --env production --var TENANT_DATA_PLANE:1`. Copy, never
+  move; restore missing vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
   delay, manifest stays pending; other errors → failed manifest + ack.
   Exhausted retries hit the DLQ, where `markDeadLettered` writes a retryable

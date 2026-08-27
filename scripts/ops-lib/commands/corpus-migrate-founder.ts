@@ -28,6 +28,7 @@ import { resolveBucket } from "../../corpus-lib/config";
 import {
   executeBlockingProblems,
   isFullyMigrated,
+  certificationProblems,
   planFounderMigration,
   type ByUrlSlotEvidence,
   type FounderMigrationInput,
@@ -53,7 +54,7 @@ import type {
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 
-const GET_BY_IDS_CHUNK = 20;
+const GET_BY_IDS_CHUNK = 20; // Vectorize get_by_ids max; 50 trips 40007
 const CHECKPOINT_EVERY = 25;
 // Evidence gathering is two GETs per list row on every plan, preflight, and
 // reconciliation pass, so it runs concurrently rather than serially.
@@ -556,16 +557,18 @@ async function runCorpusMigrateFounder(
       io.stderr("Resolve the problems above before executing.");
       return 1;
     }
-    if (plan.problems.length > 0) {
-      // Only execute-handled problems remain: mismatched destinations are
-      // overwritten with the source bytes, and unrecognized keys are still
-      // copied (zero lost objects) — though stray keys block certification
-      // until dispositioned (delete the junk or extend the layout vocabulary).
+    const remaining = certificationProblems(plan);
+    if (remaining.length > 0) {
+      // Execute-handled problems: mismatched destinations are overwritten
+      // with the source bytes, and unrecognized keys are still copied (zero
+      // lost objects) — though stray keys block certification until
+      // dispositioned. Informational problems (other tenants in the bucket)
+      // were printed above and do not change this advice.
       io.stderr(
         "The problems above are handled by --execute: destination mismatches are re-copied, " +
           "and unrecognized keys are still copied. Rerun with --execute --sole-writer.",
       );
-      return plan.problems.some((p) => p.kind === "unrecognized_key") ? 1 : 0;
+      return remaining.some((p) => p.kind === "unrecognized_key") ? 1 : 0;
     }
     io.stderr("Rerun with --execute --sole-writer to copy (writes the resumable state file).");
     return 0;
@@ -757,7 +760,7 @@ async function runCorpusMigrateFounder(
     const onlyVectorLag =
       upsertedNow > 0 &&
       !isFullyMigrated(reconciled) &&
-      reconciled.problems.length === 0 &&
+      certificationProblems(reconciled).length === 0 &&
       reconciled.counts.pending_copies === 0 &&
       reconciled.counts.pending_vectors > 0;
     if (!onlyVectorLag || attempt >= RECONCILE_RETRIES) break;
@@ -804,13 +807,15 @@ async function runCorpusMigrateFounder(
     return 0;
   }
   io.stderr(
-    reconciled.problems.length > 0
-      ? "Certification blocked by the problems above — resolve them, then re-plan to certify."
-      : upsertedNow > 0 && reconciled.counts.pending_copies === 0
+    reconciled.counts.pending_copies > 0 || reconciled.counts.pending_vectors > 0
+      ? upsertedNow > 0 && reconciled.counts.pending_copies === 0
         ? "Vectors may still be propagating (asynchronous mutations) — rerun plan mode later to confirm reconciliation."
         : args.limit === Infinity && errors === 0
           ? "Not yet fully migrated — rerun to continue (the state file resumes this run)."
-          : "Pass incomplete — rerun to continue (the state file resumes this run).",
+          : "Pass incomplete — rerun to continue (the state file resumes this run)."
+      : certificationProblems(reconciled).length > 0
+        ? "Certification blocked by the problems above — resolve them, then re-plan to certify."
+        : "Pass incomplete — rerun to continue (the state file resumes this run).",
   );
   return 1;
 }
@@ -821,7 +826,7 @@ function defaultDeps(io: CommandIo): CorpusMigrateFounderDeps {
     makeClients: async ({ bucket, vectorize, namespace }) => {
       // Lazy imports keep `ops --help` and unit tests from loading client
       // modules or resolving credentials.
-      const { makeR2Client, makeVectorizeClient } = await import("../../lib/cf-clients");
+      const { makeVectorizeClient, r2InventoryClientFromVars } = await import("../../lib/cf-clients");
       const { loadDotVars } = await import("../../lib/dotvars");
       const vars: Record<string, string | undefined> = {
         ...loadDotVars(".corpus.vars"),
@@ -835,15 +840,7 @@ function defaultDeps(io: CommandIo): CorpusMigrateFounderDeps {
         throw new Error(`missing credential: ${names.join(" or ")} (env or .corpus.vars)`);
       };
       return {
-        r2: makeR2Client(
-          {
-            accountId: required(["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]),
-            accessKeyId: required(["CORPUS_R2_ACCESS_KEY"]),
-            secretAccessKey: required(["CORPUS_R2_SECRET_KEY"]),
-            bucket,
-          },
-          globalThis.fetch,
-        ),
+        r2: r2InventoryClientFromVars(vars, bucket, globalThis.fetch),
         vectorize: makeVectorizeClient(
           {
             accountId: required(["CORPUS_VECTORIZE_ACCOUNT_ID", "CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]),
@@ -907,9 +904,11 @@ Options:
                      paused/drained.
   --help             Show this message.
 
-Credentials (env or .corpus.vars): CORPUS_R2_ACCOUNT_ID, CORPUS_R2_ACCESS_KEY,
-CORPUS_R2_SECRET_KEY, and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN — needed
-in plan mode too (plan reads live listings and vector state).
+Credentials (env or .corpus.vars): CORPUS_R2_ACCOUNT_ID / CLOUDFLARE_ACCOUNT_ID,
+plus either CORPUS_R2_ACCESS_KEY+CORPUS_R2_SECRET_KEY (S3) or
+CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN (R2 REST — what cloud-agent
+environments have). Vectorize uses the same API token. Needed in plan mode
+too (plan reads live listings and vector state).
 
 Run to full reconciliation BEFORE setting TENANT_DATA_PLANE=1 anywhere, and
 see docs/founder-cutover.md for the production cutover (worker vector-id

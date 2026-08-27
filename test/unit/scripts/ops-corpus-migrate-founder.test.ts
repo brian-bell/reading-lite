@@ -133,8 +133,12 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
       },
     },
     vectorize: {
-      getByIds: async (ids) =>
-        ids.map((id) => vectors.get(id)).filter((v): v is StoredVector => v !== undefined),
+      getByIds: async (ids) => {
+        if (ids.length > 20) {
+          throw new Error(`too many ids in payload; max id count is 20, got ${ids.length}`);
+        }
+        return ids.map((id) => vectors.get(id)).filter((v): v is StoredVector => v !== undefined);
+      },
       upsert: async (vs) => {
         for (const v of vs) {
           upserts.push({ id: v.id, namespace, metadata: v.metadata });
@@ -198,6 +202,56 @@ describe("ops corpus migrate-founder — plan mode", () => {
     const code = await run(["--tenant", TENANT], h);
     expect(code).toBe(1);
     expect(h.err.join("\n")).toContain("missing_legacy_vector");
+  });
+
+  it("does not treat another tenant's objects as a plan-mode block", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(h.err.join("\n")).toContain("foreign_tenant_object");
+    expect(h.err.join("\n")).toContain("Rerun with --execute --sole-writer");
+    expect(h.err.join("\n")).not.toContain("Resolve the problems above before executing");
+  });
+
+  it("chunks Vectorize get_by_ids at the API's 20-id cap", async () => {
+    // 11 extra ready rows → 12 ready × (legacy + prefixed) = 24 ids, which a
+    // chunk of 50 would send in one payload and Vectorize would 400.
+    const h = makeHarness();
+    const items = [...LIST_DOC.items];
+    for (let i = 0; i < 11; i++) {
+      const id = `rd_extra${i}`;
+      const url = `https://a.example/extra-${i}`;
+      const prefix = `readings/2026/01/01T000000Z-${id}`;
+      items.push({
+        id,
+        url,
+        status: "ready",
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+        key_prefix: prefix,
+      });
+      h.objects.set("index/list.json", { body: JSON.stringify({ version: 1, items }), contentType: "application/json" });
+      h.objects.set(`index/by-id/${id}`, {
+        body: JSON.stringify({ id, key_prefix: prefix }),
+        contentType: "application/json",
+      });
+      h.objects.set(`index/by-url/${urlHash(url)}`, {
+        body: JSON.stringify({ id, key_prefix: prefix }),
+        contentType: "application/json",
+      });
+      h.objects.set(`${prefix}/manifest.json`, {
+        body: JSON.stringify({ ...READY_MANIFEST, id, url, url_hash: urlHash(url) }),
+        contentType: "application/json",
+      });
+      h.vectors.set(id, { id, values: [0.1, 0.2], metadata: { url } });
+    }
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(JSON.parse(h.out.join("\n")).vectors).toHaveLength(12);
   });
 
   it("invites execute when destination mismatches are the only problems — execute is their repair", async () => {
@@ -507,6 +561,21 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
   });
 
+  it("--limit with another tenant in the bucket still resumes rather than blocking certification", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const first = await run(["--tenant", TENANT, "--execute", "--sole-writer", "--limit", "3"], h);
+    expect(first).toBe(1);
+    expect(h.err.join("\n")).toContain("rerun to continue");
+    expect(h.err.join("\n")).not.toContain("Certification blocked");
+    const second = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(second).toBe(0);
+    expect(h.objects.get("u/usr_22222222-2222-4222-8222-222222222222/index/list.json")?.body).toBe("{}");
+  });
+
   it("plan mode after a completed execute reports fully migrated with zero pending work", async () => {
     const h = makeHarness();
     await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
@@ -553,6 +622,19 @@ describe("ops corpus migrate-founder — execute", () => {
     const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(code).toBe(0);
     expect(h.objects.get(damaged)?.body).toBe(JSON.stringify(READY_POINTER));
+  });
+
+  it("certifies a complete copy when another tenant's objects share the bucket", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    expect(h.objects.get("u/usr_22222222-2222-4222-8222-222222222222/index/list.json")?.body).toBe("{}");
+    expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
+    expect(h.err.join("\n")).toContain("Fully migrated");
   });
 
   it("copies an unrecognized stray key (zero loss) but withholds certification", async () => {
@@ -663,6 +745,35 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(h.sleeps).toEqual([5000]);
     expect(h.err.join("\n")).toContain("not yet visible");
     expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
+  });
+
+  it("still waits for Vectorize lag when another tenant's objects share the bucket", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const inner = h.deps.makeClients;
+    let revealAfter = 0;
+    h.deps.makeClients = async (opts) => {
+      const c = await inner(opts);
+      const getByIds = c.vectorize.getByIds;
+      c.vectorize = {
+        ...c.vectorize,
+        getByIds: async (ids) => {
+          const res = await getByIds(ids);
+          if (h.upserts.length === 0) return res;
+          if (revealAfter++ < 1) return res.filter((v) => v.namespace === undefined);
+          return res;
+        },
+      };
+      return c;
+    };
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    expect(h.sleeps).toEqual([5000]);
+    expect(h.err.join("\n")).toContain("not yet visible");
+    expect(h.err.join("\n")).toContain("Fully migrated");
   });
 
   it("refuses to resume a state file stamped for a different tenant or bucket", async () => {

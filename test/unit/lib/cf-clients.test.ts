@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   dryRunR2,
   makeR2Client,
+  makeR2RestClient,
   makeVectorizeClient,
+  r2InventoryClientFromVars,
   withKeyRoot,
 } from "../../../scripts/lib/cf-clients";
 
@@ -173,6 +175,135 @@ describe("makeR2Client", () => {
     const req = fetchFn.mock.calls[0]![0] as Request;
     expect(req.method).toBe("DELETE");
     expect(req.url).toContain("acct123.r2.cloudflarestorage.com/reading-lite/index/list.json");
+  });
+});
+
+describe("makeR2RestClient", () => {
+  const restCfg = { accountId: "acct123", apiToken: "cf-token", bucket: "reading-lite-staging" };
+
+  it("lists object metadata from the JSON REST envelope, following cursors", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            success: true,
+            result: [{ key: "index/list.json", size: 120, etag: "abc123" }],
+            result_info: { cursor: "next-page", is_truncated: true, per_page: 1000 },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            success: true,
+            result: [{ key: "readings/a/manifest.json", size: "456", etag: '"def456"' }],
+            result_info: { is_truncated: false },
+          }),
+          { status: 200 },
+        ),
+      );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await expect(r2.listObjects("index/")).resolves.toEqual([
+      { key: "index/list.json", size: 120, etag: "abc123" },
+      { key: "readings/a/manifest.json", size: 456, etag: "def456" },
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const first = fetchFn.mock.calls[0]![0] as string;
+    expect(first).toContain("api.cloudflare.com/client/v4/accounts/acct123/r2/buckets/reading-lite-staging/objects?");
+    expect(first).toContain("prefix=index%2F");
+    expect(fetchFn.mock.calls[1]![0]).toContain("cursor=next-page");
+    expect(new Headers(fetchFn.mock.calls[0]![1]?.headers).get("authorization")).toBe("Bearer cf-token");
+  });
+
+  it("PUTs raw bytes to the REST object URL with the bearer token", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () =>
+        new Response(JSON.stringify({ success: true, result: { etag: "abc" } }), { status: 200 }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await r2.put("readings/2026/x/manifest.json", "{}", { contentType: "application/json" });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const url = fetchFn.mock.calls[0]![0] as string;
+    const init = fetchFn.mock.calls[0]![1] as RequestInit;
+    expect(url).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct123/r2/buckets/reading-lite-staging/objects/readings/2026/x/manifest.json",
+    );
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe("{}");
+    const headers = new Headers(init.headers);
+    expect(headers.get("authorization")).toBe("Bearer cf-token");
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
+  it("getBytes round-trips binary bodies; 404 is null", async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    const out = await r2.getBytes("readings/a/raw.pdf");
+    expect(out?.contentType).toBe("application/pdf");
+    expect([...(out?.body ?? [])]).toEqual([...bytes]);
+
+    const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("", { status: 404 }),
+    );
+    expect(await makeR2RestClient(restCfg, missFetch as unknown as typeof fetch).getBytes("k")).toBeNull();
+  });
+
+  it("putIfAbsent returns false on 412", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("exists", { status: 412 }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(false);
+  });
+});
+
+describe("r2InventoryClientFromVars", () => {
+  it("prefers S3 credentials when access keys are present", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("", { status: 200 }),
+    );
+    const r2 = r2InventoryClientFromVars(
+      {
+        CLOUDFLARE_ACCOUNT_ID: "acct123",
+        CORPUS_R2_ACCESS_KEY: "AKIA",
+        CORPUS_R2_SECRET_KEY: "secret",
+        CLOUDFLARE_API_TOKEN: "cf-token",
+      },
+      "reading-lite",
+      fetchFn as unknown as typeof fetch,
+    );
+    await r2.put("k", "v");
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.url).toContain("acct123.r2.cloudflarestorage.com");
+  });
+
+  it("falls back to the REST API when only a Cloudflare API token is present", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response(JSON.stringify({ success: true }), { status: 200 }),
+    );
+    const r2 = r2InventoryClientFromVars(
+      {
+        CLOUDFLARE_ACCOUNT_ID: "acct123",
+        CLOUDFLARE_API_TOKEN: "cf-token",
+      },
+      "reading-lite-staging",
+      fetchFn as unknown as typeof fetch,
+    );
+    await r2.put("k", "v");
+    expect(fetchFn.mock.calls[0]![0]).toContain(
+      "api.cloudflare.com/client/v4/accounts/acct123/r2/buckets/reading-lite-staging/objects/k",
+    );
+  });
+
+  it("throws when neither S3 keys nor an API token are present", () => {
+    expect(() =>
+      r2InventoryClientFromVars({ CLOUDFLARE_ACCOUNT_ID: "acct123" }, "reading-lite"),
+    ).toThrow(/CLOUDFLARE_API_TOKEN/);
   });
 });
 

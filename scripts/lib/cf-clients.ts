@@ -84,6 +84,12 @@ export interface R2Config {
   bucket: string;
 }
 
+export interface R2RestConfig {
+  accountId: string;
+  apiToken: string;
+  bucket: string;
+}
+
 export interface VectorizeConfig {
   accountId: string;
   index: string;
@@ -205,6 +211,185 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     } while (continuationToken);
     return objects;
   }
+}
+
+// Cloudflare REST R2 (reading-lite-s1k.6.2): the same inventory surface as
+// makeR2Client, authenticated with a Cloudflare API token instead of S3
+// access keys. Cloud-agent environments carry CLOUDFLARE_API_TOKEN and can
+// list/get/put objects this way even when CORPUS_R2_ACCESS_KEY is unset.
+// Slashes in keys stay literal (R2 REST requirement); other reserved
+// characters go through encodePath.
+export function makeR2RestClient(cfg: R2RestConfig, fetchFn: typeof fetch = fetch): R2InventoryClient {
+  const objectsBase = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/r2/buckets/${cfg.bucket}/objects`;
+  const authHeader = `Bearer ${cfg.apiToken}`;
+
+  const objectUrl = (key: string) => `${objectsBase}/${encodePath(key)}`;
+
+  const authedFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    const headers = new Headers(init.headers);
+    headers.set("authorization", authHeader);
+    return fetchFn(url, { ...init, headers });
+  };
+
+  const throwIfUnsuccessfulJson = async (res: Response, action: string, key?: string): Promise<void> => {
+    const text = await res.text().catch(() => "");
+    let parsed: { success?: boolean; errors?: { message?: string }[] } | null = null;
+    try {
+      parsed = JSON.parse(text) as { success?: boolean; errors?: { message?: string }[] };
+    } catch {
+      parsed = null;
+    }
+    if (parsed?.success === true) return;
+    const detail = parsed?.errors?.map((e) => e.message).filter(Boolean).join("; ") || text;
+    const where = key === undefined ? action : `${action} ${key}`;
+    throw new Error(`R2 ${where} failed: ${res.status} ${detail}`);
+  };
+
+  return {
+    async put(key, body, opts) {
+      const headers: Record<string, string> = {};
+      if (opts?.contentType) headers["content-type"] = opts.contentType;
+      const res = await authedFetch(objectUrl(key), { method: "PUT", body, headers });
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "PUT", key);
+        return;
+      }
+      // 2xx still carries a JSON envelope whose success flag is the contract.
+      const text = await res.text().catch(() => "");
+      if (!text) return;
+      try {
+        const parsed = JSON.parse(text) as { success?: boolean };
+        if (parsed.success === false) {
+          throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("R2 PUT")) throw err;
+      }
+    },
+    async putIfAbsent(key, body, opts) {
+      const headers: Record<string, string> = { "if-none-match": "*" };
+      if (opts?.contentType) headers["content-type"] = opts.contentType;
+      const res = await authedFetch(objectUrl(key), { method: "PUT", body, headers });
+      if (res.ok) return true;
+      if (res.status === 412 || res.status === 409) return false;
+      await throwIfUnsuccessfulJson(res, "PUT", key);
+      return false;
+    },
+    async get(key) {
+      const res = await authedFetch(objectUrl(key), { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "GET", key);
+        return null;
+      }
+      return res.text();
+    },
+    async head(key) {
+      const res = await authedFetch(objectUrl(key), { method: "HEAD" });
+      if (res.status === 404) return false;
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "HEAD", key);
+        return false;
+      }
+      return true;
+    },
+    async delete(key) {
+      const res = await authedFetch(objectUrl(key), { method: "DELETE" });
+      if (res.status === 404) return;
+      if (!res.ok) await throwIfUnsuccessfulJson(res, "DELETE", key);
+    },
+    async listKeys() {
+      return (await listObjects()).map((o) => o.key);
+    },
+    listObjects,
+    async getBytes(key) {
+      const res = await authedFetch(objectUrl(key), { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "GET", key);
+        return null;
+      }
+      return {
+        body: new Uint8Array(await res.arrayBuffer()),
+        contentType: res.headers.get("content-type"),
+      };
+    },
+  };
+
+  async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
+    const objects: R2ObjectMeta[] = [];
+    let cursor: string | undefined;
+    do {
+      const params = new URLSearchParams({ per_page: "1000" });
+      if (prefix) params.set("prefix", prefix);
+      if (cursor) params.set("cursor", cursor);
+      const res = await authedFetch(`${objectsBase}?${params.toString()}`, { method: "GET" });
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "LIST");
+        return objects;
+      }
+      const json = (await res.json()) as {
+        success?: boolean;
+        errors?: { message?: string }[];
+        result?: Array<{ key?: string; size?: number | string; etag?: string }>;
+        result_info?: { cursor?: string; is_truncated?: boolean };
+      };
+      if (json.success === false) {
+        const detail = json.errors?.map((e) => e.message).filter(Boolean).join("; ") || "unsuccessful";
+        throw new Error(`R2 LIST failed: ${res.status} ${detail}`);
+      }
+      for (const item of json.result ?? []) {
+        if (!item.key) continue;
+        objects.push({
+          key: item.key,
+          size: Number(item.size ?? 0),
+          etag: normalizeRestEtag(item.etag),
+        });
+      }
+      const info = json.result_info;
+      cursor = info?.is_truncated ? info.cursor : undefined;
+    } while (cursor);
+    return objects;
+  }
+}
+
+function normalizeRestEtag(etag: string | undefined): string {
+  if (!etag) return "";
+  return etag.replace(/^W\//, "").replaceAll('"', "");
+}
+
+// Prefer S3 credentials when both are present (existing operator .corpus.vars);
+// otherwise use the Cloudflare REST API with CLOUDFLARE_API_TOKEN, which is
+// what cloud-agent environments actually have.
+export function r2InventoryClientFromVars(
+  vars: Record<string, string | undefined>,
+  bucket: string,
+  fetchFn: typeof fetch = fetch,
+): R2InventoryClient {
+  const accountId = firstDefined(vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
+  const accessKeyId = vars.CORPUS_R2_ACCESS_KEY;
+  const secretAccessKey = vars.CORPUS_R2_SECRET_KEY;
+  const apiToken = firstDefined(vars, ["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]);
+  if (!accountId) {
+    throw new Error("missing credential: CORPUS_R2_ACCOUNT_ID or CLOUDFLARE_ACCOUNT_ID (env or .corpus.vars)");
+  }
+  if (accessKeyId && secretAccessKey) {
+    return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn);
+  }
+  if (apiToken) {
+    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn);
+  }
+  throw new Error(
+    "missing credential: CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN (env or .corpus.vars)",
+  );
+}
+
+function firstDefined(vars: Record<string, string | undefined>, names: string[]): string | undefined {
+  for (const name of names) {
+    const value = vars[name];
+    if (value) return value;
+  }
+  return undefined;
 }
 
 function extractXmlTags(xml: string, tag: string): string[] {
