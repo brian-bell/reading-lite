@@ -14,7 +14,9 @@ describe("mcp format helpers", () => {
     expect(publicReadingUrl("https://reading.test.example/", "rd_ABC")).toBe(
       "https://reading.test.example/readings/rd_ABC",
     );
-    expect(publicReadingUrl("", "rd_ABC")).toBe("https://reading-lite.bbell.dev/readings/rd_ABC");
+    expect(publicReadingUrl("", "rd_ABC")).toBeUndefined();
+    expect(publicReadingUrl("   ", "rd_ABC")).toBeUndefined();
+    expect(publicReadingUrl(undefined, "rd_ABC")).toBeUndefined();
   });
 
   it("builds a markdown link, falling back to the URL as the label", () => {
@@ -37,6 +39,24 @@ describe("mcp format helpers", () => {
     expect(rest.truncated).toBe(false);
     expect(rest.bytes_returned).toBe(50);
     expect(rest.text).toBe("a".repeat(50));
+  });
+
+  it("does not split UTF-8 code points across pages", () => {
+    // "€" is E2 82 AC (3 bytes). A 2-byte page would cut it in half.
+    const body = "a€b";
+    const first = sliceUtf8(body, 0, 2);
+    expect(first.text).toBe("a");
+    expect(first.truncated).toBe(true);
+    expect(first.next_offset).toBe(1);
+    const rest = sliceUtf8(body, first.next_offset!, 16);
+    expect(rest.text).toBe("€b");
+    expect(first.text + rest.text).toBe(body);
+
+    // A maxBytes smaller than the first character still returns that character whole.
+    const euro = sliceUtf8("€", 0, 1);
+    expect(euro.text).toBe("€");
+    expect(euro.truncated).toBe(false);
+    expect(euro.next_offset).toBeNull();
   });
 
   it("maps auth and not-found HTTP errors onto the connector phrasing", () => {

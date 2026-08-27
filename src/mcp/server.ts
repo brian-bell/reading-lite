@@ -26,7 +26,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
     { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
     {
       instructions:
-        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url, import_markdown, and reprocess_reading mutate the corpus. After a successful import, include a markdown link to public_url.",
+        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url, import_markdown, and reprocess_reading mutate the corpus. After a successful import, include a markdown link to public_url when the result has one.",
     },
   );
   registerMcpTools(server, opts);

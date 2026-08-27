@@ -1,12 +1,12 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-export const DEFAULT_WEB_BASE_URL = "https://reading-lite.bbell.dev";
 export const CONTENT_CHUNK_BYTES = 200 * 1024;
 export const POLL_INTERVAL_MS = 2_000;
 export const POLL_MAX_WAIT_MS = 25_000;
 
-export function publicReadingUrl(webBaseUrl: string | undefined, id: string): string {
-  const raw = webBaseUrl && webBaseUrl.trim().length > 0 ? webBaseUrl : DEFAULT_WEB_BASE_URL;
+export function publicReadingUrl(webBaseUrl: string | undefined, id: string): string | undefined {
+  const raw = webBaseUrl?.trim();
+  if (!raw) return undefined;
   const origin = raw.replace(/\/+$/, "");
   return `${origin}/readings/${id}`;
 }
@@ -25,10 +25,36 @@ export interface Utf8Slice {
   next_offset: number | null;
 }
 
+function utf8Continuation(byte: number): boolean {
+  return (byte & 0xc0) === 0x80;
+}
+
+function utf8SeqLen(lead: number): number {
+  if (lead < 0x80) return 1;
+  if ((lead & 0xe0) === 0xc0) return 2;
+  if ((lead & 0xf0) === 0xe0) return 3;
+  if ((lead & 0xf8) === 0xf0) return 4;
+  return 1;
+}
+
 export function sliceUtf8(text: string, offsetBytes: number, maxBytes: number): Utf8Slice {
   const bytes = new TextEncoder().encode(text);
-  const start = Math.max(0, Math.min(offsetBytes, bytes.length));
-  const end = Math.min(bytes.length, start + Math.max(0, maxBytes));
+  let start = Math.max(0, Math.min(offsetBytes, bytes.length));
+  while (start < bytes.length && utf8Continuation(bytes[start]!)) {
+    start += 1;
+  }
+  const budget = Math.max(0, maxBytes);
+  const limit = Math.min(bytes.length, start + budget);
+  let end = start;
+  if (budget > 0) {
+    while (end < bytes.length) {
+      const next = end + utf8SeqLen(bytes[end]!);
+      if (next > bytes.length) break;
+      if (next > limit && end > start) break;
+      end = next;
+      if (end >= limit) break;
+    }
+  }
   const chunk = bytes.subarray(start, end);
   const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
   const truncated = end < bytes.length;

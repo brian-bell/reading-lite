@@ -172,7 +172,7 @@ Tools (reads first; writes mutate the corpus): `list_readings`, `search_readings
 `get_reading`, `get_reading_content`, `submit_url`, `import_markdown`,
 `reprocess_reading`, `get_diagnostics`. List/search return metadata only; full
 extracted markdown is opt-in by id. After a successful import the tool result
-includes a markdown link to `https://reading-lite.bbell.dev/readings/<id>`.
+includes `public_url` / `public_markdown_link` when `WEB_BASE_URL` is set.
 
 Cursor `mcp.json` / Grok Bot custom connector (same shape). Use the existing
 `reading-lite.bearerToken` value — never commit it:

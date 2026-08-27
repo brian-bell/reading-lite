@@ -155,7 +155,7 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     {
       title: "Get reading",
       description:
-        "Fetch one reading's metadata and summary_markdown by id. Includes the public web URL. Does not include the full extracted body — use get_reading_content for that.",
+        "Fetch one reading's metadata and summary_markdown by id. Includes public_url when WEB_BASE_URL is configured. Does not include the full extracted body — use get_reading_content for that.",
       inputSchema: {
         id: z.string().min(1).describe("Reading id (rd_…)"),
       },
@@ -168,8 +168,12 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       const publicUrl = publicReadingUrl(ctx.webBaseUrl, args.id);
       return jsonToolResult({
         ...rec,
-        public_url: publicUrl,
-        public_markdown_link: publicMarkdownLink(readingTitleOf(out.json), publicUrl),
+        ...(publicUrl
+          ? {
+              public_url: publicUrl,
+              public_markdown_link: publicMarkdownLink(readingTitleOf(out.json), publicUrl),
+            }
+          : {}),
       });
     },
   );
@@ -197,7 +201,7 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       const publicUrl = publicReadingUrl(ctx.webBaseUrl, args.id);
       return jsonToolResult({
         id: args.id,
-        public_url: publicUrl,
+        ...(publicUrl ? { public_url: publicUrl } : {}),
         content_type: "text/markdown",
         bytes_total: slice.bytes_total,
         bytes_returned: slice.bytes_returned,
@@ -232,7 +236,7 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     {
       title: "Import markdown",
       description:
-        "MUTATES the corpus. Import extracted markdown for a source_url (the identity/dedupe key). Prefer this over submit_url when you already have text (X, YouTube transcripts, Reddit). Returns id + status. After a successful import, include the public markdown link in your reply. Optional poll_until_ready waits until ready or failed.",
+        "MUTATES the corpus. Import extracted markdown for a source_url (the identity/dedupe key). Prefer this over submit_url when you already have text (X, YouTube transcripts, Reddit). Returns id + status. After a successful import, include public_markdown_link in your reply when the result has one. Optional poll_until_ready waits until ready or failed.",
       inputSchema: {
         source_url: z.string().url().describe("https source URL used for identity/dedupe"),
         markdown: z.string().min(1).describe("Extracted article markdown"),
@@ -270,8 +274,12 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
           note: isTerminalStatus(readingStatusOf(polled.json))
             ? undefined
             : "still pending after bounded poll",
-          public_url: publicUrl,
-          public_markdown_link: publicMarkdownLink(title, publicUrl),
+          ...(publicUrl
+            ? {
+                public_url: publicUrl,
+                public_markdown_link: publicMarkdownLink(title, publicUrl),
+              }
+            : {}),
           reading: polled.json,
         });
       }
