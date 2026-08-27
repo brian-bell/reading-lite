@@ -185,6 +185,10 @@ Cursor `mcp.json` / Grok Bot custom connector (same shape). Use the existing
 }
 ```
 
+The same tools are also served at `https://reading-lite.bbell.dev/api/mcp` (already
+inside the `/api/*` Worker route). Use `/mcp` once the dedicated `mcp*` route is
+attached; `/api/mcp` is the fallback when Pages still owns `/mcp`.
+
 Local `wrangler dev` serves the same path at `http://127.0.0.1:8787/mcp`.
 Stdio-only clients can bridge with `npx mcp-remote https://reading-lite.bbell.dev/mcp`.
 Operator notes (origin var, production route) live in

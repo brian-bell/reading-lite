@@ -363,6 +363,29 @@ describe("POST /mcp", () => {
     expect(ok.rpc.result?.tools).toBeDefined();
   });
 
+  it("also serves the same MCP endpoint at /api/mcp", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request("http://t/api/mcp", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200);
+    const rpc = (await res.json()) as JsonRpc;
+    assertNoTokenLeak(rpc);
+    expect((rpc.result?.tools ?? []).map((t) => t.name)).toContain("list_readings");
+  });
+
   it("returns 405 for GET /mcp in stateless mode", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const ctx = createExecutionContext();

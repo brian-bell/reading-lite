@@ -141,7 +141,12 @@ There is no OAuth. Tools call the existing `/api/readings*` routes internally;
 the token is never echoed in tool results.
 
 Production needs the dedicated `reading-lite.bbell.dev/mcp*` Worker route so
-Pages does not serve SPA HTML at `/mcp`. Staging uses the `workers.dev` URL
+Pages does not serve SPA HTML at `/mcp`. Attaching that route requires zone
+Workers Routes permission on the Cloudflare API token; if `ops deploy worker
+--env production` uploads the script but fails with authentication error 10000
+on `/zones/.../workers/routes`, add the route in the dashboard (Worker
+`reading-lite`, pattern `reading-lite.bbell.dev/mcp*`) or use the `/api/mcp`
+alias which is already covered by `/api/*`. Staging uses the `workers.dev` URL
 (`https://reading-lite-staging.<account>.workers.dev/mcp`) with no extra route.
 
 `MCP_ALLOWED_ORIGINS` (wrangler var, default `https://reading-lite.bbell.dev`)
