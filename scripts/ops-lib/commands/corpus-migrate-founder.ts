@@ -911,8 +911,8 @@ environments have). Vectorize uses the same API token. Needed in plan mode
 too (plan reads live listings and vector state).
 
 Run to full reconciliation BEFORE setting TENANT_DATA_PLANE=1 anywhere, and
-see docs/operations.md for the full cutover ordering (worker vector-id support
-and x-expected-tenant enforcement must be deployed before the flip).`,
+see docs/founder-cutover.md for the production cutover (worker vector-id
+support and x-expected-tenant enforcement must already be deployed).`,
   defaultDeps,
   run: runCorpusMigrateFounder,
 };

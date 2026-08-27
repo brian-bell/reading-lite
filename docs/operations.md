@@ -223,6 +223,10 @@ npm run ops -- corpus recover --tenant global --index ./index.json --execute
 
 ### Founder corpus migration (s1k.6)
 
+Production cutover (freeze, repair, copy, gate flip, verify, rollback,
+observation) is [`docs/founder-cutover.md`](founder-cutover.md), written from
+the 2026-08-27 staging rehearsal. This section is the command.
+
 `ops corpus migrate-founder` moves the pre-tenant corpus into the founder's
 tenant namespace as a **copy, never a move**: every global-layout object is
 copied byte-identically to `u/{tenantId}/{same key}` (stored `key_prefix`
@@ -265,16 +269,19 @@ what the objects *said*, never whether they passed: the row comparison always
 re-runs against the live `index/list.json`, so a row that goes stale while
 its manifest sits untouched is still caught.
 
-Both modes need the `CORPUS_R2_*` + `CORPUS_CF_API_TOKEN` credentials (plan
-reads live listings, per-row manifest/pointer content, and vector state).
-`--limit` caps work per pass for
-interrupted-run rehearsal; the tenant-stamped state file refuses resumes
-under a different tenant, bucket, or index. Cutover ordering: pause/drain
-the realtime writer, run to full reconciliation, deploy worker-side tenant
-vector-id support, and only then set `TENANT_DATA_PLANE=1`. Rollback before
-the flip is "don't flip"; after, unset the gate and redeploy the prior
-Worker — legacy state survives until post-observation sign-off (ADR 0001,
-founder data cutover).
+Both modes need an account id plus either S3 `CORPUS_R2_*` keys or
+`CLOUDFLARE_API_TOKEN` / `CORPUS_CF_API_TOKEN` (R2 REST). Plan reads live
+listings, per-row manifest/pointer content, and vector state.
+`--limit` caps work per pass for interrupted-run rehearsal; the
+tenant-stamped state file refuses resumes under a different tenant, bucket,
+or index.
+
+Cutover ordering, gate-flip commands, and the staging-rehearsal pitfalls
+(stale `index/list.json`, missing vectors, Vectorize `get_by_ids` cap of 20,
+`--var` vs `ops deploy worker`) are in
+[`docs/founder-cutover.md`](founder-cutover.md). Rollback before the flip is
+"don't flip"; after, unset the gate and redeploy — legacy state survives
+until post-observation sign-off (ADR 0001).
 
 ### The extract-agent
 
