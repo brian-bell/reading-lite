@@ -146,6 +146,21 @@ describe("planFounderMigration", () => {
     expect(isFullyMigrated(plan)).toBe(true);
   });
 
+  it("certifies a complete founder copy even when another tenant's objects share the bucket", () => {
+    const destCopies = SOURCE_OBJECTS.map((o) => ({ ...o, key: `${ROOT}${o.key}` }));
+    const foreign = obj("u/usr_22222222-2222-4222-8222-222222222222/index/list.json");
+    const plan = planFounderMigration(
+      input({
+        objects: [...SOURCE_OBJECTS, ...destCopies, foreign],
+        tenantVectors: new Map([[`${TENANT}:rd_ready`, goodTenantVector()]]),
+      }),
+    );
+    expect(plan.problems).toEqual([expect.objectContaining({ kind: "foreign_tenant_object" })]);
+    expect(executeBlockingProblems(plan)).toEqual([]);
+    expect(plan.counts.pending_copies).toBe(0);
+    expect(isFullyMigrated(plan)).toBe(true);
+  });
+
   it("keeps counting an upserted vector even after the legacy vector disappears", () => {
     // Post-observation legacy deletion must not regress reconciliation.
     const plan = planFounderMigration(

@@ -289,6 +289,10 @@ export function planFounderMigration(input: FounderMigrationInput): FounderMigra
     if (obj.key.startsWith(keyRoot)) {
       dest.set(obj.key.slice(keyRoot.length), obj);
     } else if (obj.key.startsWith(TENANT_ROOT_PREFIX)) {
+      // Other tenants in the same bucket are expected (staging isolation
+      // leftovers today; real users after cutover). They are not source, not
+      // destination, and this command never deletes them — report, don't
+      // block copy or certification of the founder re-rooting.
       problems.push({
         kind: "foreign_tenant_object",
         detail: `object under another tenant root: ${obj.key}`,
@@ -579,17 +583,32 @@ const EXECUTE_HANDLED_PROBLEMS: ReadonlySet<MigrationProblem["kind"]> = new Set(
   "unrecognized_key",
 ]);
 
+// Reported for the operator, but they are not a deficiency of THIS tenant's
+// copy. Execute does not touch them; certification of the founder re-rooting
+// ignores them so a bucket that already holds another tenant (staging, or
+// production after other users exist) can still fully migrate.
+const INFORMATIONAL_PROBLEMS: ReadonlySet<MigrationProblem["kind"]> = new Set([
+  "foreign_tenant_object",
+]);
+
 export function executeBlockingProblems(plan: FounderMigrationPlan): MigrationProblem[] {
-  return plan.problems.filter((p) => !EXECUTE_HANDLED_PROBLEMS.has(p.kind));
+  return plan.problems.filter(
+    (p) => !EXECUTE_HANDLED_PROBLEMS.has(p.kind) && !INFORMATIONAL_PROBLEMS.has(p.kind),
+  );
+}
+
+export function certificationProblems(plan: FounderMigrationPlan): MigrationProblem[] {
+  return plan.problems.filter((p) => !INFORMATIONAL_PROBLEMS.has(p.kind));
 }
 
 // The reconciliation verdict: re-planning after an execute must show nothing
-// pending and nothing wrong. This is the s1k.6 "counts and hashes reconcile
-// with zero lost readings" gate in plan form — etag equality per object plus
-// per-row expectations plus per-ready-row tenant vectors.
+// pending and nothing wrong with this tenant's copy. This is the s1k.6
+// "counts and hashes reconcile with zero lost readings" gate in plan form —
+// etag equality per object plus per-row expectations plus per-ready-row
+// tenant vectors. Other tenants' objects stay listed as informational.
 export function isFullyMigrated(plan: FounderMigrationPlan): boolean {
   return (
-    plan.problems.length === 0 &&
+    certificationProblems(plan).length === 0 &&
     plan.counts.pending_copies === 0 &&
     plan.counts.pending_vectors === 0 &&
     plan.counts.source_objects > 0

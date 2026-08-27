@@ -200,6 +200,19 @@ describe("ops corpus migrate-founder — plan mode", () => {
     expect(h.err.join("\n")).toContain("missing_legacy_vector");
   });
 
+  it("does not treat another tenant's objects as a plan-mode block", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const code = await run(["--tenant", TENANT], h);
+    expect(code).toBe(0);
+    expect(h.err.join("\n")).toContain("foreign_tenant_object");
+    expect(h.err.join("\n")).toContain("Rerun with --execute --sole-writer");
+    expect(h.err.join("\n")).not.toContain("Resolve the problems above before executing");
+  });
+
   it("invites execute when destination mismatches are the only problems — execute is their repair", async () => {
     const h = makeHarness();
     h.objects.set(`u/${TENANT}/index/by-id/rd_ready`, { body: "WRONG", contentType: "application/json" });
@@ -507,6 +520,21 @@ describe("ops corpus migrate-founder — execute", () => {
     expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
   });
 
+  it("--limit with another tenant in the bucket still resumes rather than blocking certification", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const first = await run(["--tenant", TENANT, "--execute", "--sole-writer", "--limit", "3"], h);
+    expect(first).toBe(1);
+    expect(h.err.join("\n")).toContain("rerun to continue");
+    expect(h.err.join("\n")).not.toContain("Certification blocked");
+    const second = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(second).toBe(0);
+    expect(h.objects.get("u/usr_22222222-2222-4222-8222-222222222222/index/list.json")?.body).toBe("{}");
+  });
+
   it("plan mode after a completed execute reports fully migrated with zero pending work", async () => {
     const h = makeHarness();
     await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
@@ -553,6 +581,19 @@ describe("ops corpus migrate-founder — execute", () => {
     const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
     expect(code).toBe(0);
     expect(h.objects.get(damaged)?.body).toBe(JSON.stringify(READY_POINTER));
+  });
+
+  it("certifies a complete copy when another tenant's objects share the bucket", async () => {
+    const h = makeHarness();
+    h.objects.set("u/usr_22222222-2222-4222-8222-222222222222/index/list.json", {
+      body: "{}",
+      contentType: "application/json",
+    });
+    const code = await run(["--tenant", TENANT, "--execute", "--sole-writer"], h);
+    expect(code).toBe(0);
+    expect(h.objects.get("u/usr_22222222-2222-4222-8222-222222222222/index/list.json")?.body).toBe("{}");
+    expect(h.stateOnDisk.value?.reconciled_at).toBeDefined();
+    expect(h.err.join("\n")).toContain("Fully migrated");
   });
 
   it("copies an unrecognized stray key (zero loss) but withholds certification", async () => {
