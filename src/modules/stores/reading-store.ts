@@ -258,6 +258,32 @@ export class ReadingStore {
     return attempts;
   }
 
+  // Deletes every object under one reading's id-scoped prefix (manifest,
+  // extracted.md, raw.*, attempts/*). Re-lists after each batch delete rather
+  // than paging by cursor, and returns only once a listing observes ZERO
+  // objects — so an object created between a list snapshot and its batch
+  // delete is caught by the next pass rather than left behind. (An object
+  // created after that final empty observation is the caller's coordination
+  // problem, not this method's.) Returns the number of objects deleted.
+  async deleteReadingObjects(keyPrefix: string): Promise<number> {
+    const prefix = this.layout.readingObjectsPrefix(keyPrefix);
+    let deleted = 0;
+    for (;;) {
+      const list = await this.bucket.list({ prefix, limit: 1000 });
+      if (list.objects.length === 0) return deleted;
+      await this.bucket.delete(list.objects.map((obj) => obj.key));
+      deleted += list.objects.length;
+    }
+  }
+
+  async deleteByUrlPointer(urlHash: string): Promise<void> {
+    await this.bucket.delete(this.layout.byUrlKey(urlHash));
+  }
+
+  async deleteByIdPointer(id: string): Promise<void> {
+    await this.bucket.delete(this.layout.byIdKey(id));
+  }
+
   async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {
     const list = await this.bucket.list({
       prefix: this.layout.readingObjectsPrefix(keyPrefix),

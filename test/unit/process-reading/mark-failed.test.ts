@@ -42,6 +42,30 @@ function services(): Services {
   };
 }
 
+// Activation always writes the pending manifest before enqueueing, and the
+// consumer refuses to write anything for a reading with no stored trace (the
+// purge guard) — so the realistic consumer state is a bucket that serves the
+// pending manifest and fails only on the writes under test.
+function manifestGet() {
+  const a = args();
+  const body = JSON.stringify({
+    id: a.id,
+    url: a.url,
+    url_hash: a.urlHash,
+    status: "pending",
+    content_type: "application/octet-stream",
+    content_status: "captured",
+    content_bytes: 0,
+    content_sha256: "0".repeat(64),
+    created_at: a.createdAt,
+    updated_at: a.createdAt,
+  });
+  return vi.fn(async (key: string) => {
+    if (key !== `${a.keyPrefix}/manifest.json`) return null;
+    return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+  });
+}
+
 describe("processReading — markFailed is defensive against R2 outages", () => {
   it("does not propagate when writeManifest in markFailed throws", async () => {
     // Extractor throws (services.fetch fails) → markFailed runs → writeManifest
@@ -49,7 +73,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     // the request already returned 202 and there's nothing for the caller to
     // do with a thrown promise from waitUntil.
     const bucket = {
-      get: vi.fn(async () => null),
+      get: manifestGet(),
       put: vi.fn(async () => {
         throw new Error("R2 outage");
       }),
@@ -68,7 +92,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     // writeManifest succeeds (put for manifest.json works), but the index
     // append fails. markFailed must not bubble that out either.
     const bucket = {
-      get: vi.fn(async () => null),
+      get: manifestGet(),
       put: vi.fn(async (key: string) => {
         if (key === "index/list.json") throw new Error("R2 partial outage");
       }),

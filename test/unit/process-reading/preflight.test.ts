@@ -33,13 +33,35 @@ function envWith(bucket: R2Bucket, overrides: Record<string, string>): Env {
   } as unknown as Env;
 }
 
+// Activation always writes the pending manifest before enqueueing, and the
+// consumer refuses to write anything for a reading with no stored trace (the
+// purge guard) — so the realistic queue-consumer state this test needs is a
+// bucket already holding the pending manifest.
+function pendingManifestJson(): string {
+  const a = args();
+  return JSON.stringify({
+    id: a.id,
+    url: a.url,
+    url_hash: a.urlHash,
+    status: "pending",
+    content_type: "application/octet-stream",
+    content_status: "captured",
+    content_bytes: 0,
+    content_sha256: "0".repeat(64),
+    created_at: a.createdAt,
+    updated_at: a.createdAt,
+  });
+}
+
 function workingBucket() {
-  const store = new Map<string, string>();
+  const store = new Map<string, string>([
+    [`${args().keyPrefix}/manifest.json`, pendingManifestJson()],
+  ]);
   return {
     get: vi.fn(async (key: string) => {
       const body = store.get(key);
       if (body === undefined) return null;
-      return { text: async () => body, json: async () => JSON.parse(body) };
+      return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
     }),
     put: vi.fn(async (key: string, value: unknown) => {
       store.set(key, String(value));

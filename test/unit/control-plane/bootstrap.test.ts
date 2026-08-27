@@ -4,6 +4,7 @@ import {
   TOKEN_MAX_TTL_MS,
   bootstrapFounder,
 } from "../../../src/control-plane/bootstrap";
+import { API_SCOPES } from "../../../src/control-plane/principal";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { deriveHmacKey, hmacHex } from "../../../src/control-plane/crypto";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
@@ -80,6 +81,7 @@ describe("bootstrapFounder", () => {
       result.tokenId,
     );
     expect(scopes.map((row) => row.scope)).toEqual([
+      "readings:delete",
       "readings:import",
       "readings:read",
       "readings:write",
@@ -158,7 +160,7 @@ describe("bootstrapFounder", () => {
     const scopes = sqlite
       .prepare("SELECT COUNT(*) AS n FROM api_token_scopes WHERE token_id = ?")
       .get(`tok_${TOKEN_UUID}`) as { n: number };
-    expect(scopes.n).toBe(3);
+    expect(scopes.n).toBe(API_SCOPES.length);
     const users = sqlite.prepare("SELECT email_canonical FROM users ORDER BY email_canonical").all() as {
       email_canonical: string;
     }[];

@@ -198,6 +198,17 @@ export interface ReprocessReadingResponse {
   attempt_id: string;
 }
 
+// Mirrors DeleteReadingResponseSchema: the purge report from
+// DELETE /api/readings/:id. `by_url_released` is false when the by-url slot
+// belongs to a different (surviving) reading and was deliberately left alone.
+export interface DeleteReadingResponse {
+  id: string;
+  vector_delete_requested: boolean;
+  list_row_removed: boolean;
+  by_url_released: boolean;
+  objects_deleted: number;
+}
+
 export interface ReadingObjectInfo {
   key: string;
   size: number;

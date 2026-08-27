@@ -1,6 +1,11 @@
 import { parseTenantId, parseTokenId, parseUserId, type TenantId, type UserId } from "./ids";
 
-export const API_SCOPES = ["readings:read", "readings:write", "readings:import"] as const;
+export const API_SCOPES = [
+  "readings:read",
+  "readings:write",
+  "readings:import",
+  "readings:delete",
+] as const;
 
 export type ApiScope = (typeof API_SCOPES)[number];
 

@@ -223,6 +223,33 @@ describe("api token scope matrix", () => {
     ).toBe(403);
   });
 
+  it("requires readings:delete for DELETE and grants nothing else with it", async () => {
+    // Every pre-delete scope together still cannot delete.
+    const legacyScopes = await insertScopedToken("scope-no-delete", [
+      "readings:read",
+      "readings:write",
+      "readings:import",
+    ]);
+    const refused = await request("/api/readings/rd_missing", `Bearer ${legacyScopes}`, {
+      method: "DELETE",
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: "forbidden" });
+
+    // A delete-only token can delete (404 here: nothing to purge) but neither
+    // read nor write.
+    const deleter = await insertScopedToken("scope-delete-only", ["readings:delete"]);
+    const auth = `Bearer ${deleter}`;
+    const allowed = await request("/api/readings/rd_missing", auth, { method: "DELETE" });
+    expect(allowed.status).toBe(404);
+    for (const path of readRoutes) {
+      expect((await request(path, auth)).status, path).toBe(403);
+    }
+    for (const { path, body } of writePosts) {
+      expect((await request(path, auth, { method: "POST", body })).status, path).toBe(403);
+    }
+  });
+
   it("allows readings:import on import-markdown and forbids reads and writes", async () => {
     const secret = await insertScopedToken("scope-import-only", ["readings:import"]);
     const auth = `Bearer ${secret}`;

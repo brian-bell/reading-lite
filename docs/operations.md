@@ -116,6 +116,11 @@ npm run ops -- deploy web --branch main --execute
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 
+When a release adds an API scope (e.g. `readings:delete`, migration
+`0002_readings_delete_scope.sql`), existing tokens do not pick it up on their
+own: apply the migration, then re-run the same founder bootstrap command —
+its scope grants are idempotent and top up the existing token.
+
 `ops deploy worker` targets only staging and production (`--env`), so a dev
 Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
 an existing SPA build.

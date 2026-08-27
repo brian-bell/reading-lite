@@ -194,6 +194,9 @@ describe("commitTerminalManifest", () => {
 
   it("5: no existing manifest → plain writeManifest (no CAS), committed:true", async () => {
     const reader = newReader();
+    // The by-id pointer is the liveness witness: activation always writes it,
+    // and without any witness a missing manifest reads as purged (case 5b).
+    await reader.writeByIdPointer(ID, { id: ID, key_prefix: PREFIX });
     const plain = vi.spyOn(reader, "writeManifest");
     const cas = vi.spyOn(reader, "replaceManifestIfCurrent");
     const { similarity } = fakeVectorize();
@@ -207,6 +210,24 @@ describe("commitTerminalManifest", () => {
     expect(out.committed).toBe(true);
     expect(plain).toHaveBeenCalled();
     expect(cas).not.toHaveBeenCalled();
+  });
+
+  it("5b: no manifest and no liveness witness (purged reading) → nothing written", async () => {
+    const reader = newReader();
+    const plain = vi.spyOn(reader, "writeManifest");
+    const pointerWrite = vi.spyOn(reader, "writeByUrlPointer");
+    const { similarity, index } = fakeVectorize();
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(plain).not.toHaveBeenCalled();
+    expect(pointerWrite).not.toHaveBeenCalled();
+    expect(index.upsert).not.toHaveBeenCalled();
   });
 
   it("6: preserve-ready manifest (markFailed preserve branch) → committed + index appended", async () => {

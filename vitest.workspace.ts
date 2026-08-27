@@ -23,6 +23,7 @@ export default [
         "test/unit/process-reading/**/*.test.ts",
         "test/unit/intake/**/*.test.ts",
         "test/unit/reading-visibility/**/*.test.ts",
+        "test/unit/reading-purge/**/*.test.ts",
       ],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
