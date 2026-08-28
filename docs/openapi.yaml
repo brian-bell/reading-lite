@@ -1,0 +1,1353 @@
+openapi: 3.1.0
+info:
+  title: reading-lite API
+  version: 1.0.0
+  summary: Personal reading corpus on Cloudflare Workers
+  description: |
+    Submit a URL (or import Markdown), get a structured summary, and search the
+    corpus. All routes except `/health` require a bearer token. Scopes gate each
+    operation (`readings:read`, `readings:write`, `readings:import`,
+    `readings:delete`).
+
+    Optional header `X-Expected-Tenant` pins the tenant layout the client
+    expects (`usr_…` or `global`). When present, a mismatch returns 412 before
+    any store write.
+
+    Local `wrangler dev` has no Queue or Vectorize binding: submit/reprocess/
+    import return 503, and similar returns an empty list.
+  contact:
+    url: https://github.com/brian-bell/reading-lite
+servers:
+  - url: https://reading-lite.bbell.dev
+    description: Production
+  - url: http://127.0.0.1:8787
+    description: Local wrangler dev
+tags:
+  - name: health
+    description: Unauthenticated liveness
+  - name: identity
+    description: Authenticated principal introspection
+  - name: readings
+    description: Corpus read and write paths
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Worker is up
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+
+  /api/whoami:
+    get:
+      tags: [identity]
+      operationId: getWhoami
+      summary: Authenticated principal identity
+      description: |
+        Returns the tenant and user the bearer acts as, plus whether
+        `TENANT_DATA_PLANE=1`. No scope gate beyond authentication.
+      responses:
+        "200":
+          description: Principal identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhoamiResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/readings:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [readings]
+      operationId: listReadings
+      summary: List readings (newest first)
+      description: |
+        Server-side filter against denormalized `index/list.json`. `q` is a
+        case-insensitive substring across title, tldr, url, and keywords.
+        `tag` is an exact case-insensitive match on tags only.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Page of list-index items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListReadingsResponse"
+        "400":
+          $ref: "#/components/responses/InvalidQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+    post:
+      tags: [readings]
+      operationId: submitReading
+      summary: Submit a URL for processing
+      description: |
+        Claims by-url ownership, writes a pending manifest, and enqueues a job.
+        Ready/pending owners return 200 with the existing manifest. Failed
+        owners reprocess the same id (202).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostReadingsBody"
+      responses:
+        "200":
+          description: Existing ready or pending owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+        "202":
+          description: New or reprocessed pending attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivatedReading"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/IntakeConflict"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      x-required-scope: readings:write
+
+  /api/readings/import-markdown:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      tags: [readings]
+      operationId: importMarkdown
+      summary: Import Markdown as a reading
+      description: |
+        Uses `source_url` for identity/dedupe, skips fetching, and processes the
+        supplied Markdown. Defaults `email` to false. Ready/pending owners
+        return 200; failed owners reprocess the same id (202).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostReadingsImportMarkdownBody"
+      responses:
+        "200":
+          description: Existing ready or pending owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+        "202":
+          description: New or reprocessed pending attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivatedReading"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/IntakeConflict"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      x-required-scope: readings:import
+
+  /api/readings/lookup:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [readings]
+      operationId: lookupReadingByUrl
+      summary: Resolve the owner id for a URL
+      description: |
+        Side-effect-free. Only a live, valid by-url pointer resolves. Does not
+        claim cold legacy pointers or repair damaged ones.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+      responses:
+        "200":
+          description: Owner found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LookupResponse"
+        "400":
+          description: Missing url
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+              example:
+                error: missing url
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Owner pointer still initializing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InitializingConflict"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+  /api/readings/similar:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      tags: [readings]
+      operationId: querySimilarReadings
+      summary: Top-K similar readings by embedding
+      description: |
+        Queries Vectorize. Without a Vectorize binding (local dev), returns
+        `{ "items": [] }`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostReadingsSimilarBody"
+      responses:
+        "200":
+          description: Similarity hits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostReadingsSimilarResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:write
+
+  /api/readings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    get:
+      tags: [readings]
+      operationId: getReading
+      summary: Get a reading manifest
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Manifest (stale pending/attempts may be annotated as failed at read time)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+    delete:
+      tags: [readings]
+      operationId: deleteReading
+      summary: Purge a reading
+      description: |
+        Visibility-first purge: Vectorize vector, owned by-url pointer, list
+        row, R2 objects under the prefix, by-id pointer last. 409 while an
+        attempt is actively running (stale attempts past the pending TTL do
+        not block). Inbound `connections` on other readings may still name the
+        deleted id.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Purge report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteReadingResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Active attempt in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+              example:
+                error: reading already has an active attempt
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:delete
+
+  /api/readings/{id}/diagnostics:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    get:
+      tags: [readings]
+      operationId: getReadingDiagnostics
+      summary: Inspect manifest, pointers, objects, and attempts
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Diagnostics bundle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetReadingDiagnosticsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+  /api/readings/{id}/reprocess:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    post:
+      tags: [readings]
+      operationId: reprocessReading
+      summary: Start a fresh processing attempt
+      description: |
+        Optional empty body. `force: true` bypasses an active-attempt conflict.
+        Optional `source: { kind: "markdown", … }` reprocesses supplied Markdown
+        instead of re-fetching the URL (and takes precedence over stored
+        Markdown). On success the reading becomes `source_type: "markdown"`;
+        on failure prior source type is retained, and a previously ready
+        reading rolls back to its preserved manifest. Markdown must fit the
+        Cloudflare 128 KB queue-message limit or the attempt rolls back with
+        503.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostReadingReprocessBody"
+      responses:
+        "200":
+          description: Existing ready/pending outcome (rare for reprocess)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+        "202":
+          description: Reprocess enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivatedReading"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IntakeConflict"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      x-required-scope: readings:write
+
+  /api/readings/{id}/content:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    get:
+      tags: [readings]
+      operationId: getReadingContent
+      summary: Stream extracted Markdown
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Extracted markdown (`extracted.md`)
+          content:
+            text/markdown:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Missing reading, or `content_status` is not `captured`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+  /api/readings/{id}/content/raw:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    get:
+      tags: [readings]
+      operationId: getReadingRawContent
+      summary: Stream raw captured bytes
+      description: Returns the original bytes with the stored `content_type`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Raw source bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Founder legacy bearer (or session token) looked up in D1. Runtime auth
+        does not fall back to the `READER_API_TOKEN` secret itself.
+
+  parameters:
+    ReadingId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        description: Reading id (typically `rd_…`)
+    ExpectedTenant:
+      name: X-Expected-Tenant
+      in: header
+      required: false
+      schema:
+        type: string
+        description: |
+          Layout pin: principal tenant id (`usr_…`) when the data-plane gate is
+          on, or `global` when it is off. Mismatch → 412.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+          example:
+            error: unauthorized
+    Forbidden:
+      description: Authenticated but lacking scope, or forbidden principal
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+          example:
+            error: forbidden
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+          example:
+            error: not found
+    InvalidBody:
+      description: Request body failed zod validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationError"
+    InvalidQuery:
+      description: Query string failed zod validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationError"
+          example:
+            error: invalid query
+            details: "…"
+    ExpectedTenantMismatch:
+      description: >
+        X-Expected-Tenant does not match the layout this request would use
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExpectedTenantMismatch"
+    AuthMisconfigured:
+      description: Control-plane or auth-root secret missing/invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+          example:
+            error: auth misconfigured
+    IntakeConflict:
+      description: |
+        Owner still initializing, active attempt in progress, or markdown
+        content unavailable for the requested operation.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/InitializingConflict"
+              - $ref: "#/components/schemas/ErrorMessage"
+    Unavailable:
+      description: |
+        Queue unbound, claim/activation contention, or queue send failure
+        (includes oversized reprocess Markdown that cannot be enqueued).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UnavailableError"
+
+  schemas:
+    ErrorMessage:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    ValidationError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+
+    ExpectedTenantMismatch:
+      type: object
+      additionalProperties: false
+      required: [error, acting_tenant]
+      properties:
+        error:
+          type: string
+          const: expected tenant mismatch
+        acting_tenant:
+          type: string
+
+    InitializingConflict:
+      type: object
+      additionalProperties: false
+      required: [error, id, poll]
+      properties:
+        error:
+          type: string
+          const: reading owner is still initializing
+        id:
+          type: string
+        poll:
+          type: string
+          description: Relative poll path, e.g. `/api/readings/{id}`
+
+    UnavailableError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable unavailable reason
+        id:
+          type: string
+          description: Present when an id was allocated before the failure
+
+    WhoamiResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, user_id, principal, tenant_data_plane]
+      properties:
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        principal:
+          type: string
+          enum: [api_token, session]
+        tenant_data_plane:
+          type: boolean
+
+    HttpUrl:
+      type: string
+      format: uri
+      pattern: "^https?://"
+      description: http(s) URL
+
+    PostReadingsBody:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          $ref: "#/components/schemas/HttpUrl"
+        email:
+          type: boolean
+          description: Send completion email when configured (default true on submit)
+
+    PostReadingsImportMarkdownBody:
+      type: object
+      additionalProperties: false
+      required: [source_url, markdown]
+      properties:
+        source_url:
+          $ref: "#/components/schemas/HttpUrl"
+        title:
+          type: string
+          minLength: 1
+        markdown:
+          type: string
+          minLength: 1
+        email:
+          type: boolean
+          description: Defaults to false on import
+
+    ReprocessMarkdownSource:
+      type: object
+      additionalProperties: false
+      required: [kind, markdown]
+      properties:
+        kind:
+          type: string
+          const: markdown
+        markdown:
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+
+    PostReadingReprocessBody:
+      type: object
+      additionalProperties: false
+      properties:
+        force:
+          type: boolean
+          default: false
+        email:
+          type: boolean
+          description: Defaults to false on reprocess
+        source:
+          $ref: "#/components/schemas/ReprocessMarkdownSource"
+
+    ActivatedReading:
+      type: object
+      additionalProperties: false
+      required: [id, status, poll, attempt_id]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          const: pending
+        poll:
+          type: string
+          description: Relative path to poll, e.g. `/api/readings/{id}`
+        attempt_id:
+          type: string
+
+    LookupResponse:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+
+    PostReadingsSimilarBody:
+      type: object
+      additionalProperties: false
+      required: [query_embedding]
+      properties:
+        query_embedding:
+          type: array
+          minItems: 1536
+          maxItems: 1536
+          items:
+            type: number
+        k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+
+    SimilarItem:
+      type: object
+      additionalProperties: false
+      required: [id, url, score]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        score:
+          type: number
+
+    PostReadingsSimilarResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SimilarItem"
+
+    DeleteReadingResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - vector_delete_requested
+        - list_row_removed
+        - by_url_released
+        - objects_deleted
+      properties:
+        id:
+          type: string
+          minLength: 1
+        vector_delete_requested:
+          type: boolean
+          description: Vectorize deleteByIds was issued (existence not reported)
+        list_row_removed:
+          type: boolean
+        by_url_released:
+          type: boolean
+          description: False when another surviving reading owns the by-url slot
+        objects_deleted:
+          type: integer
+          minimum: 0
+
+    ManifestStatus:
+      type: string
+      enum: [pending, ready, failed]
+
+    SourceType:
+      type: string
+      enum: [url, markdown]
+
+    ContentStatus:
+      type: string
+      enum: [captured, raw_only, failed]
+
+    NoveltyVerdict:
+      type: string
+      enum: [novel, familiar, duplicate]
+
+    ProcessingAttemptTrigger:
+      type: string
+      enum: [submit, reprocess, import]
+
+    ProcessingAttemptStatus:
+      type: string
+      enum: [running, succeeded, failed]
+
+    ProcessingStage:
+      type: string
+      enum:
+        - queued
+        - fetch_source
+        - prepare_markdown
+        - write_raw
+        - write_extracted
+        - embed_source
+        - query_similar
+        - summarize
+        - embed_summary
+        - upsert_vector
+        - write_manifest
+        - write_indexes
+        - send_email
+
+    Sha256Hex:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+      description: 64 lowercase hex chars
+
+    ManifestError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        message:
+          type: string
+          minLength: 1
+        stage:
+          $ref: "#/components/schemas/ProcessingStage"
+        failed_at:
+          type: string
+          format: date-time
+        retryable:
+          type: boolean
+
+    ProcessingAttemptSummary:
+      type: object
+      additionalProperties: false
+      required: [id, trigger, status, started_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        trigger:
+          $ref: "#/components/schemas/ProcessingAttemptTrigger"
+        status:
+          $ref: "#/components/schemas/ProcessingAttemptStatus"
+        stage:
+          $ref: "#/components/schemas/ProcessingStage"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          $ref: "#/components/schemas/ManifestError"
+
+    ProcessingAttemptEvent:
+      type: object
+      additionalProperties: false
+      required: [stage, status, at]
+      properties:
+        stage:
+          $ref: "#/components/schemas/ProcessingStage"
+        status:
+          type: string
+          enum: [started, succeeded, failed]
+        at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: number
+          minimum: 0
+        error:
+          $ref: "#/components/schemas/ManifestError"
+
+    ProcessingAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - trigger
+        - status
+        - started_at
+        - reading_id
+        - url
+        - url_hash
+        - key_prefix
+        - events
+      properties:
+        id:
+          type: string
+          minLength: 1
+        trigger:
+          $ref: "#/components/schemas/ProcessingAttemptTrigger"
+        status:
+          $ref: "#/components/schemas/ProcessingAttemptStatus"
+        stage:
+          $ref: "#/components/schemas/ProcessingStage"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          $ref: "#/components/schemas/ManifestError"
+        reading_id:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        url_hash:
+          $ref: "#/components/schemas/Sha256Hex"
+        key_prefix:
+          type: string
+          minLength: 1
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProcessingAttemptEvent"
+
+    SimilaritySnapshot:
+      type: object
+      additionalProperties: false
+      required: [count, computed_at]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+        max:
+          type: number
+        mean:
+          type: number
+        computed_at:
+          type: string
+          format: date-time
+
+    Connection:
+      type: object
+      additionalProperties: false
+      required: [id, reason]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          minLength: 1
+
+    OpenAISummarizationUsage:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+        - model
+        - input_tokens
+        - output_tokens
+        - reasoning_tokens
+        - cached_input_tokens
+        - cache_write_tokens
+      properties:
+        provider:
+          type: string
+          const: openai
+        model:
+          type: string
+          minLength: 1
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        reasoning_tokens:
+          type: integer
+          minimum: 0
+        cached_input_tokens:
+          type: integer
+          minimum: 0
+        cache_write_tokens:
+          type: integer
+          minimum: 0
+
+    AnthropicSummarizationUsage:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+        - model
+        - input_tokens
+        - output_tokens
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+      properties:
+        provider:
+          type: string
+          const: anthropic
+        model:
+          type: string
+          minLength: 1
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        cache_creation_input_tokens:
+          type: integer
+          minimum: 0
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+
+    SummarizationUsage:
+      oneOf:
+        - $ref: "#/components/schemas/OpenAISummarizationUsage"
+        - $ref: "#/components/schemas/AnthropicSummarizationUsage"
+      discriminator:
+        propertyName: provider
+        mapping:
+          openai: "#/components/schemas/OpenAISummarizationUsage"
+          anthropic: "#/components/schemas/AnthropicSummarizationUsage"
+
+    LegacyUsage:
+      type: object
+      additionalProperties: false
+      required:
+        - anthropic_input_tokens
+        - anthropic_output_tokens
+        - openai_embedding_tokens
+      properties:
+        anthropic_input_tokens:
+          type: integer
+          minimum: 0
+        anthropic_output_tokens:
+          type: integer
+          minimum: 0
+        openai_embedding_tokens:
+          type: integer
+          minimum: 0
+
+    UsageV2:
+      type: object
+      additionalProperties: false
+      required: [summarization, openai_embedding_tokens]
+      properties:
+        summarization:
+          $ref: "#/components/schemas/SummarizationUsage"
+        openai_embedding_tokens:
+          type: integer
+          minimum: 0
+
+    Usage:
+      oneOf:
+        - $ref: "#/components/schemas/LegacyUsage"
+        - $ref: "#/components/schemas/UsageV2"
+
+    Manifest:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - url
+        - url_hash
+        - status
+        - content_type
+        - content_status
+        - content_bytes
+        - content_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        url_hash:
+          $ref: "#/components/schemas/Sha256Hex"
+        source_type:
+          $ref: "#/components/schemas/SourceType"
+        status:
+          $ref: "#/components/schemas/ManifestStatus"
+        error:
+          $ref: "#/components/schemas/ManifestError"
+        active_attempt:
+          $ref: "#/components/schemas/ProcessingAttemptSummary"
+        last_attempt:
+          $ref: "#/components/schemas/ProcessingAttemptSummary"
+        preserve_ready_manifest:
+          description: Internal rollback snapshot; opaque to clients
+        title:
+          type: string
+          minLength: 1
+        tldr:
+          type: string
+          minLength: 1
+        tags:
+          type: array
+          items:
+            type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        people:
+          type: array
+          items:
+            type: string
+        orgs:
+          type: array
+          items:
+            type: string
+        novelty_verdict:
+          $ref: "#/components/schemas/NoveltyVerdict"
+        similarity:
+          $ref: "#/components/schemas/SimilaritySnapshot"
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Connection"
+        summary_markdown:
+          type: string
+        content_type:
+          type: string
+          minLength: 1
+        content_status:
+          $ref: "#/components/schemas/ContentStatus"
+        content_bytes:
+          type: integer
+          minimum: 0
+        extracted_bytes:
+          type: integer
+          minimum: 0
+        content_sha256:
+          $ref: "#/components/schemas/Sha256Hex"
+        fetched_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    ListIndexItem:
+      type: object
+      additionalProperties: false
+      required: [id, key_prefix, url, status, created_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        key_prefix:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          minLength: 1
+        tldr:
+          type: string
+          minLength: 1
+        tags:
+          type: array
+          items:
+            type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        status:
+          $ref: "#/components/schemas/ManifestStatus"
+        novelty_verdict:
+          $ref: "#/components/schemas/NoveltyVerdict"
+        similarity:
+          $ref: "#/components/schemas/SimilaritySnapshot"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error:
+          $ref: "#/components/schemas/ManifestError"
+        active_attempt:
+          $ref: "#/components/schemas/ProcessingAttemptSummary"
+        last_attempt:
+          $ref: "#/components/schemas/ProcessingAttemptSummary"
+
+    ListReadingsResponse:
+      type: object
+      additionalProperties: false
+      required: [readings, limit, offset, has_more]
+      properties:
+        readings:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListIndexItem"
+        limit:
+          type: integer
+          minimum: 0
+        offset:
+          type: integer
+          minimum: 0
+        has_more:
+          type: boolean
+
+    ByUrlPointer:
+      type: object
+      additionalProperties: false
+      required: [id, key_prefix]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        key_prefix:
+          type: string
+          minLength: 1
+
+    PointerDiagnostic:
+      type: object
+      additionalProperties: false
+      required: [exists, matches_manifest]
+      properties:
+        exists:
+          type: boolean
+        pointer:
+          $ref: "#/components/schemas/ByUrlPointer"
+        matches_manifest:
+          type: boolean
+
+    ReadingObjectInfo:
+      type: object
+      additionalProperties: false
+      required: [key, size]
+      properties:
+        key:
+          type: string
+          minLength: 1
+        size:
+          type: integer
+          minimum: 0
+        uploaded:
+          type: string
+
+    GetReadingDiagnosticsResponse:
+      type: object
+      additionalProperties: false
+      required: [id, key_prefix, manifest, index_item, pointers, objects, attempts]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        key_prefix:
+          type: string
+          minLength: 1
+        manifest:
+          $ref: "#/components/schemas/Manifest"
+        index_item:
+          oneOf:
+            - $ref: "#/components/schemas/ListIndexItem"
+            - type: "null"
+        pointers:
+          type: object
+          additionalProperties: false
+          required: [by_id, by_url]
+          properties:
+            by_id:
+              $ref: "#/components/schemas/PointerDiagnostic"
+            by_url:
+              $ref: "#/components/schemas/PointerDiagnostic"
+        objects:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReadingObjectInfo"
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProcessingAttempt"
