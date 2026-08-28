@@ -67,6 +67,7 @@ export default [
         "test/unit/extract-agent/**/*.test.ts",
         "test/unit/control-plane/**/*.test.ts",
         "test/unit/scripts/**/*.test.ts",
+        "test/unit/openapi/**/*.test.ts",
       ],
       environment: "node",
     },

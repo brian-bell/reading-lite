@@ -147,7 +147,8 @@ matrix.
   will not see un-namespaced vectors, so a corpus migrated in R2 but not in
   Vectorize would silently return zero neighbours.
 - Keep manifest contracts synchronized: `src/schemas/manifest.ts`,
-  `src/schemas/api.ts`, tests, and `web/src/types.ts` change together.
+  `src/schemas/api.ts`, tests, `web/src/types.ts`, and `docs/openapi.yaml`
+  change together.
 - Keep summarizer config fail-closed: require the selected provider's
   credential, reject invalid provider/effort values, no implicit fallback.
 - Preserve the Anthropic prompt-cache prefix (`buildSummarizeRequestBody` in
