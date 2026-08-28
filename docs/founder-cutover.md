@@ -339,8 +339,9 @@ under `u/$TENANT/` and as `{tenantId}:{readingId}` vectors.
 
 Until you pin the gate in `wrangler.toml`, **any** later
 `wrangler deploy --env production` or `ops deploy worker --env production
---execute` rolls the gate **off**. Do not deploy production for other reasons
-during this window.
+--execute` rolls the gate **off**. That includes a merge to `main`, which
+runs `.github/workflows/deploy-worker.yml`. Do not deploy production for
+other reasons during this window.
 
 Watch for: list/detail/content, submit/reprocess of a throwaway URL (lands
 in the tenant prefix), similarity returning bare ids, no 412 storms on

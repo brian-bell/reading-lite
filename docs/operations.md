@@ -86,9 +86,10 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against D1. `ops deploy worker` does not create the database, apply
-migrations, or import the founder token, and `--execute` refuses placeholder
-`CONTROL_PLANE` `database_id` values in `wrangler.toml`.
+against D1. `ops deploy worker` does not create the database or import the
+founder token. `--execute` applies pending remote D1 migrations, then
+uploads, and refuses placeholder `CONTROL_PLANE` `database_id` values in
+`wrangler.toml`.
 
 Staging:
 
@@ -113,13 +114,29 @@ npm run ops -- deploy worker --env production --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
+Merges to `main` also run `.github/workflows/deploy-worker.yml`: Worker
+typecheck + test, then the same `ops deploy worker --env production --execute`
+(pending remote D1 migrations, then upload). `workflow_dispatch` re-runs that
+path without a merge. The SPA is not part of it (`ops deploy web` stays
+operator-driven), and the workflow does not pass `--var`, so it cannot flip
+`TENANT_DATA_PLANE`. During the founder cutover observation window, do not
+merge to `main` if that would roll the gate off (see `docs/founder-cutover.md`).
+
+GitHub repository secrets (or the `production` environment):
+
+| Secret | Purpose |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Use the Edit Cloudflare Workers template, scoped to this account; include D1 Edit and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. |
+| `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
+
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 
 When a release adds an API scope (e.g. `readings:delete`, migration
 `0002_readings_delete_scope.sql`), existing tokens do not pick it up on their
-own: apply the migration, then re-run the same founder bootstrap command —
-its scope grants are idempotent and top up the existing token.
+own: `ops deploy worker --execute` applies the migration, then re-run the
+same founder bootstrap command — its scope grants are idempotent and top up
+the existing token.
 
 `ops deploy worker` targets only staging and production (`--env`), so a dev
 Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
