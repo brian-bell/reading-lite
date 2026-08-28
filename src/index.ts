@@ -33,6 +33,7 @@ export interface Env {
   EMAIL_TO: string;
   WEB_BASE_URL: string;
   CORS_ALLOWED_ORIGINS: string;
+  MCP_ALLOWED_ORIGINS: string;
   PENDING_TTL_SECONDS: string;
   FETCH_TIMEOUT_MS: string;
   FETCH_MAX_BYTES: string;

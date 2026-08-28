@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { Env } from "./index";
 import {
   corsMiddleware,
@@ -7,6 +8,7 @@ import {
   requireScope,
   type AppBindings,
 } from "./middleware";
+import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
 import {
   ListReadingsQuerySchema,
   PostReadingReprocessBodySchema,
@@ -25,6 +27,7 @@ import { applyStaleness } from "./modules/staleness";
 
 export interface AppOptions {
   services?: Services;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
@@ -48,6 +51,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("*", corsMiddleware());
 
   app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse();
     console.error(err);
     return c.json({ error: "internal" }, 500);
   });
@@ -55,6 +59,16 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/health", (c) => c.text("ok", 200));
 
   const authNowMs = () => Date.parse(services.now());
+
+  app.use("/mcp", mcpOriginGuard());
+  app.use("/mcp", requirePrincipal(authNowMs));
+  app.all("/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
+  // Alias under /api/* so production works before the dedicated /mcp* zone
+  // route is attached (that update needs Cloudflare zone Workers Routes
+  // permission the deploy token may not have).
+  app.use("/api/mcp", mcpOriginGuard());
+  app.use("/api/mcp", requirePrincipal(authNowMs));
+  app.all("/api/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
 
   // Everything below requires bearer auth.
   app.use("/api/whoami", requirePrincipal(authNowMs));
