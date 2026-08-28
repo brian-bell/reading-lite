@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import yaml from "yaml";
 
@@ -92,5 +94,39 @@ describe("docs/openapi.yaml", () => {
     for (const name of REQUIRED_SCHEMAS) {
       expect(schemas[name], `missing schema ${name}`).toBeDefined();
     }
+  });
+
+  it("accepts a full processing attempt returned by diagnostics", () => {
+    const doc = loadSpec();
+    const ajv = new Ajv2020({ strict: false });
+    addFormats(ajv);
+    ajv.addSchema(doc, "reading-lite-openapi");
+    const validate = ajv.getSchema(
+      "reading-lite-openapi#/components/schemas/ProcessingAttempt",
+    );
+    const attempt = {
+      id: "at_01",
+      trigger: "submit",
+      status: "succeeded",
+      stage: "write_indexes",
+      started_at: "2026-08-28T18:00:00.000Z",
+      finished_at: "2026-08-28T18:00:01.000Z",
+      reading_id: "rd_01",
+      url: "https://example.com/article",
+      url_hash: "a".repeat(64),
+      key_prefix: "readings/rd_01",
+      events: [
+        {
+          stage: "fetch_source",
+          status: "succeeded",
+          at: "2026-08-28T18:00:00.500Z",
+          duration_ms: 500,
+        },
+      ],
+    };
+
+    expect(validate).toBeDefined();
+    expect(validate?.(attempt)).toBe(true);
+    expect(validate?.({ ...attempt, unexpected: true })).toBe(false);
   });
 });

@@ -31,6 +31,8 @@
     "@types/turndown": "^5.0.5",
     "@vitest/runner": "~2.1.8",
     "@vitest/snapshot": "~2.1.8",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "aws4fetch": "^1.0.20",
     "better-sqlite3": "^11.7.0",
     "playwright": "^1.61.1",

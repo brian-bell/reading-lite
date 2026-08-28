@@ -940,27 +940,51 @@ components:
           $ref: "#/components/schemas/ManifestError"
 
     ProcessingAttempt:
-      allOf:
-        - $ref: "#/components/schemas/ProcessingAttemptSummary"
-        - type: object
-          additionalProperties: false
-          required: [reading_id, url, url_hash, key_prefix, events]
-          properties:
-            reading_id:
-              type: string
-              minLength: 1
-            url:
-              type: string
-              format: uri
-            url_hash:
-              $ref: "#/components/schemas/Sha256Hex"
-            key_prefix:
-              type: string
-              minLength: 1
-            events:
-              type: array
-              items:
-                $ref: "#/components/schemas/ProcessingAttemptEvent"
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - trigger
+        - status
+        - started_at
+        - reading_id
+        - url
+        - url_hash
+        - key_prefix
+        - events
+      properties:
+        id:
+          type: string
+          minLength: 1
+        trigger:
+          $ref: "#/components/schemas/ProcessingAttemptTrigger"
+        status:
+          $ref: "#/components/schemas/ProcessingAttemptStatus"
+        stage:
+          $ref: "#/components/schemas/ProcessingStage"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          $ref: "#/components/schemas/ManifestError"
+        reading_id:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        url_hash:
+          $ref: "#/components/schemas/Sha256Hex"
+        key_prefix:
+          type: string
+          minLength: 1
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProcessingAttemptEvent"
 
     SimilaritySnapshot:
       type: object
