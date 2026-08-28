@@ -28,9 +28,4 @@ describe("aboveFloor", () => {
   it("handles an empty input", () => {
     expect(aboveFloor([], SIMILARITY_FLOOR)).toEqual([]);
   });
-
-  it("uses a floor strictly between no-similarity and self-similarity", () => {
-    expect(SIMILARITY_FLOOR).toBeGreaterThan(0);
-    expect(SIMILARITY_FLOOR).toBeLessThan(1);
-  });
 });

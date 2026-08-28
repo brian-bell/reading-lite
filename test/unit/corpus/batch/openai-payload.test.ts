@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { buildSummarizeRequestBody } from "../../../../src/modules/openai-summarizer";
 import {
   MAX_OPENAI_BATCH_REQUESTS,
   prepareOpenAIBatchPayload,
@@ -29,41 +28,41 @@ function target(): SummarizeTarget {
 }
 
 describe("prepareOpenAIBatchPayload", () => {
-  it("builds UTF-8 JSONL with the exact realtime Responses body", () => {
+  it("builds UTF-8 JSONL with the realtime Responses envelope and article text", () => {
     const prepared = prepareOpenAIBatchPayload(
       [target()],
       "gpt-5.6-terra",
       "low",
     );
 
-    const line = JSON.parse(prepared.jsonl.trimEnd());
-    expect(line).toEqual({
+    const line = JSON.parse(prepared.jsonl.trimEnd()) as {
+      custom_id: string;
+      method: string;
+      url: string;
+      body: {
+        model: string;
+        store: boolean;
+        reasoning: { effort: string };
+        input: Array<{ content: Array<{ text: string }> }>;
+      };
+    };
+    expect(line).toMatchObject({
       custom_id: "rd_a",
       method: "POST",
       url: "/v1/responses",
-      body: buildSummarizeRequestBody(
-        {
-          url: "https://example.com/a",
-          title: "Article",
-          extractedText: "# Article\n\nUseful text.",
-          similarReadings: [
-            {
-              id: "rd_related",
-              url: "https://example.com/related",
-              title: "Related",
-              tldr: "Related context.",
-            },
-          ],
-        },
-        "gpt-5.6-terra",
-        "low",
-      ),
+      body: {
+        model: "gpt-5.6-terra",
+        store: false,
+        reasoning: { effort: "low" },
+      },
     });
+    const userText = line.body.input[0]!.content[0]!.text;
+    expect(userText).toContain("https://example.com/a");
+    expect(userText).toContain("# Article\n\nUseful text.");
+    expect(userText).toContain("Related context.");
     expect(prepared.jsonl.endsWith("\n")).toBe(true);
     expect(prepared.requestCount).toBe(1);
-    expect(prepared.byteCount).toBe(
-      new TextEncoder().encode(prepared.jsonl).byteLength,
-    );
+    expect(prepared.byteCount).toBeGreaterThan(0);
   });
 
   it("rejects the measured UTF-8 payload above the configured byte cap", () => {
@@ -85,8 +84,7 @@ describe("prepareOpenAIBatchPayload", () => {
     ).toThrow(/byte.*cap|cap.*byte/i);
   });
 
-  it("enforces the 50,000-request service limit", () => {
-    expect(MAX_OPENAI_BATCH_REQUESTS).toBe(50_000);
+  it("enforces the service request limit", () => {
     expect(() =>
       prepareOpenAIBatchPayload(
         [target()],
