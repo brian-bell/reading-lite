@@ -1,9 +1,9 @@
 // `ops deploy worker` — deploy the Cloudflare Worker (reading-lite).
-// Plan-first: a mode-less run passes wrangler --dry-run (config validation +
-// in-place build check, no upload) and prints the command plus the
-// control-plane readiness preflight; --execute uploads. The preflight refuses
-// an execute against placeholder CONTROL_PLANE D1 database ids; plan mode
-// warns instead of failing.
+// Plan-first: a mode-less run prints the remote D1 migrate command and passes
+// wrangler --dry-run (config validation + in-place build check, no upload)
+// plus the control-plane readiness preflight; --execute applies pending remote
+// D1 migrations then uploads. The preflight refuses an execute against
+// placeholder CONTROL_PLANE D1 database ids; plan mode warns instead of failing.
 
 import { parseArgs } from "node:util";
 import { validateControlPlaneDeployReadiness } from "../../control-plane-env";
@@ -26,6 +26,10 @@ export function buildWranglerArgs(args: { env: DeployEnv; execute: boolean }): s
   return out;
 }
 
+export function buildMigrationArgs(args: { env: DeployEnv; databaseName: string }): string[] {
+  return ["d1", "migrations", "apply", args.databaseName, "--env", args.env, "--remote"];
+}
+
 async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<number> {
   let values;
   try {
@@ -46,8 +50,12 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   const wranglerArgs = buildWranglerArgs({ env, execute });
   const mode = execute ? "DEPLOY" : "PLAN";
   const readiness = deps.validateReadiness(env);
+  const migrationArgs = readiness.ok
+    ? buildMigrationArgs({ env, databaseName: readiness.d1.databaseName })
+    : null;
   deps.io.stderr(
     `[${mode}] worker=reading-lite env=${env}\n` +
+      (migrationArgs ? `[${mode}] $ wrangler ${migrationArgs.join(" ")}\n` : "") +
       `[${mode}] $ wrangler ${wranglerArgs.join(" ")}\n` +
       `[${mode}] required runtime secret: ${readiness.requiredSecrets.runtime.join(", ")}\n` +
       `[${mode}] bootstrap-only secret: ${readiness.requiredSecrets.bootstrapOnly.join(", ")}`,
@@ -57,6 +65,10 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
     if (execute) return 2;
   }
   deps.io.stderr("");
+  if (execute && migrationArgs) {
+    const migrateCode = await deps.runWrangler(migrationArgs);
+    if (migrateCode !== 0) return migrateCode;
+  }
   return deps.runWrangler(wranglerArgs);
 }
 
@@ -67,14 +79,17 @@ export const deployWorkerCommand: CommandDefinition<DeployWorkerDeps> = {
   safety: "plan-first",
   helpText: `Usage: npm run ops -- deploy worker [--env production|staging] [--execute]
 
-Plans by default: runs \`wrangler deploy --dry-run\` (validates config and
-build without uploading) and prints the control-plane preflight. --execute
-uploads. Idempotent: re-running with the same source produces the same Worker
-version.
+Plans by default: prints the remote D1 migrate command, runs
+\`wrangler deploy --dry-run\` (validates config and build without uploading),
+and prints the control-plane preflight. --execute applies pending remote D1
+migrations, then uploads. Idempotent: re-running with the same source and
+schema produces the same Worker version; already-applied migrations are a
+no-op. Does not create the database or import the founder token.
 
 Options:
   --env <name>   Worker environment to deploy (default: production).
-  --execute      Actually upload (otherwise wrangler --dry-run is passed).
+  --execute      Apply remote D1 migrations and upload (otherwise wrangler
+                 --dry-run is passed and migrations are not applied).
   --help         Show this message.
 
 Secrets are NOT managed here. Set them once with:

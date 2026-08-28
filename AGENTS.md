@@ -107,6 +107,11 @@ matrix.
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
   hard-coded to staging names.
+- Merges to `main` deploy the production Worker via
+  `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
+  --execute`, which applies pending remote D1 migrations then uploads). GitHub
+  secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. The SPA is not
+  auto-deployed.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional.
@@ -169,7 +174,8 @@ Pointers only — the details live in the named files' comments.
 - Production founder cutover is `docs/founder-cutover.md`. Default
   `--bucket` is production `reading-lite`. `ops deploy worker` cannot pass
   `--var` and defaults to `--env production`; the gate flip is
-  `wrangler deploy --env production --var TENANT_DATA_PLANE:1`. Copy, never
+  `wrangler deploy --env production --var TENANT_DATA_PLANE:1`. The merge-to-main
+  Worker deploy uses that same no-`--var` path. Copy, never
   move; restore missing vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
   delay, manifest stays pending; other errors → failed manifest + ack.

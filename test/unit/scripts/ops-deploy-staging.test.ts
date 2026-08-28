@@ -31,23 +31,49 @@ describe("ops deploy worker", () => {
       },
       validateReadiness: () => ({
         ok,
-        ...(ok ? {} : { error: "placeholder database_id" }),
+        ...(ok
+          ? {
+              d1: {
+                binding: "CONTROL_PLANE",
+                databaseName: "reading-lite-control-staging",
+                databaseId: "real-id",
+              },
+            }
+          : { error: "placeholder database_id" }),
         requiredSecrets: { runtime: ["AUTH_ROOT_SECRET", "OPENAI_API_KEY"], bootstrapOnly: ["READER_API_TOKEN"] },
       }) as never,
     };
     return { deps, err, runs };
   }
 
-  it("plan mode passes wrangler --dry-run", async () => {
-    const { deps, runs } = makeDeps();
+  it("plan mode prints the remote D1 migrate command and passes wrangler --dry-run", async () => {
+    const { deps, err, runs } = makeDeps();
     expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
     expect(runs).toEqual([["deploy", "--env", "staging", "--dry-run"]]);
+    expect(err.join("\n")).toContain(
+      "wrangler d1 migrations apply reading-lite-control-staging --env staging --remote",
+    );
   });
 
-  it("--execute uploads without --dry-run", async () => {
+  it("--execute applies remote D1 migrations then uploads without --dry-run", async () => {
     const { deps, runs } = makeDeps();
     expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(0);
-    expect(runs).toEqual([["deploy", "--env", "staging"]]);
+    expect(runs).toEqual([
+      ["d1", "migrations", "apply", "reading-lite-control-staging", "--env", "staging", "--remote"],
+      ["deploy", "--env", "staging"],
+    ]);
+  });
+
+  it("a failed migrate does not upload the Worker", async () => {
+    const { deps, runs } = makeDeps();
+    deps.runWrangler = async (args) => {
+      runs.push(args);
+      return args[0] === "d1" ? 1 : 0;
+    };
+    expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(1);
+    expect(runs).toEqual([
+      ["d1", "migrations", "apply", "reading-lite-control-staging", "--env", "staging", "--remote"],
+    ]);
   });
 
   it("a failed control-plane preflight blocks execute but only warns a plan", async () => {

@@ -30,7 +30,7 @@ jobs:
       id-token: write # required: used to fetch the GitHub OIDC token
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
