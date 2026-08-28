@@ -3,7 +3,6 @@ import {
   sendReadingEmail,
   ResendError,
   BadResendResponseError,
-  RESEND_EMAILS_URL,
 } from "../../../src/modules/email";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { Manifest } from "../../../src/schemas/manifest";
@@ -82,7 +81,6 @@ describe("sendReadingEmail", () => {
     const call = fetchFn.mock.calls[0]!;
     const url = call[0];
     const init = call[1]!;
-    expect(url).toBe(RESEND_EMAILS_URL);
     expect(url).toBe("https://api.resend.com/emails");
     expect(init.method).toBe("POST");
     const headers = new Headers(init.headers);

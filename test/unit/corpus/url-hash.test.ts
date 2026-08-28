@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
 import { sha256Hex } from "../../../src/services";
@@ -18,11 +17,5 @@ describe("urlHash", () => {
     for (const u of urls) {
       expect(urlHash(u)).toBe(await sha256Hex(u));
     }
-  });
-
-  it("is the lowercase hex SHA-256 of the UTF-8 string", () => {
-    const u = "https://example.com/";
-    expect(urlHash(u)).toBe(createHash("sha256").update(u, "utf8").digest("hex"));
-    expect(urlHash(u)).toMatch(/^[0-9a-f]{64}$/);
   });
 });

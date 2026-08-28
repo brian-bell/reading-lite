@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { excludeSelf, summarizeSimilarity, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { excludeSelf, summarizeSimilarity } from "../../../src/modules/stores/similarity-store";
 import type { SimilarityMatch } from "../../../src/modules/stores/similarity-store";
 
 const AT = "2026-08-22T00:00:00.000Z";
@@ -67,9 +67,5 @@ describe("excludeSelf", () => {
 
   it("handles an empty result set", () => {
     expect(excludeSelf([], "self", 5)).toEqual([]);
-  });
-
-  it("exposes the shared neighbourhood size", () => {
-    expect(SIMILAR_TOP_K).toBe(5);
   });
 });

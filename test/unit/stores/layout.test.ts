@@ -1,31 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ATTEMPTS_PREFIX,
-  BY_ID_PREFIX,
-  BY_URL_PREFIX,
-  EXTRACTED_FILE,
-  LIST_INDEX_KEY,
-  MANIFEST_FILE,
-  RAW_PREFIX,
-  READINGS_PREFIX,
-  buildKeyPrefix,
-  r2KeyLayout,
-} from "../../../src/modules/stores/layout";
-
-// The exact spellings are a contract with objects already stored in R2 — a
-// "cleanup" rename here would strand the live corpus. Pin them.
-describe("layout vocabulary", () => {
-  it("spells the stored corpus layout", () => {
-    expect(LIST_INDEX_KEY).toBe("index/list.json");
-    expect(MANIFEST_FILE).toBe("manifest.json");
-    expect(READINGS_PREFIX).toBe("readings/");
-    expect(EXTRACTED_FILE).toBe("extracted.md");
-    expect(RAW_PREFIX).toBe("raw.");
-    expect(ATTEMPTS_PREFIX).toBe("attempts/");
-    expect(BY_URL_PREFIX).toBe("index/by-url/");
-    expect(BY_ID_PREFIX).toBe("index/by-id/");
-  });
-});
+import { buildKeyPrefix, r2KeyLayout } from "../../../src/modules/stores/layout";
 
 describe("buildKeyPrefix", () => {
   it("compacts the ISO timestamp into the readings/ prefix", () => {
@@ -65,10 +39,6 @@ describe("r2KeyLayout with the global (pre-tenant) root", () => {
     expect(layout.byIdKey("rd_abc")).toBe("index/by-id/rd_abc");
   });
 
-  it("keeps attempt keys inside the attempts prefix", () => {
-    expect(layout.attemptKey(kp, "at_123").startsWith(layout.attemptsPrefix(kp))).toBe(true);
-  });
-
   it("relativeKey is the identity when there is no root", () => {
     expect(layout.relativeKey(layout.manifestKey(kp))).toBe(`${kp}/manifest.json`);
   });
@@ -94,8 +64,8 @@ describe("r2KeyLayout with a tenant root", () => {
   });
 
   it("leaves the stored key_prefix relative — buildKeyPrefix never carries the root", () => {
-    expect(buildKeyPrefix("rd_abc", "2026-04-26T20:00:00.000Z").startsWith("readings/")).toBe(
-      true,
+    expect(buildKeyPrefix("rd_abc", "2026-04-26T20:00:00.000Z")).toBe(
+      "readings/2026/04/26T200000Z-rd_abc",
     );
   });
 

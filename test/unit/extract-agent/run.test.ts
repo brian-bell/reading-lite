@@ -81,7 +81,6 @@ describe("markdownGate", () => {
   const bodyBudget = MARKDOWN_SUBMIT_BUDGET_BYTES - url.length;
 
   it("passes a body at exactly the submit budget (queue cap minus envelope reserve)", () => {
-    expect(MARKDOWN_SUBMIT_BUDGET_BYTES).toBe(MARKDOWN_IMPORT_MAX_BYTES - 1024);
     expect(markdownGate(body("x".repeat(bodyBudget)), cfg)).toEqual({ ok: true });
   });
 

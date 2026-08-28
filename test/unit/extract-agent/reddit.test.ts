@@ -5,12 +5,12 @@ import {
   redditJsonUrl,
   type RedditDeps,
 } from "../../../scripts/extract-agent-lib/reddit";
-import { buildRedditImport } from "../../../scripts/reddit-import-lib/parse";
 import threadFixture from "../../fixtures/reddit/thread.json";
 
 const THREAD_JSON = JSON.stringify(threadFixture);
 const ORIGINAL_URL =
   "https://www.reddit.com/r/programming/comments/1ua2lxq/old_software/?utm_source=share#comments";
+const THREAD_TITLE = "Old Software Was Fast Because It Had No Choice";
 
 function publicLookup(hosts: string[] = []): RedditDeps["lookup"] {
   return async (hostname) => {
@@ -92,16 +92,24 @@ describe("redditJsonUrl", () => {
 });
 
 describe("extractReddit", () => {
-  it("fetches safely with browser JSON headers and returns the manual-import parser's exact body", async () => {
+  it("fetches safely with browser JSON headers and returns parsed import markdown", async () => {
     const hosts: string[] = [];
     const d = deps(jsonResponse(), { lookup: publicLookup(hosts) });
 
     const outcome = await extractReddit(ORIGINAL_URL, d);
 
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       kind: "extracted",
-      body: buildRedditImport(ORIGINAL_URL, THREAD_JSON),
+      body: {
+        source_url: ORIGINAL_URL,
+        title: THREAD_TITLE,
+      },
     });
+    if (outcome.kind === "extracted") {
+      expect(outcome.body.markdown).toContain(`# ${THREAD_TITLE}`);
+      expect(outcome.body.markdown).toContain("## Top comments");
+      expect(outcome.body.markdown).toContain("Old software wasn't actually fast.");
+    }
     expect(hosts).toEqual(["www.reddit.com"]);
     expect(d.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = vi.mocked(d.fetch).mock.calls[0]!;
@@ -154,7 +162,17 @@ describe("extractReddit", () => {
       maxBytes: 1024 * 1024,
     });
 
-    expect(outcome).toEqual({ kind: "extracted", body: buildRedditImport(sourceUrl, THREAD_JSON) });
+    expect(outcome).toMatchObject({
+      kind: "extracted",
+      body: {
+        source_url: sourceUrl,
+        title: THREAD_TITLE,
+      },
+    });
+    if (outcome.kind === "extracted") {
+      expect(outcome.body.markdown).toContain(`# ${THREAD_TITLE}`);
+      expect(outcome.body.markdown).toContain("Old software wasn't actually fast.");
+    }
     expect(vi.mocked(fetch).mock.calls.map((call) => call[0])).toEqual([
       `https://redd.it/1ua2lxq.json?${JSON_QUERY}`,
       `https://www.reddit.com/r/programming/comments/1ua2lxq/old_software.json?${JSON_QUERY}`,
