@@ -15,11 +15,24 @@ describe("parseXPostId", () => {
     );
   });
 
+  it("accepts common permalink variants", () => {
+    expect(parseXPostId("https://twitter.com/i/web/status/123456789")).toBe("123456789");
+    expect(parseXPostId("https://x.com/i/web/status/123456789")).toBe("123456789");
+    expect(parseXPostId("https://x.com/someone/status/123456789/photo/1")).toBe("123456789");
+    expect(parseXPostId("https://twitter.com/someone/status/123456789/video/2")).toBe(
+      "123456789",
+    );
+    expect(parseXPostId("https://www.x.com/someone/status/123456789")).toBe("123456789");
+    expect(parseXPostId("https://mobile.x.com/someone/status/123456789")).toBe("123456789");
+  });
+
   it("rejects non-status paths and lookalike hosts", () => {
     expect(parseXPostId("https://x.com/distributionat")).toBeNull();
     expect(parseXPostId("https://x.com/distributionat/status/not-a-number")).toBeNull();
     expect(parseXPostId("https://x.com.evil.example/user/status/123")).toBeNull();
     expect(parseXPostId("https://example.com/user/status/123")).toBeNull();
+    expect(parseXPostId("https://x.com/someone/status/123/analytics")).toBeNull();
+    expect(parseXPostId("https://x.com/someone/status/123/photo/x")).toBeNull();
   });
 });
 

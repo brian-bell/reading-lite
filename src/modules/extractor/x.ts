@@ -16,7 +16,7 @@ import {
 } from "./errors";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
 
-const X_WEB_HOSTS = /^(?:[a-z0-9-]+\.)?twitter\.com$/;
+const X_WEB_HOSTS = /^(?:[a-z0-9-]+\.)*(?:x|twitter)\.com$/;
 const X_API_BASE = "https://api.x.com/2";
 const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const TWEET_FIELDS =
@@ -137,9 +137,11 @@ export function parseXPostId(rawUrl: string): string | null {
     return null;
   }
   const host = url.hostname.toLowerCase();
-  if (host !== "x.com" && !X_WEB_HOSTS.test(host)) return null;
+  if (!X_WEB_HOSTS.test(host)) return null;
 
-  const match = url.pathname.match(/^\/(?:[^/]+|i)\/status\/(\d+)\/?$/);
+  const match = url.pathname.match(
+    /^\/(?:i\/web|[^/]+)\/status\/(\d+)(?:\/(?:photo|video)\/\d+)?\/?$/,
+  );
   return match?.[1] ?? null;
 }
 
