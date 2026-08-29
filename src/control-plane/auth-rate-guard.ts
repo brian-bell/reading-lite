@@ -134,14 +134,17 @@ export class AuthRateGuard implements DurableObject {
       return json({ error: "invalid_json" }, 400);
     }
     if (!parsed) return json({ error: "invalid_body" }, 400);
-    const now = Date.now();
-    const emailCount = await bumpStored(this.state.storage, `e:${parsed.emailHash}`, now, parsed.emailWindowMs);
-    if (emailCount > parsed.emailMax) return json({ ok: false, reason: "email" });
-    const ipCount = await bumpStored(this.state.storage, `i:${parsed.ipHash}`, now, parsed.ipWindowMs);
-    if (ipCount > parsed.ipMax) return json({ ok: false, reason: "ip" });
-    const globalCount = await bumpStored(this.state.storage, "g:all", now, parsed.globalWindowMs);
-    if (globalCount > parsed.globalMax) return json({ ok: false, reason: "global" });
-    return json({ ok: true });
+    const body = parsed;
+    return this.state.blockConcurrencyWhile(async () => {
+      const now = Date.now();
+      const emailCount = await bumpStored(this.state.storage, `e:${body.emailHash}`, now, body.emailWindowMs);
+      if (emailCount > body.emailMax) return json({ ok: false, reason: "email" });
+      const ipCount = await bumpStored(this.state.storage, `i:${body.ipHash}`, now, body.ipWindowMs);
+      if (ipCount > body.ipMax) return json({ ok: false, reason: "ip" });
+      const globalCount = await bumpStored(this.state.storage, "g:all", now, body.globalWindowMs);
+      if (globalCount > body.globalMax) return json({ ok: false, reason: "global" });
+      return json({ ok: true });
+    });
   }
 }
 

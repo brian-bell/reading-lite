@@ -246,6 +246,33 @@ describe("invite-only magic-link sessions", () => {
     expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(false);
   });
 
+  it("does not let a concurrent AuthRateGuard burst all pass the email ceiling", async () => {
+    const workerEnv = env as unknown as Env;
+    const stub = workerEnv.AUTH_RATE_GUARD!.get(workerEnv.AUTH_RATE_GUARD!.idFromName("test-email-burst"));
+    const payload = JSON.stringify({
+      emailHash: "test-burst-hash",
+      ipHash: "test-burst-ip",
+      emailWindowMs: 60_000,
+      emailMax: 2,
+      ipWindowMs: 60_000,
+      ipMax: 20,
+      globalWindowMs: 60_000,
+      globalMax: 200,
+    });
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        stub.fetch("https://auth-rate-guard/admit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: payload,
+        }),
+      ),
+    );
+    const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
+    expect(outcomes.filter((ok) => ok)).toHaveLength(2);
+    expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
+  });
+
   it("does not disclose whether an unknown address is invited", async () => {
     const workerEnv = env as unknown as Env;
     await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();

@@ -10,14 +10,33 @@ import type { Env } from "../../../src/index";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-function memoryStorage(): DurableObjectStorage {
+function memoryStorage(yieldBeforeRead = false): DurableObjectStorage {
   const map = new Map<string, unknown>();
   return {
-    get: async (key: string) => map.get(key),
+    get: async (key: string) => {
+      const current = map.get(key);
+      if (yieldBeforeRead) await new Promise((resolve) => setTimeout(resolve, 0));
+      return current;
+    },
     put: async (key: string, value: unknown) => {
       map.set(key, value);
     },
   } as DurableObjectStorage;
+}
+
+function guardState(storage: DurableObjectStorage = memoryStorage()): DurableObjectState {
+  let chain: Promise<unknown> = Promise.resolve();
+  return {
+    storage,
+    blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+      const run = chain.then(callback, callback);
+      chain = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+  } as DurableObjectState;
 }
 
 describe("coarseIp", () => {
@@ -60,29 +79,40 @@ describe("bumpWindow", () => {
 });
 
 describe("AuthRateGuard", () => {
+  const body = {
+    emailHash: "e1",
+    ipHash: "i1",
+    emailWindowMs: 60_000,
+    emailMax: 2,
+    ipWindowMs: 60_000,
+    ipMax: 20,
+    globalWindowMs: 60_000,
+    globalMax: 200,
+  };
+
+  function admit(guard: AuthRateGuard): Promise<Response> {
+    return guard.fetch(
+      new Request("https://auth-rate-guard/admit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
   it("admits until the email ceiling then denies", async () => {
-    const guard = new AuthRateGuard({ storage: memoryStorage() } as DurableObjectState, {} as Env);
-    const body = {
-      emailHash: "e1",
-      ipHash: "i1",
-      emailWindowMs: 60_000,
-      emailMax: 2,
-      ipWindowMs: 60_000,
-      ipMax: 20,
-      globalWindowMs: 60_000,
-      globalMax: 200,
-    };
-    const admit = () =>
-      guard.fetch(
-        new Request("https://auth-rate-guard/admit", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-      );
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(false);
+    const guard = new AuthRateGuard(guardState(), {} as Env);
+    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(false);
+  });
+
+  it("does not let a concurrent burst all pass the email ceiling", async () => {
+    const guard = new AuthRateGuard(guardState(memoryStorage(true)), {} as Env);
+    const responses = await Promise.all(Array.from({ length: 8 }, () => admit(guard)));
+    const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
+    expect(outcomes.filter((ok) => ok)).toHaveLength(2);
+    expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
   });
 });
 
