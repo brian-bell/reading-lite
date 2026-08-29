@@ -26,13 +26,11 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
     }
 
     const origin = c.req.header("origin");
-    const cookieAllowed =
-      !origin ||
-      isSameOriginRequest({
-        origin,
-        url: c.req.url,
-        webBaseUrl: c.env.WEB_BASE_URL,
-      });
+    const cookieAllowed = isSameOriginRequest({
+      origin,
+      url: c.req.url,
+      webBaseUrl: c.env.WEB_BASE_URL,
+    });
 
     const verdict = await authenticateRequest(fromD1(c.env.CONTROL_PLANE), {
       authorization: c.req.header("authorization"),

@@ -108,6 +108,54 @@ describe("invite-only magic-link sessions", () => {
     expect(readings.res.status).toBe(200);
   });
 
+  it("denies cookie writes without a same-origin Origin and leaves bearer unconstrained", async () => {
+    const challenge = await request("/api/auth/challenge", {
+      method: "POST",
+      body: { email: "founder@test.example" },
+    });
+    const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
+    const redeemed = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential, redemption_id: "clm_origin" },
+    });
+    expect(redeemed.res.status).toBe(200);
+    const cookie = cookieFrom(redeemed.res)!;
+
+    const missing = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      origin: "",
+      body: { url: "https://example.com/origin-missing" },
+    });
+    expect(missing.res.status).toBe(401);
+
+    const cross = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      origin: "https://evil.example",
+      body: { url: "https://example.com/origin-cross" },
+    });
+    expect(cross.res.status).toBe(401);
+
+    const sameOriginWhoami = await request("/api/whoami", { cookie });
+    expect(sameOriginWhoami.res.status).toBe(200);
+
+    const bearerMissingOrigin = await request("/api/whoami", {
+      authorization: "Bearer test-token",
+      origin: "",
+    });
+    expect(bearerMissingOrigin.res.status).toBe(200);
+
+    const bearerWrite = await request("/api/readings", {
+      method: "POST",
+      authorization: "Bearer test-token",
+      origin: "",
+      body: { url: "https://example.com/bearer-no-origin" },
+    });
+    expect(bearerWrite.res.status).not.toBe(401);
+    expect(bearerWrite.res.status).not.toBe(403);
+  });
+
   it("retries the same redemption id and rejects a competing claimant", async () => {
     const challenge = await request("/api/auth/challenge", {
       method: "POST",
