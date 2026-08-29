@@ -1,12 +1,13 @@
 import type { Context } from "hono";
 import { AuthChallengeBodySchema, AuthRedeemBodySchema } from "../schemas/api";
+import { LOGIN_PURPOSE } from "./constants";
 import { admitAuthSend } from "./auth-rate-guard";
 import { issueLoginChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
 import { logAuthEvent } from "./auth-log";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, sessionCookieHeader } from "./cookies";
-import { fromD1 } from "./db";
+import { fromD1, type ControlPlaneDb } from "./db";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import {
   buildMagicLinkVerifyUrl,
@@ -85,6 +86,12 @@ export async function handleAuthChallenge(
     return jsonAuth({ ok: true }, 200);
   }
 
+  if (!isAuthMailAllowed(c.env, emailCanonical)) {
+    logAuthEvent("magic_link_delivery_skipped");
+    return jsonAuth({ ok: true }, 200);
+  }
+
+  const liveBeforeIssue = await listLiveLoginChallenges(db, emailCanonical);
   const issued = await issueLoginChallenge(db, {
     emailCanonical,
     emailDisplayRequested: parsed.data.email.trim(),
@@ -96,11 +103,6 @@ export async function handleAuthChallenge(
 
   if (issued.kind !== "issued") {
     logAuthEvent("magic_link_skipped", { email: parsed.data.email });
-    return jsonAuth({ ok: true }, 200);
-  }
-
-  if (!isAuthMailAllowed(c.env, emailCanonical)) {
-    logAuthEvent("magic_link_delivery_skipped", { challenge_id: issued.challengeId });
     return jsonAuth({ ok: true }, 200);
   }
 
@@ -127,6 +129,7 @@ export async function handleAuthChallenge(
       challenge_id: issued.challengeId,
     });
   } catch {
+    await restoreLiveLoginChallenges(db, issued.challengeId, liveBeforeIssue);
     logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
   }
 
@@ -239,4 +242,42 @@ export async function handleDevMailbox(c: Context<AppBindings>): Promise<Respons
     return jsonAuth({ to: byDisplay.to_email, verify_url: byDisplay.verify_url }, 200);
   }
   return jsonAuth({ to: row.to_email, verify_url: row.verify_url }, 200);
+}
+
+async function listLiveLoginChallenges(
+  db: ControlPlaneDb,
+  emailCanonical: string,
+): Promise<{ id: string; state: string }[]> {
+  return db.all<{ id: string; state: string }>(
+    `SELECT id, state FROM auth_challenges
+     WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed')`,
+    emailCanonical,
+    LOGIN_PURPOSE,
+  );
+}
+
+async function restoreLiveLoginChallenges(
+  db: ControlPlaneDb,
+  newChallengeId: string,
+  snapshot: { id: string; state: string }[],
+): Promise<void> {
+  try {
+    // Revoke the unused new issued row first so the partial unique index
+    // `auth_challenges_one_issued` can accept a restored issued predecessor.
+    const statements = [
+      {
+        sql: `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
+        params: [newChallengeId],
+      },
+      ...snapshot
+        .filter((row) => row.id !== newChallengeId)
+        .map((row) => ({
+          sql: `UPDATE auth_challenges SET state = ? WHERE id = ?`,
+          params: [row.state, row.id],
+        })),
+    ];
+    await db.batch(statements);
+  } catch {
+    // Delivery already failed; keep the generic 200.
+  }
 }

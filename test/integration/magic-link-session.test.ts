@@ -369,4 +369,92 @@ describe("invite-only magic-link sessions", () => {
       await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
     }
   });
+
+  it("does not revoke a live challenge when staging allowlist forbids delivery", async () => {
+    const workerEnv = env as unknown as Env;
+    const now = Date.parse(NOW);
+    const origAppEnv = workerEnv.APP_ENV;
+    const origAllowlist = workerEnv.AUTH_MAIL_ALLOWLIST;
+    await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();
+    await workerEnv.CONTROL_PLANE.prepare(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+       VALUES ('keep-live@test.example', 'Keep-Live@test.example', ?)`,
+    )
+      .bind(now)
+      .run();
+    try {
+      const first = await request("/api/auth/challenge", {
+        method: "POST",
+        body: { email: "keep-live@test.example" },
+      });
+      expect(first.res.status).toBe(200);
+      expect(first.sent).toHaveLength(1);
+      const credential = credentialFrom(first.sent[0]!.verifyUrl);
+
+      workerEnv.APP_ENV = "staging";
+      workerEnv.AUTH_MAIL_ALLOWLIST = "";
+
+      const denied = await request("/api/auth/challenge", {
+        method: "POST",
+        body: { email: "keep-live@test.example" },
+      });
+      expect(denied.res.status).toBe(200);
+      expect(await denied.res.json()).toEqual({ ok: true });
+      expect(denied.sent).toHaveLength(0);
+
+      const redeemed = await request("/api/auth/redeem", {
+        method: "POST",
+        body: { credential, redemption_id: "clm_allowlist_keep" },
+      });
+      expect(redeemed.res.status).toBe(200);
+    } finally {
+      workerEnv.APP_ENV = origAppEnv;
+      if (origAllowlist === undefined) {
+        delete workerEnv.AUTH_MAIL_ALLOWLIST;
+      } else {
+        workerEnv.AUTH_MAIL_ALLOWLIST = origAllowlist;
+      }
+      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
+      await workerEnv.CONTROL_PLANE.prepare(
+        "DELETE FROM signup_invites WHERE email_canonical = 'keep-live@test.example'",
+      ).run();
+    }
+  });
+
+  it("restores the previous live challenge when delivery throws", async () => {
+    const first = await request("/api/auth/challenge", {
+      method: "POST",
+      body: { email: "founder@test.example" },
+    });
+    expect(first.sent).toHaveLength(1);
+    const credential = credentialFrom(first.sent[0]!.verifyUrl);
+
+    const app = createApp({
+      services: services(),
+      auth: {
+        sendMagicLink: async () => {
+          throw new Error("resend 400");
+        },
+      },
+    });
+    const ctx = createExecutionContext();
+    const failed = await app.fetch(
+      new Request("http://t/api/auth/challenge", {
+        method: "POST",
+        headers: { origin: "http://t", "content-type": "application/json" },
+        body: JSON.stringify({ email: "founder@test.example" }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(failed.status).toBe(200);
+    expect(await failed.json()).toEqual({ ok: true });
+
+    const redeemed = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential, redemption_id: "clm_restore_live" },
+    });
+    expect(redeemed.res.status).toBe(200);
+  });
 });

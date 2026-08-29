@@ -10,7 +10,6 @@ export function buildMagicLinkResendPayload(from: string, to: string, verifyUrl:
     subject: rendered.subject,
     text: rendered.text,
     html: rendered.html,
-    tracking: { click: false, open: false },
   };
 }
 
