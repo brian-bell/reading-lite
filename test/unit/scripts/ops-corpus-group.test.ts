@@ -454,10 +454,10 @@ describe("ops corpus backfill-vectors", () => {
     expect(calls.upserts).toBe(1);
   });
 
-  it("tenant mode probes and upserts the ADR-0002 tenant-prefixed vector id", async () => {
+  it("tenant mode probes and upserts the ADR-0002 prefixed id with its audit stamp", async () => {
     const { deps } = makeDeps();
     const probes: string[] = [];
-    const upserts: Array<{ id: string }[]> = [];
+    const upserts: Array<{ id: string; metadata?: Record<string, unknown> }[]> = [];
     deps.r2.vectorExists = async (_index, id) => {
       probes.push(id);
       return false;
@@ -482,6 +482,7 @@ describe("ops corpus backfill-vectors", () => {
     expect(upserts.map((batch) => batch.map((vector) => vector.id))).toEqual([
       [`${tenantId}:rd_v`],
     ]);
+    expect(upserts[0]?.[0]?.metadata?.tenant_id).toBe(tenantId);
   });
 
   it("fails closed without --tenant", async () => {

@@ -136,6 +136,9 @@ async function runCorpusBackfillVectors(
         upsert(vectors.map((vector) => ({
           ...vector,
           id: tenantVectorId(tenant.namespace, vector.id),
+          ...(tenant.namespace === undefined
+            ? {}
+            : { metadata: { ...(vector.metadata ?? {}), tenant_id: tenant.namespace } }),
         })))) as never,
     },
   );
