@@ -82,6 +82,25 @@ function recordingRateGuard() {
   return { ns, posts };
 }
 
+function rateGuardAllowingSends(maxSends: number) {
+  let remaining = maxSends;
+  const posts: { kind?: string }[] = [];
+  const ns = {
+    idFromName: () => ({ toString: () => "id" }),
+    get: () => ({
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { kind?: string };
+        posts.push(body);
+        const ok = body.kind === "send" ? remaining-- > 0 : true;
+        return new Response(JSON.stringify({ ok }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }),
+  };
+  return { ns, posts };
+}
+
 describe("invite-only magic-link sessions", () => {
   it("redeems a newest-only link into a durable host-only session cookie", async () => {
     const challenge = await request("/api/auth/challenge", {
@@ -523,6 +542,101 @@ describe("invite-only magic-link sessions", () => {
         "DELETE FROM signup_invites WHERE email_canonical = 'keep-live@test.example'",
       ).run();
     }
+  });
+
+  it("does not touch a live challenge when send is rate-limited", async () => {
+    const workerEnv = env as unknown as Env;
+    const origGuard = workerEnv.AUTH_RATE_GUARD;
+    const { ns } = rateGuardAllowingSends(1);
+    workerEnv.AUTH_RATE_GUARD = ns as unknown as Env["AUTH_RATE_GUARD"];
+    try {
+      const first = await request(
+        "/api/auth/challenge",
+        { method: "POST", body: { email: "founder@test.example" } },
+        workerEnv,
+      );
+      expect(first.res.status).toBe(200);
+      expect(first.sent).toHaveLength(1);
+      const credential = credentialFrom(first.sent[0]!.verifyUrl);
+      const countAfterFirst = (
+        await workerEnv.CONTROL_PLANE.prepare(
+          "SELECT COUNT(*) AS n FROM auth_challenges WHERE email_canonical = ?",
+        )
+          .bind("founder@test.example")
+          .first<{ n: number }>()
+      )?.n;
+
+      const denied = await request(
+        "/api/auth/challenge",
+        { method: "POST", body: { email: "founder@test.example" } },
+        workerEnv,
+      );
+      expect(denied.res.status).toBe(200);
+      expect(await denied.res.json()).toEqual({ ok: true });
+      expect(denied.sent).toHaveLength(0);
+
+      const countAfterDeny = await workerEnv.CONTROL_PLANE.prepare(
+        "SELECT COUNT(*) AS n FROM auth_challenges WHERE email_canonical = ?",
+      )
+        .bind("founder@test.example")
+        .first<{ n: number }>();
+      expect(countAfterDeny?.n).toBe(countAfterFirst);
+
+      const redeemed = await request("/api/auth/redeem", {
+        method: "POST",
+        body: { credential, redemption_id: "clm_send_deny_keep" },
+      });
+      expect(redeemed.res.status).toBe(200);
+    } finally {
+      workerEnv.AUTH_RATE_GUARD = origGuard;
+    }
+  });
+
+  it("keeps the emailed challenge when mail_sent_at write fails after send", async () => {
+    const first = await request("/api/auth/challenge", {
+      method: "POST",
+      body: { email: "founder@test.example" },
+    });
+    expect(first.sent).toHaveLength(1);
+    const previous = credentialFrom(first.sent[0]!.verifyUrl);
+
+    const sent: MagicLinkMail[] = [];
+    const app = createApp({
+      services: services(),
+      auth: {
+        sendMagicLink: async (message) => {
+          sent.push(message);
+        },
+        markMailSent: async () => {
+          throw new Error("d1 mail_sent_at write failed");
+        },
+      },
+    });
+    const ctx = createExecutionContext();
+    const second = await app.fetch(
+      new Request("http://t/api/auth/challenge", {
+        method: "POST",
+        headers: { origin: "http://t", "content-type": "application/json" },
+        body: JSON.stringify({ email: "founder@test.example" }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(second.status).toBe(200);
+    expect(sent).toHaveLength(1);
+
+    const emailed = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential: credentialFrom(sent[0]!.verifyUrl), redemption_id: "clm_keep_after_mark_fail" },
+    });
+    expect(emailed.res.status).toBe(200);
+
+    const leftover = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential: previous, redemption_id: "clm_previous_after_mark_fail" },
+    });
+    expect(leftover.res.status).toBe(401);
   });
 
   it("restores the previous live challenge when delivery throws", async () => {

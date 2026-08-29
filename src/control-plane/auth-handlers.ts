@@ -4,6 +4,7 @@ import { LOGIN_PURPOSE } from "./constants";
 import { admitAuthIp, admitAuthSend } from "./auth-rate-guard";
 import { issueLoginChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
+import { resolveLoginEligibility } from "./eligibility";
 import { logAuthEvent } from "./auth-log";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, sessionCookieHeader } from "./cookies";
@@ -31,6 +32,7 @@ export interface AuthRuntime {
   sendMagicLink?: SendMagicLink;
   randomBytes?: RandomBytes;
   newUuid?: UuidSource;
+  markMailSent?: (args: { challengeId: string; nowMs: number }) => Promise<void>;
 }
 
 const ChallengeBodySchema = AuthChallengeBodySchema;
@@ -91,6 +93,18 @@ export async function handleAuthChallenge(
     return jsonAuth({ ok: true }, 200);
   }
 
+  const eligibility = await resolveLoginEligibility(db, emailCanonical, nowMs);
+  if (eligibility.kind === "ineligible") {
+    logAuthEvent("magic_link_skipped", { email: parsed.data.email });
+    return jsonAuth({ ok: true }, 200);
+  }
+
+  const sendAdmitted = await admitAuthSend(c.env, emailCanonical);
+  if (sendAdmitted === "deny") {
+    logAuthEvent("magic_link_rate_limited");
+    return jsonAuth({ ok: true }, 200);
+  }
+
   const liveBeforeIssue = await listLiveLoginChallenges(db, emailCanonical);
   const issued = await issueLoginChallenge(db, {
     emailCanonical,
@@ -103,13 +117,6 @@ export async function handleAuthChallenge(
 
   if (issued.kind !== "issued") {
     logAuthEvent("magic_link_skipped", { email: parsed.data.email });
-    return jsonAuth({ ok: true }, 200);
-  }
-
-  const sendAdmitted = await admitAuthSend(c.env, emailCanonical);
-  if (sendAdmitted === "deny") {
-    await restoreLiveLoginChallenges(db, issued.challengeId, liveBeforeIssue);
-    logAuthEvent("magic_link_rate_limited");
     return jsonAuth({ ok: true }, 200);
   }
 
@@ -131,19 +138,23 @@ export async function handleAuthChallenge(
     } else {
       throw new Error("magic-link delivery is not configured");
     }
-    await db.run(
-      `UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ? AND mail_sent_at_ms IS NULL`,
-      nowMs,
-      issued.challengeId,
-    );
-    logAuthEvent("magic_link_issued", {
-      email: issued.deliveryEmail,
-      challenge_id: issued.challengeId,
-    });
   } catch {
     await restoreLiveLoginChallenges(db, issued.challengeId, liveBeforeIssue);
     logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
+    return jsonAuth({ ok: true }, 200);
   }
+
+  await rememberMailSentMarker(async () => {
+    if (runtime.markMailSent) {
+      await runtime.markMailSent({ challengeId: issued.challengeId, nowMs });
+      return;
+    }
+    await markChallengeMailSent(db, { challengeId: issued.challengeId, nowMs });
+  });
+  logAuthEvent("magic_link_issued", {
+    email: issued.deliveryEmail,
+    challenge_id: issued.challengeId,
+  });
 
   return jsonAuth({ ok: true }, 200);
 }
@@ -254,6 +265,30 @@ export async function handleDevMailbox(c: Context<AppBindings>): Promise<Respons
     return jsonAuth({ to: byDisplay.to_email, verify_url: byDisplay.verify_url }, 200);
   }
   return jsonAuth({ to: row.to_email, verify_url: row.verify_url }, 200);
+}
+
+export async function markChallengeMailSent(
+  db: ControlPlaneDb,
+  args: { challengeId: string; nowMs: number },
+): Promise<void> {
+  await db.run(
+    `UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ? AND mail_sent_at_ms IS NULL`,
+    args.nowMs,
+    args.challengeId,
+  );
+}
+
+/** Retry a successful-send mail marker. Never throws; the issued row stays live. */
+export async function rememberMailSentMarker(mark: () => Promise<void>): Promise<void> {
+  try {
+    await mark();
+  } catch {
+    try {
+      await mark();
+    } catch {
+      // Send already succeeded. Restoring would revoke the emailed secret.
+    }
+  }
 }
 
 async function listLiveLoginChallenges(
