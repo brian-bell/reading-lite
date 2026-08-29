@@ -109,7 +109,7 @@ describe("extractXThread", () => {
           "conversation_id:100 from:author -is:retweet",
         );
         expect(url.searchParams.get("max_results")).toBe("100");
-        expect(url.searchParams.get("start_time")).toBe("2026-07-27T12:00:00Z");
+        expect(url.searchParams.has("start_time")).toBe(false);
         return json({
           data: [root, shared, child, audience, sideReply],
           includes: {
@@ -674,5 +674,169 @@ describe("extractXThread", () => {
       "/2/tweets/search/recent",
     ]);
     expect(requestedPaths).not.toContain("/2/tweets/search/all");
+  });
+
+  it("imports a just-posted URL without sending a too-new start_time", async () => {
+    const shared = {
+      id: "100",
+      text: "Just posted",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-28T12:00:00.000Z",
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      expect(url.searchParams.has("start_time")).toBe(false);
+      return json({ data: [shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("Just posted");
+  });
+
+  it("keeps lookup quoted long-form and media urls when search expansions are thinner", async () => {
+    const quoted = {
+      id: "99",
+      text: "truncated quote https://t.co/q",
+      note_tweet: {
+        text: "Quoted long-form https://t.co/q",
+        entities: {
+          urls: [{ url: "https://t.co/q", expanded_url: "https://example.com/quoted" }],
+        },
+      },
+      author_id: "author-2",
+      conversation_id: "99",
+      created_at: "2026-07-26T12:00:00.000Z",
+    };
+    const thinQuoted = {
+      id: "99",
+      text: "truncated quote https://t.co/q",
+      author_id: "author-2",
+      conversation_id: "99",
+      created_at: "2026-07-26T12:00:00.000Z",
+    };
+    const shared = {
+      id: "100",
+      text: "I quoted them",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      referenced_tweets: [{ type: "quoted", id: "99" }],
+      attachments: { media_keys: ["media-1"] },
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [
+              { id: "author-1", name: "Author Name", username: "author" },
+              { id: "author-2", name: "Quoted Author", username: "quoted" },
+            ],
+            tweets: [quoted],
+            media: [
+              {
+                media_key: "media-1",
+                type: "photo",
+                url: "https://pbs.twimg.com/media/full.jpg",
+                alt_text: "Lookup photo",
+              },
+            ],
+          },
+        });
+      }
+      return json({
+        data: [shared],
+        includes: {
+          tweets: [thinQuoted],
+          media: [{ media_key: "media-1", type: "photo" }],
+        },
+        meta: {},
+      });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("Quoted long-form https://example.com/quoted");
+    expect(out.markdown).not.toContain("truncated quote https://t.co/q");
+    expect(out.markdown).toContain("![Lookup photo](https://pbs.twimg.com/media/full.jpg)");
+  });
+
+  it("fails when search omits a middle same-author ancestor that expansions returned", async () => {
+    const root = {
+      id: "100",
+      text: "Root post",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+    };
+    const omittedMiddle = {
+      id: "200",
+      text: "Omitted middle",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:01:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "100" }],
+    };
+    const parent = {
+      id: "300",
+      text: "Present parent",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:02:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "200" }],
+    };
+    const shared = {
+      id: "400",
+      text: "Shared leaf",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:03:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "300" }],
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/400") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+            tweets: [parent],
+          },
+        });
+      }
+      if (url.pathname === "/2/tweets/100") return json({ data: root });
+      if (url.pathname === "/2/tweets/search/recent") {
+        return json({
+          data: [root, parent, shared],
+          includes: { tweets: [omittedMiddle] },
+          meta: {},
+        });
+      }
+      return json({}, 500);
+    });
+
+    await expect(
+      extractXThread("https://x.com/author/status/400", {
+        ...xDeps,
+        fetch: fetchFn as unknown as typeof fetch,
+      }),
+    ).rejects.toBeInstanceOf(XThreadIncompleteError);
   });
 });

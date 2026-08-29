@@ -210,7 +210,7 @@ export async function extractXThread(
   let paginationToken: string | undefined;
   const seenTokens = new Set<string>();
   do {
-    const url = searchUrl(conversationId, author.username, rootCreatedAt, paginationToken);
+    const url = searchUrl(conversationId, author.username, paginationToken);
     const rawPage = await requestXJson(url, deps, budget);
     const page = parseXPayload(SearchSchema, rawPage, endpointName(url));
     assertNoFatalPartialErrors(page);
@@ -332,16 +332,11 @@ function lookupUrl(id: string): URL {
 function searchUrl(
   conversationId: string,
   username: string,
-  rootCreatedAt: number,
   paginationToken?: string,
 ): URL {
   const url = new URL(`${X_API_BASE}/tweets/search/recent`);
   url.searchParams.set("query", `conversation_id:${conversationId} from:${username} -is:retweet`);
   url.searchParams.set("max_results", "100");
-  const start = new Date(Math.floor(rootCreatedAt / 1_000) * 1_000)
-    .toISOString()
-    .replace(".000Z", "Z");
-  url.searchParams.set("start_time", start);
   if (paginationToken) url.searchParams.set("pagination_token", paginationToken);
   addFields(url);
   return url;
@@ -409,8 +404,17 @@ function collectIncludes(
   media: Map<string, XMedia>,
 ): void {
   for (const user of includes?.users ?? []) users.set(user.id, user);
-  for (const tweet of includes?.tweets ?? []) tweets.set(tweet.id, tweet);
-  for (const item of includes?.media ?? []) media.set(item.media_key, item);
+  for (const tweet of includes?.tweets ?? []) {
+    const existing = tweets.get(tweet.id);
+    if (existing && postsConflict(existing, tweet)) {
+      throw new XThreadIncompleteError(`X returned conflicting data for post ${tweet.id}`);
+    }
+    tweets.set(tweet.id, existing ? mergePosts(existing, tweet) : tweet);
+  }
+  for (const item of includes?.media ?? []) {
+    const existing = media.get(item.media_key);
+    media.set(item.media_key, existing ? richerMedia(existing, item) : item);
+  }
 }
 
 function authorComponent(
@@ -433,19 +437,6 @@ function authorComponent(
     byId.set(post.id, existing ? mergePosts(existing, post) : post);
   }
   if (!byId.has(sharedId)) throw new XThreadIncompleteError("the shared post was missing");
-  const shared = byId.get(sharedId)!;
-  const sharedParent = shared.referenced_tweets?.find(
-    (reference) => reference.type === "replied_to",
-  )?.id;
-  if (sharedParent && !byId.has(sharedParent)) {
-    const expandedParent = referencedPosts.get(sharedParent);
-    if (
-      expandedParent?.author_id === authorId &&
-      expandedParent.conversation_id === conversationId
-    ) {
-      throw new XThreadIncompleteError(`same-author parent ${sharedParent} was missing`);
-    }
-  }
 
   const neighbors = new Map<string, Set<string>>();
   const parentById = new Map<string, string>();
@@ -468,6 +459,18 @@ function authorComponent(
       if (component.has(neighbor)) continue;
       component.add(neighbor);
       queue.push(neighbor);
+    }
+  }
+
+  for (const id of component) {
+    const parentId = referenceId(byId.get(id)!, "replied_to");
+    if (!parentId || component.has(parentId)) continue;
+    const expandedParent = referencedPosts.get(parentId);
+    if (
+      expandedParent?.author_id === authorId &&
+      expandedParent.conversation_id === conversationId
+    ) {
+      throw new XThreadIncompleteError(`same-author parent ${parentId} was missing`);
     }
   }
 
@@ -600,6 +603,12 @@ function mergeUrlEntities(
     }
   }
   return [...byUrl.values()];
+}
+
+function richerMedia(existing: XMedia, incoming: XMedia): XMedia {
+  const existingRank = (existing.url ? 2 : 0) + (existing.preview_image_url ? 1 : 0);
+  const incomingRank = (incoming.url ? 2 : 0) + (incoming.preview_image_url ? 1 : 0);
+  return existingRank >= incomingRank ? existing : incoming;
 }
 
 function comparePosts(a: XPost, b: XPost): number {
