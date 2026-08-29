@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
+import { issueLoginChallenge } from "../../../src/control-plane/challenges";
 import {
   SESSION_ABSOLUTE_TTL_MS,
   SESSION_COOKIE_NAME,
@@ -7,6 +8,7 @@ import {
   SESSION_LAST_SEEN_COALESCE_MS,
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
 import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim, revokeSession } from "../../../src/control-plane/sessions";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
@@ -26,21 +28,26 @@ async function issuedSession() {
     newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
-  if (!userId) throw new Error("expected founder id");
-  const issued = await issueSessionForClaim(db, {
-    userId,
-    claimId: "clm_session-1",
+  const issued = await issueLoginChallenge(db, {
+    emailCanonical: "founder@example.com",
+    emailDisplayRequested: "founder@example.com",
+    nowMs: NOW_MS,
+    authRoot,
+  });
+  if (issued.kind !== "issued") throw new Error("expected challenge");
+  const redeemed = await redeemLoginChallenge(db, {
+    credential: issued.credential,
+    redemptionId: "clm_session-1",
     nowMs: NOW_MS,
     authRoot,
     userAgentLabel: "test",
   });
-  if (issued.kind !== "ok") throw new Error("expected session");
+  if (redeemed.kind !== "ok") throw new Error("expected session");
   return {
     sqlite,
     db,
-    cookieHeader: `${SESSION_COOKIE_NAME}=${issued.credential}`,
-    sessionId: issued.sessionId,
+    cookieHeader: `${SESSION_COOKIE_NAME}=${redeemed.credential}`,
+    sessionId: redeemed.sessionId,
   };
 }
 

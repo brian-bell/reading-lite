@@ -107,7 +107,8 @@ matrix.
 - Staging (`[env.staging]`, `reading-lite-staging`) and production
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
-  hard-coded to staging names.
+  hard-coded to staging names. Staging same-origin host is
+  `reading-lite-staging.bbell.dev` (Worker `/api/*`, `/health`, `/mcp*`).
 - Merges to `main` deploy the production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). GitHub
@@ -116,7 +117,8 @@ matrix.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `X_API_BEARER_TOKEN` only for
-  X/Twitter status URL imports; `RESEND_API_KEY` optional.
+  X/Twitter status URL imports; `RESEND_API_KEY` required on staging/production
+  for magic-link auth mail.
   `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
   `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
   Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
@@ -242,7 +244,9 @@ run the staging founder bootstrap (`ops founder bootstrap --env staging
   apply local D1 migrations and import `dev-local-token` as the founder legacy
   bearer), SPA on `http://127.0.0.1:5173` (`cd web && npm run dev`) proxying
   `/api` + `/health`. Paste the bearer token into the SPA's top-right field and
-  Save.
+  Save. Local `LOCAL_MAIL_SINK=1` stores issued magic links for
+  `GET /api/dev/mailbox?email=…` on loopback. Bearer tokens still authenticate
+  the Worker API for operator CLIs.
 - Read-path routes (list, detail, `/content`, `/lookup`) and `q` search on
   `GET /api/readings` work against the local R2 bucket without Vectorize. To try
   them against real data, see "Seeding local R2" in `docs/operations.md`.

@@ -5,8 +5,10 @@ info:
   summary: Personal reading corpus on Cloudflare Workers
   description: |
     Submit a URL (or import Markdown), get a structured summary, and search the
-    corpus. All routes except `/health` require a bearer token. Scopes gate each
-    operation (`readings:read`, `readings:write`, `readings:import`,
+    corpus. All routes except `/health` and the magic-link challenge/redeem endpoints
+    require authentication. Browser sessions use a host-only `__Host-session`
+    cookie; programmatic clients use `Authorization: Bearer`. Scopes gate each
+    reading operation (`readings:read`, `readings:write`, `readings:import`,
     `readings:delete`).
 
     Optional header `X-Expected-Tenant` pins the tenant layout the client
@@ -69,6 +71,100 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/challenge:
+    post:
+      tags: [identity]
+      operationId: requestAuthChallenge
+      summary: Request a magic-link login challenge
+      security: []
+      description: |
+        Same-origin. Always returns a generic `{ ok: true }` so callers cannot
+        enumerate users or invites. Existing active users can request a link in
+        every signup mode. Unknown addresses are eligible only when current
+        policy plus a `signup_invites` row allow provisioning. Issuing a new
+        login challenge revokes any prior unconsumed challenge for that
+        canonical email. The 15-minute secret is delivered out of band and
+        lives in the SPA URL fragment, not this response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthChallengeBody"
+      responses:
+        "200":
+          description: Generic acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthChallengeResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/auth/redeem:
+    post:
+      tags: [identity]
+      operationId: redeemAuthChallenge
+      summary: Redeem a magic-link challenge into a host-only session cookie
+      security: []
+      description: |
+        Same-origin POST of the fragment secret after an explicit user
+        gesture. Idempotent for the same `redemption_id`; a competing claimant
+        fails. Sets a durable host-only `__Host-session` cookie
+        (`Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=7776000`) so login
+        survives browser restart. D1 still enforces a 30-day inactivity
+        timeout and 90-day absolute expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthRedeemBody"
+      responses:
+        "200":
+          description: Session issued
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthRedeemResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Competing claimant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /api/auth/logout:
+    post:
+      tags: [identity]
+      operationId: logoutSession
+      summary: Revoke the current browser session and clear the cookie
+      security: []
+      description: Same-origin. Revokes the D1 session and expires `__Host-session`.
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthLogoutResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /api/readings:
     parameters:
@@ -674,6 +770,60 @@ components:
         email:
           type: string
           description: Verified display email for the authenticated user
+
+    AuthChallengeBody:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          minLength: 1
+
+    AuthChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    AuthRedeemBody:
+      type: object
+      additionalProperties: false
+      required: [credential, redemption_id]
+      properties:
+        credential:
+          type: string
+          minLength: 1
+        redemption_id:
+          type: string
+          minLength: 1
+
+    AuthRedeemResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, user_id, email, principal]
+      properties:
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        email:
+          type: string
+        principal:
+          type: string
+          const: session
+
+    AuthLogoutResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
 
     HttpUrl:
       type: string

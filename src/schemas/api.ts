@@ -66,6 +66,17 @@ export const GetWhoamiResponseSchema = z.object({
 });
 export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
 
+export const AuthChallengeBodySchema = z.object({
+  email: z.string().min(1),
+});
+export type AuthChallengeBody = z.infer<typeof AuthChallengeBodySchema>;
+
+export const AuthRedeemBodySchema = z.object({
+  credential: z.string().min(1),
+  redemption_id: z.string().min(1),
+});
+export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
+
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy
 // could route a later write to a different worker version. A client that sends
