@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-23
 - **Decision owners:** Brian Bell
-- **Bead:** `reading-lite-s1k.6.1`
+- **Task:** `reading-lite-s1k.6.1`
 - **Scope:** WS-A multi-tenant core
 - **Amends:** ADR 0001 (vector isolation in "Tenant-scoped data plane",
   the "Cross-tenant key and vector access" controls, and steps 3 and 5 of
@@ -94,7 +94,7 @@ by prefixed IDs derived from the tenant's own list index.
 ### Implementation deltas
 
 Shipped behavior today is unaffected (gate off ⇒ bare IDs, no namespace).
-Before the cutover gate flips, dependent beads under `reading-lite-s1k.6`
+Before the cutover gate flips, dependent tasks under `reading-lite-s1k.6`
 must land:
 
 - `SimilarityStore`: compose the prefixed ID on upsert/delete and strip it

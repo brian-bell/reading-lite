@@ -272,9 +272,9 @@ npm run ops -- corpus recover --tenant global --index ./index.json --execute
 
 ### Founder corpus migration (s1k.6)
 
-Production cutover (freeze, repair, copy, gate flip, verify, rollback,
-observation) is [`docs/founder-cutover.md`](founder-cutover.md), written from
-the 2026-08-27 staging rehearsal. This section is the command.
+Production cutover (HITL gates, freeze, repair, copy, gate flip, verify,
+rollback, observation) is [`docs/founder-cutover.md`](founder-cutover.md),
+written from the 2026-08-27 staging rehearsal. This section is the command.
 
 `ops corpus migrate-founder` moves the pre-tenant corpus into the founder's
 tenant namespace as a **copy, never a move**: every global-layout object is
