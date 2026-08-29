@@ -15,6 +15,7 @@ function memoryStorage(
   yieldBeforeRead = false,
   map: Map<string, unknown> = new Map(),
 ): DurableObjectStorage {
+  let alarm: number | null = null;
   return {
     get: async (key: string) => {
       const current = map.get(key);
@@ -24,7 +25,18 @@ function memoryStorage(
     put: async (key: string, value: unknown) => {
       map.set(key, value);
     },
-  } as DurableObjectStorage;
+    delete: async (key: string) => {
+      map.delete(key);
+    },
+    list: async () => new Map(map),
+    getAlarm: async () => alarm,
+    setAlarm: async (expiresAt: number) => {
+      alarm = expiresAt;
+    },
+    deleteAlarm: async () => {
+      alarm = null;
+    },
+  } as unknown as DurableObjectStorage;
 }
 
 function guardState(storage: DurableObjectStorage = memoryStorage()): DurableObjectState {
@@ -114,8 +126,8 @@ describe("AuthRateGuard", () => {
     expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(true);
     expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(false);
     expect(map.has("i:i1")).toBe(false);
-    expect(map.get("e:e1")).toEqual({ start: expect.any(Number), count: 3 });
-    expect(map.get("g:all")).toEqual({ start: expect.any(Number), count: 2 });
+    expect(map.get("e:e1")).toEqual({ start: expect.any(Number), count: 3, windowMs: 60_000 });
+    expect(map.get("g:all")).toEqual({ start: expect.any(Number), count: 2, windowMs: 60_000 });
   });
 
   it("ip admits until the IP ceiling then denies without bumping email or global", async () => {
@@ -126,7 +138,7 @@ describe("AuthRateGuard", () => {
     expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(false);
     expect(map.has("e:e1")).toBe(false);
     expect(map.has("g:all")).toBe(false);
-    expect(map.get("i:i1")).toEqual({ start: expect.any(Number), count: 3 });
+    expect(map.get("i:i1")).toEqual({ start: expect.any(Number), count: 3, windowMs: 60_000 });
   });
 
   it("does not let a concurrent burst all pass the email ceiling", async () => {
@@ -135,6 +147,23 @@ describe("AuthRateGuard", () => {
     const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
     expect(outcomes.filter((ok) => ok)).toHaveLength(2);
     expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
+  });
+
+  it("alarm deletes expired i: and e: records without changing live admit counts", async () => {
+    const map = new Map<string, unknown>([
+      ["i:stale", { start: Date.now() - 120_000, count: 9, windowMs: 60_000 }],
+      ["e:stale", { start: Date.now() - 120_000, count: 4, windowMs: 60_000 }],
+    ]);
+    const guard = new AuthRateGuard(guardState(memoryStorage(false, map)), {} as Env);
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(true);
+    await guard.alarm();
+    expect(map.has("i:stale")).toBe(false);
+    expect(map.has("e:stale")).toBe(false);
+    expect(map.get("i:i1")).toEqual({ start: expect.any(Number), count: 1, windowMs: 60_000 });
+    expect(map.get("e:e1")).toEqual({ start: expect.any(Number), count: 1, windowMs: 60_000 });
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(false);
   });
 });
 

@@ -11,7 +11,7 @@ import {
 } from "./constants";
 import { deriveHmacKey, hmacHex } from "./crypto";
 
-type WindowRecord = { start: number; count: number };
+type WindowRecord = { start: number; count: number; windowMs?: number };
 
 type AdmitIpBody = {
   kind: "ip";
@@ -97,8 +97,43 @@ async function bumpStored(
 ): Promise<number> {
   const current = (await storage.get(key)) as WindowRecord | undefined;
   const next = bumpWindow(current, now, windowMs);
-  await storage.put(key, next);
+  await storage.put(key, { ...next, windowMs });
+  await scheduleCleanupAlarm(storage, now + windowMs);
   return next.count;
+}
+
+async function scheduleCleanupAlarm(storage: DurableObjectStorage, expiresAt: number): Promise<void> {
+  const when = Math.max(expiresAt, Date.now() + 1);
+  const existing = await storage.getAlarm();
+  if (existing == null || when < existing) {
+    await storage.setAlarm(when);
+  }
+}
+
+function recordWindowMs(record: WindowRecord): number {
+  return record.windowMs && record.windowMs > 0 ? record.windowMs : AUTH_RATE_GLOBAL_WINDOW_MS;
+}
+
+async function deleteExpiredWindowRecords(
+  storage: DurableObjectStorage,
+  now: number,
+): Promise<void> {
+  const entries = await storage.list<WindowRecord>();
+  let nextAlarm: number | null = null;
+  for (const [key, value] of entries) {
+    if (!value || typeof value.start !== "number" || typeof value.count !== "number") continue;
+    const expiresAt = value.start + recordWindowMs(value);
+    if (now >= expiresAt) {
+      await storage.delete(key);
+      continue;
+    }
+    if (nextAlarm == null || expiresAt < nextAlarm) nextAlarm = expiresAt;
+  }
+  if (nextAlarm != null) {
+    await storage.setAlarm(Math.max(nextAlarm, now + 1));
+  } else {
+    await storage.deleteAlarm();
+  }
 }
 
 function parseAdmitBody(value: unknown): AdmitBody | null {
@@ -157,6 +192,12 @@ export class AuthRateGuard implements DurableObject {
       const globalCount = await bumpStored(this.state.storage, "g:all", now, body.globalWindowMs);
       if (globalCount > body.globalMax) return json({ ok: false, reason: "global" });
       return json({ ok: true });
+    });
+  }
+
+  async alarm(): Promise<void> {
+    await this.state.blockConcurrencyWhile(async () => {
+      await deleteExpiredWindowRecords(this.state.storage, Date.now());
     });
   }
 }
