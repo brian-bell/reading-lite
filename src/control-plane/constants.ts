@@ -16,13 +16,13 @@ export type AuthChallengePurpose = "login" | "email_change";
 export const REDEMPTION_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const USER_AGENT_LABEL_MAX = 80;
 
-/** AuthRateGuard: per-email magic-link send ceiling. */
+/** AuthRateGuard: per-email ceiling for actual magic-link sends. */
 export const AUTH_RATE_EMAIL_WINDOW_MS = 15 * 60 * 1000;
 export const AUTH_RATE_EMAIL_MAX = 5;
-/** AuthRateGuard: per-coarse-IP magic-link send ceiling. */
+/** AuthRateGuard: per-coarse-IP ceiling for every challenge request (flood control). */
 export const AUTH_RATE_IP_WINDOW_MS = 15 * 60 * 1000;
 export const AUTH_RATE_IP_MAX = 20;
-/** AuthRateGuard: global Resend-send ceiling. */
+/** AuthRateGuard: global ceiling for actual magic-link sends. */
 export const AUTH_RATE_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 export const AUTH_RATE_GLOBAL_MAX = 200;
 export const AUTH_RATE_GUARD_NAME = "auth-rate-guard";

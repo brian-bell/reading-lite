@@ -13,16 +13,23 @@ import { deriveHmacKey, hmacHex } from "./crypto";
 
 type WindowRecord = { start: number; count: number };
 
-type AdmitBody = {
-  emailHash: string;
+type AdmitIpBody = {
+  kind: "ip";
   ipHash: string;
-  emailWindowMs: number;
-  emailMax: number;
   ipWindowMs: number;
   ipMax: number;
+};
+
+type AdmitSendBody = {
+  kind: "send";
+  emailHash: string;
+  emailWindowMs: number;
+  emailMax: number;
   globalWindowMs: number;
   globalMax: number;
 };
+
+type AdmitBody = AdmitIpBody | AdmitSendBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -97,27 +104,30 @@ async function bumpStored(
 function parseAdmitBody(value: unknown): AdmitBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
-  const emailHash = typeof body.emailHash === "string" ? body.emailHash : "";
-  const ipHash = typeof body.ipHash === "string" ? body.ipHash : "";
-  const nums = [
-    body.emailWindowMs,
-    body.emailMax,
-    body.ipWindowMs,
-    body.ipMax,
-    body.globalWindowMs,
-    body.globalMax,
-  ].map((n) => Number(n));
-  if (!emailHash || !ipHash || nums.some((n) => !Number.isFinite(n) || n <= 0)) return null;
-  return {
-    emailHash,
-    ipHash,
-    emailWindowMs: nums[0]!,
-    emailMax: nums[1]!,
-    ipWindowMs: nums[2]!,
-    ipMax: nums[3]!,
-    globalWindowMs: nums[4]!,
-    globalMax: nums[5]!,
-  };
+  const kind = body.kind;
+  if (kind === "ip") {
+    const ipHash = typeof body.ipHash === "string" ? body.ipHash : "";
+    const ipWindowMs = Number(body.ipWindowMs);
+    const ipMax = Number(body.ipMax);
+    if (!ipHash || !Number.isFinite(ipWindowMs) || ipWindowMs <= 0 || !Number.isFinite(ipMax) || ipMax <= 0) {
+      return null;
+    }
+    return { kind: "ip", ipHash, ipWindowMs, ipMax };
+  }
+  if (kind === "send") {
+    const emailHash = typeof body.emailHash === "string" ? body.emailHash : "";
+    const nums = [body.emailWindowMs, body.emailMax, body.globalWindowMs, body.globalMax].map((n) => Number(n));
+    if (!emailHash || nums.some((n) => !Number.isFinite(n) || n <= 0)) return null;
+    return {
+      kind: "send",
+      emailHash,
+      emailWindowMs: nums[0]!,
+      emailMax: nums[1]!,
+      globalWindowMs: nums[2]!,
+      globalMax: nums[3]!,
+    };
+  }
+  return null;
 }
 
 export class AuthRateGuard implements DurableObject {
@@ -137,10 +147,13 @@ export class AuthRateGuard implements DurableObject {
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
       const now = Date.now();
+      if (body.kind === "ip") {
+        const ipCount = await bumpStored(this.state.storage, `i:${body.ipHash}`, now, body.ipWindowMs);
+        if (ipCount > body.ipMax) return json({ ok: false, reason: "ip" });
+        return json({ ok: true });
+      }
       const emailCount = await bumpStored(this.state.storage, `e:${body.emailHash}`, now, body.emailWindowMs);
       if (emailCount > body.emailMax) return json({ ok: false, reason: "email" });
-      const ipCount = await bumpStored(this.state.storage, `i:${body.ipHash}`, now, body.ipWindowMs);
-      if (ipCount > body.ipMax) return json({ ok: false, reason: "ip" });
       const globalCount = await bumpStored(this.state.storage, "g:all", now, body.globalWindowMs);
       if (globalCount > body.globalMax) return json({ ok: false, reason: "global" });
       return json({ ok: true });
@@ -148,36 +161,45 @@ export class AuthRateGuard implements DurableObject {
   }
 }
 
-export async function admitAuthSend(
-  env: Env,
-  request: Request,
-  canonicalEmail: string,
-): Promise<"allow" | "deny"> {
+export async function admitAuthIp(env: Env, request: Request): Promise<"allow" | "deny"> {
+  try {
+    return await admitGuard(env, {
+      kind: "ip",
+      ipHash: await hashSubject(env, coarseIp(connectingIp(request))),
+      ipWindowMs: envInt(env, "AUTH_RATE_IP_WINDOW_MS", AUTH_RATE_IP_WINDOW_MS),
+      ipMax: envInt(env, "AUTH_RATE_IP_MAX", AUTH_RATE_IP_MAX),
+    });
+  } catch {
+    return isCloudAuthEnv(env) ? "deny" : "allow";
+  }
+}
+
+export async function admitAuthSend(env: Env, canonicalEmail: string): Promise<"allow" | "deny"> {
+  try {
+    return await admitGuard(env, {
+      kind: "send",
+      emailHash: await hashSubject(env, canonicalEmail),
+      emailWindowMs: envInt(env, "AUTH_RATE_EMAIL_WINDOW_MS", AUTH_RATE_EMAIL_WINDOW_MS),
+      emailMax: envInt(env, "AUTH_RATE_EMAIL_MAX", AUTH_RATE_EMAIL_MAX),
+      globalWindowMs: envInt(env, "AUTH_RATE_GLOBAL_WINDOW_MS", AUTH_RATE_GLOBAL_WINDOW_MS),
+      globalMax: envInt(env, "AUTH_RATE_GLOBAL_MAX", AUTH_RATE_GLOBAL_MAX),
+    });
+  } catch {
+    return isCloudAuthEnv(env) ? "deny" : "allow";
+  }
+}
+
+async function admitGuard(env: Env, body: AdmitBody): Promise<"allow" | "deny"> {
   const ns = env.AUTH_RATE_GUARD;
   const cloud = isCloudAuthEnv(env);
   if (!ns) return cloud ? "deny" : "allow";
-  try {
-    const emailHash = await hashSubject(env, canonicalEmail);
-    const ipHash = await hashSubject(env, coarseIp(connectingIp(request)));
-    const stub = ns.get(ns.idFromName(AUTH_RATE_GUARD_NAME));
-    const res = await stub.fetch("https://auth-rate-guard/admit", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        emailHash,
-        ipHash,
-        emailWindowMs: envInt(env, "AUTH_RATE_EMAIL_WINDOW_MS", AUTH_RATE_EMAIL_WINDOW_MS),
-        emailMax: envInt(env, "AUTH_RATE_EMAIL_MAX", AUTH_RATE_EMAIL_MAX),
-        ipWindowMs: envInt(env, "AUTH_RATE_IP_WINDOW_MS", AUTH_RATE_IP_WINDOW_MS),
-        ipMax: envInt(env, "AUTH_RATE_IP_MAX", AUTH_RATE_IP_MAX),
-        globalWindowMs: envInt(env, "AUTH_RATE_GLOBAL_WINDOW_MS", AUTH_RATE_GLOBAL_WINDOW_MS),
-        globalMax: envInt(env, "AUTH_RATE_GLOBAL_MAX", AUTH_RATE_GLOBAL_MAX),
-      }),
-    });
-    if (!res.ok) return cloud ? "deny" : "allow";
-    const payload = (await res.json()) as { ok?: boolean };
-    return payload.ok === true ? "allow" : "deny";
-  } catch {
-    return cloud ? "deny" : "allow";
-  }
+  const stub = ns.get(ns.idFromName(AUTH_RATE_GUARD_NAME));
+  const res = await stub.fetch("https://auth-rate-guard/admit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return cloud ? "deny" : "allow";
+  const payload = (await res.json()) as { ok?: boolean };
+  return payload.ok === true ? "allow" : "deny";
 }

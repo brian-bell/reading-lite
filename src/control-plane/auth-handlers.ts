@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { AuthChallengeBodySchema, AuthRedeemBodySchema } from "../schemas/api";
 import { LOGIN_PURPOSE } from "./constants";
-import { admitAuthSend } from "./auth-rate-guard";
+import { admitAuthIp, admitAuthSend } from "./auth-rate-guard";
 import { issueLoginChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
 import { logAuthEvent } from "./auth-log";
@@ -80,8 +80,8 @@ export async function handleAuthChallenge(
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
-  const admitted = await admitAuthSend(c.env, c.req.raw, emailCanonical);
-  if (admitted === "deny") {
+  const ipAdmitted = await admitAuthIp(c.env, c.req.raw);
+  if (ipAdmitted === "deny") {
     logAuthEvent("magic_link_rate_limited");
     return jsonAuth({ ok: true }, 200);
   }
@@ -103,6 +103,13 @@ export async function handleAuthChallenge(
 
   if (issued.kind !== "issued") {
     logAuthEvent("magic_link_skipped", { email: parsed.data.email });
+    return jsonAuth({ ok: true }, 200);
+  }
+
+  const sendAdmitted = await admitAuthSend(c.env, emailCanonical);
+  if (sendAdmitted === "deny") {
+    await restoreLiveLoginChallenges(db, issued.challengeId, liveBeforeIssue);
+    logAuthEvent("magic_link_rate_limited");
     return jsonAuth({ ok: true }, 200);
   }
 

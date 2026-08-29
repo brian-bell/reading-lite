@@ -25,6 +25,7 @@ async function request(
     origin?: string;
     secFetchSite?: string;
   } = {},
+  workerEnv: Env = env as unknown as Env,
 ) {
   const sent: MagicLinkMail[] = [];
   const app = createApp({
@@ -45,7 +46,7 @@ async function request(
       headers,
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
     }),
-    env,
+    workerEnv,
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -63,6 +64,22 @@ function credentialFrom(verifyUrl: string): string {
   const hash = verifyUrl.split("#")[1];
   if (!hash) throw new Error("missing fragment");
   return hash;
+}
+
+function recordingRateGuard() {
+  const posts: { kind?: string }[] = [];
+  const ns = {
+    idFromName: () => ({ toString: () => "id" }),
+    get: () => ({
+      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+        posts.push(JSON.parse(String(init?.body)) as { kind?: string });
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    }),
+  };
+  return { ns, posts };
 }
 
 describe("invite-only magic-link sessions", () => {
@@ -312,12 +329,10 @@ describe("invite-only magic-link sessions", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          kind: "send",
           emailHash: "test-email-hash",
-          ipHash: "test-ip-hash",
           emailWindowMs: 60_000,
           emailMax: 2,
-          ipWindowMs: 60_000,
-          ipMax: 20,
           globalWindowMs: 60_000,
           globalMax: 200,
         }),
@@ -331,12 +346,10 @@ describe("invite-only magic-link sessions", () => {
     const workerEnv = env as unknown as Env;
     const stub = workerEnv.AUTH_RATE_GUARD!.get(workerEnv.AUTH_RATE_GUARD!.idFromName("test-email-burst"));
     const payload = JSON.stringify({
+      kind: "send",
       emailHash: "test-burst-hash",
-      ipHash: "test-burst-ip",
       emailWindowMs: 60_000,
       emailMax: 2,
-      ipWindowMs: 60_000,
-      ipMax: 20,
       globalWindowMs: 60_000,
       globalMax: 200,
     });
@@ -352,6 +365,64 @@ describe("invite-only magic-link sessions", () => {
     const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
     expect(outcomes.filter((ok) => ok)).toHaveLength(2);
     expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
+  });
+
+  it("counts IP on every challenge POST and email/global only when sending", async () => {
+    const workerEnv = env as unknown as Env;
+    const origGuard = workerEnv.AUTH_RATE_GUARD;
+    const { ns, posts } = recordingRateGuard();
+    workerEnv.AUTH_RATE_GUARD = ns as unknown as Env["AUTH_RATE_GUARD"];
+    await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();
+    try {
+      const unknown = await request(
+        "/api/auth/challenge",
+        { method: "POST", body: { email: "nobody-rate@test.example" } },
+        workerEnv,
+      );
+      expect(unknown.res.status).toBe(200);
+      expect(unknown.sent).toHaveLength(0);
+      expect(posts.map((post) => post.kind)).toEqual(["ip"]);
+
+      const founder = await request(
+        "/api/auth/challenge",
+        { method: "POST", body: { email: "founder@test.example" } },
+        workerEnv,
+      );
+      expect(founder.sent).toHaveLength(1);
+      expect(posts.map((post) => post.kind)).toEqual(["ip", "ip", "send"]);
+    } finally {
+      workerEnv.AUTH_RATE_GUARD = origGuard;
+      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
+    }
+  });
+
+  it("does not count email/global for allowlist-blocked challenge POSTs", async () => {
+    const workerEnv = env as unknown as Env;
+    const origGuard = workerEnv.AUTH_RATE_GUARD;
+    const origAppEnv = workerEnv.APP_ENV;
+    const origAllowlist = workerEnv.AUTH_MAIL_ALLOWLIST;
+    const { ns, posts } = recordingRateGuard();
+    workerEnv.AUTH_RATE_GUARD = ns as unknown as Env["AUTH_RATE_GUARD"];
+    workerEnv.APP_ENV = "staging";
+    workerEnv.AUTH_MAIL_ALLOWLIST = "";
+    try {
+      const blocked = await request(
+        "/api/auth/challenge",
+        { method: "POST", body: { email: "blocked-rate@test.example" } },
+        workerEnv,
+      );
+      expect(blocked.res.status).toBe(200);
+      expect(blocked.sent).toHaveLength(0);
+      expect(posts.map((post) => post.kind)).toEqual(["ip"]);
+    } finally {
+      workerEnv.AUTH_RATE_GUARD = origGuard;
+      workerEnv.APP_ENV = origAppEnv;
+      if (origAllowlist === undefined) {
+        delete workerEnv.AUTH_MAIL_ALLOWLIST;
+      } else {
+        workerEnv.AUTH_MAIL_ALLOWLIST = origAllowlist;
+      }
+    }
   });
 
   it("does not disclose whether an unknown address is invited", async () => {

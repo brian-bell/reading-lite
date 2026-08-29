@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  admitAuthIp,
   admitAuthSend,
   AuthRateGuard,
   bumpWindow,
@@ -10,8 +11,10 @@ import type { Env } from "../../../src/index";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-function memoryStorage(yieldBeforeRead = false): DurableObjectStorage {
-  const map = new Map<string, unknown>();
+function memoryStorage(
+  yieldBeforeRead = false,
+  map: Map<string, unknown> = new Map(),
+): DurableObjectStorage {
   return {
     get: async (key: string) => {
       const current = map.get(key);
@@ -79,18 +82,22 @@ describe("bumpWindow", () => {
 });
 
 describe("AuthRateGuard", () => {
-  const body = {
+  const sendBody = {
+    kind: "send",
     emailHash: "e1",
-    ipHash: "i1",
     emailWindowMs: 60_000,
     emailMax: 2,
-    ipWindowMs: 60_000,
-    ipMax: 20,
     globalWindowMs: 60_000,
     globalMax: 200,
   };
+  const ipBody = {
+    kind: "ip",
+    ipHash: "i1",
+    ipWindowMs: 60_000,
+    ipMax: 2,
+  };
 
-  function admit(guard: AuthRateGuard): Promise<Response> {
+  function admit(guard: AuthRateGuard, body: unknown): Promise<Response> {
     return guard.fetch(
       new Request("https://auth-rate-guard/admit", {
         method: "POST",
@@ -100,54 +107,102 @@ describe("AuthRateGuard", () => {
     );
   }
 
-  it("admits until the email ceiling then denies", async () => {
-    const guard = new AuthRateGuard(guardState(), {} as Env);
-    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit(guard)).json()) as { ok: boolean }).ok).toBe(false);
+  it("send admits until the email ceiling then denies without bumping IP", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new AuthRateGuard(guardState(memoryStorage(false, map)), {} as Env);
+    expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, sendBody)).json()) as { ok: boolean }).ok).toBe(false);
+    expect(map.has("i:i1")).toBe(false);
+    expect(map.get("e:e1")).toEqual({ start: expect.any(Number), count: 3 });
+    expect(map.get("g:all")).toEqual({ start: expect.any(Number), count: 2 });
+  });
+
+  it("ip admits until the IP ceiling then denies without bumping email or global", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new AuthRateGuard(guardState(memoryStorage(false, map)), {} as Env);
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(true);
+    expect(((await (await admit(guard, ipBody)).json()) as { ok: boolean }).ok).toBe(false);
+    expect(map.has("e:e1")).toBe(false);
+    expect(map.has("g:all")).toBe(false);
+    expect(map.get("i:i1")).toEqual({ start: expect.any(Number), count: 3 });
   });
 
   it("does not let a concurrent burst all pass the email ceiling", async () => {
     const guard = new AuthRateGuard(guardState(memoryStorage(true)), {} as Env);
-    const responses = await Promise.all(Array.from({ length: 8 }, () => admit(guard)));
+    const responses = await Promise.all(Array.from({ length: 8 }, () => admit(guard, sendBody)));
     const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
     expect(outcomes.filter((ok) => ok)).toHaveLength(2);
     expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
   });
 });
 
-describe("admitAuthSend", () => {
+function recordingGuard(decision: { ok: boolean; reason?: string } = { ok: true }) {
+  const bodies: unknown[] = [];
+  const env = {
+    APP_ENV: "production",
+    AUTH_ROOT_SECRET: ROOT_HEX,
+    AUTH_RATE_GUARD: {
+      idFromName: () => ({ toString: () => "id" }),
+      get: () => ({
+        fetch: async (_input: RequestInfo, init?: RequestInit) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          return new Response(JSON.stringify(decision), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      }),
+    },
+  } as unknown as Env;
+  return { env, bodies };
+}
+
+describe("admitAuthIp", () => {
   it("fails closed on staging without a Durable Object binding", async () => {
     const env = { APP_ENV: "staging", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthSend(env, new Request("https://example.test/"), "a@b.test")).toBe("deny");
+    expect(await admitAuthIp(env, new Request("https://example.test/"))).toBe("deny");
   });
 
   it("allows local traffic when the Durable Object is unbound", async () => {
     const env = { APP_ENV: "local", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthSend(env, new Request("https://example.test/"), "a@b.test")).toBe("allow");
+    expect(await admitAuthIp(env, new Request("https://example.test/"))).toBe("allow");
   });
 
-  it("HMACs subjects and honors the guard decision", async () => {
-    const bodies: unknown[] = [];
-    const env = {
-      APP_ENV: "production",
-      AUTH_ROOT_SECRET: ROOT_HEX,
-      AUTH_RATE_GUARD: {
-        idFromName: () => ({ toString: () => "id" }),
-        get: () => ({
-          fetch: async (_input: RequestInfo, init?: RequestInit) => {
-            bodies.push(JSON.parse(String(init?.body)));
-            return new Response(JSON.stringify({ ok: false, reason: "email" }), {
-              headers: { "content-type": "application/json" },
-            });
-          },
-        }),
-      },
-    } as unknown as Env;
-    expect(await admitAuthSend(env, new Request("https://example.test/"), "founder@test.example")).toBe("deny");
-    const posted = bodies[0] as { emailHash: string; ipHash: string };
-    expect(posted.emailHash).toMatch(/^[0-9a-f]{64}$/);
+  it("posts kind ip with an HMAC of the coarse IP and no email hash", async () => {
+    const { env, bodies } = recordingGuard({ ok: false, reason: "ip" });
+    expect(
+      await admitAuthIp(
+        env,
+        new Request("https://example.test/", { headers: { "cf-connecting-ip": "203.0.113.55" } }),
+      ),
+    ).toBe("deny");
+    const posted = bodies[0] as { kind: string; ipHash: string; emailHash?: string };
+    expect(posted.kind).toBe("ip");
     expect(posted.ipHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(posted).not.toHaveProperty("emailHash");
+    expect(JSON.stringify(posted)).not.toContain("203.0.113");
+  });
+});
+
+describe("admitAuthSend", () => {
+  it("fails closed on staging without a Durable Object binding", async () => {
+    const env = { APP_ENV: "staging", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
+    expect(await admitAuthSend(env, "a@b.test")).toBe("deny");
+  });
+
+  it("allows local traffic when the Durable Object is unbound", async () => {
+    const env = { APP_ENV: "local", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
+    expect(await admitAuthSend(env, "a@b.test")).toBe("allow");
+  });
+
+  it("posts kind send with an HMAC of the email and no IP hash", async () => {
+    const { env, bodies } = recordingGuard({ ok: false, reason: "email" });
+    expect(await admitAuthSend(env, "founder@test.example")).toBe("deny");
+    const posted = bodies[0] as { kind: string; emailHash: string; ipHash?: string };
+    expect(posted.kind).toBe("send");
+    expect(posted.emailHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(posted).not.toHaveProperty("ipHash");
     expect(JSON.stringify(posted)).not.toContain("founder@test.example");
   });
 });
