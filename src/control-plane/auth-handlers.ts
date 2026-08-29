@@ -254,9 +254,9 @@ export async function handleDevMailbox(c: Context<AppBindings>): Promise<Respons
 async function listLiveLoginChallenges(
   db: ControlPlaneDb,
   emailCanonical: string,
-): Promise<{ id: string; state: string }[]> {
-  return db.all<{ id: string; state: string }>(
-    `SELECT id, state FROM auth_challenges
+): Promise<{ id: string; state: string; issued_at_ms: number }[]> {
+  return db.all<{ id: string; state: string; issued_at_ms: number }>(
+    `SELECT id, state, issued_at_ms FROM auth_challenges
      WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed')`,
     emailCanonical,
     LOGIN_PURPOSE,
@@ -267,7 +267,7 @@ async function listLiveLoginChallenges(
 export async function restoreLiveLoginChallenges(
   db: ControlPlaneDb,
   newChallengeId: string,
-  snapshot: { id: string; state: string }[],
+  snapshot: { id: string; state: string; issued_at_ms: number }[],
 ): Promise<void> {
   try {
     // Skip the whole rollback unless this unused issued row is still unused.
@@ -277,15 +277,52 @@ export async function restoreLiveLoginChallenges(
       newChallengeId,
     );
     if (revokedNew.changes === 0) return;
-    const statements = snapshot
-      .filter((row) => row.id !== newChallengeId)
-      .map((row) => ({
-        sql: `UPDATE auth_challenges
-              SET state = ?
-              WHERE id = ? AND state = 'revoked' AND claim_id IS NULL AND consumed_at_ms IS NULL`,
-        params: [row.state, row.id],
-      }));
-    await db.batch(statements);
+
+    const meta = await db.first<{ email_canonical: string; purpose: string }>(
+      `SELECT email_canonical, purpose FROM auth_challenges WHERE id = ?`,
+      newChallengeId,
+    );
+    if (!meta) return;
+
+    const otherLive = await db.first<{ id: string }>(
+      `SELECT id FROM auth_challenges
+       WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed') AND id != ?`,
+      meta.email_canonical,
+      meta.purpose,
+      newChallengeId,
+    );
+    if (otherLive) return;
+
+    const predecessors = snapshot.filter((row) => row.id !== newChallengeId);
+    if (predecessors.length === 0) return;
+    const snapshotIds = predecessors.map((row) => row.id);
+    const placeholders = snapshotIds.map(() => "?").join(", ");
+
+    // Newest unused row this issue displaced: a listed predecessor, or a sibling
+    // inserted after the snapshot (higher rowid) — never an older leftover.
+    await db.run(
+      `UPDATE auth_challenges SET state = 'issued'
+       WHERE id = (
+         SELECT id FROM auth_challenges
+         WHERE email_canonical = ?
+           AND purpose = ?
+           AND id != ?
+           AND state = 'revoked'
+           AND claim_id IS NULL
+           AND consumed_at_ms IS NULL
+           AND (id IN (${placeholders}) OR rowid > (SELECT MAX(rowid) FROM auth_challenges WHERE id IN (${placeholders})))
+         ORDER BY rowid DESC
+         LIMIT 1
+       )
+       AND state = 'revoked'
+       AND claim_id IS NULL
+       AND consumed_at_ms IS NULL`,
+      meta.email_canonical,
+      meta.purpose,
+      newChallengeId,
+      ...snapshotIds,
+      ...snapshotIds,
+    );
   } catch {
     // Delivery already failed; keep the generic 200.
   }

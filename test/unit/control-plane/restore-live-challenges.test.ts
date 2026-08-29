@@ -41,7 +41,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    const snapshot = [{ id: first.challengeId, state: "issued" }];
+    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     const consumed = await redeemLoginChallenge(db, {
       credential: first.credential,
@@ -97,7 +97,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    const snapshot = [{ id: first.challengeId, state: "issued" }];
+    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     sqlite
       .prepare(
@@ -139,6 +139,63 @@ describe("restoreLiveLoginChallenges", () => {
     expect(competing.kind).toBe("invalid");
   });
 
+  it("does not restore an older unused link after a delivered sibling was revoked", async () => {
+    const { sqlite, db } = await seeded();
+    const older = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(older.kind).toBe("issued");
+    if (older.kind !== "issued") return;
+    const listedFirst = [{ id: older.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+
+    const sibling = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(sibling.kind).toBe("issued");
+    if (sibling.kind !== "issued") return;
+
+    const late = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(late.kind).toBe("issued");
+    if (late.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, late.challengeId, listedFirst);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: older.challengeId, state: "revoked" },
+      { id: sibling.challengeId, state: "issued" },
+      { id: late.challengeId, state: "revoked" },
+    ]);
+
+    const siblingRedeem = await redeemLoginChallenge(db, {
+      credential: sibling.credential,
+      redemptionId: "clm_sibling_keep",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(siblingRedeem.kind).toBe("ok");
+
+    const olderRedeem = await redeemLoginChallenge(db, {
+      credential: older.credential,
+      redemptionId: "clm_older_intercepted",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(olderRedeem.kind).toBe("invalid");
+  });
+
   it("does not restore predecessors when the new challenge is no longer unused issued", async () => {
     const { sqlite, db } = await seeded();
     const first = await issueLoginChallenge(db, {
@@ -149,7 +206,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    const snapshot = [{ id: first.challengeId, state: "issued" }];
+    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     const second = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
