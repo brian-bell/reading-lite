@@ -106,10 +106,21 @@ export async function issueSessionForClaim(
     randomBytes?: RandomBytes;
     newUuid?: UuidSource;
   },
-): Promise<{ sessionId: SessionId; credential: string }> {
-  const existing = await lookupUsableSessionForClaim(db, input.userId, input.claimId, input.nowMs);
+): Promise<
+  | { kind: "ok"; sessionId: SessionId; credential: string }
+  | { kind: "invalid" }
+> {
+  const existing = await lookupSessionForClaim(db, input.userId, input.claimId);
   if (existing) {
-    return rotateOwnSessionSecret(db, existing, input.userId, input.authRoot, input.randomBytes);
+    if (!sessionUsable(existing, input.nowMs)) return { kind: "invalid" };
+    const rotated = await rotateOwnSessionSecret(
+      db,
+      existing,
+      input.userId,
+      input.authRoot,
+      input.randomBytes,
+    );
+    return { kind: "ok", ...rotated };
   }
 
   await revokeLruIfAtCap(db, input.userId, input.nowMs);
@@ -137,15 +148,22 @@ export async function issueSessionForClaim(
       input.claimId,
     );
   } catch (err) {
-    const raced = await lookupUsableSessionForClaim(db, input.userId, input.claimId, input.nowMs);
-    if (raced) {
-      return rotateOwnSessionSecret(db, raced, input.userId, input.authRoot, input.randomBytes);
+    const raced = await lookupSessionForClaim(db, input.userId, input.claimId);
+    if (raced && sessionUsable(raced, input.nowMs)) {
+      const rotated = await rotateOwnSessionSecret(
+        db,
+        raced,
+        input.userId,
+        input.authRoot,
+        input.randomBytes,
+      );
+      return { kind: "ok", ...rotated };
     }
-    if (isUniqueConstraintError(err)) throw err;
+    if (raced || isUniqueConstraintError(err)) return { kind: "invalid" };
     throw new Error("failed to persist session");
   }
 
-  return { sessionId, credential: formatCredential(sessionId, secret) };
+  return { kind: "ok", sessionId, credential: formatCredential(sessionId, secret) };
 }
 
 export async function authenticateSession(
@@ -251,23 +269,16 @@ async function touchLastSeen(db: ControlPlaneDb, row: SessionRow, nowMs: number)
   }
 }
 
-async function lookupUsableSessionForClaim(
+async function lookupSessionForClaim(
   db: ControlPlaneDb,
   userId: UserId,
   claimId: string,
-  nowMs: number,
 ): Promise<SessionRow | null> {
   return db.first<SessionRow>(
     `SELECT * FROM sessions
-     WHERE created_from_claim_id = ?
-       AND user_id = ?
-       AND revoked_at_ms IS NULL
-       AND idle_expires_at_ms > ?
-       AND absolute_expires_at_ms > ?`,
+     WHERE created_from_claim_id = ? AND user_id = ?`,
     claimId,
     userId,
-    nowMs,
-    nowMs,
   );
 }
 

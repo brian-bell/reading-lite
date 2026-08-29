@@ -125,6 +125,7 @@ async function completeRedemption(
     randomBytes: input.randomBytes,
     newUuid: input.newUuid,
   });
+  if (session.kind !== "ok") return { kind: "invalid" };
 
   await db.batch([
     {

@@ -9,7 +9,7 @@ import {
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim } from "../../../src/control-plane/sessions";
+import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim, revokeSession } from "../../../src/control-plane/sessions";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
@@ -137,6 +137,8 @@ describe("issueSessionForClaim", () => {
       authRoot,
       userAgentLabel: "a",
     });
+    expect(sessionA.kind).toBe("ok");
+    if (sessionA.kind !== "ok") return;
     const hmacA = sqlite
       .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
       .get(sessionA.sessionId) as { secret_hmac: string };
@@ -153,6 +155,8 @@ describe("issueSessionForClaim", () => {
       authRoot,
       userAgentLabel: "b",
     });
+    expect(sessionB.kind).toBe("ok");
+    if (sessionB.kind !== "ok") return;
 
     expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
     expect(sessionB.credential).not.toBe(sessionA.credential);
@@ -179,5 +183,40 @@ describe("issueSessionForClaim", () => {
     expect(asB.kind).toBe("ok");
     if (asB.kind !== "ok") return;
     expect(asB.principal.userId).toBe(userB);
+  });
+
+  it("treats a revoked claim row as invalid instead of inserting a new session", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userA = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userA) throw new Error("expected founder id");
+    const first = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_revoked1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    await revokeSession(db, first.sessionId, NOW_MS + 1, "logout");
+    const retry = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_revoked1",
+      nowMs: NOW_MS + 2,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(retry.kind).toBe("invalid");
+    const count = sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(1);
   });
 });

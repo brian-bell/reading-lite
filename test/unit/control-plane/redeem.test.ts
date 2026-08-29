@@ -4,7 +4,7 @@ import { issueLoginChallenge } from "../../../src/control-plane/challenges";
 import { MAGIC_LINK_TTL_MS, SESSION_COOKIE_NAME } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession } from "../../../src/control-plane/sessions";
+import { authenticateSession, revokeSession } from "../../../src/control-plane/sessions";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -284,5 +284,43 @@ describe("redeemLoginChallenge", () => {
       nowMs: NOW_MS + 3,
     });
     expect(stillFounder.kind).toBe("ok");
+  });
+
+  it("rejects logout-then-Continue on the same claim without 500 or a new session", async () => {
+    const { sqlite, db } = await seeded();
+    const issued = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(issued.kind).toBe("issued");
+    if (issued.kind !== "issued") return;
+    const first = await redeemLoginChallenge(db, {
+      credential: issued.credential,
+      redemptionId: "clm_continue",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    await revokeSession(db, first.sessionId, NOW_MS + 2, "logout");
+
+    const again = await redeemLoginChallenge(db, {
+      credential: issued.credential,
+      redemptionId: "clm_continue",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(again.kind).toBe("invalid");
+    const rows = sqlite.prepare("SELECT id, revoked_at_ms FROM sessions").all() as {
+      id: string;
+      revoked_at_ms: number | null;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(first.sessionId);
+    expect(rows[0]?.revoked_at_ms).toBe(NOW_MS + 2);
   });
 });
