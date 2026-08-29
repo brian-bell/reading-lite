@@ -28,6 +28,7 @@ import {
   submitReading,
   type ContentKind
 } from "./api";
+import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-link-credential";
 import type {
   Connection,
   ListReading,
@@ -227,10 +228,9 @@ function VerifyPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [credential, setCredential] = useState("");
+  const [credential, setCredential] = useState(() => captureMagicLinkCredential(location.hash));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const captured = useRef(false);
   const redemptionId = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? `clm_${crypto.randomUUID()}`
@@ -238,14 +238,13 @@ function VerifyPage() {
   );
 
   useEffect(() => {
-    if (captured.current) return;
-    const hash = (location.hash || window.location.hash).replace(/^#/, "");
-    if (!hash) return;
-    captured.current = true;
-    setCredential(hash);
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
+    const next = captureMagicLinkCredential(hash);
+    if (next !== "" && next !== credential) setCredential(next);
+    if (hash.replace(/^#/, "") === "") return;
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     navigate(location.pathname || "/auth/verify", { replace: true });
-  }, [location.hash, location.pathname, navigate]);
+  }, [credential, location.hash, location.pathname, navigate]);
 
   return (
     <section className="page">
@@ -265,6 +264,7 @@ function VerifyPage() {
               setError(null);
               try {
                 await redeemLoginLink(credential, redemptionId.current);
+                clearMagicLinkCredential();
                 await queryClient.fetchQuery({ queryKey: ["whoami"] });
                 navigate("/", { replace: true });
               } catch (e) {

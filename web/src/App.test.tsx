@@ -1,14 +1,9 @@
-import {
-  cleanup,
-  render,
-  screen,
-  waitFor,
-  within
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { clearMagicLinkCredential } from "./magic-link-credential";
 import type { ListReading, Manifest, ListReadingsResponse, ReadingDiagnostics } from "./types";
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
@@ -147,6 +142,7 @@ describe("App", () => {
 
   afterEach(() => {
     cleanup();
+    clearMagicLinkCredential();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -357,6 +353,25 @@ describe("App", () => {
       expect(whoamiAfter.length).toBeGreaterThan(1);
     });
     expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+  });
+
+  it("recovers the magic-link secret after remount once the hash is stripped", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = render(
+      <App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeInTheDocument();
+    unmount();
+
+    render(<App initialPath="/auth/verify" />);
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeInTheDocument();
+    expect(screen.queryByText(/missing its secret/i)).not.toBeInTheDocument();
   });
 
   it("renders reading detail fields (title, url, tldr, summary, entities)", async () => {
