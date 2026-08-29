@@ -293,6 +293,179 @@ describe("extractXThread", () => {
     ).rejects.toBeInstanceOf(XThreadIncompleteError);
   });
 
+  it("imports when a quoted author expansion fails", async () => {
+    const quoted = {
+      id: "99",
+      text: "Quoted body",
+      author_id: "suspended-user",
+      conversation_id: "99",
+      created_at: "2026-07-26T12:00:00.000Z",
+    };
+    const shared = {
+      id: "100",
+      text: "I quote a deleted account",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      referenced_tweets: [{ type: "quoted", id: "99" }],
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+            tweets: [quoted],
+          },
+          errors: [
+            {
+              value: "suspended-user",
+              parameter: "referenced_tweets.id.author_id",
+              title: "Not Found Error",
+              detail: "Could not find user with ids: [suspended-user].",
+            },
+          ],
+        });
+      }
+      return json({ data: [shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("I quote a deleted account");
+    expect(out.markdown).toContain("Quoted post unavailable: https://x.com/i/status/99");
+    expect(out.markdown).not.toContain("Quoted body");
+  });
+
+  it("imports when media hydration fails and honors resource_id without value", async () => {
+    const shared = {
+      id: "100",
+      text: "A post with a missing image",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      attachments: { media_keys: ["3_missing"] },
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+          errors: [
+            {
+              resource_id: "3_missing",
+              title: "Not Found Error",
+              detail: "Could not find media with keys: [3_missing].",
+            },
+          ],
+        });
+      }
+      return json({ data: [shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("A post with a missing image");
+    expect(out.markdown).not.toContain("![");
+    expect(out.markdown).not.toContain("3_missing");
+  });
+
+  it("does not treat lookup vs search optional nested key differences as a conflict", async () => {
+    const lookupPost = {
+      id: "100",
+      text: "Hello from lookup",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      note_tweet: {
+        text: "Hello from lookup",
+        entities: {
+          urls: [{ url: "https://t.co/a", expanded_url: "https://example.com/a" }],
+        },
+      },
+      article: { title: "Extra", preview_text: "Hello from lookup", source: { id: "art-1" } },
+      attachments: { media_keys: ["media-1"], poll_ids: ["poll-1"] },
+      referenced_tweets: [{ type: "quoted" as const, id: "99", extra: "passthrough" }],
+    };
+    const searchPost = {
+      id: "100",
+      text: "Hello from lookup",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      note_tweet: {
+        entities: {
+          urls: [{ expanded_url: "https://example.com/a", url: "https://t.co/a" }],
+        },
+        text: "Hello from lookup",
+      },
+      attachments: { poll_ids: ["poll-1"], media_keys: ["media-1"] },
+      referenced_tweets: [{ extra: "passthrough", id: "99", type: "quoted" as const }],
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: lookupPost,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [searchPost], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("Hello from lookup");
+  });
+
+  it("still fails when lookup and search disagree on reconstruction fields", async () => {
+    const lookupPost = {
+      id: "100",
+      text: "Hello from lookup",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+    };
+    const searchPost = {
+      ...lookupPost,
+      text: "Hello from search",
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: lookupPost,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [searchPost], meta: {} });
+    });
+
+    await expect(
+      extractXThread("https://x.com/author/status/100", {
+        ...xDeps,
+        fetch: fetchFn as unknown as typeof fetch,
+      }),
+    ).rejects.toBeInstanceOf(XThreadIncompleteError);
+  });
+
   it("renders long-form text, expanded links, media, and quoted-post context", async () => {
     const shared = {
       id: "2081655420314419450",

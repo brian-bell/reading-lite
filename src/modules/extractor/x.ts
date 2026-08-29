@@ -97,6 +97,8 @@ const IncludesSchema = z
 const XPartialErrorSchema = z
   .object({
     value: z.union([z.string(), z.array(z.string())]).optional(),
+    resource_id: z.union([z.string(), z.array(z.string())]).optional(),
+    parameter: z.string().optional(),
   })
   .passthrough();
 const LookupSchema = z
@@ -272,9 +274,30 @@ function parseXPayload<Schema extends z.ZodTypeAny>(
   return parsed.data;
 }
 
+const NON_FATAL_EXPANSION_PARAMETERS = new Set([
+  "referenced_tweets.id.author_id",
+  "attachments.media_keys",
+]);
+
+function errorResourceIds(error: {
+  value?: string | string[];
+  resource_id?: string | string[];
+}): string[] {
+  const raw = error.value ?? error.resource_id;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  return typeof raw === "string" && raw.length > 0 ? [raw] : [];
+}
+
 function assertNoFatalPartialErrors(payload: {
   data: XPost | XPost[];
-  errors?: Array<{ value?: string | string[] }>;
+  includes?: XIncludes;
+  errors?: Array<{
+    value?: string | string[];
+    resource_id?: string | string[];
+    parameter?: string;
+  }>;
 }): void {
   if (!payload.errors || payload.errors.length === 0) return;
   const posts = Array.isArray(payload.data) ? payload.data : [payload.data];
@@ -285,15 +308,19 @@ function assertNoFatalPartialErrors(payload: {
         .map((reference) => reference.id),
     ),
   );
-  const quoteOnly = payload.errors.every((error) => {
-    const values = Array.isArray(error.value)
-      ? error.value
-      : error.value
-        ? [error.value]
-        : [];
-    return values.length > 0 && values.every((value) => quoteIds.has(value));
+  const quotedAuthorIds = new Set(
+    (payload.includes?.tweets ?? [])
+      .filter((tweet) => quoteIds.has(tweet.id))
+      .map((tweet) => tweet.author_id),
+  );
+  const mediaKeys = new Set(posts.flatMap((post) => post.attachments?.media_keys ?? []));
+  const ignorable = new Set<string>([...quoteIds, ...quotedAuthorIds, ...mediaKeys]);
+  const nonFatal = payload.errors.every((error) => {
+    if (error.parameter && NON_FATAL_EXPANSION_PARAMETERS.has(error.parameter)) return true;
+    const ids = errorResourceIds(error);
+    return ids.length > 0 && ids.every((id) => ignorable.has(id));
   });
-  if (!quoteOnly) throw new XThreadIncompleteError("X returned a partial API response");
+  if (!nonFatal) throw new XThreadIncompleteError("X returned a partial API response");
 }
 
 function lookupUrl(id: string): URL {
@@ -474,17 +501,28 @@ function authorComponent(
   return result;
 }
 
+function referenceId(post: XPost, type: "replied_to" | "quoted"): string | undefined {
+  return post.referenced_tweets?.find((reference) => reference.type === type)?.id;
+}
+
+function attachmentMediaKeys(post: XPost): readonly string[] {
+  return post.attachments?.media_keys ?? [];
+}
+
 function postsConflict(a: XPost, b: XPost): boolean {
-  return (
+  if (
     a.author_id !== b.author_id ||
     a.conversation_id !== b.conversation_id ||
     a.created_at !== b.created_at ||
     a.text !== b.text ||
-    JSON.stringify(a.referenced_tweets ?? []) !== JSON.stringify(b.referenced_tweets ?? []) ||
-    JSON.stringify(a.note_tweet ?? null) !== JSON.stringify(b.note_tweet ?? null) ||
-    JSON.stringify(a.article ?? null) !== JSON.stringify(b.article ?? null) ||
-    JSON.stringify(a.attachments ?? null) !== JSON.stringify(b.attachments ?? null)
-  );
+    referenceId(a, "replied_to") !== referenceId(b, "replied_to") ||
+    referenceId(a, "quoted") !== referenceId(b, "quoted")
+  ) {
+    return true;
+  }
+  const aKeys = attachmentMediaKeys(a);
+  const bKeys = attachmentMediaKeys(b);
+  return aKeys.length !== bKeys.length || aKeys.some((key, index) => key !== bKeys[index]);
 }
 
 function comparePosts(a: XPost, b: XPost): number {
