@@ -112,7 +112,7 @@ export function redditListingToMarkdown(
     const comments = commentsListing.data.children
       .filter((c) => c.kind === "t1")
       .map((c) => Comment.safeParse(c.data))
-      .filter((r): r is z.SafeParseSuccess<z.infer<typeof Comment>> => r.success)
+      .filter((r): r is z.ZodSafeParseSuccess<z.infer<typeof Comment>> => r.success)
       .map((r) => r.data)
       .filter((c) => c.body && c.body.trim() && c.body !== "[deleted]" && c.body !== "[removed]")
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))

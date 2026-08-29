@@ -52,7 +52,7 @@ const BatchInfoSchema = z.object({
   id: z.string(),
   processing_status: z.string(),
   results_url: z.string().nullable().default(null),
-  request_counts: z.record(z.number()).optional(),
+  request_counts: z.record(z.string(), z.number()).optional(),
 });
 
 export function makeAnthropicBatchClient(deps: AnthropicBatchDeps): AnthropicBatchClient {
