@@ -42,7 +42,7 @@ async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Re
 
 export async function getWhoami(): Promise<WhoamiResponse | null> {
   const response = await apiFetch(new URL("/api/whoami", window.location.origin));
-  if (response.status === 401) return null;
+  if (response.status === 401 || response.status === 403) return null;
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to load identity"));
   }

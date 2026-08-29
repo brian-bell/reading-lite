@@ -264,8 +264,8 @@ function VerifyPage() {
               setBusy(true);
               setError(null);
               try {
-                const identity = await redeemLoginLink(credential, redemptionId.current);
-                await queryClient.setQueryData(["whoami"], identity);
+                await redeemLoginLink(credential, redemptionId.current);
+                await queryClient.fetchQuery({ queryKey: ["whoami"] });
                 navigate("/", { replace: true });
               } catch (e) {
                 setError(e instanceof Error ? e.message : "failed to complete sign-in");

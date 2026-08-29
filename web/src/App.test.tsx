@@ -193,6 +193,18 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
 
+  it("treats a 403 whoami like signed-out instead of a load error", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "forbidden" }, 403);
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App initialPath="/" />);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not load readings.")).not.toBeInTheDocument();
+  });
+
   it("shows authenticated identity and logs out without storing bearer material", async () => {
     let signedOut = false;
     const fetchMock = vi.fn(async (request: Request) => {
@@ -297,11 +309,16 @@ describe("App", () => {
   });
 
   it("strips the magic-link fragment and only redeems after an explicit click", async () => {
+    let signedIn = false;
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
-      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
-      if (url.pathname === "/api/auth/redeem") {
+      if (url.pathname === "/api/whoami") {
+        if (!signedIn) return jsonResponse({ error: "unauthorized" }, 401);
         return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true, ignored: "redeem-json-must-not-be-cached" });
       }
       return jsonResponse(emptyPage);
     });
@@ -332,6 +349,14 @@ describe("App", () => {
     const body = (await redeemReq.clone().json()) as { credential: string; redemption_id: string };
     expect(body.credential).toBe("ml_550e8400-e29b-41d4-a716-446655440000.deadbeef");
     expect(body.redemption_id).toMatch(/^clm_/);
+    await waitFor(() => {
+      const whoamiAfter = fetchMock.mock.calls.filter((c) => {
+        const req = c[0] as Request;
+        return req.method === "GET" && new URL(req.url).pathname === "/api/whoami";
+      });
+      expect(whoamiAfter.length).toBeGreaterThan(1);
+    });
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
   });
 
   it("renders reading detail fields (title, url, tldr, summary, entities)", async () => {
