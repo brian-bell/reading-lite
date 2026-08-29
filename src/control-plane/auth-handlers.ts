@@ -131,6 +131,11 @@ export async function handleAuthChallenge(
     } else {
       throw new Error("magic-link delivery is not configured");
     }
+    await db.run(
+      `UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ? AND mail_sent_at_ms IS NULL`,
+      nowMs,
+      issued.challengeId,
+    );
     logAuthEvent("magic_link_issued", {
       email: issued.deliveryEmail,
       challenge_id: issued.challengeId,
@@ -295,11 +300,10 @@ export async function restoreLiveLoginChallenges(
 
     const predecessors = snapshot.filter((row) => row.id !== newChallengeId);
     if (predecessors.length === 0) return;
-    const snapshotIds = predecessors.map((row) => row.id);
-    const placeholders = snapshotIds.map(() => "?").join(", ");
 
-    // Newest unused row this issue displaced: a listed predecessor, or a sibling
-    // inserted after the snapshot (higher rowid) — never an older leftover.
+    // Newest unused predecessor whose mail was actually sent. Snapshot and
+    // later-sibling IDs without mail_sent_at_ms would revive a concurrent
+    // replacement that never went out (two overlapping failed sends).
     await db.run(
       `UPDATE auth_challenges SET state = 'issued'
        WHERE id = (
@@ -310,7 +314,7 @@ export async function restoreLiveLoginChallenges(
            AND state = 'revoked'
            AND claim_id IS NULL
            AND consumed_at_ms IS NULL
-           AND (id IN (${placeholders}) OR rowid > (SELECT MAX(rowid) FROM auth_challenges WHERE id IN (${placeholders})))
+           AND mail_sent_at_ms IS NOT NULL
          ORDER BY rowid DESC
          LIMIT 1
        )
@@ -320,8 +324,6 @@ export async function restoreLiveLoginChallenges(
       meta.email_canonical,
       meta.purpose,
       newChallengeId,
-      ...snapshotIds,
-      ...snapshotIds,
     );
   } catch {
     // Delivery already failed; keep the generic 200.

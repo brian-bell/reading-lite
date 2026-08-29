@@ -30,6 +30,14 @@ function challengeStates(sqlite: ReturnType<typeof openMigratedControlPlane>["sq
     .all() as { id: string; state: string }[];
 }
 
+function markMailSent(
+  sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"],
+  challengeId: string,
+  atMs: number,
+): void {
+  sqlite.prepare("UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ?").run(atMs, challengeId);
+}
+
 describe("restoreLiveLoginChallenges", () => {
   it("does not revive a predecessor that was consumed before issue revoked it", async () => {
     const { sqlite, db } = await seeded();
@@ -41,6 +49,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
+    markMailSent(sqlite, first.challengeId, NOW_MS);
     const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     const consumed = await redeemLoginChallenge(db, {
@@ -97,6 +106,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
+    markMailSent(sqlite, first.challengeId, NOW_MS);
     const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     sqlite
@@ -149,6 +159,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(older.kind).toBe("issued");
     if (older.kind !== "issued") return;
+    markMailSent(sqlite, older.challengeId, NOW_MS);
     const listedFirst = [{ id: older.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     const sibling = await issueLoginChallenge(db, {
@@ -159,6 +170,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(sibling.kind).toBe("issued");
     if (sibling.kind !== "issued") return;
+    markMailSent(sqlite, sibling.challengeId, NOW_MS + 1);
 
     const late = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -206,6 +218,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
+    markMailSent(sqlite, first.challengeId, NOW_MS);
     const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
 
     const second = await issueLoginChallenge(db, {
@@ -232,5 +245,65 @@ describe("restoreLiveLoginChallenges", () => {
       { id: first.challengeId, state: "revoked" },
       { id: second.challengeId, state: "consumed" },
     ]);
+  });
+
+  it("does not restore an undelivered sibling after two overlapping failed sends", async () => {
+    const { sqlite, db } = await seeded();
+    const delivered = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(delivered.kind).toBe("issued");
+    if (delivered.kind !== "issued") return;
+    markMailSent(sqlite, delivered.challengeId, NOW_MS);
+    const snapshotA = [{ id: delivered.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+
+    const a = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(a.kind).toBe("issued");
+    if (a.kind !== "issued") return;
+    const snapshotB = [{ id: a.challengeId, state: "issued", issued_at_ms: NOW_MS + 1 }];
+
+    const b = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(b.kind).toBe("issued");
+    if (b.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, a.challengeId, snapshotA);
+    await restoreLiveLoginChallenges(db, b.challengeId, snapshotB);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: delivered.challengeId, state: "issued" },
+      { id: a.challengeId, state: "revoked" },
+      { id: b.challengeId, state: "revoked" },
+    ]);
+
+    const deliveredRedeem = await redeemLoginChallenge(db, {
+      credential: delivered.credential,
+      redemptionId: "clm_delivered_keep",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(deliveredRedeem.kind).toBe("ok");
+
+    const undeliveredRedeem = await redeemLoginChallenge(db, {
+      credential: a.credential,
+      redemptionId: "clm_undelivered_a",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(undeliveredRedeem.kind).toBe("invalid");
   });
 });
