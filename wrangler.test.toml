@@ -7,7 +7,12 @@ main = "src/index.ts"
 compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
 
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthRateGuard"]
+
 [vars]
+APP_ENV = "test"
 CORS_ALLOWED_ORIGINS = ""
 MCP_ALLOWED_ORIGINS = "https://reading.test.example"
 PENDING_TTL_SECONDS = "300"
@@ -28,6 +33,10 @@ EMAIL_FROM = "reading-lite@test.example"
 EMAIL_TO = "reader@test.example"
 WEB_BASE_URL = "https://reading.test.example"
 TENANT_DATA_PLANE = "1"
+LOCAL_MAIL_SINK = "1"
+AUTH_RATE_EMAIL_MAX = "1000"
+AUTH_RATE_IP_MAX = "1000"
+AUTH_RATE_GLOBAL_MAX = "10000"
 
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
@@ -38,3 +47,7 @@ binding = "CONTROL_PLANE"
 database_name = "reading-lite-control-test"
 database_id = "00000000-0000-0000-0000-000000000099"
 migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "AUTH_RATE_GUARD"
+class_name = "AuthRateGuard"

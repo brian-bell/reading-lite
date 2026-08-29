@@ -23,12 +23,21 @@ import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
-import { fromD1 } from "./control-plane/db";
 import { applyStaleness } from "./modules/staleness";
+import {
+  handleAuthChallenge,
+  handleAuthLogout,
+  handleAuthRedeem,
+  handleDevMailbox,
+  jsonAuth,
+  type AuthRuntime,
+} from "./control-plane/auth-handlers";
+import { fromD1 } from "./control-plane/db";
 
 export interface AppOptions {
   services?: Services;
   sleep?: (ms: number) => Promise<void>;
+  auth?: AuthRuntime;
 }
 
 function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
@@ -47,6 +56,7 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
 
 export function createApp(opts: AppOptions = {}) {
   const services = opts.services ?? defaultServices();
+  const authRuntime = opts.auth ?? {};
   const app = new Hono<AppBindings>();
 
   app.use("*", corsMiddleware());
@@ -60,6 +70,12 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/health", (c) => c.text("ok", 200));
 
   const authNowMs = () => Date.parse(services.now());
+
+  app.post("/api/auth/challenge", (c) => handleAuthChallenge(c, authNowMs(), authRuntime));
+  app.post("/api/auth/redeem", (c) => handleAuthRedeem(c, authNowMs(), authRuntime));
+  app.post("/api/auth/logout", (c) => handleAuthLogout(c, authNowMs()));
+  app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
+  app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));

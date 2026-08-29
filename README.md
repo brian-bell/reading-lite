@@ -128,15 +128,22 @@ Secrets are set with `wrangler secret put` — see
 Machine-readable contract: [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI
 3.1). Keep it in lockstep with `src/router.ts` and `src/schemas/`.
 
-All routes except `/health` require `Authorization: Bearer <token>`. After
-cutover the token is the founder legacy bearer imported by
+All routes except `/health` and `POST /api/auth/challenge` /
+`POST /api/auth/redeem` require authentication (bearer token or the host-only
+session cookie). After cutover the founder legacy bearer is imported by
 `founder-bootstrap` from `READER_API_TOKEN`; runtime auth looks it up in D1
-and does not fall back to the secret itself.
+and does not fall back to the secret itself. Magic-link login issues a durable
+host-only `__Host-session` cookie (`Secure; HttpOnly; Path=/; SameSite=Lax;
+Max-Age=7776000`) so login survives browser restart. D1 still enforces a
+30-day inactivity timeout and 90-day absolute session expiry.
 
 | Method + path | Behavior |
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `GET /api/whoami` | Authenticated principal identity (`tenant_id`, `user_id`, `principal`, `tenant_data_plane`, `email`). No scope beyond auth. |
+| `POST /api/auth/challenge` | Same-origin. Body `{ email }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. |
+| `POST /api/auth/redeem` | Same-origin. Body `{ credential, redemption_id }`. Sets `__Host-session` (`Max-Age=7776000`). |
+| `POST /api/auth/logout` | Same-origin. Revokes the D1 session and clears the cookie. |
 | `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
 | `POST /api/readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
 | `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |

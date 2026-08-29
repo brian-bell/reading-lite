@@ -37,7 +37,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | `workers_dev` URL |
+| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (`/api/*` `/health` `/mcp*`) |
 | production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` + `/mcp*` |
 
 Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
@@ -61,7 +61,7 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
-| `RESEND_API_KEY` | optional — per-reading email notifications |
+| `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
 default to `1`. HKDF includes the version, so a secret-only rotation must keep
@@ -148,7 +148,9 @@ bootstrap of `dev-local-token`).
 
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
-path.
+path. Staging uses `https://reading-lite-staging.bbell.dev` the same way
+production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
+`WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
 
 ### MCP connector
 
@@ -164,8 +166,8 @@ Workers Routes permission on the Cloudflare API token; if `ops deploy worker
 --env production` uploads the script but fails with authentication error 10000
 on `/zones/.../workers/routes`, add the route in the dashboard (Worker
 `reading-lite`, pattern `reading-lite.bbell.dev/mcp*`) or use the `/api/mcp`
-alias which is already covered by `/api/*`. Staging uses the `workers.dev` URL
-(`https://reading-lite-staging.<account>.workers.dev/mcp`) with no extra route.
+alias which is already covered by `/api/*`. Staging has the same trio of
+Worker routes on `reading-lite-staging.bbell.dev` (`/api/*`, `/health`, `/mcp*`).
 
 `MCP_ALLOWED_ORIGINS` (wrangler var, default `https://reading-lite.bbell.dev`)
 is the Origin allowlist. Requests with no `Origin` pass (non-browser clients).
