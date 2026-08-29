@@ -1,0 +1,127 @@
+import { describe, expect, it } from "vitest";
+import { restoreLiveLoginChallenges } from "../../../src/control-plane/auth-handlers";
+import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
+import { issueLoginChallenge } from "../../../src/control-plane/challenges";
+import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
+import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+
+const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
+const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
+
+async function seeded() {
+  const { sqlite, db } = openMigratedControlPlane();
+  await bootstrapFounder(db, {
+    email: "Founder@Example.com",
+    legacyToken: "test-token",
+    signupMode: "invite_only",
+    nowMs: NOW_MS,
+    authRoot,
+    newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+    newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+  });
+  return { sqlite, db };
+}
+
+function challengeStates(sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"]) {
+  return sqlite
+    .prepare("SELECT id, state FROM auth_challenges ORDER BY issued_at_ms")
+    .all() as { id: string; state: string }[];
+}
+
+describe("restoreLiveLoginChallenges", () => {
+  it("does not revive a predecessor that was consumed before issue revoked it", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(first.kind).toBe("issued");
+    if (first.kind !== "issued") return;
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
+
+    const consumed = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_consumed_pred",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(consumed.kind).toBe("ok");
+
+    const second = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(second.kind).toBe("issued");
+    if (second.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: first.challengeId, state: "consumed" },
+      { id: second.challengeId, state: "revoked" },
+    ]);
+
+    const retry = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_consumed_pred",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(retry.kind).toBe("ok");
+
+    const competing = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_other_claim",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(competing.kind).toBe("conflict");
+  });
+
+  it("does not restore predecessors when the new challenge is no longer unused issued", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(first.kind).toBe("issued");
+    if (first.kind !== "issued") return;
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
+
+    const second = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(second.kind).toBe("issued");
+    if (second.kind !== "issued") return;
+
+    const redeemedNew = await redeemLoginChallenge(db, {
+      credential: second.credential,
+      redemptionId: "clm_new_consumed",
+      nowMs: NOW_MS + 2,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(redeemedNew.kind).toBe("ok");
+
+    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: first.challengeId, state: "revoked" },
+      { id: second.challengeId, state: "consumed" },
+    ]);
+  });
+});

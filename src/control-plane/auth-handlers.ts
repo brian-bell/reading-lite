@@ -256,26 +256,26 @@ async function listLiveLoginChallenges(
   );
 }
 
-async function restoreLiveLoginChallenges(
+/** Roll back an unused issued challenge after delivery failure. */
+export async function restoreLiveLoginChallenges(
   db: ControlPlaneDb,
   newChallengeId: string,
   snapshot: { id: string; state: string }[],
 ): Promise<void> {
   try {
-    // Revoke the unused new issued row first so the partial unique index
-    // `auth_challenges_one_issued` can accept a restored issued predecessor.
-    const statements = [
-      {
-        sql: `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
-        params: [newChallengeId],
-      },
-      ...snapshot
-        .filter((row) => row.id !== newChallengeId)
-        .map((row) => ({
-          sql: `UPDATE auth_challenges SET state = ? WHERE id = ?`,
-          params: [row.state, row.id],
-        })),
-    ];
+    // Skip the whole rollback unless this unused issued row is still unused.
+    // A concurrent redeem may have claimed it after Resend actually delivered.
+    const revokedNew = await db.run(
+      `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
+      newChallengeId,
+    );
+    if (revokedNew.changes === 0) return;
+    const statements = snapshot
+      .filter((row) => row.id !== newChallengeId)
+      .map((row) => ({
+        sql: `UPDATE auth_challenges SET state = ? WHERE id = ? AND state = 'revoked'`,
+        params: [row.state, row.id],
+      }));
     await db.batch(statements);
   } catch {
     // Delivery already failed; keep the generic 200.
