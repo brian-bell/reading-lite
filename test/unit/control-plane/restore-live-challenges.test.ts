@@ -366,6 +366,130 @@ describe("restoreLiveLoginChallenges", () => {
     expect(aRedeem.kind).toBe("invalid");
   });
 
+  it("does not restore an older mailed leftover after a claimed successor with no mail_sent_at", async () => {
+    const { sqlite, db } = await seeded();
+    const older = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(older.kind).toBe("issued");
+    if (older.kind !== "issued") return;
+    markMailSent(sqlite, older.challengeId, NOW_MS);
+
+    const claimed = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(claimed.kind).toBe("issued");
+    if (claimed.kind !== "issued") return;
+    sqlite
+      .prepare(
+        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
+      )
+      .run("clm_unmarked_claimed", NOW_MS + 2, claimed.challengeId);
+    const marker = sqlite
+      .prepare("SELECT mail_sent_at_ms FROM auth_challenges WHERE id = ?")
+      .get(claimed.challengeId) as { mail_sent_at_ms: number | null };
+    expect(marker.mail_sent_at_ms).toBeNull();
+    const snapshot = [{ id: claimed.challengeId, state: "claimed", issued_at_ms: NOW_MS + 1 }];
+
+    const failed = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 3,
+      authRoot,
+    });
+    expect(failed.kind).toBe("issued");
+    if (failed.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, failed.challengeId, snapshot);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: older.challengeId, state: "revoked" },
+      { id: claimed.challengeId, state: "revoked" },
+      { id: failed.challengeId, state: "revoked" },
+    ]);
+    const leftover = sqlite
+      .prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?")
+      .get(claimed.challengeId) as { state: string; claim_id: string | null };
+    expect(leftover).toEqual({ state: "revoked", claim_id: "clm_unmarked_claimed" });
+
+    const olderRedeem = await redeemLoginChallenge(db, {
+      credential: older.credential,
+      redemptionId: "clm_older_blocked_by_claimed",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(olderRedeem.kind).toBe("invalid");
+  });
+
+  it("does not restore an older mailed leftover after a claimed successor with no mail_sent_at", async () => {
+    const { sqlite, db } = await seeded();
+    const older = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(older.kind).toBe("issued");
+    if (older.kind !== "issued") return;
+    markMailSent(sqlite, older.challengeId, NOW_MS);
+
+    const claimed = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(claimed.kind).toBe("issued");
+    if (claimed.kind !== "issued") return;
+    sqlite
+      .prepare(
+        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
+      )
+      .run("clm_unmarked_claimed", NOW_MS + 2, claimed.challengeId);
+    const marker = sqlite
+      .prepare("SELECT mail_sent_at_ms FROM auth_challenges WHERE id = ?")
+      .get(claimed.challengeId) as { mail_sent_at_ms: number | null };
+    expect(marker.mail_sent_at_ms).toBeNull();
+    const snapshot = [{ id: claimed.challengeId, state: "claimed", issued_at_ms: NOW_MS + 1 }];
+
+    const failed = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 3,
+      authRoot,
+    });
+    expect(failed.kind).toBe("issued");
+    if (failed.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, failed.challengeId, snapshot);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: older.challengeId, state: "revoked" },
+      { id: claimed.challengeId, state: "revoked" },
+      { id: failed.challengeId, state: "revoked" },
+    ]);
+    const leftover = sqlite
+      .prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?")
+      .get(claimed.challengeId) as { state: string; claim_id: string | null };
+    expect(leftover).toEqual({ state: "revoked", claim_id: "clm_unmarked_claimed" });
+
+    const olderRedeem = await redeemLoginChallenge(db, {
+      credential: older.credential,
+      redemptionId: "clm_older_blocked_by_claimed",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(olderRedeem.kind).toBe("invalid");
+  });
+
   it("restores a concurrent first send that the snapshot missed", async () => {
     const { sqlite, db } = await seeded();
     const first = await issueLoginChallenge(db, {

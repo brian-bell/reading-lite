@@ -336,18 +336,31 @@ export async function restoreLiveLoginChallenges(
     const snapshotIssuedIds = snapshot
       .filter((row) => row.id !== newChallengeId && row.state === "issued")
       .map((row) => row.id);
+    const snapshotClaimedIds = snapshot
+      .filter((row) => row.id !== newChallengeId && row.state === "claimed")
+      .map((row) => row.id);
 
+    const mailedPlaceholders = snapshotClaimedIds.map(() => "?").join(", ");
     const newestMarked = await db.first<{ id: string }>(
-      `SELECT id FROM auth_challenges
-       WHERE email_canonical = ? AND purpose = ? AND id != ? AND mail_sent_at_ms IS NOT NULL
-       ORDER BY rowid DESC
-       LIMIT 1`,
+      snapshotClaimedIds.length === 0
+        ? `SELECT id FROM auth_challenges
+           WHERE email_canonical = ? AND purpose = ? AND id != ? AND mail_sent_at_ms IS NOT NULL
+           ORDER BY rowid DESC
+           LIMIT 1`
+        : `SELECT id FROM auth_challenges
+           WHERE email_canonical = ? AND purpose = ? AND id != ?
+             AND (mail_sent_at_ms IS NOT NULL OR id IN (${mailedPlaceholders}))
+           ORDER BY rowid DESC
+           LIMIT 1`,
       meta.email_canonical,
       meta.purpose,
       newChallengeId,
+      ...snapshotClaimedIds,
     );
     if (newestMarked) {
-      // Newest mailed wins. A later mailed+claimed/consumed row must not revive an older leftover.
+      // Newest mailed wins, including an unmarked claimed successor from the snapshot.
+      // restoreUnusedRevokedChallenge is a no-op when claim_id is set, so a claimed
+      // successor still blocks older unused leftovers.
       await restoreUnusedRevokedChallenge(db, newestMarked.id);
       return;
     }
