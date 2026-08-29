@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -534,9 +534,8 @@ describe("App", () => {
       ]
     });
     render(<App initialPath="/" />);
-    await waitForElementToBeRemoved(() => screen.queryByText("Loading readings"));
     expect(
-      screen.getByText(
+      await screen.findByText(
         (_text, element) =>
           element?.classList.contains("status-pill") === true &&
           element.textContent === `Failed: ${message}`
