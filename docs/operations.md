@@ -37,7 +37,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | `workers_dev` URL. Same-origin custom host is not configured: the deploy token cannot create DNS or Worker routes on `bbell.dev`, and Pages has no staging custom domain. |
+| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (Pages + `/api/*` `/health` `/mcp*`) |
 | production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` + `/mcp*` |
 
 Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
@@ -148,8 +148,8 @@ bootstrap of `dev-local-token`).
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging still lacks a same-origin host for the `__Host-session`
-cookie; Pages preview and `workers.dev` cannot share it.
+does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
+production uses `https://reading-lite.bbell.dev`.
 
 ### MCP connector
 

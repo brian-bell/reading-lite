@@ -108,9 +108,8 @@ matrix.
 - Staging (`[env.staging]`, `reading-lite-staging`) and production
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
-  hard-coded to staging names. Staging has no same-origin custom host yet (zone
-  DNS + Workers Routes permission required); `__Host-session` cannot be shared
-  between Pages preview and `workers.dev`.
+  hard-coded to staging names. Staging same-origin host is
+  `reading-lite-staging.bbell.dev` (Pages + Worker `/api/*`, `/health`, `/mcp*`).
 - Merges to `main` deploy the production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). GitHub
