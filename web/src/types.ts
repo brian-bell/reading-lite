@@ -235,3 +235,12 @@ export interface ReadingDiagnostics {
   objects: ReadingObjectInfo[];
   attempts: ProcessingAttempt[];
 }
+
+export interface WhoamiResponse {
+  tenant_id: string;
+  user_id: string;
+  principal: "api_token" | "session";
+  tenant_data_plane: boolean;
+  email: string;
+}
+
