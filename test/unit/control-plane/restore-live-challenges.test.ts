@@ -365,4 +365,85 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(aRedeem.kind).toBe("invalid");
   });
+
+  it("restores a concurrent first send that the snapshot missed", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(first.kind).toBe("issued");
+    if (first.kind !== "issued") return;
+    markMailSent(sqlite, first.challengeId, NOW_MS);
+
+    const second = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(second.kind).toBe("issued");
+    if (second.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, second.challengeId, []);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: first.challengeId, state: "issued" },
+      { id: second.challengeId, state: "revoked" },
+    ]);
+
+    const firstRedeem = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_concurrent_keep",
+      nowMs: NOW_MS + 2,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(firstRedeem.kind).toBe("ok");
+  });
+
+  it("restores an issued predecessor whose mail_sent_at write was swallowed", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(first.kind).toBe("issued");
+    if (first.kind !== "issued") return;
+    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+
+    const marked = sqlite
+      .prepare("SELECT mail_sent_at_ms FROM auth_challenges WHERE id = ?")
+      .get(first.challengeId) as { mail_sent_at_ms: number | null };
+    expect(marked.mail_sent_at_ms).toBeNull();
+
+    const second = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(second.kind).toBe("issued");
+    if (second.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: first.challengeId, state: "issued" },
+      { id: second.challengeId, state: "revoked" },
+    ]);
+
+    const firstRedeem = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_swallowed_marker",
+      nowMs: NOW_MS + 2,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(firstRedeem.kind).toBe("ok");
+  });
 });

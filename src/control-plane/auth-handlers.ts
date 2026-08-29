@@ -333,33 +333,71 @@ export async function restoreLiveLoginChallenges(
     );
     if (otherLive) return;
 
-    const predecessors = snapshot.filter((row) => row.id !== newChallengeId);
-    if (predecessors.length === 0) return;
+    const snapshotIssuedIds = snapshot
+      .filter((row) => row.id !== newChallengeId && row.state === "issued")
+      .map((row) => row.id);
 
-    // Newest mailed predecessor, and only if nothing later was mailed.
-    // Falling back to an older unused mailed row would revive leftovers after
-    // a later mailed+claimed challenge (newest-only inside the 15-minute TTL).
-    // Skipping undelivered siblings keeps overlapping failed replacements from
-    // restoring a challenge whose mail never went out.
-    await db.run(
-      `UPDATE auth_challenges SET state = 'issued'
-       WHERE id = (
-         SELECT id FROM auth_challenges
-         WHERE email_canonical = ?
-           AND purpose = ?
-           AND id != ?
-           AND mail_sent_at_ms IS NOT NULL
-         ORDER BY rowid DESC
-         LIMIT 1
-       )
-       AND state = 'revoked'
-       AND claim_id IS NULL
-       AND consumed_at_ms IS NULL`,
+    const newestMarked = await db.first<{ id: string }>(
+      `SELECT id FROM auth_challenges
+       WHERE email_canonical = ? AND purpose = ? AND id != ? AND mail_sent_at_ms IS NOT NULL
+       ORDER BY rowid DESC
+       LIMIT 1`,
       meta.email_canonical,
       meta.purpose,
       newChallengeId,
     );
+    if (newestMarked) {
+      // Newest mailed wins. A later mailed+claimed/consumed row must not revive an older leftover.
+      await restoreUnusedRevokedChallenge(db, newestMarked.id);
+      return;
+    }
+
+    if (snapshotIssuedIds.length > 0) {
+      // Send succeeded but mail_sent_at_ms never stuck. Treat listed issued ids as mailed.
+      const newestSnapshotIssued = await newestChallengeId(db, snapshotIssuedIds);
+      if (newestSnapshotIssued) await restoreUnusedRevokedChallenge(db, newestSnapshotIssued);
+      return;
+    }
+
+    // Snapshot listed nothing live (a concurrent first send landed after list).
+    // Restore the unused predecessor this issue actually revoked.
+    const revokedPredecessor = await db.first<{ id: string }>(
+      `SELECT id FROM auth_challenges
+       WHERE email_canonical = ?
+         AND purpose = ?
+         AND id != ?
+         AND state = 'revoked'
+         AND claim_id IS NULL
+         AND consumed_at_ms IS NULL
+       ORDER BY rowid DESC
+       LIMIT 1`,
+      meta.email_canonical,
+      meta.purpose,
+      newChallengeId,
+    );
+    if (revokedPredecessor) await restoreUnusedRevokedChallenge(db, revokedPredecessor.id);
   } catch {
     // Delivery already failed; keep the generic 200.
   }
+}
+
+async function newestChallengeId(db: ControlPlaneDb, ids: string[]): Promise<string | null> {
+  if (ids.length === 0) return null;
+  const placeholders = ids.map(() => "?").join(", ");
+  const row = await db.first<{ id: string }>(
+    `SELECT id FROM auth_challenges WHERE id IN (${placeholders}) ORDER BY rowid DESC LIMIT 1`,
+    ...ids,
+  );
+  return row?.id ?? null;
+}
+
+async function restoreUnusedRevokedChallenge(db: ControlPlaneDb, challengeId: string): Promise<void> {
+  await db.run(
+    `UPDATE auth_challenges SET state = 'issued'
+     WHERE id = ?
+       AND state = 'revoked'
+       AND claim_id IS NULL
+       AND consumed_at_ms IS NULL`,
+    challengeId,
+  );
 }
