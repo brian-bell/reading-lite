@@ -1,0 +1,215 @@
+import { describe, expect, it } from "vitest";
+import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
+import {
+  SESSION_ABSOLUTE_TTL_MS,
+  SESSION_COOKIE_NAME,
+  SESSION_IDLE_TTL_MS,
+  SESSION_LAST_SEEN_COALESCE_MS,
+} from "../../../src/control-plane/constants";
+import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim, revokeSession } from "../../../src/control-plane/sessions";
+import { parseUserId } from "../../../src/control-plane/ids";
+import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+
+const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
+const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
+
+async function issuedSession() {
+  const { sqlite, db } = openMigratedControlPlane();
+  await bootstrapFounder(db, {
+    email: "Founder@Example.com",
+    legacyToken: "test-token",
+    signupMode: "invite_only",
+    nowMs: NOW_MS,
+    authRoot,
+    newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+    newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+  });
+  const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+  if (!userId) throw new Error("expected founder id");
+  const issued = await issueSessionForClaim(db, {
+    userId,
+    claimId: "clm_session-1",
+    nowMs: NOW_MS,
+    authRoot,
+    userAgentLabel: "test",
+  });
+  if (issued.kind !== "ok") throw new Error("expected session");
+  return {
+    sqlite,
+    db,
+    cookieHeader: `${SESSION_COOKIE_NAME}=${issued.credential}`,
+    sessionId: issued.sessionId,
+  };
+}
+
+describe("authenticateSession", () => {
+  it("coalesces last-seen writes to at most once per hour and extends idle expiry", async () => {
+    const { sqlite, db, cookieHeader, sessionId } = await issuedSession();
+    const before = sqlite
+      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms FROM sessions WHERE id = ?")
+      .get(sessionId) as { last_seen_at_ms: number; idle_expires_at_ms: number };
+    expect(before.last_seen_at_ms).toBe(NOW_MS);
+    expect(before.idle_expires_at_ms).toBe(NOW_MS + SESSION_IDLE_TTL_MS);
+
+    const withinHour = await authenticateSession(db, {
+      cookieHeader,
+      authRoot,
+      nowMs: NOW_MS + SESSION_LAST_SEEN_COALESCE_MS - 1,
+    });
+    expect(withinHour.kind).toBe("ok");
+    const unchanged = sqlite
+      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms FROM sessions WHERE id = ?")
+      .get(sessionId) as { last_seen_at_ms: number; idle_expires_at_ms: number };
+    expect(unchanged.last_seen_at_ms).toBe(NOW_MS);
+    expect(unchanged.idle_expires_at_ms).toBe(NOW_MS + SESSION_IDLE_TTL_MS);
+
+    const laterMs = NOW_MS + SESSION_LAST_SEEN_COALESCE_MS;
+    const afterHour = await authenticateSession(db, {
+      cookieHeader,
+      authRoot,
+      nowMs: laterMs,
+    });
+    expect(afterHour.kind).toBe("ok");
+    const touched = sqlite
+      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms, absolute_expires_at_ms FROM sessions WHERE id = ?")
+      .get(sessionId) as {
+      last_seen_at_ms: number;
+      idle_expires_at_ms: number;
+      absolute_expires_at_ms: number;
+    };
+    expect(touched.last_seen_at_ms).toBe(laterMs);
+    expect(touched.idle_expires_at_ms).toBe(laterMs + SESSION_IDLE_TTL_MS);
+    expect(touched.absolute_expires_at_ms).toBe(NOW_MS + SESSION_ABSOLUTE_TTL_MS);
+  });
+
+  it("rejects a session after 30 days idle even when the cookie Max-Age remains", async () => {
+    const { db, cookieHeader } = await issuedSession();
+    const idle = await authenticateSession(db, {
+      cookieHeader,
+      authRoot,
+      nowMs: NOW_MS + SESSION_IDLE_TTL_MS,
+    });
+    expect(idle.kind).toBe("unauthenticated");
+  });
+
+  it("rejects a session after 90-day absolute expiry", async () => {
+    const { sqlite, db, cookieHeader, sessionId } = await issuedSession();
+    sqlite
+      .prepare("UPDATE sessions SET idle_expires_at_ms = ? WHERE id = ?")
+      .run(NOW_MS + SESSION_ABSOLUTE_TTL_MS + 1, sessionId);
+    const absolute = await authenticateSession(db, {
+      cookieHeader,
+      authRoot,
+      nowMs: NOW_MS + SESSION_ABSOLUTE_TTL_MS,
+    });
+    expect(absolute.kind).toBe("unauthenticated");
+  });
+});
+
+describe("issueSessionForClaim", () => {
+  it("does not hand out another user's session for a reused claim id", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userA = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userA) throw new Error("expected founder id");
+
+    const sessionA = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_shared-1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(sessionA.kind).toBe("ok");
+    if (sessionA.kind !== "ok") return;
+    const hmacA = sqlite
+      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
+      .get(sessionA.sessionId) as { secret_hmac: string };
+
+    const userB = await ensureUserWithDefaults(db, {
+      emailCanonical: "other@example.com",
+      emailDisplay: "other@example.com",
+      nowMs: NOW_MS,
+    });
+    const sessionB = await issueSessionForClaim(db, {
+      userId: userB,
+      claimId: "clm_shared-1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "b",
+    });
+    expect(sessionB.kind).toBe("ok");
+    if (sessionB.kind !== "ok") return;
+
+    expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
+    expect(sessionB.credential).not.toBe(sessionA.credential);
+    const hmacAAfter = sqlite
+      .prepare("SELECT secret_hmac, user_id FROM sessions WHERE id = ?")
+      .get(sessionA.sessionId) as { secret_hmac: string; user_id: string };
+    expect(hmacAAfter.secret_hmac).toBe(hmacA.secret_hmac);
+    expect(hmacAAfter.user_id).toBe(userA);
+
+    const stillA = await authenticateSession(db, {
+      cookieHeader: `${SESSION_COOKIE_NAME}=${sessionA.credential}`,
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(stillA.kind).toBe("ok");
+    if (stillA.kind !== "ok") return;
+    expect(stillA.principal.userId).toBe(userA);
+
+    const asB = await authenticateSession(db, {
+      cookieHeader: `${SESSION_COOKIE_NAME}=${sessionB.credential}`,
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(asB.kind).toBe("ok");
+    if (asB.kind !== "ok") return;
+    expect(asB.principal.userId).toBe(userB);
+  });
+
+  it("treats a revoked claim row as invalid instead of inserting a new session", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userA = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userA) throw new Error("expected founder id");
+    const first = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_revoked1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    await revokeSession(db, first.sessionId, NOW_MS + 1, "logout");
+    const retry = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_revoked1",
+      nowMs: NOW_MS + 2,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(retry.kind).toBe("invalid");
+    const count = sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(1);
+  });
+});

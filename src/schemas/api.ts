@@ -62,6 +62,7 @@ export const GetWhoamiResponseSchema = z.object({
   user_id: z.string(),
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
+  email: z.string(),
 });
 export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
 

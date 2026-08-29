@@ -23,6 +23,7 @@ import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
+import { fromD1 } from "./control-plane/db";
 import { applyStaleness } from "./modules/staleness";
 
 export interface AppOptions {
@@ -70,7 +71,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/mcp", requirePrincipal(authNowMs));
   app.all("/api/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
 
-  // Everything below requires bearer auth.
+  // Authenticated routes: bearer token or host-only session cookie.
   app.use("/api/whoami", requirePrincipal(authNowMs));
   app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
@@ -79,13 +80,18 @@ export function createApp(opts: AppOptions = {}) {
   // may learn who it is. Operator tooling uses this to verify that a bearer
   // token acts as the tenant the operator selected before submitting writes
   // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
-  app.get("/api/whoami", (c) => {
+  app.get("/api/whoami", async (c) => {
     const principal = c.get("principal");
+    const user = await fromD1(c.env.CONTROL_PLANE).first<{ email_display: string }>(
+      "SELECT email_display FROM users WHERE id = ?",
+      String(principal.userId),
+    );
     return c.json({
       tenant_id: String(principal.tenantId),
       user_id: String(principal.userId),
       principal: principal.kind,
       tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
+      email: user?.email_display ?? "",
     });
   });
 

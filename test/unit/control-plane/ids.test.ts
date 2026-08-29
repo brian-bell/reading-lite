@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  mintChallengeId,
+  mintSessionId,
   mintTokenId,
   mintUserId,
+  parseChallengeId,
   parseSessionId,
   parseTenantId,
   parseTokenId,
@@ -11,6 +14,7 @@ import {
 const USER = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
 const SESSION = "ses_550e8400-e29b-41d4-a716-446655440000";
+const CHALLENGE = "ml_550e8400-e29b-41d4-a716-446655440000";
 
 describe("control-plane IDs", () => {
   it("parses prefixed UUIDv4 user and tenant IDs", () => {
@@ -21,7 +25,9 @@ describe("control-plane IDs", () => {
   it("parses prefixed UUIDv4 token and session IDs", () => {
     expect(parseTokenId(TOKEN)).toBe(TOKEN);
     expect(parseSessionId(SESSION)).toBe(SESSION);
+    expect(parseChallengeId(CHALLENGE)).toBe(CHALLENGE);
     expect(parseSessionId(TOKEN)).toBeNull();
+    expect(parseChallengeId(SESSION)).toBeNull();
   });
 
   it("canonicalizes uppercase hex to lowercase", () => {
@@ -49,10 +55,11 @@ describe("control-plane IDs", () => {
     expect(parseSessionId(USER)).toBeNull();
   });
 
-  it("mints user and token IDs that parse", () => {
-    const userId = mintUserId(() => "550e8400-e29b-41d4-a716-446655440000");
-    const tokenId = mintTokenId(() => "550e8400-e29b-41d4-a716-446655440000");
-    expect(userId).toBe(USER);
-    expect(tokenId).toBe(TOKEN);
+  it("mints user, token, session, and challenge IDs that parse", () => {
+    const uuid = () => "550e8400-e29b-41d4-a716-446655440000";
+    expect(mintUserId(uuid)).toBe(USER);
+    expect(mintTokenId(uuid)).toBe(TOKEN);
+    expect(mintSessionId(uuid)).toBe(SESSION);
+    expect(mintChallengeId(uuid)).toBe(CHALLENGE);
   });
 });

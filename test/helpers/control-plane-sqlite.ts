@@ -23,6 +23,10 @@ export function fromBetterSqlite(sqlite: Database.Database): ControlPlaneDb {
       });
       apply();
     },
+    async run(sql, ...params) {
+      const info = sqlite.prepare(sql).run(...params);
+      return { changes: info.changes };
+    },
   };
 }
 

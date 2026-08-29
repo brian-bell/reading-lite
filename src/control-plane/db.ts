@@ -7,6 +7,19 @@ export interface ControlPlaneDb {
   first<T>(sql: string, ...params: unknown[]): Promise<T | null>;
   all<T>(sql: string, ...params: unknown[]): Promise<T[]>;
   batch(statements: readonly SqlStatement[]): Promise<void>;
+  run(sql: string, ...params: unknown[]): Promise<{ changes: number }>;
+}
+
+export function isUniqueConstraintError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const record = err as { message?: unknown; code?: unknown };
+  const message = typeof record.message === "string" ? record.message : "";
+  const code = typeof record.code === "string" ? record.code : "";
+  return (
+    code === "SQLITE_CONSTRAINT_UNIQUE" ||
+    code === "SQLITE_CONSTRAINT" ||
+    /UNIQUE constraint failed/i.test(message)
+  );
 }
 
 export function fromD1(d1: D1Database): ControlPlaneDb {
@@ -21,6 +34,10 @@ export function fromD1(d1: D1Database): ControlPlaneDb {
     async batch(statements) {
       if (statements.length === 0) return;
       await d1.batch(statements.map((statement) => d1.prepare(statement.sql).bind(...statement.params)));
+    },
+    async run(sql, ...params) {
+      const result = await d1.prepare(sql).bind(...params).run();
+      return { changes: result.meta.changes ?? 0 };
     },
   };
 }

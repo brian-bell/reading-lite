@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import {
+  SESSION_ABSOLUTE_TTL_MS,
+  SESSION_IDLE_TTL_MS,
+} from "../../../src/control-plane/constants";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import {
   admitProcessReadingEnvelope,
@@ -174,6 +178,29 @@ function founderEnvelope(
   };
 }
 
+function insertSession(
+  sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"],
+  input: { id: string; userId: string; nowMs: number },
+): void {
+  sqlite
+    .prepare(
+      `INSERT INTO sessions (
+         id, user_id, secret_hmac, hash_key_version,
+         created_at_ms, authenticated_at_ms, last_seen_at_ms,
+         idle_expires_at_ms, absolute_expires_at_ms, created_from_claim_id
+       ) VALUES (?, ?, 'test-session-hmac', 1, ?, ?, ?, ?, ?, 'clm_envelope')`,
+    )
+    .run(
+      input.id,
+      input.userId,
+      input.nowMs,
+      input.nowMs,
+      input.nowMs,
+      input.nowMs + SESSION_IDLE_TTL_MS,
+      input.nowMs + SESSION_ABSOLUTE_TTL_MS,
+    );
+}
+
 describe("admitProcessReadingEnvelope", () => {
   it("admits an active founder tenant and api_token with readings:write", async () => {
     const { db, founder } = await seededFounder();
@@ -237,18 +264,8 @@ describe("admitProcessReadingEnvelope", () => {
     });
   });
 
-  it("rejects session and operator actors until their authority can be verified", async () => {
+  it("rejects operator actors until their authority can be verified", async () => {
     const { db } = await seededFounder();
-    await expect(
-      admitProcessReadingEnvelope(
-        db,
-        founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
-        NOW_MS,
-      ),
-    ).resolves.toEqual({
-      ok: false,
-      reason: "token_unusable",
-    });
     await expect(
       admitProcessReadingEnvelope(
         db,
@@ -256,6 +273,53 @@ describe("admitProcessReadingEnvelope", () => {
         NOW_MS,
       ),
     ).resolves.toEqual({
+      ok: false,
+      reason: "token_unusable",
+    });
+  });
+
+  it("admits a live session actor for the same active tenant", async () => {
+    const { sqlite, db, founder } = await seededFounder();
+    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    await expect(
+      admitProcessReadingEnvelope(
+        db,
+        founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
+        NOW_MS,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      tenant: { tenantId: founder.userId },
+    });
+  });
+
+  it("rejects a revoked, idle-expired, or absolute-expired session actor", async () => {
+    const { sqlite, db } = await seededFounder();
+    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    const sessionEnvelope = founderEnvelope({
+      actor: { kind: "session", credentialId: SESSION },
+    });
+
+    sqlite.prepare("UPDATE sessions SET revoked_at_ms = ? WHERE id = ?").run(NOW_MS, SESSION);
+    await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
+      ok: false,
+      reason: "token_unusable",
+    });
+
+    sqlite
+      .prepare("UPDATE sessions SET revoked_at_ms = NULL, idle_expires_at_ms = ? WHERE id = ?")
+      .run(NOW_MS, SESSION);
+    await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
+      ok: false,
+      reason: "token_unusable",
+    });
+
+    sqlite
+      .prepare(
+        "UPDATE sessions SET idle_expires_at_ms = ?, absolute_expires_at_ms = ? WHERE id = ?",
+      )
+      .run(NOW_MS + SESSION_IDLE_TTL_MS, NOW_MS, SESSION);
+    await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
     });
@@ -274,7 +338,7 @@ function throwingDb(): ControlPlaneDb {
   const boom = async () => {
     throw new Error("D1 must not be touched before envelope validation");
   };
-  return { first: boom, all: boom, batch: boom };
+  return { first: boom, all: boom, batch: boom, run: boom };
 }
 
 describe("consumeProcessReadingMessage", () => {
@@ -370,5 +434,48 @@ describe("consumeProcessReadingMessage", () => {
 
     expect(process).not.toHaveBeenCalled();
     expect(msg.ack).toHaveBeenCalledOnce();
+  });
+
+  it("processes a live session actor envelope", async () => {
+    const { sqlite, db, founder } = await seededFounder();
+    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    const envelope = founderEnvelope({ actor: { kind: "session", credentialId: SESSION } });
+    const msg = fakeMessage(envelope);
+    const process = vi.fn(async () => {});
+
+    await consumeProcessReadingMessage(msg, {
+      db,
+      nowMs: NOW_MS,
+      process,
+    });
+
+    expect(process).toHaveBeenCalledOnce();
+    expect(process).toHaveBeenCalledWith(envelope.job, { tenantId: founder.userId });
+    expect(msg.ack).not.toHaveBeenCalled();
+  });
+
+  it("acks a revoked or expired session actor envelope without processing", async () => {
+    const { sqlite, db } = await seededFounder();
+    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    sqlite.prepare("UPDATE sessions SET revoked_at_ms = ? WHERE id = ?").run(NOW_MS, SESSION);
+    const process = vi.fn();
+    const revoked = fakeMessage(
+      founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
+    );
+    await consumeProcessReadingMessage(revoked, { db, nowMs: NOW_MS, process });
+    expect(process).not.toHaveBeenCalled();
+    expect(revoked.ack).toHaveBeenCalledOnce();
+
+    sqlite
+      .prepare(
+        "UPDATE sessions SET revoked_at_ms = NULL, idle_expires_at_ms = ?, absolute_expires_at_ms = ? WHERE id = ?",
+      )
+      .run(NOW_MS + SESSION_IDLE_TTL_MS, NOW_MS, SESSION);
+    const expired = fakeMessage(
+      founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
+    );
+    await consumeProcessReadingMessage(expired, { db, nowMs: NOW_MS, process });
+    expect(process).not.toHaveBeenCalled();
+    expect(expired.ack).toHaveBeenCalledOnce();
   });
 });

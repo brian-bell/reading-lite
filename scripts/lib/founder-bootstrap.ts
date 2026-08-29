@@ -184,6 +184,10 @@ export function makeWranglerD1(opts: {
         await exec(statement.sql, statement.params);
       }
     },
+    async run(sql, ...params) {
+      await exec(sql, params);
+      return { changes: 0 };
+    },
   };
 }
 

@@ -2,6 +2,7 @@ import { parsePresentedToken } from "./bearer";
 import { deriveHmacKey, hmacHex, timingSafeEqualHex, type AuthRoot } from "./crypto";
 import type { ControlPlaneDb } from "./db";
 import { createApiTokenPrincipal, type AuthenticatedPrincipal } from "./principal";
+import { authenticateSession } from "./sessions";
 
 export type AuthVerdict =
   | { kind: "ok"; principal: AuthenticatedPrincipal }
@@ -27,6 +28,42 @@ interface TokenRow {
 interface UserRow {
   id: string;
   status: string;
+}
+
+export interface AuthenticateRequestInput {
+  authorization: string | undefined;
+  cookieHeader: string | undefined;
+  cookieAllowed: boolean;
+  authRoot: AuthRoot;
+  previousAuthRoot?: AuthRoot;
+  nowMs: number;
+}
+
+export function hasBearerAuthorization(header: string | undefined): boolean {
+  if (!header) return false;
+  const value = header.trim();
+  return /^Bearer(?:\s+|$)/i.test(value);
+}
+
+export async function authenticateRequest(
+  db: ControlPlaneDb,
+  input: AuthenticateRequestInput,
+): Promise<AuthVerdict> {
+  if (hasBearerAuthorization(input.authorization)) {
+    return authenticateBearer(db, {
+      authorization: input.authorization,
+      authRoot: input.authRoot,
+      ...(input.previousAuthRoot ? { previousAuthRoot: input.previousAuthRoot } : {}),
+      nowMs: input.nowMs,
+    });
+  }
+  if (!input.cookieAllowed) return { kind: "unauthenticated" };
+  return authenticateSession(db, {
+    cookieHeader: input.cookieHeader,
+    authRoot: input.authRoot,
+    ...(input.previousAuthRoot ? { previousAuthRoot: input.previousAuthRoot } : {}),
+    nowMs: input.nowMs,
+  });
 }
 
 export async function authenticateBearer(

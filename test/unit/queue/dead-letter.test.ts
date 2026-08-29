@@ -103,6 +103,7 @@ describe("handleDeadLetter", () => {
       },
       all: async () => [],
       batch: async () => {},
+      run: async () => ({ changes: 0 }),
     };
     await handleDeadLetter(msg, { db, nowMs: Date.now(), mark });
     expect(mark).not.toHaveBeenCalled();
