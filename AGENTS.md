@@ -115,7 +115,8 @@ matrix.
   auto-deployed.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
-  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional.
+  `SUMMARIZER_PROVIDER=anthropic`; `X_API_BEARER_TOKEN` only for
+  X/Twitter status URL imports; `RESEND_API_KEY` optional.
   `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
   `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
   Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
@@ -197,6 +198,10 @@ Pointers only — the details live in the named files' comments.
 - YouTube extracts a metadata floor in-worker
   (`src/modules/extractor/youtube.ts`); for description + transcript use the
   **`youtube-import`** skill.
+- X/Twitter status URLs reconstruct the author thread in-worker
+  (`src/modules/extractor/x.ts`) via recent search and `X_API_BEARER_TOKEN`.
+  Conversations older than seven days land `failed` with
+  `XThreadOutsideRecentWindowError`.
 - Turndown/linkedom quirks and the raw-DOM salvage path are documented in
   `src/modules/extractor/index.ts`.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.

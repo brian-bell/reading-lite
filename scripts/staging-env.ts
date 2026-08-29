@@ -173,6 +173,7 @@ export function buildSecretCommands(
     "AUTH_ROOT_SECRET",
     "OPENAI_API_KEY",
     ...(provider === "anthropic" ? ["ANTHROPIC_API_KEY"] : []),
+    "X_API_BEARER_TOKEN",
     "RESEND_API_KEY",
   ];
   return names.map(

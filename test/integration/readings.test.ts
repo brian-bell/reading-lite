@@ -804,6 +804,172 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(attempt.events.every((event) => Date.parse(event.at) <= finishedAt)).toBe(true);
   });
 
+  it("retrieves an X author's thread and uses it as the reading body", async () => {
+    const baseFetch = makeStubFetch();
+    const author = { id: "author-1", name: "Author Name", username: "author" };
+    const root = {
+      id: "100",
+      text: "Root post",
+      author_id: author.id,
+      conversation_id: "100",
+      created_at: "2026-04-26T12:00:00.000Z",
+    };
+    const child = {
+      id: "200",
+      text: "Thread continuation",
+      author_id: author.id,
+      conversation_id: "100",
+      created_at: "2026-04-26T12:01:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "100" }],
+    };
+    const audience = {
+      id: "300",
+      text: "Audience text must stay out",
+      author_id: "audience-1",
+      conversation_id: "100",
+      created_at: "2026-04-26T12:02:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "100" }],
+    };
+    const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.x.com/2/tweets/100?")) {
+        expect(init?.headers).toMatchObject({ Authorization: "Bearer test-x-token" });
+        return new Response(JSON.stringify({ data: root, includes: { users: [author] } }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("https://api.x.com/2/tweets/search/recent?")) {
+        return new Response(
+          JSON.stringify({
+            data: [root, child, audience],
+            includes: {
+              users: [
+                author,
+                { id: "audience-1", name: "Audience", username: "audience" },
+              ],
+            },
+            meta: {},
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return baseFetch(input, init);
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://x.com/author/status/100?s=46" }),
+      }),
+      env,
+      ctx,
+    );
+    expect(submit.status).toBe(202);
+    const { id } = (await submit.json()) as { id: string };
+
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const manifestResponse = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await manifestResponse.json()) as {
+      status: string;
+      source_type: string;
+      content_type: string;
+    };
+    expect(manifest).toMatchObject({
+      status: "ready",
+      source_type: "url",
+      content_type: "application/json; charset=utf-8",
+    });
+
+    const content = await app.request(
+      `/api/readings/${id}/content`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const markdown = await content.text();
+    expect(markdown).toContain("# X thread by Author Name (@author)");
+    expect(markdown).toContain("Root post");
+    expect(markdown).toContain("Thread continuation");
+    expect(markdown).not.toContain("Audience text must stay out");
+
+    const summarizeCall = fetchFn.mock.calls.find(([input]) =>
+      String(input).startsWith("https://api.openai.com/v1/responses"),
+    );
+    expect(String(summarizeCall?.[1]?.body)).toContain("Thread continuation");
+  });
+
+  it("surfaces the recent-search window error on an old X reading", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://api.x.com/2/tweets/100?")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              id: "100",
+              text: "Old root",
+              author_id: "author-1",
+              conversation_id: "100",
+              created_at: "2026-04-18T12:00:00.000Z",
+            },
+            includes: {
+              users: [{ id: "author-1", name: "Author Name", username: "author" }],
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected request after old-thread gate: ${url}`);
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://x.com/author/status/100" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const manifest = (await get.json()) as {
+      status: string;
+      error: { code: string; message: string; stage: string; retryable: boolean };
+    };
+    expect(manifest).toMatchObject({
+      status: "failed",
+      error: {
+        code: "XThreadOutsideRecentWindowError",
+        message:
+          "This X thread is older than the 7-day recent-search window and cannot be imported.",
+        stage: "fetch_source",
+        retryable: false,
+      },
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("dedups: second POST with same URL returns the existing manifest, no second Vectorize upsert", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);

@@ -22,6 +22,7 @@ AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab
 FOUNDER_EMAIL = "founder@test.example"
 ANTHROPIC_API_KEY = "test-anthropic-key"
 OPENAI_API_KEY = "test-openai-key"
+X_API_BEARER_TOKEN = "test-x-token"
 RESEND_API_KEY = "test-resend-key"
 EMAIL_FROM = "reading-lite@test.example"
 EMAIL_TO = "reader@test.example"
