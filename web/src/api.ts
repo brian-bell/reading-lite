@@ -78,6 +78,8 @@ export async function logoutSession(): Promise<void> {
     headers: jsonHeaders(),
     body: JSON.stringify({})
   });
+  // 401: session already gone; Worker still expires the host-only cookie.
+  if (response.status === 401) return;
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to log out"));
   }

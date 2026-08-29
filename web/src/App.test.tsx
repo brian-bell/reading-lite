@@ -141,6 +141,7 @@ function stubJSON(body: unknown, status = 200) {
 describe("App", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.sessionStorage.clear();
     stubJSON(onePage);
   });
 
@@ -193,10 +194,17 @@ describe("App", () => {
   });
 
   it("shows authenticated identity and logs out without storing bearer material", async () => {
+    let signedOut = false;
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
-      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
-      if (url.pathname === "/api/auth/logout") return jsonResponse({ ok: true });
+      if (url.pathname === "/api/whoami") {
+        if (signedOut) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/logout") {
+        signedOut = true;
+        return jsonResponse({ ok: true });
+      }
       return jsonResponse(emptyPage);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -216,6 +224,52 @@ describe("App", () => {
       expect(logout).toBeDefined();
       expect((logout![0] as Request).credentials).toBe("include");
     });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("reading-lite.bearerToken")).toBeNull();
+  });
+
+  it("deletes a leftover pre-cutover bearer token on load without sending it", async () => {
+    window.localStorage.setItem("reading-lite.bearerToken", "founder-secret");
+    const fetchMock = stubJSON(onePage);
+    render(<App initialPath="/" />);
+    await waitFor(() => {
+      expect(window.localStorage.getItem("reading-lite.bearerToken")).toBeNull();
+    });
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+    for (const call of fetchMock.mock.calls) {
+      const req = call[0] as Request;
+      expect(req.headers.get("Authorization")).toBeNull();
+    }
+  });
+
+  it("clears identity and reading caches when logout returns 401", async () => {
+    window.localStorage.setItem("reading-lite.bearerToken", "founder-secret");
+    let signedOut = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (signedOut) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/logout") {
+        signedOut = true;
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      if (url.pathname === "/api/readings/rd_ONE/diagnostics") return jsonResponse(diagnostics());
+      return jsonResponse(onePage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Operator Notes" })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("reading-lite.bearerToken")).toBeNull();
   });
 
   it("requests a magic link from the sign-in form", async () => {

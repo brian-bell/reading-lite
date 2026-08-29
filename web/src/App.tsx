@@ -43,8 +43,33 @@ type AppProps = {
 };
 
 const pageSize = 20;
+const LEGACY_BEARER_STORAGE_KEY = "reading-lite.bearerToken";
+
+function discardLegacyBearerToken(): void {
+  try {
+    window.localStorage.removeItem(LEGACY_BEARER_STORAGE_KEY);
+  } catch {
+    // Private mode or disabled storage must not block boot or logout.
+  }
+  try {
+    window.sessionStorage.removeItem(LEGACY_BEARER_STORAGE_KEY);
+  } catch {
+    // Same: best-effort wipe of leftover founder-token material.
+  }
+}
+
+function clearClientSession(queryClient: ReturnType<typeof useQueryClient>): void {
+  discardLegacyBearerToken();
+  queryClient.setQueryData(["whoami"], null);
+  queryClient.removeQueries({ queryKey: ["readings"] });
+  queryClient.removeQueries({ queryKey: ["reading"] });
+  queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
+}
 
 export function App({ initialPath }: AppProps) {
+  useEffect(() => {
+    discardLegacyBearerToken();
+  }, []);
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -153,10 +178,12 @@ function IdentityBar({
           setBusy(true);
           try {
             await logoutSession();
-            await queryClient.setQueryData(["whoami"], null);
-            await queryClient.removeQueries({ queryKey: ["readings"] });
-            onSignedOut();
+          } catch {
+            // Client session still drops: a failed POST must not keep the
+            // previous user's identity or reading caches on screen.
           } finally {
+            clearClientSession(queryClient);
+            onSignedOut();
             setBusy(false);
           }
         }}
