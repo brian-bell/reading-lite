@@ -29,6 +29,11 @@ import {
   type ContentKind
 } from "./api";
 import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-link-credential";
+import {
+  consumeLoginReturnPath,
+  rememberLoginReturnPath,
+  safeReadingReturnPath
+} from "./login-return-path";
 import type {
   Connection,
   ListReading,
@@ -89,26 +94,66 @@ function AppRoutes() {
         <Route path="/login" element={<LoginPage identity={identity} />} />
         <Route path="/login/verify" element={<VerifyPage />} />
         <Route path="/auth/verify" element={<VerifyPage />} />
-        <Route
-          path="/"
-          element={identity ? <ReadingList /> : identityQuery.isLoading ? <StatusMessage>Loading</StatusMessage> : <LoginPage identity={identity} />}
-        />
+        <Route path="/" element={<HomeRoute identity={identity} identityQuery={identityQuery} />} />
         <Route
           path="/readings/:id"
-          element={
-            identity ? (
-              <ReadingDetail />
-            ) : identityQuery.isLoading ? (
-              <StatusMessage>Loading</StatusMessage>
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
+          element={<ReadingRoute identity={identity} identityQuery={identityQuery} />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>
   );
+}
+
+function identityError(error: unknown): Error {
+  return error instanceof Error ? error : new Error("failed to load identity");
+}
+
+function IdentityError({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  return (
+    <div className="error-message">
+      <p>{error.message}</p>
+      <button type="button" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function HomeRoute({
+  identity,
+  identityQuery
+}: {
+  identity: WhoamiResponse | null;
+  identityQuery: ReturnType<typeof useIdentity>;
+}) {
+  if (identity) return <ReadingList />;
+  if (identityQuery.isLoading) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isError) {
+    return (
+      <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
+    );
+  }
+  return <LoginPage identity={identity} />;
+}
+
+function ReadingRoute({
+  identity,
+  identityQuery
+}: {
+  identity: WhoamiResponse | null;
+  identityQuery: ReturnType<typeof useIdentity>;
+}) {
+  const location = useLocation();
+  if (identity) return <ReadingDetail />;
+  if (identityQuery.isLoading) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isError) {
+    return (
+      <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
+    );
+  }
+  const next = encodeURIComponent(location.pathname);
+  return <Navigate to={`/login?next=${next}`} replace />;
 }
 
 function Shell({
@@ -179,10 +224,20 @@ function IdentityBar({
 }
 
 function LoginPage({ identity }: { identity: WhoamiResponse | null }) {
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (identity) return <Navigate to="/" replace />;
+  const next = searchParams.get("next");
+
+  useEffect(() => {
+    rememberLoginReturnPath(next);
+  }, [next]);
+
+  if (identity) {
+    const dest = safeReadingReturnPath(next) ?? "/";
+    return <Navigate to={dest} replace />;
+  }
   return (
     <section className="page">
       <div className="page-heading">
@@ -227,6 +282,7 @@ function LoginPage({ identity }: { identity: WhoamiResponse | null }) {
 function VerifyPage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [credential, setCredential] = useState(() => captureMagicLinkCredential(location.hash));
   const [error, setError] = useState<string | null>(null);
@@ -243,8 +299,8 @@ function VerifyPage() {
     if (next !== "" && next !== credential) setCredential(next);
     if (hash.replace(/^#/, "") === "") return;
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    navigate(location.pathname || "/auth/verify", { replace: true });
-  }, [credential, location.hash, location.pathname, navigate]);
+    navigate(`${location.pathname}${location.search}` || "/auth/verify", { replace: true });
+  }, [credential, location.hash, location.pathname, location.search, navigate]);
 
   return (
     <section className="page">
@@ -266,7 +322,7 @@ function VerifyPage() {
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
                 await queryClient.fetchQuery({ queryKey: ["whoami"] });
-                navigate("/", { replace: true });
+                navigate(consumeLoginReturnPath(searchParams.get("next")), { replace: true });
               } catch (e) {
                 setError(e instanceof Error ? e.message : "failed to complete sign-in");
               } finally {
@@ -815,10 +871,15 @@ function StatusMessage({ children }: { children: ReactNode }) {
 }
 
 function ErrorState({ error }: { error: Error }) {
-  const message =
-    error instanceof ApiError && (error.status === 401 || error.status === 403)
-      ? "Sign in to continue."
-      : "Could not load readings.";
+  const queryClient = useQueryClient();
+  const isAuthFailure = error instanceof ApiError && (error.status === 401 || error.status === 403);
+
+  useEffect(() => {
+    if (!isAuthFailure) return;
+    void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+  }, [isAuthFailure, queryClient]);
+
+  const message = isAuthFailure ? "Sign in to continue." : "Could not load readings.";
   return <div className="error-message">{message}</div>;
 }
 

@@ -201,6 +201,84 @@ describe("App", () => {
     expect(screen.queryByText("Could not load readings.")).not.toBeInTheDocument();
   });
 
+  it("shows a retryable identity error when whoami fails with 5xx instead of the sign-in form", async () => {
+    let whoamiOk = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (!whoamiOk) return jsonResponse({ error: "whoami unavailable" }, 500);
+        return jsonResponse(sessionWhoami);
+      }
+      return jsonResponse(onePage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/" />);
+    expect(await screen.findByText("whoami unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+
+    whoamiOk = true;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+  });
+
+  it("shows a retryable identity error on a reading route when whoami cannot be fetched", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "whoami unavailable" }, 500);
+      return jsonResponse(manifest());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByText("whoami unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Operator Notes" })).not.toBeInTheDocument();
+  });
+
+  it("invalidates whoami when a cookie-authed list call returns 401 so the login gate runs", async () => {
+    let whoamiCalls = 0;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        whoamiCalls += 1;
+        if (whoamiCalls === 1) return jsonResponse(sessionWhoami);
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      if (url.pathname === "/api/readings") return jsonResponse({ error: "unauthorized" }, 401);
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/" />);
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    expect(await screen.findByText("Sign in to continue.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByText("reader@example.com")).not.toBeInTheDocument();
+  });
+
+  it("sends a 401 reading detail back through login with a return path", async () => {
+    let whoamiCalls = 0;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        whoamiCalls += 1;
+        if (whoamiCalls === 1) return jsonResponse(sessionWhoami);
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse({ error: "unauthorized" }, 401);
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    expect(await screen.findByText("Sign in to continue.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("reading-lite.loginNext")).toBe("/readings/rd_ONE");
+  });
+
   it("shows authenticated identity and logs out without storing bearer material", async () => {
     let signedOut = false;
     const fetchMock = vi.fn(async (request: Request) => {
@@ -353,6 +431,93 @@ describe("App", () => {
       expect(whoamiAfter.length).toBeGreaterThan(1);
     });
     expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+  });
+
+  it("sends a signed-out reading route to login with a return path", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      return jsonResponse(manifest());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("reading-lite.loginNext")).toBe("/readings/rd_ONE");
+  });
+
+  it("returns to the reading after Continue when next is a safe readings path", async () => {
+    let signedIn = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (!signedIn) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?next=/readings/rd_ONE#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
+  });
+
+  it("returns home after Continue when next is an open redirect", async () => {
+    let signedIn = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (!signedIn) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?next=https://evil.example/phish#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+  });
+
+  it("uses a stored login next when the verify URL has no query", async () => {
+    let signedIn = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (!signedIn) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/readings/rd_ONE") return jsonResponse(manifest());
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.sessionStorage.setItem("reading-lite.loginNext", "/readings/rd_ONE");
+    const user = userEvent.setup();
+
+    render(<App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
   });
 
   it("recovers the magic-link secret after remount once the hash is stripped", async () => {
