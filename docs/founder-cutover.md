@@ -1,9 +1,11 @@
-# Founder corpus production cutover
+# Founder corpus production cutover (s1k.6.3)
 
-Operator runbook for copying the pre-tenant production corpus into the founder
-tenant namespace and flipping `TENANT_DATA_PLANE`. Staging rehearsed this on
-2026-08-27 (`reading-lite-s1k.6.2`); this document is the production procedure
-that rehearsal proved, including the repairs and footguns it hit.
+Operator runbook and human-approval checklist for copying the pre-tenant
+production corpus into the founder tenant namespace and flipping
+`TENANT_DATA_PLANE`. Staging rehearsed this on 2026-08-27 (`s1k.6.2`); this
+document is the production procedure that rehearsal proved, including the
+repairs and footguns it hit. Do not run production mutate commands until
+Gate 1 is signed.
 
 Command reference for `ops corpus migrate-founder` still lives in
 [`operations.md`](operations.md#founder-corpus-migration-s1k6). ADRs:
@@ -29,6 +31,44 @@ Do **not** delete the global copies or bare-id vectors until after production
 observation and explicit sign-off. That deletion is a later procedure, not
 this one.
 
+```mermaid
+flowchart TD
+  goNoGo[Go_no_go]
+  freeze[Pause_queue]
+  baseline[Baseline_plan]
+  repair[Repair_until_clean]
+  copy[Limited_then_full_copy]
+  recertify[Recertify_gate_off]
+  flip[Gate_on]
+  verify[Verify_tenant_paths]
+  observe[Resume_and_observe]
+  rollback[Rollback_redeploy]
+  goNoGo --> freeze --> baseline --> repair --> copy --> recertify --> flip --> verify --> observe
+  verify -->|bad| rollback
+  observe -->|bad| rollback
+```
+
+### In this window
+
+- Pause production queue delivery
+- Copy R2 objects into the founder prefix
+- Re-upsert vectors from stored values. No paid re-embed
+- Recertify with the gate still off
+- Flip the gate with `wrangler deploy --env production --var TENANT_DATA_PLANE:1`
+- Verify tenant paths
+- Resume the queue
+- Keep legacy data through the observation window
+
+### Out of this window
+
+- Pinning `TENANT_DATA_PLANE = "1"` in `wrangler.toml`
+- Deleting global objects or bare-id vectors
+- Account deletion (`s1k.10.1`)
+- Any staging resource (`reading-lite-staging`, staging Worker, staging
+  queue, staging founder id)
+- Any merge to `main` during observation. CI would redeploy production
+  without `--var` and roll the gate off
+
 ## Preconditions
 
 All of these must already be true. None of them are this window's job.
@@ -46,7 +86,11 @@ All of these must already be true. None of them are this window's job.
    start.
 4. You can authenticate to production R2 + Vectorize (see Credentials) and
    you have the **production** founder bearer (`READER_API_TOKEN` from
-   `.prd.vars`, not `.stg.vars`).
+   `.prd.vars`, not `.stg.vars`). `OPENAI_API_KEY` is only needed if a
+   missing vector requires `corpus backfill-vectors`.
+5. One state file, `./founder-migration.production.state.json` (gitignored).
+   Same `--state` on every plan and execute. A file stamped for a different
+   tenant, bucket, or index is refused.
 
 ## Do not
 
@@ -108,6 +152,41 @@ Pass the **same** `--state` to every plan and execute. Plan reads the etag
 cache and never writes the file; execute writes the copy/vector ledger.
 A state file stamped for a different tenant, bucket, or index is refused.
 
+## HITL gates
+
+Acceptance is three human stops. Sign and date each before the named phase.
+
+### Gate 1 — Start the window
+
+Required before Phase 1. Queue pause is the first mutating command.
+
+- [ ] Preconditions above are all checked
+- [ ] `whoami` is `tenant_data_plane: false` and `$TENANT` is the production founder
+- [ ] Operator laptop is on `main` with the rehearsed migrate-founder tooling
+
+**Signed:** ________  **Date:** ________
+
+### Gate 2 — Flip the gate
+
+Required before Phase 6.
+
+- [ ] Phase 5 printed `Fully migrated`
+- [ ] Global object count is unchanged from Phase 2
+- [ ] Founder dest count matches copies plus any pre-existing founder-prefix leftovers
+- [ ] One ready id exists as both the bare vector and `$TENANT:rd_…` with matching namespace and `metadata.tenant_id`
+
+**Signed:** ________  **Date:** ________
+
+### Gate 3 — Keep or roll back
+
+Required before Phase 8 resume, or Phase R rollback.
+
+- [ ] Phase 7 list count equals certified `list_rows`
+- [ ] Detail, content, lookup, `q=`, and similar look right. Similar returns bare ids and founder-only neighbors
+- [ ] Decision: keep the gate on and resume, or roll back
+
+**Signed:** ________  **Date:** ________  **Keep / rollback:** ________
+
 ---
 
 ## Phase 0 — Confirm target and gate
@@ -124,6 +203,8 @@ Record `$TENANT`. If `tenant_data_plane` is already `true`, stop — this
 runbook assumes a gate-off start.
 
 ## Phase 1 — Freeze the realtime writer
+
+**Gate 1 must be signed.**
 
 Pause **delivery** so the consumer stops paid work. Submits can still write a
 pending manifest and enqueue; this window is a maintenance hold: no
@@ -286,6 +367,8 @@ deletion. Keyword `q=` search is unaffected.
 
 Do not flip the gate until this phase is clean.
 
+**Gate 2 must be signed before Phase 6.**
+
 ## Phase 6 — Gate on
 
 Dry-run first; bindings must still name production queue, D1, Vectorize, and
@@ -325,6 +408,8 @@ If list row count collapses to a leftover founder `index/list.json` from
 before the copy, stop and roll back (Phase R). That means the dest list was
 not overwritten; re-plan should have shown `destination_mismatch` until
 execute.
+
+**Gate 3 must be signed before Phase 8 or Phase R.**
 
 ## Phase 8 — Observation (gate on, legacy retained)
 
@@ -394,6 +479,34 @@ npx wrangler queues resume-delivery "$QUEUE"
 Gate stays off. Partial or full copies under `u/$TENANT/` are leftover
 objects, same as staging's pre-existing founder prefix. They are not
 production reads while the gate is off.
+
+## Record sheet
+
+| Field | Value |
+|---|---|
+| Date | |
+| Operator | |
+| `$TENANT` | |
+| Phase 2 global objects | |
+| Phase 2 list rows / ready rows | |
+| Phase 2 pending copies / vectors | |
+| Phase 2 leftover founder-prefix objects | |
+| Phase 2 foreign `u/usr_…/` prefixes | |
+| Phase 2 `! kind:` lines | |
+| Phase 5 certified global objects | |
+| Phase 5 founder dest count | |
+| `fully_migrated` timestamp | |
+| Gate-on Worker version id | |
+| Rollback Worker version id (if used) | |
+| Observation notes | |
+
+## Acceptance mapping
+
+| Criterion | Evidence on this page |
+|---|---|
+| Human approves the maintenance and rollback checkpoints before execution | Gates 1–3 signed and dated |
+| Production pre/post inventories reconcile with zero lost readings or broken connections | Phase 2 vs Phase 5 counts, plus Phase 7 lookups and connections on a ready row |
+| Tenant mode is activated only after checks pass, and legacy data remains available through the approved rollback window | Gate 2 before Phase 6. No deletes. Phase R still possible until later sign-off |
 
 ## After sign-off (not this window)
 
