@@ -39,3 +39,27 @@ export function isSameOriginRequest(input: {
   }
   return false;
 }
+
+const SAFE_COOKIE_METHODS = new Set(["GET", "HEAD"]);
+
+/** Cookie CSRF: Origin required on writes. GET/HEAD may omit Origin when Sec-Fetch-Site is same-origin. */
+export function cookieAuthAllowed(input: {
+  method: string;
+  origin: string | undefined;
+  secFetchSite?: string | undefined;
+  url: string;
+  webBaseUrl?: string;
+}): boolean {
+  if (
+    isSameOriginRequest({
+      origin: input.origin,
+      url: input.url,
+      webBaseUrl: input.webBaseUrl,
+    })
+  ) {
+    return true;
+  }
+  if (!SAFE_COOKIE_METHODS.has(input.method.toUpperCase())) return false;
+  if (input.origin) return false;
+  return (input.secFetchSite ?? "").trim().toLowerCase() === "same-origin";
+}

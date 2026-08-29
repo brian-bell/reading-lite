@@ -23,6 +23,7 @@ async function request(
     authorization?: string;
     cookie?: string;
     origin?: string;
+    secFetchSite?: string;
   } = {},
 ) {
   const sent: MagicLinkMail[] = [];
@@ -36,6 +37,7 @@ async function request(
   if (init.authorization) headers.set("authorization", init.authorization);
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
+  if (init.secFetchSite) headers.set("sec-fetch-site", init.secFetchSite);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -154,6 +156,37 @@ describe("invite-only magic-link sessions", () => {
     });
     expect(bearerWrite.res.status).not.toBe(401);
     expect(bearerWrite.res.status).not.toBe(403);
+  });
+
+  it("allows a same-origin cookie GET without Origin and still requires Origin on cookie POST", async () => {
+    const challenge = await request("/api/auth/challenge", {
+      method: "POST",
+      body: { email: "founder@test.example" },
+    });
+    const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
+    const redeemed = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential, redemption_id: "clm_sec_fetch" },
+    });
+    expect(redeemed.res.status).toBe(200);
+    const cookie = cookieFrom(redeemed.res)!;
+
+    const whoami = await request("/api/whoami", {
+      cookie,
+      origin: "",
+      secFetchSite: "same-origin",
+    });
+    expect(whoami.res.status).toBe(200);
+    const body = (await whoami.res.json()) as { principal: string };
+    expect(body.principal).toBe("session");
+
+    const write = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      origin: "",
+      body: { url: "https://example.com/cookie-post-no-origin" },
+    });
+    expect(write.res.status).toBe(401);
   });
 
   it("retries the same redemption id and rejects a competing claimant", async () => {

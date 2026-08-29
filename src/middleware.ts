@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import { authenticateRequest } from "./control-plane/authenticate";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { fromD1 } from "./control-plane/db";
-import { isSameOriginRequest } from "./control-plane/origin";
+import { cookieAuthAllowed } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import { EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
@@ -25,9 +25,10 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
     }
 
-    const origin = c.req.header("origin");
-    const cookieAllowed = isSameOriginRequest({
-      origin,
+    const cookieAllowed = cookieAuthAllowed({
+      method: c.req.method,
+      origin: c.req.header("origin"),
+      secFetchSite: c.req.header("sec-fetch-site"),
       url: c.req.url,
       webBaseUrl: c.env.WEB_BASE_URL,
     });
