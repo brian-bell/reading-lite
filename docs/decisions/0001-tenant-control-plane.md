@@ -3,7 +3,7 @@
 - **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23)
 - **Date:** 2026-08-16
 - **Decision owners:** Brian Bell
-- **Bead:** `reading-lite-s1k.1`
+- **Task:** `reading-lite-s1k.1`
 - **Scope:** WS-A multi-tenant core
 
 ## Context
@@ -929,7 +929,7 @@ Revisit this ADR only when evidence changes one of its constraints:
 - a second identity/recovery factor is approved; or
 - meter retention requires a separate database.
 
-Implementation details may be refined in dependent beads, but changes to tenant
+Implementation details may be refined in dependent tasks, but changes to tenant
 identity, fail-closed behavior, revocation consistency, queue versioning, or
 spend reservation semantics require a superseding ADR.
 
