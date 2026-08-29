@@ -301,9 +301,11 @@ export async function restoreLiveLoginChallenges(
     const predecessors = snapshot.filter((row) => row.id !== newChallengeId);
     if (predecessors.length === 0) return;
 
-    // Newest unused predecessor whose mail was actually sent. Snapshot and
-    // later-sibling IDs without mail_sent_at_ms would revive a concurrent
-    // replacement that never went out (two overlapping failed sends).
+    // Newest mailed predecessor, and only if nothing later was mailed.
+    // Falling back to an older unused mailed row would revive leftovers after
+    // a later mailed+claimed challenge (newest-only inside the 15-minute TTL).
+    // Skipping undelivered siblings keeps overlapping failed replacements from
+    // restoring a challenge whose mail never went out.
     await db.run(
       `UPDATE auth_challenges SET state = 'issued'
        WHERE id = (
@@ -311,9 +313,6 @@ export async function restoreLiveLoginChallenges(
          WHERE email_canonical = ?
            AND purpose = ?
            AND id != ?
-           AND state = 'revoked'
-           AND claim_id IS NULL
-           AND consumed_at_ms IS NULL
            AND mail_sent_at_ms IS NOT NULL
          ORDER BY rowid DESC
          LIMIT 1

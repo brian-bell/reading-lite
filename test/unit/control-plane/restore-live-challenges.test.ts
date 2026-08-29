@@ -306,4 +306,63 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(undeliveredRedeem.kind).toBe("invalid");
   });
+
+  it("does not restore mailed A after mailed+claimed B and failed C", async () => {
+    const { sqlite, db } = await seeded();
+    const a = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(a.kind).toBe("issued");
+    if (a.kind !== "issued") return;
+    markMailSent(sqlite, a.challengeId, NOW_MS);
+
+    const b = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(b.kind).toBe("issued");
+    if (b.kind !== "issued") return;
+    markMailSent(sqlite, b.challengeId, NOW_MS + 1);
+    sqlite
+      .prepare(
+        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
+      )
+      .run("clm_b", NOW_MS + 2, b.challengeId);
+    const snapshotC = [{ id: b.challengeId, state: "claimed", issued_at_ms: NOW_MS + 1 }];
+
+    const c = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 3,
+      authRoot,
+    });
+    expect(c.kind).toBe("issued");
+    if (c.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, c.challengeId, snapshotC);
+
+    expect(challengeStates(sqlite)).toEqual([
+      { id: a.challengeId, state: "revoked" },
+      { id: b.challengeId, state: "revoked" },
+      { id: c.challengeId, state: "revoked" },
+    ]);
+    const leftover = sqlite
+      .prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?")
+      .get(b.challengeId) as { state: string; claim_id: string | null };
+    expect(leftover).toEqual({ state: "revoked", claim_id: "clm_b" });
+
+    const aRedeem = await redeemLoginChallenge(db, {
+      credential: a.credential,
+      redemptionId: "clm_restore_a",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(aRedeem.kind).toBe("invalid");
+  });
 });
