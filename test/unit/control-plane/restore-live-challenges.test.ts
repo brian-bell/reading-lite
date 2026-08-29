@@ -87,6 +87,58 @@ describe("restoreLiveLoginChallenges", () => {
     expect(competing.kind).toBe("conflict");
   });
 
+  it("does not re-issue a revoked predecessor that already minted a claim", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(first.kind).toBe("issued");
+    if (first.kind !== "issued") return;
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
+
+    sqlite
+      .prepare(
+        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
+      )
+      .run("clm_racy", NOW_MS + 1, first.challengeId);
+
+    const second = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(second.kind).toBe("issued");
+    if (second.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+
+    const predecessor = sqlite
+      .prepare("SELECT state, claim_id, consumed_at_ms FROM auth_challenges WHERE id = ?")
+      .get(first.challengeId) as { state: string; claim_id: string | null; consumed_at_ms: number | null };
+    expect(predecessor).toEqual({
+      state: "revoked",
+      claim_id: "clm_racy",
+      consumed_at_ms: null,
+    });
+    expect(challengeStates(sqlite)).toEqual([
+      { id: first.challengeId, state: "revoked" },
+      { id: second.challengeId, state: "revoked" },
+    ]);
+
+    const competing = await redeemLoginChallenge(db, {
+      credential: first.credential,
+      redemptionId: "clm_new_claimant",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(competing.kind).toBe("invalid");
+  });
+
   it("does not restore predecessors when the new challenge is no longer unused issued", async () => {
     const { sqlite, db } = await seeded();
     const first = await issueLoginChallenge(db, {

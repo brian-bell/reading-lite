@@ -273,7 +273,9 @@ export async function restoreLiveLoginChallenges(
     const statements = snapshot
       .filter((row) => row.id !== newChallengeId)
       .map((row) => ({
-        sql: `UPDATE auth_challenges SET state = ? WHERE id = ? AND state = 'revoked'`,
+        sql: `UPDATE auth_challenges
+              SET state = ?
+              WHERE id = ? AND state = 'revoked' AND claim_id IS NULL AND consumed_at_ms IS NULL`,
         params: [row.state, row.id],
       }));
     await db.batch(statements);
