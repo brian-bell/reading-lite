@@ -99,14 +99,14 @@ export const MigrationStateSchema = z
     vectorize: z.string().min(1),
     started_at: z.string(),
     // Keyed by DESTINATION key — the object this run created.
-    copies: z.record(CopiedObjectSchema),
+    copies: z.record(z.string(), CopiedObjectSchema),
     // Keyed by reading id.
-    vectors: z.record(MigratedVectorSchema),
+    vectors: z.record(z.string(), MigratedVectorSchema),
     // Keyed by list-row id. Optional: a pre-cache state file still loads, and
     // an absent or stale entry only costs the two reads it would have saved.
-    evidence: z.record(CachedRowEvidenceSchema).optional(),
+    evidence: z.record(z.string(), CachedRowEvidenceSchema).optional(),
     // Keyed by url hash — the by-url slot cache. Optional, same rules.
-    by_url: z.record(CachedByUrlPointerSchema).optional(),
+    by_url: z.record(z.string(), CachedByUrlPointerSchema).optional(),
     reconciled_at: z.string().optional(),
   })
   .strict();
