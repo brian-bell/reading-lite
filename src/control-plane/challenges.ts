@@ -5,7 +5,7 @@ import {
 } from "./constants";
 import { formatCredential, mintSecretHex, type RandomBytes } from "./credential";
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
-import type { ControlPlaneDb } from "./db";
+import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import { resolveLoginEligibility } from "./eligibility";
 import { mintChallengeId, type ChallengeId, type UuidSource } from "./ids";
 
@@ -43,39 +43,48 @@ export async function issueLoginChallenge(
   const challengeId = mintChallengeId(input.newUuid);
   const secret = mintSecretHex(input.randomBytes);
   const secretHmac = await hmacHex(await deriveHmacKey(input.authRoot, "magic_link"), secret);
+  const expiresAtMs = input.nowMs + MAGIC_LINK_TTL_MS;
 
-  await db.batch([
-    {
-      sql: `UPDATE auth_challenges
-            SET state = 'revoked'
-            WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed')`,
-      params: [input.emailCanonical, LOGIN_PURPOSE],
-    },
-    {
-      sql: `INSERT INTO auth_challenges (
-              id, purpose, email_canonical, email_display, user_id,
-              secret_hmac, hash_key_version, issued_at_ms, expires_at_ms, state
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued')`,
-      params: [
-        challengeId,
-        LOGIN_PURPOSE,
-        input.emailCanonical,
-        emailDisplay,
-        userId,
-        secretHmac,
-        input.authRoot.version,
-        input.nowMs,
-        input.nowMs + MAGIC_LINK_TTL_MS,
-      ],
-    },
-  ]);
-
-  return {
-    kind: "issued",
-    challengeId,
-    credential: formatCredential(challengeId, secret),
-    deliveryEmail,
+  const revoke = {
+    sql: `UPDATE auth_challenges
+          SET state = 'revoked'
+          WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed')`,
+    params: [input.emailCanonical, LOGIN_PURPOSE],
   };
+  const insert = {
+    sql: `INSERT INTO auth_challenges (
+            id, purpose, email_canonical, email_display, user_id,
+            secret_hmac, hash_key_version, issued_at_ms, expires_at_ms, state
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued')`,
+    params: [
+      challengeId,
+      LOGIN_PURPOSE,
+      input.emailCanonical,
+      emailDisplay,
+      userId,
+      secretHmac,
+      input.authRoot.version,
+      input.nowMs,
+      expiresAtMs,
+    ],
+  };
+
+  const attempts = 5;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await db.batch([revoke, insert]);
+      return {
+        kind: "issued",
+        challengeId,
+        credential: formatCredential(challengeId, secret),
+        deliveryEmail,
+      };
+    } catch (err) {
+      if (!isUniqueConstraintError(err) || attempt === attempts - 1) throw err;
+    }
+  }
+
+  throw new Error("failed to persist login challenge");
 }
 
 export async function lookupChallenge(

@@ -10,6 +10,18 @@ export interface ControlPlaneDb {
   run(sql: string, ...params: unknown[]): Promise<{ changes: number }>;
 }
 
+export function isUniqueConstraintError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const record = err as { message?: unknown; code?: unknown };
+  const message = typeof record.message === "string" ? record.message : "";
+  const code = typeof record.code === "string" ? record.code : "";
+  return (
+    code === "SQLITE_CONSTRAINT_UNIQUE" ||
+    code === "SQLITE_CONSTRAINT" ||
+    /UNIQUE constraint failed/i.test(message)
+  );
+}
+
 export function fromD1(d1: D1Database): ControlPlaneDb {
   return {
     async first<T>(sql: string, ...params: unknown[]) {

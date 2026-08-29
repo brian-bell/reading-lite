@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { issueLoginChallenge } from "../../../src/control-plane/challenges";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -76,4 +77,58 @@ describe("issueLoginChallenge", () => {
     if (issued.kind !== "issued") return;
     expect(issued.deliveryEmail).toBe("New@example.com");
   });
+
+  it("serializes overlapping issues so only one issued challenge exists", async () => {
+    const { sqlite, db } = await seeded();
+    const racing = twoWriterRaceDb(db);
+    const [first, second] = await Promise.all([
+      issueLoginChallenge(racing, {
+        emailCanonical: "founder@example.com",
+        emailDisplayRequested: "founder@example.com",
+        nowMs: NOW_MS,
+        authRoot,
+      }),
+      issueLoginChallenge(racing, {
+        emailCanonical: "founder@example.com",
+        emailDisplayRequested: "founder@example.com",
+        nowMs: NOW_MS + 1,
+        authRoot,
+      }),
+    ]);
+    expect(first.kind).toBe("issued");
+    expect(second.kind).toBe("issued");
+    const issued = sqlite
+      .prepare("SELECT COUNT(*) AS n FROM auth_challenges WHERE state = 'issued'")
+      .get() as { n: number };
+    expect(issued.n).toBe(1);
+  });
 });
+
+function twoWriterRaceDb(inner: ControlPlaneDb): ControlPlaneDb {
+  let started = 0;
+  let releaseFirst: (() => void) | undefined;
+  let firstWaiting: Promise<void> | undefined;
+
+  return {
+    first: (sql, ...params) => inner.first(sql, ...params),
+    all: (sql, ...params) => inner.all(sql, ...params),
+    run: (sql, ...params) => inner.run(sql, ...params),
+    async batch(statements) {
+      const [head, ...rest] = statements;
+      if (!head) return;
+      await inner.run(head.sql, ...head.params);
+      started += 1;
+      if (started === 1) {
+        firstWaiting = new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        await firstWaiting;
+      } else if (started === 2) {
+        releaseFirst?.();
+      }
+      for (const statement of rest) {
+        await inner.run(statement.sql, ...statement.params);
+      }
+    },
+  };
+}

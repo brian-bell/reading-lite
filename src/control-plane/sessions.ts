@@ -8,7 +8,7 @@ import {
 import { formatCredential, mintSecretHex, parseCredential, type RandomBytes } from "./credential";
 import { readSessionCookie } from "./cookies";
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
-import type { ControlPlaneDb } from "./db";
+import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import { matchSecretHmac } from "./hmac-match";
 import {
   mintSessionId,
@@ -107,12 +107,9 @@ export async function issueSessionForClaim(
     newUuid?: UuidSource;
   },
 ): Promise<{ sessionId: SessionId; credential: string }> {
-  const existing = await db.first<SessionRow>(
-    "SELECT * FROM sessions WHERE created_from_claim_id = ?",
-    input.claimId,
-  );
+  const existing = await lookupUsableSessionForClaim(db, input.userId, input.claimId, input.nowMs);
   if (existing) {
-    return rotateSessionSecret(db, existing, input.authRoot, input.randomBytes);
+    return rotateOwnSessionSecret(db, existing, input.userId, input.authRoot, input.randomBytes);
   }
 
   await revokeLruIfAtCap(db, input.userId, input.nowMs);
@@ -139,12 +136,12 @@ export async function issueSessionForClaim(
       input.userAgentLabel,
       input.claimId,
     );
-  } catch {
-    const raced = await db.first<SessionRow>(
-      "SELECT * FROM sessions WHERE created_from_claim_id = ?",
-      input.claimId,
-    );
-    if (raced) return rotateSessionSecret(db, raced, input.authRoot, input.randomBytes);
+  } catch (err) {
+    const raced = await lookupUsableSessionForClaim(db, input.userId, input.claimId, input.nowMs);
+    if (raced) {
+      return rotateOwnSessionSecret(db, raced, input.userId, input.authRoot, input.randomBytes);
+    }
+    if (isUniqueConstraintError(err)) throw err;
     throw new Error("failed to persist session");
   }
 
@@ -252,6 +249,39 @@ async function touchLastSeen(db: ControlPlaneDb, row: SessionRow, nowMs: number)
   } catch {
     // Auth still succeeds if the coalesce write fails.
   }
+}
+
+async function lookupUsableSessionForClaim(
+  db: ControlPlaneDb,
+  userId: UserId,
+  claimId: string,
+  nowMs: number,
+): Promise<SessionRow | null> {
+  return db.first<SessionRow>(
+    `SELECT * FROM sessions
+     WHERE created_from_claim_id = ?
+       AND user_id = ?
+       AND revoked_at_ms IS NULL
+       AND idle_expires_at_ms > ?
+       AND absolute_expires_at_ms > ?`,
+    claimId,
+    userId,
+    nowMs,
+    nowMs,
+  );
+}
+
+async function rotateOwnSessionSecret(
+  db: ControlPlaneDb,
+  row: SessionRow,
+  userId: UserId,
+  authRoot: AuthRoot,
+  randomBytes?: RandomBytes,
+): Promise<{ sessionId: SessionId; credential: string }> {
+  if (row.user_id !== userId) {
+    throw new Error("session claim belongs to another user");
+  }
+  return rotateSessionSecret(db, row, authRoot, randomBytes);
 }
 
 async function rotateSessionSecret(

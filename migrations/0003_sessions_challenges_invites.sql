@@ -14,10 +14,13 @@ CREATE TABLE sessions (
   revoked_at_ms INTEGER,
   revocation_reason TEXT,
   user_agent_label TEXT,
-  created_from_claim_id TEXT NOT NULL UNIQUE
+  created_from_claim_id TEXT NOT NULL
 );
 
 CREATE INDEX sessions_user_id ON sessions (user_id);
+-- Claim ids are client-chosen. Uniqueness is per user so a reused id cannot
+-- attach to another account's session. Idempotent retry looks up this pair.
+CREATE UNIQUE INDEX sessions_user_claim ON sessions (user_id, created_from_claim_id);
 
 CREATE TABLE auth_challenges (
   id TEXT PRIMARY KEY,
@@ -38,6 +41,10 @@ CREATE TABLE auth_challenges (
 );
 
 CREATE INDEX auth_challenges_email_purpose ON auth_challenges (email_canonical, purpose, issued_at_ms DESC);
+-- Newest-only: at most one issued login/email-change challenge per address.
+CREATE UNIQUE INDEX auth_challenges_one_issued
+  ON auth_challenges (email_canonical, purpose)
+  WHERE state = 'issued';
 
 CREATE TABLE signup_invites (
   email_canonical TEXT PRIMARY KEY,

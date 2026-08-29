@@ -9,7 +9,8 @@ import {
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession } from "../../../src/control-plane/sessions";
+import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim } from "../../../src/control-plane/sessions";
+import { parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -111,5 +112,72 @@ describe("authenticateSession", () => {
       nowMs: NOW_MS + SESSION_ABSOLUTE_TTL_MS,
     });
     expect(absolute.kind).toBe("unauthenticated");
+  });
+});
+
+describe("issueSessionForClaim", () => {
+  it("does not hand out another user's session for a reused claim id", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userA = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userA) throw new Error("expected founder id");
+
+    const sessionA = await issueSessionForClaim(db, {
+      userId: userA,
+      claimId: "clm_shared-1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    const hmacA = sqlite
+      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
+      .get(sessionA.sessionId) as { secret_hmac: string };
+
+    const userB = await ensureUserWithDefaults(db, {
+      emailCanonical: "other@example.com",
+      emailDisplay: "other@example.com",
+      nowMs: NOW_MS,
+    });
+    const sessionB = await issueSessionForClaim(db, {
+      userId: userB,
+      claimId: "clm_shared-1",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "b",
+    });
+
+    expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
+    expect(sessionB.credential).not.toBe(sessionA.credential);
+    const hmacAAfter = sqlite
+      .prepare("SELECT secret_hmac, user_id FROM sessions WHERE id = ?")
+      .get(sessionA.sessionId) as { secret_hmac: string; user_id: string };
+    expect(hmacAAfter.secret_hmac).toBe(hmacA.secret_hmac);
+    expect(hmacAAfter.user_id).toBe(userA);
+
+    const stillA = await authenticateSession(db, {
+      cookieHeader: `${SESSION_COOKIE_NAME}=${sessionA.credential}`,
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(stillA.kind).toBe("ok");
+    if (stillA.kind !== "ok") return;
+    expect(stillA.principal.userId).toBe(userA);
+
+    const asB = await authenticateSession(db, {
+      cookieHeader: `${SESSION_COOKIE_NAME}=${sessionB.credential}`,
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(asB.kind).toBe("ok");
+    if (asB.kind !== "ok") return;
+    expect(asB.principal.userId).toBe(userB);
   });
 });

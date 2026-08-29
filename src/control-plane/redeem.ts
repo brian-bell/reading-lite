@@ -30,6 +30,10 @@ export function parseRedemptionId(raw: string): string | null {
   return REDEMPTION_ID_RE.test(value) ? value : null;
 }
 
+function challengeExpired(challenge: { expires_at_ms: number }, nowMs: number): boolean {
+  return challenge.expires_at_ms <= nowMs;
+}
+
 export async function redeemLoginChallenge(
   db: ControlPlaneDb,
   input: RedeemLoginInput,
@@ -47,8 +51,8 @@ export async function redeemLoginChallenge(
   );
   if (!challenge || !match.ok) return { kind: "invalid" };
   if (challenge.purpose !== LOGIN_PURPOSE) return { kind: "invalid" };
-  if (challenge.expires_at_ms <= input.nowMs && challenge.state === "issued") return { kind: "invalid" };
   if (challenge.state === "revoked") return { kind: "invalid" };
+  if (challengeExpired(challenge, input.nowMs)) return { kind: "invalid" };
 
   if (challenge.state === "issued") {
     const claimed = await db.run(
@@ -79,7 +83,7 @@ async function resumeOrConflict(
   input: RedeemLoginInput,
 ): Promise<RedeemResult> {
   if (!challenge) return { kind: "invalid" };
-  if (challenge.state === "revoked" || challenge.expires_at_ms <= input.nowMs) return { kind: "invalid" };
+  if (challenge.state === "revoked" || challengeExpired(challenge, input.nowMs)) return { kind: "invalid" };
   if (challenge.claim_id && challenge.claim_id !== input.redemptionId) return { kind: "conflict" };
   if (challenge.state === "claimed" || challenge.state === "consumed") {
     return completeRedemption(db, challenge.id, input);
@@ -94,6 +98,7 @@ async function completeRedemption(
 ): Promise<RedeemResult> {
   const challenge = await lookupChallenge(db, challengeId);
   if (!challenge) return { kind: "invalid" };
+  if (challengeExpired(challenge, input.nowMs)) return { kind: "invalid" };
   if (challenge.claim_id && challenge.claim_id !== input.redemptionId) return { kind: "conflict" };
   if (challenge.state === "revoked") return { kind: "invalid" };
   if (challenge.state !== "claimed" && challenge.state !== "consumed") return { kind: "invalid" };
