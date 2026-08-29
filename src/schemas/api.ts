@@ -62,8 +62,20 @@ export const GetWhoamiResponseSchema = z.object({
   user_id: z.string(),
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
+  email: z.string(),
 });
 export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
+
+export const AuthChallengeBodySchema = z.object({
+  email: z.string().min(1),
+});
+export type AuthChallengeBody = z.infer<typeof AuthChallengeBodySchema>;
+
+export const AuthRedeemBodySchema = z.object({
+  credential: z.string().min(1),
+  redemption_id: z.string().min(1),
+});
+export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
 
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy

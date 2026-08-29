@@ -24,10 +24,20 @@ import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./inta
 import { purgeReading } from "./reading-purge";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { applyStaleness } from "./modules/staleness";
+import {
+  handleAuthChallenge,
+  handleAuthLogout,
+  handleAuthRedeem,
+  handleDevMailbox,
+  jsonAuth,
+  type AuthRuntime,
+} from "./control-plane/auth-handlers";
+import { fromD1 } from "./control-plane/db";
 
 export interface AppOptions {
   services?: Services;
   sleep?: (ms: number) => Promise<void>;
+  auth?: AuthRuntime;
 }
 
 function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
@@ -46,6 +56,7 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
 
 export function createApp(opts: AppOptions = {}) {
   const services = opts.services ?? defaultServices();
+  const authRuntime = opts.auth ?? {};
   const app = new Hono<AppBindings>();
 
   app.use("*", corsMiddleware());
@@ -60,6 +71,12 @@ export function createApp(opts: AppOptions = {}) {
 
   const authNowMs = () => Date.parse(services.now());
 
+  app.post("/api/auth/challenge", (c) => handleAuthChallenge(c, authNowMs(), authRuntime));
+  app.post("/api/auth/redeem", (c) => handleAuthRedeem(c, authNowMs(), authRuntime));
+  app.post("/api/auth/logout", (c) => handleAuthLogout(c, authNowMs()));
+  app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
+  app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
+
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));
   app.all("/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
@@ -70,7 +87,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/mcp", requirePrincipal(authNowMs));
   app.all("/api/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
 
-  // Everything below requires bearer auth.
+  // Authenticated routes: bearer token or host-only session cookie.
   app.use("/api/whoami", requirePrincipal(authNowMs));
   app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
@@ -79,13 +96,18 @@ export function createApp(opts: AppOptions = {}) {
   // may learn who it is. Operator tooling uses this to verify that a bearer
   // token acts as the tenant the operator selected before submitting writes
   // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
-  app.get("/api/whoami", (c) => {
+  app.get("/api/whoami", async (c) => {
     const principal = c.get("principal");
+    const user = await fromD1(c.env.CONTROL_PLANE).first<{ email_display: string }>(
+      "SELECT email_display FROM users WHERE id = ?",
+      String(principal.userId),
+    );
     return c.json({
       tenant_id: String(principal.tenantId),
       user_id: String(principal.userId),
       principal: principal.kind,
       tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
+      email: user?.email_display ?? "",
     });
   });
 

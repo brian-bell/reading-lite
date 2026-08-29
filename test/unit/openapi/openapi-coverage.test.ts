@@ -14,6 +14,9 @@ import yaml from "yaml";
 const ROUTER_REST_PATHS = [
   "/health",
   "/api/whoami",
+  "/api/auth/challenge",
+  "/api/auth/redeem",
+  "/api/auth/logout",
   "/api/readings",
   "/api/readings/import-markdown",
   "/api/readings/lookup",
@@ -28,6 +31,9 @@ const ROUTER_REST_PATHS = [
 const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = [
   { path: "/health", method: "get" },
   { path: "/api/whoami", method: "get" },
+  { path: "/api/auth/challenge", method: "post" },
+  { path: "/api/auth/redeem", method: "post" },
+  { path: "/api/auth/logout", method: "post" },
   { path: "/api/readings", method: "get" },
   { path: "/api/readings", method: "post" },
   { path: "/api/readings/import-markdown", method: "post" },
@@ -43,6 +49,11 @@ const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = 
 
 const REQUIRED_SCHEMAS = [
   "WhoamiResponse",
+  "AuthChallengeBody",
+  "AuthChallengeResponse",
+  "AuthRedeemBody",
+  "AuthRedeemResponse",
+  "AuthLogoutResponse",
   "PostReadingsBody",
   "PostReadingsImportMarkdownBody",
   "PostReadingReprocessBody",

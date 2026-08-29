@@ -44,6 +44,7 @@ export interface Env {
   // "1" enables tenant-prefixed R2 keys (u/{tenantId}/…). Off by default so
   // production/staging keep the founder corpus visible until s1k.6 copies it.
   TENANT_DATA_PLANE?: string;
+  LOCAL_MAIL_SINK?: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;
   RETRY_MAX_DELAY_MS?: string;

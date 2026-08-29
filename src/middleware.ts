@@ -1,11 +1,8 @@
 import type { MiddlewareHandler } from "hono";
-import { authenticateBearer } from "./control-plane/authenticate";
-import {
-  parseAuthRootKeyVersion,
-  parseAuthRootSecret,
-  type AuthRoot,
-} from "./control-plane/crypto";
+import { authenticateRequest } from "./control-plane/authenticate";
+import { readAuthRoots } from "./control-plane/auth-root";
 import { fromD1 } from "./control-plane/db";
+import { isSameOriginRequest } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import { EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
@@ -21,21 +18,28 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
     }
 
-    let authRoot: AuthRoot;
-    let previousAuthRoot: AuthRoot | undefined;
+    let roots;
     try {
-      authRoot = rootFromEnv(c.env.AUTH_ROOT_SECRET, c.env.AUTH_ROOT_KEY_VERSION);
-      previousAuthRoot = c.env.AUTH_PREVIOUS_ROOT_SECRET
-        ? rootFromEnv(c.env.AUTH_PREVIOUS_ROOT_SECRET, c.env.AUTH_PREVIOUS_ROOT_KEY_VERSION)
-        : undefined;
+      roots = readAuthRoots(c.env);
     } catch {
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
     }
 
-    const verdict = await authenticateBearer(fromD1(c.env.CONTROL_PLANE), {
+    const origin = c.req.header("origin");
+    const cookieAllowed =
+      !origin ||
+      isSameOriginRequest({
+        origin,
+        url: c.req.url,
+        webBaseUrl: c.env.WEB_BASE_URL,
+      });
+
+    const verdict = await authenticateRequest(fromD1(c.env.CONTROL_PLANE), {
       authorization: c.req.header("authorization"),
-      authRoot,
-      ...(previousAuthRoot ? { previousAuthRoot } : {}),
+      cookieHeader: c.req.header("cookie"),
+      cookieAllowed,
+      authRoot: roots.authRoot,
+      ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
       nowMs: nowMs(),
     });
     if (verdict.kind === "unauthenticated") {
@@ -117,14 +121,7 @@ export const corsMiddleware = (): MiddlewareHandler<{ Bindings: Env }> => {
   };
 };
 
-function rootFromEnv(secret: string, versionRaw: string | undefined): AuthRoot {
-  return {
-    secret: parseAuthRootSecret(secret),
-    version: parseAuthRootKeyVersion(versionRaw),
-  };
-}
-
-function jsonNoStore(
+export function jsonNoStore(
   c: { json: (body: unknown, status: 401 | 403 | 412 | 500) => Response },
   body: unknown,
   status: 401 | 403 | 412 | 500,

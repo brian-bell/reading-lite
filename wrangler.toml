@@ -65,7 +65,9 @@ OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
-WEB_BASE_URL = ""
+WEB_BASE_URL = "http://127.0.0.1:5173"
+# Local-only magic-link outbox. Never set on staging or production.
+LOCAL_MAIL_SINK = "1"
 # Tenant-prefixed R2 keys (u/{tenantId}/…). Leave unset until s1k.6 copies the
 # founder corpus; "1" would hide global readings/ and index/ objects.
 # TENANT_DATA_PLANE = "1"

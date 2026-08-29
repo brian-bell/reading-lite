@@ -274,7 +274,7 @@ function throwingDb(): ControlPlaneDb {
   const boom = async () => {
     throw new Error("D1 must not be touched before envelope validation");
   };
-  return { first: boom, all: boom, batch: boom };
+  return { first: boom, all: boom, batch: boom, run: boom };
 }
 
 describe("consumeProcessReadingMessage", () => {
