@@ -16,6 +16,7 @@ import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } fro
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 export interface CorpusSweepR2 {
   readListIndex: (deps: R2Deps) => Promise<unknown[]>;
@@ -148,6 +149,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
 
   for (const t of targets) {
     const keys = await r2.keysForReading(t.id, t.key_prefix, t.url, r2Deps);
+    const vectorId = tenantVectorId(tenant.namespace, t.id);
     io.stdout(`• dropping ${t.id}  ${t.url}`);
     // Ask the index whether a vector exists rather than inferring it from
     // status — every status-based rule was wrong in some direction (see
@@ -162,7 +164,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     if (!opts.remote) {
       io.stdout(`    skipping vector (--local: Vectorize has no local store)`);
     } else {
-      hasVector = await r2.vectorExists(vectorizeIndex, t.id, tenant.namespace);
+      hasVector = await r2.vectorExists(vectorizeIndex, vectorId, tenant.namespace);
       if (hasVector) vectoredDrops.push({ id: t.id, created_at: t.created_at });
       else io.stdout(`    no vector indexed for ${t.id}`);
     }
@@ -170,7 +172,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
       if (!opts.execute) {
         io.stdout(`    would delete vector  ${vectorizeIndex}/${t.id}`);
       } else {
-        const res = await r2.deleteVector(vectorizeIndex, t.id);
+        const res = await r2.deleteVector(vectorizeIndex, vectorId);
         if (res === "deleted") {
           deleted++;
           io.stdout(`    deleted   vector:${vectorizeIndex}/${t.id}`);
