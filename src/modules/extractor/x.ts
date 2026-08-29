@@ -430,7 +430,7 @@ function authorComponent(
     if (existing && postsConflict(existing, post)) {
       throw new XThreadIncompleteError(`X returned conflicting data for post ${post.id}`);
     }
-    byId.set(post.id, post);
+    byId.set(post.id, existing ? mergePosts(existing, post) : post);
   }
   if (!byId.has(sharedId)) throw new XThreadIncompleteError("the shared post was missing");
   const shared = byId.get(sharedId)!;
@@ -523,6 +523,83 @@ function postsConflict(a: XPost, b: XPost): boolean {
   const aKeys = attachmentMediaKeys(a);
   const bKeys = attachmentMediaKeys(b);
   return aKeys.length !== bKeys.length || aKeys.some((key, index) => key !== bKeys[index]);
+}
+
+type XNoteTweet = NonNullable<XPost["note_tweet"]>;
+type XArticle = NonNullable<XPost["article"]>;
+type XEntities = z.infer<typeof EntitiesSchema>;
+type XUrlEntity = z.infer<typeof UrlEntitySchema>;
+
+function mergePosts(existing: XPost, incoming: XPost): XPost {
+  const merged: XPost = { ...existing, ...incoming };
+  const note_tweet = richerNoteTweet(existing.note_tweet, incoming.note_tweet);
+  const article = richerArticle(existing.article, incoming.article);
+  const entities = richerEntities(existing.entities, incoming.entities);
+  if (note_tweet) merged.note_tweet = note_tweet;
+  else delete merged.note_tweet;
+  if (article) merged.article = article;
+  else delete merged.article;
+  if (entities) merged.entities = entities;
+  else delete merged.entities;
+  return merged;
+}
+
+function richerNoteTweet(
+  existing: XNoteTweet | undefined,
+  incoming: XNoteTweet | undefined,
+): XNoteTweet | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const base = existing.text.length >= incoming.text.length ? existing : incoming;
+  const entities = richerEntities(existing.entities, incoming.entities);
+  return {
+    ...base,
+    text: base.text,
+    ...(entities ? { entities } : {}),
+  };
+}
+
+function articleRank(article: XArticle | undefined): number {
+  if (!article) return 0;
+  let rank = 1;
+  if (article.title) rank += 1;
+  if (article.text) rank += 8;
+  else if (article.plain_text) rank += 4;
+  else if (article.preview_text) rank += 2;
+  return rank;
+}
+
+function richerArticle(
+  existing: XArticle | undefined,
+  incoming: XArticle | undefined,
+): XArticle | undefined {
+  return articleRank(existing) >= articleRank(incoming) ? existing : incoming;
+}
+
+function richerEntities(
+  existing: XEntities | undefined,
+  incoming: XEntities | undefined,
+): XEntities | undefined {
+  const urls = mergeUrlEntities(existing?.urls, incoming?.urls);
+  if (!urls) return existing ?? incoming;
+  const base =
+    (existing?.urls?.length ?? 0) >= (incoming?.urls?.length ?? 0) ? existing : incoming;
+  return { ...base, urls };
+}
+
+function mergeUrlEntities(
+  existing: XUrlEntity[] | undefined,
+  incoming: XUrlEntity[] | undefined,
+): XUrlEntity[] | undefined {
+  if (!existing?.length && !incoming?.length) return undefined;
+  const byUrl = new Map<string, XUrlEntity>();
+  for (const entity of [...(existing ?? []), ...(incoming ?? [])]) {
+    const prev = byUrl.get(entity.url);
+    if (!prev || (!prev.expanded_url && entity.expanded_url)) {
+      byUrl.set(entity.url, entity);
+    }
+  }
+  return [...byUrl.values()];
 }
 
 function comparePosts(a: XPost, b: XPost): number {

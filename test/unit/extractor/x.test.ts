@@ -431,6 +431,99 @@ describe("extractXThread", () => {
     });
 
     expect(out.markdown).toContain("Hello from lookup");
+    expect(out.markdown).toContain("## Extra");
+  });
+
+  it("keeps lookup long-form, article, and expanded urls when search is truncated", async () => {
+    const lookupPost = {
+      id: "100",
+      text: "truncated https://t.co/link",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      note_tweet: {
+        text: "Full long-form body https://t.co/link",
+        entities: {
+          urls: [{ url: "https://t.co/link", expanded_url: "https://example.com/full" }],
+        },
+      },
+      article: {
+        title: "Lookup article",
+        text: "Article body that search omitted https://t.co/link",
+      },
+      entities: {
+        urls: [{ url: "https://t.co/link", expanded_url: "https://example.com/full" }],
+      },
+    };
+    const searchPost = {
+      id: "100",
+      text: "truncated https://t.co/link",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: lookupPost,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [searchPost], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain("## Lookup article");
+    expect(out.markdown).toContain("Article body that search omitted https://example.com/full");
+    expect(out.markdown).not.toContain("truncated https://t.co/link");
+  });
+
+  it("uses search long-form when lookup is the thinner copy", async () => {
+    const lookupPost = {
+      id: "100",
+      text: "truncated https://t.co/link",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+    };
+    const searchPost = {
+      ...lookupPost,
+      note_tweet: {
+        text: "Search recovered the long form https://t.co/link",
+        entities: {
+          urls: [{ url: "https://t.co/link", expanded_url: "https://example.com/search-copy" }],
+        },
+      },
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: lookupPost,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [searchPost], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.markdown).toContain(
+      "Search recovered the long form https://example.com/search-copy",
+    );
+    expect(out.markdown).not.toContain("truncated https://t.co/link");
   });
 
   it("still fails when lookup and search disagree on reconstruction fields", async () => {
