@@ -26,6 +26,15 @@ export interface Env {
   AUTH_PREVIOUS_ROOT_SECRET?: string;
   AUTH_PREVIOUS_ROOT_KEY_VERSION?: string;
   FOUNDER_EMAIL?: string;
+  APP_ENV?: string;
+  AUTH_MAIL_ALLOWLIST?: string;
+  AUTH_RATE_GUARD?: DurableObjectNamespace;
+  AUTH_RATE_EMAIL_WINDOW_MS?: string;
+  AUTH_RATE_EMAIL_MAX?: string;
+  AUTH_RATE_IP_WINDOW_MS?: string;
+  AUTH_RATE_IP_MAX?: string;
+  AUTH_RATE_GLOBAL_WINDOW_MS?: string;
+  AUTH_RATE_GLOBAL_MAX?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
   RESEND_API_KEY: string;
@@ -157,3 +166,4 @@ export default {
 };
 
 export { createApp } from "./router";
+export { AuthRateGuard } from "./control-plane/auth-rate-guard";

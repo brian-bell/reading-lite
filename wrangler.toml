@@ -44,16 +44,26 @@ main = "src/index.ts"
 compatibility_date = "2024-12-30"
 compatibility_flags = ["nodejs_compat"]
 
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AuthRateGuard"]
+
+[[durable_objects.bindings]]
+name = "AUTH_RATE_GUARD"
+class_name = "AuthRateGuard"
+
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
 #   READER_API_TOKEN     — imported once as the founder legacy D1 token
 #   AUTH_ROOT_SECRET     — 256-bit hex HKDF root for credential HMACs
 #   OPENAI_API_KEY       — always required: embeddings + default summarizer
 #   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
-#   RESEND_API_KEY       — Resend API key (per-reading email notifications)
+#   RESEND_API_KEY       — required on staging/production for auth magic-link
+#                          mail (also used for per-reading notifications)
 
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
+APP_ENV = "local"
 CORS_ALLOWED_ORIGINS = ""
 MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
@@ -102,6 +112,7 @@ name = "reading-lite-staging"
 workers_dev = true
 
 [env.staging.vars]
+APP_ENV = "staging"
 CORS_ALLOWED_ORIGINS = ""
 MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
@@ -111,8 +122,13 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"
-EMAIL_FROM = ""
+EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = ""
+# Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
+AUTH_MAIL_ALLOWLIST = ""
+# Same-origin staging host for __Host-session is not set: this API token
+# cannot create DNS or Worker routes on bbell.dev (error 10000), and Pages
+# has no staging custom domain. Do not invent a hostname.
 WEB_BASE_URL = ""
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
@@ -152,6 +168,10 @@ database_name = "reading-lite-control-staging"
 database_id = "a29af3ca-280c-443e-9edd-7acec745698c"
 migrations_dir = "migrations"
 
+[[env.staging.durable_objects.bindings]]
+name = "AUTH_RATE_GUARD"
+class_name = "AuthRateGuard"
+
 # ---- production ----
 # Deploy with `npm run ops -- deploy worker --env production --execute`.
 # Environments do NOT inherit top-level [vars] / bindings — repeat them here.
@@ -160,6 +180,7 @@ migrations_dir = "migrations"
 name = "reading-lite"
 
 [env.production.vars]
+APP_ENV = "production"
 CORS_ALLOWED_ORIGINS = ""
 MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev"
 PENDING_TTL_SECONDS = "900"
@@ -233,6 +254,10 @@ binding = "CONTROL_PLANE"
 database_name = "reading-lite-control"
 database_id = "23c5298d-42b0-42fc-8a77-bef441ee712e"
 migrations_dir = "migrations"
+
+[[env.production.durable_objects.bindings]]
+name = "AUTH_RATE_GUARD"
+class_name = "AuthRateGuard"
 
 # Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.

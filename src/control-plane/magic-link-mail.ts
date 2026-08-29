@@ -1,3 +1,4 @@
+import { MAGIC_LINK_VERIFY_PATH } from "./constants";
 import { originOfUrl } from "./origin";
 
 export interface MagicLinkMail {
@@ -8,9 +9,25 @@ export interface MagicLinkMail {
 
 export type SendMagicLink = (message: MagicLinkMail) => Promise<void>;
 
+export type MagicLinkDelivery =
+  | { kind: "injected"; send: SendMagicLink }
+  | { kind: "local_sink" }
+  | { kind: "resend" }
+  | { kind: "unavailable" };
+
+export function resolveMagicLinkDelivery(
+  env: { APP_ENV?: string; LOCAL_MAIL_SINK?: string },
+  runtime: { sendMagicLink?: SendMagicLink },
+): MagicLinkDelivery {
+  if (runtime.sendMagicLink) return { kind: "injected", send: runtime.sendMagicLink };
+  if (env.APP_ENV === "staging" || env.APP_ENV === "production") return { kind: "resend" };
+  if (env.LOCAL_MAIL_SINK === "1") return { kind: "local_sink" };
+  return { kind: "unavailable" };
+}
+
 export function buildMagicLinkVerifyUrl(webBaseUrl: string, credential: string): string {
   const base = webBaseUrl.replace(/\/+$/, "");
-  return `${base}/login/verify#${credential}`;
+  return `${base}${MAGIC_LINK_VERIFY_PATH}#${credential}`;
 }
 
 export function publicWebBase(webBaseUrl: string | undefined, requestUrl: string): string {

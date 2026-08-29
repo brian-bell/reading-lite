@@ -1,19 +1,23 @@
 import type { Context } from "hono";
 import { AuthChallengeBodySchema, AuthRedeemBodySchema } from "../schemas/api";
+import { admitAuthSend } from "./auth-rate-guard";
 import { issueLoginChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
 import { logAuthEvent } from "./auth-log";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, sessionCookieHeader } from "./cookies";
 import { fromD1 } from "./db";
+import { isAuthMailAllowed } from "./mail-allowlist";
 import {
   buildMagicLinkVerifyUrl,
   latestLocalMagicLink,
   publicWebBase,
   renderMagicLinkMail,
+  resolveMagicLinkDelivery,
   storeLocalMagicLink,
   type SendMagicLink,
 } from "./magic-link-mail";
+import { sendMagicLinkViaResend } from "./resend-magic-link";
 import { isLoopbackHost, isSameOriginRequest } from "./origin";
 import { parseRedemptionId, redeemLoginChallenge } from "./redeem";
 import { authenticateSession, revokeSession } from "./sessions";
@@ -75,6 +79,12 @@ export async function handleAuthChallenge(
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
+  const admitted = await admitAuthSend(c.env, c.req.raw, emailCanonical);
+  if (admitted === "deny") {
+    logAuthEvent("magic_link_rate_limited");
+    return jsonAuth({ ok: true }, 200);
+  }
+
   const issued = await issueLoginChallenge(db, {
     emailCanonical,
     emailDisplayRequested: parsed.data.email.trim(),
@@ -84,29 +94,40 @@ export async function handleAuthChallenge(
     newUuid: runtime.newUuid,
   });
 
-  if (issued.kind === "issued") {
-    const verifyUrl = buildMagicLinkVerifyUrl(publicWebBase(c.env.WEB_BASE_URL, c.req.url), issued.credential);
-    const rendered = renderMagicLinkMail(verifyUrl);
-    try {
-      if (runtime.sendMagicLink) {
-        await runtime.sendMagicLink({ to: issued.deliveryEmail, subject: rendered.subject, verifyUrl });
-      } else if (c.env.LOCAL_MAIL_SINK === "1") {
-        await storeLocalMagicLink(db, {
-          to: issued.deliveryEmail,
-          subject: rendered.subject,
-          verifyUrl,
-          nowMs,
-        });
-      }
-      logAuthEvent("magic_link_issued", {
-        email: issued.deliveryEmail,
-        challenge_id: issued.challengeId,
-      });
-    } catch {
-      logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
-    }
-  } else {
+  if (issued.kind !== "issued") {
     logAuthEvent("magic_link_skipped", { email: parsed.data.email });
+    return jsonAuth({ ok: true }, 200);
+  }
+
+  if (!isAuthMailAllowed(c.env, emailCanonical)) {
+    logAuthEvent("magic_link_delivery_skipped", { challenge_id: issued.challengeId });
+    return jsonAuth({ ok: true }, 200);
+  }
+
+  const verifyUrl = buildMagicLinkVerifyUrl(publicWebBase(c.env.WEB_BASE_URL, c.req.url), issued.credential);
+  const rendered = renderMagicLinkMail(verifyUrl);
+  try {
+    const delivery = resolveMagicLinkDelivery(c.env, runtime);
+    if (delivery.kind === "injected") {
+      await delivery.send({ to: issued.deliveryEmail, subject: rendered.subject, verifyUrl });
+    } else if (delivery.kind === "local_sink") {
+      await storeLocalMagicLink(db, {
+        to: issued.deliveryEmail,
+        subject: rendered.subject,
+        verifyUrl,
+        nowMs,
+      });
+    } else if (delivery.kind === "resend") {
+      await sendMagicLinkViaResend(c.env, issued.deliveryEmail, verifyUrl);
+    } else {
+      throw new Error("magic-link delivery is not configured");
+    }
+    logAuthEvent("magic_link_issued", {
+      email: issued.deliveryEmail,
+      challenge_id: issued.challengeId,
+    });
+  } catch {
+    logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
   }
 
   return jsonAuth({ ok: true }, 200);

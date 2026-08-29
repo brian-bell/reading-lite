@@ -4,7 +4,7 @@ export function logAuthEvent(event: string, fields: Record<string, unknown> = {}
   const redacted: Record<string, unknown> = { event };
   for (const [key, value] of Object.entries(fields)) {
     if (value === undefined) continue;
-    if (/(secret|token|cookie|credential|authorization|hmac|fragment)/i.test(key)) {
+    if (/(secret|token|cookie|credential|authorization|hmac|fragment|verify_url|verifyUrl)/i.test(key)) {
       continue;
     }
     if (key === "email" && typeof value === "string") {
