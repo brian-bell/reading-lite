@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError, RedditManualImportError } from "../../../src/modules/extractor";
+import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError, RedditManualImportError, XApiConfigError } from "../../../src/modules/extractor";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import { canonicalWatchUrl, oembedUrl, timedtextJson3Url } from "../../../src/modules/extractor/youtube";
 
@@ -31,6 +31,21 @@ const HTML_ARTICLE = `<!doctype html>
 </body></html>`;
 
 describe("extractFromUrl", () => {
+  it("routes X status links away from generic HTML extraction", async () => {
+    const fetchFn = vi.fn(async () => {
+      throw new Error("must not fetch x.com HTML");
+    });
+
+    await expect(
+      extractFromUrl("https://x.com/distributionat/status/2081655420314419450?s=46", {
+        fetch: fetchFn as unknown as typeof fetch,
+        timeoutMs: 5_000,
+        maxBytes: 1_000_000,
+      }),
+    ).rejects.toBeInstanceOf(XApiConfigError);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("extracts HTML to markdown via readability + turndown", async () => {
     const fetchFn = fakeFetch({
       "https://example.com/a": {

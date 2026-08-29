@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -517,6 +517,54 @@ describe("App", () => {
     });
     render(<App initialPath="/" />);
     expect(await screen.findByText(/404 from upstream/i)).toBeInTheDocument();
+  });
+
+  it("renders the X recent-window error on the list", async () => {
+    const message =
+      "This X thread is older than the 7-day recent-search window and cannot be imported.";
+    stubJSON({
+      ...onePage,
+      readings: [
+        listReading({
+          status: "failed",
+          title: "Old X thread",
+          tldr: undefined,
+          error: { code: "XThreadOutsideRecentWindowError", message }
+        })
+      ]
+    });
+    render(<App initialPath="/" />);
+    await waitForElementToBeRemoved(() => screen.queryByText("Loading readings"));
+    expect(
+      screen.getByText(
+        (_text, element) =>
+          element?.classList.contains("status-pill") === true &&
+          element.textContent === `Failed: ${message}`
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("renders the X recent-window error on reading detail", async () => {
+    const message =
+      "This X thread is older than the 7-day recent-search window and cannot be imported.";
+    stubJSON(
+      manifest({
+        status: "failed",
+        title: "Old X thread",
+        tldr: undefined,
+        error: { code: "XThreadOutsideRecentWindowError", message }
+      })
+    );
+
+    render(<App initialPath="/readings/rd_ONE" />);
+
+    expect(
+      await screen.findByText(
+        (_text, element) =>
+          element?.classList.contains("status-pill") === true &&
+          element.textContent === `Failed: ${message}`
+      )
+    ).toBeInTheDocument();
   });
 
   it("submits a search query and refetches with q on the request URL", async () => {

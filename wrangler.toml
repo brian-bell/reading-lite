@@ -28,6 +28,7 @@
 #   `npx wrangler queues create reading-lite-staging-dlq`  (dead-letter queue; not auto-created)
 #   `wrangler secret put READER_API_TOKEN --env staging`
 #   `wrangler secret put OPENAI_API_KEY --env staging`
+#   `wrangler secret put X_API_BEARER_TOKEN --env staging`  (for X status URLs)
 #   `wrangler secret put ANTHROPIC_API_KEY --env staging`  (only for SUMMARIZER_PROVIDER=anthropic)
 #
 # Production setup (one-time):
@@ -37,6 +38,7 @@
 #   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
 #   `wrangler secret put READER_API_TOKEN --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
+#   `wrangler secret put X_API_BEARER_TOKEN --env production`  (for X status URLs)
 #   `wrangler secret put ANTHROPIC_API_KEY --env production`  (only for SUMMARIZER_PROVIDER=anthropic)
 
 name = "reading-lite-dev"
@@ -57,6 +59,7 @@ class_name = "AuthRateGuard"
 #   READER_API_TOKEN     — imported once as the founder legacy D1 token
 #   AUTH_ROOT_SECRET     — 256-bit hex HKDF root for credential HMACs
 #   OPENAI_API_KEY       — always required: embeddings + default summarizer
+#   X_API_BEARER_TOKEN    — required only for X/Twitter status URL imports
 #   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
 #   RESEND_API_KEY       — required on staging/production for auth magic-link
 #                          mail (also used for per-reading notifications)

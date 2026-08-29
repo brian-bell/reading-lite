@@ -8,6 +8,8 @@ AUTH_ROOT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
 # AUTH_PREVIOUS_ROOT_KEY_VERSION=1
 FOUNDER_EMAIL=founder@localhost
 OPENAI_API_KEY=sk-...
+# Required only when importing x.com/twitter.com status URLs.
+X_API_BEARER_TOKEN=
 # Required only when SUMMARIZER_PROVIDER=anthropic.
 ANTHROPIC_API_KEY=sk-ant-...
 

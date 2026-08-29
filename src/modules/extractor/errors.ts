@@ -39,3 +39,36 @@ export class RedditManualImportError extends Error {
     this.name = "RedditManualImportError";
   }
 }
+
+export class XApiConfigError extends Error {
+  constructor() {
+    super("X_API_BEARER_TOKEN is required to import X posts.");
+    this.name = "XApiConfigError";
+  }
+}
+
+export class XApiError extends Error {
+  constructor(
+    public readonly endpoint: string,
+    public readonly status: number,
+  ) {
+    super(`X API request failed with status ${status}: ${endpoint}`);
+    this.name = "XApiError";
+  }
+}
+
+export class XThreadOutsideRecentWindowError extends Error {
+  constructor() {
+    super(
+      "This X thread is older than the 7-day recent-search window and cannot be imported.",
+    );
+    this.name = "XThreadOutsideRecentWindowError";
+  }
+}
+
+export class XThreadIncompleteError extends Error {
+  constructor(reason: string) {
+    super(`X thread could not be imported completely: ${reason}`);
+    this.name = "XThreadIncompleteError";
+  }
+}

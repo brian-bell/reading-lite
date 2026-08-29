@@ -60,6 +60,7 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `AUTH_PREVIOUS_ROOT_SECRET` | optional — previous root during a bounded rotation window |
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
+| `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
 | `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
@@ -496,6 +497,26 @@ Claim, release, and crash-resume semantics are specified in
 `scripts/corpus-lib/batch/activation-phase.ts`, `write-phase.ts`,
 `prepare-fresh-markdown.ts`, and `openai-reconcile.ts`; `run.ts`'s header
 documents the shared phase ordering.
+
+## X threads
+
+Submitting an `x.com/<user>/status/<id>` or `twitter.com/<user>/status/<id>`
+URL retrieves the linked author's same-author self-reply component through the
+X API. Sharing a middle post includes its author-written ancestors and
+descendants; audience replies and author side conversations reached through an
+audience reply are excluded. Quoted posts are rendered as context but their
+threads are not traversed. The raw artifact is the bounded aggregate API JSON,
+and the reconstructed Markdown is used as the reading body.
+
+This path requires `X_API_BEARER_TOKEN`. It uses only
+`/2/tweets/search/recent`, consumes every pagination token, and never falls back
+to full-archive search or X's JavaScript page shell. If the conversation root is
+outside the seven-day recent-search window, the reading lands `failed` with:
+
+> This X thread is older than the 7-day recent-search window and cannot be imported.
+
+This personal tool does not implement X deletion/edit compliance
+synchronization.
 
 ## Sources that need a local skill
 

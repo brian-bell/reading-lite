@@ -39,7 +39,7 @@ export async function fetchWithRetry(
       // typed error so the queue handler can msg.retry({ delaySeconds }) and
       // free the slot for other work while we wait.
       if (response.status === 429) {
-        const retryAfter = parseRetryAfterMs(response.headers.get("retry-after"), now);
+        const retryAfter = parseRateLimitDelayMs(response.headers, now);
         response.body?.cancel().catch(() => {});
         throw new RateLimitedError(429, retryAfter, urlToString(input));
       }
@@ -66,6 +66,17 @@ export async function fetchWithRetry(
 
   if (lastResponse) return lastResponse;
   throw lastError;
+}
+
+export function parseRateLimitDelayMs(headers: Headers, now: () => number): number | null {
+  const retryAfter = parseRetryAfterMs(headers.get("retry-after"), now);
+  if (retryAfter !== null) return retryAfter;
+
+  const reset = headers.get("x-rate-limit-reset")?.trim();
+  if (!reset || !/^\d+$/.test(reset)) return null;
+  const resetMs = Number(reset) * 1_000;
+  if (!Number.isSafeInteger(resetMs)) return null;
+  return Math.max(0, resetMs - now());
 }
 
 function urlToString(input: URL | string): string {
