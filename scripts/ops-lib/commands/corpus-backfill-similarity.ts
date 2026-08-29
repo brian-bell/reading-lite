@@ -13,7 +13,7 @@ import {
   snapshotFor,
   validateBackfillWrite,
 } from "../../corpus-lib/backfill-similarity";
-import { SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
@@ -82,6 +82,18 @@ function parsePositiveInt(raw: string): number {
   return n;
 }
 
+function normalizeVectorMatchIds(
+  matches: { id: string; score: number }[],
+  namespace: string | undefined,
+): { id: string; score: number }[] {
+  if (namespace === undefined) return matches;
+  const prefix = `${namespace}:`;
+  return matches.map((match) => ({
+    ...match,
+    id: match.id.startsWith(prefix) ? match.id.slice(prefix.length) : match.id,
+  }));
+}
+
 async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Promise<number> {
   const opts = parseBackfillArgs(argv);
   const { io, r2 } = deps;
@@ -135,13 +147,18 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
   try {
     for (const t of targets) {
       // Over-fetch by one: the reading's own vector always comes back first.
-      const matches = await r2.queryByVectorId(vectorizeIndex, t.id, SIMILAR_TOP_K + 1, tenant.namespace);
+      const matches = await r2.queryByVectorId(
+        vectorizeIndex,
+        tenantVectorId(tenant.namespace, t.id),
+        SIMILAR_TOP_K + 1,
+        tenant.namespace,
+      );
       if (matches === null) {
         noVector++;
         io.stderr(`  ! no vector indexed for ${t.id}  ${t.url}`);
         continue;
       }
-      const snap = snapshotFor(t.id, matches, now);
+      const snap = snapshotFor(t.id, normalizeVectorMatchIds(matches, tenant.namespace), now);
       measured++;
       const score = snap.max === undefined ? "none" : snap.max.toFixed(3);
       io.stdout(`  ${t.id}  neighbours=${snap.count} nearest=${score}  ${t.url}`);

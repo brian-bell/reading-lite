@@ -8,6 +8,7 @@
 
 import { runVectorBackfill, type VectorBackfillResult, type VectorBackfillRow } from "../../corpus-lib/backfill-vectors";
 import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -123,10 +124,19 @@ async function runCorpusBackfillVectors(
     },
     {
       readListIndex: async () => r2.readListIndex(r2Deps),
-      vectorExists: (id) => r2.vectorExists(vectorizeIndex, id, tenant.namespace),
+      vectorExists: (id) =>
+        r2.vectorExists(vectorizeIndex, tenantVectorId(tenant.namespace, id), tenant.namespace),
       readManifest: (keyPrefix) => r2.readManifest(keyPrefix, r2Deps),
       embedMany,
-      upsert: upsert as never,
+      upsert: ((vectors: {
+        id: string;
+        values: number[];
+        metadata?: Record<string, unknown>;
+      }[]) =>
+        upsert(vectors.map((vector) => ({
+          ...vector,
+          id: tenantVectorId(tenant.namespace, vector.id),
+        })))) as never,
     },
   );
 

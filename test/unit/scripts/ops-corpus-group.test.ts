@@ -187,6 +187,30 @@ describe("ops corpus sweep", () => {
     expect(new Set(probes)).toEqual(new Set(["usr_11111111-1111-4111-8111-111111111111"]));
   });
 
+  it("tenant mode probes and deletes the ADR-0002 tenant-prefixed vector id", async () => {
+    const { deps } = makeDeps(DUP_ITEMS);
+    const probes: Array<{ id: string; namespace: string | undefined }> = [];
+    const deletes: string[] = [];
+    deps.r2.vectorExists = async (_index, id, namespace) => {
+      probes.push({ id, namespace });
+      return true;
+    };
+    deps.r2.deleteVector = async (_index, id) => {
+      deletes.push(id);
+      return "deleted";
+    };
+
+    const tenantId = "usr_11111111-1111-4111-8111-111111111111";
+    const code = await corpusSweepCommand.run(
+      ["--tenant", tenantId, "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(probes).toEqual([{ id: `${tenantId}:rd_dup`, namespace: tenantId }]);
+    expect(deletes).toEqual([`${tenantId}:rd_dup`]);
+  });
+
   it("--drop requires exactly one --keep and no other selectors", async () => {
     const { deps } = makeDeps(DUP_ITEMS);
     await expect(corpusSweepCommand.run(["--tenant", "global", "--drop", "rd_dup"], deps)).rejects.toThrow(UsageError);
@@ -314,6 +338,37 @@ describe("ops corpus backfill-similarity", () => {
     expect(calls.indexWrites).toBe(0);
   });
 
+  it("tenant mode queries by the prefixed id and writes a bare-id snapshot without self", async () => {
+    const { deps } = makeDeps([]);
+    const queries: Array<{ id: string; namespace: string | undefined }> = [];
+    const written: Record<string, unknown>[] = [];
+    deps.r2.queryByVectorId = async (_index, id, _topK, namespace) => {
+      queries.push({ id, namespace });
+      return [
+        { id: `${namespace}:rd_r`, score: 1 },
+        { id: `${namespace}:rd_neighbour`, score: 0.6 },
+      ];
+    };
+    deps.r2.putManifest = async (_keyPrefix, body) => {
+      written.push(body as Record<string, unknown>);
+    };
+
+    const tenantId = "usr_11111111-1111-4111-8111-111111111111";
+    const code = await corpusBackfillSimilarityCommand.run(
+      ["--tenant", tenantId, "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(queries).toEqual([{ id: `${tenantId}:rd_r`, namespace: tenantId }]);
+    expect(written[0]?.similarity).toEqual({
+      count: 1,
+      max: 0.6,
+      mean: 0.6,
+      computed_at: "2026-08-22T12:00:00.000Z",
+    });
+  });
+
   it("--execute writes the manifest and flushes the index", async () => {
     const { deps, calls } = makeDeps([{ id: "rd_r", score: 1 }, { id: "rd_o", score: 0.5 }]);
     const code = await corpusBackfillSimilarityCommand.run(["--tenant", "global", "--execute"], deps);
@@ -397,6 +452,36 @@ describe("ops corpus backfill-vectors", () => {
     expect(calls.writersMade).toBe(1);
     expect(calls.embeds).toBe(1);
     expect(calls.upserts).toBe(1);
+  });
+
+  it("tenant mode probes and upserts the ADR-0002 tenant-prefixed vector id", async () => {
+    const { deps } = makeDeps();
+    const probes: string[] = [];
+    const upserts: Array<{ id: string }[]> = [];
+    deps.r2.vectorExists = async (_index, id) => {
+      probes.push(id);
+      return false;
+    };
+    deps.makeWriters = async () => ({
+      embedMany: async (inputs) => ({
+        embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0)),
+      }),
+      upsert: async (vectors) => {
+        upserts.push(vectors);
+      },
+    });
+
+    const tenantId = "usr_11111111-1111-4111-8111-111111111111";
+    const code = await corpusBackfillVectorsCommand.run(
+      ["--tenant", tenantId, "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(probes).toEqual([`${tenantId}:rd_v`, `${tenantId}:rd_v`]);
+    expect(upserts.map((batch) => batch.map((vector) => vector.id))).toEqual([
+      [`${tenantId}:rd_v`],
+    ]);
   });
 
   it("fails closed without --tenant", async () => {
