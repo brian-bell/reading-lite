@@ -113,7 +113,7 @@ export async function admitProcessReadingEnvelope(
   envelope: ProcessReadingEnvelopeV1,
   nowMs: number,
 ): Promise<AdmitEnvelopeResult> {
-  if (envelope.actor.kind !== "api_token") {
+  if (envelope.actor.kind !== "api_token" && envelope.actor.kind !== "session") {
     return { ok: false, reason: "token_unusable" };
   }
 
@@ -151,6 +151,27 @@ export async function admitProcessReadingEnvelope(
       requiredScope,
     );
     if (!required) {
+      return { ok: false, reason: "token_unusable" };
+    }
+  }
+
+  if (envelope.actor.kind === "session") {
+    const session = await db.first<{
+      user_id: string;
+      revoked_at_ms: number | null;
+      idle_expires_at_ms: number;
+      absolute_expires_at_ms: number;
+    }>(
+      "SELECT user_id, revoked_at_ms, idle_expires_at_ms, absolute_expires_at_ms FROM sessions WHERE id = ?",
+      envelope.actor.credentialId,
+    );
+    if (
+      !session ||
+      session.user_id !== user.id ||
+      session.revoked_at_ms != null ||
+      session.idle_expires_at_ms <= nowMs ||
+      session.absolute_expires_at_ms <= nowMs
+    ) {
       return { ok: false, reason: "token_unusable" };
     }
   }

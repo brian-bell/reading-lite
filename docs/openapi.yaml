@@ -660,7 +660,7 @@ components:
     WhoamiResponse:
       type: object
       additionalProperties: false
-      required: [tenant_id, user_id, principal, tenant_data_plane]
+      required: [tenant_id, user_id, principal, tenant_data_plane, email]
       properties:
         tenant_id:
           type: string
@@ -671,6 +671,9 @@ components:
           enum: [api_token, session]
         tenant_data_plane:
           type: boolean
+        email:
+          type: string
+          description: Verified display email for the authenticated user
 
     HttpUrl:
       type: string
