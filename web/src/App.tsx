@@ -87,6 +87,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage identity={identity} />} />
         <Route path="/login/verify" element={<VerifyPage />} />
+        <Route path="/auth/verify" element={<VerifyPage />} />
         <Route
           path="/"
           element={identity ? <ReadingList /> : identityQuery.isLoading ? <StatusMessage>Loading</StatusMessage> : <LoginPage identity={identity} />}
@@ -243,8 +244,8 @@ function VerifyPage() {
     captured.current = true;
     setCredential(hash);
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    navigate("/login/verify", { replace: true });
-  }, [location.hash, navigate]);
+    navigate(location.pathname || "/auth/verify", { replace: true });
+  }, [location.hash, location.pathname, navigate]);
 
   return (
     <section className="page">

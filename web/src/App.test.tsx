@@ -309,7 +309,7 @@ describe("App", () => {
     const user = userEvent.setup();
     const replaceState = vi.spyOn(window.history, "replaceState");
 
-    render(<App initialPath="/login/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
+    render(<App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
 
     const continueButton = await screen.findByRole("button", { name: "Continue" });
     expect(

@@ -108,7 +108,9 @@ matrix.
 - Staging (`[env.staging]`, `reading-lite-staging`) and production
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
-  hard-coded to staging names.
+  hard-coded to staging names. Staging has no same-origin custom host yet (zone
+  DNS + Workers Routes permission required); `__Host-session` cannot be shared
+  between Pages preview and `workers.dev`.
 - Merges to `main` deploy the production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). GitHub
@@ -116,7 +118,8 @@ matrix.
   auto-deployed.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
-  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` optional.
+  `SUMMARIZER_PROVIDER=anthropic`; `RESEND_API_KEY` required on staging/production
+  for magic-link auth mail.
   `founder-bootstrap` reads `AUTH_ROOT_SECRET` and `READER_API_TOKEN` from
   `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
   Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.

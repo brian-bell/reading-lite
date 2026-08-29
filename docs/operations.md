@@ -37,7 +37,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | `workers_dev` URL |
+| staging | `reading-lite-staging` | `reading-lite-staging` | `workers_dev` URL. Same-origin custom host is not configured: the deploy token cannot create DNS or Worker routes on `bbell.dev`, and Pages has no staging custom domain. |
 | production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` + `/mcp*` |
 
 Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
@@ -60,7 +60,7 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `AUTH_PREVIOUS_ROOT_SECRET` | optional — previous root during a bounded rotation window |
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
-| `RESEND_API_KEY` | optional — per-reading email notifications |
+| `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
 default to `1`. HKDF includes the version, so a secret-only rotation must keep
@@ -147,7 +147,9 @@ bootstrap of `dev-local-token`).
 
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
-path.
+path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
+does not 404. Staging still lacks a same-origin host for the `__Host-session`
+cookie; Pages preview and `workers.dev` cannot share it.
 
 ### MCP connector
 
