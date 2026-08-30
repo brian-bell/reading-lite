@@ -11,6 +11,7 @@ import {
   type OpenAIReasoningEffort,
   type SummarizeReadingResult,
   type SummarizeReadingInput,
+  type SummarizerDeps,
 } from "../../../../src/modules/summarizer";
 import {
   ManifestSchema,
@@ -22,33 +23,62 @@ import { loadDotVars } from "../../../../scripts/lib/dotvars";
 
 const DEFAULT_BASE_URL = "https://reading-lite.bbell.dev";
 const DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const DEFAULT_INPUT_PRICE_PER_MILLION = 2;
 const DEFAULT_OUTPUT_PRICE_PER_MILLION = 12;
+const DEFAULT_ANTHROPIC_INPUT_PRICE_PER_MILLION = 3;
+const DEFAULT_ANTHROPIC_OUTPUT_PRICE_PER_MILLION = 15;
 const DEFAULT_PRICE_DATE = "2026-07-30";
 const MAX_OUTPUT_TOKENS = 8192;
+const ANTHROPIC_EFFORTS = ["low", "medium", "high", "max"] as const;
+
+export type AnthropicEffort = (typeof ANTHROPIC_EFFORTS)[number];
 
 export interface ComparisonArgs {
-  target: string;
+  targets: string[];
   baseUrl: string;
   execute: boolean;
   efforts: OpenAIReasoningEffort[];
+  includeAnthropic: boolean;
+  anthropicModel: string;
   outputDir?: string;
   model?: string;
   inputPricePerMillion: number;
   outputPricePerMillion: number;
+  anthropicInputPricePerMillion: number;
+  anthropicOutputPricePerMillion: number;
   priceDate: string;
 }
 
-export interface ComparisonPlan {
+export type ComparisonCandidate =
+  | {
+      provider: "openai";
+      model: string;
+      reasoningEffort: OpenAIReasoningEffort;
+    }
+  | {
+      provider: "anthropic";
+      model: string;
+      anthropicEffort: "none";
+    };
+
+export interface FrozenReading {
   readingId: string;
   contentSha256: string;
-  model: string;
-  efforts: OpenAIReasoningEffort[];
   input: SummarizeReadingInput;
   productionBaseline: ReadingSummary;
   productionUsage?: SummarizationUsage;
+}
+
+export interface ComparisonPlan {
+  readings: FrozenReading[];
+  candidates: ComparisonCandidate[];
+  openaiModel: string;
+  efforts: OpenAIReasoningEffort[];
   inputPricePerMillion: number;
   outputPricePerMillion: number;
+  anthropicInputPricePerMillion: number;
+  anthropicOutputPricePerMillion: number;
   priceDate: string;
   estimatedMaximumCostUsd: number;
 }
@@ -56,11 +86,6 @@ export interface ComparisonPlan {
 export interface PrepareComparisonDeps {
   fetch: typeof fetch;
   readerToken: string;
-}
-
-export interface ComparisonCandidate {
-  model: string;
-  reasoningEffort: OpenAIReasoningEffort;
 }
 
 export interface RunComparisonDeps {
@@ -72,13 +97,15 @@ export interface RunComparisonDeps {
   onProgress?(observation: ComparisonObservation): void | Promise<void>;
 }
 
-type OpenAIUsage = Extract<SummarizationUsage, { provider: "openai" }>;
-
 export interface ComparisonObservation {
-  effort: OpenAIReasoningEffort;
+  readingId: string;
+  provider: ComparisonCandidate["provider"];
+  model: string;
+  reasoningEffort?: OpenAIReasoningEffort;
+  anthropicEffort?: "none";
   latencyMs: number;
   reading: ReadingSummary;
-  usage: OpenAIUsage;
+  usage: SummarizationUsage;
   estimatedCostUsd: number;
 }
 
@@ -87,16 +114,45 @@ export interface ComparisonArtifactPaths {
   reportPath: string;
 }
 
+export interface CompareCliDeps {
+  fetch: typeof fetch;
+  now(): number;
+  credentials: Record<string, string | undefined>;
+  summarize?: RunComparisonDeps["summarize"];
+  stdout?(text: string): void;
+  stderr?(text: string): void;
+}
+
+export interface CompareRunResult {
+  mode: "plan" | "execute";
+  plan: ComparisonPlan;
+  observations?: ComparisonObservation[];
+  paths?: ComparisonArtifactPaths;
+  outputDir?: string;
+}
+
+export function parseAnthropicEffort(value: string): AnthropicEffort {
+  if ((ANTHROPIC_EFFORTS as readonly string[]).includes(value)) {
+    return value as AnthropicEffort;
+  }
+  throw new Error(
+    `invalid Anthropic effort: ${value} (expected low|medium|high|max)`,
+  );
+}
+
 export function parseComparisonArgs(argv: string[]): ComparisonArgs {
   const { values } = parseArgs({
     args: argv,
     options: {
-      target: { type: "string" },
+      target: { type: "string", multiple: true, default: [] },
       "base-url": { type: "string", default: DEFAULT_BASE_URL },
       execute: { type: "boolean", default: false },
       effort: { type: "string", multiple: true, default: [] },
       "output-dir": { type: "string" },
       model: { type: "string" },
+      "anthropic-model": { type: "string" },
+      "anthropic-effort": { type: "string" },
+      "openai-only": { type: "boolean", default: false },
       "input-price": {
         type: "string",
         default: String(DEFAULT_INPUT_PRICE_PER_MILLION),
@@ -105,33 +161,169 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
         type: "string",
         default: String(DEFAULT_OUTPUT_PRICE_PER_MILLION),
       },
+      "anthropic-input-price": {
+        type: "string",
+        default: String(DEFAULT_ANTHROPIC_INPUT_PRICE_PER_MILLION),
+      },
+      "anthropic-output-price": {
+        type: "string",
+        default: String(DEFAULT_ANTHROPIC_OUTPUT_PRICE_PER_MILLION),
+      },
       "price-date": { type: "string", default: DEFAULT_PRICE_DATE },
     },
     strict: true,
   });
-  if (!values.target) throw new Error("--target is required");
+  if (!values.target || values.target.length === 0) {
+    throw new Error("--target is required (repeatable)");
+  }
+  if (values["anthropic-effort"]) {
+    const effort = parseAnthropicEffort(values["anthropic-effort"]);
+    if (values["openai-only"]) {
+      throw new Error("--anthropic-effort cannot be combined with --openai-only");
+    }
+    throw new Error(
+      `Anthropic summarization effort "${effort}" is not supported on this branch: ` +
+        `the Worker summarizeReading() Anthropic path has no effort field. ` +
+        `Omit --anthropic-effort to run ${values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL} once with no effort field.`,
+    );
+  }
   const efforts =
     values.effort!.length === 0
       ? [...DEFAULT_EFFORTS]
       : [...new Set(values.effort!.map(parseReasoningEffort))];
   const inputPricePerMillion = Number(values["input-price"]);
   const outputPricePerMillion = Number(values["output-price"]);
+  const anthropicInputPricePerMillion = Number(values["anthropic-input-price"]);
+  const anthropicOutputPricePerMillion = Number(values["anthropic-output-price"]);
   if (!Number.isFinite(inputPricePerMillion) || inputPricePerMillion < 0) {
     throw new Error("--input-price must be a non-negative number");
   }
   if (!Number.isFinite(outputPricePerMillion) || outputPricePerMillion < 0) {
     throw new Error("--output-price must be a non-negative number");
   }
+  if (
+    !Number.isFinite(anthropicInputPricePerMillion) ||
+    anthropicInputPricePerMillion < 0
+  ) {
+    throw new Error("--anthropic-input-price must be a non-negative number");
+  }
+  if (
+    !Number.isFinite(anthropicOutputPricePerMillion) ||
+    anthropicOutputPricePerMillion < 0
+  ) {
+    throw new Error("--anthropic-output-price must be a non-negative number");
+  }
   return {
-    target: values.target,
+    targets: uniqueTargets(values.target),
     baseUrl: values["base-url"]!.replace(/\/$/, ""),
     execute: values.execute!,
     efforts,
+    includeAnthropic: values["openai-only"] !== true,
+    anthropicModel: values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL,
     outputDir: values["output-dir"],
     model: values.model,
     inputPricePerMillion,
     outputPricePerMillion,
+    anthropicInputPricePerMillion,
+    anthropicOutputPricePerMillion,
     priceDate: values["price-date"]!,
+  };
+}
+
+export function buildCandidateMatrix(
+  args: Pick<ComparisonArgs, "efforts" | "includeAnthropic" | "anthropicModel">,
+  openaiModel: string,
+): ComparisonCandidate[] {
+  const candidates: ComparisonCandidate[] = args.efforts.map(
+    (reasoningEffort) => ({
+      provider: "openai" as const,
+      model: openaiModel,
+      reasoningEffort,
+    }),
+  );
+  if (args.includeAnthropic) {
+    candidates.push({
+      provider: "anthropic",
+      model: args.anthropicModel,
+      anthropicEffort: "none",
+    });
+  }
+  return candidates;
+}
+
+export function candidateLabel(candidate: ComparisonCandidate): string {
+  if (candidate.provider === "openai") {
+    return `openai/${candidate.model} effort=${candidate.reasoningEffort}`;
+  }
+  return `anthropic/${candidate.model} effort=${candidate.anthropicEffort}`;
+}
+
+export function formatComparisonPlan(
+  plan: ComparisonPlan,
+  execute: boolean,
+): string {
+  const readingCount = plan.readings.length;
+  const candidateCount = plan.candidates.length;
+  const callCount = readingCount * candidateCount;
+  const readingNoun = readingCount === 1 ? "reading" : "readings";
+  const candidateNoun = candidateCount === 1 ? "candidate" : "candidates";
+  const callNoun = callCount === 1 ? "provider call" : "provider calls";
+  const readingLines = plan.readings
+    .map(
+      (reading) =>
+        `  ${reading.readingId}\n` +
+        `    source: ${reading.input.url}\n` +
+        `    frozen similar readings: ${reading.input.similarReadings.length}`,
+    )
+    .join("\n");
+  const candidateLines = plan.candidates
+    .map((candidate) => `    ${candidateLabel(candidate)}`)
+    .join("\n");
+  const anthropicLine = plan.candidates.some(
+    (candidate) => candidate.provider === "anthropic",
+  )
+    ? `  anthropic: ${plan.candidates.find((candidate) => candidate.provider === "anthropic")!.model} effort=none\n`
+    : "  anthropic: omitted\n";
+  return (
+    `${execute ? "[EXECUTE]" : "[DRY RUN]"} ${readingCount} ${readingNoun} × ${candidateCount} ${candidateNoun} = ${callCount} ${callNoun}\n` +
+    `${readingLines}\n` +
+    `  openai model: ${plan.openaiModel}\n` +
+    `  openai efforts: ${plan.efforts.join(", ")}\n` +
+    anthropicLine +
+    `  candidates:\n${candidateLines}\n` +
+    `  conservative maximum: $${plan.estimatedMaximumCostUsd.toFixed(4)} ` +
+    `(pricing as of ${plan.priceDate})\n`
+  );
+}
+
+export function summarizerDepsForCandidate(
+  candidate: ComparisonCandidate,
+  creds: {
+    fetch: typeof fetch;
+    openaiApiKey: string;
+    anthropicApiKey?: string;
+  },
+): SummarizerDeps {
+  if (candidate.provider === "openai") {
+    return {
+      fetch: creds.fetch,
+      provider: "openai",
+      openaiApiKey: creds.openaiApiKey,
+      openaiModel: candidate.model,
+      openaiReasoningEffort: candidate.reasoningEffort,
+      anthropicApiKey: creds.anthropicApiKey,
+      anthropicModel: DEFAULT_ANTHROPIC_MODEL,
+    };
+  }
+  if (!creds.anthropicApiKey) {
+    throw new Error("missing ANTHROPIC_API_KEY");
+  }
+  return {
+    fetch: creds.fetch,
+    provider: "anthropic",
+    openaiApiKey: creds.openaiApiKey,
+    anthropicApiKey: creds.anthropicApiKey,
+    anthropicModel: candidate.model,
   };
 }
 
@@ -139,96 +331,46 @@ export async function prepareComparison(
   args: ComparisonArgs,
   deps: PrepareComparisonDeps,
 ): Promise<ComparisonPlan> {
-  const readingId = args.target.startsWith("rd_")
-    ? args.target
-    : await lookupReadingId(args.target, args.baseUrl, deps);
-  const manifest = ManifestSchema.parse(
-    await getJson(`${args.baseUrl}/api/readings/${encodeURIComponent(readingId)}`, deps),
-  );
-  if (manifest.status !== "ready" || manifest.content_status !== "captured") {
-    throw new Error(
-      `reading ${readingId} must be ready with captured content (got ${manifest.status}/${manifest.content_status})`,
-    );
+  const readings: FrozenReading[] = [];
+  const seen = new Set<string>();
+  for (const target of args.targets) {
+    const frozen = await freezeReading(target, args.baseUrl, deps);
+    if (seen.has(frozen.readingId)) continue;
+    seen.add(frozen.readingId);
+    readings.push(frozen);
   }
-
-  const extractedText = await getText(
-    `${args.baseUrl}/api/readings/${encodeURIComponent(readingId)}/content`,
-    deps,
-  );
-  const rawContent = await getBytes(
-    `${args.baseUrl}/api/readings/${encodeURIComponent(readingId)}/content/raw`,
-    deps,
-  );
-  const actualSha = createHash("sha256").update(rawContent).digest("hex");
-  if (actualSha !== manifest.content_sha256) {
-    throw new Error(
-      `content hash mismatch for ${readingId}: manifest=${manifest.content_sha256} downloaded=${actualSha}`,
-    );
-  }
-
-  const productionBaseline = ReadingSummarySchema.parse({
-    title: manifest.title,
-    tldr: manifest.tldr,
-    tags: manifest.tags,
-    keywords: manifest.keywords,
-    people: manifest.people,
-    orgs: manifest.orgs,
-    novelty_verdict: manifest.novelty_verdict,
-    connections: manifest.connections,
-    summary_markdown: manifest.summary_markdown,
-  });
-  const similarReadings = await Promise.all(
-    productionBaseline.connections.map(async (connection) => {
-      const related = ManifestSchema.parse(
-        await getJson(
-          `${args.baseUrl}/api/readings/${encodeURIComponent(connection.id)}`,
-          deps,
-        ),
-      );
-      return {
-        id: related.id,
-        url: related.url,
-        ...(related.title ? { title: related.title } : {}),
-        ...(related.tldr ? { tldr: related.tldr } : {}),
-      };
-    }),
-  );
-
-  const productionUsage =
-    manifest.usage && "summarization" in manifest.usage
-      ? manifest.usage.summarization
-      : undefined;
-  const model =
-    args.model ??
-    (productionUsage?.provider === "openai"
-      ? productionUsage.model
-      : DEFAULT_OPENAI_SUMMARIZATION_MODEL);
-  const estimatedInputTokens =
-    productionUsage?.provider === "openai"
-      ? productionUsage.input_tokens
-      : Math.ceil(extractedText.length / 3);
-  const maximumCostPerCall =
-    (estimatedInputTokens * args.inputPricePerMillion +
-      MAX_OUTPUT_TOKENS * args.outputPricePerMillion) /
-    1_000_000;
+  const openaiModel = resolveOpenAIModel(args.model, readings);
+  const candidates = buildCandidateMatrix(args, openaiModel);
+  const estimatedMaximumCostUsd = readings.reduce((sum, reading) => {
+    const estimatedInputTokens = estimateInputTokens(reading);
+    const openaiCallCeiling =
+      (estimatedInputTokens * args.inputPricePerMillion +
+        MAX_OUTPUT_TOKENS * args.outputPricePerMillion) /
+      1_000_000;
+    const anthropicCallCeiling =
+      (estimatedInputTokens * args.anthropicInputPricePerMillion +
+        MAX_OUTPUT_TOKENS * args.anthropicOutputPricePerMillion) /
+      1_000_000;
+    const openaiCount = candidates.filter(
+      (candidate) => candidate.provider === "openai",
+    ).length;
+    const anthropicCount = candidates.filter(
+      (candidate) => candidate.provider === "anthropic",
+    ).length;
+    return sum + openaiCallCeiling * openaiCount + anthropicCallCeiling * anthropicCount;
+  }, 0);
 
   return {
-    readingId,
-    contentSha256: manifest.content_sha256,
-    model,
+    readings,
+    candidates,
+    openaiModel,
     efforts: args.efforts,
-    input: {
-      url: manifest.url,
-      ...(manifest.title ? { title: manifest.title } : {}),
-      extractedText,
-      similarReadings,
-    },
-    productionBaseline,
-    ...(productionUsage ? { productionUsage } : {}),
     inputPricePerMillion: args.inputPricePerMillion,
     outputPricePerMillion: args.outputPricePerMillion,
+    anthropicInputPricePerMillion: args.anthropicInputPricePerMillion,
+    anthropicOutputPricePerMillion: args.anthropicOutputPricePerMillion,
     priceDate: args.priceDate,
-    estimatedMaximumCostUsd: maximumCostPerCall * args.efforts.length,
+    estimatedMaximumCostUsd,
   };
 }
 
@@ -237,31 +379,31 @@ export async function runComparison(
   deps: RunComparisonDeps,
 ): Promise<ComparisonObservation[]> {
   const observations: ComparisonObservation[] = [];
-  for (const effort of plan.efforts) {
-    const startedAt = deps.now();
-    const result = await deps.summarize(plan.input, {
-      model: plan.model,
-      reasoningEffort: effort,
-    });
-    const latencyMs = deps.now() - startedAt;
-    if (result.usage.provider !== "openai") {
-      throw new Error(
-        `comparison candidate ${effort} returned ${result.usage.provider} usage`,
-      );
+  for (const reading of plan.readings) {
+    for (const candidate of plan.candidates) {
+      const startedAt = deps.now();
+      const result = await deps.summarize(reading.input, candidate);
+      const latencyMs = deps.now() - startedAt;
+      if (result.usage.provider !== candidate.provider) {
+        throw new Error(
+          `comparison candidate ${candidateLabel(candidate)} returned ${result.usage.provider} usage`,
+        );
+      }
+      const observation: ComparisonObservation = {
+        readingId: reading.readingId,
+        provider: candidate.provider,
+        model: candidate.model,
+        ...(candidate.provider === "openai"
+          ? { reasoningEffort: candidate.reasoningEffort }
+          : { anthropicEffort: candidate.anthropicEffort }),
+        latencyMs,
+        reading: result.reading,
+        usage: result.usage,
+        estimatedCostUsd: estimateActualCost(result.usage, plan),
+      };
+      observations.push(observation);
+      await deps.onProgress?.(observation);
     }
-    const observation = {
-      effort,
-      latencyMs,
-      reading: result.reading,
-      usage: result.usage,
-      estimatedCostUsd: estimateActualCost(
-        result.usage,
-        plan.inputPricePerMillion,
-        plan.outputPricePerMillion,
-      ),
-    };
-    observations.push(observation);
-    await deps.onProgress?.(observation);
   }
   return observations;
 }
@@ -306,27 +448,36 @@ export async function writeComparisonArtifacts(
   const reportPath = resolve(absoluteOutputDir, "report.md");
   const serializable = {
     generatedAt,
-    reading: {
-      id: plan.readingId,
-      url: plan.input.url,
-      title: plan.input.title,
-      content_sha256: plan.contentSha256,
-    },
     comparison: {
-      model: plan.model,
+      openai_model: plan.openaiModel,
       efforts: plan.efforts,
-      similar_readings: plan.input.similarReadings,
+      candidates: plan.candidates,
       pricing: {
         as_of: plan.priceDate,
-        input_per_million: plan.inputPricePerMillion,
-        output_per_million: plan.outputPricePerMillion,
+        openai: {
+          input_per_million: plan.inputPricePerMillion,
+          output_per_million: plan.outputPricePerMillion,
+        },
+        anthropic: {
+          input_per_million: plan.anthropicInputPricePerMillion,
+          output_per_million: plan.anthropicOutputPricePerMillion,
+        },
       },
     },
-    production_baseline: {
-      reading: plan.productionBaseline,
-      usage: plan.productionUsage,
-    },
-    candidates: observations,
+    readings: plan.readings.map((reading) => ({
+      id: reading.readingId,
+      url: reading.input.url,
+      title: reading.input.title,
+      content_sha256: reading.contentSha256,
+      similar_readings: reading.input.similarReadings,
+      production_baseline: {
+        reading: reading.productionBaseline,
+        usage: reading.productionUsage,
+      },
+      candidates: observations.filter(
+        (observation) => observation.readingId === reading.readingId,
+      ),
+    })),
   };
   await Promise.all([
     writeFile(resultsPath, JSON.stringify(serializable, null, 2) + "\n", "utf8"),
@@ -344,55 +495,284 @@ export function buildComparisonReport(
   observations: ComparisonObservation[],
   generatedAt: string,
 ): string {
-  const productionUsage =
-    plan.productionUsage?.provider === "openai"
-      ? plan.productionUsage
-      : undefined;
-  const productionRow = productionUsage
-    ? `| Production baseline | n/a | ${productionUsage.input_tokens} | ${productionUsage.output_tokens} | ${productionUsage.reasoning_tokens} | n/a |`
-    : "| Production baseline | n/a | n/a | n/a | n/a | n/a |";
-  const candidateRows = observations.map(
-    (item) =>
-      `| ${item.effort} | ${item.latencyMs} | ${item.usage.input_tokens} | ${item.usage.output_tokens} | ${item.usage.reasoning_tokens} | $${item.estimatedCostUsd.toFixed(6)} |`,
-  );
-  const contexts =
-    plan.input.similarReadings.length === 0
-      ? "None"
-      : plan.input.similarReadings
-          .map(
-            (item) =>
-              `- \`${item.id}\`${item.title ? ` — ${item.title}` : ""}`,
-          )
-          .join("\n");
-  const sections = [
-    readingSection("Production baseline", plan.productionBaseline),
-    ...observations.map((item) =>
-      readingSection(`${item.effort} effort`, item.reading),
-    ),
+  const metricRows = [
+    ...plan.readings.flatMap((reading) => {
+      const productionRow = productionMetricRow(reading);
+      const candidateRows = observations
+        .filter((item) => item.readingId === reading.readingId)
+        .map(
+          (item) =>
+            `| ${reading.readingId} | ${observationLabel(item)} | ${item.latencyMs} | ${item.usage.input_tokens} | ${item.usage.output_tokens} | ${extraTokenCell(item.usage)} | $${item.estimatedCostUsd.toFixed(6)} |`,
+        );
+      return [productionRow, ...candidateRows];
+    }),
   ];
-  return `# Summary effort comparison
+  const readingSections = plan.readings.flatMap((reading) => {
+    const related =
+      reading.input.similarReadings.length === 0
+        ? "None"
+        : reading.input.similarReadings
+            .map(
+              (item) =>
+                `- \`${item.id}\`${item.title ? ` — ${item.title}` : ""}`,
+            )
+            .join("\n");
+    const sections = [
+      readingSection("Production baseline", reading.productionBaseline),
+      ...observations
+        .filter((item) => item.readingId === reading.readingId)
+        .map((item) => readingSection(observationLabel(item), item.reading)),
+    ];
+    return [
+      `## ${reading.input.title ?? reading.readingId}`,
+      "",
+      `- Reading: [${reading.input.title ?? reading.readingId}](${reading.input.url})`,
+      `- Reading id: \`${reading.readingId}\``,
+      `- Content SHA-256: \`${reading.contentSha256}\``,
+      "",
+      "### Frozen similarity context",
+      "",
+      related,
+      "",
+      ...sections,
+    ];
+  });
+  return `# Summarizer comparison
 
-- Reading: [${plan.input.title ?? plan.readingId}](${plan.input.url})
-- Reading id: \`${plan.readingId}\`
-- Content SHA-256: \`${plan.contentSha256}\`
-- Model: \`${plan.model}\`
 - Generated: ${generatedAt}
-- Pricing: $${plan.inputPricePerMillion}/M input, $${plan.outputPricePerMillion}/M output (as of ${plan.priceDate})
+- OpenAI model: \`${plan.openaiModel}\`
+- OpenAI efforts: ${plan.efforts.join(", ")}
+- Anthropic: ${
+    plan.candidates.some((candidate) => candidate.provider === "anthropic")
+      ? `\`${candidateLabel(plan.candidates.find((candidate) => candidate.provider === "anthropic")!)}\``
+      : "omitted"
+  }
+- Pricing: OpenAI $${plan.inputPricePerMillion}/M input, $${plan.outputPricePerMillion}/M output; Anthropic $${plan.anthropicInputPricePerMillion}/M input, $${plan.anthropicOutputPricePerMillion}/M output (as of ${plan.priceDate})
 
-All local candidates used the exact same captured article and frozen similarity context. The context below is reconstructed from the production baseline's selected connections; it may not contain every original top-K candidate seen during production ingestion.
-
-## Frozen similarity context
-
-${contexts}
+All local candidates used the captured article and frozen similarity context for that reading. The context below is reconstructed from the production baseline's selected connections; it may not contain every original top-K candidate seen during production ingestion.
 
 ## Metrics
 
-| Candidate | Latency ms | Input tokens | Output tokens | Reasoning tokens | Estimated cost |
-| --- | ---: | ---: | ---: | ---: | ---: |
-${[productionRow, ...candidateRows].join("\n")}
+| Reading | Candidate | Latency ms | Input tokens | Output tokens | Reasoning / cache | Estimated cost |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+${metricRows.join("\n")}
 
-${sections.join("\n\n")}
+${readingSections.join("\n\n")}
 `;
+}
+
+export async function runCompareSummaryEffort(
+  argv: string[],
+  deps: CompareCliDeps,
+): Promise<CompareRunResult> {
+  const write = deps.stdout ?? ((text: string) => process.stdout.write(text));
+  const writeErr = deps.stderr ?? ((text: string) => process.stderr.write(text));
+  const args = parseComparisonArgs(argv);
+  if (!deps.credentials.READER_API_TOKEN) throw new Error("missing READER_API_TOKEN");
+  const plan = await prepareComparison(args, {
+    fetch: deps.fetch,
+    readerToken: deps.credentials.READER_API_TOKEN,
+  });
+  write(formatComparisonPlan(plan, args.execute));
+  if (!args.execute) {
+    write("No provider calls made. After explicit spend approval, pass --execute.\n");
+    return { mode: "plan", plan };
+  }
+
+  const hasOpenAI = plan.candidates.some((candidate) => candidate.provider === "openai");
+  const hasAnthropic = plan.candidates.some(
+    (candidate) => candidate.provider === "anthropic",
+  );
+  if (hasOpenAI && !deps.credentials.OPENAI_API_KEY) {
+    throw new Error("missing OPENAI_API_KEY");
+  }
+  if (hasAnthropic && !deps.credentials.ANTHROPIC_API_KEY) {
+    throw new Error("missing ANTHROPIC_API_KEY");
+  }
+
+  const generatedAt = new Date(deps.now()).toISOString();
+  const outputDir =
+    args.outputDir ?? defaultOutputDir(plan, generatedAt);
+  write(`  candidate checkpoints: ${resolve(outputDir)}\n`);
+  const summarize =
+    deps.summarize ??
+    ((input, candidate) =>
+      summarizeReading(
+        input,
+        summarizerDepsForCandidate(candidate, {
+          fetch: deps.fetch,
+          openaiApiKey: deps.credentials.OPENAI_API_KEY ?? "",
+          anthropicApiKey: deps.credentials.ANTHROPIC_API_KEY,
+        }),
+      ));
+  const { observations, paths } = await runCheckpointedComparison(
+    plan,
+    outputDir,
+    generatedAt,
+    {
+      now: deps.now,
+      summarize,
+      onProgress: (observation) => {
+        writeErr(
+          `${observation.readingId} ${observationLabel(observation)}: ok (${observation.latencyMs} ms, ` +
+            `$${observation.estimatedCostUsd.toFixed(6)})\n`,
+        );
+      },
+    },
+  );
+  const totalCost = observations.reduce(
+    (sum, observation) => sum + observation.estimatedCostUsd,
+    0,
+  );
+  write(
+    `Wrote ${observations.length} candidates to ${resolve(outputDir)}\n` +
+      `  report: ${paths.reportPath}\n` +
+      `  results: ${paths.resultsPath}\n` +
+      `  estimated total: $${totalCost.toFixed(6)}\n`,
+  );
+  return { mode: "execute", plan, observations, paths, outputDir };
+}
+
+function uniqueTargets(targets: string[]): string[] {
+  return [...new Set(targets)];
+}
+
+function resolveOpenAIModel(
+  override: string | undefined,
+  readings: FrozenReading[],
+): string {
+  if (override) return override;
+  const models = [
+    ...new Set(
+      readings
+        .map((reading) => reading.productionUsage)
+        .filter(
+          (usage): usage is Extract<SummarizationUsage, { provider: "openai" }> =>
+            usage?.provider === "openai",
+        )
+        .map((usage) => usage.model),
+    ),
+  ];
+  return models.length === 1 ? models[0]! : DEFAULT_OPENAI_SUMMARIZATION_MODEL;
+}
+
+function estimateInputTokens(reading: FrozenReading): number {
+  return reading.productionUsage?.provider === "openai"
+    ? reading.productionUsage.input_tokens
+    : Math.ceil(reading.input.extractedText.length / 3);
+}
+
+async function freezeReading(
+  target: string,
+  baseUrl: string,
+  deps: PrepareComparisonDeps,
+): Promise<FrozenReading> {
+  const readingId = target.startsWith("rd_")
+    ? target
+    : await lookupReadingId(target, baseUrl, deps);
+  const manifest = ManifestSchema.parse(
+    await getJson(`${baseUrl}/api/readings/${encodeURIComponent(readingId)}`, deps),
+  );
+  if (manifest.status !== "ready" || manifest.content_status !== "captured") {
+    throw new Error(
+      `reading ${readingId} must be ready with captured content (got ${manifest.status}/${manifest.content_status})`,
+    );
+  }
+
+  const extractedText = await getText(
+    `${baseUrl}/api/readings/${encodeURIComponent(readingId)}/content`,
+    deps,
+  );
+  const rawContent = await getBytes(
+    `${baseUrl}/api/readings/${encodeURIComponent(readingId)}/content/raw`,
+    deps,
+  );
+  const actualSha = createHash("sha256").update(rawContent).digest("hex");
+  if (actualSha !== manifest.content_sha256) {
+    throw new Error(
+      `content hash mismatch for ${readingId}: manifest=${manifest.content_sha256} downloaded=${actualSha}`,
+    );
+  }
+
+  const productionBaseline = ReadingSummarySchema.parse({
+    title: manifest.title,
+    tldr: manifest.tldr,
+    tags: manifest.tags,
+    keywords: manifest.keywords,
+    people: manifest.people,
+    orgs: manifest.orgs,
+    novelty_verdict: manifest.novelty_verdict,
+    connections: manifest.connections,
+    summary_markdown: manifest.summary_markdown,
+  });
+  const similarReadings = await Promise.all(
+    productionBaseline.connections.map(async (connection) => {
+      const related = ManifestSchema.parse(
+        await getJson(
+          `${baseUrl}/api/readings/${encodeURIComponent(connection.id)}`,
+          deps,
+        ),
+      );
+      return {
+        id: related.id,
+        url: related.url,
+        ...(related.title ? { title: related.title } : {}),
+        ...(related.tldr ? { tldr: related.tldr } : {}),
+      };
+    }),
+  );
+  const productionUsage =
+    manifest.usage && "summarization" in manifest.usage
+      ? manifest.usage.summarization
+      : undefined;
+
+  return {
+    readingId,
+    contentSha256: manifest.content_sha256,
+    input: {
+      url: manifest.url,
+      ...(manifest.title ? { title: manifest.title } : {}),
+      extractedText,
+      similarReadings,
+    },
+    productionBaseline,
+    ...(productionUsage ? { productionUsage } : {}),
+  };
+}
+
+function defaultOutputDir(plan: ComparisonPlan, generatedAt: string): string {
+  const stamp = generatedAt.replace(/[:.]/g, "-");
+  if (plan.readings.length === 1) {
+    return `.summarizer-comparisons/${plan.readings[0]!.readingId}/${stamp}`;
+  }
+  return `.summarizer-comparisons/${stamp}`;
+}
+
+function observationLabel(item: {
+  provider: ComparisonCandidate["provider"];
+  model: string;
+  reasoningEffort?: OpenAIReasoningEffort;
+  anthropicEffort?: "none";
+}): string {
+  if (item.provider === "openai") {
+    return `${item.provider}/${item.model}/${item.reasoningEffort ?? "n/a"}`;
+  }
+  return `${item.provider}/${item.model}/${item.anthropicEffort ?? "none"}`;
+}
+
+function extraTokenCell(usage: SummarizationUsage): string {
+  if (usage.provider === "openai") {
+    return String(usage.reasoning_tokens);
+  }
+  return `cache r${usage.cache_read_input_tokens}/w${usage.cache_creation_input_tokens}`;
+}
+
+function productionMetricRow(reading: FrozenReading): string {
+  const usage = reading.productionUsage;
+  if (!usage) {
+    return `| ${reading.readingId} | Production baseline | n/a | n/a | n/a | n/a | n/a |`;
+  }
+  return `| ${reading.readingId} | Production baseline | n/a | ${usage.input_tokens} | ${usage.output_tokens} | ${extraTokenCell(usage)} | n/a |`;
 }
 
 function readingSection(label: string, reading: ReadingSummary): string {
@@ -402,17 +782,17 @@ function readingSection(label: string, reading: ReadingSummary): string {
       : reading.connections
           .map((item) => `- \`${item.id}\`: ${item.reason}`)
           .join("\n");
-  return `## ${label}
+  return `### ${label}
 
-### TL;DR
+#### TL;DR
 
 ${reading.tldr}
 
-### Summary
+#### Summary
 
 ${reading.summary_markdown}
 
-### Structured fields
+#### Structured fields
 
 - Title: ${reading.title}
 - Tags: ${reading.tags.join(", ")}
@@ -421,25 +801,39 @@ ${reading.summary_markdown}
 - Organizations: ${reading.orgs.join(", ") || "None"}
 - Novelty: ${reading.novelty_verdict}
 
-### Connections
+#### Connections
 
 ${connections}`;
 }
 
 function estimateActualCost(
-  usage: OpenAIUsage,
-  inputPricePerMillion: number,
-  outputPricePerMillion: number,
+  usage: SummarizationUsage,
+  plan: Pick<
+    ComparisonPlan,
+    | "inputPricePerMillion"
+    | "outputPricePerMillion"
+    | "anthropicInputPricePerMillion"
+    | "anthropicOutputPricePerMillion"
+  >,
 ): number {
-  const uncachedInput = Math.max(
-    0,
-    usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens,
-  );
+  if (usage.provider === "openai") {
+    const uncachedInput = Math.max(
+      0,
+      usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens,
+    );
+    const value =
+      (uncachedInput * plan.inputPricePerMillion +
+        usage.cached_input_tokens * plan.inputPricePerMillion * 0.1 +
+        usage.cache_write_tokens * plan.inputPricePerMillion * 1.25 +
+        usage.output_tokens * plan.outputPricePerMillion) /
+      1_000_000;
+    return Math.round(value * 100_000_000) / 100_000_000;
+  }
   const value =
-    (uncachedInput * inputPricePerMillion +
-      usage.cached_input_tokens * inputPricePerMillion * 0.1 +
-      usage.cache_write_tokens * inputPricePerMillion * 1.25 +
-      usage.output_tokens * outputPricePerMillion) /
+    (usage.input_tokens * plan.anthropicInputPricePerMillion +
+      usage.cache_creation_input_tokens * plan.anthropicInputPricePerMillion * 1.25 +
+      usage.cache_read_input_tokens * plan.anthropicInputPricePerMillion * 0.1 +
+      usage.output_tokens * plan.anthropicOutputPricePerMillion) /
     1_000_000;
   return Math.round(value * 100_000_000) / 100_000_000;
 }
@@ -513,28 +907,45 @@ function loadCredentials(): Record<string, string | undefined> {
 function printUsage(): void {
   process.stdout.write(`Usage: npx tsx .agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts --target <url-or-id> [options]
 
-Reads an existing production reading and compares OpenAI summarization efforts
-locally. Dry-run by default; --execute makes paid OpenAI calls. Production is
-never mutated.
+Reads existing production readings and compares summarizer candidates locally
+(OpenAI efforts plus optional Anthropic). Dry-run by default; --execute is
+the only paid path. Production is never mutated: GET-only against reading-lite,
+no /reprocess, and no manifest/vector/list writes.
 
-  --target <url-or-id>       Canonical source URL or reading id (required).
-  --effort <effort>          Candidate effort; repeatable. Default: low,
-                             medium, high, xhigh.
-  --model <model>            Override the production manifest's OpenAI model.
-  --base-url <url>           Reading service. Default: ${DEFAULT_BASE_URL}.
-  --output-dir <path>        Artifact directory. Default:
-                             .summarizer-comparisons/<id>/<timestamp>.
-  --input-price <usd>        Standard input price per 1M tokens.
-                             Default: ${DEFAULT_INPUT_PRICE_PER_MILLION}.
-  --output-price <usd>       Standard output price per 1M tokens.
-                             Default: ${DEFAULT_OUTPUT_PRICE_PER_MILLION}.
-  --price-date <date>        Pricing provenance date. Default: ${DEFAULT_PRICE_DATE}.
-  --execute                  Make paid OpenAI calls and write artifacts.
-  --help                     Show this help.
+  --target <url-or-id>         Canonical source URL or reading id. Repeatable.
+  --effort <effort>            OpenAI candidate effort; repeatable.
+                               none|low|medium|high|xhigh|max.
+                               Default: low, medium, high, xhigh.
+  --model <model>              OpenAI model override (default: production
+                               OpenAI model, else gpt-5.6-terra).
+  --anthropic-model <model>    Anthropic model. Default: ${DEFAULT_ANTHROPIC_MODEL}.
+  --anthropic-effort <effort>  Optional. low|medium|high|max only. On this
+                               branch the Anthropic path has no effort field,
+                               so this flag fails closed. Omit it to run
+                               Sonnet once with no effort field.
+  --openai-only                OpenAI-only matrix (skip Sonnet).
+  --base-url <url>             Reading service. Default: ${DEFAULT_BASE_URL}.
+  --output-dir <path>          Artifact directory. Default:
+                               .summarizer-comparisons/<id>/<timestamp> (one
+                               reading) or .summarizer-comparisons/<timestamp>
+                               (N readings).
+  --input-price <usd>          OpenAI standard input price per 1M tokens.
+                               Default: ${DEFAULT_INPUT_PRICE_PER_MILLION}.
+  --output-price <usd>         OpenAI standard output price per 1M tokens.
+                               Default: ${DEFAULT_OUTPUT_PRICE_PER_MILLION}.
+  --anthropic-input-price <usd> Anthropic input price per 1M tokens.
+                               Default: ${DEFAULT_ANTHROPIC_INPUT_PRICE_PER_MILLION}.
+  --anthropic-output-price <usd> Anthropic output price per 1M tokens.
+                               Default: ${DEFAULT_ANTHROPIC_OUTPUT_PRICE_PER_MILLION}.
+  --price-date <date>          Pricing provenance date. Default: ${DEFAULT_PRICE_DATE}.
+  --execute                    Make paid provider calls and write artifacts.
+  --help                       Show this help.
 
 Credentials resolve from process env, .prd.vars, then .dev.vars. The runner
-uses GET requests only against reading-lite and sends the frozen input directly
-to OpenAI with store:false through the production summarizer module.
+uses GET requests only against reading-lite and sends each frozen input through
+the production summarizeReading() module (OpenAI store:false; Anthropic tool
+use). Production OpenAI stays gpt-5.6-terra; this runner does not change
+Worker config.
 `);
 }
 
@@ -543,69 +954,11 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     printUsage();
     return;
   }
-  const args = parseComparisonArgs(argv);
-  const vars = loadCredentials();
-  if (!vars.READER_API_TOKEN) throw new Error("missing READER_API_TOKEN");
-  const plan = await prepareComparison(args, {
+  await runCompareSummaryEffort(argv, {
     fetch: globalThis.fetch,
-    readerToken: vars.READER_API_TOKEN,
+    now: () => Date.now(),
+    credentials: loadCredentials(),
   });
-  process.stdout.write(
-    `${args.execute ? "[EXECUTE]" : "[DRY RUN]"} ${plan.readingId}\n` +
-      `  source: ${plan.input.url}\n` +
-      `  model: ${plan.model}\n` +
-      `  efforts: ${plan.efforts.join(", ")}\n` +
-      `  frozen similar readings: ${plan.input.similarReadings.length}\n` +
-      `  conservative maximum: $${plan.estimatedMaximumCostUsd.toFixed(4)} ` +
-      `(pricing as of ${plan.priceDate})\n`,
-  );
-  if (!args.execute) {
-    process.stdout.write(
-      "No OpenAI calls made. After explicit spend approval, pass --execute.\n",
-    );
-    return;
-  }
-  if (!vars.OPENAI_API_KEY) throw new Error("missing OPENAI_API_KEY");
-
-  const generatedAt = new Date().toISOString();
-  const outputDir =
-    args.outputDir ??
-    `.summarizer-comparisons/${plan.readingId}/${generatedAt.replace(/[:.]/g, "-")}`;
-  process.stdout.write(`  candidate checkpoints: ${resolve(outputDir)}\n`);
-  const { observations, paths } = await runCheckpointedComparison(
-    plan,
-    outputDir,
-    generatedAt,
-    {
-      now: () => Date.now(),
-      summarize: (input, candidate) =>
-        summarizeReading(input, {
-          fetch: globalThis.fetch,
-          provider: "openai",
-          openaiApiKey: vars.OPENAI_API_KEY!,
-          openaiModel: candidate.model,
-          openaiReasoningEffort: candidate.reasoningEffort,
-          anthropicApiKey: vars.ANTHROPIC_API_KEY,
-          anthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
-        }),
-      onProgress: (observation) => {
-        process.stderr.write(
-          `${observation.effort}: ok (${observation.latencyMs} ms, ` +
-            `$${observation.estimatedCostUsd.toFixed(6)})\n`,
-        );
-      },
-    },
-  );
-  const totalCost = observations.reduce(
-    (sum, observation) => sum + observation.estimatedCostUsd,
-    0,
-  );
-  process.stdout.write(
-    `Wrote ${observations.length} candidates to ${resolve(outputDir)}\n` +
-      `  report: ${paths.reportPath}\n` +
-      `  results: ${paths.resultsPath}\n` +
-      `  estimated total: $${totalCost.toFixed(6)}\n`,
-  );
 }
 
 if (

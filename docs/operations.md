@@ -570,6 +570,26 @@ outside the seven-day recent-search window, the reading lands `failed` with:
 This personal tool does not implement X deletion/edit compliance
 synchronization.
 
+## Comparing summarizers on production readings
+
+To compare OpenAI (including `max`) and Anthropic Sonnet on one or more
+**existing production readings**, use the compare-summary-effort skill — not
+`ops eval summarizer` (that is the fixture-based quality matrix).
+
+```sh
+npx tsx .agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts \
+  --target rd_EXAMPLE \
+  --target 'https://example.com/article' \
+  --model gpt-5.6-luna \
+  --effort max
+```
+
+Plans by default (prints the readings × candidates matrix and a conservative
+cost ceiling). `--execute` is the only paid path. Production is GET-only: no
+`/reprocess`, no manifest/vector/list writes, no wrangler or production config
+change. Anthropic effort is optional; omit `--anthropic-effort` to run Sonnet
+once with no effort field. See `.agents/skills/compare-summary-effort/SKILL.md`.
+
 ## Sources that need a local skill
 
 ### Reddit

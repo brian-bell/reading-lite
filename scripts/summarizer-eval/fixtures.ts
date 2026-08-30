@@ -34,12 +34,34 @@ export interface EvaluationCase {
   expected: EvaluationExpectation;
 }
 
+export const ANTHROPIC_EVAL_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "max",
+] as const;
+export type AnthropicEvalEffort = (typeof ANTHROPIC_EVAL_EFFORTS)[number];
+
 export interface EvaluationCandidate {
   id: string;
   label: string;
   provider: "openai" | "anthropic";
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  // Pinned Anthropic effort. "none" means no effort field is sent to the
+  // Worker path. Ambient ANTHROPIC_SUMMARIZATION_REASONING_EFFORT must not
+  // fill this in.
+  anthropicEffort?: AnthropicEvalEffort;
+}
+
+export function evaluationCandidateIdentity(
+  candidate: EvaluationCandidate,
+): string {
+  if (candidate.provider === "openai") {
+    return `${candidate.provider}/${candidate.model} effort=${candidate.reasoningEffort ?? "none"}`;
+  }
+  return `${candidate.provider}/${candidate.model} effort=${candidate.anthropicEffort ?? "none"}`;
 }
 
 const priorLatency = {
@@ -301,6 +323,7 @@ export const EVALUATION_CANDIDATES: EvaluationCandidate[] = [
     label: "Anthropic Sonnet 4.6",
     provider: "anthropic",
     model: "claude-sonnet-4-6",
+    anthropicEffort: "none",
   },
   {
     id: "terra-none",

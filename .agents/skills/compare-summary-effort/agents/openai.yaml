@@ -1,4 +1,4 @@
 interface:
-  display_name: "Compare Summary Effort"
-  short_description: "Compare OpenAI summary efforts locally"
-  default_prompt: "Use $compare-summary-effort to compare low through xhigh OpenAI summaries for a production reading URL."
+  display_name: "Compare Production Summarizers"
+  short_description: "Compare OpenAI and Anthropic summaries on production readings"
+  default_prompt: "Use $compare-summary-effort to compare OpenAI (including max) and Claude Sonnet summaries for one or more production reading URLs or ids. Dry-run first, then --execute. Anthropic effort is optional and must be omitted unless the Worker path supports it."
