@@ -321,6 +321,8 @@ function VerifyPage() {
               try {
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
+                await queryClient.cancelQueries({ queryKey: ["whoami"] });
+                await queryClient.resetQueries({ queryKey: ["whoami"] });
                 await queryClient.fetchQuery({ queryKey: ["whoami"] });
                 navigate(consumeLoginReturnPath(searchParams.get("next")), { replace: true });
               } catch (e) {

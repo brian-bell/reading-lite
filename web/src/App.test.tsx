@@ -434,6 +434,57 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
   });
 
+  it("does not join an in-flight signed-out whoami after redeem", async () => {
+    let signedIn = false;
+    let whoamiStarted = 0;
+    let releaseFirstWhoami: () => void = () => undefined;
+    const firstWhoamiStarted = new Promise<void>((resolve) => {
+      releaseFirstWhoami = resolve;
+    });
+    let holdFirstWhoami: (value: void) => void = () => undefined;
+    const firstWhoamiHeld = new Promise<void>((resolve) => {
+      holdFirstWhoami = resolve;
+    });
+
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        const sessionAtStart = signedIn;
+        whoamiStarted += 1;
+        if (whoamiStarted === 1) {
+          releaseFirstWhoami();
+          await firstWhoamiHeld;
+        }
+        if (!sessionAtStart) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
+    const continueButton = await screen.findByRole("button", { name: "Continue" });
+    await firstWhoamiStarted;
+
+    const clicked = user.click(continueButton);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => new URL((c[0] as Request).url).pathname === "/api/auth/redeem")
+      ).toBe(true);
+    });
+    holdFirstWhoami();
+    await clicked;
+
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
   it("sends a signed-out reading route to login with a return path", async () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
