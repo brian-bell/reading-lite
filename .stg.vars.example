@@ -41,9 +41,9 @@ RESEND_API_KEY=
 # Informational overrides; the deployed staging defaults live in wrangler.toml.
 SUMMARIZER_PROVIDER=openai
 OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra
-OPENAI_SUMMARIZATION_REASONING_EFFORT=medium
+OPENAI_SUMMARIZATION_REASONING_EFFORT=high
 ANTHROPIC_MODEL=claude-sonnet-5
-ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium
+ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=high
 
 # Optional: used only for scripts/manual smoke and docs examples.
 READER_URL=https://reading-lite-staging.<workers-subdomain>.workers.dev/readings

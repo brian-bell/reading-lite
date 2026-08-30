@@ -130,7 +130,7 @@ matrix, not a substitute for real readings.
   `.dev.vars` / `.stg.vars` / `.prd.vars` (same `AUTH_ROOT_SECRET` as the
   Worker secret). `READER_API_TOKEN` is not a runtime auth fallback.
   Checked-in defaults: OpenAI `gpt-5.6-terra`; staging and production use
-  `medium` effort, local uses `low` (OpenAI
+  `high` effort, local uses `low` (OpenAI
   `OPENAI_SUMMARIZATION_REASONING_EFFORT` and Anthropic
   `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT`). Staging teardown's R2 emptying needs
   `CORPUS_R2_*` creds in env or `.corpus.vars`.
