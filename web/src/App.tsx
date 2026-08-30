@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   BrowserRouter,
@@ -236,7 +236,7 @@ function LoginPage({
   const [error, setError] = useState<string | null>(null);
   const next = searchParams.get("next");
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (identity) return;
     rememberLoginReturnPath(next);
   }, [identity, next]);
