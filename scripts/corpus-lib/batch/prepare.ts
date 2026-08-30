@@ -5,6 +5,8 @@ import type { BatchTarget, DroppedTarget } from "./types";
 export interface PrepareDeps {
   // Reads the current manifest for a key prefix (R2 via S3), or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
+  newAttemptId(): string;
+  now(): string;
 }
 
 export interface PrepareResult {
@@ -33,6 +35,9 @@ export async function prepareTargets(
       urlHash: manifest.url_hash,
       keyPrefix: row.key_prefix,
       createdAt: manifest.created_at,
+      attemptId: deps.newAttemptId(),
+      attemptStartedAt: deps.now(),
+      trigger: "reprocess",
       manifest,
     });
   }

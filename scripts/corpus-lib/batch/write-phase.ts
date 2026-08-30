@@ -1,6 +1,7 @@
 import {
   type Manifest,
   type ManifestError,
+  type ProcessingAttemptSummary,
   type SummarizationUsage,
 } from "../../../src/schemas/manifest";
 import type { ReadingSummary } from "../../../src/schemas/reading-summary";
@@ -347,9 +348,7 @@ async function writeNormalizedResults(
     const embedding = embeddings[i]!;
     // Mirror process-reading.ts: openai_embedding_tokens = query + tldr embed.
     const embeddingTokens = target.queryEmbedTokens + (tldrTokens[i] ?? 0);
-    // SidecarTarget satisfies ReadingIdentity structurally. attempt: null is
-    // the explicit statement that the sidecar carries no attempt identity
-    // (reading-lite-1cm mints one at prepare time).
+    const finishedAt = deps.now();
     const manifest = readyManifest(
       {
         identity: target,
@@ -358,9 +357,9 @@ async function writeNormalizedResults(
         ...(target.similarity === undefined ? {} : { similarity: target.similarity }),
         content: contentFactsOf(target),
         usage: { summarization: usage, openai_embedding_tokens: embeddingTokens },
-        attempt: null,
+        attempt: terminalAttempt(target, "succeeded", finishedAt),
       },
-      deps.now(),
+      finishedAt,
     );
     successes.push({ target, manifest });
     vectors.push({
@@ -390,12 +389,14 @@ async function writeNormalizedResults(
   //    through by-id and would 404, and a resubmit could mint a duplicate. The
   //    write is idempotent for the recover path (same id → same key_prefix).
   for (const { target, error } of failures) {
+    const finishedAt = error.failed_at ?? deps.now();
+    const attempt = terminalAttempt(target, "failed", finishedAt, error);
     const manifest = target.preserveReadyManifest
-      ? rollForward(target.preserveReadyManifest, null, deps.now())
+      ? rollForward(target.preserveReadyManifest, attempt, finishedAt)
       : failedManifest(
           target,
-          { sourceType: target.sourceType, error, attempt: null, content: contentFactsOf(target) },
-          deps.now(),
+          { sourceType: target.sourceType, error, attempt, content: contentFactsOf(target) },
+          finishedAt,
         );
     await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
     await deps.r2.put(
@@ -416,6 +417,31 @@ async function writeNormalizedResults(
   }
 
   return report;
+}
+
+function terminalAttempt(
+  target: SidecarTarget,
+  status: "succeeded" | "failed",
+  finishedAt: string,
+  error?: ManifestError,
+): ProcessingAttemptSummary | null {
+  if (target.attemptId === undefined) return null;
+  if (target.attemptStartedAt === undefined || target.trigger === undefined) {
+    throw new Error(`sidecar target ${target.id} has an incomplete attempt identity`);
+  }
+  return {
+    id: target.attemptId,
+    trigger: target.trigger,
+    status,
+    ...(status === "succeeded"
+      ? { stage: "write_indexes" as const }
+      : error?.stage === undefined
+        ? {}
+        : { stage: error.stage }),
+    started_at: target.attemptStartedAt,
+    finished_at: finishedAt,
+    ...(error === undefined ? {} : { error }),
+  };
 }
 
 // The camelCase sidecar fields → the snake_case ContentFacts the shared

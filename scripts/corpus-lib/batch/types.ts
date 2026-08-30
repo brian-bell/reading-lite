@@ -1,5 +1,8 @@
 import type { SimilaritySnapshot } from "../../../src/modules/stores/similarity-store";
-import type { Manifest } from "../../../src/schemas/manifest";
+import type {
+  Manifest,
+  ProcessingAttemptTrigger,
+} from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type {
   OpenAIReasoningEffort,
@@ -15,6 +18,9 @@ export interface BatchTarget {
   urlHash: string;
   keyPrefix: string;
   createdAt: string;
+  attemptId: string;
+  attemptStartedAt: string;
+  trigger: ProcessingAttemptTrigger;
   manifest: Manifest;
 }
 
@@ -75,6 +81,10 @@ export interface SidecarTarget {
   url: string;
   urlHash: string;
   createdAt: string;
+  // Optional as a group so pre-upgrade sidecars remain resumable.
+  attemptId?: string;
+  attemptStartedAt?: string;
+  trigger?: ProcessingAttemptTrigger;
   sourceType: "url" | "markdown";
   contentType: string;
   contentStatus: string;

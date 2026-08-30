@@ -25,6 +25,9 @@ function target(over: Partial<Manifest> = {}): BatchTarget {
     urlHash: manifest.url_hash,
     keyPrefix: "readings/2026/01/01T000000Z-rd_a",
     createdAt: manifest.created_at,
+    attemptId: "at_extract_1",
+    attemptStartedAt: "2026-06-22T12:00:00.000Z",
+    trigger: "reprocess",
     manifest,
   };
 }

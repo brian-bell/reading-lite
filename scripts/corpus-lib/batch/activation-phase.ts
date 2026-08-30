@@ -288,11 +288,11 @@ function buildPendingManifest(target: ExtractedTarget, now: string): Manifest {
     source_type: "markdown",
     status: "pending",
     active_attempt: {
-      id: `batch_${target.target.readingId}`,
-      trigger: "import",
+      id: target.target.attemptId,
+      trigger: target.target.trigger,
       status: "running",
       stage: "summarize",
-      started_at: now,
+      started_at: target.target.attemptStartedAt,
     },
     error: undefined,
     extracted_bytes: markdownBytes,
@@ -319,34 +319,33 @@ function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: 
     source_type: m.source_type ?? "url",
     status: "pending",
     active_attempt: {
-      id: `batch_${target.target.readingId}`,
-      trigger: "reprocess",
+      id: target.target.attemptId,
+      trigger: target.target.trigger,
       status: "running",
       stage: "summarize",
-      started_at: now,
+      started_at: target.target.attemptStartedAt,
     },
     content_type: fresh?.content_type ?? m.content_type,
     content_status: "captured",
     content_bytes: fresh?.content_bytes ?? m.content_bytes,
     content_sha256: fresh?.content_sha256 ?? m.content_sha256,
     extracted_bytes: markdownBytes,
-    ...preservedReadySnapshotField(m, target.target.readingId),
+    ...preservedReadySnapshotField(m),
     created_at: m.created_at,
     updated_at: now,
   });
 }
 
-function preservedReadySnapshotField(m: Manifest, readingId: string): Partial<Manifest> {
-  const snapshot = readySnapshotForActivation(m, readingId);
+function preservedReadySnapshotField(m: Manifest): Partial<Manifest> {
+  const snapshot = readySnapshotForActivation(m);
   return snapshot ? { preserve_ready_manifest: snapshot } : {};
 }
 
-function readySnapshotForActivation(m: Manifest, readingId: string): Manifest | undefined {
+function readySnapshotForActivation(m: Manifest): Manifest | undefined {
   if (m.status === "ready") return withoutNestedReadySnapshot(m);
   if (
     m.status !== "pending" ||
-    m.active_attempt?.id !== `batch_${readingId}` ||
-    m.active_attempt.trigger !== "reprocess"
+    m.active_attempt?.trigger !== "reprocess"
   ) {
     return undefined;
   }
