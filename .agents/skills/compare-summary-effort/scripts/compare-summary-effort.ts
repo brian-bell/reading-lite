@@ -8,6 +8,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  parseAnthropicEffort as parseModelAwareAnthropicEffort,
   parseReasoningEffort,
   summarizeReading,
   type AnthropicReasoningEffort,
@@ -188,10 +189,14 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
   if (values["openai-only"] && values["anthropic-effort"]) {
     throw new Error("--anthropic-effort cannot be combined with --openai-only");
   }
+  const includeAnthropic = values["openai-only"] !== true;
   const anthropicModel = values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL;
   const anthropicEffort = values["anthropic-effort"]
     ? parseAnthropicEffort(values["anthropic-effort"])
     : DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+  if (includeAnthropic) {
+    parseModelAwareAnthropicEffort(anthropicEffort, anthropicModel);
+  }
   const efforts =
     values.effort!.length === 0
       ? [...DEFAULT_EFFORTS]
@@ -223,7 +228,7 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
     baseUrl: values["base-url"]!.replace(/\/$/, ""),
     execute: values.execute!,
     efforts,
-    includeAnthropic: values["openai-only"] !== true,
+    includeAnthropic,
     anthropicModel,
     anthropicEffort,
     outputDir: values["output-dir"],

@@ -45,7 +45,9 @@ that job — that command is the fixture-based quality matrix, not live readings
 3. Anthropic effort is pinned to the actual `output_config.effort` sent. Default
    is `low`. Pass `--anthropic-effort` (`low|medium|high|xhigh|max`) to pin a
    different Sonnet 5 effort. `"none"` is OpenAI-only and is rejected. Ambient
-   `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` cannot change a run.
+   `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` cannot change a run. Incompatible
+   `--anthropic-model` / `--anthropic-effort` pairs fail at argv parse, before
+   freeze or spend.
 
 4. Check current official OpenAI and Anthropic pricing when the runner's pricing
    date is stale or a model changed. Pass current standard rates with

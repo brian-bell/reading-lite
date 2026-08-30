@@ -271,6 +271,87 @@ describe("compare-summary-effort", () => {
       anthropicModel: "claude-sonnet-5",
       anthropicEffort: "high",
     });
+    expect(
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-sonnet-4-6",
+        "--anthropic-effort",
+        "max",
+      ]),
+    ).toMatchObject({
+      anthropicModel: "claude-sonnet-4-6",
+      anthropicEffort: "max",
+    });
+  });
+
+  it("rejects thinking-incompatible Anthropic model/effort pairs at argv parse before freeze or spend", async () => {
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-opus-5",
+        "--anthropic-effort",
+        "max",
+      ]),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-sonnet-4-6",
+        "--anthropic-effort",
+        "xhigh",
+      ]),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-fable-5",
+      ]),
+    ).toThrow(/unsupported ANTHROPIC_MODEL for effort: claude-fable-5/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--openai-only",
+        "--anthropic-model",
+        "claude-fable-5",
+      ]),
+    ).not.toThrow();
+
+    const fetchFn = vi.fn<typeof fetch>();
+    const summarize = vi.fn();
+    await expect(
+      runCompareSummaryEffort(
+        [
+          "--target",
+          "rd_MAIN",
+          "--anthropic-model",
+          "claude-opus-5",
+          "--anthropic-effort",
+          "max",
+          "--execute",
+        ],
+        {
+          fetch: fetchFn,
+          now: () => Date.parse("2026-08-03T04:00:00.000Z"),
+          credentials: {
+            READER_API_TOKEN: "reader-token",
+            OPENAI_API_KEY: "sk-openai",
+            ANTHROPIC_API_KEY: "sk-ant",
+          },
+          summarize,
+        },
+      ),
+    ).rejects.toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
   });
 
   it("resolves a URL into one frozen comparison input using production GETs only", async () => {
