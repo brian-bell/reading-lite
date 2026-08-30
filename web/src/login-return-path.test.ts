@@ -24,20 +24,25 @@ describe("safeReadingReturnPath", () => {
 
 describe("login return path storage", () => {
   afterEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
   });
 
-  it("remembers only a safe next and consumes it once", () => {
+  it("remembers only a safe next in localStorage and consumes it once", () => {
     rememberLoginReturnPath("https://evil.example");
+    expect(localStorage.getItem(loginNextStorageKey)).toBeNull();
     expect(sessionStorage.getItem(loginNextStorageKey)).toBeNull();
     rememberLoginReturnPath("/readings/rd_ONE");
+    expect(localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    expect(sessionStorage.getItem(loginNextStorageKey)).toBeNull();
     expect(consumeLoginReturnPath(null)).toBe("/readings/rd_ONE");
     expect(consumeLoginReturnPath(null)).toBe("/");
+    expect(localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
   it("prefers a safe query next over storage", () => {
     rememberLoginReturnPath("/readings/rd_STORED");
     expect(consumeLoginReturnPath("/readings/rd_QUERY")).toBe("/readings/rd_QUERY");
-    expect(sessionStorage.getItem(loginNextStorageKey)).toBeNull();
+    expect(localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 });

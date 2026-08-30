@@ -91,7 +91,7 @@ function AppRoutes() {
   return (
     <Shell identity={identity} onSignedOut={() => identityQuery.refetch()}>
       <Routes>
-        <Route path="/login" element={<LoginPage identity={identity} />} />
+        <Route path="/login" element={<LoginPage identity={identity} identityQuery={identityQuery} />} />
         <Route path="/login/verify" element={<VerifyPage />} />
         <Route path="/auth/verify" element={<VerifyPage />} />
         <Route path="/" element={<HomeRoute identity={identity} identityQuery={identityQuery} />} />
@@ -128,13 +128,13 @@ function HomeRoute({
   identityQuery: ReturnType<typeof useIdentity>;
 }) {
   if (identity) return <ReadingList />;
-  if (identityQuery.isLoading) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
   if (identityQuery.isError) {
     return (
       <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
     );
   }
-  return <LoginPage identity={identity} />;
+  return <LoginPage identity={identity} identityQuery={identityQuery} />;
 }
 
 function ReadingRoute({
@@ -146,7 +146,7 @@ function ReadingRoute({
 }) {
   const location = useLocation();
   if (identity) return <ReadingDetail />;
-  if (identityQuery.isLoading) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
   if (identityQuery.isError) {
     return (
       <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
@@ -223,7 +223,13 @@ function IdentityBar({
   );
 }
 
-function LoginPage({ identity }: { identity: WhoamiResponse | null }) {
+function LoginPage({
+  identity,
+  identityQuery
+}: {
+  identity: WhoamiResponse | null;
+  identityQuery: ReturnType<typeof useIdentity>;
+}) {
   const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
@@ -231,12 +237,19 @@ function LoginPage({ identity }: { identity: WhoamiResponse | null }) {
   const next = searchParams.get("next");
 
   useEffect(() => {
+    if (identity) return;
     rememberLoginReturnPath(next);
-  }, [next]);
+  }, [identity, next]);
 
   if (identity) {
     const dest = safeReadingReturnPath(next) ?? "/";
     return <Navigate to={dest} replace />;
+  }
+  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isError) {
+    return (
+      <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
+    );
   }
   return (
     <section className="page">
@@ -323,7 +336,8 @@ function VerifyPage() {
                 clearMagicLinkCredential();
                 await queryClient.cancelQueries({ queryKey: ["whoami"] });
                 await queryClient.resetQueries({ queryKey: ["whoami"] });
-                await queryClient.fetchQuery({ queryKey: ["whoami"] });
+                const whoami = await queryClient.fetchQuery({ queryKey: ["whoami"] });
+                if (!whoami) throw new Error("failed to complete sign-in");
                 navigate(consumeLoginReturnPath(searchParams.get("next")), { replace: true });
               } catch (e) {
                 setError(e instanceof Error ? e.message : "failed to complete sign-in");

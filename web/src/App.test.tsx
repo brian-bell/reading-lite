@@ -1,8 +1,10 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { loginNextStorageKey } from "./login-return-path";
 import { clearMagicLinkCredential } from "./magic-link-credential";
 import type { ListReading, Manifest, ListReadingsResponse, ReadingDiagnostics } from "./types";
 
@@ -143,6 +145,7 @@ describe("App", () => {
   afterEach(() => {
     cleanup();
     clearMagicLinkCredential();
+    onlineManager.setOnline(true);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -237,6 +240,36 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Operator Notes" })).not.toBeInTheDocument();
   });
 
+  it("does not treat a paused whoami as signed-out on home", async () => {
+    onlineManager.setOnline(false);
+    render(<App initialPath="/" />);
+    expect(await screen.findByText("Loading")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Reading Library" })).not.toBeInTheDocument();
+  });
+
+  it("does not treat a paused whoami as signed-out on a reading route", async () => {
+    onlineManager.setOnline(false);
+    render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByText("Loading")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Operator Notes" })).not.toBeInTheDocument();
+  });
+
+  it("shows a retryable identity error on /login when whoami fails with 5xx", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "whoami unavailable" }, 500);
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/login" />);
+    expect(await screen.findByText("whoami unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("invalidates whoami when a cookie-authed list call returns 401 so the login gate runs", async () => {
     let whoamiCalls = 0;
     const fetchMock = vi.fn(async (request: Request) => {
@@ -276,7 +309,8 @@ describe("App", () => {
     expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
     expect(await screen.findByText("Sign in to continue.")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(window.sessionStorage.getItem("reading-lite.loginNext")).toBe("/readings/rd_ONE");
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
   it("shows authenticated identity and logs out without storing bearer material", async () => {
@@ -495,7 +529,8 @@ describe("App", () => {
 
     render(<App initialPath="/readings/rd_ONE" />);
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(window.sessionStorage.getItem("reading-lite.loginNext")).toBe("/readings/rd_ONE");
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
   it("returns to the reading after Continue when next is a safe readings path", async () => {
@@ -521,6 +556,7 @@ describe("App", () => {
     );
     await user.click(await screen.findByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
   it("returns home after Continue when next is an open redirect", async () => {
@@ -547,7 +583,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
   });
 
-  it("uses a stored login next when the verify URL has no query", async () => {
+  it("returns to a localStorage next after a new-tab verify hop", async () => {
     let signedIn = false;
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
@@ -563,12 +599,18 @@ describe("App", () => {
       return jsonResponse(emptyPage);
     });
     vi.stubGlobal("fetch", fetchMock);
-    window.sessionStorage.setItem("reading-lite.loginNext", "/readings/rd_ONE");
     const user = userEvent.setup();
+
+    const firstTab = render(<App initialPath="/readings/rd_ONE" />);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
+    firstTab.unmount();
 
     render(<App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
     await user.click(await screen.findByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
   it("recovers the magic-link secret after remount once the hash is stripped", async () => {

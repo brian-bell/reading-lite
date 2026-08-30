@@ -27,12 +27,12 @@ export function safeReadingReturnPath(raw: string | null | undefined): string | 
 
 export function rememberLoginReturnPath(raw: string | null | undefined): void {
   const safe = safeReadingReturnPath(raw);
-  if (safe !== undefined) sessionStorage.setItem(loginNextStorageKey, safe);
+  if (safe !== undefined) localStorage.setItem(loginNextStorageKey, safe);
 }
 
 export function consumeLoginReturnPath(searchNext?: string | null): string {
   const fromQuery = safeReadingReturnPath(searchNext);
-  const fromStore = safeReadingReturnPath(sessionStorage.getItem(loginNextStorageKey));
-  sessionStorage.removeItem(loginNextStorageKey);
+  const fromStore = safeReadingReturnPath(localStorage.getItem(loginNextStorageKey));
+  localStorage.removeItem(loginNextStorageKey);
   return fromQuery ?? fromStore ?? "/";
 }
