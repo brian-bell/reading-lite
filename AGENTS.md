@@ -99,6 +99,12 @@ founder@example.com --execute`, `npm run ops -- corpus recover --tenant global -
 ./index.json --execute`. See `docs/operations.md` or `--help` for the full
 matrix.
 
+Production summarizer comparisons on live readings (N ids/URLs, OpenAI
+efforts including max, optional Anthropic Sonnet, GET-only, no production
+writes) use `.agents/skills/compare-summary-effort` — dry-run first,
+`--execute` is the only paid path. `ops eval summarizer` is the fixture
+matrix, not a substitute for real readings.
+
 ## Environments
 
 - Local `wrangler dev` (`reading-lite-dev`) intentionally has no Queue or
