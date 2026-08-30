@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { z } from "zod";
+import { ProcessingAttemptTriggerSchema } from "../../../src/schemas/manifest";
 import { acquireReconcileLock } from "./reconcile-lock";
 import type { PersistedSidecar } from "./types";
 
@@ -19,6 +20,9 @@ const SidecarTargetSchema = z
     url: z.string().url(),
     urlHash: z.string().regex(/^[0-9a-f]{64}$/),
     createdAt: z.string().datetime(),
+    attemptId: z.string().min(1).optional(),
+    attemptStartedAt: z.string().datetime().optional(),
+    trigger: ProcessingAttemptTriggerSchema.optional(),
     sourceType: z.enum(["url", "markdown"]),
     contentType: z.string().min(1),
     contentStatus: z.string().min(1),
@@ -40,7 +44,20 @@ const SidecarTargetSchema = z
     releaseByUrlOnFailure: z.literal(true).optional(),
     preserveReadyManifest: z.unknown().optional(),
   })
-  .strip();
+  .strip()
+  .superRefine((target, ctx) => {
+    const attemptFieldCount = [
+      target.attemptId,
+      target.attemptStartedAt,
+      target.trigger,
+    ].filter((value) => value !== undefined).length;
+    if (attemptFieldCount !== 0 && attemptFieldCount !== 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "target attempt identity must include attemptId, attemptStartedAt, and trigger",
+      });
+    }
+  });
 
 const ActivatingTargetSchema = z
   .object({

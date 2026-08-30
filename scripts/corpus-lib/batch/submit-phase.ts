@@ -288,6 +288,9 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     url: target.url,
     urlHash: target.urlHash,
     createdAt: target.createdAt,
+    attemptId: target.attemptId,
+    attemptStartedAt: target.attemptStartedAt,
+    trigger: target.trigger,
     sourceType: m.source_type ?? "url",
     contentType,
     // We hold summarizable markdown, so the resulting reading is captured —
@@ -311,7 +314,7 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   ) {
     out.releaseByUrlOnFailure = true;
   }
-  const preserveReadyManifest = readySnapshotForBatchFailure(m, target.readingId);
+  const preserveReadyManifest = readySnapshotForBatchFailure(m);
   if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
   return out;
 }
@@ -336,12 +339,11 @@ async function persistFreshContent(
   }
 }
 
-function readySnapshotForBatchFailure(m: Manifest, readingId: string): Manifest | undefined {
+function readySnapshotForBatchFailure(m: Manifest): Manifest | undefined {
   if (m.status === "ready") return withoutNestedReadySnapshot(m);
   if (
     m.status !== "pending" ||
-    m.active_attempt?.id !== `batch_${readingId}` ||
-    m.active_attempt.trigger !== "reprocess"
+    m.active_attempt?.trigger !== "reprocess"
   ) {
     return undefined;
   }

@@ -45,6 +45,9 @@ function summarizeTarget(
         urlHash: m.url_hash,
         keyPrefix: "readings/2026/01/01T000000Z-rd_a",
         createdAt: m.created_at,
+        attemptId: "at_submit_1",
+        attemptStartedAt: "2026-06-22T12:00:00.000Z",
+        trigger: "reprocess",
         manifest: m,
       },
       markdown: "# Article\n\nbody",
@@ -189,6 +192,9 @@ describe("submitBatch", () => {
       contentBytes: 42,
       contentStatus: "captured",
       createdAt: "2026-01-01T00:00:00.000Z",
+      attemptId: "at_submit_1",
+      attemptStartedAt: "2026-06-22T12:00:00.000Z",
+      trigger: "reprocess",
     });
     // extracted_bytes computed from the markdown actually summarized.
     expect(t.extractedBytes).toBe(new TextEncoder().encode("# Article\n\nbody").byteLength);

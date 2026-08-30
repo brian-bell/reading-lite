@@ -210,7 +210,9 @@ Operator notes (origin var, production route) live in
 
 A small React SPA in `web/` renders the list (with search + tag chips),
 submission form, and detail page (TL;DR, summary markdown, entities,
-connections, content links), and persists the bearer token in `localStorage`.
+connections, content links). Browser login uses a magic-link cookie session
+(identity + logout in the top bar). It does not store bearer material in
+`localStorage` or `sessionStorage`.
 
 ```sh
 # In one terminal — Worker:

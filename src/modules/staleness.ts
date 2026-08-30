@@ -107,7 +107,7 @@ export function isBatchOwnedPending(input: StaleInput): boolean {
     input.status === "pending" &&
     typeof attempt?.id === "string" &&
     attempt.id.startsWith("batch_") &&
-    attempt.trigger === "import" &&
+    (attempt.trigger === "import" || attempt.trigger === "reprocess") &&
     attempt.status === "running" &&
     attempt.stage === "summarize"
   );

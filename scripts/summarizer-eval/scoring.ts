@@ -1,7 +1,8 @@
 import type { SummarizationUsage } from "../../src/modules/summarizer";
-import type {
-  EvaluationCandidate,
-  EvaluationCase,
+import {
+  evaluationCandidateIdentity,
+  type EvaluationCandidate,
+  type EvaluationCase,
 } from "./fixtures";
 import type { EvaluationObservation } from "./run";
 
@@ -27,6 +28,7 @@ export interface ScoredObservation {
 export interface CandidateSummary {
   candidateId: string;
   label: string;
+  identity: string;
   cases: number;
   schemaSuccessRate: number;
   materialPassRate: number;
@@ -259,6 +261,7 @@ export function aggregateCandidate(
   return {
     candidateId: candidate.id,
     label: candidate.label,
+    identity: evaluationCandidateIdentity(candidate),
     cases: results.length,
     schemaSuccessRate: mean(scores.map((score) => Number(score.schemaSuccess))),
     materialPassRate: mean(scores.map((score) => Number(score.materialPass))),

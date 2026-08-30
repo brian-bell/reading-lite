@@ -98,6 +98,18 @@ input {
   padding: 8px 10px;
 }
 
+.identity-bar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.identity-bar span {
+  color: #526071;
+  font-size: 0.9rem;
+}
+
+.identity-bar button,
 .token-form button,
 .pager button {
   background: #146c60;

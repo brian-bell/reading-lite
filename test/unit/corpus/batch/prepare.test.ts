@@ -32,9 +32,13 @@ function row(over: Partial<AuditRow> = {}): AuditRow {
 }
 
 describe("prepareTargets", () => {
-  it("resolves a target from the existing manifest", async () => {
+  it("resolves a recovery target with a fresh reprocess attempt", async () => {
     const readManifest = vi.fn(async () => manifest());
-    const { targets, dropped } = await prepareTargets([row()], { readManifest });
+    const { targets, dropped } = await prepareTargets([row()], {
+      readManifest,
+      newAttemptId: () => "at_recover_1",
+      now: () => "2026-06-22T12:00:00.000Z",
+    });
     expect(dropped).toHaveLength(0);
     expect(targets).toHaveLength(1);
     expect(targets[0]).toMatchObject({
@@ -43,20 +47,31 @@ describe("prepareTargets", () => {
       urlHash: "a".repeat(64),
       keyPrefix: "readings/2026/01/01T000000Z-rd_a",
       createdAt: "2026-01-01T00:00:00.000Z",
+      attemptId: "at_recover_1",
+      attemptStartedAt: "2026-06-22T12:00:00.000Z",
+      trigger: "reprocess",
     });
     expect(readManifest).toHaveBeenCalledWith("readings/2026/01/01T000000Z-rd_a");
   });
 
   it("drops a row whose manifest is missing", async () => {
     const readManifest = vi.fn(async () => null);
-    const { targets, dropped } = await prepareTargets([row()], { readManifest });
+    const { targets, dropped } = await prepareTargets([row()], {
+      readManifest,
+      newAttemptId: () => "at_unused",
+      now: () => "2026-06-22T12:00:00.000Z",
+    });
     expect(targets).toHaveLength(0);
     expect(dropped).toEqual([{ readingId: "rd_a", reason: expect.stringMatching(/manifest/i) }]);
   });
 
   it("carries the manifest so a ready reading's snapshot can be preserved", async () => {
     const readManifest = vi.fn(async () => manifest({ status: "ready", title: "Kept" }));
-    const { targets } = await prepareTargets([row()], { readManifest });
+    const { targets } = await prepareTargets([row()], {
+      readManifest,
+      newAttemptId: () => "at_ready",
+      now: () => "2026-06-22T12:00:00.000Z",
+    });
     expect(targets[0]!.manifest.status).toBe("ready");
     expect(targets[0]!.manifest.title).toBe("Kept");
   });

@@ -270,10 +270,10 @@ export interface ReadyFacts {
   usage: { summarization: SummarizationUsage; openai_embedding_tokens: number };
   /**
    * The finished attempt, stamped as last_attempt. `null` is the writer's
-   * explicit statement that no identifiable attempt ran (the offline batch,
-   * whose sidecars carry no attempt identity) — attempt identity is never
-   * fabricated. Accepts the worker's full ProcessingAttempt directly; the
-   * parse-on-return strips it to summary shape.
+   * explicit statement that the writer has no attempt identity, including a
+   * resumed pre-upgrade batch sidecar. Attempt identity is never fabricated.
+   * Accepts the worker's full ProcessingAttempt directly; the parse-on-return
+   * strips it to summary shape.
    */
   attempt: ProcessingAttemptSummary | null;
 }

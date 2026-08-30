@@ -1,4 +1,5 @@
 import type {
+  AnthropicReasoningEffort,
   OpenAIReasoningEffort,
   SummarizeReadingInput,
 } from "../../src/modules/summarizer";
@@ -34,12 +35,34 @@ export interface EvaluationCase {
   expected: EvaluationExpectation;
 }
 
+export const ANTHROPIC_EVAL_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly AnthropicReasoningEffort[];
+export type AnthropicEvalEffort = (typeof ANTHROPIC_EVAL_EFFORTS)[number];
+
 export interface EvaluationCandidate {
   id: string;
   label: string;
   provider: "openai" | "anthropic";
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  // Pinned Anthropic output_config.effort. This is the actual effort sent;
+  // "none" is OpenAI-only and would be a lie after the Anthropic effort knob.
+  // Ambient ANTHROPIC_SUMMARIZATION_REASONING_EFFORT must not fill this in.
+  anthropicEffort?: AnthropicEvalEffort;
+}
+
+export function evaluationCandidateIdentity(
+  candidate: EvaluationCandidate,
+): string {
+  if (candidate.provider === "openai") {
+    return `${candidate.provider}/${candidate.model} effort=${candidate.reasoningEffort ?? "none"}`;
+  }
+  return `${candidate.provider}/${candidate.model} effort=${candidate.anthropicEffort ?? "none"}`;
 }
 
 const priorLatency = {
@@ -301,6 +324,7 @@ export const EVALUATION_CANDIDATES: EvaluationCandidate[] = [
     label: "Anthropic Sonnet 5",
     provider: "anthropic",
     model: "claude-sonnet-5",
+    anthropicEffort: "low",
   },
   {
     id: "terra-none",

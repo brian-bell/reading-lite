@@ -30,18 +30,29 @@ export async function extractTargets(
       // manifest has zeroed content_bytes/sha (markFailed), so reusing it would
       // stamp a ready manifest with bogus descriptors; fresh-extract instead
       // (which also matches the realtime reprocess path: url readings re-fetch).
-      // A `batch_<id>` pending is the exception: it's this batch path's own eager
+      // A batch-marked pending is the exception: it's this batch path's own eager
       // activation (captured descriptors + a written extracted.md). After an
       // activating-window crash + rerun, reuse that captured markdown so a
       // transiently-down source doesn't drop the reading and strand its eager
-      // by-url claim. Scoped to the `batch_` attempt id so a realtime pending
-      // (which re-fetches) is untouched; a missing/blank extracted.md still falls
-      // through to a fresh extract below.
+      // by-url claim. New attempts use batch_<uuid>; the exact
+      // batch_<readingId> check keeps crash recovery compatible with legacy
+      // activations without treating another reading's legacy marker as ours.
+      // A realtime pending still re-fetches, and missing/blank extracted.md
+      // still falls through to a fresh extract below.
       const m = target.manifest;
+      const attempt = m.active_attempt;
+      const hasOwnedBatchAttemptId =
+        attempt?.id === `batch_${target.readingId}` ||
+        /^batch_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          attempt?.id ?? "",
+        );
       const isOwnBatchActivationPending =
         m.status === "pending" &&
         m.content_status === "captured" &&
-        m.active_attempt?.id === `batch_${target.readingId}`;
+        hasOwnedBatchAttemptId &&
+        attempt?.trigger === "reprocess" &&
+        attempt.status === "running" &&
+        attempt.stage === "summarize";
       const canReuse =
         (m.status === "ready" && m.content_status === "captured") || isOwnBatchActivationPending;
       const saved = canReuse ? await deps.loadExtracted(target.keyPrefix) : null;
