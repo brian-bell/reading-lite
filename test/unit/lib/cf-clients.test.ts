@@ -60,6 +60,20 @@ describe("makeR2Client", () => {
     await expect(r2.putIfAbsent("k", "v")).rejects.toThrow(/R2 PUT k failed: 500 boom/);
   });
 
+  it("putIfMatch sends the witnessed ETag and reports CAS conflicts", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(new Response("", { status: 200 }))
+      .mockResolvedValueOnce(new Response("conflict", { status: 412 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+
+    await expect(r2.putIfMatch("k", "next", "abc", { contentType: "application/json" })).resolves.toBe(true);
+    await expect(r2.putIfMatch("k", "next", "newer")).resolves.toBe(false);
+    const first = fetchFn.mock.calls[0]![0] as Request;
+    expect(first.headers.get("if-match")).toBe('"abc"');
+    expect(first.headers.get("content-type")).toBe("application/json");
+  });
+
   it("dry-run putIfAbsent logs and returns true", async () => {
     const lines: string[] = [];
     const r2 = dryRunR2((line) => lines.push(line));
@@ -87,11 +101,13 @@ describe("makeR2Client", () => {
     await expect(r2.get("k")).rejects.toThrow(/R2 GET/);
   });
 
-  it("head returns true on ok, false otherwise", async () => {
+  it("head distinguishes present, absent, and storage failure", async () => {
     const okFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
     const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
+    const failedFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 503 }));
     expect(await makeR2Client(r2Config, okFetch as unknown as typeof fetch).head("k")).toBe(true);
     expect(await makeR2Client(r2Config, missFetch as unknown as typeof fetch).head("k")).toBe(false);
+    await expect(makeR2Client(r2Config, failedFetch as unknown as typeof fetch).head("k")).rejects.toThrow(/R2 HEAD/);
   });
 
   it("lists object keys across continuation-token pages", async () => {
@@ -259,6 +275,57 @@ describe("makeR2RestClient", () => {
     );
     const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
     await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(false);
+  });
+
+  it("putIfMatch accepts success:true and empty 2xx bodies, and returns false on conflict", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, result: { etag: "next" } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response("conflict", { status: 412 }));
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "abc")).resolves.toBe(true);
+    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "def")).resolves.toBe(true);
+    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "ghi")).resolves.toBe(false);
+    expect(new Headers(fetchFn.mock.calls[0]![1]?.headers).get("if-match")).toBe('"abc"');
+  });
+
+  it("putIfMatch rejects a 2xx Cloudflare error envelope without leaking its body", async () => {
+    const secret = "Bearer must-not-appear";
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(
+        JSON.stringify({ success: false, errors: [{ message: `permission denied ${secret}` }] }),
+        { status: 200 },
+      ),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+
+    const error = await r2.putIfMatch("readings/a/manifest.json", "{}", "abc").catch((err) => err as Error);
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) throw new Error("expected putIfMatch to reject");
+    expect(error.message).toMatch(/R2 PUT readings\/a\/manifest\.json failed/);
+    expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain("permission denied");
+  });
+
+  it("putIfMatch rejects malformed 2xx and ordinary non-2xx responses with bounded errors", async () => {
+    const secret = "cf-token-must-not-leak";
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(new Response(`not-json ${secret} ${"body ".repeat(100)}`, { status: 200 }))
+      .mockResolvedValueOnce(new Response(`forbidden ${secret} ${"body ".repeat(100)}`, { status: 403 }));
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+
+    const malformed = await r2.putIfMatch("readings/a/manifest.json", "{}", "abc").catch((err) => err as Error);
+    const forbidden = await r2.putIfMatch("readings/a/manifest.json", "{}", "def").catch((err) => err as Error);
+
+    if (!(malformed instanceof Error) || !(forbidden instanceof Error)) {
+      throw new Error("expected putIfMatch to reject malformed and non-2xx responses");
+    }
+    expect(malformed.message).toBe("R2 PUT readings/a/manifest.json failed: malformed Cloudflare response");
+    expect(forbidden.message).toBe("R2 PUT readings/a/manifest.json failed: HTTP 403");
+    expect(`${malformed.message}\n${forbidden.message}`).not.toContain(secret);
+    expect(`${malformed.message}\n${forbidden.message}`).not.toContain("body body");
   });
 });
 
