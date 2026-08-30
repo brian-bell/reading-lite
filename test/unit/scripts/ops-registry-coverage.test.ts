@@ -28,6 +28,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "sweep",
     "delete-orphans",
     "backfill-similarity",
+    "refresh-neighbours",
     "backfill-vectors",
     "migrate-founder",
     "normalize-tags",

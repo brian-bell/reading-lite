@@ -309,7 +309,9 @@ describe("App", () => {
     expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
     expect(await screen.findByText("Sign in to continue.")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    await waitFor(() => {
+      expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    });
     expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
@@ -529,7 +531,9 @@ describe("App", () => {
 
     render(<App initialPath="/readings/rd_ONE" />);
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    await waitFor(() => {
+      expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    });
     expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
@@ -603,7 +607,9 @@ describe("App", () => {
 
     const firstTab = render(<App initialPath="/readings/rd_ONE" />);
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    await waitFor(() => {
+      expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/readings/rd_ONE");
+    });
     expect(window.sessionStorage.getItem(loginNextStorageKey)).toBeNull();
     firstTab.unmount();
 

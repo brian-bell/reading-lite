@@ -145,6 +145,39 @@ describe("queryByVectorId", () => {
     expect(out).toEqual([{ id: "rd_a", score: 1 }, { id: "rd_b", score: 0.7 }]);
   });
 
+  it("requests all vector metadata and surfaces title, tldr, tags, created_at", async () => {
+    const run: Runner = async (_cmd, args) => {
+      expect(args).toContain("--return-metadata");
+      expect(args[args.indexOf("--return-metadata") + 1]).toBe("all");
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          count: 1,
+          matches: [{
+            id: "rd_b",
+            score: 0.72,
+            metadata: {
+              title: "Neighbour",
+              tldr: "A short summary.",
+              tags: ["ai", 1, "llm"],
+              created_at: "2026-08-01T00:00:00.000Z",
+              url: "https://b.example/x",
+            },
+          }],
+        }),
+        stderr: "",
+      };
+    };
+    expect(await queryByVectorId("idx", "rd_a", 6, { run })).toEqual([{
+      id: "rd_b",
+      score: 0.72,
+      title: "Neighbour",
+      tldr: "A short summary.",
+      tags: ["ai", "llm"],
+      created_at: "2026-08-01T00:00:00.000Z",
+    }]);
+  });
+
   it("returns null on the real missing-vector signal, which exits ZERO", async () => {
     // Verified against wrangler 4.101: an unknown vector id is not an error.
     // It exits 0 with a warning on stderr and prints no JSON.
