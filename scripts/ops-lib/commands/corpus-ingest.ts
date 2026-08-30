@@ -308,6 +308,7 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
         configuredProvider: cfg.summarizerProvider,
         model: cfg.summarizerProvider === "openai" ? cfg.openaiModel : cfg.anthropicModel,
         reasoningEffort: cfg.openaiReasoningEffort,
+        anthropicReasoningEffort: cfg.anthropicReasoningEffort,
         newRunId: randomUUID,
         newId: mintReadingId,
         now: () => new Date().toISOString(),

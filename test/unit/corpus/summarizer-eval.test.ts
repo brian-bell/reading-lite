@@ -55,8 +55,8 @@ describe("summarizer evaluation corpus", () => {
     expect(EVALUATION_CANDIDATES[0]).toEqual(
       expect.objectContaining({
         provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        anthropicEffort: "none",
+        model: "claude-sonnet-5",
+        anthropicEffort: "low",
       }),
     );
     for (const candidate of EVALUATION_CANDIDATES.filter(
@@ -74,7 +74,7 @@ describe("summarizer evaluation corpus", () => {
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high";
       const high = evaluationCandidateIdentity(EVALUATION_CANDIDATES[0]!);
       expect(low).toBe(high);
-      expect(low).toBe("anthropic/claude-sonnet-4-6 effort=none");
+      expect(low).toBe("anthropic/claude-sonnet-5 effort=low");
       expect(evaluationCandidateIdentity(EVALUATION_CANDIDATES[2]!)).toBe(
         "openai/gpt-5.6-terra effort=low",
       );

@@ -148,7 +148,7 @@ describe("ops eval summarizer", () => {
     const text = out.join("\n");
     expect(text).toContain("[PLAN]");
     expect(text).toContain("provider calls");
-    expect(text).toContain("anthropic: anthropic/claude-sonnet-4-6 effort=none");
+    expect(text).toContain("anthropic: anthropic/claude-sonnet-5 effort=low");
     expect(text).toContain("terra-low: openai/gpt-5.6-terra effort=low");
   });
 
@@ -177,24 +177,30 @@ describe("ops eval summarizer", () => {
       const second = makeDeps();
       await evalSummarizerCommand.run(["--candidate", "anthropic"], second.deps);
       expect(out.join("\n")).toBe(second.out.join("\n"));
-      expect(out.join("\n")).toContain("anthropic/claude-sonnet-4-6 effort=none");
+      expect(out.join("\n")).toContain("anthropic/claude-sonnet-5 effort=low");
       expect(evaluationCandidateIdentity(anthropic)).toBe(
-        "anthropic/claude-sonnet-4-6 effort=none",
+        "anthropic/claude-sonnet-5 effort=low",
       );
 
       const creds = {
         fetch: globalThis.fetch,
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-ant",
-        fallbackAnthropicModel: "claude-sonnet-4-6",
+        fallbackAnthropicModel: "claude-sonnet-5",
       };
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
       const depsLow = summarizerDepsForEvaluationCandidate(anthropic, creds);
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "max";
       const depsHigh = summarizerDepsForEvaluationCandidate(anthropic, creds);
       expect(depsLow).toEqual(depsHigh);
-      expect(depsLow).not.toHaveProperty("anthropicReasoningEffort");
+      expect(depsLow.anthropicReasoningEffort).toBe("low");
       expect(depsLow).not.toHaveProperty("anthropicEffort");
+      expect(() =>
+        summarizerDepsForEvaluationCandidate(
+          { id: "anthropic", label: "unpinned", provider: "anthropic", model: "claude-sonnet-5" },
+          creds,
+        ),
+      ).toThrow(/must pin anthropicEffort/);
     } finally {
       if (previous === undefined) {
         delete process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;

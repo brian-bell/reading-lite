@@ -36,18 +36,18 @@ that job — that command is the fixture-based quality matrix, not live readings
 2. Review the printed matrix: readings × candidates, frozen-context counts,
    pricing date, and conservative cost ceiling. The default matrix is OpenAI
    `low`, `medium`, `high`, and `xhigh` plus one Anthropic call to
-   `claude-sonnet-4-6` with **no effort field** (`effort=none` is pinned in
-   the displayed and persisted candidate identity so ambient
+   `claude-sonnet-5` at pinned **`effort=low`** (`output_config.effort`; ambient
    `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` cannot change a run). Override OpenAI candidates by
    repeating `--effort` (`none|low|medium|high|xhigh|max`). Reserve `max` for
    an explicitly requested quality-first comparison. Pass `--openai-only` to
    skip Sonnet.
 
-3. Anthropic effort is optional and fail-closed on current main: omit
-   `--anthropic-effort` to run Sonnet once with no effort field. If the caller
-   passes `--anthropic-effort` (`low|medium|high|max` only) and the Worker
-   Anthropic path still has no effort knob, the runner errors before any paid
-   call. Do not invent a field.
+3. Anthropic effort is pinned to the actual `output_config.effort` sent. Default
+   is `low`. Pass `--anthropic-effort` (`low|medium|high|xhigh|max`) to pin a
+   different Sonnet 5 effort. `"none"` is OpenAI-only and is rejected. Ambient
+   `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` cannot change a run. Incompatible
+   `--anthropic-model` / `--anthropic-effort` pairs fail at argv parse, before
+   freeze or spend.
 
 4. Check current official OpenAI and Anthropic pricing when the runner's pricing
    date is stale or a model changed. Pass current standard rates with

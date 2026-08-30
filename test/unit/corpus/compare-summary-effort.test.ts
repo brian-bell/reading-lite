@@ -86,9 +86,9 @@ function openaiCandidate(
 }
 
 function anthropicCandidate(
-  model = "claude-sonnet-4-6",
+  model = "claude-sonnet-5",
 ): ComparisonCandidate {
-  return { provider: "anthropic", model, anthropicEffort: "none" };
+  return { provider: "anthropic", model, anthropicEffort: "low" };
 }
 
 function checkpointPlan(
@@ -177,14 +177,15 @@ function productionFetch(readings: Record<string, { manifest: ReturnType<typeof 
 }
 
 describe("compare-summary-effort", () => {
-  it("defaults to a dry-run OpenAI effort matrix plus Sonnet with no effort field", () => {
+  it("defaults to a dry-run OpenAI effort matrix plus Sonnet at pinned low effort", () => {
     expect(parseComparisonArgs(["--target", ARTICLE_URL])).toEqual({
       targets: [ARTICLE_URL],
       baseUrl: "https://reading-lite.bbell.dev",
       execute: false,
       efforts: ["low", "medium", "high", "xhigh"],
       includeAnthropic: true,
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
+      anthropicEffort: "low",
       outputDir: undefined,
       model: undefined,
       inputPricePerMillion: 2,
@@ -200,7 +201,7 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
+      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
     ]);
     expect(
       buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
@@ -209,8 +210,8 @@ describe("compare-summary-effort", () => {
       buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
     ).toEqual({
       provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      anthropicEffort: "none",
+      model: "claude-sonnet-5",
+      anthropicEffort: "low",
     });
   });
 
@@ -256,18 +257,101 @@ describe("compare-summary-effort", () => {
     ).toThrow("invalid OPENAI_SUMMARIZATION_REASONING_EFFORT: turbo");
   });
 
-  it("rejects Anthropic-incompatible effort values and fails closed when an Anthropic effort is requested", () => {
-    expect(() => parseAnthropicEffort("xhigh")).toThrow(
-      "invalid Anthropic effort: xhigh (expected low|medium|high|max)",
-    );
+  it("rejects Anthropic-incompatible effort values and pins a real effort", () => {
     expect(() => parseAnthropicEffort("none")).toThrow(
-      "invalid Anthropic effort: none (expected low|medium|high|max)",
+      "invalid Anthropic effort: none (expected low|medium|high|xhigh|max)",
     );
-    expect(() =>
+    expect(() => parseAnthropicEffort("turbo")).toThrow(
+      "invalid Anthropic effort: turbo (expected low|medium|high|xhigh|max)",
+    );
+    expect(parseAnthropicEffort("xhigh")).toBe("xhigh");
+    expect(
       parseComparisonArgs(["--target", "rd_MAIN", "--anthropic-effort", "high"]),
-    ).toThrow(
-      /Anthropic summarization effort "high" is not supported on this branch: the Worker summarizeReading\(\) Anthropic path has no effort field\. Omit --anthropic-effort to run claude-sonnet-4-6 once with no effort field/,
-    );
+    ).toMatchObject({
+      anthropicModel: "claude-sonnet-5",
+      anthropicEffort: "high",
+    });
+    expect(
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-sonnet-4-6",
+        "--anthropic-effort",
+        "max",
+      ]),
+    ).toMatchObject({
+      anthropicModel: "claude-sonnet-4-6",
+      anthropicEffort: "max",
+    });
+  });
+
+  it("rejects thinking-incompatible Anthropic model/effort pairs at argv parse before freeze or spend", async () => {
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-opus-5",
+        "--anthropic-effort",
+        "max",
+      ]),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-sonnet-4-6",
+        "--anthropic-effort",
+        "xhigh",
+      ]),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--anthropic-model",
+        "claude-fable-5",
+      ]),
+    ).toThrow(/unsupported ANTHROPIC_MODEL for effort: claude-fable-5/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
+        "--openai-only",
+        "--anthropic-model",
+        "claude-fable-5",
+      ]),
+    ).not.toThrow();
+
+    const fetchFn = vi.fn<typeof fetch>();
+    const summarize = vi.fn();
+    await expect(
+      runCompareSummaryEffort(
+        [
+          "--target",
+          "rd_MAIN",
+          "--anthropic-model",
+          "claude-opus-5",
+          "--anthropic-effort",
+          "max",
+          "--execute",
+        ],
+        {
+          fetch: fetchFn,
+          now: () => Date.parse("2026-08-03T04:00:00.000Z"),
+          credentials: {
+            READER_API_TOKEN: "reader-token",
+            OPENAI_API_KEY: "sk-openai",
+            ANTHROPIC_API_KEY: "sk-ant",
+          },
+          summarize,
+        },
+      ),
+    ).rejects.toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
   });
 
   it("resolves a URL into one frozen comparison input using production GETs only", async () => {
@@ -328,7 +412,7 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
+      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.736_096, 6);
     expect(fetchFn).toHaveBeenCalledTimes(5);
@@ -389,7 +473,7 @@ describe("compare-summary-effort", () => {
     expect(plan.readings[1]!.input.extractedText).toBe("# Other");
     expect(plan.candidates).toEqual([
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
+      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.642_368, 6);
     expect(
@@ -471,7 +555,7 @@ describe("compare-summary-effort", () => {
     expect(summarize.mock.calls.map((call) => call[1])).toEqual([
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "low" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "high" },
-      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
+      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
     ]);
     expect(results).toEqual([
       expect.objectContaining({
@@ -491,8 +575,8 @@ describe("compare-summary-effort", () => {
       expect.objectContaining({
         readingId: "rd_MAIN",
         provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        anthropicEffort: "none",
+        model: "claude-sonnet-5",
+        anthropicEffort: "low",
         latencyMs: 15,
         estimatedCostUsd: 0.066,
       }),
@@ -620,15 +704,15 @@ describe("compare-summary-effort", () => {
       {
         readingId: "rd_MAIN",
         provider: "anthropic" as const,
-        model: "claude-sonnet-4-6",
-        anthropicEffort: "none" as const,
+        model: "claude-sonnet-5",
+        anthropicEffort: "low" as const,
         latencyMs: 900,
         reading: {
           ...plan.readings[0]!.productionBaseline,
           tldr: "Sonnet TLDR",
           summary_markdown: "Sonnet summary.",
         },
-        usage: anthropicUsage("claude-sonnet-4-6"),
+        usage: anthropicUsage("claude-sonnet-5"),
         estimatedCostUsd: 0.066,
       },
     ];
@@ -655,7 +739,7 @@ describe("compare-summary-effort", () => {
         "| rd_MAIN | openai/gpt-5.6-terra/high | 1234 | 20000 | 1000 | 300 | $0.053200 |",
       );
       expect(report).toContain(
-        "| rd_MAIN | anthropic/claude-sonnet-4-6/none | 900 | 18000 | 800 | cache r0/w0 | $0.066000 |",
+        "| rd_MAIN | anthropic/claude-sonnet-5/low | 900 | 18000 | 800 | cache r0/w0 | $0.066000 |",
       );
       const parsed = JSON.parse(json) as {
         comparison: { candidates: Array<Record<string, unknown>> };
@@ -663,11 +747,11 @@ describe("compare-summary-effort", () => {
       };
       expect(parsed.comparison.candidates[1]).toEqual({
         provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        anthropicEffort: "none",
+        model: "claude-sonnet-5",
+        anthropicEffort: "low",
       });
       expect(parsed.readings[0]!.candidates[1]).toEqual(
-        expect.objectContaining({ anthropicEffort: "none" }),
+        expect.objectContaining({ anthropicEffort: "low" }),
       );
       expect(parsed.readings[0]!.candidates[1]).not.toHaveProperty("reasoningEffort");
     } finally {
@@ -709,7 +793,7 @@ describe("compare-summary-effort", () => {
     expect(summarize).not.toHaveBeenCalled();
     expect(stdout.join("")).toContain("[DRY RUN] 1 reading × 2 candidates = 2 provider calls");
     expect(stdout.join("")).toContain("conservative maximum:");
-    expect(stdout.join("")).toContain("anthropic/claude-sonnet-4-6");
+    expect(stdout.join("")).toContain("anthropic/claude-sonnet-5");
     expect(stdout.join("")).toContain("No provider calls made");
 
     const outputDir = await mkdtemp(
@@ -752,7 +836,7 @@ describe("compare-summary-effort", () => {
       expect(summarize).toHaveBeenCalledTimes(2);
       expect(summarize.mock.calls.map((call) => call[1])).toEqual([
         { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-        { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
+        { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
       ]);
       expect(
         fetchFn.mock.calls.every((call) => {
@@ -869,10 +953,10 @@ describe("compare-summary-effort", () => {
       anthropicApiKey: "sk-ant",
     });
     expect(anthropicDeps.provider).toBe("anthropic");
-    expect(anthropicDeps.anthropicModel).toBe("claude-sonnet-4-6");
+    expect(anthropicDeps.anthropicModel).toBe("claude-sonnet-5");
     expect(anthropicDeps).not.toHaveProperty("openaiReasoningEffort");
     expect(anthropicDeps).not.toHaveProperty("anthropicEffort");
-    expect(anthropicDeps).not.toHaveProperty("anthropicReasoningEffort");
+    expect(anthropicDeps.anthropicReasoningEffort).toBe("low");
   });
 
   it("prints the paid-call matrix and cost ceiling in plan text", () => {
@@ -880,8 +964,8 @@ describe("compare-summary-effort", () => {
     const text = formatComparisonPlan(plan, false);
     expect(text).toContain("[DRY RUN] 1 reading × 2 candidates = 2 provider calls");
     expect(text).toContain("openai/gpt-5.6-luna effort=max");
-    expect(text).toContain("anthropic/claude-sonnet-4-6 effort=none");
-    expect(text).toContain("anthropic: claude-sonnet-4-6 effort=none");
+    expect(text).toContain("anthropic/claude-sonnet-5 effort=low");
+    expect(text).toContain("anthropic: claude-sonnet-5 effort=low");
     expect(text).toContain("conservative maximum: $0.3000");
   });
 
@@ -899,7 +983,7 @@ describe("compare-summary-effort", () => {
         "gpt-5.6-luna",
       );
       expect(low).toEqual(high);
-      expect(candidateLabel(low[1]!)).toBe("anthropic/claude-sonnet-4-6 effort=none");
+      expect(candidateLabel(low[1]!)).toBe("anthropic/claude-sonnet-5 effort=low");
       const creds = {
         fetch: globalThis.fetch,
         openaiApiKey: "sk-openai",
@@ -910,7 +994,7 @@ describe("compare-summary-effort", () => {
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "max";
       const depsHigh = summarizerDepsForCandidate(high[1]!, creds);
       expect(depsLow).toEqual(depsHigh);
-      expect(depsLow).not.toHaveProperty("anthropicReasoningEffort");
+      expect(depsLow.anthropicReasoningEffort).toBe("low");
       expect(depsLow).not.toHaveProperty("anthropicEffort");
     } finally {
       if (previous === undefined) {

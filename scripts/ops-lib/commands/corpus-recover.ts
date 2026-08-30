@@ -501,6 +501,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           configuredProvider: cfg.summarizerProvider,
           model: cfg.summarizerProvider === "openai" ? cfg.openaiModel : cfg.anthropicModel,
           reasoningEffort: cfg.openaiReasoningEffort,
+          anthropicReasoningEffort: cfg.anthropicReasoningEffort,
           newRunId: randomUUID,
           now: () => new Date().toISOString(),
           sleep,

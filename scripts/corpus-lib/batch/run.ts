@@ -35,7 +35,10 @@ import type {
   Sidecar,
 } from "./types";
 import type { ActivationResult } from "./activation-phase";
-import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
+import type {
+  AnthropicReasoningEffort,
+  OpenAIReasoningEffort,
+} from "../../../src/modules/summarizer/types";
 import { reconcileOpenAIPreSubmitSidecar } from "./openai-reconcile";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
@@ -54,6 +57,7 @@ export interface BatchRunDeps {
   configuredProvider?: "openai" | "anthropic";
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  anthropicReasoningEffort?: AnthropicReasoningEffort;
   newRunId?(): string;
   newAttemptId?(): string;
   now(): string;
@@ -186,6 +190,7 @@ export async function runBatchPipeline(
       ? requireOpenAIBatchClient(deps, "start new batch")
       : undefined;
   const reasoningEffort = deps.reasoningEffort ?? "low";
+  const anthropicEffort = deps.anthropicReasoningEffort ?? "low";
   const runId =
     provider === "openai"
       ? (deps.newRunId?.() ?? `run_${Date.now()}`)
@@ -215,6 +220,7 @@ export async function runBatchPipeline(
       assertExtractedBatchPayloadWithinLimit(
         extracted,
         deps.model,
+        anthropicEffort,
         deps.maxBatchBytes,
       );
     } else {
@@ -246,6 +252,7 @@ export async function runBatchPipeline(
       assertSummarizeBatchPayloadWithinLimit(
         summarizeTargets,
         deps.model,
+        anthropicEffort,
         deps.maxBatchBytes,
       );
     } else {
@@ -334,6 +341,7 @@ export async function runBatchPipeline(
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
   const { info, sidecar } = await submitBatch(summarizeTargets, {
     model: deps.model,
+    effort: anthropicEffort,
     batch: batch!,
     putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,

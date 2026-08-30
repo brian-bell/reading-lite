@@ -43,7 +43,7 @@ function toolUseResponse(input: unknown, usage: Partial<Record<string, number>> 
     id: "msg_01",
     type: "message",
     role: "assistant",
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     stop_reason: "tool_use",
     content: [
       { type: "tool_use", id: "toolu_01", name: EMIT_READING_TOOL_NAME, input },
@@ -64,7 +64,7 @@ describe("summarizeReading", () => {
         title: "Sample",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk-ant", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk-ant", model: "claude-sonnet-5", effort: "low" },
     );
     expect(out.reading).toEqual(validToolInput);
     expect(out.usage.input_tokens).toBe(100);
@@ -80,7 +80,7 @@ describe("summarizeReading", () => {
         extractedText: "hello",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk-secret", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk-secret", model: "claude-sonnet-5", effort: "low" },
     );
     expect(fetchFn).toHaveBeenCalledOnce();
     const call = fetchFn.mock.calls[0]!;
@@ -93,7 +93,10 @@ describe("summarizeReading", () => {
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
     expect(headers.get("content-type")).toBe("application/json");
     const body = JSON.parse(init.body as string);
-    expect(body.model).toBe("claude-sonnet-4-6");
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.output_config).toEqual({ effort: "low" });
     expect(body.tool_choice).toEqual({ type: "any" });
     expect(Array.isArray(body.tools)).toBe(true);
     expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
@@ -116,7 +119,7 @@ describe("summarizeReading", () => {
         extractedText: "## Heading\n\nbody text here",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     );
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     const userText = body.messages[0].content
@@ -141,7 +144,7 @@ describe("summarizeReading", () => {
           { id: "rd_b", url: "https://example.com/y", title: "Y", tldr: "About Y" },
         ],
       },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     );
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     const userText = JSON.stringify(body.messages[0].content);
@@ -156,7 +159,7 @@ describe("summarizeReading", () => {
     );
     const e = await summarizeReading(
       { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     ).catch((e) => e);
     expect(e).toBeInstanceOf(AnthropicError);
     expect(e.status).toBe(429);
@@ -169,7 +172,7 @@ describe("summarizeReading", () => {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         stop_reason: "end_turn",
         content: [{ type: "text", text: "I refuse to use the tool" }],
         usage: { input_tokens: 10, output_tokens: 10 },
@@ -178,7 +181,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toBeInstanceOf(NoToolUseError);
   });
@@ -190,7 +193,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
@@ -201,7 +204,7 @@ describe("summarizeReading", () => {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         stop_reason: "tool_use",
         content: [
           {
@@ -216,7 +219,7 @@ describe("summarizeReading", () => {
     );
     const error = await summarizeReading(
       { url: "https://example.com/a", extractedText: "Watch on YouTube", similarReadings: [] },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     ).catch((caught) => caught);
     expect(error).toBeInstanceOf(SourceRejectedError);
     expect(error).toMatchObject({
@@ -238,7 +241,8 @@ describe("summarizeReading", () => {
       {
         fetch: fetchFn as unknown as typeof fetch,
         apiKey: "sk",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
+        effort: "low",
         retry: {
           maxAttempts: 3,
           baseDelayMs: 10,
@@ -261,7 +265,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toThrow();
     expect(fetchFn).not.toHaveBeenCalled();
@@ -273,8 +277,12 @@ describe("buildSummarizeRequestBody", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-opus-4-8",
+      "low",
     ) as Record<string, any>;
     expect(body.model).toBe("claude-opus-4-8");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.output_config).toEqual({ effort: "low" });
     expect(body.tool_choice).toEqual({ type: "any" });
     expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
       EMIT_READING_TOOL_NAME,
@@ -289,6 +297,7 @@ describe("buildSummarizeRequestBody", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-opus-4-8",
+      "low",
     ) as Record<string, any>;
     expect(body.system[0].text).toContain("full article body or a full transcript");
     expect(body.system[0].text).toMatch(/summary or recap of the URL/i);
@@ -308,15 +317,16 @@ describe("buildSummarizeRequestBody", () => {
       ],
     };
     const fetchFn = vi.fn<typeof fetch>(async () => ok(toolUseResponse(validToolInput)));
-    await summarizeReading(input, { fetch: fetchFn, apiKey: "sk", model: "claude-opus-4-8" });
+    await summarizeReading(input, { fetch: fetchFn, apiKey: "sk", model: "claude-opus-4-8", effort: "low" });
     const sent = fetchFn.mock.calls[0]![1]!.body as string;
-    expect(JSON.stringify(buildSummarizeRequestBody(input, "claude-opus-4-8"))).toBe(sent);
+    expect(JSON.stringify(buildSummarizeRequestBody(input, "claude-opus-4-8", "low"))).toBe(sent);
   });
 
   it("advertises a tool schema exactly as strict as the parser's contract", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-opus-4-8",
+      "low",
     ) as Record<string, any>;
     // The parser validates with the strict ReadingSummarySchema; the advertised
     // JSON schema must carry the same constraints (additionalProperties, bounds)
@@ -342,10 +352,32 @@ describe("buildSummarizeRequestBody", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-opus-4-8",
+      "low",
     ) as Record<string, any>;
     // Snapshot guards against silent prompt-cache invalidation: any byte change
     // in tools+system busts every cached prefix across the batch.
     expect({ tools: body.tools, system: body.system }).toMatchSnapshot();
+  });
+
+  it("wires output_config.effort, the Anthropic Messages field for claude-sonnet-5", () => {
+    const body = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-sonnet-5",
+      "xhigh",
+    ) as Record<string, any>;
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.output_config).toEqual({ effort: "xhigh" });
+    expect(body).not.toHaveProperty("reasoning");
+    const maxBody = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-sonnet-5",
+      "max",
+    ) as Record<string, any>;
+    expect(maxBody.max_tokens).toBe(8192);
+    expect(maxBody.thinking).toEqual({ type: "disabled" });
+    expect(maxBody.output_config).toEqual({ effort: "max" });
   });
 });
 

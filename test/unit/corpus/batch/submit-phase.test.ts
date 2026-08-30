@@ -87,6 +87,7 @@ describe("submitBatch", () => {
     const batch = fakeBatch();
     const { info } = await submitBatch([summarizeTarget()], {
       model: "claude-opus-4-8",
+      effort: "low",
       batch: batch as any,
       putObject: noopPut(),
       saveSidecar: noopSave(),
@@ -100,6 +101,22 @@ describe("submitBatch", () => {
     const userText = JSON.stringify(requests[0].params.messages);
     expect(userText).toContain("# Article");
     expect(userText).toContain("https://example.com/a");
+    expect(requests[0].params.output_config).toEqual({ effort: "low" });
+  });
+
+  it("passes the configured Anthropic effort on the realtime request body", async () => {
+    const batch = fakeBatch();
+    await submitBatch([summarizeTarget()], {
+      model: "claude-sonnet-5",
+      effort: "max",
+      batch: batch as any,
+      putObject: noopPut(),
+      saveSidecar: noopSave(),
+    });
+    const requests = batch.create.mock.calls[0]![0];
+    expect(requests[0].params.output_config).toEqual({ effort: "max" });
+    expect(requests[0].params.max_tokens).toBe(8192);
+    expect(requests[0].params.thinking).toEqual({ type: "disabled" });
   });
 
   it("persists freshly-extracted raw + extracted.md to R2 before summarizing", async () => {
@@ -107,6 +124,7 @@ describe("submitBatch", () => {
     const putObject = noopPut();
     await submitBatch([summarizeTarget({ fresh: freshContent })], {
       model: "m",
+      effort: "low",
       batch: batch as any,
       putObject,
       saveSidecar: noopSave(),
@@ -119,7 +137,7 @@ describe("submitBatch", () => {
   it("does not write content objects when markdown was reused from R2", async () => {
     const batch = fakeBatch();
     const putObject = noopPut();
-    await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject, saveSidecar: noopSave() });
+    await submitBatch([summarizeTarget()], { model: "m", effort: "low", batch: batch as any, putObject, saveSidecar: noopSave() });
     expect(putObject).not.toHaveBeenCalled();
   });
 
@@ -135,7 +153,7 @@ describe("submitBatch", () => {
       order.push("create");
       return { id: "msgbatch_99", processing_status: "in_progress", results_url: null };
     });
-    await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar });
+    await submitBatch([summarizeTarget()], { model: "m", effort: "low", batch: batch as any, putObject: noopPut(), saveSidecar });
     expect(order).toEqual(["pending", "create", "final:msgbatch_99"]);
     expect(saved).toMatchObject([
       {
@@ -160,6 +178,7 @@ describe("submitBatch", () => {
     const batch = fakeBatch();
     const { sidecar } = await submitBatch([summarizeTarget({ manifest: { status: "ready", title: "Old", tldr: "old tldr" } })], {
       model: "claude-opus-4-8",
+      effort: "low",
       batch: batch as any,
       putObject: noopPut(),
       saveSidecar: noopSave(),
@@ -189,6 +208,7 @@ describe("submitBatch", () => {
     const batch = fakeBatch();
     const { sidecar } = await submitBatch([summarizeTarget({ fresh: { ...freshContent, content_bytes: 999, content_sha256: "e".repeat(64) } })], {
       model: "m",
+      effort: "low",
       batch: batch as any,
       putObject: noopPut(),
       saveSidecar: noopSave(),
@@ -199,7 +219,7 @@ describe("submitBatch", () => {
 
   it("does not preserve a snapshot for a non-ready reading", async () => {
     const batch = fakeBatch();
-    const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() });
+    const { sidecar } = await submitBatch([summarizeTarget()], { model: "m", effort: "low", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() });
     expect(sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
   });
 
@@ -231,7 +251,7 @@ describe("submitBatch", () => {
     const batch = fakeBatch();
     const { sidecar } = await submitBatch(
       [summarizeTarget({ freshActivation: policy as BatchActivationPolicy })],
-      { model: "m", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() },
+      { model: "m", effort: "low", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() },
     );
 
     expect(sidecar.targets[0]!.releaseByUrlOnFailure).toBe(expectedRelease);
@@ -242,6 +262,7 @@ describe("submitBatch", () => {
     // recover-shaped: no freshActivation. Failed source → no release, no snapshot.
     const failed = await submitBatch([summarizeTarget()], {
       model: "m",
+      effort: "low",
       batch: batch as any,
       putObject: noopPut(),
       saveSidecar: noopSave(),
@@ -252,6 +273,7 @@ describe("submitBatch", () => {
     // a ready recover source still rolls forward on failure but never releases by-url
     const ready = await submitBatch([summarizeTarget({ manifest: { status: "ready", tldr: "keep" } })], {
       model: "m",
+      effort: "low",
       batch: batch as any,
       putObject: noopPut(),
       saveSidecar: noopSave(),

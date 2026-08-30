@@ -5,9 +5,13 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  parseAnthropicEffort as parseModelAwareAnthropicEffort,
   parseReasoningEffort,
   summarizeReading,
+  type AnthropicReasoningEffort,
   type OpenAIReasoningEffort,
   type SummarizeReadingResult,
   type SummarizeReadingInput,
@@ -23,14 +27,19 @@ import { loadDotVars } from "../../../../scripts/lib/dotvars";
 
 const DEFAULT_BASE_URL = "https://reading-lite.bbell.dev";
 const DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const DEFAULT_INPUT_PRICE_PER_MILLION = 2;
 const DEFAULT_OUTPUT_PRICE_PER_MILLION = 12;
 const DEFAULT_ANTHROPIC_INPUT_PRICE_PER_MILLION = 3;
 const DEFAULT_ANTHROPIC_OUTPUT_PRICE_PER_MILLION = 15;
 const DEFAULT_PRICE_DATE = "2026-07-30";
 const MAX_OUTPUT_TOKENS = 8192;
-const ANTHROPIC_EFFORTS = ["low", "medium", "high", "max"] as const;
+const ANTHROPIC_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly AnthropicReasoningEffort[];
 
 export type AnthropicEffort = (typeof ANTHROPIC_EFFORTS)[number];
 
@@ -41,6 +50,7 @@ export interface ComparisonArgs {
   efforts: OpenAIReasoningEffort[];
   includeAnthropic: boolean;
   anthropicModel: string;
+  anthropicEffort: AnthropicEffort;
   outputDir?: string;
   model?: string;
   inputPricePerMillion: number;
@@ -59,7 +69,7 @@ export type ComparisonCandidate =
   | {
       provider: "anthropic";
       model: string;
-      anthropicEffort: "none";
+      anthropicEffort: AnthropicEffort;
     };
 
 export interface FrozenReading {
@@ -102,7 +112,7 @@ export interface ComparisonObservation {
   provider: ComparisonCandidate["provider"];
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
-  anthropicEffort?: "none";
+  anthropicEffort?: AnthropicEffort;
   latencyMs: number;
   reading: ReadingSummary;
   usage: SummarizationUsage;
@@ -136,7 +146,7 @@ export function parseAnthropicEffort(value: string): AnthropicEffort {
     return value as AnthropicEffort;
   }
   throw new Error(
-    `invalid Anthropic effort: ${value} (expected low|medium|high|max)`,
+    `invalid Anthropic effort: ${value} (expected low|medium|high|xhigh|max)`,
   );
 }
 
@@ -176,16 +186,16 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
   if (!values.target || values.target.length === 0) {
     throw new Error("--target is required (repeatable)");
   }
-  if (values["anthropic-effort"]) {
-    const effort = parseAnthropicEffort(values["anthropic-effort"]);
-    if (values["openai-only"]) {
-      throw new Error("--anthropic-effort cannot be combined with --openai-only");
-    }
-    throw new Error(
-      `Anthropic summarization effort "${effort}" is not supported on this branch: ` +
-        `the Worker summarizeReading() Anthropic path has no effort field. ` +
-        `Omit --anthropic-effort to run ${values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL} once with no effort field.`,
-    );
+  if (values["openai-only"] && values["anthropic-effort"]) {
+    throw new Error("--anthropic-effort cannot be combined with --openai-only");
+  }
+  const includeAnthropic = values["openai-only"] !== true;
+  const anthropicModel = values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL;
+  const anthropicEffort = values["anthropic-effort"]
+    ? parseAnthropicEffort(values["anthropic-effort"])
+    : DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+  if (includeAnthropic) {
+    parseModelAwareAnthropicEffort(anthropicEffort, anthropicModel);
   }
   const efforts =
     values.effort!.length === 0
@@ -218,8 +228,9 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
     baseUrl: values["base-url"]!.replace(/\/$/, ""),
     execute: values.execute!,
     efforts,
-    includeAnthropic: values["openai-only"] !== true,
-    anthropicModel: values["anthropic-model"] ?? DEFAULT_ANTHROPIC_MODEL,
+    includeAnthropic,
+    anthropicModel,
+    anthropicEffort,
     outputDir: values["output-dir"],
     model: values.model,
     inputPricePerMillion,
@@ -231,7 +242,10 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
 }
 
 export function buildCandidateMatrix(
-  args: Pick<ComparisonArgs, "efforts" | "includeAnthropic" | "anthropicModel">,
+  args: Pick<
+    ComparisonArgs,
+    "efforts" | "includeAnthropic" | "anthropicModel" | "anthropicEffort"
+  >,
   openaiModel: string,
 ): ComparisonCandidate[] {
   const candidates: ComparisonCandidate[] = args.efforts.map(
@@ -245,7 +259,7 @@ export function buildCandidateMatrix(
     candidates.push({
       provider: "anthropic",
       model: args.anthropicModel,
-      anthropicEffort: "none",
+      anthropicEffort: args.anthropicEffort,
     });
   }
   return candidates;
@@ -279,10 +293,11 @@ export function formatComparisonPlan(
   const candidateLines = plan.candidates
     .map((candidate) => `    ${candidateLabel(candidate)}`)
     .join("\n");
-  const anthropicLine = plan.candidates.some(
+  const anthropicCandidate = plan.candidates.find(
     (candidate) => candidate.provider === "anthropic",
-  )
-    ? `  anthropic: ${plan.candidates.find((candidate) => candidate.provider === "anthropic")!.model} effort=none\n`
+  );
+  const anthropicLine = anthropicCandidate
+    ? `  anthropic: ${anthropicCandidate.model} effort=${anthropicCandidate.anthropicEffort}\n`
     : "  anthropic: omitted\n";
   return (
     `${execute ? "[EXECUTE]" : "[DRY RUN]"} ${readingCount} ${readingNoun} × ${candidateCount} ${candidateNoun} = ${callCount} ${callNoun}\n` +
@@ -324,6 +339,7 @@ export function summarizerDepsForCandidate(
     openaiApiKey: creds.openaiApiKey,
     anthropicApiKey: creds.anthropicApiKey,
     anthropicModel: candidate.model,
+    anthropicReasoningEffort: candidate.anthropicEffort,
   };
 }
 
@@ -752,7 +768,7 @@ function observationLabel(item: {
   provider: ComparisonCandidate["provider"];
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
-  anthropicEffort?: "none";
+  anthropicEffort?: AnthropicEffort;
 }): string {
   if (item.provider === "openai") {
     return `${item.provider}/${item.model}/${item.reasoningEffort ?? "n/a"}`;
@@ -919,10 +935,11 @@ no /reprocess, and no manifest/vector/list writes.
   --model <model>              OpenAI model override (default: production
                                OpenAI model, else gpt-5.6-terra).
   --anthropic-model <model>    Anthropic model. Default: ${DEFAULT_ANTHROPIC_MODEL}.
-  --anthropic-effort <effort>  Optional. low|medium|high|max only. On this
-                               branch the Anthropic path has no effort field,
-                               so this flag fails closed. Omit it to run
-                               Sonnet once with no effort field.
+  --anthropic-effort <effort>  Anthropic output_config.effort.
+                               low|medium|high|xhigh|max.
+                               Default: ${DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT}
+                               (pinned; ambient ANTHROPIC_SUMMARIZATION_REASONING_EFFORT
+                               cannot change a run).
   --openai-only                OpenAI-only matrix (skip Sonnet).
   --base-url <url>             Reading service. Default: ${DEFAULT_BASE_URL}.
   --output-dir <path>          Artifact directory. Default:

@@ -89,10 +89,10 @@ export function summarizerDepsForEvaluationCandidate(
   if (!creds.anthropicApiKey) {
     throw new Error("missing ANTHROPIC_API_KEY");
   }
-  if (candidate.anthropicEffort && candidate.anthropicEffort !== "none") {
+  const effort = candidate.anthropicEffort;
+  if (!effort) {
     throw new Error(
-      `Anthropic summarization effort "${candidate.anthropicEffort}" is not supported on this branch: ` +
-        `the Worker summarizeReading() Anthropic path has no effort field.`,
+      `Anthropic evaluation candidate ${candidate.id} must pin anthropicEffort to the actual output_config.effort used`,
     );
   }
   return {
@@ -101,6 +101,7 @@ export function summarizerDepsForEvaluationCandidate(
     openaiApiKey: creds.openaiApiKey,
     anthropicApiKey: creds.anthropicApiKey,
     anthropicModel: candidate.model,
+    anthropicReasoningEffort: effort,
   };
 }
 
@@ -181,7 +182,7 @@ include credential values. There is no provider fallback.`,
               fetch: globalThis.fetch,
               openaiApiKey: vars.OPENAI_API_KEY!,
               anthropicApiKey: vars.ANTHROPIC_API_KEY,
-              fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+              fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-5",
             }),
           ),
         onProgress: (observation) => {
