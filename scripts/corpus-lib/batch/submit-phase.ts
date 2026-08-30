@@ -10,7 +10,10 @@ import type {
 } from "./clients";
 import type { PreparedOpenAIBatchPayload } from "./openai-payload";
 import { acquireSidecarLock } from "./reconcile-lock";
-import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
+import type {
+  AnthropicReasoningEffort,
+  OpenAIReasoningEffort,
+} from "../../../src/modules/summarizer/types";
 import type {
   ExtractedTarget,
   OpenAISubmittedSidecar,
@@ -27,6 +30,7 @@ const layout = r2KeyLayout();
 
 export interface SubmitDeps {
   model: string;
+  effort: AnthropicReasoningEffort;
   batch: AnthropicBatchClient;
   // Writes a single object to R2 (raw bytes / extracted markdown) at submit time.
   putObject(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
@@ -89,7 +93,7 @@ export async function submitBatch(
   for (const st of targets) {
     await persistFreshContent(st, deps.putObject);
 
-    requests.push(requestForSummarizeTarget(st, deps.model));
+    requests.push(requestForSummarizeTarget(st, deps.model, deps.effort));
 
     sidecarTargets.push(sidecarTargetFor(st));
   }
@@ -208,12 +212,14 @@ export async function submitOpenAIBatch(
 export function assertExtractedBatchPayloadWithinLimit(
   targets: ExtractedTarget[],
   model: string,
+  effort: AnthropicReasoningEffort,
   maxBytes = MAX_BATCH_BYTES,
 ): void {
   const requests = targets.map((extracted) =>
     requestForSummarizeTarget(
       { extracted, similar: [], queryEmbedTokens: 0, similarity: { count: 0, computed_at: "1970-01-01T00:00:00.000Z" } },
       model,
+      effort,
     ),
   );
   assertBatchPayloadWithinLimit(requests, maxBytes);
@@ -222,9 +228,12 @@ export function assertExtractedBatchPayloadWithinLimit(
 export function assertSummarizeBatchPayloadWithinLimit(
   targets: SummarizeTarget[],
   model: string,
+  effort: AnthropicReasoningEffort,
   maxBytes = MAX_BATCH_BYTES,
 ): void {
-  const requests = targets.map((target) => requestForSummarizeTarget(target, model));
+  const requests = targets.map((target) =>
+    requestForSummarizeTarget(target, model, effort),
+  );
   assertBatchPayloadWithinLimit(requests, maxBytes);
 }
 
@@ -242,7 +251,11 @@ function assertBatchPayloadWithinLimit(
   }
 }
 
-function requestForSummarizeTarget(st: SummarizeTarget, model: string): AnthropicBatchRequest {
+function requestForSummarizeTarget(
+  st: SummarizeTarget,
+  model: string,
+  effort: AnthropicReasoningEffort,
+): AnthropicBatchRequest {
   const { target, markdown, title } = st.extracted;
   return {
     custom_id: target.readingId,
@@ -254,6 +267,7 @@ function requestForSummarizeTarget(st: SummarizeTarget, model: string): Anthropi
         similarReadings: st.similar,
       },
       model,
+      effort,
     ),
   };
 }
@@ -274,6 +288,9 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     url: target.url,
     urlHash: target.urlHash,
     createdAt: target.createdAt,
+    attemptId: target.attemptId,
+    attemptStartedAt: target.attemptStartedAt,
+    trigger: target.trigger,
     sourceType: m.source_type ?? "url",
     contentType,
     // We hold summarizable markdown, so the resulting reading is captured —
@@ -297,7 +314,7 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   ) {
     out.releaseByUrlOnFailure = true;
   }
-  const preserveReadyManifest = readySnapshotForBatchFailure(m, target.readingId);
+  const preserveReadyManifest = readySnapshotForBatchFailure(m);
   if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
   return out;
 }
@@ -322,12 +339,11 @@ async function persistFreshContent(
   }
 }
 
-function readySnapshotForBatchFailure(m: Manifest, readingId: string): Manifest | undefined {
+function readySnapshotForBatchFailure(m: Manifest): Manifest | undefined {
   if (m.status === "ready") return withoutNestedReadySnapshot(m);
   if (
     m.status !== "pending" ||
-    m.active_attempt?.id !== `batch_${readingId}` ||
-    m.active_attempt.trigger !== "reprocess"
+    m.active_attempt?.trigger !== "reprocess"
   ) {
     return undefined;
   }

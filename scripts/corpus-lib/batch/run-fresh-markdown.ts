@@ -1,5 +1,10 @@
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
-import { runBatchPipeline, type BatchRunDeps, type BatchRunResult } from "./run";
+import {
+  newBatchAttemptId,
+  runBatchPipeline,
+  type BatchRunDeps,
+  type BatchRunResult,
+} from "./run";
 import { r2ReadDeps } from "./r2-reads";
 import { prepareFreshMarkdown, type FreshDisposition } from "./prepare-fresh-markdown";
 import { activateFreshTargets } from "./activation-phase";
@@ -38,6 +43,7 @@ export async function runFreshMarkdownBatch(
     const plan = await prepareFreshMarkdown(articles, {
       ...r2ReadDeps(deps.r2),
       newId: deps.newId,
+      newAttemptId: deps.newAttemptId ?? newBatchAttemptId,
       now: deps.now,
     });
     dispositions = plan.dispositions;

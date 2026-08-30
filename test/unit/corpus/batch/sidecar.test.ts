@@ -39,6 +39,56 @@ async function tempPath() {
 }
 
 describe("batch sidecar I/O", () => {
+  it("round-trips a complete target attempt identity", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const attemptedTarget = {
+        ...target,
+        attemptId: "at_batch_1",
+        attemptStartedAt: "2026-06-22T12:00:00.000Z",
+        trigger: "reprocess" as const,
+      };
+      const sidecar: Sidecar = {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_1",
+        model: "m",
+        processingStatus: "in_progress",
+        resultsUrl: null,
+        targets: [attemptedTarget],
+      };
+      await saveSidecar(path, sidecar);
+      await expect(loadSidecar(path)).resolves.toMatchObject({
+        targets: [attemptedTarget],
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a partial target attempt identity", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      await writeFile(
+        path,
+        JSON.stringify({
+          version: 2,
+          provider: "anthropic",
+          phase: "submitted",
+          batchId: "msgbatch_1",
+          model: "m",
+          processingStatus: "in_progress",
+          resultsUrl: null,
+          targets: [{ ...target, attemptId: "at_incomplete" }],
+        }),
+      );
+      await expect(loadSidecar(path)).rejects.toThrow(/attempt identity/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("round-trips the tenant selector stamp (s1k.4.3 resume pinning)", async () => {
     const { dir, path } = await tempPath();
     try {

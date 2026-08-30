@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runBatch, runBatchPipeline, type BatchRunDeps } from "../../../../scripts/corpus-lib/batch/run";
+import {
+  newBatchAttemptId,
+  runBatch,
+  runBatchPipeline,
+  type BatchRunDeps,
+} from "../../../../scripts/corpus-lib/batch/run";
 import { activateRecoverTargets } from "../../../../scripts/corpus-lib/batch/activation-phase";
 import { loadSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
+import { isBatchOwnedPending } from "../../../../src/modules/staleness";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
@@ -16,6 +22,23 @@ import type {
 } from "../../../../scripts/corpus-lib/batch/types";
 
 const NOW = "2026-06-18T12:00:00.000Z";
+
+describe("newBatchAttemptId", () => {
+  it("keeps the durable batch marker used by pending-state readers", () => {
+    const id = newBatchAttemptId();
+    expect(id).toMatch(/^batch_[0-9a-f-]+$/);
+    expect(isBatchOwnedPending({
+      status: "pending",
+      active_attempt: {
+        id,
+        trigger: "import",
+        status: "running",
+        stage: "summarize",
+        started_at: NOW,
+      },
+    })).toBe(true);
+  });
+});
 
 function manifest(id: string, over: Partial<Manifest> = {}): Manifest {
   return {
@@ -129,6 +152,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     },
     extract,
     model: "claude-opus-4-8",
+    newAttemptId: () => "at_recover_1",
     now: () => NOW,
     sleep: vi.fn(async () => {}),
     loadSidecar: vi.fn(async () => null),
@@ -1337,6 +1361,9 @@ describe("runBatch — eager recover claim", () => {
         urlHash: ready.url_hash,
         keyPrefix: kp,
         createdAt: ready.created_at,
+        attemptId: "at_ready_success",
+        attemptStartedAt: NOW,
+        trigger: "reprocess",
         manifest: ready,
       },
       markdown: "# Saved\n\nrecovery markdown",
@@ -1457,6 +1484,9 @@ describe("runBatch — eager recover claim", () => {
         urlHash: ready.url_hash,
         keyPrefix: kp,
         createdAt: ready.created_at,
+        attemptId: "at_ready_failure",
+        attemptStartedAt: NOW,
+        trigger: "reprocess",
         manifest: ready,
       },
       markdown: "# rd_a\n\nbody",
@@ -1522,6 +1552,9 @@ describe("runBatch — eager recover claim", () => {
         urlHash: failedAtPrepare.url_hash,
         keyPrefix: kp,
         createdAt: failedAtPrepare.created_at,
+        attemptId: "at_failed_recover",
+        attemptStartedAt: NOW,
+        trigger: "reprocess",
         manifest: failedAtPrepare,
       },
       markdown: "# rd_a\n\nbody",
@@ -1578,6 +1611,9 @@ describe("runBatch — eager recover claim", () => {
         urlHash: ready.url_hash,
         keyPrefix: kp,
         createdAt: ready.created_at,
+        attemptId: "at_ready_anthropic",
+        attemptStartedAt: NOW,
+        trigger: "reprocess",
         manifest: ready,
       },
       markdown: "# rd_a\n\nbody",
@@ -1714,7 +1750,7 @@ describe("runBatch — recover resume", () => {
     );
     expect(activated).toMatchObject({
       status: "pending",
-      active_attempt: { id: "batch_rd_a", trigger: "reprocess" },
+      active_attempt: { id: "at_recover_1", trigger: "reprocess" },
     });
     expect(h.store.get("readings/kp-rd_a/extracted.md")).toBe(
       "fresh https://example.com/rd_a",

@@ -60,6 +60,9 @@ function deps(
       ids.push(id);
       return id;
     },
+    newAttemptId() {
+      return "at_import_1";
+    },
     now() {
       return "2026-06-22T00:00:00.000Z";
     },
@@ -77,6 +80,11 @@ describe("prepareFreshMarkdown — unclaimed URL", () => {
     expect(t.target.url).toBe("https://example.com/a");
     expect(t.target.urlHash).toBe(hex("https://example.com/a"));
     expect(t.target.createdAt).toBe("2026-06-22T00:00:00.000Z");
+    expect(t.target).toMatchObject({
+      attemptId: "at_import_1",
+      attemptStartedAt: "2026-06-22T00:00:00.000Z",
+      trigger: "import",
+    });
     // key_prefix is the compact-timestamp layout the worker mints.
     expect(t.target.keyPrefix).toBe("readings/2026/06/22T000000Z-rd_NEW0");
 

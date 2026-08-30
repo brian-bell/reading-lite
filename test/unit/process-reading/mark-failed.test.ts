@@ -24,7 +24,7 @@ function envWith(bucket: R2Bucket): Env {
     READER_API_TOKEN: "x",
     ANTHROPIC_API_KEY: "x",
     OPENAI_API_KEY: "x",
-    ANTHROPIC_MODEL: "claude-sonnet-4-6",
+    ANTHROPIC_MODEL: "claude-sonnet-5",
     FETCH_TIMEOUT_MS: "20000",
     FETCH_MAX_BYTES: "10485760",
     CORS_ALLOWED_ORIGINS: "",

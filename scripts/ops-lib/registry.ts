@@ -23,6 +23,7 @@ import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
 import { corpusMigrateFounderCommand } from "./commands/corpus-migrate-founder";
 import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
+import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
 import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
@@ -63,6 +64,7 @@ export const defaultRegistry: Registry = {
     corpusBackfillVectorsCommand,
     corpusMigrateFounderCommand,
     corpusNormalizeTagsCommand,
+    corpusPurgeConnectionsCommand,
     corpusRebuildListCommand,
     readingSubmitCommand,
     importMarkdownCommand,

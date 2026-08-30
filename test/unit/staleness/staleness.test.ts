@@ -82,13 +82,28 @@ describe("stalenessOf", () => {
   });
 
   describe("pending expiry", () => {
-    it("does not stale a batch-owned pending import marker", () => {
+    it("does not stale a uniquely identified batch-owned pending import", () => {
       const input: StaleInput = {
         status: "pending",
         updated_at: ONE_HOUR_AGO,
         active_attempt: runningAttempt({
-          id: "batch_rd_a",
+          id: "batch_550e8400-e29b-41d4-a716-446655440000",
           trigger: "import",
+          stage: "summarize",
+          started_at: ONE_HOUR_AGO,
+        }),
+      };
+      expect(isBatchOwnedPending(input)).toBe(true);
+      expect(stalenessOf(input, TTL, NOW)).toEqual({ expiredActiveAttempt: null, pendingError: null });
+    });
+
+    it("does not stale a batch-owned pending reprocess whose preparation exceeded TTL", () => {
+      const input: StaleInput = {
+        status: "pending",
+        updated_at: NOW,
+        active_attempt: runningAttempt({
+          id: "batch_550e8400-e29b-41d4-a716-446655440000",
+          trigger: "reprocess",
           stage: "summarize",
           started_at: ONE_HOUR_AGO,
         }),

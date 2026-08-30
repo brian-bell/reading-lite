@@ -269,12 +269,14 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
     planOwnership: async (eligible, cfg) => {
       const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
       const { prepareFreshMarkdown } = await import("../../corpus-lib/batch/prepare-fresh-markdown");
+      const { newBatchAttemptId } = await import("../../corpus-lib/batch/run");
       const { r2ReadDeps } = await import("../../corpus-lib/batch/r2-reads");
       const { mintReadingId } = await import("../../../src/services");
       const r2 = withKeyRoot(makeR2Client(cfg.r2, globalThis.fetch), cfg.keyRoot);
       return prepareFreshMarkdown(eligible, {
         ...r2ReadDeps(r2),
         newId: mintReadingId,
+        newAttemptId: newBatchAttemptId,
         now: () => new Date().toISOString(),
       });
     },
@@ -306,6 +308,7 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
         configuredProvider: cfg.summarizerProvider,
         model: cfg.summarizerProvider === "openai" ? cfg.openaiModel : cfg.anthropicModel,
         reasoningEffort: cfg.openaiReasoningEffort,
+        anthropicReasoningEffort: cfg.anthropicReasoningEffort,
         newRunId: randomUUID,
         newId: mintReadingId,
         now: () => new Date().toISOString(),

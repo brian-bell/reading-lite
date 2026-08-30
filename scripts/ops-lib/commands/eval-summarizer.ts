@@ -9,10 +9,12 @@ import { parseArgs } from "node:util";
 import {
   EVALUATION_CANDIDATES,
   EVALUATION_CASES,
+  evaluationCandidateIdentity,
   type EvaluationCandidate,
   type EvaluationCase,
 } from "../../summarizer-eval/fixtures";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import type { SummarizerDeps } from "../../../src/modules/summarizer";
 
 export interface EvalSummarizerDeps extends BaseDeps {
   // The whole paid path: provider calls, scoring, and report writes. Only
@@ -64,6 +66,45 @@ function selectById<T extends { id: string }>(all: T[], selected: string[], labe
   return all.filter((item) => requested.has(item.id));
 }
 
+export function summarizerDepsForEvaluationCandidate(
+  candidate: EvaluationCandidate,
+  creds: {
+    fetch: typeof fetch;
+    openaiApiKey: string;
+    anthropicApiKey?: string;
+    fallbackAnthropicModel: string;
+  },
+): SummarizerDeps {
+  if (candidate.provider === "openai") {
+    return {
+      fetch: creds.fetch,
+      provider: "openai",
+      openaiApiKey: creds.openaiApiKey,
+      openaiModel: candidate.model,
+      openaiReasoningEffort: candidate.reasoningEffort,
+      anthropicApiKey: creds.anthropicApiKey,
+      anthropicModel: creds.fallbackAnthropicModel,
+    };
+  }
+  if (!creds.anthropicApiKey) {
+    throw new Error("missing ANTHROPIC_API_KEY");
+  }
+  const effort = candidate.anthropicEffort;
+  if (!effort) {
+    throw new Error(
+      `Anthropic evaluation candidate ${candidate.id} must pin anthropicEffort to the actual output_config.effort used`,
+    );
+  }
+  return {
+    fetch: creds.fetch,
+    provider: "anthropic",
+    openaiApiKey: creds.openaiApiKey,
+    anthropicApiKey: creds.anthropicApiKey,
+    anthropicModel: candidate.model,
+    anthropicReasoningEffort: effort,
+  };
+}
+
 async function runEvalSummarizer(argv: string[], deps: EvalSummarizerDeps): Promise<number> {
   const args = parseEvalArgs(argv);
   const candidates = selectById(EVALUATION_CANDIDATES, args.candidateIds, "candidate");
@@ -72,9 +113,7 @@ async function runEvalSummarizer(argv: string[], deps: EvalSummarizerDeps): Prom
     `${args.execute ? "[EXECUTE]" : "[PLAN]"} ${candidates.length} candidates × ${cases.length} cases = ${candidates.length * cases.length} provider calls`,
   );
   for (const candidate of candidates) {
-    deps.io.stdout(
-      `  ${candidate.id}: ${candidate.provider}/${candidate.model}${candidate.reasoningEffort ? ` effort=${candidate.reasoningEffort}` : ""}`,
-    );
+    deps.io.stdout(`  ${candidate.id}: ${evaluationCandidateIdentity(candidate)}`);
   }
   if (!args.execute) {
     deps.io.stdout("Pass --execute to run paid provider calls and write the report.");
@@ -137,18 +176,15 @@ include credential values. There is no provider fallback.`,
       const observations = await runEvaluationMatrix(cases, candidates, {
         now: () => Date.now(),
         summarize: (evaluationCase, candidate) =>
-          summarizeReading(evaluationCase.input, {
-            fetch: globalThis.fetch,
-            provider: candidate.provider,
-            openaiApiKey: vars.OPENAI_API_KEY!,
-            openaiModel: candidate.provider === "openai" ? candidate.model : undefined,
-            openaiReasoningEffort: candidate.reasoningEffort,
-            anthropicApiKey: vars.ANTHROPIC_API_KEY,
-            anthropicModel:
-              candidate.provider === "anthropic"
-                ? candidate.model
-                : (vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"),
-          }),
+          summarizeReading(
+            evaluationCase.input,
+            summarizerDepsForEvaluationCandidate(candidate, {
+              fetch: globalThis.fetch,
+              openaiApiKey: vars.OPENAI_API_KEY!,
+              anthropicApiKey: vars.ANTHROPIC_API_KEY,
+              fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-5",
+            }),
+          ),
         onProgress: (observation) => {
           const status = observation.error ? `ERROR ${observation.error}` : "ok";
           io.stderr(
@@ -174,7 +210,11 @@ include credential values. There is no provider fallback.`,
       await Promise.all([
         writeFile(
           resolve(absoluteOutputDir, "results.json"),
-          JSON.stringify({ generatedAt, summaries, results: scored }, null, 2) + "\n",
+          JSON.stringify(
+            { generatedAt, candidates, summaries, results: scored },
+            null,
+            2,
+          ) + "\n",
           "utf8",
         ),
         writeFile(

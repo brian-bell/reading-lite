@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type {
@@ -34,7 +35,10 @@ import type {
   Sidecar,
 } from "./types";
 import type { ActivationResult } from "./activation-phase";
-import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
+import type {
+  AnthropicReasoningEffort,
+  OpenAIReasoningEffort,
+} from "../../../src/modules/summarizer/types";
 import { reconcileOpenAIPreSubmitSidecar } from "./openai-reconcile";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
@@ -53,7 +57,9 @@ export interface BatchRunDeps {
   configuredProvider?: "openai" | "anthropic";
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  anthropicReasoningEffort?: AnthropicReasoningEffort;
   newRunId?(): string;
+  newAttemptId?(): string;
   now(): string;
   sleep(ms: number): Promise<void>;
   // Resume support: the sidecar persists the in-flight batch so a crashed poll
@@ -184,6 +190,7 @@ export async function runBatchPipeline(
       ? requireOpenAIBatchClient(deps, "start new batch")
       : undefined;
   const reasoningEffort = deps.reasoningEffort ?? "low";
+  const anthropicEffort = deps.anthropicReasoningEffort ?? "low";
   const runId =
     provider === "openai"
       ? (deps.newRunId?.() ?? `run_${Date.now()}`)
@@ -213,6 +220,7 @@ export async function runBatchPipeline(
       assertExtractedBatchPayloadWithinLimit(
         extracted,
         deps.model,
+        anthropicEffort,
         deps.maxBatchBytes,
       );
     } else {
@@ -244,6 +252,7 @@ export async function runBatchPipeline(
       assertSummarizeBatchPayloadWithinLimit(
         summarizeTargets,
         deps.model,
+        anthropicEffort,
         deps.maxBatchBytes,
       );
     } else {
@@ -332,6 +341,7 @@ export async function runBatchPipeline(
   log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
   const { info, sidecar } = await submitBatch(summarizeTargets, {
     model: deps.model,
+    effort: anthropicEffort,
     batch: batch!,
     putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
     saveSidecar: deps.saveSidecar,
@@ -353,6 +363,8 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
     async () => {
       const prepared = await prepareTargets(rows, {
         readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+        newAttemptId: deps.newAttemptId ?? newBatchAttemptId,
+        now: deps.now,
       });
       const extracted = await extractTargets(prepared.targets, {
         loadExtracted: (kp) => deps.r2.get(layout.extractedKey(kp)),
@@ -377,6 +389,10 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
           })),
     },
   );
+}
+
+export function newBatchAttemptId(): string {
+  return `batch_${randomUUID()}`;
 }
 
 function noIdReconciliationError(existing: PersistedSidecar): Error {

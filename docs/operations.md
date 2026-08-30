@@ -37,7 +37,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (`/api/*` `/health` `/mcp*`) |
+| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (Pages + `/api/*` `/health` `/mcp*`) |
 | production | `reading-lite` | `reading-lite` | routed at `reading-lite.bbell.dev/api/*` + `/health` + `/mcp*` |
 
 Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
@@ -62,6 +62,16 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
 | `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
+
+Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
+`OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `medium` in
+staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` uses the same
+defaults and is applied only when `SUMMARIZER_PROVIDER=anthropic`. Claude Sonnet
+5 (`ANTHROPIC_MODEL=claude-sonnet-5`) accepts `low`, `medium`, `high`, `xhigh`,
+or `max` on `output_config.effort`; invalid values, efforts the configured
+model cannot take, and model/effort pairs that 400 with
+`thinking: { type: "disabled" }` (Fable 5, Mythos 5, Mythos Preview; Opus 5 at
+`xhigh` or `max`) fail closed before any source fetch or upstream spend.
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
 default to `1`. HKDF includes the version, so a secret-only rotation must keep
@@ -148,7 +158,8 @@ bootstrap of `dev-local-token`).
 
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
-path. Staging uses `https://reading-lite-staging.bbell.dev` the same way
+path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
+does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
 production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
 `WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
 
@@ -246,6 +257,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
+| `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
@@ -281,6 +293,54 @@ npm run ops -- corpus rebuild-list --tenant global --bucket reading-lite --execu
 
 Deploy the new Worker **before** the production rewrite. An old Worker that
 later commits a terminal manifest would strip the new fields off that row.
+
+### Purging connections to a deleted reading
+
+`ops corpus purge-connections` is the explicit offline cleanup for inbound
+`connections[]` entries that still name one deleted reading. `DELETE
+/api/readings/:id` deliberately does not scan the corpus, enqueue cleanup, or
+write a tombstone, so a reading-detail link may return 404 until an operator
+runs this sweep. Cleanup is not automatic.
+
+```sh
+# Exact plan; reads and validates the complete global manifest set, writes nothing.
+npm run ops -- corpus purge-connections --tenant global --id rd_deleted
+
+# Apply to one tenant namespace after establishing the sole-writer window.
+npm run ops -- corpus purge-connections \
+  --tenant usr_… --id rd_deleted --execute --sole-writer
+```
+
+The target id must be absent from the selected namespace before the scan and
+again immediately before mutation. The command refuses a present target or any
+malformed canonical manifest, with no preflight writes. Only exact
+`readings/{year}/{month}/{timestamp}-{id}/manifest.json` objects enter the
+scan; nested attempt or backup objects and other manifest-shaped JSON are
+ignored. Each selected key must also round-trip from the parsed manifest's
+`id` and `created_at`. The command compares the bare `id` inside each
+connection even when R2 object keys are tenant-prefixed, removes every exact
+match, preserves unrelated connection order and manifest fields, and is
+idempotent when rerun.
+
+`--execute` is accepted only with `--sole-writer`. For this command,
+`--sole-writer` is the operator assertion that no ingestion, reprocessing,
+deletion, or recreation can mutate the selected corpus for the command's full
+duration. Each manifest update still uses its listed ETag as an `If-Match` CAS.
+On conflict the command boundedly re-lists, validates, proves the target is
+still absent, recomputes against the newest manifest, and retries; it never
+blind-writes. Exhaustion or target recreation exits nonzero and reports whether
+earlier manifests were already changed.
+
+The single-line JSON audit reports `mode`, the explicit tenant/global selector
+(and `tenant_audit_stamp.tenant_id` for tenant mode), `target_id`, manifests
+scanned and matched, matching entries, manifests written or that would be
+written, unchanged manifests, conflicts, retries, failures, and
+`partial_execution`. Failures also include a bounded `failure_code` and
+`failure_stage`; provider response bodies and credentials are never copied
+into the audit or error stream. The command emits exactly one final audit even
+when a later storage operation fails after earlier writes. R2 listing
+pagination is completed by the shared client and canonical manifest keys are
+processed in deterministic lexical order.
 
 `ops corpus recover` has two execution paths: `--wave` paces realtime
 submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
@@ -458,8 +518,10 @@ The resulting `ready` manifests are contract-compatible with the realtime import
 path (`source_type: "markdown"`, captured content, correct
 `content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`, by-url and
 by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
-paths omit the realtime attempt-log fields (`last_attempt` and the per-attempt
-objects under the key prefix).
+paths stamp a terminal `last_attempt` summary in the manifest, but they do not
+write the realtime per-attempt objects under the key prefix. A resumed
+pre-upgrade sidecar without attempt identity retains the legacy omission of
+`last_attempt`.
 
 **`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant global --execute` and
 `ops corpus recover --tenant global --batch --execute` refuse to submit without it. Both batch paths
@@ -496,7 +558,10 @@ behind.
 (`./corpus-ingest.batch.json` by default); re-running resumes that batch instead
 of creating a second, double-billed one. The sidecar pins provider, model,
 OpenAI reasoning effort, and a stable run id, so an environment change cannot
-switch a resume to another provider. OpenAI's pre-submit upload/create phases are
+switch a resume to another provider. New Anthropic batches send
+`output_config.effort` from `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` on the
+same request body as realtime (`low`, `medium`, `high`, `xhigh`, or `max` on
+Claude Sonnet 5; invalid values fail closed before submit). OpenAI's pre-submit upload/create phases are
 persisted — a companion `<sidecar>.input.jsonl` holds the exact JSONL bytes,
 written before the `uploading` checkpoint. On resume the reconciler adopts what
 already exists: remote files by filename (`reading-lite-${runId}.jsonl`), remote
@@ -535,6 +600,26 @@ outside the seven-day recent-search window, the reading lands `failed` with:
 
 This personal tool does not implement X deletion/edit compliance
 synchronization.
+
+## Comparing summarizers on production readings
+
+To compare OpenAI (including `max`) and Anthropic Sonnet on one or more
+**existing production readings**, use the compare-summary-effort skill — not
+`ops eval summarizer` (that is the fixture-based quality matrix).
+
+```sh
+npx tsx .agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts \
+  --target rd_EXAMPLE \
+  --target 'https://example.com/article' \
+  --model gpt-5.6-luna \
+  --effort max
+```
+
+Plans by default (prints the readings × candidates matrix and a conservative
+cost ceiling). `--execute` is the only paid path. Production is GET-only: no
+`/reprocess`, no manifest/vector/list writes, no wrangler or production config
+change. Anthropic effort is optional; omit `--anthropic-effort` to run Sonnet
+once with no effort field. See `.agents/skills/compare-summary-effort/SKILL.md`.
 
 ## Sources that need a local skill
 

@@ -32,6 +32,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "backfill-vectors",
     "migrate-founder",
     "normalize-tags",
+    "purge-connections",
     "rebuild-list",
   ],
   reading: ["submit"],

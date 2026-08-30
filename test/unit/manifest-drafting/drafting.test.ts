@@ -502,7 +502,7 @@ describe("failedManifest", () => {
     });
   });
 
-  it("carries supplied content facts and accepts attempt: null (the batch path)", () => {
+  it("carries supplied content facts and accepts attempt: null for a legacy batch", () => {
     const manifest = failedManifest(
       IDENTITY,
       {
@@ -579,7 +579,7 @@ describe("rollForward", () => {
     expect("active_attempt" in rolled).toBe(false);
   });
 
-  it("attempt: null keeps the preserved last_attempt (the batch path)", () => {
+  it("attempt: null keeps the preserved last_attempt for a legacy batch", () => {
     const rolled = rollForward(READY_PRIOR, null, NOW);
     expect(rolled.last_attempt).toEqual(READY_PRIOR.last_attempt);
     expect(rolled.updated_at).toBe(NOW);
