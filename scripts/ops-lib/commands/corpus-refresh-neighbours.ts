@@ -6,8 +6,11 @@
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
 // inventory, and writes refresh-report.json; --execute also rewrites drifted
 // `manifest.similarity` snapshots with the same one-field discipline as
-// `corpus backfill-similarity`. A second immediate --execute is a no-op write
-// because snapshotChanged rejects sub-epsilon jitter.
+// `corpus backfill-similarity`. After a successful putManifest, the list row is
+// the resumability marker for index/list.json: a retry that finds a current
+// manifest and a stale list row rewrites only the index. A null or unparseable
+// manifest is a failed measurement in both modes — connections are not on the
+// list row, so a list-only diff would drop stale_connection from the report.
 
 import path from "node:path";
 import {
@@ -105,9 +108,12 @@ function normalizeVectorMatchIds(
   }));
 }
 
-function mergeReading(item: RefreshRow, manifest: unknown): RefreshRow {
-  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) return item;
-  return { ...item, ...(manifest as RefreshRow), key_prefix: item.key_prefix, id: item.id, url: item.url };
+function mergeReading(item: RefreshRow, manifest: Record<string, unknown>): RefreshRow {
+  return { ...item, ...(manifest as unknown as RefreshRow), key_prefix: item.key_prefix, id: item.id, url: item.url };
+}
+
+function isManifestObject(raw: unknown): raw is Record<string, unknown> {
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw);
 }
 
 async function runCorpusRefreshNeighbours(
@@ -167,52 +173,69 @@ async function runCorpusRefreshNeighbours(
       }
       const normalized = normalizeVectorMatchIds(matches, tenant.namespace);
       const snap = snapshotFor(t.id, normalized, now);
-      measured++;
 
+      // Connections (and tensions) live on the manifest, not the list row.
+      // A null here is either a missing object or a lenient wrangler miss, and
+      // a throw is unparseable JSON: both are failed measurements. Diffing the
+      // list row would invent an empty cited set and drop stale_connection.
       let manifest: unknown = null;
       try {
         manifest = await r2.readManifest(t.key_prefix, r2Deps);
       } catch (e) {
+        errored++;
         io.stderr(`  ! manifest unparseable for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
       }
+      if (!isManifestObject(manifest)) {
+        errored++;
+        io.stderr(`  ! manifest unreadable for ${t.id}`);
+        continue;
+      }
+
+      measured++;
       const reading = mergeReading(t, manifest);
       const judged = resolveJudgedAt(reading);
       const reasons = diffNeighbourhood(reading, normalized, items, judged.judged_at);
-      const changed = snapshotChanged(reading.similarity, snap);
-      if (changed) drifted++;
+      // Manifest-wins for whether the stored snapshot needs a rewrite; the list
+      // row is the resumability marker for index/list.json. After a successful
+      // putManifest and a failed flush, a retry sees a current manifest and a
+      // stale list row — queue that row for the flush without rewriting the
+      // manifest (the same heal backfill-similarity gets from planBackfill).
+      const manifestDrifted = snapshotChanged(reading.similarity, snap);
+      const listDrifted = snapshotChanged(t.similarity, snap);
+      if (manifestDrifted) drifted++;
 
       const score = snap.max === undefined ? "none" : snap.max.toFixed(3);
       const reasonText = reasons.length === 0 ? "fresh" : reasons.join(",");
+      const driftLabel = manifestDrifted ? "snapshot-drift" : listDrifted ? "list-stale" : "snapshot-ok";
       io.stdout(
-        `  ${t.id}  neighbours=${snap.count} nearest=${score}  ${changed ? "snapshot-drift" : "snapshot-ok"}  ${reasonText}  ${t.url}`,
+        `  ${t.id}  neighbours=${snap.count} nearest=${score}  ${driftLabel}  ${reasonText}  ${t.url}`,
       );
 
       if (reasons.length > 0) {
         flagged.push(buildReportReading(reading, normalized, items, reasons, judged));
       }
 
-      if (!opts.execute || !changed) continue;
+      if (!opts.execute) continue;
 
-      if (manifest === null) {
-        errored++;
-        io.stderr(`  ! manifest unreadable for ${t.id}`);
-        continue;
+      if (manifestDrifted) {
+        const check = validateBackfillWrite(manifest, snap);
+        if (!check.ok) {
+          invalid++;
+          io.stderr(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
+          continue;
+        }
+        try {
+          await r2.putManifest(t.key_prefix, check.manifest, r2Deps);
+        } catch (e) {
+          errored++;
+          io.stderr(`  ! manifest write failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+          continue;
+        }
+        scored.set(t.id, snap);
+      } else if (listDrifted) {
+        scored.set(t.id, snap);
       }
-
-      const check = validateBackfillWrite(manifest, snap);
-      if (!check.ok) {
-        invalid++;
-        io.stderr(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
-        continue;
-      }
-      try {
-        await r2.putManifest(t.key_prefix, check.manifest, r2Deps);
-      } catch (e) {
-        errored++;
-        io.stderr(`  ! manifest write failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
-        continue;
-      }
-      scored.set(t.id, snap);
     }
   } finally {
     await flushIndex();
@@ -247,9 +270,10 @@ async function runCorpusRefreshNeighbours(
   }
 
   const failed = noVector + errored + invalid;
-  if (opts.execute && failed > 0) {
+  if (errored > 0 || (opts.execute && failed > 0)) {
+    const n = opts.execute ? failed : errored;
     io.stderr(
-      `\n${failed} of ${plan.targets.length} attempted reading(s) were not refreshed — run incomplete.`,
+      `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
     );
     return 1;
   }

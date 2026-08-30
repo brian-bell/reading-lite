@@ -281,4 +281,79 @@ describe("ops corpus refresh-neighbours", () => {
     expect(calls.queries).toHaveLength(0);
     expect(calls.puts).toHaveLength(0);
   });
+
+  it("rewrites list.json when the manifest snapshot is current but the list row is stale", async () => {
+    // Manifest write succeeded, list flush did not: the list row still has the
+    // pre-refresh snapshot, while the live measurement matches the manifest.
+    const current = { count: 1, max: 0.72, mean: 0.72, computed_at: AT };
+    const listStale: RefreshRow = { ...READY, similarity: { count: 0, computed_at: AT } };
+    const { deps, calls, lines } = makeDeps({
+      items: [listStale, NEIGHBOUR],
+      manifest: { ...VALID_MANIFEST, similarity: current },
+    });
+    const written: RefreshRow[][] = [];
+    deps.r2.writeListIndex = async (items) => {
+      written.push(items);
+      calls.indexWrites++;
+    };
+
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r", "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(1);
+    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual({
+      count: 1,
+      max: 0.72,
+      mean: 0.72,
+      computed_at: "2026-08-22T12:00:00.000Z",
+    });
+    expect(lines.join("\n")).toContain("list-stale");
+  });
+
+  it("plan mode treats a missing manifest as a failed measurement, not a list-only report row", async () => {
+    const { deps, calls, lines } = makeDeps({ items: [READY], manifest: null });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(1);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.reports).toHaveLength(1);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(lines.join("\n")).toMatch(/manifest unreadable for rd_r/);
+    expect(lines.join("\n")).toMatch(/not measured — run incomplete/);
+  });
+
+  it("execute still fails closed on an unreadable manifest when the list snapshot would not rewrite", async () => {
+    const scored: RefreshRow = {
+      ...READY,
+      similarity: { count: 1, max: 0.72, mean: 0.72, computed_at: AT },
+    };
+    const { deps, calls, lines } = makeDeps({
+      items: [scored, NEIGHBOUR],
+      manifest: null,
+    });
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r", "--execute"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(lines.join("\n")).toMatch(/manifest unreadable for rd_r/);
+  });
+
+  it("treats an unparseable manifest as a failed measurement in plan mode", async () => {
+    const { deps, calls, lines } = makeDeps({
+      items: [READY],
+      manifestThrow: "Unexpected token",
+    });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(1);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(calls.puts).toHaveLength(0);
+    expect(lines.join("\n")).toMatch(/manifest unparseable for rd_r/);
+  });
 });
