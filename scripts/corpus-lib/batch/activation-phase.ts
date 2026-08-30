@@ -188,7 +188,7 @@ export async function activateRecoverTargets(
     // without a claim write (both writers serialize identically).
 
     // Revalidate the live manifest is still this reading, regardless of status:
-    // a ready force-reprocess, a failed reading, or our own batch_<id> pending on
+    // a ready force-reprocess, a failed reading, or our own batch-marked pending on
     // a re-run all pass. Re-flip safety of our own pending rests on --sole-writer.
     const m = await readManifest(deps.r2, keyPrefix);
     if (!(m && m.id === id && m.url === url && m.url_hash === urlHash)) {

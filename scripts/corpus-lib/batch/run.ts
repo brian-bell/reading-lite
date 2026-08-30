@@ -384,7 +384,7 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
 }
 
 export function newBatchAttemptId(): string {
-  return `at_${randomUUID()}`;
+  return `batch_${randomUUID()}`;
 }
 
 function noIdReconciliationError(existing: PersistedSidecar): Error {
