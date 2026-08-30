@@ -308,13 +308,74 @@ describe("ops corpus refresh-neighbours", () => {
     expect(code).toBe(0);
     expect(calls.puts).toHaveLength(0);
     expect(calls.indexWrites).toBe(1);
-    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual({
-      count: 1,
-      max: 0.72,
-      mean: 0.72,
-      computed_at: "2026-08-22T12:00:00.000Z",
-    });
+    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual(current);
     expect(lines.join("\n")).toContain("list-stale");
+  });
+
+  it("heals the list row from manifest.similarity, not the sub-epsilon fresh measurement", async () => {
+    // The retry re-query can land within the 0.02 epsilon of the manifest's
+    // snapshot without matching it. The heal must restore row/manifest
+    // lockstep, so it copies the manifest's values, never the fresh ones.
+    const current = { count: 1, max: 0.729, mean: 0.729, computed_at: LATER };
+    const listStale: RefreshRow = { ...READY, similarity: { count: 0, computed_at: AT } };
+    const { deps, calls } = makeDeps({
+      items: [listStale, NEIGHBOUR],
+      manifest: { ...VALID_MANIFEST, similarity: current },
+    });
+    const written: RefreshRow[][] = [];
+    deps.r2.writeListIndex = async (items) => {
+      written.push(items);
+      calls.indexWrites++;
+    };
+
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r", "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(1);
+    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual(current);
+  });
+
+  it("plan mode treats a schema-invalid manifest as a failed measurement, not a report row", async () => {
+    // storedConnections would silently drop the malformed entry and invent a
+    // new_neighbour flag; the measurement must fail instead.
+    const { deps, calls, lines } = makeDeps({
+      items: [READY, NEIGHBOUR],
+      manifest: { ...VALID_MANIFEST, connections: [{ id: "rd_n" }] },
+    });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "rd_r"], deps);
+    expect(code).toBe(1);
+    expect(calls.puts).toHaveLength(0);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(lines.join("\n")).toMatch(/manifest fails ManifestSchema for rd_r/);
+    expect(lines.join("\n")).toMatch(/not measured — run incomplete/);
+  });
+
+  it("execute fails closed on a schema-invalid manifest even without snapshot drift", async () => {
+    const scored: RefreshRow = {
+      ...READY,
+      similarity: { count: 1, max: 0.72, mean: 0.72, computed_at: AT },
+    };
+    const { deps, calls, lines } = makeDeps({
+      items: [scored, NEIGHBOUR],
+      manifest: {
+        ...VALID_MANIFEST,
+        similarity: { count: 1, max: 0.72, mean: 0.72, computed_at: AT },
+        connections: [{ id: "rd_n" }],
+      },
+    });
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r", "--execute"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(lines.join("\n")).toMatch(/manifest fails ManifestSchema for rd_r/);
   });
 
   it("plan mode treats a missing manifest as a failed measurement, not a list-only report row", async () => {

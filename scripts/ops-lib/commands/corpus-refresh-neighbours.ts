@@ -8,9 +8,12 @@
 // `manifest.similarity` snapshots with the same one-field discipline as
 // `corpus backfill-similarity`. After a successful putManifest, the list row is
 // the resumability marker for index/list.json: a retry that finds a current
-// manifest and a stale list row rewrites only the index. A null or unparseable
-// manifest is a failed measurement in both modes — connections are not on the
-// list row, so a list-only diff would drop stale_connection from the report.
+// manifest and a stale list row copies manifest.similarity onto the row —
+// never the fresh measurement, which can differ within the epsilon. A null,
+// unparseable, or ManifestSchema-invalid manifest is a failed measurement in
+// both modes — connections are not on the list row, and a schema-drifted
+// manifest would skew the diff (storedConnections drops malformed entries,
+// inventing new_neighbour or hiding stale_connection).
 
 import path from "node:path";
 import {
@@ -199,6 +202,17 @@ async function runCorpusRefreshNeighbours(
         io.stderr(`  ! manifest unreadable for ${t.id}`);
         continue;
       }
+      // Manifest reads are always parsed (AGENTS.md): the diff below trusts
+      // connections/novelty_verdict, and storedConnections silently drops any
+      // malformed entry. Validate the candidate (stored manifest + fresh
+      // snapshot) rather than the raw read, so a manifest whose only defect is
+      // a malformed similarity is still repaired by this very write.
+      const check = validateBackfillWrite(manifest, snap);
+      if (!check.ok) {
+        invalid++;
+        io.stderr(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
+        continue;
+      }
 
       measured++;
       const reading = mergeReading(t, manifest);
@@ -227,12 +241,6 @@ async function runCorpusRefreshNeighbours(
       if (!opts.execute) continue;
 
       if (manifestDrifted) {
-        const check = validateBackfillWrite(manifest, snap);
-        if (!check.ok) {
-          invalid++;
-          io.stderr(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
-          continue;
-        }
         try {
           await r2.putManifest(t.key_prefix, check.manifest, r2Deps);
         } catch (e) {
@@ -241,8 +249,11 @@ async function runCorpusRefreshNeighbours(
           continue;
         }
         scored.set(t.id, snap);
-      } else if (listDrifted) {
-        scored.set(t.id, snap);
+      } else if (listDrifted && reading.similarity !== undefined) {
+        // Within the epsilon the fresh measurement can differ from what the
+        // manifest stores; the heal restores row/manifest lockstep, so it
+        // copies the manifest's snapshot, never the fresh one.
+        scored.set(t.id, reading.similarity);
       }
     }
   } catch (e) {
@@ -289,12 +300,12 @@ async function runCorpusRefreshNeighbours(
   }
 
   const failed = noVector + errored + invalid;
-  if (flushFailed || errored > 0 || (opts.execute && failed > 0)) {
+  if (flushFailed || errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
     if (flushFailed) {
       io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
     }
-    if (errored > 0 || (opts.execute && failed > 0)) {
-      const n = opts.execute ? failed : errored;
+    if (errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
+      const n = opts.execute ? failed : errored + invalid;
       io.stderr(
         `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
       );
