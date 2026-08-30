@@ -112,6 +112,8 @@ describe("submitBatch", () => {
     });
     const requests = batch.create.mock.calls[0]![0];
     expect(requests[0].params.output_config).toEqual({ effort: "max" });
+    expect(requests[0].params.max_tokens).toBe(8192);
+    expect(requests[0].params.thinking).toEqual({ type: "disabled" });
   });
 
   it("persists freshly-extracted raw + extracted.md to R2 before summarizing", async () => {
