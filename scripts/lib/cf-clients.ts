@@ -12,6 +12,7 @@ export interface R2PutOptions {
 export interface R2Client {
   put(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<void>;
   putIfAbsent(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<boolean>;
+  putIfMatch?(key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions): Promise<boolean>;
   get(key: string): Promise<string | null>;
   head(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
@@ -37,6 +38,7 @@ export interface R2ObjectBody {
 // for binary-safe copies. A separate interface so the many in-memory R2Client
 // fakes in tests keep compiling; makeR2Client always returns the superset.
 export interface R2InventoryClient extends R2Client {
+  putIfMatch(key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions): Promise<boolean>;
   listObjects(prefix?: string): Promise<R2ObjectMeta[]>;
   getBytes(key: string): Promise<R2ObjectBody | null>;
 }
@@ -141,6 +143,15 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
       const text = await res.text().catch(() => "");
       throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
     },
+    async putIfMatch(key, body, etag, opts) {
+      const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
+      if (opts?.contentType) headers["content-type"] = opts.contentType;
+      const res = await signedFetch(key, { method: "PUT", body, headers });
+      if (res.ok) return true;
+      if (res.status === 412 || res.status === 409) return false;
+      const text = await res.text().catch(() => "");
+      throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
+    },
     async get(key) {
       const res = await signedFetch(key, { method: "GET" });
       if (res.status === 404) return null;
@@ -152,7 +163,10 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     },
     async head(key) {
       const res = await signedFetch(key, { method: "HEAD" });
-      return res.ok;
+      if (res.status === 404) return false;
+      if (res.ok) return true;
+      const text = await res.text().catch(() => "");
+      throw new Error(`R2 HEAD ${key} failed: ${res.status} ${text}`);
     },
     async delete(key) {
       const res = await signedFetch(key, { method: "DELETE" });
@@ -275,6 +289,28 @@ export function makeR2RestClient(cfg: R2RestConfig, fetchFn: typeof fetch = fetc
       await throwIfUnsuccessfulJson(res, "PUT", key);
       return false;
     },
+    async putIfMatch(key, body, etag, opts) {
+      const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
+      if (opts?.contentType) headers["content-type"] = opts.contentType;
+      const res = await authedFetch(objectUrl(key), { method: "PUT", body, headers });
+      if (res.status === 412 || res.status === 409) return false;
+      if (!res.ok) throw new Error(`R2 PUT ${key} failed: HTTP ${res.status}`);
+      const text = await res.text();
+      // Cloudflare's object-upload endpoint may return an empty 2xx body. When
+      // it does return JSON, the success flag is authoritative.
+      if (text.trim() === "") return true;
+      let envelope: { success?: unknown };
+      try {
+        envelope = JSON.parse(text) as { success?: unknown };
+      } catch {
+        throw new Error(`R2 PUT ${key} failed: malformed Cloudflare response`);
+      }
+      if (envelope.success === true) return true;
+      if (envelope.success === false) {
+        throw new Error(`R2 PUT ${key} failed: Cloudflare response success=false`);
+      }
+      throw new Error(`R2 PUT ${key} failed: malformed Cloudflare response`);
+    },
     async get(key) {
       const res = await authedFetch(objectUrl(key), { method: "GET" });
       if (res.status === 404) return null;
@@ -356,6 +392,10 @@ export function makeR2RestClient(cfg: R2RestConfig, fetchFn: typeof fetch = fetc
 function normalizeRestEtag(etag: string | undefined): string {
   if (!etag) return "";
   return etag.replace(/^W\//, "").replaceAll('"', "");
+}
+
+function quoteEtag(etag: string): string {
+  return `"${etag.replace(/^W\//, "").replaceAll('"', "")}"`;
 }
 
 // Prefer S3 credentials when both are present (existing operator .corpus.vars);
@@ -489,6 +529,10 @@ export function withKeyRoot(client: R2Client, keyRoot: string): R2Client {
   return {
     put: (key, body, opts) => client.put(`${keyRoot}${key}`, body, opts),
     putIfAbsent: (key, body, opts) => client.putIfAbsent(`${keyRoot}${key}`, body, opts),
+    ...(client.putIfMatch === undefined
+      ? {}
+      : { putIfMatch: (key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions) =>
+          client.putIfMatch!(`${keyRoot}${key}`, body, etag, opts) }),
     get: (key) => client.get(`${keyRoot}${key}`),
     head: (key) => client.head(`${keyRoot}${key}`),
     delete: (key) => client.delete(`${keyRoot}${key}`),
@@ -506,6 +550,10 @@ export function dryRunR2(log: (line: string) => void = (l) => process.stderr.wri
     },
     async putIfAbsent(key) {
       log(`[dry-run] R2 PUT if absent ${key}`);
+      return true;
+    },
+    async putIfMatch(key) {
+      log(`[dry-run] R2 PUT if match ${key}`);
       return true;
     },
     async get() {
