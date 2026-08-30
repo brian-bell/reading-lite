@@ -243,7 +243,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites only drifted snapshots) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
@@ -256,9 +256,12 @@ stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later
 judgement slices. Plan mode does not mutate R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
-≥ 0.02) and leaves status, vectors, title, tldr, tags, keywords, entities,
-and `summary_markdown` untouched. A second immediate `--execute` writes
-nothing.
+≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
+the same class of write `rebuild-list` guards with `--sole-writer`. Do not
+run `--execute` while submissions are in flight: a concurrent queue write
+can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
+entities, and `summary_markdown` untouched. A second immediate `--execute`
+writes nothing.
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant global

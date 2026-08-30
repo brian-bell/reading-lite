@@ -61,6 +61,7 @@ function makeDeps(opts: {
   matches?: RefreshNeighbour[] | null;
   manifest?: unknown;
   manifestThrow?: string;
+  queryThrow?: (id: string) => Error | undefined;
 }) {
   const { io: cio, lines } = io();
   const calls = {
@@ -80,6 +81,8 @@ function makeDeps(opts: {
       },
       queryByVectorId: async (_index, id, _topK, namespace) => {
         calls.queries.push({ id, namespace });
+        const thrown = opts.queryThrow?.(id);
+        if (thrown) throw thrown;
         if (opts.matches === null) return null;
         return opts.matches ?? [
           { id: "rd_r", score: 1 },
@@ -355,5 +358,39 @@ describe("ops corpus refresh-neighbours", () => {
     expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
     expect(calls.puts).toHaveLength(0);
     expect(lines.join("\n")).toMatch(/manifest unparseable for rd_r/);
+  });
+
+  it("isolates a Vectorize query failure and still writes the report for measured readings", async () => {
+    const other: RefreshRow = { ...NEIGHBOUR, novelty_verdict: "familiar" };
+    const { deps, calls, lines } = makeDeps({
+      items: [READY, other],
+      queryThrow: (id) => (id === "rd_n" ? new Error("vectorize query failed for rd_n: 503") : undefined),
+    });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(1);
+    expect(calls.queries.map((q) => q.id)).toEqual(["rd_r", "rd_n"]);
+    expect(calls.reports).toHaveLength(1);
+    const report = JSON.parse(calls.reports[0]!.body);
+    expect(report.readings.map((r: { id: string }) => r.id)).toEqual(["rd_r"]);
+    expect(lines.join("\n")).toMatch(/vectorize query failed for rd_n/);
+    expect(lines.join("\n")).toMatch(/not measured — run incomplete/);
+  });
+
+  it("writes refresh-report.json even when the list flush fails, then exits 1", async () => {
+    const { deps, calls, lines } = makeDeps({});
+    deps.r2.writeListIndex = async () => {
+      calls.indexWrites++;
+      throw new Error("put index/list.json failed: 500");
+    };
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r", "--execute"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(calls.puts).toHaveLength(1);
+    expect(calls.indexWrites).toBe(1);
+    expect(calls.reports).toHaveLength(1);
+    expect(JSON.parse(calls.reports[0]!.body).readings[0].id).toBe("rd_r");
+    expect(lines.join("\n")).toMatch(/index\/list\.json rewrite failed/);
   });
 });

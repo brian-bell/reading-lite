@@ -158,14 +158,22 @@ async function runCorpusRefreshNeighbours(
     io.stdout(`index/list.json rewritten (${scored.size} row(s) updated).`);
   };
 
+  let flushFailed = false;
   try {
     for (const t of plan.targets) {
-      const matches = await r2.queryByVectorId(
-        vectorizeIndex,
-        tenantVectorId(tenant.namespace, t.id),
-        SIMILAR_TOP_K + 1,
-        tenant.namespace,
-      );
+      let matches: RefreshNeighbour[] | null;
+      try {
+        matches = await r2.queryByVectorId(
+          vectorizeIndex,
+          tenantVectorId(tenant.namespace, t.id),
+          SIMILAR_TOP_K + 1,
+          tenant.namespace,
+        );
+      } catch (e) {
+        errored++;
+        io.stderr(`  ! vectorize query failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
+      }
       if (matches === null) {
         noVector++;
         io.stderr(`  ! no vector indexed for ${t.id}  ${t.url}`);
@@ -237,8 +245,19 @@ async function runCorpusRefreshNeighbours(
         scored.set(t.id, snap);
       }
     }
+  } catch (e) {
+    errored++;
+    io.stderr(`  ! refresh pass aborted: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
-    await flushIndex();
+    // Catch a failed flush so already-flagged rows still reach refresh-report.json.
+    // Re-querying Vectorize just to emit the tier-2 contract is the cost this
+    // avoids; list.json heals on the next --execute from the list-row marker.
+    try {
+      await flushIndex();
+    } catch (e) {
+      flushFailed = true;
+      io.stderr(`  ! index/list.json rewrite failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   const report = buildRefreshReport({
@@ -260,7 +279,7 @@ async function runCorpusRefreshNeighbours(
     );
   }
   if (errored > 0) {
-    io.stdout(`Manifest read/write failures: ${errored} — these readings were not refreshed.`);
+    io.stdout(`Failed measurements: ${errored} — these readings were not ${opts.execute ? "refreshed" : "measured"}.`);
   }
   if (invalid > 0) {
     io.stdout(
@@ -270,11 +289,16 @@ async function runCorpusRefreshNeighbours(
   }
 
   const failed = noVector + errored + invalid;
-  if (errored > 0 || (opts.execute && failed > 0)) {
-    const n = opts.execute ? failed : errored;
-    io.stderr(
-      `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
-    );
+  if (flushFailed || errored > 0 || (opts.execute && failed > 0)) {
+    if (flushFailed) {
+      io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
+    }
+    if (errored > 0 || (opts.execute && failed > 0)) {
+      const n = opts.execute ? failed : errored;
+      io.stderr(
+        `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
+      );
+    }
     return 1;
   }
 
