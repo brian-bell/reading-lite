@@ -29,6 +29,7 @@ describe("resolveBatchConfig", () => {
     expect(cfg.anthropicModel).toBe("claude-opus-4-8");
     expect(cfg.openaiModel).toBe("gpt-batch");
     expect(cfg.openaiReasoningEffort).toBe("high");
+    expect(cfg.anthropicReasoningEffort).toBe("low");
     expect(cfg.summarizerProvider).toBe("openai");
   });
 
@@ -48,6 +49,7 @@ describe("resolveBatchConfig", () => {
     expect(cfg.anthropicModel).toBe("claude-sonnet-4-6");
     expect(cfg.openaiModel).toBe("gpt-5.6-terra");
     expect(cfg.openaiReasoningEffort).toBe("low");
+    expect(cfg.anthropicReasoningEffort).toBe("low");
     expect(cfg.summarizerProvider).toBe("openai");
   });
 
@@ -153,6 +155,45 @@ describe("resolveBatchConfig", () => {
         },
       ),
     ).toThrow(/OPENAI_SUMMARIZATION_REASONING_EFFORT/);
+  });
+
+  it("validates Anthropic effort only for Anthropic runs", () => {
+    expect(
+      resolveBatchConfig(
+        { tenant: GLOBAL_TENANT },
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "anthropic",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "max",
+          },
+        },
+      ).anthropicReasoningEffort,
+    ).toBe("max");
+    expect(() =>
+      resolveBatchConfig(
+        { tenant: GLOBAL_TENANT },
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "anthropic",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
+          },
+        },
+      ),
+    ).toThrow(/ANTHROPIC_SUMMARIZATION_REASONING_EFFORT/);
+    expect(
+      resolveBatchConfig(
+        { tenant: GLOBAL_TENANT },
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "openai",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
+          },
+        },
+      ).anthropicReasoningEffort,
+    ).toBe("low");
   });
 
   it("does not parse the current provider when a resume pins its own", () => {

@@ -6,11 +6,16 @@ import {
   type SummarizerProvider,
 } from "../../src/modules/summarizer/config";
 import {
+  DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT,
+  parseAnthropicEffort,
   parseReasoningEffort,
 } from "../../src/modules/summarizer";
-import type { OpenAIReasoningEffort } from "../../src/modules/summarizer/types";
+import type {
+  AnthropicReasoningEffort,
+  OpenAIReasoningEffort,
+} from "../../src/modules/summarizer/types";
 
 export const DEFAULT_BUCKET = "reading-lite";
 export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
@@ -55,6 +60,7 @@ export interface BatchConfig {
   openaiApiKey: string;
   openaiModel: string;
   openaiReasoningEffort: OpenAIReasoningEffort;
+  anthropicReasoningEffort: AnthropicReasoningEffort;
   summarizerProvider: SummarizerProvider;
 }
 
@@ -126,6 +132,12 @@ export function resolveBatchConfig(
             vars.OPENAI_SUMMARIZATION_REASONING_EFFORT,
           )
         : DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT,
+    anthropicReasoningEffort:
+      summarizerProvider === "anthropic" && flags.resumeProvider === undefined
+        ? parseAnthropicEffort(
+            vars.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
+          )
+        : DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
     summarizerProvider,
   };
 }

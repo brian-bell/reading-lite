@@ -76,6 +76,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
+ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
 WEB_BASE_URL = "http://127.0.0.1:5173"
@@ -125,6 +126,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"
+ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"
 EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = ""
 # Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
@@ -202,6 +204,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "medium"
+ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"
 # Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
 # `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.

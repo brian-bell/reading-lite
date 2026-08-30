@@ -7,7 +7,10 @@ import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
 } from "../summarizer/instructions";
-import type { SummarizeReadingInput } from "../summarizer/types";
+import type {
+  AnthropicReasoningEffort,
+  SummarizeReadingInput,
+} from "../summarizer/types";
 
 export type {
   SimilarContext,
@@ -52,6 +55,7 @@ export interface AnthropicDeps {
   fetch: typeof fetch;
   apiKey: string;
   model: string;
+  effort: AnthropicReasoningEffort;
   retry?: RetryDeps;
 }
 
@@ -183,10 +187,12 @@ interface AnthropicMessageResponse {
 export function buildSummarizeRequestBody(
   input: SummarizeReadingInput,
   model: string,
+  effort: AnthropicReasoningEffort,
 ): object {
   return {
     model,
     max_tokens: 8192,
+    output_config: { effort },
     system: [
       {
         type: "text",
@@ -279,7 +285,7 @@ export async function summarizeReading(
     throw new Error("summarizeReading: extractedText must be non-empty");
   }
 
-  const body = buildSummarizeRequestBody(input, deps.model);
+  const body = buildSummarizeRequestBody(input, deps.model, deps.effort);
 
   const init: RequestInit = {
     method: "POST",

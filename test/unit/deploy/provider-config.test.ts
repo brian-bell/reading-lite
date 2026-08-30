@@ -40,6 +40,26 @@ describe("checked-in summarizer provider configuration", () => {
     expect(
       wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-4-6"$/gm),
     ).toHaveLength(3);
+    expect(
+      wrangler.match(
+        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
+      ),
+    ).toHaveLength(1);
+    expect(
+      wrangler.match(
+        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"$/gm,
+      ),
+    ).toHaveLength(2);
+    expect(
+      wrangler.match(
+        /\[env\.staging\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"$/m,
+      ),
+    ).toHaveLength(1);
+    expect(
+      wrangler.match(
+        /\[env\.production\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"$/m,
+      ),
+    ).toHaveLength(1);
   });
 
   it("keeps test and dotenv examples aligned with the provider variables", () => {
@@ -51,15 +71,22 @@ describe("checked-in summarizer provider configuration", () => {
     expect(testConfig).toContain(
       'OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
+    expect(testConfig).toContain(
+      'ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"',
+    );
 
     const devExample = read(".dev.vars.example");
     expect(devExample).toContain("SUMMARIZER_PROVIDER=openai");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=low");
+    expect(devExample).toContain("ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=low");
 
     const stgExample = read(".stg.vars.example");
     expect(stgExample).toContain("SUMMARIZER_PROVIDER=openai");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=medium");
+    expect(stgExample).toContain(
+      "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium",
+    );
   });
 });

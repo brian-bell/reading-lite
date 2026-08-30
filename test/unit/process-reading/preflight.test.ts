@@ -106,4 +106,37 @@ describe("processReading — config preflight", () => {
       /invalid OPENAI_SUMMARIZATION_REASONING_EFFORT/,
     );
   });
+
+  it("rejects an invalid Anthropic effort before fetching or embedding", async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    const services: Services = {
+      fetch: fetchFn,
+      now: () => "2026-04-26T20:00:01.000Z",
+      newId: () => "rd_TEST",
+    };
+
+    const bucket = workingBucket();
+    await processReading(
+      args(),
+      envWith(bucket, {
+        SUMMARIZER_PROVIDER: "anthropic",
+        ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
+      }),
+      services,
+      founderTenant(),
+    );
+
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    const puts = (bucket.put as ReturnType<typeof vi.fn>).mock.calls;
+    const manifestPut = puts.filter(
+      ([key]) => typeof key === "string" && key.endsWith("/manifest.json"),
+    ).at(-1);
+    expect(manifestPut).toBeDefined();
+    const manifest = JSON.parse(String(manifestPut![1]));
+    expect(manifest.status).toBe("failed");
+    expect(manifest.error?.message).toMatch(
+      /invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT/,
+    );
+  });
 });

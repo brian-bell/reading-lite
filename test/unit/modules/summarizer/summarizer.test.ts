@@ -114,6 +114,8 @@ describe("summarizeReading provider selection", () => {
     expect(fetchFn.mock.calls[0]![0]).toBe(
       "https://api.anthropic.com/v1/messages",
     );
+    const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
+    expect(body.output_config).toEqual({ effort: "low" });
     expect(result.usage).toEqual({
       provider: "anthropic",
       model: "claude-sonnet-4-6",
@@ -210,6 +212,41 @@ describe("summarizeReading provider selection", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  it("passes a valid Anthropic effort on output_config and rejects unsupported values before calling an API", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(anthropicResponse()), { status: 200 }),
+    );
+
+    await summarizeReading(input, {
+      fetch: fetchFn,
+      provider: "anthropic",
+      openaiApiKey: "sk-openai",
+      anthropicApiKey: "sk-anthropic",
+      anthropicModel: "claude-sonnet-4-6",
+      anthropicReasoningEffort: "medium",
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
+    expect(body.output_config).toEqual({ effort: "medium" });
+
+    const unused = vi.fn<typeof fetch>();
+    const error = await summarizeReading(input, {
+      fetch: unused,
+      provider: "anthropic",
+      openaiApiKey: "sk-openai",
+      anthropicApiKey: "sk-anthropic",
+      anthropicModel: "claude-sonnet-4-6",
+      anthropicReasoningEffort: "xhigh",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(SummarizerConfigError);
+    expect(error).toHaveProperty(
+      "message",
+      "invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh",
+    );
+    expect(unused).not.toHaveBeenCalled();
+  });
+
   it("does not fall back after the selected provider fails", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response(JSON.stringify({ error: { message: "OpenAI failed" } }), {
@@ -287,6 +324,43 @@ describe("validateProcessingCredentials", () => {
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-anthropic",
         openaiReasoningEffort: "irrelevant-invalid-value",
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects an invalid Anthropic effort at the preflight seam", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicReasoningEffort: "extreme",
+      }),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: extreme/);
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicReasoningEffort: "none",
+      }),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: none/);
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicReasoningEffort: "medium",
+      }),
+    ).not.toThrow();
+  });
+
+  it("ignores Anthropic-only effort when OpenAI is selected", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "openai",
+        openaiApiKey: "sk-openai",
+        anthropicReasoningEffort: "irrelevant-invalid-value",
       }),
     ).not.toThrow();
   });

@@ -3,7 +3,8 @@
 # Read by `npm run corpus-recover -- --batch` (the bulk Message Batch path):
 # it uses the R2 (S3) + Vectorize + CF_API_TOKEN values below to write
 # R2/Vectorize directly, plus ANTHROPIC_API_KEY / OPENAI_API_KEY /
-# ANTHROPIC_MODEL from .dev.vars/.prd.vars.
+# ANTHROPIC_MODEL / ANTHROPIC_SUMMARIZATION_REASONING_EFFORT from
+# .dev.vars/.prd.vars.
 # Resolution order: env var (same name) > this file > .dev.vars/.prd.vars > error.
 
 CORPUS_R2_ACCOUNT_ID=

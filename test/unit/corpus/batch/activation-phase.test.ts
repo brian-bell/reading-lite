@@ -231,6 +231,7 @@ describe("activateFreshTargets", () => {
 
     await submitBatch([summarize], {
       model: "m",
+      effort: "low",
       batch: batch as any,
       putObject,
       saveSidecar: vi.fn(async () => {}),

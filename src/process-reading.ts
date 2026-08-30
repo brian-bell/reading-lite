@@ -74,6 +74,7 @@ export async function processReading(
       openaiApiKey: env.OPENAI_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
       openaiReasoningEffort: env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
+      anthropicReasoningEffort: env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
     });
 
     const extracted = await extractSource(args, env, services, reader, attempt);
@@ -152,6 +153,8 @@ export async function processReading(
               env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
             anthropicApiKey: env.ANTHROPIC_API_KEY,
             anthropicModel: env.ANTHROPIC_MODEL,
+            anthropicReasoningEffort:
+              env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
             retry,
           },
         ),
