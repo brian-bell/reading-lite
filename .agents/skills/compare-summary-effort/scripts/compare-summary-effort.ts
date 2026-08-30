@@ -59,6 +59,7 @@ export type ComparisonCandidate =
   | {
       provider: "anthropic";
       model: string;
+      anthropicEffort: "none";
     };
 
 export interface FrozenReading {
@@ -101,6 +102,7 @@ export interface ComparisonObservation {
   provider: ComparisonCandidate["provider"];
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  anthropicEffort?: "none";
   latencyMs: number;
   reading: ReadingSummary;
   usage: SummarizationUsage;
@@ -243,6 +245,7 @@ export function buildCandidateMatrix(
     candidates.push({
       provider: "anthropic",
       model: args.anthropicModel,
+      anthropicEffort: "none",
     });
   }
   return candidates;
@@ -252,7 +255,7 @@ export function candidateLabel(candidate: ComparisonCandidate): string {
   if (candidate.provider === "openai") {
     return `openai/${candidate.model} effort=${candidate.reasoningEffort}`;
   }
-  return `anthropic/${candidate.model}`;
+  return `anthropic/${candidate.model} effort=${candidate.anthropicEffort}`;
 }
 
 export function formatComparisonPlan(
@@ -279,7 +282,7 @@ export function formatComparisonPlan(
   const anthropicLine = plan.candidates.some(
     (candidate) => candidate.provider === "anthropic",
   )
-    ? `  anthropic: ${plan.candidates.find((candidate) => candidate.provider === "anthropic")!.model} (no effort field)\n`
+    ? `  anthropic: ${plan.candidates.find((candidate) => candidate.provider === "anthropic")!.model} effort=none\n`
     : "  anthropic: omitted\n";
   return (
     `${execute ? "[EXECUTE]" : "[DRY RUN]"} ${readingCount} ${readingNoun} × ${candidateCount} ${candidateNoun} = ${callCount} ${callNoun}\n` +
@@ -392,7 +395,7 @@ export async function runComparison(
         model: candidate.model,
         ...(candidate.provider === "openai"
           ? { reasoningEffort: candidate.reasoningEffort }
-          : {}),
+          : { anthropicEffort: candidate.anthropicEffort }),
         latencyMs,
         reading: result.reading,
         usage: result.usage,
@@ -541,7 +544,7 @@ export function buildComparisonReport(
 - OpenAI efforts: ${plan.efforts.join(", ")}
 - Anthropic: ${
     plan.candidates.some((candidate) => candidate.provider === "anthropic")
-      ? `\`${plan.candidates.find((candidate) => candidate.provider === "anthropic")!.model}\` (no effort field)`
+      ? `\`${candidateLabel(plan.candidates.find((candidate) => candidate.provider === "anthropic")!)}\``
       : "omitted"
   }
 - Pricing: OpenAI $${plan.inputPricePerMillion}/M input, $${plan.outputPricePerMillion}/M output; Anthropic $${plan.anthropicInputPricePerMillion}/M input, $${plan.anthropicOutputPricePerMillion}/M output (as of ${plan.priceDate})
@@ -749,11 +752,12 @@ function observationLabel(item: {
   provider: ComparisonCandidate["provider"];
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
+  anthropicEffort?: "none";
 }): string {
   if (item.provider === "openai") {
     return `${item.provider}/${item.model}/${item.reasoningEffort ?? "n/a"}`;
   }
-  return `${item.provider}/${item.model}`;
+  return `${item.provider}/${item.model}/${item.anthropicEffort ?? "none"}`;
 }
 
 function extraTokenCell(usage: SummarizationUsage): string {

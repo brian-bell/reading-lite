@@ -36,7 +36,9 @@ that job — that command is the fixture-based quality matrix, not live readings
 2. Review the printed matrix: readings × candidates, frozen-context counts,
    pricing date, and conservative cost ceiling. The default matrix is OpenAI
    `low`, `medium`, `high`, and `xhigh` plus one Anthropic call to
-   `claude-sonnet-4-6` with **no effort field**. Override OpenAI candidates by
+   `claude-sonnet-4-6` with **no effort field** (`effort=none` is pinned in
+   the displayed and persisted candidate identity so ambient
+   `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` cannot change a run). Override OpenAI candidates by
    repeating `--effort` (`none|low|medium|high|xhigh|max`). Reserve `max` for
    an explicitly requested quality-first comparison. Pass `--openai-only` to
    skip Sonnet.

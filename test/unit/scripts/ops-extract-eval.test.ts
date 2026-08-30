@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { extractAgentCommand, type ExtractAgentDeps } from "../../../scripts/ops-lib/commands/extract-agent";
 import { extractProbeCommand, type ExtractProbeDeps } from "../../../scripts/ops-lib/commands/extract-probe";
-import { evalSummarizerCommand, type EvalSummarizerDeps } from "../../../scripts/ops-lib/commands/eval-summarizer";
+import { evalSummarizerCommand, summarizerDepsForEvaluationCandidate, type EvalSummarizerDeps } from "../../../scripts/ops-lib/commands/eval-summarizer";
+import { EVALUATION_CANDIDATES, evaluationCandidateIdentity } from "../../../scripts/summarizer-eval/fixtures";
 import { UsageError, type CommandIo } from "../../../scripts/ops-lib/contract";
 import type { SessionDeps } from "../../../scripts/extract-agent-lib/session";
 
@@ -147,6 +148,8 @@ describe("ops eval summarizer", () => {
     const text = out.join("\n");
     expect(text).toContain("[PLAN]");
     expect(text).toContain("provider calls");
+    expect(text).toContain("anthropic: anthropic/claude-sonnet-4-6 effort=none");
+    expect(text).toContain("terra-low: openai/gpt-5.6-terra effort=low");
   });
 
   it("--execute runs the paid matrix", async () => {
@@ -161,5 +164,43 @@ describe("ops eval summarizer", () => {
     const { deps, executions } = makeDeps();
     await expect(evalSummarizerCommand.run(["--candidate", "nope"], deps)).rejects.toThrow(UsageError);
     expect(executions).toHaveLength(0);
+  });
+
+  it("pins Anthropic effort on candidate identity and ignores ambient env", async () => {
+    const previous = process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+    const anthropic = EVALUATION_CANDIDATES.find((item) => item.provider === "anthropic")!;
+    try {
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+      const { deps, out } = makeDeps();
+      await evalSummarizerCommand.run(["--candidate", "anthropic"], deps);
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high";
+      const second = makeDeps();
+      await evalSummarizerCommand.run(["--candidate", "anthropic"], second.deps);
+      expect(out.join("\n")).toBe(second.out.join("\n"));
+      expect(out.join("\n")).toContain("anthropic/claude-sonnet-4-6 effort=none");
+      expect(evaluationCandidateIdentity(anthropic)).toBe(
+        "anthropic/claude-sonnet-4-6 effort=none",
+      );
+
+      const creds = {
+        fetch: globalThis.fetch,
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-ant",
+        fallbackAnthropicModel: "claude-sonnet-4-6",
+      };
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+      const depsLow = summarizerDepsForEvaluationCandidate(anthropic, creds);
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "max";
+      const depsHigh = summarizerDepsForEvaluationCandidate(anthropic, creds);
+      expect(depsLow).toEqual(depsHigh);
+      expect(depsLow).not.toHaveProperty("anthropicReasoningEffort");
+      expect(depsLow).not.toHaveProperty("anthropicEffort");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+      } else {
+        process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = previous;
+      }
+    }
   });
 });

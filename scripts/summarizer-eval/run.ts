@@ -2,13 +2,15 @@ import type {
   SummarizationUsage,
   SummarizeReadingResult,
 } from "../../src/modules/summarizer";
-import type {
-  EvaluationCandidate,
-  EvaluationCase,
+import {
+  evaluationCandidateIdentity,
+  type EvaluationCandidate,
+  type EvaluationCase,
 } from "./fixtures";
 
 export interface EvaluationObservation {
   candidateId: string;
+  candidateIdentity?: string;
   caseId: string;
   latencyMs: number;
   reading?: SummarizeReadingResult["reading"];
@@ -39,6 +41,7 @@ export async function runEvaluationMatrix(
         const result = await deps.summarize(evaluationCase, candidate);
         observation = {
           candidateId: candidate.id,
+          candidateIdentity: evaluationCandidateIdentity(candidate),
           caseId: evaluationCase.id,
           latencyMs: deps.now() - startedAt,
           reading: result.reading,
@@ -47,6 +50,7 @@ export async function runEvaluationMatrix(
       } catch (error) {
         observation = {
           candidateId: candidate.id,
+          candidateIdentity: evaluationCandidateIdentity(candidate),
           caseId: evaluationCase.id,
           latencyMs: deps.now() - startedAt,
           error: error instanceof Error ? error.message : String(error),

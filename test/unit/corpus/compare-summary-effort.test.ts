@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildCandidateMatrix,
+  candidateLabel,
   formatComparisonPlan,
   parseComparisonArgs,
   parseAnthropicEffort,
@@ -87,7 +88,7 @@ function openaiCandidate(
 function anthropicCandidate(
   model = "claude-sonnet-4-6",
 ): ComparisonCandidate {
-  return { provider: "anthropic", model };
+  return { provider: "anthropic", model, anthropicEffort: "none" };
 }
 
 function checkpointPlan(
@@ -199,14 +200,18 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
+      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
     ]);
     expect(
       buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
     ).not.toHaveProperty("reasoningEffort");
     expect(
       buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
-    ).not.toHaveProperty("anthropicEffort");
+    ).toEqual({
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      anthropicEffort: "none",
+    });
   });
 
   it("accepts the full OpenAI effort set including max", () => {
@@ -323,7 +328,7 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
+      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.736_096, 6);
     expect(fetchFn).toHaveBeenCalledTimes(5);
@@ -384,7 +389,7 @@ describe("compare-summary-effort", () => {
     expect(plan.readings[1]!.input.extractedText).toBe("# Other");
     expect(plan.candidates).toEqual([
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
+      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.642_368, 6);
     expect(
@@ -466,7 +471,7 @@ describe("compare-summary-effort", () => {
     expect(summarize.mock.calls.map((call) => call[1])).toEqual([
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "low" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "high" },
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
+      { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
     ]);
     expect(results).toEqual([
       expect.objectContaining({
@@ -487,6 +492,7 @@ describe("compare-summary-effort", () => {
         readingId: "rd_MAIN",
         provider: "anthropic",
         model: "claude-sonnet-4-6",
+        anthropicEffort: "none",
         latencyMs: 15,
         estimatedCostUsd: 0.066,
       }),
@@ -615,6 +621,7 @@ describe("compare-summary-effort", () => {
         readingId: "rd_MAIN",
         provider: "anthropic" as const,
         model: "claude-sonnet-4-6",
+        anthropicEffort: "none" as const,
         latencyMs: 900,
         reading: {
           ...plan.readings[0]!.productionBaseline,
@@ -648,11 +655,20 @@ describe("compare-summary-effort", () => {
         "| rd_MAIN | openai/gpt-5.6-terra/high | 1234 | 20000 | 1000 | 300 | $0.053200 |",
       );
       expect(report).toContain(
-        "| rd_MAIN | anthropic/claude-sonnet-4-6 | 900 | 18000 | 800 | cache r0/w0 | $0.066000 |",
+        "| rd_MAIN | anthropic/claude-sonnet-4-6/none | 900 | 18000 | 800 | cache r0/w0 | $0.066000 |",
       );
       const parsed = JSON.parse(json) as {
+        comparison: { candidates: Array<Record<string, unknown>> };
         readings: Array<{ candidates: Array<Record<string, unknown>> }>;
       };
+      expect(parsed.comparison.candidates[1]).toEqual({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        anthropicEffort: "none",
+      });
+      expect(parsed.readings[0]!.candidates[1]).toEqual(
+        expect.objectContaining({ anthropicEffort: "none" }),
+      );
       expect(parsed.readings[0]!.candidates[1]).not.toHaveProperty("reasoningEffort");
     } finally {
       await rm(outputDir, { recursive: true, force: true });
@@ -736,7 +752,7 @@ describe("compare-summary-effort", () => {
       expect(summarize).toHaveBeenCalledTimes(2);
       expect(summarize.mock.calls.map((call) => call[1])).toEqual([
         { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-        { provider: "anthropic", model: "claude-sonnet-4-6" },
+        { provider: "anthropic", model: "claude-sonnet-4-6", anthropicEffort: "none" },
       ]);
       expect(
         fetchFn.mock.calls.every((call) => {
@@ -864,8 +880,44 @@ describe("compare-summary-effort", () => {
     const text = formatComparisonPlan(plan, false);
     expect(text).toContain("[DRY RUN] 1 reading × 2 candidates = 2 provider calls");
     expect(text).toContain("openai/gpt-5.6-luna effort=max");
-    expect(text).toContain("anthropic/claude-sonnet-4-6");
-    expect(text).toContain("anthropic: claude-sonnet-4-6 (no effort field)");
+    expect(text).toContain("anthropic/claude-sonnet-4-6 effort=none");
+    expect(text).toContain("anthropic: claude-sonnet-4-6 effort=none");
     expect(text).toContain("conservative maximum: $0.3000");
+  });
+
+  it("pins Anthropic effort on candidate identity and ignores ambient env", () => {
+    const previous = process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+    try {
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+      const low = buildCandidateMatrix(
+        parseComparisonArgs(["--target", "rd_MAIN", "--effort", "max"]),
+        "gpt-5.6-luna",
+      );
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high";
+      const high = buildCandidateMatrix(
+        parseComparisonArgs(["--target", "rd_MAIN", "--effort", "max"]),
+        "gpt-5.6-luna",
+      );
+      expect(low).toEqual(high);
+      expect(candidateLabel(low[1]!)).toBe("anthropic/claude-sonnet-4-6 effort=none");
+      const creds = {
+        fetch: globalThis.fetch,
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-ant",
+      };
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+      const depsLow = summarizerDepsForCandidate(low[1]!, creds);
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "max";
+      const depsHigh = summarizerDepsForCandidate(high[1]!, creds);
+      expect(depsLow).toEqual(depsHigh);
+      expect(depsLow).not.toHaveProperty("anthropicReasoningEffort");
+      expect(depsLow).not.toHaveProperty("anthropicEffort");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+      } else {
+        process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = previous;
+      }
+    }
   });
 });

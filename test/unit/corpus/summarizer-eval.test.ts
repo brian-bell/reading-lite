@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReadingSummary } from "../../../src/schemas/reading-summary";
-import { EVALUATION_CASES, EVALUATION_CANDIDATES } from "../../../scripts/summarizer-eval/fixtures";
+import { EVALUATION_CASES, EVALUATION_CANDIDATES, evaluationCandidateIdentity } from "../../../scripts/summarizer-eval/fixtures";
 import {
   aggregateCandidate,
   buildEvaluationReport,
@@ -52,6 +52,39 @@ describe("summarizer evaluation corpus", () => {
       "luna-low",
       "sol-low",
     ]);
+    expect(EVALUATION_CANDIDATES[0]).toEqual(
+      expect.objectContaining({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        anthropicEffort: "none",
+      }),
+    );
+    for (const candidate of EVALUATION_CANDIDATES.filter(
+      (item) => item.provider === "anthropic",
+    )) {
+      expect(candidate.anthropicEffort).toBeDefined();
+    }
+  });
+
+  it("evaluation candidate identity includes pinned Anthropic effort and ignores ambient env", () => {
+    const previous = process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+    try {
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+      const low = evaluationCandidateIdentity(EVALUATION_CANDIDATES[0]!);
+      process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high";
+      const high = evaluationCandidateIdentity(EVALUATION_CANDIDATES[0]!);
+      expect(low).toBe(high);
+      expect(low).toBe("anthropic/claude-sonnet-4-6 effort=none");
+      expect(evaluationCandidateIdentity(EVALUATION_CANDIDATES[2]!)).toBe(
+        "openai/gpt-5.6-terra effort=low",
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;
+      } else {
+        process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = previous;
+      }
+    }
   });
 });
 
@@ -275,6 +308,7 @@ describe("evaluation aggregation and reporting", () => {
     const summary = aggregateCandidate(EVALUATION_CANDIDATES[2]!, scores);
     expect(summary).toMatchObject({
       candidateId: "terra-low",
+      identity: "openai/gpt-5.6-terra effort=low",
       cases: 5,
       schemaSuccessRate: 1,
       materialPassRate: 1,
@@ -325,7 +359,11 @@ describe("runEvaluationMatrix", () => {
 
     expect(summarize).toHaveBeenCalledTimes(2);
     expect(observations).toHaveLength(2);
-    expect(observations[0]).toMatchObject({ candidateId: "terra-none", latencyMs: 25 });
+    expect(observations[0]).toMatchObject({
+      candidateId: "terra-none",
+      candidateIdentity: "openai/gpt-5.6-terra effort=none",
+      latencyMs: 25,
+    });
     expect(observations[1]).toMatchObject({
       candidateId: "terra-low",
       latencyMs: 60,
