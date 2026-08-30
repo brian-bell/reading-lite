@@ -13,7 +13,6 @@ import {
   type SummarizeReadingInput,
   type SummarizerDeps,
 } from "../../../../src/modules/summarizer";
-import { buildSummarizeRequestBody as buildAnthropicRequestBody } from "../../../../src/modules/anthropic";
 import {
   ManifestSchema,
   ReadingSummarySchema,
@@ -137,13 +136,6 @@ export function parseAnthropicEffort(value: string): AnthropicEffort {
   throw new Error(
     `invalid Anthropic effort: ${value} (expected low|medium|high|max)`,
   );
-}
-
-export function anthropicEffortSupported(): boolean {
-  // The live Anthropic request builder takes (input, model). Effort support
-  // exists only when that builder grows an extra argument; this runner must not
-  // invent a field on summarizeReading() / the request body.
-  return buildAnthropicRequestBody.length > 2;
 }
 
 export function parseComparisonArgs(argv: string[]): ComparisonArgs {

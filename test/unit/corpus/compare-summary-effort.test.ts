@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  anthropicEffortSupported,
   buildCandidateMatrix,
   formatComparisonPlan,
   parseComparisonArgs,
@@ -259,7 +258,6 @@ describe("compare-summary-effort", () => {
     expect(() => parseAnthropicEffort("none")).toThrow(
       "invalid Anthropic effort: none (expected low|medium|high|max)",
     );
-    expect(anthropicEffortSupported()).toBe(false);
     expect(() =>
       parseComparisonArgs(["--target", "rd_MAIN", "--anthropic-effort", "high"]),
     ).toThrow(
