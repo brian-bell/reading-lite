@@ -68,8 +68,10 @@ Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
 staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` uses the same
 defaults and is applied only when `SUMMARIZER_PROVIDER=anthropic`. Claude Sonnet
 5 (`ANTHROPIC_MODEL=claude-sonnet-5`) accepts `low`, `medium`, `high`, `xhigh`,
-or `max` on `output_config.effort`; invalid values, and efforts the configured
-model cannot take, fail closed before any source fetch or upstream spend.
+or `max` on `output_config.effort`; invalid values, efforts the configured
+model cannot take, and model/effort pairs that 400 with
+`thinking: { type: "disabled" }` (Fable 5, Mythos 5, Mythos Preview; Opus 5 at
+`xhigh` or `max`) fail closed before any source fetch or upstream spend.
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
 default to `1`. HKDF includes the version, so a secret-only rotation must keep

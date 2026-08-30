@@ -45,11 +45,14 @@ const OPENAI_REASONING_EFFORTS = [
   "max",
 ] as const satisfies readonly OpenAIReasoningEffort[];
 
-// Official per-model availability:
+// Intersection of official effort availability and thinking-disabled
+// compatibility. buildSummarizeRequestBody always sends
+// thinking: { type: "disabled" }.
 // https://platform.claude.com/docs/en/build-with-claude/effort
-// max: Fable 5, Mythos 5, Opus 5, Opus 4.8, Mythos Preview, Opus 4.7, Opus 4.6,
-// Sonnet 5, Sonnet 4.6. xhigh: Fable 5, Mythos 5, Opus 5, Opus 4.8, Opus 4.7,
-// Sonnet 5. Unknown models fail closed.
+// https://platform.claude.com/docs/en/build-with-claude/thinking
+// Fable 5, Mythos 5, and Mythos Preview reject disabled thinking (omitted).
+// Opus 5 accepts disabled thinking only at high or below; xhigh|max 400.
+// Unknown models fail closed.
 const ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH = [
   "low",
   "medium",
@@ -74,14 +77,12 @@ const ANTHROPIC_EFFORTS_BY_MODEL: Record<
   readonly AnthropicReasoningEffort[]
 > = {
   "claude-sonnet-5": ANTHROPIC_EFFORT_ALL,
-  "claude-opus-5": ANTHROPIC_EFFORT_ALL,
-  "claude-fable-5": ANTHROPIC_EFFORT_ALL,
-  "claude-mythos-5": ANTHROPIC_EFFORT_ALL,
+  // Disabled thinking is accepted only at high or below.
+  "claude-opus-5": ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
   "claude-opus-4-8": ANTHROPIC_EFFORT_ALL,
   "claude-opus-4-7": ANTHROPIC_EFFORT_ALL,
   "claude-sonnet-4-6": ANTHROPIC_EFFORT_WITH_MAX,
   "claude-opus-4-6": ANTHROPIC_EFFORT_WITH_MAX,
-  "claude-mythos-preview": ANTHROPIC_EFFORT_WITH_MAX,
   "claude-opus-4-5-20251101": ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
 };
 
