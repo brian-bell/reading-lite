@@ -64,7 +64,7 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
 
 Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
-`OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `medium` in
+`OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `high` in
 staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` uses the same
 defaults and is applied only when `SUMMARIZER_PROVIDER=anthropic`. Claude Sonnet
 5 (`ANTHROPIC_MODEL=claude-sonnet-5`) accepts `low`, `medium`, `high`, `xhigh`,
