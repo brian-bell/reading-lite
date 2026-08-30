@@ -243,12 +243,27 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites only drifted snapshots) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 | `npm run ops -- corpus migrate-founder` | copy the global layout into the founder tenant namespace and re-upsert vectors (plan doubles as the reconciliation check) |
+
+`ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
+stored vector id (no embedding calls, no LLM), prints the staleness inventory,
+and always writes `refresh-report.json` — the input contract for later
+judgement slices. Plan mode does not mutate R2. `--execute` rewrites only
+drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
+≥ 0.02) and leaves status, vectors, title, tldr, tags, keywords, entities,
+and `summary_markdown` untouched. A second immediate `--execute` writes
+nothing.
+
+```sh
+npm run ops -- corpus refresh-neighbours --tenant global
+npm run ops -- corpus refresh-neighbours --tenant global --execute
+```
 
 `ops corpus rebuild-list` re-projects every indexed manifest through
 `manifestToIndexItem` and writes `index/list.json`. Use it after deploying a

@@ -159,17 +159,30 @@ export async function deleteVector(
 // The exact phrase wrangler emits for an id that has no vector in the index.
 const VECTOR_NOT_FOUND = /could not find any relevant vectors/i;
 
+// Neighbour identity plus the metadata refresh-neighbours needs: created_at
+// for the age test, and title/tldr/tags so later judgement slices can build a
+// prompt without extra R2 reads. Optional because older vectors may omit them.
+export interface VectorQueryMatch {
+  id: string;
+  score: number;
+  title?: string;
+  tldr?: string;
+  tags?: string[];
+  created_at?: string;
+}
+
 export async function queryByVectorId(
   index: string,
   id: string,
   topK: number,
   deps: Pick<R2Deps, "run"> & { namespace?: string } = {},
-): Promise<{ id: string; score: number }[] | null> {
+): Promise<VectorQueryMatch[] | null> {
   const run = deps.run ?? defaultRunner;
   const { code, stdout, stderr } = await run("wrangler", [
     "vectorize", "query", index,
     "--vector-id", id,
     "--top-k", String(topK),
+    "--return-metadata", "all",
     // Tenant-namespaced queries (s1k.4.3): a namespaced query can only match
     // vectors in that namespace, mirroring the worker's similarityStoreFor.
     ...(deps.namespace === undefined ? [] : ["--namespace", deps.namespace]),
@@ -200,11 +213,26 @@ export async function queryByVectorId(
   }
   const matches = (parsed as { matches?: unknown }).matches;
   if (!Array.isArray(matches)) return null;
-  return matches
-    .filter((m): m is { id: string; score: number } =>
-      typeof (m as { id?: unknown }).id === "string" &&
-      typeof (m as { score?: unknown }).score === "number")
-    .map((m) => ({ id: m.id, score: m.score }));
+  return matches.map(parseVectorQueryMatch).filter((m): m is VectorQueryMatch => m !== null);
+}
+
+function parseVectorQueryMatch(raw: unknown): VectorQueryMatch | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const rec = raw as { id?: unknown; score?: unknown; metadata?: unknown };
+  if (typeof rec.id !== "string" || typeof rec.score !== "number") return null;
+  const out: VectorQueryMatch = { id: rec.id, score: rec.score };
+  const md =
+    typeof rec.metadata === "object" && rec.metadata !== null && !Array.isArray(rec.metadata)
+      ? (rec.metadata as Record<string, unknown>)
+      : undefined;
+  if (md === undefined) return out;
+  if (typeof md.title === "string") out.title = md.title;
+  if (typeof md.tldr === "string") out.tldr = md.tldr;
+  if (typeof md.created_at === "string") out.created_at = md.created_at;
+  if (Array.isArray(md.tags)) {
+    out.tags = md.tags.filter((t): t is string => typeof t === "string");
+  }
+  return out;
 }
 
 // Whether the index actually holds a vector for this reading.

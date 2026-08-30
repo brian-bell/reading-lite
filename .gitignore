@@ -14,6 +14,7 @@ dist/
 # Generated corpus-audit / reading-list outputs (written to cwd)
 INDEX.md
 index.json
+refresh-report.json
 # Generated batch sidecars (record in-flight providers) and their companion
 # JSONL (contains full extracted article text + similar-reading context).
 # Never commit: a stray `git add .` would publish corpus contents.

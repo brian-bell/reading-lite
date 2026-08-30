@@ -1,0 +1,294 @@
+// Pure planning + staleness diff for `corpus-refresh-neighbours`.
+//
+// Tier 1 of the nightly corpus refresh: re-measure every ready reading against
+// Vectorize (no embedding calls, no LLM) and flag those whose stored
+// connections/verdict no longer match the current floored neighbourhood. The
+// command writes drifted `manifest.similarity` snapshots with the same
+// one-field discipline as backfill-similarity (`withSimilarity` /
+// `validateBackfillWrite`) and emits refresh-report.json as the tier-2 input.
+//
+// Similarity is a measurement; connections are a judgement. This module only
+// measures and diffs. It never rewrites title, tldr, tags, keywords, entities,
+// or summary_markdown.
+
+import {
+  SIMILAR_TOP_K,
+  SIMILARITY_FLOOR,
+  aboveFloor,
+  excludeSelf,
+  type SimilaritySnapshot,
+} from "../../src/modules/stores/similarity-store";
+
+// Material-change gate for rewriting a stored snapshot. Count is exact;
+// max/mean use a 0.02 cosine epsilon so nightly jitter around the same
+// neighbourhood does not churn computed_at. Calibrated as a starting point
+// against the same live-corpus sample that set SIMILARITY_FLOOR (rank-1
+// nearest typically moves by more than this when a real neighbour arrives or
+// leaves; the 0.51-0.54 same-domain tail moves by less). Revisit after the
+// first full production run.
+export const SNAPSHOT_CHANGE_EPSILON = 0.02;
+
+export type RefreshFlag = "stale_connection" | "new_neighbour" | "verdict_inconsistent";
+
+export type JudgedAtSource = "connections_computed_at" | "last_attempt" | "updated_at";
+
+export interface RefreshNeighbour {
+  id: string;
+  score: number;
+  title?: string;
+  tldr?: string;
+  tags?: string[];
+  created_at?: string;
+}
+
+export interface RefreshConnection {
+  id: string;
+  reason: string;
+}
+
+export interface RefreshRow {
+  id: string;
+  url: string;
+  status: string;
+  key_prefix: string;
+  created_at?: string;
+  updated_at?: string;
+  novelty_verdict?: string;
+  connections?: RefreshConnection[];
+  tensions?: { id: string }[];
+  similarity?: SimilaritySnapshot;
+  connections_computed_at?: string;
+  last_attempt?: { status?: string; finished_at?: string; stage?: string; trigger?: string };
+}
+
+export interface RefreshPlan {
+  targets: RefreshRow[];
+  skippedNotReady: number;
+}
+
+export interface JudgedAt {
+  judged_at?: string;
+  judged_at_source?: JudgedAtSource;
+}
+
+export interface RefreshReportNeighbour {
+  id: string;
+  score: number;
+  title?: string;
+  tldr?: string;
+  tags?: string[];
+  created_at?: string;
+}
+
+export interface RefreshReportReading {
+  id: string;
+  key_prefix: string;
+  url: string;
+  reasons: RefreshFlag[];
+  novelty_verdict?: string;
+  connections: RefreshConnection[];
+  judged_at?: string;
+  judged_at_source?: JudgedAtSource;
+  current_neighbours: RefreshReportNeighbour[];
+}
+
+export interface RefreshReport {
+  version: 1;
+  generated_at: string;
+  tenant: string;
+  floor: number;
+  readings: RefreshReportReading[];
+}
+
+export function planRefresh(
+  items: RefreshRow[],
+  opts: { only?: string[]; limit?: number } = {},
+): RefreshPlan {
+  const only = opts.only && opts.only.length > 0 ? new Set(opts.only) : null;
+  let skippedNotReady = 0;
+  const targets: RefreshRow[] = [];
+  for (const it of items) {
+    if (only && !only.has(it.id)) continue;
+    if (it.status !== "ready") {
+      skippedNotReady++;
+      continue;
+    }
+    targets.push(it);
+  }
+  const limited = opts.limit === undefined ? targets : targets.slice(0, opts.limit);
+  return { targets: limited, skippedNotReady };
+}
+
+export function resolveJudgedAt(reading: RefreshRow): JudgedAt {
+  if (isTimestamp(reading.connections_computed_at)) {
+    return {
+      judged_at: reading.connections_computed_at,
+      judged_at_source: "connections_computed_at",
+    };
+  }
+  const attempt = reading.last_attempt;
+  if (attempt?.status === "succeeded" && isTimestamp(attempt.finished_at)) {
+    return { judged_at: attempt.finished_at, judged_at_source: "last_attempt" };
+  }
+  if (isTimestamp(reading.updated_at)) {
+    return { judged_at: reading.updated_at, judged_at_source: "updated_at" };
+  }
+  return {};
+}
+
+export function snapshotChanged(
+  oldSnap: SimilaritySnapshot | undefined,
+  newSnap: SimilaritySnapshot,
+): boolean {
+  if (oldSnap === undefined) return true;
+  if (oldSnap.count !== newSnap.count) return true;
+  if (metricChanged(oldSnap.max, newSnap.max)) return true;
+  if (metricChanged(oldSnap.mean, newSnap.mean)) return true;
+  return false;
+}
+
+export function flooredNeighbours(
+  id: string,
+  matches: RefreshNeighbour[],
+): RefreshNeighbour[] {
+  return aboveFloor(excludeSelf(matches, id, SIMILAR_TOP_K), SIMILARITY_FLOOR);
+}
+
+export function resolveNeighbourCreatedAt(
+  match: RefreshNeighbour,
+  createdAtById: Map<string, string>,
+): string | undefined {
+  return isTimestamp(match.created_at) ? match.created_at : createdAtById.get(match.id);
+}
+
+export function diffNeighbourhood(
+  reading: RefreshRow,
+  currentMatches: RefreshNeighbour[],
+  list: { id: string; status: string; created_at?: string }[],
+  judgedAt?: string,
+): RefreshFlag[] {
+  const readyIds = new Set(list.filter((row) => row.status === "ready").map((row) => row.id));
+  const createdAtById = createdAtMap(list);
+  const related = flooredNeighbours(reading.id, currentMatches);
+  const cited = citedIds(reading.connections);
+  const flags: RefreshFlag[] = [];
+
+  if (staleCitationIds(reading, readyIds).length > 0) {
+    flags.push("stale_connection");
+  }
+
+  const judgedMs = isTimestamp(judgedAt) ? Date.parse(judgedAt) : undefined;
+  const hasNew = related.some((neighbour) => {
+    if (cited.has(neighbour.id)) return false;
+    const createdAt = resolveNeighbourCreatedAt(neighbour, createdAtById);
+    // No resolvable timestamp → treat as new (conservative: one extra tier-2
+    // call, never hides drift). Missing judgedAt is the same stance: we cannot
+    // prove the neighbour was already visible.
+    if (createdAt === undefined || judgedMs === undefined) return true;
+    const createdMs = Date.parse(createdAt);
+    if (!Number.isFinite(createdMs)) return true;
+    return createdMs > judgedMs;
+  });
+  if (hasNew) flags.push("new_neighbour");
+
+  if (verdictInconsistent(reading.novelty_verdict, related.length > 0)) {
+    flags.push("verdict_inconsistent");
+  }
+
+  return flags;
+}
+
+export function buildReportReading(
+  reading: RefreshRow,
+  currentMatches: RefreshNeighbour[],
+  list: { id: string; status: string; created_at?: string }[],
+  reasons: RefreshFlag[],
+  judged: JudgedAt,
+): RefreshReportReading {
+  const createdAtById = createdAtMap(list);
+  const connections = storedConnections(reading.connections);
+  const current_neighbours = flooredNeighbours(reading.id, currentMatches).map((neighbour) => {
+    const created_at = resolveNeighbourCreatedAt(neighbour, createdAtById);
+    const out: RefreshReportNeighbour = { id: neighbour.id, score: neighbour.score };
+    if (neighbour.title !== undefined) out.title = neighbour.title;
+    if (neighbour.tldr !== undefined) out.tldr = neighbour.tldr;
+    if (neighbour.tags !== undefined) out.tags = neighbour.tags;
+    if (created_at !== undefined) out.created_at = created_at;
+    return out;
+  });
+  const row: RefreshReportReading = {
+    id: reading.id,
+    key_prefix: reading.key_prefix,
+    url: reading.url,
+    reasons,
+    connections,
+    current_neighbours,
+  };
+  if (reading.novelty_verdict !== undefined) row.novelty_verdict = reading.novelty_verdict;
+  if (judged.judged_at !== undefined) row.judged_at = judged.judged_at;
+  if (judged.judged_at_source !== undefined) row.judged_at_source = judged.judged_at_source;
+  return row;
+}
+
+export function buildRefreshReport(opts: {
+  generatedAt: string;
+  tenant: string;
+  readings: RefreshReportReading[];
+}): RefreshReport {
+  return {
+    version: 1,
+    generated_at: opts.generatedAt,
+    tenant: opts.tenant,
+    floor: SIMILARITY_FLOOR,
+    readings: opts.readings,
+  };
+}
+
+function metricChanged(a: number | undefined, b: number | undefined): boolean {
+  if (a === undefined && b === undefined) return false;
+  if (a === undefined || b === undefined) return true;
+  return Math.abs(a - b) >= SNAPSHOT_CHANGE_EPSILON;
+}
+
+function isTimestamp(value: string | undefined): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function createdAtMap(list: { id: string; created_at?: string }[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const row of list) {
+    if (isTimestamp(row.created_at)) out.set(row.id, row.created_at);
+  }
+  return out;
+}
+
+function storedConnections(raw: unknown): RefreshConnection[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is RefreshConnection =>
+      typeof c === "object" &&
+      c !== null &&
+      typeof (c as { id?: unknown }).id === "string" &&
+      typeof (c as { reason?: unknown }).reason === "string",
+  );
+}
+
+function citedIds(raw: unknown): Set<string> {
+  return new Set(storedConnections(raw).map((c) => c.id));
+}
+
+function staleCitationIds(reading: RefreshRow, readyIds: Set<string>): string[] {
+  const connectionIds = storedConnections(reading.connections).map((c) => c.id);
+  const tensionIds = Array.isArray(reading.tensions)
+    ? reading.tensions
+        .filter((t): t is { id: string } => typeof t === "object" && t !== null && typeof t.id === "string")
+        .map((t) => t.id)
+    : [];
+  return [...new Set([...connectionIds, ...tensionIds])].filter((id) => !readyIds.has(id));
+}
+
+function verdictInconsistent(verdict: string | undefined, hasFlooredNeighbour: boolean): boolean {
+  if (verdict === "novel") return hasFlooredNeighbour;
+  if (verdict === "familiar" || verdict === "duplicate") return !hasFlooredNeighbour;
+  return false;
+}

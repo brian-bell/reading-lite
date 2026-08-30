@@ -1,6 +1,6 @@
 // Single-manifest put via the wrangler R2 CLI (temp file + `r2 object put`).
-// Shared by the similarity backfill and tag normalization, which each rewrite
-// exactly one manifest field per reading.
+// Shared by the similarity backfill, neighbour refresh, and tag normalization,
+// which each rewrite exactly one manifest field per reading.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
