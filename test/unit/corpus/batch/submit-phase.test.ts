@@ -104,7 +104,7 @@ describe("submitBatch", () => {
   it("passes the configured Anthropic effort on the realtime request body", async () => {
     const batch = fakeBatch();
     await submitBatch([summarizeTarget()], {
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       effort: "max",
       batch: batch as any,
       putObject: noopPut(),

@@ -38,7 +38,7 @@ describe("checked-in summarizer provider configuration", () => {
       ),
     ).toHaveLength(1);
     expect(
-      wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-4-6"$/gm),
+      wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-5"$/gm),
     ).toHaveLength(3);
     expect(
       wrangler.match(
@@ -71,6 +71,7 @@ describe("checked-in summarizer provider configuration", () => {
     expect(testConfig).toContain(
       'OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
+    expect(testConfig).toContain('ANTHROPIC_MODEL = "claude-sonnet-5"');
     expect(testConfig).toContain(
       'ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
@@ -79,12 +80,14 @@ describe("checked-in summarizer provider configuration", () => {
     expect(devExample).toContain("SUMMARIZER_PROVIDER=openai");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=low");
+    expect(devExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5");
     expect(devExample).toContain("ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=low");
 
     const stgExample = read(".stg.vars.example");
     expect(stgExample).toContain("SUMMARIZER_PROVIDER=openai");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=medium");
+    expect(stgExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5");
     expect(stgExample).toContain(
       "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium",
     );

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  parseAnthropicEffort,
   summarizeReading,
   SummarizerConfigError,
   validateProcessingCredentials,
@@ -74,7 +75,7 @@ describe("summarizeReading provider selection", () => {
       fetch: fetchFn,
       openaiApiKey: "sk-openai",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
     });
 
     expect(fetchFn).toHaveBeenCalledOnce();
@@ -107,7 +108,7 @@ describe("summarizeReading provider selection", () => {
       provider: "anthropic",
       openaiApiKey: "sk-openai",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
     });
 
     expect(fetchFn).toHaveBeenCalledOnce();
@@ -118,7 +119,7 @@ describe("summarizeReading provider selection", () => {
     expect(body.output_config).toEqual({ effort: "low" });
     expect(result.usage).toEqual({
       provider: "anthropic",
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       input_tokens: 90,
       output_tokens: 45,
       cache_creation_input_tokens: 12,
@@ -135,7 +136,7 @@ describe("summarizeReading provider selection", () => {
         provider: "anthropic",
         openaiApiKey: "sk-openai",
         anthropicApiKey: "",
-        anthropicModel: "claude-sonnet-4-6",
+        anthropicModel: "claude-sonnet-5",
       }),
     ).rejects.toMatchObject({
       name: "SummarizerConfigError",
@@ -147,7 +148,7 @@ describe("summarizeReading provider selection", () => {
         provider: "openai",
         openaiApiKey: "",
         anthropicApiKey: "",
-        anthropicModel: "claude-sonnet-4-6",
+        anthropicModel: "claude-sonnet-5",
       }),
     ).rejects.toMatchObject({
       name: "SummarizerConfigError",
@@ -168,7 +169,7 @@ describe("summarizeReading provider selection", () => {
         openaiApiKey: "",
         openaiReasoningEffort: "irrelevant-invalid-value",
         anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-sonnet-4-6",
+        anthropicModel: "claude-sonnet-5",
       }),
     ).resolves.toMatchObject({
       usage: { provider: "anthropic" },
@@ -184,7 +185,7 @@ describe("summarizeReading provider selection", () => {
       provider: "other",
       openaiApiKey: "sk-openai",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
     }).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(SummarizerConfigError);
@@ -201,7 +202,7 @@ describe("summarizeReading provider selection", () => {
       openaiApiKey: "sk-openai",
       openaiReasoningEffort: "extreme",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
     }).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(SummarizerConfigError);
@@ -222,13 +223,45 @@ describe("summarizeReading provider selection", () => {
       provider: "anthropic",
       openaiApiKey: "sk-openai",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
       anthropicReasoningEffort: "medium",
     });
     expect(fetchFn).toHaveBeenCalledOnce();
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     expect(body.output_config).toEqual({ effort: "medium" });
 
+    fetchFn.mockClear();
+    await summarizeReading(input, {
+      fetch: fetchFn,
+      provider: "anthropic",
+      openaiApiKey: "sk-openai",
+      anthropicApiKey: "sk-anthropic",
+      anthropicModel: "claude-sonnet-5",
+      anthropicReasoningEffort: "xhigh",
+    });
+    expect(JSON.parse(fetchFn.mock.calls[0]![1]!.body as string).output_config).toEqual(
+      { effort: "xhigh" },
+    );
+
+    const unused = vi.fn<typeof fetch>();
+    const error = await summarizeReading(input, {
+      fetch: unused,
+      provider: "anthropic",
+      openaiApiKey: "sk-openai",
+      anthropicApiKey: "sk-anthropic",
+      anthropicModel: "claude-sonnet-5",
+      anthropicReasoningEffort: "none",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(SummarizerConfigError);
+    expect(error).toHaveProperty(
+      "message",
+      "invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: none",
+    );
+    expect(unused).not.toHaveBeenCalled();
+  });
+
+  it("rejects an effort the configured Anthropic model cannot take before calling an API", async () => {
     const unused = vi.fn<typeof fetch>();
     const error = await summarizeReading(input, {
       fetch: unused,
@@ -259,7 +292,7 @@ describe("summarizeReading provider selection", () => {
       provider: "openai",
       openaiApiKey: "sk-openai",
       anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
+      anthropicModel: "claude-sonnet-5",
     }).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(OpenAIError);
@@ -323,6 +356,7 @@ describe("validateProcessingCredentials", () => {
         provider: "anthropic",
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
         openaiReasoningEffort: "irrelevant-invalid-value",
       }),
     ).not.toThrow();
@@ -334,6 +368,7 @@ describe("validateProcessingCredentials", () => {
         provider: "anthropic",
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
         anthropicReasoningEffort: "extreme",
       }),
     ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: extreme/);
@@ -342,6 +377,7 @@ describe("validateProcessingCredentials", () => {
         provider: "anthropic",
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
         anthropicReasoningEffort: "none",
       }),
     ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: none/);
@@ -350,9 +386,40 @@ describe("validateProcessingCredentials", () => {
         provider: "anthropic",
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
         anthropicReasoningEffort: "medium",
       }),
     ).not.toThrow();
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
+        anthropicReasoningEffort: "xhigh",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-5",
+        anthropicReasoningEffort: "max",
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects an effort the configured Anthropic model cannot take", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        provider: "anthropic",
+        openaiApiKey: "sk-openai",
+        anthropicApiKey: "sk-anthropic",
+        anthropicModel: "claude-sonnet-4-6",
+        anthropicReasoningEffort: "xhigh",
+      }),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
   });
 
   it("ignores Anthropic-only effort when OpenAI is selected", () => {
@@ -363,5 +430,28 @@ describe("validateProcessingCredentials", () => {
         anthropicReasoningEffort: "irrelevant-invalid-value",
       }),
     ).not.toThrow();
+  });
+});
+
+describe("parseAnthropicEffort", () => {
+  it("accepts Claude Sonnet 5 efforts from the official Messages API set", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(parseAnthropicEffort(effort, "claude-sonnet-5")).toBe(effort);
+    }
+  });
+
+  it("rejects OpenAI-only none and xhigh on Sonnet 4.6", () => {
+    expect(() => parseAnthropicEffort("none", "claude-sonnet-5")).toThrow(
+      /invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: none/,
+    );
+    expect(() => parseAnthropicEffort("xhigh", "claude-sonnet-4-6")).toThrow(
+      /invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/,
+    );
+  });
+
+  it("fails closed on an undocumented model id", () => {
+    expect(() => parseAnthropicEffort("low", "claude-haiku-4-5")).toThrow(
+      /unsupported ANTHROPIC_MODEL for effort: claude-haiku-4-5/,
+    );
   });
 });

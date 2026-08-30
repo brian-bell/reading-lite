@@ -147,7 +147,7 @@ include credential values. There is no provider fallback.`,
             anthropicModel:
               candidate.provider === "anthropic"
                 ? candidate.model
-                : (vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"),
+                : (vars.ANTHROPIC_MODEL ?? "claude-sonnet-5"),
             anthropicReasoningEffort:
               candidate.provider === "anthropic"
                 ? vars.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT

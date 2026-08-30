@@ -46,7 +46,7 @@ describe("resolveBatchConfig", () => {
     void OPENAI_SUMMARIZATION_REASONING_EFFORT;
     void SUMMARIZER_PROVIDER;
     const cfg = resolveBatchConfig({ tenant: GLOBAL_TENANT }, { vars: noModel });
-    expect(cfg.anthropicModel).toBe("claude-sonnet-4-6");
+    expect(cfg.anthropicModel).toBe("claude-sonnet-5");
     expect(cfg.openaiModel).toBe("gpt-5.6-terra");
     expect(cfg.openaiReasoningEffort).toBe("low");
     expect(cfg.anthropicReasoningEffort).toBe("low");
@@ -170,6 +170,19 @@ describe("resolveBatchConfig", () => {
         },
       ).anthropicReasoningEffort,
     ).toBe("max");
+    expect(
+      resolveBatchConfig(
+        { tenant: GLOBAL_TENANT },
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "anthropic",
+            ANTHROPIC_MODEL: "claude-sonnet-5",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
+          },
+        },
+      ).anthropicReasoningEffort,
+    ).toBe("xhigh");
     expect(() =>
       resolveBatchConfig(
         { tenant: GLOBAL_TENANT },
@@ -177,6 +190,19 @@ describe("resolveBatchConfig", () => {
           vars: {
             ...full,
             SUMMARIZER_PROVIDER: "anthropic",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "none",
+          },
+        },
+      ),
+    ).toThrow(/ANTHROPIC_SUMMARIZATION_REASONING_EFFORT/);
+    expect(() =>
+      resolveBatchConfig(
+        { tenant: GLOBAL_TENANT },
+        {
+          vars: {
+            ...full,
+            SUMMARIZER_PROVIDER: "anthropic",
+            ANTHROPIC_MODEL: "claude-sonnet-4-6",
             ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
           },
         },
@@ -189,7 +215,7 @@ describe("resolveBatchConfig", () => {
           vars: {
             ...full,
             SUMMARIZER_PROVIDER: "openai",
-            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "xhigh",
+            ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "none",
           },
         },
       ).anthropicReasoningEffort,

@@ -6,6 +6,7 @@ import {
   type SummarizerProvider,
 } from "../../src/modules/summarizer/config";
 import {
+  DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT,
@@ -19,7 +20,7 @@ import type {
 
 export const DEFAULT_BUCKET = "reading-lite";
 export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
-export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export { DEFAULT_ANTHROPIC_MODEL };
 
 // R2 bucket to read the corpus from (read path uses wrangler / Cloudflare auth,
 // not the reading API token).
@@ -136,6 +137,7 @@ export function resolveBatchConfig(
       summarizerProvider === "anthropic" && flags.resumeProvider === undefined
         ? parseAnthropicEffort(
             vars.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
+            vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
           )
         : DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
     summarizerProvider,

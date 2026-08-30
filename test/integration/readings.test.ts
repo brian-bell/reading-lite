@@ -228,7 +228,7 @@ function makeStubFetch(opts: {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         stop_reason: "tool_use",
         content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: await summaryToolInput() }],
         usage: { input_tokens: 100, output_tokens: 50 },
@@ -587,7 +587,7 @@ describe("two-tenant save-to-ready lifecycle", () => {
 
 describe.each([
   ["openai", "gpt-5.6-terra"],
-  ["anthropic", "claude-sonnet-4-6"],
+  ["anthropic", "claude-sonnet-5"],
 ] as const)("realtime summarizer provider %s", (provider, model) => {
   it("completes submit, markdown import, and reprocess through the selected provider", async () => {
     const workerEnv = env as unknown as Env;

@@ -26,9 +26,15 @@ export type OpenAIReasoningEffort =
   | "xhigh"
   | "max";
 
-// Claude Sonnet 4.6 (`ANTHROPIC_MODEL`) accepts output_config.effort values
-// low|medium|high|max. It does not accept OpenAI's none or xhigh.
-export type AnthropicReasoningEffort = "low" | "medium" | "high" | "max";
+// Claude Sonnet 5 (`ANTHROPIC_MODEL`) accepts output_config.effort values
+// low|medium|high|xhigh|max. Availability is per-model; parseAnthropicEffort
+// rejects pairs the configured model cannot take. `none` is OpenAI-only.
+export type AnthropicReasoningEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 export interface ProviderSummarizeResult<TUsage> {
   reading: ReadingSummary;

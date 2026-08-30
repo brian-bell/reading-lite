@@ -43,7 +43,7 @@ function toolUseResponse(input: unknown, usage: Partial<Record<string, number>> 
     id: "msg_01",
     type: "message",
     role: "assistant",
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     stop_reason: "tool_use",
     content: [
       { type: "tool_use", id: "toolu_01", name: EMIT_READING_TOOL_NAME, input },
@@ -64,7 +64,7 @@ describe("summarizeReading", () => {
         title: "Sample",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk-ant", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk-ant", model: "claude-sonnet-5", effort: "low" },
     );
     expect(out.reading).toEqual(validToolInput);
     expect(out.usage.input_tokens).toBe(100);
@@ -80,7 +80,7 @@ describe("summarizeReading", () => {
         extractedText: "hello",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk-secret", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk-secret", model: "claude-sonnet-5", effort: "low" },
     );
     expect(fetchFn).toHaveBeenCalledOnce();
     const call = fetchFn.mock.calls[0]!;
@@ -93,7 +93,7 @@ describe("summarizeReading", () => {
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
     expect(headers.get("content-type")).toBe("application/json");
     const body = JSON.parse(init.body as string);
-    expect(body.model).toBe("claude-sonnet-4-6");
+    expect(body.model).toBe("claude-sonnet-5");
     expect(body.output_config).toEqual({ effort: "low" });
     expect(body.tool_choice).toEqual({ type: "any" });
     expect(Array.isArray(body.tools)).toBe(true);
@@ -117,7 +117,7 @@ describe("summarizeReading", () => {
         extractedText: "## Heading\n\nbody text here",
         similarReadings: [],
       },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     );
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     const userText = body.messages[0].content
@@ -142,7 +142,7 @@ describe("summarizeReading", () => {
           { id: "rd_b", url: "https://example.com/y", title: "Y", tldr: "About Y" },
         ],
       },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     );
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     const userText = JSON.stringify(body.messages[0].content);
@@ -157,7 +157,7 @@ describe("summarizeReading", () => {
     );
     const e = await summarizeReading(
       { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     ).catch((e) => e);
     expect(e).toBeInstanceOf(AnthropicError);
     expect(e.status).toBe(429);
@@ -170,7 +170,7 @@ describe("summarizeReading", () => {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         stop_reason: "end_turn",
         content: [{ type: "text", text: "I refuse to use the tool" }],
         usage: { input_tokens: 10, output_tokens: 10 },
@@ -179,7 +179,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toBeInstanceOf(NoToolUseError);
   });
@@ -191,7 +191,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toBeInstanceOf(BadToolInputError);
   });
@@ -202,7 +202,7 @@ describe("summarizeReading", () => {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         stop_reason: "tool_use",
         content: [
           {
@@ -217,7 +217,7 @@ describe("summarizeReading", () => {
     );
     const error = await summarizeReading(
       { url: "https://example.com/a", extractedText: "Watch on YouTube", similarReadings: [] },
-      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     ).catch((caught) => caught);
     expect(error).toBeInstanceOf(SourceRejectedError);
     expect(error).toMatchObject({
@@ -239,7 +239,7 @@ describe("summarizeReading", () => {
       {
         fetch: fetchFn as unknown as typeof fetch,
         apiKey: "sk",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         effort: "low",
         retry: {
           maxAttempts: 3,
@@ -263,7 +263,7 @@ describe("summarizeReading", () => {
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-4-6", effort: "low" },
+        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
     ).rejects.toThrow();
     expect(fetchFn).not.toHaveBeenCalled();
@@ -355,15 +355,22 @@ describe("buildSummarizeRequestBody", () => {
     expect({ tools: body.tools, system: body.system }).toMatchSnapshot();
   });
 
-  it("wires output_config.effort, the Anthropic Messages field for claude-sonnet-4-6", () => {
+  it("wires output_config.effort, the Anthropic Messages field for claude-sonnet-5", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
-      "claude-sonnet-4-6",
-      "medium",
+      "claude-sonnet-5",
+      "xhigh",
     ) as Record<string, any>;
-    expect(body.output_config).toEqual({ effort: "medium" });
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.output_config).toEqual({ effort: "xhigh" });
     expect(body).not.toHaveProperty("reasoning");
     expect(body).not.toHaveProperty("thinking");
+    const maxBody = buildSummarizeRequestBody(
+      { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
+      "claude-sonnet-5",
+      "max",
+    ) as Record<string, any>;
+    expect(maxBody.output_config).toEqual({ effort: "max" });
   });
 });
 

@@ -586,7 +586,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
           openaiModel: candidate.model,
           openaiReasoningEffort: candidate.reasoningEffort,
           anthropicApiKey: vars.ANTHROPIC_API_KEY,
-          anthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+          anthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-5",
         }),
       onProgress: (observation) => {
         process.stderr.write(

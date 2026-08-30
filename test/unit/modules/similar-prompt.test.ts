@@ -10,7 +10,7 @@ const input = (similar: SimilarContext[]) => ({
 });
 
 function userText(similar: SimilarContext[]): string {
-  const body = buildSummarizeRequestBody(input(similar), "claude-sonnet-4-6", "low");
+  const body = buildSummarizeRequestBody(input(similar), "claude-sonnet-5", "low");
   return JSON.stringify(body);
 }
 
