@@ -48,6 +48,7 @@ export interface FreshMarkdownDeps {
   ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
   // Mint a fresh reading id (rd_...) for an unclaimed URL.
   newId(): string;
+  newAttemptId(): string;
   now(): string;
 }
 
@@ -124,6 +125,7 @@ export async function prepareFreshMarkdown(
           owner.key_prefix,
           manifest.created_at,
           deps.now(),
+          deps.newAttemptId(),
           { kind: "verify-existing-failed", expected },
         );
         toIngest.push(target);
@@ -188,6 +190,7 @@ export async function prepareFreshMarkdown(
         cold.key_prefix,
         cold.manifest.created_at,
         deps.now(),
+        deps.newAttemptId(),
         { kind: "create-existing-failed", expected },
       );
       toIngest.push(target);
@@ -198,9 +201,17 @@ export async function prepareFreshMarkdown(
     const id = deps.newId();
     const createdAt = deps.now();
     const keyPrefix = buildKeyPrefix(id, createdAt);
-    const target = buildExtractedTarget(article, url, urlHash, id, keyPrefix, createdAt, createdAt, {
-      kind: "create-new",
-    });
+    const target = buildExtractedTarget(
+      article,
+      url,
+      urlHash,
+      id,
+      keyPrefix,
+      createdAt,
+      createdAt,
+      deps.newAttemptId(),
+      { kind: "create-new" },
+    );
     toIngest.push(target);
     dispositions.push({ kind: "ingest-new", url, id, article, target });
   }
@@ -253,6 +264,7 @@ function buildExtractedTarget(
   keyPrefix: string,
   createdAt: string,
   now: string,
+  attemptId: string,
   freshActivation: BatchActivationPolicy,
 ): ExtractedTarget {
   const markdown = article.markdown;
@@ -290,7 +302,17 @@ function buildExtractedTarget(
   };
 
   return {
-    target: { readingId: id, url, urlHash, keyPrefix, createdAt, manifest },
+    target: {
+      readingId: id,
+      url,
+      urlHash,
+      keyPrefix,
+      createdAt,
+      attemptId,
+      attemptStartedAt: now,
+      trigger: "import",
+      manifest,
+    },
     markdown,
     ...(article.title === undefined ? {} : { title: article.title }),
     fresh,

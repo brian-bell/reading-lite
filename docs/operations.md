@@ -440,8 +440,10 @@ The resulting `ready` manifests are contract-compatible with the realtime import
 path (`source_type: "markdown"`, captured content, correct
 `content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`, by-url and
 by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
-paths omit the realtime attempt-log fields (`last_attempt` and the per-attempt
-objects under the key prefix).
+paths stamp a terminal `last_attempt` summary in the manifest, but they do not
+write the realtime per-attempt objects under the key prefix. A resumed
+pre-upgrade sidecar without attempt identity retains the legacy omission of
+`last_attempt`.
 
 **`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant global --execute` and
 `ops corpus recover --tenant global --batch --execute` refuse to submit without it. Both batch paths

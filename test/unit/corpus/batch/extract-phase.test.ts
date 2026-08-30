@@ -25,6 +25,9 @@ function target(over: Partial<Manifest> = {}): BatchTarget {
     urlHash: manifest.url_hash,
     keyPrefix: "readings/2026/01/01T000000Z-rd_a",
     createdAt: manifest.created_at,
+    attemptId: "at_extract_1",
+    attemptStartedAt: "2026-06-22T12:00:00.000Z",
+    trigger: "reprocess",
     manifest,
   };
 }
@@ -89,8 +92,8 @@ describe("extractTargets", () => {
     expect(dropped[0]).toMatchObject({ readingId: "rd_a", reason: expect.stringMatching(/network down/) });
   });
 
-  it("reuses extracted.md for our own batch_<id> activation pending (crash-rerun reattach, no re-fetch)", async () => {
-    // An activating-window crash leaves a batch_<id> pending with captured
+  it("reuses extracted.md for a unique batch attempt after an activating-window crash", async () => {
+    // An activating-window crash leaves a batch_<uuid> pending with captured
     // descriptors and a written extracted.md. A rerun must reattach to that
     // markdown rather than re-fetch (and risk dropping a transiently-down source,
     // stranding the eager claim).
@@ -99,7 +102,13 @@ describe("extractTargets", () => {
     const pending = target({
       status: "pending",
       content_status: "captured",
-      active_attempt: { id: "batch_rd_a", trigger: "reprocess", status: "running", stage: "summarize", started_at: "2026-01-02T00:00:00.000Z" },
+      active_attempt: {
+        id: "batch_550e8400-e29b-41d4-a716-446655440000",
+        trigger: "reprocess",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-01-02T00:00:00.000Z",
+      },
     });
 
     const { extracted, dropped } = await extractTargets([pending], { loadExtracted, extract });

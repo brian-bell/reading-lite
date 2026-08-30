@@ -9,6 +9,7 @@ import type { ExtractedTarget, SummarizeTarget } from "../../../../scripts/corpu
 import type { ExtractedContent } from "../../../../src/modules/extractor";
 
 const NOW = "2026-06-22T00:00:00.000Z";
+const ATTEMPT_STARTED_AT = "2026-06-21T23:58:00.000Z";
 const URL_HASH = "a".repeat(64);
 const KEY_PREFIX = "readings/2026/06/22T000000Z-rd_a";
 
@@ -46,6 +47,9 @@ function target(over: Partial<ExtractedTarget> = {}): ExtractedTarget {
       urlHash: URL_HASH,
       keyPrefix: KEY_PREFIX,
       createdAt: NOW,
+      attemptId: "at_import_1",
+      attemptStartedAt: ATTEMPT_STARTED_AT,
+      trigger: "import",
       manifest: manifest(),
     },
     markdown: "# A\n\nbody",
@@ -128,11 +132,11 @@ describe("activateFreshTargets", () => {
     const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
     expect(pending.status).toBe("pending");
     expect(pending.active_attempt).toMatchObject({
-      id: "batch_rd_a",
+      id: "at_import_1",
       trigger: "import",
       status: "running",
       stage: "summarize",
-      started_at: NOW,
+      started_at: ATTEMPT_STARTED_AT,
     });
     expect(JSON.parse(fakeR2.store.get("index/list.json")!).items[0]).toMatchObject({
       id: "rd_a",
@@ -283,6 +287,9 @@ function recoverTarget(over: Partial<ExtractedTarget> = {}): ExtractedTarget {
       urlHash: m.url_hash,
       keyPrefix: KEY_PREFIX,
       createdAt: m.created_at,
+      attemptId: "at_recover_1",
+      attemptStartedAt: ATTEMPT_STARTED_AT,
+      trigger: "reprocess",
       manifest: m,
     },
     markdown: "# A\n\nbody",
@@ -322,11 +329,11 @@ describe("activateRecoverTargets", () => {
     expect(pending.content_sha256).toBe(freshHtml.content_sha256);
     expect(pending.extracted_bytes).toBe(new TextEncoder().encode("# A\n\nbody").byteLength);
     expect(pending.active_attempt).toMatchObject({
-      id: "batch_rd_a",
+      id: "at_recover_1",
       trigger: "reprocess",
       status: "running",
       stage: "summarize",
-      started_at: NOW,
+      started_at: ATTEMPT_STARTED_AT,
     });
 
     // by-id pointer + a pending list row

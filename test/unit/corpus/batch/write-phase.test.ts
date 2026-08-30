@@ -162,6 +162,25 @@ function deps(r2: ReturnType<typeof fakeR2>, vectorize: ReturnType<typeof fakeVe
 }
 
 describe("writeResults — success path", () => {
+  it("finishes the sidecar attempt on a ready manifest", async () => {
+    const r2 = fakeR2();
+    const attempted = sidecarTarget({
+      attemptId: "at_batch_1",
+      attemptStartedAt: "2026-06-18T11:55:00.000Z",
+      trigger: "reprocess",
+    });
+    await writeResults(sidecar([attempted]), [succeeded("rd_a")], deps(r2, fakeVectorize()));
+    const manifest = ManifestSchema.parse(JSON.parse(r2.store.get(`${attempted.keyPrefix}/manifest.json`)!));
+    expect(manifest.last_attempt).toEqual({
+      id: "at_batch_1",
+      trigger: "reprocess",
+      status: "succeeded",
+      stage: "write_indexes",
+      started_at: "2026-06-18T11:55:00.000Z",
+      finished_at: NOW,
+    });
+  });
+
   it("writes a ready manifest with the resolved reading fields", async () => {
     const r2 = fakeR2();
     const vec = fakeVectorize();
@@ -545,6 +564,26 @@ describe("writeOpenAIResults — success path", () => {
 });
 
 describe("writeResults — failure path", () => {
+  it("finishes the sidecar attempt with the manifest failure", async () => {
+    const r2 = fakeR2();
+    const attempted = sidecarTarget({
+      attemptId: "at_batch_failed",
+      attemptStartedAt: "2026-06-18T11:55:00.000Z",
+      trigger: "import",
+    });
+    await writeResults(sidecar([attempted]), [errored("rd_a")], deps(r2, fakeVectorize()));
+    const manifest = ManifestSchema.parse(JSON.parse(r2.store.get(`${attempted.keyPrefix}/manifest.json`)!));
+    expect(manifest.last_attempt).toEqual({
+      id: "at_batch_failed",
+      trigger: "import",
+      status: "failed",
+      stage: "summarize",
+      started_at: "2026-06-18T11:55:00.000Z",
+      finished_at: NOW,
+      error: manifest.error,
+    });
+  });
+
   it("does not create a by-url pointer for a non-eager failed batch result", async () => {
     const r2 = fakeR2();
     await writeResults(sidecar([sidecarTarget()]), [errored("rd_a")], deps(r2, fakeVectorize()));
@@ -716,7 +755,13 @@ describe("writeResults — failure path", () => {
     });
     const r2 = fakeR2({ [pointerKey]: existingPointer });
     await writeResults(
-      sidecar([sidecarTarget({ preserveReadyManifest: ready, releaseByUrlOnFailure: true })]),
+      sidecar([sidecarTarget({
+        preserveReadyManifest: ready,
+        releaseByUrlOnFailure: true,
+        attemptId: "at_ready_retry",
+        attemptStartedAt: "2026-06-18T11:55:00.000Z",
+        trigger: "reprocess",
+      })]),
       [errored("rd_a")],
       deps(r2, fakeVectorize()),
     );
@@ -724,6 +769,13 @@ describe("writeResults — failure path", () => {
     expect(m.status).toBe("ready");
     expect(m.title).toBe("Previously Good");
     expect(m.tldr).toBe("kept tldr");
+    expect(m.last_attempt).toMatchObject({
+      id: "at_ready_retry",
+      trigger: "reprocess",
+      status: "failed",
+      stage: "summarize",
+      finished_at: NOW,
+    });
     const index = JSON.parse(r2.store.get("index/list.json")!);
     expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("ready");
     expect(r2.store.get(pointerKey)).toBe(existingPointer);

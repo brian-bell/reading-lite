@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type {
@@ -54,6 +55,7 @@ export interface BatchRunDeps {
   model: string;
   reasoningEffort?: OpenAIReasoningEffort;
   newRunId?(): string;
+  newAttemptId?(): string;
   now(): string;
   sleep(ms: number): Promise<void>;
   // Resume support: the sidecar persists the in-flight batch so a crashed poll
@@ -353,6 +355,8 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
     async () => {
       const prepared = await prepareTargets(rows, {
         readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+        newAttemptId: deps.newAttemptId ?? newBatchAttemptId,
+        now: deps.now,
       });
       const extracted = await extractTargets(prepared.targets, {
         loadExtracted: (kp) => deps.r2.get(layout.extractedKey(kp)),
@@ -377,6 +381,10 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
           })),
     },
   );
+}
+
+export function newBatchAttemptId(): string {
+  return `batch_${randomUUID()}`;
 }
 
 function noIdReconciliationError(existing: PersistedSidecar): Error {
