@@ -94,6 +94,8 @@ describe("summarizeReading", () => {
     expect(headers.get("content-type")).toBe("application/json");
     const body = JSON.parse(init.body as string);
     expect(body.model).toBe("claude-sonnet-5");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.output_config).toEqual({ effort: "low" });
     expect(body.tool_choice).toEqual({ type: "any" });
     expect(Array.isArray(body.tools)).toBe(true);
@@ -278,6 +280,8 @@ describe("buildSummarizeRequestBody", () => {
       "low",
     ) as Record<string, any>;
     expect(body.model).toBe("claude-opus-4-8");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.output_config).toEqual({ effort: "low" });
     expect(body.tool_choice).toEqual({ type: "any" });
     expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
@@ -362,14 +366,17 @@ describe("buildSummarizeRequestBody", () => {
       "xhigh",
     ) as Record<string, any>;
     expect(body.model).toBe("claude-sonnet-5");
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.output_config).toEqual({ effort: "xhigh" });
     expect(body).not.toHaveProperty("reasoning");
-    expect(body).not.toHaveProperty("thinking");
     const maxBody = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-sonnet-5",
       "max",
     ) as Record<string, any>;
+    expect(maxBody.max_tokens).toBe(8192);
+    expect(maxBody.thinking).toEqual({ type: "disabled" });
     expect(maxBody.output_config).toEqual({ effort: "max" });
   });
 });

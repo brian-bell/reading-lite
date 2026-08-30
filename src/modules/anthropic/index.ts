@@ -192,6 +192,9 @@ export function buildSummarizeRequestBody(
   return {
     model,
     max_tokens: 8192,
+    // Sonnet 5 turns adaptive thinking on if `thinking` is omitted. Disable it
+    // explicitly so summarization stays a single tool call at the 8192 cap.
+    thinking: { type: "disabled" },
     output_config: { effort },
     system: [
       {

@@ -117,6 +117,8 @@ describe("summarizeReading provider selection", () => {
     );
     const body = JSON.parse(fetchFn.mock.calls[0]![1]!.body as string);
     expect(body.output_config).toEqual({ effort: "low" });
+    expect(body.max_tokens).toBe(8192);
+    expect(body.thinking).toEqual({ type: "disabled" });
     expect(result.usage).toEqual({
       provider: "anthropic",
       model: "claude-sonnet-5",
