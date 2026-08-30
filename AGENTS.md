@@ -77,8 +77,9 @@ comments of the modules themselves — read those before changing a module.
   `run.ts`'s header documents the shared phase ordering; the recover front-end
   is `prepare.ts`/`extract-phase.ts`/`activation-phase.ts`, the fresh-markdown
   front-end is `prepare-fresh-markdown.ts`/`run-fresh-markdown.ts`.
-- `web/` — React/Vite SPA (bearer token in localStorage, list/search, submit,
-  detail/diagnostics, reprocess).
+- `web/` — React/Vite SPA (magic-link cookie session for identity/logout,
+  list/search, submit, detail/diagnostics, reprocess). Does not store bearer
+  material in localStorage/sessionStorage.
 
 ## Commands
 
@@ -108,7 +109,7 @@ matrix.
   (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
   hard-coded to staging names. Staging same-origin host is
-  `reading-lite-staging.bbell.dev` (Worker `/api/*`, `/health`, `/mcp*`).
+  `reading-lite-staging.bbell.dev` (Pages + Worker `/api/*`, `/health`, `/mcp*`).
 - Merges to `main` deploy the production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). GitHub
@@ -243,10 +244,9 @@ run the staging founder bootstrap (`ops founder bootstrap --env staging
 - Worker on `http://127.0.0.1:8787` (`npm run dev` runs `dev:setup` first to
   apply local D1 migrations and import `dev-local-token` as the founder legacy
   bearer), SPA on `http://127.0.0.1:5173` (`cd web && npm run dev`) proxying
-  `/api` + `/health`. Paste the bearer token into the SPA's top-right field and
-  Save. Local `LOCAL_MAIL_SINK=1` stores issued magic links for
-  `GET /api/dev/mailbox?email=…` on loopback. Bearer tokens still authenticate
-  the Worker API for operator CLIs.
+  `/api` + `/health`. Request a magic link from the SPA; local `LOCAL_MAIL_SINK=1`
+  stores it for `GET /api/dev/mailbox?email=…` on loopback. Bearer tokens still
+  authenticate the Worker API for operator CLIs.
 - Read-path routes (list, detail, `/content`, `/lookup`) and `q` search on
   `GET /api/readings` work against the local R2 bucket without Vectorize. To try
   them against real data, see "Seeding local R2" in `docs/operations.md`.
