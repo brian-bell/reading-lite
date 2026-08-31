@@ -174,6 +174,7 @@ export const ManifestSchema = z
     novelty_verdict: NoveltyVerdictSchema.optional(),
     similarity: SimilaritySnapshotSchema.optional(),
     connections: z.array(ConnectionSchema).optional(),
+    connections_computed_at: z.string().datetime().optional(),
     summary_markdown: z.string().optional(),
 
     content_type: z.string().min(1),

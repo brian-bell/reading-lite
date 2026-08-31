@@ -174,6 +174,7 @@ The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields:
 `status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`,
 `last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`,
 `novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`,
+`connections_computed_at?`,
 `summary_markdown?`, `content_type`, `content_status`, `content_bytes`,
 `extracted_bytes?`, `content_sha256`, and `usage?`, which records embedding
 tokens plus a provider-discriminated summarization usage object.

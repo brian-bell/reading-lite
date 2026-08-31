@@ -5,6 +5,10 @@ import {
   type EvaluationCase,
 } from "./fixtures";
 import type { EvaluationObservation } from "./run";
+import {
+  SUMMARIZER_PRICE_DATE,
+  estimateSummarizationCostUsd,
+} from "./pricing";
 
 export interface EvaluationScore {
   schemaSuccess: boolean;
@@ -44,23 +48,11 @@ export interface CandidateSummary {
   batchCostUsd: number;
 }
 
-const PRICE_DATE = "2026-07-23";
-const OPENAI_PRICES: Record<
-  string,
-  { input: number; cached: number; cacheWrite: number; output: number }
-> = {
-  "gpt-5.6-sol": { input: 5, cached: 0.5, cacheWrite: 6.25, output: 30 },
-  "gpt-5.6-terra": { input: 2.5, cached: 0.25, cacheWrite: 3.125, output: 15 },
-  "gpt-5.6-luna": { input: 1, cached: 0.1, cacheWrite: 1.25, output: 6 },
-};
-const ANTHROPIC_SONNET_PRICE = {
-  input: 3,
-  cacheWrite: 3.75,
-  cached: 0.3,
-  output: 15,
-};
+export const EVALUATION_PRICE_DATE = SUMMARIZER_PRICE_DATE;
 
-export const EVALUATION_PRICE_DATE = PRICE_DATE;
+function roundCost(value: number): number {
+  return Math.round(value * 100_000_000) / 100_000_000;
+}
 
 function normalize(value: string): string {
   return value
@@ -199,42 +191,11 @@ export function scoreObservation(
   };
 }
 
-function roundCost(value: number): number {
-  return Math.round(value * 100_000_000) / 100_000_000;
-}
-
 export function estimateCostUsd(usage: SummarizationUsage): {
   synchronous: number;
   batch: number;
 } {
-  let synchronous: number;
-  if (usage.provider === "openai") {
-    const price = OPENAI_PRICES[usage.model];
-    if (!price) throw new Error(`missing evaluation price for ${usage.model}`);
-    const uncachedInput = Math.max(
-      0,
-      usage.input_tokens -
-        usage.cached_input_tokens -
-        usage.cache_write_tokens,
-    );
-    synchronous =
-      (uncachedInput * price.input +
-        usage.cached_input_tokens * price.cached +
-        usage.cache_write_tokens * price.cacheWrite +
-        usage.output_tokens * price.output) /
-      1_000_000;
-  } else {
-    synchronous =
-      (usage.input_tokens * ANTHROPIC_SONNET_PRICE.input +
-        usage.cache_creation_input_tokens * ANTHROPIC_SONNET_PRICE.cacheWrite +
-        usage.cache_read_input_tokens * ANTHROPIC_SONNET_PRICE.cached +
-        usage.output_tokens * ANTHROPIC_SONNET_PRICE.output) /
-      1_000_000;
-  }
-  return {
-    synchronous: roundCost(synchronous),
-    batch: roundCost(synchronous / 2),
-  };
+  return estimateSummarizationCostUsd(usage);
 }
 
 function mean(values: number[]): number {
@@ -309,7 +270,7 @@ export function buildEvaluationReport(input: {
     "# Summarizer quality evaluation",
     "",
     `Generated: ${input.generatedAt}`,
-    `Price table date: ${PRICE_DATE}`,
+    `Price table date: ${SUMMARIZER_PRICE_DATE}`,
     "",
     "## Objective results",
     "",

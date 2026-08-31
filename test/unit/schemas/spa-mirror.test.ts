@@ -45,6 +45,7 @@ describe("SPA type mirror — Manifest", () => {
       orgs: [],
       novelty_verdict: "novel",
       connections: [],
+      connections_computed_at: "2026-04-26T20:00:00.000Z",
       summary_markdown: "s",
       content_type: "text/html",
       content_status: "captured",

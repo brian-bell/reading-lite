@@ -1611,6 +1611,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Connection"
+        connections_computed_at:
+          type: string
+          format: date-time
+          description: Time of the latest relationship-only judgement
         summary_markdown:
           type: string
         content_type:

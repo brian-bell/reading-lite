@@ -795,6 +795,17 @@ describe("App", () => {
       "/readings/rd_TWO"
     );
     expect(within(panel).getByText(/same operations theme/)).toBeInTheDocument();
+    expect(within(panel).queryByText(/connections as of/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the connection computation date when present", async () => {
+    stubJSON(manifest({ connections_computed_at: "2026-08-31T12:00:00.000Z" }));
+    render(<App initialPath="/readings/rd_ONE" />);
+    const heading = await screen.findByRole("heading", { name: "Connections" });
+    const panel = heading.closest("section") as HTMLElement;
+    const time = within(panel).getByText(/aug 31, 2026/i);
+    expect(time).toHaveAttribute("datetime", "2026-08-31T12:00:00.000Z");
+    expect(within(panel).getByText(/connections as of/i)).toBeInTheDocument();
   });
 
   it("renders an empty connections state when none exist", async () => {

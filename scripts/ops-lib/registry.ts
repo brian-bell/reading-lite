@@ -17,6 +17,7 @@ import { stagingSmokeCommand } from "./commands/staging-smoke";
 import { stagingTeardownCommand } from "./commands/staging-teardown";
 import { corpusBackfillSimilarityCommand } from "./commands/corpus-backfill-similarity";
 import { corpusRefreshNeighboursCommand } from "./commands/corpus-refresh-neighbours";
+import { corpusRefreshConnectionsCommand } from "./commands/corpus-refresh-connections";
 import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
 import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
 import { corpusDropCommand } from "./commands/corpus-drop";
@@ -61,6 +62,7 @@ export const defaultRegistry: Registry = {
     corpusDeleteOrphansCommand,
     corpusBackfillSimilarityCommand,
     corpusRefreshNeighboursCommand,
+    corpusRefreshConnectionsCommand,
     corpusBackfillVectorsCommand,
     corpusMigrateFounderCommand,
     corpusNormalizeTagsCommand,

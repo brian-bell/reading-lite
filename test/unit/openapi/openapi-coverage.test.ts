@@ -131,6 +131,17 @@ describe("docs/openapi.yaml", () => {
     }
   });
 
+  it("documents the optional relationship computation timestamp", () => {
+    const manifest = loadSpec().components?.schemas?.Manifest as
+      | { properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+    expect(manifest?.properties?.connections_computed_at).toMatchObject({
+      type: "string",
+      format: "date-time",
+    });
+    expect(manifest?.required ?? []).not.toContain("connections_computed_at");
+  });
+
   it("documents X-CSRF-Token on cookie-mutating REST operations", () => {
     const doc = loadSpec();
     expect(doc.components?.parameters?.CsrfToken).toBeDefined();
