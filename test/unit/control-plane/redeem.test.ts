@@ -432,4 +432,104 @@ describe("redeemLoginChallenge", () => {
     expect(rows[0]?.id).toBe(first.sessionId);
     expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 90_000);
   });
+
+  it("pins a consumed step-up replay to completed_session_id when another same-user session is live", async () => {
+    const { sqlite, db } = await seeded();
+    const issuedA = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(issuedA.kind).toBe("issued");
+    if (issuedA.kind !== "issued") return;
+    const sessionA = await redeemLoginChallenge(db, {
+      credential: issuedA.credential,
+      redemptionId: "clm_pin_a",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    expect(sessionA.kind).toBe("ok");
+    if (sessionA.kind !== "ok") return;
+
+    const issuedB = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(issuedB.kind).toBe("issued");
+    if (issuedB.kind !== "issued") return;
+    const sessionB = await redeemLoginChallenge(db, {
+      credential: issuedB.credential,
+      redemptionId: "clm_pin_b",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "b",
+    });
+    expect(sessionB.kind).toBe("ok");
+    if (sessionB.kind !== "ok") return;
+    expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
+
+    const issuedStep = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(issuedStep.kind).toBe("issued");
+    if (issuedStep.kind !== "issued") return;
+    const stepped = await redeemLoginChallenge(db, {
+      credential: issuedStep.credential,
+      redemptionId: "clm_pin_step",
+      nowMs: NOW_MS + 60_000,
+      authRoot,
+      userAgentLabel: "step",
+      stepUpSessionId: sessionA.sessionId,
+    });
+    expect(stepped.kind).toBe("ok");
+    if (stepped.kind !== "ok") return;
+    expect(stepped.sessionId).toBe(sessionA.sessionId);
+    expect(stepped.credential).toBeNull();
+
+    const challengeBefore = sqlite
+      .prepare("SELECT state, completed_session_id FROM auth_challenges WHERE id = ?")
+      .get(issuedStep.challengeId) as { state: string; completed_session_id: string };
+    expect(challengeBefore.state).toBe("consumed");
+    expect(challengeBefore.completed_session_id).toBe(sessionA.sessionId);
+
+    const sessionBBefore = sqlite
+      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
+      .get(sessionB.sessionId) as { authenticated_at_ms: number };
+    expect(sessionBBefore.authenticated_at_ms).toBe(NOW_MS + 1);
+
+    const replay = await redeemLoginChallenge(db, {
+      credential: issuedStep.credential,
+      redemptionId: "clm_pin_step",
+      nowMs: NOW_MS + 90_000,
+      authRoot,
+      userAgentLabel: "replay",
+      stepUpSessionId: sessionB.sessionId,
+    });
+    expect(replay.kind).toBe("ok");
+    if (replay.kind !== "ok") return;
+    expect(replay.sessionId).toBe(sessionA.sessionId);
+    expect(replay.credential).toBeNull();
+
+    const challengeAfter = sqlite
+      .prepare("SELECT completed_session_id FROM auth_challenges WHERE id = ?")
+      .get(issuedStep.challengeId) as { completed_session_id: string };
+    expect(challengeAfter.completed_session_id).toBe(sessionA.sessionId);
+
+    const sessionBAfter = sqlite
+      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
+      .get(sessionB.sessionId) as { authenticated_at_ms: number };
+    expect(sessionBAfter.authenticated_at_ms).toBe(sessionBBefore.authenticated_at_ms);
+
+    const sessionAAfter = sqlite
+      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
+      .get(sessionA.sessionId) as { authenticated_at_ms: number };
+    expect(sessionAAfter.authenticated_at_ms).toBe(NOW_MS + 90_000);
+  });
 });

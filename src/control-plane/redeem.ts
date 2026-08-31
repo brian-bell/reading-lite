@@ -118,7 +118,28 @@ async function completeRedemption(
     newUuid: input.newUuid,
   });
 
-  if (input.stepUpSessionId) {
+  // Consumed replay is pinned to the original completed session. A live cookie
+  // for a different same-user session must not refresh or overwrite that row.
+  // Step-up writes completed_session_id without a sessions row for this claim;
+  // replaying the same redemption must resume that row, not insert (and LRU).
+  if (challenge.state === "consumed" && challenge.completed_session_id) {
+    const mintedForClaim = await sessionExistsForClaim(db, userId, input.redemptionId);
+    if (!mintedForClaim) {
+      const resumed = await refreshSessionAuthenticatedAt(db, {
+        sessionId: challenge.completed_session_id,
+        userId,
+        nowMs: input.nowMs,
+      });
+      if (resumed.kind !== "ok") return { kind: "invalid" };
+      return {
+        kind: "ok",
+        userId,
+        sessionId: resumed.sessionId,
+        credential: null,
+        emailDisplay,
+      };
+    }
+  } else if (input.stepUpSessionId && challenge.state === "claimed") {
     const refreshed = await refreshSessionAuthenticatedAt(db, {
       sessionId: input.stepUpSessionId,
       userId,
@@ -137,27 +158,6 @@ async function completeRedemption(
         kind: "ok",
         userId,
         sessionId: refreshed.sessionId,
-        credential: null,
-        emailDisplay,
-      };
-    }
-  }
-
-  // Step-up writes completed_session_id without a sessions row for this claim.
-  // Replaying the same redemption must resume that row, not insert (and LRU).
-  if (challenge.state === "consumed" && challenge.completed_session_id) {
-    const mintedForClaim = await sessionExistsForClaim(db, userId, input.redemptionId);
-    if (!mintedForClaim) {
-      const resumed = await refreshSessionAuthenticatedAt(db, {
-        sessionId: challenge.completed_session_id,
-        userId,
-        nowMs: input.nowMs,
-      });
-      if (resumed.kind !== "ok") return { kind: "invalid" };
-      return {
-        kind: "ok",
-        userId,
-        sessionId: resumed.sessionId,
         credential: null,
         emailDisplay,
       };
