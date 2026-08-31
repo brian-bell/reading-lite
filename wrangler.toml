@@ -82,8 +82,9 @@ EMAIL_TO = ""
 WEB_BASE_URL = "http://127.0.0.1:5173"
 # Local-only magic-link outbox. Never set on staging or production.
 LOCAL_MAIL_SINK = "1"
-# Tenant-prefixed R2 keys (u/{tenantId}/…). Leave unset until s1k.6 copies the
-# founder corpus; "1" would hide global readings/ and index/ objects.
+# Tenant-prefixed R2 keys (u/{tenantId}/…). Local and staging stay unset: "1"
+# would hide their global readings/ and index/ objects. Production pins it
+# under [env.production.vars] since the founder cutover (2026-08-31).
 # TENANT_DATA_PLANE = "1"
 # In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
 # to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
@@ -211,6 +212,12 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = "bellbm@gmail.com"
 WEB_BASE_URL = "https://reading-lite.bbell.dev/"
+# Founder corpus cutover completed 2026-08-31 (docs/founder-cutover.md): every
+# production read/write is tenant-rooted (u/{tenantId}/ keys, namespaced
+# vectors). Pinned here so ordinary deploys keep the gate on. Rollback is
+# removing this line and deploying; legacy global objects and bare-id vectors
+# are retained until a separate signed-off deletion.
+TENANT_DATA_PLANE = "1"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"

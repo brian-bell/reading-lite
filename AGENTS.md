@@ -148,8 +148,9 @@ matrix, not a substitute for real readings.
   `readingStoreFor` from a validated `TenantContext`.
 - Keep `index/list.json` in sync on every terminal write, via existing
   `ReadingStore` helpers. When `TENANT_DATA_PLANE=1` those objects live under
-  `u/{tenantId}/`; stored `key_prefix` stays relative. Do not turn the gate on
-  in staging/production before the founder corpus copy (s1k.6).
+  `u/{tenantId}/`; stored `key_prefix` stays relative. Production has been
+  cut over (2026-08-31) and pins the gate in `[env.production.vars]`; local
+  and staging stay unset.
 - Keep Vectorize scoped the same way: hosted code builds the store via
   `similarityStoreFor`, which maps the tenant onto a Vectorize **namespace**
   (its own segmentation primitive — a namespaced query cannot match another
@@ -185,12 +186,14 @@ matrix, not a substitute for real readings.
 
 Pointers only — the details live in the named files' comments.
 
-- Production founder cutover is `docs/founder-cutover.md`. Default
-  `--bucket` is production `reading-lite`. `ops deploy worker` cannot pass
-  `--var` and defaults to `--env production`; the gate flip is
-  `wrangler deploy --env production --var TENANT_DATA_PLANE:1`. The merge-to-main
-  Worker deploy uses that same no-`--var` path. Copy, never
-  move; restore missing vectors with `corpus backfill-vectors`, not reprocess.
+- Production founder cutover ran 2026-08-31 (`docs/founder-cutover.md`,
+  record at the bottom). `TENANT_DATA_PLANE = "1"` is pinned in
+  `[env.production.vars]`, so ordinary deploys (incl. merge-to-main) keep the
+  gate on; rollback is removing the pin. Legacy global objects and bare-id
+  vectors are still in the bucket/index pending a separate signed-off
+  deletion — `--tenant global` operator commands still see them. Default
+  `--bucket` is production `reading-lite`. Copy, never move; restore missing
+  vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
   delay, manifest stays pending; other errors → failed manifest + ack.
   Exhausted retries hit the DLQ, where `markDeadLettered` writes a retryable
