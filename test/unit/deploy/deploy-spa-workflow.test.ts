@@ -12,7 +12,7 @@ interface Workflow {
     "cancel-in-progress"?: boolean;
   };
   permissions?: Record<string, string>;
-  jobs?: Record<string, { steps?: Array<Record<string, unknown>> }>;
+  jobs?: Record<string, { if?: string; steps?: Array<Record<string, unknown>> }>;
 }
 
 describe("production SPA deployment workflow", () => {
@@ -32,6 +32,7 @@ describe("production SPA deployment workflow", () => {
       group: "deploy-production-spa",
       "cancel-in-progress": false,
     });
+    expect(workflow.jobs?.deploy?.if).toBe("github.ref == 'refs/heads/main'");
     expect(commands).toContain("npm ci");
     expect(commands).toContain("npm run ops -- deploy web --branch main --execute");
     expect(commands).not.toMatch(/deploy worker|wrangler deploy/);
