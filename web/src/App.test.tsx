@@ -1397,4 +1397,57 @@ describe("App", () => {
       false
     );
   });
+
+  it("requests an email change with CSRF and shows a generic ack", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({ sessions: [], session_cap_warning: null });
+      }
+      if (url.pathname === "/api/auth/email-change") return jsonResponse({ ok: true });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByRole("heading", { name: "Change email" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("New email"), "new@example.com");
+    await user.click(screen.getByRole("button", { name: "Send confirmation" }));
+    expect(await screen.findByText(/if that address can be used/i)).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/email-change";
+    });
+    expect(post).toBeDefined();
+    expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(await (post![0] as Request).clone().json()).toEqual({ email: "new@example.com" });
+  });
+
+  it("asks for a fresh sign-in link when email change requires recent auth", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({ sessions: [], session_cap_warning: null });
+      }
+      if (url.pathname === "/api/auth/email-change") {
+        return jsonResponse({ error: "recent authentication required" }, 403);
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.type(await screen.findByLabelText("New email"), "new@example.com");
+    await user.click(screen.getByRole("button", { name: "Send confirmation" }));
+    expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
+      "href",
+      "/login"
+    );
+    expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
+  });
 });

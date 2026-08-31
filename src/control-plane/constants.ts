@@ -15,7 +15,8 @@ export const SESSION_COOKIE_NAME = "__Host-session";
 export const MAGIC_LINK_VERIFY_PATH = "/auth/verify";
 
 export const LOGIN_PURPOSE = "login" as const;
-export type AuthChallengePurpose = "login" | "email_change";
+export const EMAIL_CHANGE_PURPOSE = "email_change" as const;
+export type AuthChallengePurpose = typeof LOGIN_PURPOSE | typeof EMAIL_CHANGE_PURPOSE;
 
 export const REDEMPTION_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
 export const USER_AGENT_LABEL_MAX = 80;

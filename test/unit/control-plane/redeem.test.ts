@@ -304,7 +304,7 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: "test",
     });
     expect(first.kind).toBe("ok");
-    if (first.kind !== "ok") return;
+    if (first.kind !== "ok" || !first.sessionId) return;
     await revokeSession(db, first.sessionId, NOW_MS + 2, "logout");
 
     const again = await redeemLoginChallenge(db, {
@@ -342,7 +342,7 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: "first",
     });
     expect(first.kind).toBe("ok");
-    if (first.kind !== "ok") return;
+    if (first.kind !== "ok" || !first.sessionId) return;
     expect(first.credential).toBeTruthy();
 
     const next = await issueLoginChallenge(db, {
@@ -392,7 +392,7 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: "first",
     });
     expect(first.kind).toBe("ok");
-    if (first.kind !== "ok") return;
+    if (first.kind !== "ok" || !first.sessionId) return;
 
     const next = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",

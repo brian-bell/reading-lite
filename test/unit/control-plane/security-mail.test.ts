@@ -15,6 +15,15 @@ describe("renderSecurityMail", () => {
       /secret|token|cookie|credential|authorization|hmac/i,
     );
   });
+
+  it("describes an email change without secrets", () => {
+    const rendered = renderSecurityMail("email_changed");
+    expect(rendered.subject).toMatch(/email changed/i);
+    expect(rendered.text).toMatch(/login email/i);
+    expect(`${rendered.subject}\n${rendered.text}\n${rendered.html}`).not.toMatch(
+      /secret|token|cookie|credential|authorization|hmac/i,
+    );
+  });
 });
 
 describe("buildAuthResendPayload", () => {

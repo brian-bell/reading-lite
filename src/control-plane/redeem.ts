@@ -1,17 +1,31 @@
-import { LOGIN_PURPOSE, REDEMPTION_ID_RE } from "./constants";
+import { EMAIL_CHANGE_PURPOSE, LOGIN_PURPOSE, REDEMPTION_ID_RE } from "./constants";
+import { revokeAllApiTokensForUser } from "./authenticate";
 import { parseCredential, type RandomBytes } from "./credential";
 import type { AuthRoot } from "./crypto";
-import type { ControlPlaneDb } from "./db";
+import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import { resolveLoginEligibility } from "./eligibility";
 import { matchSecretHmac } from "./hmac-match";
-import { parseChallengeId, type SessionId, type UserId, type UuidSource } from "./ids";
+import { parseChallengeId, parseSessionId, parseUserId, type SessionId, type UserId, type UuidSource } from "./ids";
 import { lookupChallenge } from "./challenges";
-import { ensureUserWithDefaults, issueSessionForClaim, refreshSessionAuthenticatedAt, sessionExistsForClaim } from "./sessions";
+import {
+  ensureUserWithDefaults,
+  issueSessionForClaim,
+  refreshSessionAuthenticatedAt,
+  revokeOtherSessionsForUser,
+  sessionExistsForClaim,
+} from "./sessions";
 
 export type RedeemResult =
-  | { kind: "ok"; userId: UserId; sessionId: SessionId; credential: string | null; emailDisplay: string }
+  | {
+      kind: "ok";
+      userId: UserId;
+      sessionId: SessionId | null;
+      credential: string | null;
+      emailDisplay: string;
+      securityNotify?: { emailCanonical: string; emailDisplay: string; kind: "email_changed" };
+    }
   | { kind: "invalid" }
-  | { kind: "conflict" }
+  | { kind: "conflict"; reason?: "claim" | "email_taken" }
   | { kind: "forbidden" };
 
 export interface RedeemLoginInput {
@@ -52,7 +66,9 @@ export async function redeemLoginChallenge(
     "magic_link",
   );
   if (!challenge || !match.ok) return { kind: "invalid" };
-  if (challenge.purpose !== LOGIN_PURPOSE) return { kind: "invalid" };
+  if (challenge.purpose !== LOGIN_PURPOSE && challenge.purpose !== EMAIL_CHANGE_PURPOSE) {
+    return { kind: "invalid" };
+  }
   if (challenge.state === "revoked") return { kind: "invalid" };
   if (challengeExpired(challenge, input.nowMs)) return { kind: "invalid" };
 
@@ -104,6 +120,10 @@ async function completeRedemption(
   if (challenge.claim_id && challenge.claim_id !== input.redemptionId) return { kind: "conflict" };
   if (challenge.state === "revoked") return { kind: "invalid" };
   if (challenge.state !== "claimed" && challenge.state !== "consumed") return { kind: "invalid" };
+  if (challenge.purpose === EMAIL_CHANGE_PURPOSE) {
+    return completeEmailChange(db, challenge, input);
+  }
+  if (challenge.purpose !== LOGIN_PURPOSE) return { kind: "invalid" };
 
   const eligibility = await resolveLoginEligibility(db, challenge.email_canonical, input.nowMs);
   if (eligibility.kind === "ineligible") return { kind: "forbidden" };
@@ -191,6 +211,125 @@ async function completeRedemption(
     credential: session.credential,
     emailDisplay,
   };
+}
+
+type ChallengeRow = NonNullable<Awaited<ReturnType<typeof lookupChallenge>>>;
+
+async function completeEmailChange(
+  db: ControlPlaneDb,
+  challenge: ChallengeRow,
+  input: RedeemLoginInput,
+): Promise<RedeemResult> {
+  const userId = challenge.user_id ? parseUserId(challenge.user_id) : null;
+  if (!userId) return { kind: "invalid" };
+
+  const user = await db.first<{
+    email_canonical: string;
+    email_display: string;
+    status: string;
+  }>("SELECT email_canonical, email_display, status FROM users WHERE id = ?", userId);
+  if (!user) return { kind: "invalid" };
+  if (user.status !== "active") return { kind: "forbidden" };
+
+  const confirmingSessionId = await confirmingSessionForUser(db, {
+    sessionId: input.stepUpSessionId,
+    userId,
+    nowMs: input.nowMs,
+  });
+
+  if (challenge.state === "consumed") {
+    return {
+      kind: "ok",
+      userId,
+      sessionId: confirmingSessionId,
+      credential: null,
+      emailDisplay: challenge.email_display,
+    };
+  }
+
+  try {
+    const swapped = await db.run(
+      `UPDATE users
+       SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ?
+       WHERE id = ? AND status = 'active'`,
+      challenge.email_canonical,
+      challenge.email_display,
+      input.nowMs,
+      input.nowMs,
+      userId,
+    );
+    if (swapped.changes === 0) {
+      await burnEmailChangeChallenge(db, challenge.id);
+      return { kind: "forbidden" };
+    }
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      await burnEmailChangeChallenge(db, challenge.id);
+      return { kind: "conflict", reason: "email_taken" };
+    }
+    throw err;
+  }
+
+  await revokeOtherSessionsForUser(db, {
+    userId,
+    ...(confirmingSessionId ? { exceptSessionId: confirmingSessionId } : {}),
+    nowMs: input.nowMs,
+    reason: "email_change",
+  });
+  await revokeAllApiTokensForUser(db, { userId, nowMs: input.nowMs });
+
+  await db.run(
+    `UPDATE auth_challenges
+     SET state = 'consumed',
+         consumed_at_ms = COALESCE(consumed_at_ms, ?),
+         completed_user_id = ?,
+         completed_session_id = ?
+     WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
+    input.nowMs,
+    userId,
+    confirmingSessionId,
+    challenge.id,
+    input.redemptionId,
+  );
+
+  return {
+    kind: "ok",
+    userId,
+    sessionId: confirmingSessionId,
+    credential: null,
+    emailDisplay: challenge.email_display,
+    securityNotify: {
+      emailCanonical: user.email_canonical,
+      emailDisplay: user.email_display,
+      kind: "email_changed",
+    },
+  };
+}
+
+async function confirmingSessionForUser(
+  db: ControlPlaneDb,
+  input: { sessionId: string | undefined; userId: UserId; nowMs: number },
+): Promise<SessionId | null> {
+  if (!input.sessionId) return null;
+  const sessionId = parseSessionId(input.sessionId);
+  if (!sessionId) return null;
+  const row = await db.first<{ id: string }>(
+    `SELECT id FROM sessions
+     WHERE id = ? AND user_id = ? AND revoked_at_ms IS NULL
+       AND idle_expires_at_ms > ? AND absolute_expires_at_ms > ?`,
+    sessionId,
+    input.userId,
+    input.nowMs,
+    input.nowMs,
+  );
+  return row ? sessionId : null;
+}
+
+async function burnEmailChangeChallenge(db: ControlPlaneDb, challengeId: string): Promise<void> {
+  await db.run(
+    `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state IN ('issued', 'claimed')`,
+    challengeId,
+  );
 }
 
 async function consumeChallenge(

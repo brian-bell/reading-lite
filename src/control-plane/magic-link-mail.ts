@@ -57,6 +57,26 @@ export function renderMagicLinkMail(verifyUrl: string): { subject: string; html:
   return { subject, html, text };
 }
 
+export function renderEmailChangeMagicLinkMail(verifyUrl: string): { subject: string; html: string; text: string } {
+  const subject = "Confirm your reading-lite email";
+  const text = [
+    "Use this link to confirm a new login email for reading-lite.",
+    "It expires in 15 minutes and can be used once.",
+    "",
+    verifyUrl,
+    "",
+    "If you did not request this, you can ignore this message.",
+  ].join("\n");
+  const html = [
+    "<p>Use this link to confirm a new login email for reading-lite.</p>",
+    "<p>It expires in 15 minutes and can be used once.</p>",
+    `<p><a href="${escapeAttr(verifyUrl)}">Confirm email</a></p>`,
+    `<p>${escapeText(verifyUrl)}</p>`,
+    "<p>If you did not request this, you can ignore this message.</p>",
+  ].join("\n");
+  return { subject, html, text };
+}
+
 export async function storeLocalMagicLink(
   db: import("./db").ControlPlaneDb,
   input: { to: string; subject: string; verifyUrl: string; nowMs: number },

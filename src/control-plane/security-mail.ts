@@ -3,7 +3,7 @@ import { logAuthEvent } from "./auth-log";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import { sendAuthMailViaResend } from "./resend-mail";
 
-export type SecurityMailKind = "sessions_revoked_all";
+export type SecurityMailKind = "sessions_revoked_all" | "email_changed";
 
 export interface SecurityMail {
   to: string;
@@ -16,6 +16,20 @@ export interface SecurityMail {
 export type SendSecurityMail = (message: SecurityMail) => Promise<void>;
 
 export function renderSecurityMail(kind: SecurityMailKind): { subject: string; html: string; text: string } {
+  if (kind === "email_changed") {
+    const subject = "reading-lite: login email changed";
+    const text = [
+      "The login email for your reading-lite account was changed.",
+      "If you did this, no action is needed.",
+      "If you did not, request a new sign-in link immediately.",
+    ].join("\n");
+    const html = [
+      "<p>The login email for your reading-lite account was changed.</p>",
+      "<p>If you did this, no action is needed.</p>",
+      "<p>If you did not, request a new sign-in link immediately.</p>",
+    ].join("\n");
+    return { subject, html, text };
+  }
   if (kind !== "sessions_revoked_all") {
     throw new Error(`unknown security mail kind: ${kind}`);
   }
