@@ -1,6 +1,8 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_MAX_AGE_SECONDS, SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
+import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
+import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -24,6 +26,7 @@ async function request(
     cookie?: string;
     origin?: string;
     secFetchSite?: string;
+    csrf?: string;
   } = {},
   workerEnv: Env = env as unknown as Env,
 ) {
@@ -39,6 +42,7 @@ async function request(
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
   if (init.secFetchSite) headers.set("sec-fetch-site", init.secFetchSite);
+  if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -64,6 +68,33 @@ function credentialFrom(verifyUrl: string): string {
   const hash = verifyUrl.split("#")[1];
   if (!hash) throw new Error("missing fragment");
   return hash;
+}
+
+async function csrfForSession(sessionId: string, workerEnv: Env = env as unknown as Env): Promise<string> {
+  return hmacHex(
+    await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "csrf"),
+    sessionId,
+  );
+}
+
+async function redeemSession(redemptionId: string) {
+  const challenge = await request("/api/auth/challenge", {
+    method: "POST",
+    body: { email: "founder@test.example" },
+  });
+  const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
+  const redeemed = await request("/api/auth/redeem", {
+    method: "POST",
+    body: { credential, redemption_id: redemptionId },
+  });
+  expect(redeemed.res.status).toBe(200);
+  const cookie = cookieFrom(redeemed.res)!;
+  const whoami = await request("/api/whoami", { cookie });
+  expect(whoami.res.status).toBe(200);
+  const body = (await whoami.res.json()) as { csrf_token?: string; principal: string };
+  expect(body.principal).toBe("session");
+  expect(body.csrf_token).toMatch(/^[0-9a-f]{64}$/);
+  return { cookie, csrf: body.csrf_token! };
 }
 
 function recordingRateGuard() {
@@ -140,6 +171,7 @@ describe("invite-only magic-link sessions", () => {
     const body = (await whoami.res.json()) as Record<string, unknown>;
     expect(body.principal).toBe("session");
     expect(body.email).toBe("founder@test.example");
+    expect(body.csrf_token).toMatch(/^[0-9a-f]{64}$/);
     expect(whoami.res.headers.get("cache-control")).toBe("no-store");
 
     const readings = await request("/api/readings", { cookie: cookie! });
@@ -267,20 +299,90 @@ describe("invite-only magic-link sessions", () => {
     expect(mixed.res.status).toBe(401);
   });
 
+  it("rejects cookie mutations without a valid session-bound CSRF token", async () => {
+    const { cookie, csrf } = await redeemSession("clm_csrf");
+    const write = {
+      method: "POST" as const,
+      cookie,
+      body: { url: "https://example.com/csrf" },
+    };
+
+    const missing = await request("/api/readings", write);
+    expect(missing.res.status).toBe(403);
+    expect(await missing.res.json()).toEqual({ error: "forbidden" });
+
+    const wrong = await request("/api/readings", { ...write, csrf: "0".repeat(64) });
+    expect(wrong.res.status).toBe(403);
+
+    const otherSession = await csrfForSession("ses_550e8400-e29b-41d4-a716-446655440000");
+    expect(otherSession).not.toBe(csrf);
+    const crossSession = await request("/api/readings", { ...write, csrf: otherSession });
+    expect(crossSession.res.status).toBe(403);
+
+    const logoutMissing = await request("/api/auth/logout", { method: "POST", cookie, body: {} });
+    expect(logoutMissing.res.status).toBe(403);
+    const stillIn = await request("/api/whoami", { cookie });
+    expect(stillIn.res.status).toBe(200);
+
+    const delMissing = await request("/api/readings/rd_missing", { method: "DELETE", cookie });
+    expect(delMissing.res.status).toBe(403);
+
+    const okWrite = await request("/api/readings", { ...write, csrf });
+    expect(okWrite.res.status).not.toBe(401);
+    expect(okWrite.res.status).not.toBe(403);
+  });
+
+  it("still requires Origin on cookie writes even with a valid CSRF token", async () => {
+    const { cookie, csrf } = await redeemSession("clm_csrf_origin");
+    const missingOrigin = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      csrf,
+      origin: "",
+      body: { url: "https://example.com/csrf-no-origin" },
+    });
+    expect(missingOrigin.res.status).toBe(401);
+
+    const crossOrigin = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      csrf,
+      origin: "https://evil.example",
+      body: { url: "https://example.com/csrf-cross-origin" },
+    });
+    expect(crossOrigin.res.status).toBe(401);
+  });
+
+  it("lets bearer mutations skip CSRF and never falls back from an invalid bearer to a cookie", async () => {
+    const { cookie, csrf } = await redeemSession("clm_csrf_bearer");
+    const bearerWrite = await request("/api/readings", {
+      method: "POST",
+      authorization: "Bearer test-token",
+      origin: "",
+      body: { url: "https://example.com/bearer-no-csrf" },
+    });
+    expect(bearerWrite.res.status).not.toBe(401);
+    expect(bearerWrite.res.status).not.toBe(403);
+
+    const mixed = await request("/api/readings", {
+      method: "POST",
+      cookie,
+      csrf,
+      authorization: "Bearer definitely-wrong",
+      body: { url: "https://example.com/mixed-csrf" },
+    });
+    expect(mixed.res.status).toBe(401);
+
+    const whoami = await request("/api/whoami", { authorization: "Bearer test-token" });
+    expect(whoami.res.status).toBe(200);
+    const body = (await whoami.res.json()) as Record<string, unknown>;
+    expect(body.principal).toBe("api_token");
+    expect("csrf_token" in body).toBe(false);
+  });
+
   it("logs out by revoking the D1 session and clearing the cookie", async () => {
-    const challenge = await request("/api/auth/challenge", {
-      method: "POST",
-      body: { email: "founder@test.example" },
-    });
-    const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
-    const redeemed = await request("/api/auth/redeem", {
-      method: "POST",
-      body: { credential, redemption_id: "clm_logout" },
-    });
-    expect(redeemed.res.status).toBe(200);
-    const cookie = cookieFrom(redeemed.res)!;
-    expect(cookie).toBeTruthy();
-    const logout = await request("/api/auth/logout", { method: "POST", cookie, body: {} });
+    const { cookie, csrf } = await redeemSession("clm_logout");
+    const logout = await request("/api/auth/logout", { method: "POST", cookie, csrf, body: {} });
     expect(logout.res.status).toBe(200);
     expect(logout.res.headers.get("set-cookie") ?? "").toContain("Max-Age=0");
     const after = await request("/api/whoami", { cookie });
@@ -299,7 +401,9 @@ describe("invite-only magic-link sessions", () => {
     });
     expect(redeemed.res.status).toBe(200);
     const cookie = cookieFrom(redeemed.res)!;
-    const logout = await request("/api/auth/logout", { method: "POST", cookie, body: {} });
+    const whoami = await request("/api/whoami", { cookie });
+    const csrf = ((await whoami.res.json()) as { csrf_token: string }).csrf_token;
+    const logout = await request("/api/auth/logout", { method: "POST", cookie, csrf, body: {} });
     expect(logout.res.status).toBe(200);
     const again = await request("/api/auth/redeem", {
       method: "POST",

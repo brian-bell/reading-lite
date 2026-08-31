@@ -1,10 +1,11 @@
 import type { MiddlewareHandler } from "hono";
 import { authenticateRequest } from "./control-plane/authenticate";
 import { readAuthRoots } from "./control-plane/auth-root";
+import { cookieCsrfRequired, verifyCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
 import { cookieAuthAllowed } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
-import { EXPECTED_TENANT_HEADER } from "./schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
 
 export type AppBindings = {
@@ -46,6 +47,18 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
     }
     if (verdict.kind === "forbidden") {
       return jsonNoStore(c, { error: "forbidden" }, 403);
+    }
+
+    if (verdict.principal.kind === "session" && cookieCsrfRequired(c.req.method)) {
+      const csrfOk = await verifyCsrfToken({
+        token: c.req.header(CSRF_HEADER),
+        sessionId: verdict.principal.sessionId,
+        authRoot: roots.authRoot,
+        ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
+      });
+      if (!csrfOk) {
+        return jsonNoStore(c, { error: "forbidden" }, 403);
+      }
     }
 
     c.set("principal", verdict.principal);

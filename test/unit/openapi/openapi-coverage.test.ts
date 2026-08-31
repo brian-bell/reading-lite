@@ -47,6 +47,15 @@ const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = 
   { path: "/api/readings/{id}/content/raw", method: "get" },
 ];
 
+const COOKIE_CSRF_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = [
+  { path: "/api/auth/logout", method: "post" },
+  { path: "/api/readings", method: "post" },
+  { path: "/api/readings/import-markdown", method: "post" },
+  { path: "/api/readings/similar", method: "post" },
+  { path: "/api/readings/{id}", method: "delete" },
+  { path: "/api/readings/{id}/reprocess", method: "post" },
+];
+
 const REQUIRED_SCHEMAS = [
   "WhoamiResponse",
   "AuthChallengeBody",
@@ -70,7 +79,7 @@ const REQUIRED_SCHEMAS = [
 type OpenApiDoc = {
   openapi: string;
   paths?: Record<string, Record<string, unknown>>;
-  components?: { schemas?: Record<string, unknown> };
+  components?: { schemas?: Record<string, unknown>; parameters?: Record<string, unknown> };
 };
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -104,6 +113,23 @@ describe("docs/openapi.yaml", () => {
     const schemas = loadSpec().components?.schemas ?? {};
     for (const name of REQUIRED_SCHEMAS) {
       expect(schemas[name], `missing schema ${name}`).toBeDefined();
+    }
+  });
+
+  it("documents X-CSRF-Token on cookie-mutating REST operations", () => {
+    const doc = loadSpec();
+    expect(doc.components?.parameters?.CsrfToken).toBeDefined();
+    const whoami = doc.components?.schemas?.WhoamiResponse as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    expect(whoami?.properties?.csrf_token).toBeDefined();
+
+    const csrfRef = "#/components/parameters/CsrfToken";
+    for (const { path, method } of COOKIE_CSRF_OPERATIONS) {
+      const op = doc.paths?.[path]?.[method] as { parameters?: Array<{ $ref?: string }> } | undefined;
+      expect(op, `missing ${method.toUpperCase()} ${path}`).toBeDefined();
+      const refs = (op?.parameters ?? []).map((p) => p.$ref);
+      expect(refs, `${method.toUpperCase()} ${path} missing CsrfToken`).toContain(csrfRef);
     }
   });
 

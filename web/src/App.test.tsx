@@ -112,7 +112,8 @@ const sessionWhoami = {
   user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
   principal: "session" as const,
   tenant_data_plane: true,
-  email: "reader@example.com"
+  email: "reader@example.com",
+  csrf_token: "ab".repeat(32)
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -345,6 +346,7 @@ describe("App", () => {
       });
       expect(logout).toBeDefined();
       expect((logout![0] as Request).credentials).toBe("include");
+      expect((logout![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
     });
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(window.localStorage.getItem("reading-lite.bearerToken")).toBeNull();
@@ -519,6 +521,68 @@ describe("App", () => {
     expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
+  it("does not let a cancelled pre-redeem whoami wipe the CSRF token on the next mutation", async () => {
+    let signedIn = false;
+    let whoamiStarted = 0;
+    let releaseFirstWhoami: () => void = () => undefined;
+    const firstWhoamiStarted = new Promise<void>((resolve) => {
+      releaseFirstWhoami = resolve;
+    });
+    let holdFirstWhoami: (value: void) => void = () => undefined;
+    const firstWhoamiHeld = new Promise<void>((resolve) => {
+      holdFirstWhoami = resolve;
+    });
+
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        const sessionAtStart = signedIn;
+        whoamiStarted += 1;
+        if (whoamiStarted === 1) {
+          releaseFirstWhoami();
+          await firstWhoamiHeld;
+        }
+        if (!sessionAtStart) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      if (request.method === "POST" && url.pathname === "/api/readings") {
+        return jsonResponse({ id: "rd_NEW", status: "pending", poll: "/api/readings/rd_NEW" }, 202);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/auth/verify#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />);
+    const continueButton = await screen.findByRole("button", { name: "Continue" });
+    await firstWhoamiStarted;
+
+    const clicked = user.click(continueButton);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => new URL((c[0] as Request).url).pathname === "/api/auth/redeem")
+      ).toBe(true);
+    });
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    holdFirstWhoami();
+    await clicked;
+
+    await user.type(screen.getByLabelText(/submit a url/i), "https://example.com/new");
+    await user.click(screen.getByRole("button", { name: /submit/i }));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find((c) => {
+        const req = c[0] as Request;
+        return req.method === "POST" && new URL(req.url).pathname === "/api/readings";
+      });
+      expect(post).toBeDefined();
+      expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    });
   });
 
   it("sends a signed-out reading route to login with a return path", async () => {
@@ -741,6 +805,7 @@ describe("App", () => {
         return req.method === "POST" && new URL(req.url).pathname === "/api/readings/rd_ONE/reprocess";
       });
       expect(post).toBeDefined();
+      expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
     });
   });
 
@@ -922,6 +987,7 @@ describe("App", () => {
     ) as [Request];
     const body = (await post[0].clone().json()) as { url: string };
     expect(body.url).toBe("https://example.com/new");
+    expect(post[0].headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
 
     // List query refetched after invalidation.
     expect(await screen.findByRole("link", { name: "New One" })).toBeInTheDocument();

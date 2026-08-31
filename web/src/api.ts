@@ -18,11 +18,35 @@ export class ApiError extends Error {
   }
 }
 
+const CSRF_HEADER = "x-csrf-token";
+let csrfToken: string | undefined;
+let whoamiGeneration = 0;
+
+function rememberCsrfToken(token: string | undefined): void {
+  csrfToken = token && token !== "" ? token : undefined;
+}
+
+function rememberWhoamiCsrf(token: string | undefined, generation: number): void {
+  if (generation !== whoamiGeneration) return;
+  rememberCsrfToken(token);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw new DOMException("The operation was aborted.", "AbortError");
+}
+
 function jsonHeaders(extra?: Record<string, string>): Headers {
   const headers = new Headers({ "content-type": "application/json" });
   if (extra) {
     for (const [key, value] of Object.entries(extra)) headers.set(key, value);
   }
+  return headers;
+}
+
+function mutationHeaders(extra?: Record<string, string>): Headers {
+  const headers = jsonHeaders(extra);
+  if (csrfToken) headers.set(CSRF_HEADER, csrfToken);
   return headers;
 }
 
@@ -40,13 +64,22 @@ async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Re
   return fetch(new Request(input, { ...init, credentials: "include" }));
 }
 
-export async function getWhoami(): Promise<WhoamiResponse | null> {
-  const response = await apiFetch(new URL("/api/whoami", window.location.origin));
-  if (response.status === 401 || response.status === 403) return null;
+export async function getWhoami(context?: { signal?: AbortSignal }): Promise<WhoamiResponse | null> {
+  const generation = ++whoamiGeneration;
+  const signal = context?.signal;
+  const response = await apiFetch(new URL("/api/whoami", window.location.origin), { signal });
+  throwIfAborted(signal);
+  if (response.status === 401 || response.status === 403) {
+    rememberWhoamiCsrf(undefined, generation);
+    return null;
+  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to load identity"));
   }
-  return (await response.json()) as WhoamiResponse;
+  const body = (await response.json()) as WhoamiResponse;
+  throwIfAborted(signal);
+  rememberWhoamiCsrf(body.csrf_token, generation);
+  return body;
 }
 
 export async function requestLoginLink(email: string): Promise<void> {
@@ -75,14 +108,18 @@ export async function redeemLoginLink(credential: string, redemptionId: string):
 export async function logoutSession(): Promise<void> {
   const response = await apiFetch(new URL("/api/auth/logout", window.location.origin), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({})
   });
   // 401: session already gone; Worker still expires the host-only cookie.
-  if (response.status === 401) return;
+  if (response.status === 401) {
+    rememberCsrfToken(undefined);
+    return;
+  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to log out"));
   }
+  rememberCsrfToken(undefined);
 }
 
 export type ListReadingsParams = {
@@ -139,7 +176,7 @@ export async function submitReading(url: string): Promise<SubmitReadingResponse 
   const target = new URL("/api/readings", window.location.origin);
   const response = await apiFetch(target, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({ url })
   });
   if (!response.ok) {
@@ -155,7 +192,7 @@ export async function reprocessReading(
   const target = new URL(`/api/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
   const response = await apiFetch(target, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify(body)
   });
   if (!response.ok) {

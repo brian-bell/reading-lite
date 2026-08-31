@@ -42,7 +42,7 @@ export function isSameOriginRequest(input: {
 
 const SAFE_COOKIE_METHODS = new Set(["GET", "HEAD"]);
 
-/** Cookie CSRF: Origin required on writes. GET/HEAD may omit Origin when Sec-Fetch-Site is same-origin. */
+/** Cookie origin gate: Origin required on writes. GET/HEAD may omit Origin when Sec-Fetch-Site is same-origin. CSRF HMAC is a separate check. */
 export function cookieAuthAllowed(input: {
   method: string;
   origin: string | undefined;

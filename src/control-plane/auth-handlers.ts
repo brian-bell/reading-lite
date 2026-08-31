@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { AuthChallengeBodySchema, AuthRedeemBodySchema } from "../schemas/api";
+import { AuthChallengeBodySchema, AuthRedeemBodySchema, CSRF_HEADER } from "../schemas/api";
 import { LOGIN_PURPOSE } from "./constants";
 import { admitAuthIp, admitAuthSend } from "./auth-rate-guard";
 import { issueLoginChallenge } from "./challenges";
@@ -22,6 +22,7 @@ import {
 import { sendMagicLinkViaResend } from "./resend-magic-link";
 import { isLoopbackHost, isSameOriginRequest } from "./origin";
 import { parseRedemptionId, redeemLoginChallenge } from "./redeem";
+import { verifyCsrfToken } from "./csrf";
 import { authenticateSession, revokeSession } from "./sessions";
 import { sanitizeUserAgent } from "./user-agent";
 import type { RandomBytes } from "./credential";
@@ -235,6 +236,13 @@ export async function handleAuthLogout(
   if (verdict.kind !== "ok") {
     return jsonAuth({ error: "unauthorized" }, 401, { "set-cookie": clearSessionCookieHeader() });
   }
+  const csrfOk = await verifyCsrfToken({
+    token: c.req.header(CSRF_HEADER),
+    sessionId: verdict.principal.sessionId,
+    authRoot: roots.authRoot,
+    ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
+  });
+  if (!csrfOk) return jsonAuth({ error: "forbidden" }, 403);
   await revokeSession(db, verdict.principal.sessionId, nowMs, "logout");
   logAuthEvent("session_logout", { session_id: verdict.principal.sessionId });
   return jsonAuth({ ok: true }, 200, { "set-cookie": clearSessionCookieHeader() });
