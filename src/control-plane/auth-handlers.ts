@@ -110,7 +110,10 @@ export async function handleAuthChallenge(
     return jsonAuth({ ok: true }, 200);
   }
 
-  const liveBeforeIssue = await listLiveChallenges(db, emailCanonical, LOGIN_PURPOSE);
+  const liveBeforeIssue = await listLiveChallenges(db, {
+    emailCanonical,
+    purpose: LOGIN_PURPOSE,
+  });
   const issued = await issueLoginChallenge(db, {
     emailCanonical,
     emailDisplayRequested: parsed.data.email.trim(),
@@ -384,7 +387,11 @@ export async function handleEmailChangeRequest(
     return jsonAuth({ ok: true }, 200);
   }
 
-  const liveBeforeIssue = await listLiveChallenges(db, emailCanonical, EMAIL_CHANGE_PURPOSE);
+  const liveBeforeIssue = await listLiveChallenges(db, {
+    emailCanonical,
+    purpose: EMAIL_CHANGE_PURPOSE,
+    userId: String(principal.userId),
+  });
   const issued = await issueEmailChangeChallenge(db, {
     emailCanonical,
     emailDisplay: parsed.data.email.trim(),
@@ -473,14 +480,13 @@ export async function rememberMailSentMarker(mark: () => Promise<void>): Promise
 
 async function listLiveChallenges(
   db: ControlPlaneDb,
-  emailCanonical: string,
-  purpose: AuthChallengePurpose,
+  args: { emailCanonical: string; purpose: AuthChallengePurpose; userId?: string },
 ): Promise<{ id: string; state: string; issued_at_ms: number }[]> {
+  const scope = liveChallengeScope(args);
   return db.all<{ id: string; state: string; issued_at_ms: number }>(
     `SELECT id, state, issued_at_ms FROM auth_challenges
-     WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed')`,
-    emailCanonical,
-    purpose,
+     WHERE ${scope.clause} AND state IN ('issued', 'claimed')`,
+    ...scope.params,
   );
 }
 
@@ -499,17 +505,21 @@ export async function restoreLiveChallenges(
     );
     if (revokedNew.changes === 0) return;
 
-    const meta = await db.first<{ email_canonical: string; purpose: string }>(
-      `SELECT email_canonical, purpose FROM auth_challenges WHERE id = ?`,
+    const meta = await db.first<{ email_canonical: string; purpose: string; user_id: string | null }>(
+      `SELECT email_canonical, purpose, user_id FROM auth_challenges WHERE id = ?`,
       newChallengeId,
     );
     if (!meta) return;
+    const scope = liveChallengeScope({
+      emailCanonical: meta.email_canonical,
+      purpose: meta.purpose,
+      userId: meta.user_id,
+    });
 
     const otherLive = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed') AND id != ?`,
-      meta.email_canonical,
-      meta.purpose,
+       WHERE ${scope.clause} AND state IN ('issued', 'claimed') AND id != ?`,
+      ...scope.params,
       newChallengeId,
     );
     if (otherLive) return;
@@ -520,12 +530,11 @@ export async function restoreLiveChallenges(
 
     const newestMarked = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE email_canonical = ? AND purpose = ? AND id != ?
+       WHERE ${scope.clause} AND id != ?
          AND (mail_sent_at_ms IS NOT NULL OR claim_id IS NOT NULL)
        ORDER BY rowid DESC
        LIMIT 1`,
-      meta.email_canonical,
-      meta.purpose,
+      ...scope.params,
       newChallengeId,
     );
     if (newestMarked) {
@@ -547,16 +556,14 @@ export async function restoreLiveChallenges(
     // Restore the unused predecessor this issue actually revoked.
     const revokedPredecessor = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE email_canonical = ?
-         AND purpose = ?
+       WHERE ${scope.clause}
          AND id != ?
          AND state = 'revoked'
          AND claim_id IS NULL
          AND consumed_at_ms IS NULL
        ORDER BY rowid DESC
        LIMIT 1`,
-      meta.email_canonical,
-      meta.purpose,
+      ...scope.params,
       newChallengeId,
     );
     if (revokedPredecessor) await restoreUnusedRevokedChallenge(db, revokedPredecessor.id);
@@ -566,6 +573,24 @@ export async function restoreLiveChallenges(
 }
 
 export const restoreLiveLoginChallenges = restoreLiveChallenges;
+
+/** Same predicate issue uses when revoking live rows before insert. */
+function liveChallengeScope(args: {
+  emailCanonical: string;
+  purpose: string;
+  userId?: string | null;
+}): { clause: string; params: unknown[] } {
+  if (args.purpose === EMAIL_CHANGE_PURPOSE && args.userId) {
+    return {
+      clause: "purpose = ? AND (email_canonical = ? OR user_id = ?)",
+      params: [args.purpose, args.emailCanonical, args.userId],
+    };
+  }
+  return {
+    clause: "email_canonical = ? AND purpose = ?",
+    params: [args.emailCanonical, args.purpose],
+  };
+}
 
 async function newestChallengeId(db: ControlPlaneDb, ids: string[]): Promise<string | null> {
   if (ids.length === 0) return null;

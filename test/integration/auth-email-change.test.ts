@@ -29,6 +29,7 @@ async function request(
     csrf?: string;
     now?: string;
     securityMail?: SecurityMail[];
+    sendMagicLink?: (message: MagicLinkMail) => Promise<void>;
   } = {},
   workerEnv: Env = env as unknown as Env,
 ) {
@@ -37,9 +38,11 @@ async function request(
   const app = createApp({
     services: services(init.now ?? NOW),
     auth: {
-      sendMagicLink: async (message) => {
-        sent.push(message);
-      },
+      sendMagicLink: init.sendMagicLink
+        ? init.sendMagicLink
+        : async (message) => {
+            sent.push(message);
+          },
       sendSecurityMail: async (message) => {
         securityMail.push(message);
       },
@@ -256,5 +259,53 @@ describe("verified email change", () => {
     });
     expect(same.res.status).toBe(200);
     expect(same.sent).toHaveLength(0);
+  });
+
+  it("restores the previous email-change link when a later different-address send fails", async () => {
+    const session = await redeemUser("restore-changer@test.example", "clm_restore_email_req");
+    const toA = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { email: "address-a@test.example" },
+    });
+    expect(toA.res.status).toBe(200);
+    expect(toA.sent).toHaveLength(1);
+    const credentialA = credentialFrom(toA.sent[0]!.verifyUrl);
+
+    const toB = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { email: "address-b@test.example" },
+      sendMagicLink: async () => {
+        throw new Error("resend 400");
+      },
+    });
+    expect(toB.res.status).toBe(200);
+    expect(await toB.res.json()).toEqual({ ok: true });
+    expect(toB.sent).toHaveLength(0);
+
+    const workerEnv = env as unknown as Env;
+    const rows = await workerEnv.CONTROL_PLANE.prepare(
+      `SELECT email_canonical, state FROM auth_challenges
+       WHERE purpose = 'email_change' AND user_id = ?
+       ORDER BY issued_at_ms`,
+    )
+      .bind(session.userId)
+      .all<{ email_canonical: string; state: string }>();
+    expect(rows.results).toEqual([
+      { email_canonical: "address-a@test.example", state: "issued" },
+      { email_canonical: "address-b@test.example", state: "revoked" },
+    ]);
+
+    const restored = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { credential: credentialA, redemption_id: "clm_restore_email_a" },
+    });
+    expect(restored.res.status).toBe(200);
+    expect((await restored.res.json() as { email: string }).email).toBe("address-a@test.example");
   });
 });
