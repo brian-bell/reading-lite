@@ -331,3 +331,18 @@ describe("tenant-rooted R2Deps", () => {
     expect(calls[0]![3]).toBe("b/index/list.json");
   });
 });
+
+
+describe("defaultRunner", () => {
+  it("decodes UTF-8 that straddles stdout chunk boundaries (em dash split across writes)", async () => {
+    const { defaultRunner } = await import("../../../scripts/corpus-lib/wrangler-r2");
+    // Emit "Code — Debate" with the 3-byte em dash split across two writes.
+    const script =
+      'process.stdout.write(Buffer.from([0x43,0x6f,0x64,0x65,0x20,0xe2,0x80]));' +
+      'setTimeout(() => { process.stdout.write(Buffer.from([0x94,0x20,0x44,0x65,0x62,0x61,0x74,0x65])); }, 30);';
+    const { code, stdout } = await defaultRunner(process.execPath, ["-e", script]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("Code — Debate");
+    expect(stdout).not.toContain("\uFFFD");
+  });
+});
