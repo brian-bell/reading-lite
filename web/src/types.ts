@@ -256,6 +256,7 @@ export interface SessionListItem {
   revoked_at_ms: number | null;
   revocation_reason: string | null;
   user_agent_label: string | null;
+  usable: boolean;
 }
 
 export interface ListSessionsResponse {

@@ -185,11 +185,12 @@ paths:
       description: |
         Returns session rows for the authenticated user (id, created,
         authenticated, last-seen, idle/absolute expiry, revoked, reason,
-        user-agent label). Marks the current cookie session via
-        `current`. When the account is at the ten-session cap,
-        `session_cap_warning` is a non-null string the client can show
-        before the next login evicts the least-recently-used session.
-        CSRF is not required (GET).
+        user-agent label, usable). Marks the current cookie session via
+        `current`. Idle- or absolute-expired rows stay in the list with
+        `usable: false` so the client can inspect them. When the account
+        is at the ten-session cap, `session_cap_warning` is a non-null
+        string the client can show before the next login evicts the
+        least-recently-used session. CSRF is not required (GET).
       responses:
         "200":
           description: Session list
@@ -967,6 +968,7 @@ components:
         - revoked_at_ms
         - revocation_reason
         - user_agent_label
+        - usable
       properties:
         id:
           type: string
@@ -992,6 +994,11 @@ components:
         user_agent_label:
           type: string
           nullable: true
+        usable:
+          type: boolean
+          description: |
+            False when the session is revoked or past idle/absolute expiry.
+            Expired rows remain in the list for inspect.
 
     ListSessionsResponse:
       type: object

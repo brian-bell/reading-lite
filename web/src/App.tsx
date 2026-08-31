@@ -339,23 +339,32 @@ function AccountSecurityPage({
       {listed ? (
         <ul className="session-list">
           {listed.sessions.map((session) => (
-            <li key={session.id} className={session.revoked_at_ms ? "session-revoked" : undefined}>
+            <li
+              key={session.id}
+              className={
+                session.revoked_at_ms ? "session-revoked" : session.usable ? undefined : "session-expired"
+              }
+            >
               <div>
                 <p>
                   {session.user_agent_label ?? "Unknown browser"}
                   {session.current ? " (this device)" : ""}
-                  {session.revoked_at_ms ? ` · revoked${session.revocation_reason ? ` (${session.revocation_reason})` : ""}` : ""}
+                  {session.revoked_at_ms
+                    ? ` · revoked${session.revocation_reason ? ` (${session.revocation_reason})` : ""}`
+                    : session.usable
+                      ? ""
+                      : " · expired"}
                 </p>
                 <p className="session-meta">
                   Signed in {formatSessionTime(session.authenticated_at_ms)} · last seen{" "}
                   {formatSessionTime(session.last_seen_at_ms)}
                 </p>
               </div>
-              {session.revoked_at_ms ? null : (
+              {session.usable ? (
                 <button type="button" onClick={() => void onRevoke(session)} disabled={busyId != null}>
                   {session.current ? "Revoke this device" : "Revoke"}
                 </button>
-              )}
+              ) : null}
             </li>
           ))}
         </ul>

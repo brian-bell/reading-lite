@@ -93,6 +93,7 @@ export const SessionListItemSchema = z.object({
   revoked_at_ms: z.number().int().nullable(),
   revocation_reason: z.string().nullable(),
   user_agent_label: z.string().nullable(),
+  usable: z.boolean(),
 });
 export type SessionListItem = z.infer<typeof SessionListItemSchema>;
 

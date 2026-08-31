@@ -181,7 +181,8 @@ input {
   margin-top: 4px;
 }
 
-.session-revoked {
+.session-revoked,
+.session-expired {
   opacity: 0.7;
 }
 

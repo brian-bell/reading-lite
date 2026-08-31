@@ -149,7 +149,7 @@ out. Origin checks still apply to cookie writes.
 | `POST /api/auth/challenge` | Same-origin. Body `{ email }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. |
 | `POST /api/auth/redeem` | Same-origin. Body `{ credential, redemption_id }`. Sets `__Host-session` (`Max-Age=7776000`). A live same-user session cookie refreshes `authenticated_at_ms` instead of minting another row. |
 | `POST /api/auth/logout` | Same-origin. Cookie CSRF (`X-CSRF-Token`). Revokes the D1 session and clears the cookie. |
-| `GET /api/auth/sessions` | Caller's sessions (current marked). `session_cap_warning` when at the 10-session cap. |
+| `GET /api/auth/sessions` | Caller's sessions (current marked). `usable` is false for revoked or idle/absolute-expired rows; expired rows stay in the list. `session_cap_warning` when at the 10-session cap. |
 | `DELETE /api/auth/sessions/:id` | Cookie CSRF. Revokes one session; current also clears the cookie. No security mail. |
 | `POST /api/auth/sessions/revoke-all` | Cookie CSRF, no recent-auth. Revokes every session, logs the caller out, sends security mail. |
 | `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |

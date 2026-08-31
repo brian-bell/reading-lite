@@ -49,6 +49,7 @@ export interface SessionListItem {
   revoked_at_ms: number | null;
   revocation_reason: string | null;
   user_agent_label: string | null;
+  usable: boolean;
 }
 
 export interface SessionListResult {
@@ -295,9 +296,11 @@ export async function listSessionsForUser(
   );
   let activeCount = 0;
   const sessions = rows.map((row) => {
-    if (sessionUsable(row, input.nowMs)) activeCount += 1;
+    const usable = sessionUsable(row, input.nowMs);
+    if (usable) activeCount += 1;
     return {
       ...row,
+      usable,
       current: input.currentSessionId != null && row.id === input.currentSessionId,
     };
   });

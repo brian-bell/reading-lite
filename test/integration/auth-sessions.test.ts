@@ -105,10 +105,11 @@ describe("session inspect and revoke", () => {
     expect(listed.res.status).toBe(200);
     expect(listed.res.headers.get("cache-control")).toBe("no-store");
     const body = (await listed.res.json()) as {
-      sessions: { id: string; current: boolean; revoked_at_ms: number | null }[];
+      sessions: { id: string; current: boolean; revoked_at_ms: number | null; usable: boolean }[];
       session_cap_warning: string | null;
     };
     expect(body.sessions.some((row) => row.current)).toBe(true);
+    expect(body.sessions.find((row) => row.current)?.usable).toBe(true);
     expect(body.session_cap_warning).toBeNull();
     const currentId = body.sessions.find((row) => row.current)!.id;
 
@@ -304,5 +305,64 @@ describe("session inspect and revoke", () => {
     const listed = await request("/api/auth/sessions", { cookie: session.cookie });
     const body = (await listed.res.json()) as { session_cap_warning: string | null };
     expect(body.session_cap_warning).toBe(SESSION_CAP_WARNING);
+  });
+
+  it("keeps idle-expired sessions in the list as unusable", async () => {
+    const workerEnv = env as unknown as Env;
+    const userId = (
+      await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
+        .bind("founder@test.example")
+        .first<{ id: string }>()
+    )?.id;
+    expect(userId).toBeTruthy();
+    const secretHmac = await hmacHex(
+      await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "session"),
+      "ab".repeat(32),
+    );
+    const now = Date.parse(NOW);
+    const expiredId = `ses_${crypto.randomUUID()}`;
+    await workerEnv.CONTROL_PLANE.prepare(
+      `INSERT INTO sessions (
+         id, user_id, secret_hmac, hash_key_version,
+         created_at_ms, authenticated_at_ms, last_seen_at_ms,
+         idle_expires_at_ms, absolute_expires_at_ms, user_agent_label, created_from_claim_id
+       ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        expiredId,
+        userId,
+        secretHmac,
+        now,
+        now,
+        now,
+        now,
+        now + 90 * 24 * 60 * 60 * 1000,
+        "Old laptop",
+        "clm_expired_inspect",
+      )
+      .run();
+
+    const session = await redeemSession("clm_expired_live");
+    const listed = await request("/api/auth/sessions", { cookie: session.cookie });
+    expect(listed.res.status).toBe(200);
+    const body = (await listed.res.json()) as {
+      sessions: {
+        id: string;
+        usable: boolean;
+        revoked_at_ms: number | null;
+        user_agent_label: string | null;
+        current: boolean;
+      }[];
+      session_cap_warning: string | null;
+    };
+    const expired = body.sessions.find((row) => row.id === expiredId);
+    const live = body.sessions.find((row) => row.current);
+    expect(expired).toMatchObject({
+      usable: false,
+      revoked_at_ms: null,
+      user_agent_label: "Old laptop",
+      current: false,
+    });
+    expect(live?.usable).toBe(true);
   });
 });

@@ -198,6 +198,7 @@ describe("SPA type mirror — ListSessionsResponse", () => {
           revoked_at_ms: null,
           revocation_reason: null,
           user_agent_label: "test",
+          usable: true,
         },
       ],
       session_cap_warning: "at cap",

@@ -1134,7 +1134,8 @@ describe("App", () => {
               absolute_expires_at_ms: 3,
               revoked_at_ms: null,
               revocation_reason: null,
-              user_agent_label: "Firefox"
+              user_agent_label: "Firefox",
+              usable: true
             }
           ],
           session_cap_warning: "This account is at the 10-session limit."
@@ -1150,6 +1151,68 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
     expect(await screen.findByText(/Firefox \(this device\)/)).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("10-session limit");
+  });
+
+  it("keeps expired sessions visible without a Revoke button", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") {
+        return jsonResponse({
+          sessions: [
+            {
+              id: "ses_11111111-1111-4111-8111-111111111111",
+              current: true,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Firefox",
+              usable: true
+            },
+            {
+              id: "ses_22222222-2222-4222-8222-222222222222",
+              current: false,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 1,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Old laptop",
+              usable: false
+            },
+            {
+              id: "ses_33333333-3333-4333-8333-333333333333",
+              current: false,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: 4,
+              revocation_reason: "user",
+              user_agent_label: "Phone",
+              usable: false
+            }
+          ],
+          session_cap_warning: null
+        });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/Firefox \(this device\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Old laptop · expired/)).toBeInTheDocument();
+    expect(screen.getByText(/Phone · revoked \(user\)/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Revoke this device" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
   });
 
   it("revokes another session with CSRF and revoke-all signs out", async () => {
@@ -1173,7 +1236,8 @@ describe("App", () => {
               absolute_expires_at_ms: 3,
               revoked_at_ms: null,
               revocation_reason: null,
-              user_agent_label: "Here"
+              user_agent_label: "Here",
+              usable: true
             },
             {
               id: "ses_22222222-2222-4222-8222-222222222222",
@@ -1185,7 +1249,8 @@ describe("App", () => {
               absolute_expires_at_ms: 3,
               revoked_at_ms: null,
               revocation_reason: null,
-              user_agent_label: "Phone"
+              user_agent_label: "Phone",
+              usable: true
             }
           ],
           session_cap_warning: null
@@ -1260,7 +1325,8 @@ describe("App", () => {
                 absolute_expires_at_ms: 3,
                 revoked_at_ms: null,
                 revocation_reason: null,
-                user_agent_label: "Firefox"
+                user_agent_label: "Firefox",
+                usable: true
               }
             ],
             session_cap_warning: null
@@ -1284,5 +1350,51 @@ describe("App", () => {
     }
     expect(await screen.findByText("failed to list sessions")).toBeInTheDocument();
     expect(screen.queryByText(/Firefox/)).not.toBeInTheDocument();
+  });
+
+  it("does not sign out when revoke-all returns 401", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({
+          sessions: [
+            {
+              id: "ses_11111111-1111-4111-8111-111111111111",
+              current: true,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Firefox",
+              usable: true
+            }
+          ],
+          session_cap_warning: null
+        });
+      }
+      if (url.pathname === "/api/auth/sessions/revoke-all") {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/Firefox \(this device\)/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revoke all sessions" }));
+
+    expect(await screen.findByText("unauthorized")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Security" })).toBeInTheDocument();
+    expect(screen.getByText("reader@example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some((c) => new URL((c[0] as Request).url).pathname === "/api/auth/logout")).toBe(
+      false
+    );
   });
 });

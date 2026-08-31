@@ -136,10 +136,6 @@ export async function revokeSession(id: string): Promise<void> {
     method: "DELETE",
     headers: mutationHeaders()
   });
-  if (response.status === 401) {
-    rememberCsrfToken(undefined);
-    return;
-  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke session"));
   }
@@ -151,10 +147,6 @@ export async function revokeAllSessions(): Promise<void> {
     headers: mutationHeaders(),
     body: JSON.stringify({})
   });
-  if (response.status === 401) {
-    rememberCsrfToken(undefined);
-    return;
-  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke sessions"));
   }

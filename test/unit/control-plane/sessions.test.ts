@@ -271,6 +271,7 @@ describe("session list, cap warning, and revoke", () => {
     expect(listed.sessions.filter((row) => row.current)).toHaveLength(1);
     expect(listed.sessions.find((row) => row.current)?.id).toBe(current.sessionId);
     expect(listed.sessions[0]?.user_agent_label).toBe("ua-9");
+    expect(listed.sessions.every((row) => row.usable)).toBe(true);
 
     const eleventh = await issueSessionForClaim(db, {
       userId,
@@ -292,7 +293,45 @@ describe("session list, cap warning, and revoke", () => {
 
     const listedAfter = await listSessionsForUser(db, { userId, nowMs: NOW_MS + 10 });
     expect(listedAfter.session_cap_warning).toBe(SESSION_CAP_WARNING);
-    expect(listedAfter.sessions.find((row) => row.revocation_reason === "session_cap")).toBeTruthy();
+    expect(listedAfter.sessions.find((row) => row.revocation_reason === "session_cap")?.usable).toBe(
+      false,
+    );
+    expect(listedAfter.sessions.filter((row) => row.usable)).toHaveLength(10);
+  });
+
+  it("keeps idle-expired rows visible as usable false", async () => {
+    const { sqlite, db, sessionId } = await issuedSession();
+    const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userId) throw new Error("expected founder id");
+    sqlite.prepare("UPDATE sessions SET idle_expires_at_ms = ? WHERE id = ?").run(NOW_MS, sessionId);
+
+    const live = await issueSessionForClaim(db, {
+      userId,
+      claimId: "clm_expired_live",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "live",
+    });
+    expect(live.kind).toBe("ok");
+    if (live.kind !== "ok") throw new Error("expected live session");
+
+    const listed = await listSessionsForUser(db, {
+      userId,
+      nowMs: NOW_MS,
+      currentSessionId: live.sessionId,
+    });
+    expect(listed.sessions).toHaveLength(2);
+    expect(listed.session_cap_warning).toBeNull();
+    expect(listed.sessions.find((row) => row.id === sessionId)).toMatchObject({
+      usable: false,
+      revoked_at_ms: null,
+      current: false,
+    });
+    expect(listed.sessions.find((row) => row.id === live.sessionId)).toMatchObject({
+      usable: true,
+      revoked_at_ms: null,
+      current: true,
+    });
   });
 
   it("refreshes authenticated_at_ms on the same row", async () => {
