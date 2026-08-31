@@ -212,6 +212,22 @@ describe("diffNeighbourhood", () => {
     expect(flags).not.toContain("stale_connection");
   });
 
+  it("flags connection_below_floor when a still-ready cited reading leaves the floored neighbourhood", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "was related" }],
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_b", score: SIMILARITY_FLOOR - 0.01 },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual(["connection_below_floor"]);
+  });
+
   it("flags new_neighbour when an uncited floored neighbour postdates judged_at", () => {
     const flags = diffNeighbourhood(
       row({
@@ -238,6 +254,49 @@ describe("diffNeighbourhood", () => {
     expect(flags).not.toContain("new_neighbour");
   });
 
+  it("flags uncited_neighbour when an older reading later enters the floored neighbourhood", () => {
+    const flags = diffNeighbourhood(
+      row({ connections: [], novelty_verdict: "familiar" }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_c", score: SIMILARITY_FLOOR + 0.01, created_at: EARLIER },
+      ],
+      readyList,
+      AT,
+    );
+
+    expect(flags).toEqual(["uncited_neighbour"]);
+  });
+
+  it("does not flag a later refresh after connections match the current floored ready-neighbourhood", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_c", reason: "now judged" }],
+        novelty_verdict: "familiar",
+        connections_computed_at: LATER,
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_c", score: SIMILARITY_FLOOR + 0.01, created_at: EARLIER },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual([]);
+  });
+
+  it("excludes non-ready vector matches from the current floored neighbourhood", () => {
+    const flags = diffNeighbourhood(
+      row({ connections: [], novelty_verdict: "novel" }),
+      [{ id: "rd_a", score: 1 }, { id: "rd_failed", score: 0.9, created_at: LATER }],
+      [...readyList, { id: "rd_failed", status: "failed", created_at: LATER }],
+      AT,
+    );
+
+    expect(flags).toEqual([]);
+  });
+
   it("does not flag new_neighbour when the new neighbour is already cited", () => {
     const flags = diffNeighbourhood(
       row({
@@ -258,7 +317,7 @@ describe("diffNeighbourhood", () => {
         novelty_verdict: "familiar",
       }),
       [{ id: "rd_a", score: 1 }, { id: "rd_unknown", score: 0.8 }],
-      readyList,
+      [...readyList, { id: "rd_unknown", status: "ready" }],
       AT,
     );
     expect(flags).toContain("new_neighbour");

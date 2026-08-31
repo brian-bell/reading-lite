@@ -10,7 +10,9 @@ import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
 
 const RefreshFlagSchema = z.enum([
   "stale_connection",
+  "connection_below_floor",
   "new_neighbour",
+  "uncited_neighbour",
   "verdict_inconsistent",
 ]);
 

@@ -276,7 +276,14 @@ and a failed one preserves the ready manifest with
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later
-judgement slices. Plan mode does not mutate R2. `--execute` rewrites only
+judgement slices. The report compares stored connection IDs with the current
+floored ready-neighbourhood. It distinguishes missing or non-ready citations
+(`stale_connection`), still-ready citations that fell below the floor
+(`connection_below_floor`), uncited neighbours created after the last judgement
+(`new_neighbour`), and older uncited neighbours that now clear the floor
+(`uncited_neighbour`). This catches both sides of every membership change while
+retaining `connections_computed_at` as the preferred judgement timestamp. Plan
+mode does not mutate R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
 the same class of write `rebuild-list` guards with `--sole-writer`. Do not

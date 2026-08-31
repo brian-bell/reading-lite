@@ -71,6 +71,19 @@ describe("refresh-connections report", () => {
     expect(parseRefreshConnectionsReport(report(), "global").readings).toHaveLength(1);
   });
 
+  it("accepts explicit membership-difference reasons", () => {
+    const membershipReport = report();
+    membershipReport.readings[0]!.reasons = [
+      "connection_below_floor",
+      "uncited_neighbour",
+    ];
+
+    expect(parseRefreshConnectionsReport(membershipReport, "global").readings[0]!.reasons).toEqual([
+      "connection_below_floor",
+      "uncited_neighbour",
+    ]);
+  });
+
   it("rejects tenant, floor, and duplicate-target mismatches", () => {
     expect(() => parseRefreshConnectionsReport(report(), "usr_other")).toThrow(/tenant/);
     expect(() =>

@@ -327,8 +327,10 @@ export const corpusRefreshNeighboursCommand: CommandDefinition<CorpusRefreshNeig
   helpText: `Usage: npm run ops -- corpus refresh-neighbours [rd_ID...] [options]
 
 Queries Vectorize with each ready reading's stored vector (no embedding calls)
-and diffs the current floored neighbourhood against stored connections and
-novelty_verdict. Prints the staleness inventory and always writes
+and diffs the current floored ready-neighbourhood against stored connections
+and novelty_verdict. The report distinguishes missing or non-ready citations,
+ready citations below the floor, new uncited neighbours, and older uncited
+neighbours. Prints the staleness inventory and always writes
 refresh-report.json — the input contract for later judgement slices.
 
 --execute rewrites only drifted manifest.similarity snapshots (count change or

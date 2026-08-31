@@ -28,7 +28,12 @@ import {
 // first full production run.
 export const SNAPSHOT_CHANGE_EPSILON = 0.02;
 
-export type RefreshFlag = "stale_connection" | "new_neighbour" | "verdict_inconsistent";
+export type RefreshFlag =
+  | "stale_connection"
+  | "connection_below_floor"
+  | "new_neighbour"
+  | "uncited_neighbour"
+  | "verdict_inconsistent";
 
 export type JudgedAtSource = "connections_computed_at" | "last_attempt" | "updated_at";
 
@@ -169,17 +174,23 @@ export function diffNeighbourhood(
 ): RefreshFlag[] {
   const readyIds = new Set(list.filter((row) => row.status === "ready").map((row) => row.id));
   const createdAtById = createdAtMap(list);
-  const related = flooredNeighbours(reading.id, currentMatches);
+  const related = readyFlooredNeighbours(reading.id, currentMatches, readyIds);
   const cited = citedIds(reading.connections);
+  const relatedIds = new Set(related.map((neighbour) => neighbour.id));
   const flags: RefreshFlag[] = [];
 
   if (staleCitationIds(reading, readyIds).length > 0) {
     flags.push("stale_connection");
   }
 
+  const hasConnectionBelowFloor = storedConnections(reading.connections).some(
+    (connection) => readyIds.has(connection.id) && !relatedIds.has(connection.id),
+  );
+  if (hasConnectionBelowFloor) flags.push("connection_below_floor");
+
   const judgedMs = isTimestamp(judgedAt) ? Date.parse(judgedAt) : undefined;
-  const hasNew = related.some((neighbour) => {
-    if (cited.has(neighbour.id)) return false;
+  const uncited = related.filter((neighbour) => !cited.has(neighbour.id));
+  const isNewNeighbour = (neighbour: RefreshNeighbour): boolean => {
     const createdAt = resolveNeighbourCreatedAt(neighbour, createdAtById);
     // No resolvable timestamp → treat as new (conservative: one extra tier-2
     // call, never hides drift). Missing judgedAt is the same stance: we cannot
@@ -188,8 +199,11 @@ export function diffNeighbourhood(
     const createdMs = Date.parse(createdAt);
     if (!Number.isFinite(createdMs)) return true;
     return createdMs > judgedMs;
-  });
-  if (hasNew) flags.push("new_neighbour");
+  };
+  if (uncited.some(isNewNeighbour)) flags.push("new_neighbour");
+  if (uncited.some((neighbour) => !isNewNeighbour(neighbour))) {
+    flags.push("uncited_neighbour");
+  }
 
   if (verdictInconsistent(reading.novelty_verdict, related.length > 0)) {
     flags.push("verdict_inconsistent");
@@ -206,8 +220,9 @@ export function buildReportReading(
   judged: JudgedAt,
 ): RefreshReportReading {
   const createdAtById = createdAtMap(list);
+  const readyIds = new Set(list.filter((row) => row.status === "ready").map((row) => row.id));
   const connections = storedConnections(reading.connections);
-  const current_neighbours = flooredNeighbours(reading.id, currentMatches).map((neighbour) => {
+  const current_neighbours = readyFlooredNeighbours(reading.id, currentMatches, readyIds).map((neighbour) => {
     const created_at = resolveNeighbourCreatedAt(neighbour, createdAtById);
     const out: RefreshReportNeighbour = { id: neighbour.id, score: neighbour.score };
     if (neighbour.title !== undefined) out.title = neighbour.title;
@@ -275,6 +290,14 @@ function storedConnections(raw: unknown): RefreshConnection[] {
 
 function citedIds(raw: unknown): Set<string> {
   return new Set(storedConnections(raw).map((c) => c.id));
+}
+
+function readyFlooredNeighbours(
+  id: string,
+  matches: RefreshNeighbour[],
+  readyIds: ReadonlySet<string>,
+): RefreshNeighbour[] {
+  return flooredNeighbours(id, matches).filter((neighbour) => readyIds.has(neighbour.id));
 }
 
 function staleCitationIds(reading: RefreshRow, readyIds: Set<string>): string[] {
