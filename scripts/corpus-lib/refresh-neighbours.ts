@@ -297,8 +297,7 @@ function readyFlooredNeighbours(
   matches: RefreshNeighbour[],
   readyIds: ReadonlySet<string>,
 ): RefreshNeighbour[] {
-  const readyMatches = matches.filter((neighbour) => readyIds.has(neighbour.id));
-  return aboveFloor(excludeSelf(readyMatches, id, SIMILAR_TOP_K), SIMILARITY_FLOOR);
+  return flooredNeighbours(id, matches).filter((neighbour) => readyIds.has(neighbour.id));
 }
 
 function staleCitationIds(reading: RefreshRow, readyIds: Set<string>): string[] {

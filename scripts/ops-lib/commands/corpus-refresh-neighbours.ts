@@ -28,16 +28,11 @@ import {
   type RefreshRow,
 } from "../../corpus-lib/refresh-neighbours";
 import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-similarity";
-import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-
-// Wrangler and Vectorize cap topK at 50. Use the full window so retained
-// vectors for failed or deleted rows cannot crowd ready readings out before
-// the producer applies its ready-only top-five limit.
-const REFRESH_QUERY_TOP_K = 50;
 
 export interface CorpusRefreshNeighboursR2 {
   readListIndex: (deps: R2Deps) => Promise<RefreshRow[]>;
@@ -174,7 +169,7 @@ async function runCorpusRefreshNeighbours(
         matches = await r2.queryByVectorId(
           vectorizeIndex,
           tenantVectorId(tenant.namespace, t.id),
-          REFRESH_QUERY_TOP_K,
+          SIMILAR_TOP_K + 1,
           tenant.namespace,
         );
       } catch (e) {
