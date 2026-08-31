@@ -125,19 +125,28 @@ npm run ops -- deploy worker --env production --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
-Merges to `main` also run `.github/workflows/deploy-worker.yml`: Worker
-typecheck + test, then the same `ops deploy worker --env production --execute`
-(pending remote D1 migrations, then upload). `workflow_dispatch` re-runs that
-path without a merge. The SPA is not part of it (`ops deploy web` stays
-operator-driven), and the workflow does not pass `--var`. `TENANT_DATA_PLANE`
-is pinned in `[env.production.vars]`, so this path keeps the gate on; only
-removing the pin rolls it off (see `docs/founder-cutover.md`).
+Merges to `main` start one coordinated production chain. After `.github/workflows/ci.yml`
+succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
+and runs `ops deploy worker --env production --execute` (pending remote D1
+migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
+pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
+the pin rolls it off (see `docs/founder-cutover.md`).
+
+After the Worker release succeeds, it publishes the released commit SHA for
+`.github/workflows/deploy-spa.yml`. The SPA workflow validates and checks out
+that SHA, installs both lockfiles with `npm ci`, then runs
+`ops deploy web --branch main --execute` to build `web/` and deploy `web/dist`
+to the production Pages branch. Both release stages refuse to deploy if `main`
+has advanced at the deployment boundary, and one shared non-cancelling lock
+serializes Worker and SPA production commands. An older run therefore cannot
+overwrite a newer production release. Neither release workflow has a manual
+trigger that can bypass the chain.
 
 GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Use the Edit Cloudflare Workers template, scoped to this account; include D1 Edit and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. Scope the token to this account and zone. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 
 The imported founder token expires after 90 days; re-running the same

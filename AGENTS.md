@@ -116,11 +116,14 @@ matrix, not a substitute for real readings.
   are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
   hard-coded to staging names. Staging same-origin host is
   `reading-lite-staging.bbell.dev` (Pages + Worker `/api/*`, `/health`, `/mcp*`).
-- Merges to `main` deploy the production Worker via
+- Merges to `main` run CI, then deploy that exact commit's production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
-  --execute`, which applies pending remote D1 migrations then uploads). GitHub
-  secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. The SPA is not
-  auto-deployed.
+  --execute`, which applies pending remote D1 migrations then uploads). After
+  that succeeds, `.github/workflows/deploy-spa.yml` deploys the same commit's
+  SPA through `ops deploy web --branch main --execute`. A shared production
+  release lock serializes both workflows, and each rechecks for a stale commit
+  immediately before its deploy command. GitHub secrets:
+  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `X_API_BEARER_TOKEN` only for

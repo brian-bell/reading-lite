@@ -1,0 +1,82 @@
+# Deploy the production SPA after the Worker release succeeds. The Worker run's
+# release artifact pins this upload to the same tested and released main SHA.
+
+name: Deploy production SPA
+
+on:
+  workflow_run:
+    workflows: [Deploy production worker]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://reading-lite.bbell.dev
+    steps:
+      - name: Download the released Worker SHA
+        uses: actions/download-artifact@v7
+        with:
+          name: production-worker-release-sha
+          path: .release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Validate the released Worker SHA
+        id: release
+        run: |
+          release_sha="$(tr -d '\r\n' < .release/sha)"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "invalid production Worker release SHA"
+            exit 1
+          }
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Install deployment dependencies
+        run: npm ci
+      - name: Install SPA dependencies
+        working-directory: web
+        run: npm ci
+      - name: Require Cloudflare deploy secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "missing secret CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "missing secret CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+      - name: Build and deploy production SPA
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "${{ steps.release.outputs.sha }}" || {
+            echo "refusing stale SPA release: main advanced past ${{ steps.release.outputs.sha }}"
+            exit 1
+          }
+          npm run ops -- deploy web --branch main --execute
