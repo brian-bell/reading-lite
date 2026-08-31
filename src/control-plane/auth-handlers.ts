@@ -505,21 +505,27 @@ export async function restoreLiveChallenges(
     );
     if (revokedNew.changes === 0) return;
 
-    const meta = await db.first<{ email_canonical: string; purpose: string; user_id: string | null }>(
-      `SELECT email_canonical, purpose, user_id FROM auth_challenges WHERE id = ?`,
+    const meta = await db.first<{ email_canonical: string; purpose: string }>(
+      `SELECT email_canonical, purpose FROM auth_challenges WHERE id = ?`,
       newChallengeId,
     );
     if (!meta) return;
-    const scope = liveChallengeScope({
-      emailCanonical: meta.email_canonical,
-      purpose: meta.purpose,
-      userId: meta.user_id,
-    });
+
+    if (meta.purpose === EMAIL_CHANGE_PURPOSE) {
+      // Restore every unused row this issue() revoked (snapshot set), not one
+      // newest marked row in the target-email OR caller-user union.
+      for (const row of snapshot) {
+        if (row.id === newChallengeId) continue;
+        await restoreUnusedRevokedChallenge(db, row.id);
+      }
+      return;
+    }
 
     const otherLive = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE ${scope.clause} AND state IN ('issued', 'claimed') AND id != ?`,
-      ...scope.params,
+       WHERE email_canonical = ? AND purpose = ? AND state IN ('issued', 'claimed') AND id != ?`,
+      meta.email_canonical,
+      meta.purpose,
       newChallengeId,
     );
     if (otherLive) return;
@@ -530,11 +536,12 @@ export async function restoreLiveChallenges(
 
     const newestMarked = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE ${scope.clause} AND id != ?
+       WHERE email_canonical = ? AND purpose = ? AND id != ?
          AND (mail_sent_at_ms IS NOT NULL OR claim_id IS NOT NULL)
        ORDER BY rowid DESC
        LIMIT 1`,
-      ...scope.params,
+      meta.email_canonical,
+      meta.purpose,
       newChallengeId,
     );
     if (newestMarked) {
@@ -556,14 +563,16 @@ export async function restoreLiveChallenges(
     // Restore the unused predecessor this issue actually revoked.
     const revokedPredecessor = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
-       WHERE ${scope.clause}
+       WHERE email_canonical = ?
+         AND purpose = ?
          AND id != ?
          AND state = 'revoked'
          AND claim_id IS NULL
          AND consumed_at_ms IS NULL
        ORDER BY rowid DESC
        LIMIT 1`,
-      ...scope.params,
+      meta.email_canonical,
+      meta.purpose,
       newChallengeId,
     );
     if (revokedPredecessor) await restoreUnusedRevokedChallenge(db, revokedPredecessor.id);

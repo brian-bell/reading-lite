@@ -308,4 +308,75 @@ describe("verified email change", () => {
     expect(restored.res.status).toBe(200);
     expect((await restored.res.json() as { email: string }).email).toBe("address-a@test.example");
   });
+
+  it("restores the caller's previous link without stealing another user's live target", async () => {
+    const caller = await redeemUser("snapshot-caller@test.example", "clm_snap_caller");
+    const other = await redeemUser("snapshot-other@test.example", "clm_snap_other");
+
+    const toA = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: caller.cookie,
+      csrf: caller.csrf,
+      body: { email: "snap-a@test.example" },
+    });
+    expect(toA.sent).toHaveLength(1);
+    const credentialA = credentialFrom(toA.sent[0]!.verifyUrl);
+
+    const otherB = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { email: "snap-b@test.example" },
+    });
+    expect(otherB.sent).toHaveLength(1);
+    const credentialOtherB = credentialFrom(otherB.sent[0]!.verifyUrl);
+
+    const callerB = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: caller.cookie,
+      csrf: caller.csrf,
+      body: { email: "snap-b@test.example" },
+      sendMagicLink: async () => {
+        throw new Error("resend 400");
+      },
+    });
+    expect(callerB.res.status).toBe(200);
+    expect(callerB.sent).toHaveLength(0);
+
+    const workerEnv = env as unknown as Env;
+    const rows = await workerEnv.CONTROL_PLANE.prepare(
+      `SELECT email_canonical, user_id, state FROM auth_challenges
+       WHERE purpose = 'email_change'
+       ORDER BY issued_at_ms`,
+    ).all<{ email_canonical: string; user_id: string; state: string }>();
+    expect(rows.results).toEqual([
+      { email_canonical: "snap-a@test.example", user_id: caller.userId, state: "issued" },
+      { email_canonical: "snap-b@test.example", user_id: other.userId, state: "issued" },
+      { email_canonical: "snap-b@test.example", user_id: caller.userId, state: "revoked" },
+    ]);
+
+    const restoredA = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: caller.cookie,
+      csrf: caller.csrf,
+      body: { credential: credentialA, redemption_id: "clm_snap_restore_a" },
+    });
+    expect(restoredA.res.status).toBe(200);
+
+    const restoredOtherB = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { credential: credentialOtherB, redemption_id: "clm_snap_restore_other_b" },
+    });
+    expect(restoredOtherB.res.status).toBe(200);
+
+    const callerFailedB = await workerEnv.CONTROL_PLANE.prepare(
+      `SELECT state FROM auth_challenges
+       WHERE purpose = 'email_change' AND user_id = ? AND email_canonical = ?`,
+    )
+      .bind(caller.userId, "snap-b@test.example")
+      .first<{ state: string }>();
+    expect(callerFailedB?.state).toBe("revoked");
+  });
 });
