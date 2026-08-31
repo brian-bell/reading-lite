@@ -286,8 +286,9 @@ candidate ID set in `connections_neighbourhood_ids`, including candidates the
 judge rejected. Later refreshes compare against that baseline, so a rejected
 candidate is not billed again while the same candidate set remains. A newly
 present older candidate is evidence that the neighbourhood changed after the
-judgement and receives `uncited_neighbour`. The producer preserves live
-ingestion's selection order: raw
+judgement and receives `uncited_neighbour`. This baseline tracks ID membership;
+reprocessing the same candidate ID is not a membership change. The producer
+preserves live ingestion's selection order: raw
 Vectorize top five, similarity floor, then ready-ID intersection. It does not
 fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
 R2. `--execute` rewrites only
