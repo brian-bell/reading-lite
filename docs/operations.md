@@ -281,9 +281,16 @@ floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`stale_connection`), still-ready citations that fell below the floor
 (`connection_below_floor`), uncited neighbours created after the last judgement
 (`new_neighbour`), and older uncited neighbours that now clear the floor
-(`uncited_neighbour`). This catches both sides of every membership change while
-retaining `connections_computed_at` as the preferred judgement timestamp. Plan
-mode does not mutate R2. `--execute` rewrites only
+(`uncited_neighbour`). A successful relationship judgement stores the full
+candidate ID set in `connections_neighbourhood_ids`, including candidates the
+judge rejected. Later refreshes compare against that baseline, so a rejected
+candidate is not billed again while the same candidate set remains. A newly
+present older candidate is evidence that the neighbourhood changed after the
+judgement and receives `uncited_neighbour`. The producer preserves live
+ingestion's selection order: raw
+Vectorize top five, similarity floor, then ready-ID intersection. It does not
+fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
+R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
 the same class of write `rebuild-list` guards with `--sole-writer`. Do not

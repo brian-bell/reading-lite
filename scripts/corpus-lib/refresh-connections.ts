@@ -195,6 +195,7 @@ export function mergeRelationshipJudgement(
     connections,
     novelty_verdict: judgement.novelty_verdict,
     connections_computed_at: computedAt,
+    connections_neighbourhood_ids: [...allowedIds],
   };
   const parsed = ManifestSchema.safeParse(candidate);
   if (!parsed.success) {

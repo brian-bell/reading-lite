@@ -268,6 +268,44 @@ describe("diffNeighbourhood", () => {
     expect(flags).toEqual(["uncited_neighbour"]);
   });
 
+  it("does not reflag an older candidate that the latest judgement considered and omitted", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [],
+        connections_computed_at: LATER,
+        connections_neighbourhood_ids: ["rd_c"],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_c", score: SIMILARITY_FLOOR + 0.01, created_at: EARLIER },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual([]);
+  });
+
+  it("reflags an older uncited candidate after it enters the judged neighbourhood", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [],
+        connections_computed_at: LATER,
+        connections_neighbourhood_ids: [],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_c", score: SIMILARITY_FLOOR + 0.01, created_at: EARLIER },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual(["uncited_neighbour"]);
+  });
+
   it("does not flag a later refresh after connections match the current floored ready-neighbourhood", () => {
     const flags = diffNeighbourhood(
       row({
@@ -295,6 +333,31 @@ describe("diffNeighbourhood", () => {
     );
 
     expect(flags).toEqual([]);
+  });
+
+  it("takes the raw top five before intersecting ready IDs", () => {
+    const failedMatches = Array.from({ length: 5 }, (_, index) => ({
+      id: `rd_failed_${index}`,
+      score: 0.9 - index * 0.01,
+    }));
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "ranked below the raw top five" }],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        ...failedMatches,
+        { id: "rd_b", score: SIMILARITY_FLOOR + 0.01 },
+      ],
+      [
+        ...readyList,
+        ...failedMatches.map((match) => ({ id: match.id, status: "failed" })),
+      ],
+      LATER,
+    );
+
+    expect(flags).toEqual(["connection_below_floor", "verdict_inconsistent"]);
   });
 
   it("does not flag new_neighbour when the new neighbour is already cited", () => {

@@ -219,6 +219,7 @@ binding = "READING_JOBS"
       novelty_verdict: "familiar",
       connections: [{ id: "rd_b", reason: "related" }],
       connections_computed_at: JUDGED_AT,
+      connections_neighbourhood_ids: ["rd_b"],
       updated_at: "2026-01-01T00:00:00.000Z",
       future_field: { keep: "rd_a" },
     });

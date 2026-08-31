@@ -63,6 +63,7 @@ export interface RefreshRow {
   tensions?: { id: string }[];
   similarity?: SimilaritySnapshot;
   connections_computed_at?: string;
+  connections_neighbourhood_ids?: string[];
   last_attempt?: { status?: string; finished_at?: string; stage?: string; trigger?: string };
 }
 
@@ -189,6 +190,8 @@ export function diffNeighbourhood(
   if (hasConnectionBelowFloor) flags.push("connection_below_floor");
 
   const judgedMs = isTimestamp(judgedAt) ? Date.parse(judgedAt) : undefined;
+  const judgedNeighbourhood = new Set(reading.connections_neighbourhood_ids ?? []);
+  const hasJudgedNeighbourhood = reading.connections_neighbourhood_ids !== undefined;
   const uncited = related.filter((neighbour) => !cited.has(neighbour.id));
   const isNewNeighbour = (neighbour: RefreshNeighbour): boolean => {
     const createdAt = resolveNeighbourCreatedAt(neighbour, createdAtById);
@@ -201,7 +204,13 @@ export function diffNeighbourhood(
     return createdMs > judgedMs;
   };
   if (uncited.some(isNewNeighbour)) flags.push("new_neighbour");
-  if (uncited.some((neighbour) => !isNewNeighbour(neighbour))) {
+  if (
+    uncited.some(
+      (neighbour) =>
+        !isNewNeighbour(neighbour) &&
+        (!hasJudgedNeighbourhood || !judgedNeighbourhood.has(neighbour.id)),
+    )
+  ) {
     flags.push("uncited_neighbour");
   }
 

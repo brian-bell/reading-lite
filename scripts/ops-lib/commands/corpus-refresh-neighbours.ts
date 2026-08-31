@@ -330,7 +330,8 @@ Queries Vectorize with each ready reading's stored vector (no embedding calls)
 and diffs the current floored ready-neighbourhood against stored connections
 and novelty_verdict. The report distinguishes missing or non-ready citations,
 ready citations below the floor, new uncited neighbours, and older uncited
-neighbours. Prints the staleness inventory and always writes
+neighbours that entered since the latest relationship judgement. Prints the
+staleness inventory and always writes
 refresh-report.json — the input contract for later judgement slices.
 
 --execute rewrites only drifted manifest.similarity snapshots (count change or

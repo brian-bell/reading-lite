@@ -157,6 +157,7 @@ describe("mergeRelationshipJudgement", () => {
     expect(out.ok).toBe(true);
     if (out.ok) {
       expect(out.manifest.connections).toEqual([{ id: "rd_c", reason: "new" }]);
+      expect(out.manifest.connections_neighbourhood_ids).toEqual(["rd_b", "rd_c"]);
     }
   });
 
@@ -193,12 +194,14 @@ describe("mergeRelationshipJudgement", () => {
     if (!out.ok) return;
     const {
       connections: _beforeConnections,
+      connections_neighbourhood_ids: _beforeNeighbourhood,
       novelty_verdict: _beforeVerdict,
       connections_computed_at: _beforeAt,
       ...beforeRest
     } = before;
     const {
       connections: _afterConnections,
+      connections_neighbourhood_ids: _afterNeighbourhood,
       novelty_verdict: _afterVerdict,
       connections_computed_at: _afterAt,
       ...afterRest
@@ -220,6 +223,29 @@ describe("mergeRelationshipJudgement", () => {
     );
     expect(out.ok).toBe(true);
     if (!out.ok) return;
+    expect(
+      diffNeighbourhood(
+        out.manifest as never,
+        [{ id: "rd_b", score: 0.9, created_at: "2026-01-02T00:00:00.000Z" }],
+        [
+          { id: "rd_a", status: "ready", created_at: "2026-01-01T00:00:00.000Z" },
+          { id: "rd_b", status: "ready", created_at: "2026-01-02T00:00:00.000Z" },
+        ],
+        LATER,
+      ),
+    ).toEqual([]);
+  });
+
+  it("records rejected candidates so the next diff does not repay for them", () => {
+    const out = mergeRelationshipJudgement(
+      manifest(),
+      { novelty_verdict: "familiar", connections: [] },
+      new Set(["rd_b"]),
+      LATER,
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.manifest.connections_neighbourhood_ids).toEqual(["rd_b"]);
     expect(
       diffNeighbourhood(
         out.manifest as never,
