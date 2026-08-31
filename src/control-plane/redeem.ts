@@ -1,8 +1,7 @@
 import { EMAIL_CHANGE_PURPOSE, LOGIN_PURPOSE, REDEMPTION_ID_RE } from "./constants";
-import { revokeAllApiTokensForUser } from "./authenticate";
 import { parseCredential, type RandomBytes } from "./credential";
 import type { AuthRoot } from "./crypto";
-import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
+import { isUniqueConstraintError, type ControlPlaneDb, type SqlStatement } from "./db";
 import { resolveLoginEligibility } from "./eligibility";
 import { matchSecretHmac } from "./hmac-match";
 import { parseChallengeId, parseSessionId, parseUserId, type SessionId, type UserId, type UuidSource } from "./ids";
@@ -11,7 +10,6 @@ import {
   ensureUserWithDefaults,
   issueSessionForClaim,
   refreshSessionAuthenticatedAt,
-  revokeOtherSessionsForUser,
   sessionExistsForClaim,
 } from "./sessions";
 
@@ -247,21 +245,68 @@ async function completeEmailChange(
     };
   }
 
-  try {
-    const swapped = await db.run(
-      `UPDATE users
-       SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ?
-       WHERE id = ? AND status = 'active'`,
-      challenge.email_canonical,
-      challenge.email_display,
-      input.nowMs,
-      input.nowMs,
+  const alreadySwapped = user.email_canonical === challenge.email_canonical;
+  const oldEmailCanonical = user.email_canonical;
+  const oldEmailDisplay = user.email_display;
+
+  const revokeSessions: SqlStatement = confirmingSessionId
+    ? {
+        sql: `UPDATE sessions
+              SET revoked_at_ms = ?, revocation_reason = ?
+              WHERE user_id = ? AND revoked_at_ms IS NULL AND id != ?`,
+        params: [input.nowMs, "email_change", userId, confirmingSessionId],
+      }
+    : {
+        sql: `UPDATE sessions
+              SET revoked_at_ms = ?, revocation_reason = ?
+              WHERE user_id = ? AND revoked_at_ms IS NULL`,
+        params: [input.nowMs, "email_change", userId],
+      };
+  const revokeTokens: SqlStatement = {
+    sql: `UPDATE api_tokens SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL`,
+    params: [input.nowMs, userId],
+  };
+  const consume: SqlStatement = {
+    sql: `UPDATE auth_challenges
+          SET state = 'consumed',
+              consumed_at_ms = COALESCE(consumed_at_ms, ?),
+              completed_user_id = ?,
+              completed_session_id = ?
+          WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
+    params: [input.nowMs, userId, confirmingSessionId, challenge.id, input.redemptionId],
+  };
+
+  // Crash after swap but before consume: retry sees the new canonical, must not
+  // notify that inbox. Skip swap+mail and only finish revoke/consume.
+  if (alreadySwapped) {
+    await db.batch([revokeSessions, revokeTokens, consume]);
+    return {
+      kind: "ok",
       userId,
-    );
-    if (swapped.changes === 0) {
-      await burnEmailChangeChallenge(db, challenge.id);
-      return { kind: "forbidden" };
-    }
+      sessionId: confirmingSessionId,
+      credential: null,
+      emailDisplay: challenge.email_display,
+    };
+  }
+
+  try {
+    await db.batch([
+      {
+        sql: `UPDATE users
+              SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ?
+              WHERE id = ? AND status = 'active'`,
+        params: [
+          challenge.email_canonical,
+          challenge.email_display,
+          input.nowMs,
+          input.nowMs,
+          userId,
+        ],
+      },
+      revokeSessions,
+      revokeTokens,
+      consume,
+    ]);
   } catch (err) {
     if (isUniqueConstraintError(err)) {
       await burnEmailChangeChallenge(db, challenge.id);
@@ -270,28 +315,6 @@ async function completeEmailChange(
     throw err;
   }
 
-  await revokeOtherSessionsForUser(db, {
-    userId,
-    ...(confirmingSessionId ? { exceptSessionId: confirmingSessionId } : {}),
-    nowMs: input.nowMs,
-    reason: "email_change",
-  });
-  await revokeAllApiTokensForUser(db, { userId, nowMs: input.nowMs });
-
-  await db.run(
-    `UPDATE auth_challenges
-     SET state = 'consumed',
-         consumed_at_ms = COALESCE(consumed_at_ms, ?),
-         completed_user_id = ?,
-         completed_session_id = ?
-     WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
-    input.nowMs,
-    userId,
-    confirmingSessionId,
-    challenge.id,
-    input.redemptionId,
-  );
-
   return {
     kind: "ok",
     userId,
@@ -299,8 +322,8 @@ async function completeEmailChange(
     credential: null,
     emailDisplay: challenge.email_display,
     securityNotify: {
-      emailCanonical: user.email_canonical,
-      emailDisplay: user.email_display,
+      emailCanonical: oldEmailCanonical,
+      emailDisplay: oldEmailDisplay,
       kind: "email_changed",
     },
   };

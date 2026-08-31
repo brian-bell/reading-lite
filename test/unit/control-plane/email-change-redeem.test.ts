@@ -222,6 +222,103 @@ describe("email-change redeem", () => {
     expect(user.email_canonical).toBe("founder@example.com");
   });
 
+  it("does not notify the new inbox when swap already applied but consume did not stick", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await loginFounder(db, "clm_partial_keep");
+    const otherLogin = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(otherLogin.kind).toBe("issued");
+    if (otherLogin.kind !== "issued") return;
+    const second = await redeemLoginChallenge(db, {
+      credential: otherLogin.credential,
+      redemptionId: "clm_partial_other",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "other",
+    });
+    expect(second.kind).toBe("ok");
+    if (second.kind !== "ok" || !second.credential) return;
+
+    const change = await issueEmailChangeChallenge(db, {
+      emailCanonical: "new@example.com",
+      emailDisplay: "New@example.com",
+      userId: FOUNDER_ID,
+      nowMs: NOW_MS + 4,
+      authRoot,
+    });
+    expect(change.kind).toBe("issued");
+    if (change.kind !== "issued") return;
+    sqlite
+      .prepare(
+        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
+      )
+      .run("clm_partial", NOW_MS + 5, change.challengeId);
+    sqlite
+      .prepare(
+        `UPDATE users SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ? WHERE id = ?`,
+      )
+      .run("new@example.com", "New@example.com", NOW_MS + 5, NOW_MS + 5, FOUNDER_ID);
+
+    const retry = await redeemLoginChallenge(db, {
+      credential: change.credential,
+      redemptionId: "clm_partial",
+      nowMs: NOW_MS + 6,
+      authRoot,
+      userAgentLabel: "confirm",
+      stepUpSessionId: first.sessionId!,
+    });
+    expect(retry.kind).toBe("ok");
+    if (retry.kind !== "ok") return;
+    expect(retry.securityNotify).toBeUndefined();
+    expect(retry.emailDisplay).toBe("New@example.com");
+    expect(
+      sqlite.prepare("SELECT state, consumed_at_ms FROM auth_challenges WHERE id = ?").get(change.challengeId),
+    ).toEqual({ state: "consumed", consumed_at_ms: NOW_MS + 6 });
+    expect(
+      sqlite.prepare("SELECT email_canonical, email_display FROM users WHERE id = ?").get(FOUNDER_ID),
+    ).toEqual({ email_canonical: "new@example.com", email_display: "New@example.com" });
+    expect(
+      sqlite.prepare("SELECT revoked_at_ms FROM sessions WHERE id = ?").get(first.sessionId),
+    ).toEqual({ revoked_at_ms: null });
+    expect(
+      sqlite.prepare("SELECT revocation_reason FROM sessions WHERE id = ?").get(second.sessionId),
+    ).toEqual({ revocation_reason: "email_change" });
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at_ms IS NULL").get(),
+    ).toEqual({ n: 0 });
+
+    const competitorId = await ensureUserWithDefaults(db, {
+      emailCanonical: "other@example.com",
+      emailDisplay: "other@example.com",
+      nowMs: NOW_MS + 7,
+      newUuid: () => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    const competing = await issueEmailChangeChallenge(db, {
+      emailCanonical: "new@example.com",
+      emailDisplay: "new@example.com",
+      userId: competitorId,
+      nowMs: NOW_MS + 8,
+      authRoot,
+    });
+    expect(competing.kind).toBe("issued");
+    if (competing.kind !== "issued") return;
+    const taken = await redeemLoginChallenge(db, {
+      credential: competing.credential,
+      redemptionId: "clm_partial_taken",
+      nowMs: NOW_MS + 9,
+      authRoot,
+      userAgentLabel: null,
+    });
+    expect(taken).toEqual({ kind: "conflict", reason: "email_taken" });
+    expect(
+      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(competitorId),
+    ).toEqual({ email_canonical: "other@example.com" });
+  });
+
   it("fail-closes when the new address is taken and on a uniqueness race", async () => {
     const { sqlite, db } = await seeded();
     const otherId = await ensureUserWithDefaults(db, {
@@ -320,22 +417,33 @@ function twoUpdateRaceDb(inner: ControlPlaneDb): ControlPlaneDb {
   let releaseFirst: (() => void) | undefined;
   let firstWaiting: Promise<void> | undefined;
 
+  async function gateUserEmailUpdate(): Promise<void> {
+    started += 1;
+    if (started === 1) {
+      firstWaiting = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      await firstWaiting;
+    } else if (started === 2) {
+      releaseFirst?.();
+    }
+  }
+
+  function isUserEmailUpdate(sql: string): boolean {
+    return /UPDATE users/i.test(sql) && /email_canonical/i.test(sql);
+  }
+
   return {
     first: (sql, ...params) => inner.first(sql, ...params),
     all: (sql, ...params) => inner.all(sql, ...params),
-    batch: (statements) => inner.batch(statements),
-    async run(sql, ...params) {
-      if (/UPDATE users/i.test(sql) && /email_canonical/i.test(sql)) {
-        started += 1;
-        if (started === 1) {
-          firstWaiting = new Promise<void>((resolve) => {
-            releaseFirst = resolve;
-          });
-          await firstWaiting;
-        } else if (started === 2) {
-          releaseFirst?.();
-        }
+    async batch(statements) {
+      if (statements.some((statement) => isUserEmailUpdate(statement.sql))) {
+        await gateUserEmailUpdate();
       }
+      return inner.batch(statements);
+    },
+    async run(sql, ...params) {
+      if (isUserEmailUpdate(sql)) await gateUserEmailUpdate();
       return inner.run(sql, ...params);
     },
   };
