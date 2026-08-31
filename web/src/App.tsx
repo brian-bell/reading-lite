@@ -54,6 +54,15 @@ type AppProps = {
 
 const pageSize = 20;
 
+function dropIdentityCaches(queryClient: QueryClient): void {
+  localStorage.removeItem("reading-lite.bearerToken");
+  queryClient.setQueryData(["whoami"], null);
+  queryClient.removeQueries({ queryKey: ["readings"] });
+  queryClient.removeQueries({ queryKey: ["reading"] });
+  queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
+  queryClient.removeQueries({ queryKey: ["sessions"] });
+}
+
 export function App({ initialPath }: AppProps) {
   useEffect(() => {
     localStorage.removeItem("reading-lite.bearerToken");
@@ -172,7 +181,7 @@ function AccountSecurityRoute({
   identityQuery: ReturnType<typeof useIdentity>;
 }) {
   const location = useLocation();
-  if (identity) return <AccountSecurityPage onSignedOut={() => identityQuery.refetch()} />;
+  if (identity) return <AccountSecurityPage identity={identity} onSignedOut={() => identityQuery.refetch()} />;
   if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
   if (identityQuery.isError) {
     return (
@@ -231,11 +240,7 @@ function IdentityBar({
         type="button"
         onClick={async () => {
           setBusy(true);
-          localStorage.removeItem("reading-lite.bearerToken");
-          queryClient.setQueryData(["whoami"], null);
-          queryClient.removeQueries({ queryKey: ["readings"] });
-          queryClient.removeQueries({ queryKey: ["reading"] });
-          queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
+          dropIdentityCaches(queryClient);
           try {
             await logoutSession();
           } catch {
@@ -257,19 +262,23 @@ function formatSessionTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
-function AccountSecurityPage({ onSignedOut }: { onSignedOut: () => void }) {
+function AccountSecurityPage({
+  identity,
+  onSignedOut
+}: {
+  identity: WhoamiResponse;
+  onSignedOut: () => void;
+}) {
   const queryClient = useQueryClient();
-  const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: listSessions });
+  const sessionsQuery = useQuery({
+    queryKey: ["sessions", identity.user_id],
+    queryFn: listSessions
+  });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function dropIdentity() {
-    localStorage.removeItem("reading-lite.bearerToken");
-    queryClient.setQueryData(["whoami"], null);
-    queryClient.removeQueries({ queryKey: ["readings"] });
-    queryClient.removeQueries({ queryKey: ["reading"] });
-    queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
-    queryClient.removeQueries({ queryKey: ["sessions"] });
+    dropIdentityCaches(queryClient);
     onSignedOut();
   }
 
@@ -466,6 +475,7 @@ function VerifyPage() {
               try {
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
+                queryClient.removeQueries({ queryKey: ["sessions"] });
                 await queryClient.cancelQueries({ queryKey: ["whoami"] });
                 await queryClient.resetQueries({ queryKey: ["whoami"] });
                 const whoami = await queryClient.fetchQuery({ queryKey: ["whoami"] });

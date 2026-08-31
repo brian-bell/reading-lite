@@ -1225,4 +1225,64 @@ describe("App", () => {
     expect(revokeAll).toBeDefined();
     expect((revokeAll![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
   });
+
+  it("does not show the previous account's sessions after logout then a later login", async () => {
+    const otherWhoami = {
+      tenant_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      user_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      principal: "session" as const,
+      tenant_data_plane: true,
+      email: "other@example.com",
+      csrf_token: "cd".repeat(32)
+    };
+    let identity: "a" | "b" = "a";
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (identity === "a") return jsonResponse(sessionWhoami);
+        return jsonResponse(otherWhoami);
+      }
+      if (url.pathname === "/api/auth/logout") {
+        identity = "b";
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        if (identity === "a") {
+          return jsonResponse({
+            sessions: [
+              {
+                id: "ses_11111111-1111-4111-8111-111111111111",
+                current: true,
+                created_at_ms: 1,
+                authenticated_at_ms: 1,
+                last_seen_at_ms: 1,
+                idle_expires_at_ms: 2,
+                absolute_expires_at_ms: 3,
+                revoked_at_ms: null,
+                revocation_reason: null,
+                user_agent_label: "Firefox"
+              }
+            ],
+            session_cap_warning: null
+          });
+        }
+        return jsonResponse({ error: "failed to list sessions" }, 500);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/Firefox \(this device\)/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+    expect(await screen.findByText("other@example.com")).toBeInTheDocument();
+    expect(screen.queryByText(/Firefox/)).not.toBeInTheDocument();
+    if (!screen.queryByRole("heading", { name: "Security" })) {
+      await user.click(screen.getByRole("link", { name: "Security" }));
+    }
+    expect(await screen.findByText("failed to list sessions")).toBeInTheDocument();
+    expect(screen.queryByText(/Firefox/)).not.toBeInTheDocument();
+  });
 });
