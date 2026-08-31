@@ -451,7 +451,7 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: "a",
     });
     expect(sessionA.kind).toBe("ok");
-    if (sessionA.kind !== "ok") return;
+    if (sessionA.kind !== "ok" || !sessionA.sessionId) return;
 
     const issuedB = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -469,7 +469,7 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: "b",
     });
     expect(sessionB.kind).toBe("ok");
-    if (sessionB.kind !== "ok") return;
+    if (sessionB.kind !== "ok" || !sessionB.sessionId) return;
     expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
 
     const issuedStep = await issueLoginChallenge(db, {
