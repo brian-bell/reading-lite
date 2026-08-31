@@ -112,7 +112,8 @@ const sessionWhoami = {
   user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
   principal: "session" as const,
   tenant_data_plane: true,
-  email: "reader@example.com"
+  email: "reader@example.com",
+  csrf_token: "ab".repeat(32)
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -345,6 +346,7 @@ describe("App", () => {
       });
       expect(logout).toBeDefined();
       expect((logout![0] as Request).credentials).toBe("include");
+      expect((logout![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
     });
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(window.localStorage.getItem("reading-lite.bearerToken")).toBeNull();
@@ -741,6 +743,7 @@ describe("App", () => {
         return req.method === "POST" && new URL(req.url).pathname === "/api/readings/rd_ONE/reprocess";
       });
       expect(post).toBeDefined();
+      expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
     });
   });
 
@@ -922,6 +925,7 @@ describe("App", () => {
     ) as [Request];
     const body = (await post[0].clone().json()) as { url: string };
     expect(body.url).toBe("https://example.com/new");
+    expect(post[0].headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
 
     // List query refetched after invalidation.
     expect(await screen.findByRole("link", { name: "New One" })).toBeInTheDocument();

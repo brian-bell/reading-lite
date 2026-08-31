@@ -63,6 +63,11 @@ export const GetWhoamiResponseSchema = z.object({
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
   email: z.string(),
+  // Session principals only. Bearer whoami must omit this field.
+  csrf_token: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
 });
 export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
 
@@ -85,6 +90,9 @@ export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
 // a mismatch with 412 before touching any store. Absent header = no pin
 // (existing clients are unaffected).
 export const EXPECTED_TENANT_HEADER = "x-expected-tenant";
+
+/** Session-bound CSRF HMAC. Required on cookie POST/DELETE; bearer is exempt. */
+export const CSRF_HEADER = "x-csrf-token";
 
 export const EMBEDDING_DIM = 1536;
 

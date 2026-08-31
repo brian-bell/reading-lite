@@ -32,6 +32,8 @@ import {
   jsonAuth,
   type AuthRuntime,
 } from "./control-plane/auth-handlers";
+import { readAuthRoots } from "./control-plane/auth-root";
+import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
 
 export interface AppOptions {
@@ -102,13 +104,25 @@ export function createApp(opts: AppOptions = {}) {
       "SELECT email_display FROM users WHERE id = ?",
       String(principal.userId),
     );
-    return c.json({
+    const body: {
+      tenant_id: string;
+      user_id: string;
+      principal: AuthenticatedPrincipal["kind"];
+      tenant_data_plane: boolean;
+      email: string;
+      csrf_token?: string;
+    } = {
       tenant_id: String(principal.tenantId),
       user_id: String(principal.userId),
       principal: principal.kind,
       tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
       email: user?.email_display ?? "",
-    });
+    };
+    if (principal.kind === "session") {
+      const roots = readAuthRoots(c.env);
+      body.csrf_token = await mintCsrfToken(roots.authRoot, principal.sessionId);
+    }
+    return c.json(body);
   });
 
   app.post("/api/readings", requireScope("readings:write"), async (c) => {

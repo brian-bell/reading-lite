@@ -5527,6 +5527,7 @@ describe("CORS", () => {
     );
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe("https://allowed.example");
+    expect(res.headers.get("access-control-allow-headers")).toBe("authorization, content-type");
   });
 
   it("rejects preflight from a non-allowed origin", async () => {

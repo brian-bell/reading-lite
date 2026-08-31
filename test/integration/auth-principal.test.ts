@@ -295,6 +295,7 @@ describe("GET /api/whoami", () => {
     expect(body.principal).toBe("api_token");
     // wrangler.test.toml runs the Workers pool with TENANT_DATA_PLANE=1.
     expect(body.tenant_data_plane).toBe(true);
+    expect("csrf_token" in body).toBe(false);
   });
 
   it("reports the data-plane gate off when TENANT_DATA_PLANE is unset", async () => {

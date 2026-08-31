@@ -242,5 +242,6 @@ export interface WhoamiResponse {
   principal: "api_token" | "session";
   tenant_data_plane: boolean;
   email: string;
+  csrf_token?: string;
 }
 

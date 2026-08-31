@@ -18,11 +18,24 @@ export class ApiError extends Error {
   }
 }
 
+const CSRF_HEADER = "x-csrf-token";
+let csrfToken: string | undefined;
+
+function rememberCsrfToken(token: string | undefined): void {
+  csrfToken = token && token !== "" ? token : undefined;
+}
+
 function jsonHeaders(extra?: Record<string, string>): Headers {
   const headers = new Headers({ "content-type": "application/json" });
   if (extra) {
     for (const [key, value] of Object.entries(extra)) headers.set(key, value);
   }
+  return headers;
+}
+
+function mutationHeaders(extra?: Record<string, string>): Headers {
+  const headers = jsonHeaders(extra);
+  if (csrfToken) headers.set(CSRF_HEADER, csrfToken);
   return headers;
 }
 
@@ -42,11 +55,16 @@ async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Re
 
 export async function getWhoami(): Promise<WhoamiResponse | null> {
   const response = await apiFetch(new URL("/api/whoami", window.location.origin));
-  if (response.status === 401 || response.status === 403) return null;
+  if (response.status === 401 || response.status === 403) {
+    rememberCsrfToken(undefined);
+    return null;
+  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to load identity"));
   }
-  return (await response.json()) as WhoamiResponse;
+  const body = (await response.json()) as WhoamiResponse;
+  rememberCsrfToken(body.csrf_token);
+  return body;
 }
 
 export async function requestLoginLink(email: string): Promise<void> {
@@ -75,14 +93,18 @@ export async function redeemLoginLink(credential: string, redemptionId: string):
 export async function logoutSession(): Promise<void> {
   const response = await apiFetch(new URL("/api/auth/logout", window.location.origin), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({})
   });
   // 401: session already gone; Worker still expires the host-only cookie.
-  if (response.status === 401) return;
+  if (response.status === 401) {
+    rememberCsrfToken(undefined);
+    return;
+  }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to log out"));
   }
+  rememberCsrfToken(undefined);
 }
 
 export type ListReadingsParams = {
@@ -139,7 +161,7 @@ export async function submitReading(url: string): Promise<SubmitReadingResponse 
   const target = new URL("/api/readings", window.location.origin);
   const response = await apiFetch(target, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({ url })
   });
   if (!response.ok) {
@@ -155,7 +177,7 @@ export async function reprocessReading(
   const target = new URL(`/api/readings/${encodeURIComponent(id)}/reprocess`, window.location.origin);
   const response = await apiFetch(target, {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify(body)
   });
   if (!response.ok) {

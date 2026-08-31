@@ -8,6 +8,7 @@ import {
   ListReadingsResponseSchema,
   ListIndexItemSchema,
   ListIndexSchema,
+  GetWhoamiResponseSchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -323,5 +324,29 @@ describe("ListIndexSchema", () => {
 
   it("rejects an unknown version", () => {
     expect(() => ListIndexSchema.parse({ version: 2, items: [] })).toThrow();
+  });
+});
+
+describe("GetWhoamiResponseSchema", () => {
+  const bearer = {
+    tenant_id: "usr_550e8400-e29b-41d4-a716-446655440000",
+    user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
+    principal: "api_token",
+    tenant_data_plane: true,
+    email: "founder@test.example",
+  };
+
+  it("accepts bearer identity without csrf_token", () => {
+    expect(GetWhoamiResponseSchema.parse(bearer)).toEqual(bearer);
+  });
+
+  it("accepts a session csrf_token and rejects a malformed one", () => {
+    const token = "ab".repeat(32);
+    expect(
+      GetWhoamiResponseSchema.parse({ ...bearer, principal: "session", csrf_token: token }),
+    ).toEqual({ ...bearer, principal: "session", csrf_token: token });
+    expect(() =>
+      GetWhoamiResponseSchema.parse({ ...bearer, principal: "session", csrf_token: "short" }),
+    ).toThrow();
   });
 });
