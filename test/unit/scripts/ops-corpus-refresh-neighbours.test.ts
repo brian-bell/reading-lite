@@ -65,7 +65,7 @@ function makeDeps(opts: {
 }) {
   const { io: cio, lines } = io();
   const calls = {
-    queries: [] as Array<{ id: string; namespace: string | undefined }>,
+    queries: [] as Array<{ id: string; topK: number; namespace: string | undefined }>,
     puts: [] as Array<{ key: string; body: Record<string, unknown> }>,
     indexWrites: 0,
     reports: [] as Array<{ path: string; body: string }>,
@@ -79,8 +79,8 @@ function makeDeps(opts: {
         if (opts.manifestThrow) throw new Error(opts.manifestThrow);
         return opts.manifest === undefined ? { ...VALID_MANIFEST } : opts.manifest;
       },
-      queryByVectorId: async (_index, id, _topK, namespace) => {
-        calls.queries.push({ id, namespace });
+      queryByVectorId: async (_index, id, topK, namespace) => {
+        calls.queries.push({ id, topK, namespace });
         const thrown = opts.queryThrow?.(id);
         if (thrown) throw thrown;
         if (opts.matches === null) return null;
@@ -254,7 +254,7 @@ describe("ops corpus refresh-neighbours", () => {
       deps,
     );
     expect(code).toBe(0);
-    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, namespace: tenantId }]);
+    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, topK: 50, namespace: tenantId }]);
     expect(calls.puts[0]!.body.similarity).toEqual({
       count: 1,
       max: 0.6,

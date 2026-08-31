@@ -228,6 +228,31 @@ describe("diffNeighbourhood", () => {
     expect(flags).toEqual(["connection_below_floor"]);
   });
 
+  it("does not let higher-scoring non-ready vectors crowd a ready citation out of the neighbourhood", () => {
+    const failedMatches = Array.from({ length: 6 }, (_, index) => ({
+      id: `rd_failed_${index}`,
+      score: 0.9 - index * 0.01,
+    }));
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "still related" }],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        ...failedMatches,
+        { id: "rd_b", score: SIMILARITY_FLOOR + 0.01 },
+      ],
+      [
+        ...readyList,
+        ...failedMatches.map((match) => ({ id: match.id, status: "failed" })),
+      ],
+      LATER,
+    );
+
+    expect(flags).toEqual([]);
+  });
+
   it("flags new_neighbour when an uncited floored neighbour postdates judged_at", () => {
     const flags = diffNeighbourhood(
       row({
