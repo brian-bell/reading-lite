@@ -624,6 +624,18 @@ describe("makeVectorizeClient — 429 backoff", () => {
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000]);
   });
 
+  it("clamps a long Retry-After hint to the 30s cap", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(throttled({ "retry-after": "3600" }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: [], success: true }), { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.getByIds(["rd_a"])).resolves.toEqual([]);
+    expect(sleep).toHaveBeenCalledWith(30_000);
+  });
+
   it("gives up after the retry budget and surfaces the 429", async () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => throttled());
     const sleep = vi.fn(async (_ms: number) => {});

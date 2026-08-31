@@ -244,7 +244,7 @@ export interface RateLimitRetryDeps {
 // 2 vector ids per ready row, so a 500-row corpus is thousands of back-to-back
 // calls. Unlike the worker's fetchWithRetry (which surfaces 429 to the queue),
 // an operator CLI can simply wait: honor Retry-After when present, otherwise
-// back off 1s·2^n, capped, for a bounded number of tries. Anything else is
+// back off 1s·2^n; either way the wait is capped, for a bounded number of tries. Anything else is
 // returned as-is for the caller's own status handling.
 const RATE_LIMIT_ATTEMPTS = 6;
 const RATE_LIMIT_BASE_MS = 1_000;
@@ -261,9 +261,11 @@ export function withRateLimitRetry(
       const res = await fetchFn(url, init);
       if (res.status !== 429 || attempt >= RATE_LIMIT_ATTEMPTS - 1) return res;
       const hinted = parseRateLimitDelayMs(res.headers, now) ?? 0;
-      const backoff = Math.min(RATE_LIMIT_CAP_MS, RATE_LIMIT_BASE_MS * 2 ** attempt);
+      const backoff = RATE_LIMIT_BASE_MS * 2 ** attempt;
       await res.text().catch(() => "");
-      await sleep(Math.max(hinted, backoff));
+      // Clamp the final delay, not just the exponential term: a long or
+      // malformed server hint must not stall an operator command for hours.
+      await sleep(Math.min(RATE_LIMIT_CAP_MS, Math.max(hinted, backoff)));
     }
   };
 }
