@@ -125,17 +125,20 @@ npm run ops -- deploy worker --env production --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
-Merges to `main` run two independent production workflows. The Worker workflow,
-`.github/workflows/deploy-worker.yml`, runs Worker typecheck + test, then the
-same `ops deploy worker --env production --execute` path (pending remote D1
+Merges to `main` start one coordinated production chain. After `.github/workflows/ci.yml`
+succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
+and runs `ops deploy worker --env production --execute` (pending remote D1
 migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
-The SPA workflow, `.github/workflows/deploy-spa.yml`, installs both lockfiles
-with `npm ci`, then runs the same `ops deploy web --branch main --execute` path
-to build `web/` and deploy `web/dist` to the production Pages branch. It does
-not deploy the Worker. Both workflows also support `workflow_dispatch`.
+After the Worker release succeeds, it publishes the released commit SHA for
+`.github/workflows/deploy-spa.yml`. The SPA workflow validates and checks out
+that SHA, installs both lockfiles with `npm ci`, then runs
+`ops deploy web --branch main --execute` to build `web/` and deploy `web/dist`
+to the production Pages branch. Both release stages refuse to deploy if `main`
+has advanced, so an older run cannot overwrite a newer production release.
+Neither release workflow has a manual trigger that can bypass the chain.
 
 GitHub repository secrets (or the `production` environment):
 
