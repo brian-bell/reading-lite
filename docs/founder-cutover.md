@@ -1,5 +1,11 @@
 # Founder corpus production cutover (s1k.6.3)
 
+> **Status: done.** Production was cut over on 2026-08-31 and
+> `TENANT_DATA_PLANE = "1"` is pinned in `[env.production.vars]`. See
+> "Production cutover — what actually happened" at the bottom for the record,
+> the two tooling fixes it required, and what is still pending (legacy
+> deletion). The procedure below is kept as the reference it was run from.
+
 Operator runbook and human-approval checklist for copying the pre-tenant
 production corpus into the founder tenant namespace and flipping
 `TENANT_DATA_PLANE`. Staging rehearsed this on 2026-08-27 (`s1k.6.2`); this
@@ -513,11 +519,11 @@ production reads while the gate is off.
 Only after observation looks clean:
 
 1. Pin `TENANT_DATA_PLANE = "1"` under `[env.production.vars]` in
-   `wrangler.toml` so ordinary deploys keep the gate on.
+   `wrangler.toml` so ordinary deploys keep the gate on. **Done 2026-08-31.**
 2. `npm run ops -- deploy worker --env production --execute` (now the pin is
-   in toml).
+   in toml). **Done 2026-08-31** via the merge-to-main deploy of the pin.
 3. A **separate** signed-off procedure deletes global-layout objects and
-   bare-id vectors. Do not invent that deletion here.
+   bare-id vectors. Do not invent that deletion here. **Still pending.**
 
 Staging `wrangler.toml` stays unset unless you deliberately cut staging over
 too.
@@ -568,3 +574,39 @@ npx wrangler queues resume-delivery reading-lite
 npx wrangler deploy --env production --var TENANT_DATA_PLANE:1
 npx wrangler deploy --env production
 ```
+
+---
+
+## Production cutover — what actually happened (2026-08-30/31)
+
+Environment: Worker `reading-lite` at `https://reading-lite.bbell.dev`,
+bucket/index `reading-lite`, founder
+`usr_1700450b-c2df-4421-8805-c308a63b4dea`. Operator laptop on `main`.
+Queue paused 2026-08-31 ~00:10Z, resumed ~02:10Z.
+
+| Step | Result |
+|---|---|
+| Credentials | `.corpus.vars` S3 keys were staging-bucket scoped (403 on `reading-lite`); the Cloudflare API token had Vectorize but not R2. Ran with S3 keys minted for bucket `reading-lite` (sourced from a file outside the repo) plus `CORPUS_CF_API_TOKEN` for Vectorize. |
+| First plans | Aborted on a Vectorize `get_by_ids` 429 (`code 971`); once past that, ~780 R2 REST 429s were reported as `by_url_pointer_invalid` / `row_by_id_pointer_invalid` / `row_manifest_unreadable`. Fixed by PR #210 (429 backoff in the scripts' R2 REST + Vectorize clients). Over S3 the plan takes ~45s; over REST it crawls under the ~1200 req/5 min API limit. |
+| Baseline | 3634 global objects, 558 rows (545 ready / 13 failed / 0 pending), 548 vectors, 0 objects under `u/`. Real problems: 436 rows missing `similarity` (stale list), 6 rows with no by-url pointer (2026-05-02 readings), 11 manifests with no list row (1 ready `rd_H5EY0E0MNA`, 9 stale pendings, 1 failed). |
+| Repairs | Wrote the 6 `{id,key_prefix}` pointers with putIfAbsent; deleted all 11 orphans (34 objects, 2 owned by-url pointers, 1 vector — the ready one by explicit decision, since `corpus drop` refuses ready ids in production); `rebuild-list --execute --sole-writer`. |
+| Rebuild-list footgun | The first rebuild wrote three titles' em/en dashes as U+FFFD: the wrangler child-process runner decoded stdout per chunk. Fixed by PR #211; rebuilt again; plan clean (0 problems). |
+| `--execute --limit 20` | 20 copies, 20 vectors; re-plan served 1674 verifications from the etag cache and showed `20 copied`. |
+| Full resume | 3586 copies, 525 vectors, one Vectorize lag wait (195 vectors); **fully migrated** ~01:36Z. Ledger 3606 copies / 545 vectors. |
+| Integrity | global 3606 (lost 0); founder dest 3606; other tenant prefixes 0; founder `index/list.json` byte-identical to global (718 293 B, 558 rows). `rd_WXF4309PBA` present as bare (`namespace=null`) and as `usr_…:rd_WXF4309PBA` (`namespace` + `metadata.tenant_id` = founder) with identical values. Index count 1092. |
+| Gate on | `wrangler deploy --env production --var TENANT_DATA_PLANE:1` version `6b0d07b7-8c5b-4716-aa19-dc84318d4ba9`. whoami true; 558 rows; detail/content/lookup/failed-row/`q=` OK; `POST /similar` returned bare ids, self 1.0, founder-only neighbours. |
+| Observation | First post-cutover submit `rd_E1PVN0RMBG` landed entirely under `u/{founder}/` (objects, by-id, by-url, list row 559) with nothing in the global layout; its vector is in the founder namespace. Gate then pinned in `wrangler.toml`. |
+
+Quirks worth knowing:
+
+- Vectorize `get_by_ids` on **prefixed** ids intermittently returns `[]` even
+  when a namespaced `query` finds the same vectors at 1.0. The Worker only
+  queries; migrate-founder's certification read them fine. Don't treat an
+  empty `get_by_ids` alone as vector loss.
+- `wrangler vectorize info` fails under the OAuth login on this account; the
+  REST `…/indexes/reading-lite/info` call with the API token works.
+
+Still pending: the separate, signed-off deletion of global-layout objects and
+bare-id vectors (3606 objects, 547 vectors). Until then `--tenant global`
+operator commands still see the legacy copy.
+

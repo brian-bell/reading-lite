@@ -44,10 +44,10 @@ Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.tom
 repeats them per environment. The distinct dev Worker name guards against an
 accidental bare `wrangler deploy` clobbering production.
 
-`TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Leave it
-unset in local, staging, and production until the founder corpus is copied
-under that prefix (s1k.6). Workers-pool tests turn it on so two tenants can
-share a URL without colliding. Operator corpus scripts address whichever root
+`TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Production
+pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
+`docs/founder-cutover.md`); local and staging stay unset. Workers-pool tests
+turn it on so two tenants can share a URL without colliding. Operator corpus scripts address whichever root
 their required `--tenant` selector names — `global` until the migration.
 
 ### Secrets
@@ -129,9 +129,9 @@ Merges to `main` also run `.github/workflows/deploy-worker.yml`: Worker
 typecheck + test, then the same `ops deploy worker --env production --execute`
 (pending remote D1 migrations, then upload). `workflow_dispatch` re-runs that
 path without a merge. The SPA is not part of it (`ops deploy web` stays
-operator-driven), and the workflow does not pass `--var`, so it cannot flip
-`TENANT_DATA_PLANE`. During the founder cutover observation window, do not
-merge to `main` if that would roll the gate off (see `docs/founder-cutover.md`).
+operator-driven), and the workflow does not pass `--var`. `TENANT_DATA_PLANE`
+is pinned in `[env.production.vars]`, so this path keeps the gate on; only
+removing the pin rolls it off (see `docs/founder-cutover.md`).
 
 GitHub repository secrets (or the `production` environment):
 

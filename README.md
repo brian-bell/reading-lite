@@ -53,8 +53,8 @@ READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
 Each background run also stages an attempt record under
 `readings/.../attempts/{attempt_id}.json` capturing the trigger, stage, timings,
 and sanitized error details, so failed readings can be inspected without
-`wrangler tail`. When `TENANT_DATA_PLANE=1` (Workers-pool tests today;
-production stays off until the founder corpus is copied), those objects live
+`wrangler tail`. When `TENANT_DATA_PLANE=1` (production since the
+2026-08-31 founder cutover, and the Workers-pool tests), those objects live
 under `u/{tenantId}/`. Stored `key_prefix` remains the relative `readings/…`
 path.
 
