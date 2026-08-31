@@ -82,6 +82,31 @@ export const AuthRedeemBodySchema = z.object({
 });
 export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
 
+export const SessionListItemSchema = z.object({
+  id: z.string().min(1),
+  current: z.boolean(),
+  created_at_ms: z.number().int(),
+  authenticated_at_ms: z.number().int(),
+  last_seen_at_ms: z.number().int(),
+  idle_expires_at_ms: z.number().int(),
+  absolute_expires_at_ms: z.number().int(),
+  revoked_at_ms: z.number().int().nullable(),
+  revocation_reason: z.string().nullable(),
+  user_agent_label: z.string().nullable(),
+});
+export type SessionListItem = z.infer<typeof SessionListItemSchema>;
+
+export const ListSessionsResponseSchema = z.object({
+  sessions: z.array(SessionListItemSchema),
+  session_cap_warning: z.string().nullable(),
+});
+export type ListSessionsResponse = z.infer<typeof ListSessionsResponseSchema>;
+
+export const AuthSessionRevokeResponseSchema = z.object({
+  ok: z.literal(true),
+});
+export type AuthSessionRevokeResponse = z.infer<typeof AuthSessionRevokeResponseSchema>;
+
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy
 // could route a later write to a different worker version. A client that sends

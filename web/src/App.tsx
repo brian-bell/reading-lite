@@ -21,10 +21,13 @@ import {
   getReading,
   getWhoami,
   listReadings,
+  listSessions,
   logoutSession,
   redeemLoginLink,
   reprocessReading,
   requestLoginLink,
+  revokeAllSessions,
+  revokeSession,
   submitReading,
   type ContentKind
 } from "./api";
@@ -40,6 +43,7 @@ import type {
   ManifestStatus,
   ProcessingAttempt,
   ProcessingAttemptSummary,
+  SessionListItem,
   WhoamiResponse
 } from "./types";
 import "./styles.css";
@@ -94,6 +98,10 @@ function AppRoutes() {
         <Route path="/login" element={<LoginPage identity={identity} identityQuery={identityQuery} />} />
         <Route path="/login/verify" element={<VerifyPage />} />
         <Route path="/auth/verify" element={<VerifyPage />} />
+        <Route
+          path="/account/security"
+          element={<AccountSecurityRoute identity={identity} identityQuery={identityQuery} />}
+        />
         <Route path="/" element={<HomeRoute identity={identity} identityQuery={identityQuery} />} />
         <Route
           path="/readings/:id"
@@ -156,6 +164,25 @@ function ReadingRoute({
   return <Navigate to={`/login?next=${next}`} replace />;
 }
 
+function AccountSecurityRoute({
+  identity,
+  identityQuery
+}: {
+  identity: WhoamiResponse | null;
+  identityQuery: ReturnType<typeof useIdentity>;
+}) {
+  const location = useLocation();
+  if (identity) return <AccountSecurityPage onSignedOut={() => identityQuery.refetch()} />;
+  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
+  if (identityQuery.isError) {
+    return (
+      <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
+    );
+  }
+  const next = encodeURIComponent(location.pathname);
+  return <Navigate to={`/login?next=${next}`} replace />;
+}
+
 function Shell({
   children,
   identity,
@@ -197,6 +224,9 @@ function IdentityBar({
   return (
     <div className="identity-bar">
       <span>{identity.email}</span>
+      <Link className="identity-link" to="/account/security">
+        Security
+      </Link>
       <button
         type="button"
         onClick={async () => {
@@ -220,6 +250,108 @@ function IdentityBar({
         Log out
       </button>
     </div>
+  );
+}
+
+function formatSessionTime(ms: number): string {
+  return new Date(ms).toLocaleString();
+}
+
+function AccountSecurityPage({ onSignedOut }: { onSignedOut: () => void }) {
+  const queryClient = useQueryClient();
+  const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: listSessions });
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function dropIdentity() {
+    localStorage.removeItem("reading-lite.bearerToken");
+    queryClient.setQueryData(["whoami"], null);
+    queryClient.removeQueries({ queryKey: ["readings"] });
+    queryClient.removeQueries({ queryKey: ["reading"] });
+    queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
+    queryClient.removeQueries({ queryKey: ["sessions"] });
+    onSignedOut();
+  }
+
+  async function onRevoke(session: SessionListItem) {
+    if (busyId) return;
+    setError(null);
+    setBusyId(session.id);
+    try {
+      await revokeSession(session.id);
+      if (session.current) {
+        await dropIdentity();
+        return;
+      }
+      await sessionsQuery.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to revoke session");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRevokeAll() {
+    if (busyId) return;
+    if (!window.confirm("Revoke all browser sessions? This signs you out everywhere.")) return;
+    setError(null);
+    setBusyId("all");
+    try {
+      await revokeAllSessions();
+      await dropIdentity();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to revoke sessions");
+      setBusyId(null);
+    }
+  }
+
+  const listed = sessionsQuery.data;
+  return (
+    <section className="page account-security">
+      <div className="page-heading">
+        <h1>Security</h1>
+        <button type="button" onClick={() => void onRevokeAll()} disabled={busyId != null}>
+          Revoke all sessions
+        </button>
+      </div>
+      {listed?.session_cap_warning ? (
+        <p className="session-cap-warning" role="status">
+          {listed.session_cap_warning}
+        </p>
+      ) : null}
+      {error ? <p className="error-message">{error}</p> : null}
+      {sessionsQuery.isPending ? <StatusMessage>Loading</StatusMessage> : null}
+      {sessionsQuery.isError ? (
+        <IdentityError
+          error={sessionsQuery.error instanceof Error ? sessionsQuery.error : new Error("failed to list sessions")}
+          onRetry={() => void sessionsQuery.refetch()}
+        />
+      ) : null}
+      {listed ? (
+        <ul className="session-list">
+          {listed.sessions.map((session) => (
+            <li key={session.id} className={session.revoked_at_ms ? "session-revoked" : undefined}>
+              <div>
+                <p>
+                  {session.user_agent_label ?? "Unknown browser"}
+                  {session.current ? " (this device)" : ""}
+                  {session.revoked_at_ms ? ` · revoked${session.revocation_reason ? ` (${session.revocation_reason})` : ""}` : ""}
+                </p>
+                <p className="session-meta">
+                  Signed in {formatSessionTime(session.authenticated_at_ms)} · last seen{" "}
+                  {formatSessionTime(session.last_seen_at_ms)}
+                </p>
+              </div>
+              {session.revoked_at_ms ? null : (
+                <button type="button" onClick={() => void onRevoke(session)} disabled={busyId != null}>
+                  {session.current ? "Revoke this device" : "Revoke"}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

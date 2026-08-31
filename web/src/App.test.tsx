@@ -1116,4 +1116,113 @@ describe("App", () => {
 
     expect(await screen.findByText(/unauthorized/i)).toBeInTheDocument();
   });
+
+  it("lists sessions from IdentityBar Security and shows the cap warning", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") {
+        return jsonResponse({
+          sessions: [
+            {
+              id: "ses_11111111-1111-4111-8111-111111111111",
+              current: true,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Firefox"
+            }
+          ],
+          session_cap_warning: "This account is at the 10-session limit."
+        });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/" />);
+    await user.click(await screen.findByRole("link", { name: "Security" }));
+    expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
+    expect(await screen.findByText(/Firefox \(this device\)/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("10-session limit");
+  });
+
+  it("revokes another session with CSRF and revoke-all signs out", async () => {
+    let signedOut = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (signedOut) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({
+          sessions: [
+            {
+              id: "ses_11111111-1111-4111-8111-111111111111",
+              current: true,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Here"
+            },
+            {
+              id: "ses_22222222-2222-4222-8222-222222222222",
+              current: false,
+              created_at_ms: 1,
+              authenticated_at_ms: 1,
+              last_seen_at_ms: 1,
+              idle_expires_at_ms: 2,
+              absolute_expires_at_ms: 3,
+              revoked_at_ms: null,
+              revocation_reason: null,
+              user_agent_label: "Phone"
+            }
+          ],
+          session_cap_warning: null
+        });
+      }
+      if (url.pathname.endsWith("/ses_22222222-2222-4222-8222-222222222222") && request.method === "DELETE") {
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/sessions/revoke-all") {
+        signedOut = true;
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/Phone/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => {
+      const del = fetchMock.mock.calls.find((c) => {
+        const req = c[0] as Request;
+        return req.method === "DELETE";
+      });
+      expect(del).toBeDefined();
+      expect((del![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Revoke all sessions" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    const revokeAll = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/sessions/revoke-all";
+    });
+    expect(revokeAll).toBeDefined();
+    expect((revokeAll![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+  });
 });

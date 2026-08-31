@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ListIndexItemSchema,
   ListReadingsResponseSchema,
+  ListSessionsResponseSchema,
   PostReadingReprocessBodySchema,
 } from "../../../src/schemas/api";
 import { ManifestSchema } from "../../../src/schemas/manifest";
@@ -24,6 +25,7 @@ import type {
   Manifest as SpaManifest,
   ListReading as SpaListReading,
   ListReadingsResponse as SpaListReadingsResponse,
+  ListSessionsResponse as SpaListSessionsResponse,
   ReprocessReadingBody as SpaReprocessReadingBody,
   Usage as SpaUsage,
 } from "../../../web/src/types";
@@ -178,5 +180,28 @@ describe("SPA type mirror — ReprocessReadingBody", () => {
       source: { kind: "markdown", markdown: "# Recaptured", title: "Recaptured" },
     };
     expect(PostReadingReprocessBodySchema.parse(body)).toEqual(body);
+  });
+});
+
+describe("SPA type mirror — ListSessionsResponse", () => {
+  it("an instance shaped per SpaListSessionsResponse parses through ListSessionsResponseSchema", () => {
+    const body: SpaListSessionsResponse = {
+      sessions: [
+        {
+          id: "ses_550e8400-e29b-41d4-a716-446655440000",
+          current: true,
+          created_at_ms: 1,
+          authenticated_at_ms: 1,
+          last_seen_at_ms: 1,
+          idle_expires_at_ms: 2,
+          absolute_expires_at_ms: 3,
+          revoked_at_ms: null,
+          revocation_reason: null,
+          user_agent_label: "test",
+        },
+      ],
+      session_cap_warning: "at cap",
+    };
+    expect(() => ListSessionsResponseSchema.parse(body)).not.toThrow();
   });
 });

@@ -109,9 +109,15 @@ input {
   font-size: 0.9rem;
 }
 
+.identity-link {
+  color: #146c60;
+  font-size: 0.9rem;
+}
+
 .identity-bar button,
 .token-form button,
-.pager button {
+.pager button,
+.account-security button {
   background: #146c60;
   border: 0;
   border-radius: 6px;
@@ -137,6 +143,46 @@ input {
   justify-content: space-between;
   gap: 20px;
   margin-bottom: 20px;
+}
+
+.session-cap-warning {
+  background: #fff4d6;
+  border: 1px solid #e6c35c;
+  border-radius: 6px;
+  color: #5c4a12;
+  padding: 10px 12px;
+}
+
+.session-list {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-list li {
+  align-items: center;
+  border: 1px solid #d5dde6;
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.session-list p {
+  margin: 0;
+}
+
+.session-meta {
+  color: #526071;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+.session-revoked {
+  opacity: 0.7;
 }
 
 h1 {

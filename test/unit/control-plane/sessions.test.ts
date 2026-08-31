@@ -3,13 +3,23 @@ import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { issueLoginChallenge } from "../../../src/control-plane/challenges";
 import {
   SESSION_ABSOLUTE_TTL_MS,
+  SESSION_CAP_WARNING,
   SESSION_COOKIE_NAME,
   SESSION_IDLE_TTL_MS,
   SESSION_LAST_SEEN_COALESCE_MS,
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession, ensureUserWithDefaults, issueSessionForClaim, revokeSession } from "../../../src/control-plane/sessions";
+import {
+  authenticateSession,
+  ensureUserWithDefaults,
+  issueSessionForClaim,
+  listSessionsForUser,
+  refreshSessionAuthenticatedAt,
+  revokeAllSessionsForUser,
+  revokeOwnedSession,
+  revokeSession,
+} from "../../../src/control-plane/sessions";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
@@ -218,5 +228,136 @@ describe("issueSessionForClaim", () => {
     expect(retry.kind).toBe("invalid");
     const count = sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
     expect(count.n).toBe(1);
+  });
+});
+
+describe("session list, cap warning, and revoke", () => {
+  it("marks the current session and warns at the 10-session cap before LRU", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userId) throw new Error("expected founder id");
+
+    const issued = [];
+    for (let i = 0; i < 10; i += 1) {
+      const session = await issueSessionForClaim(db, {
+        userId,
+        claimId: `clm_cap_${i}`,
+        nowMs: NOW_MS + i,
+        authRoot,
+        userAgentLabel: `ua-${i}`,
+      });
+      expect(session.kind).toBe("ok");
+      if (session.kind === "ok") issued.push(session);
+    }
+    const current = issued[9];
+    if (!current) throw new Error("expected tenth session");
+
+    const listed = await listSessionsForUser(db, {
+      userId,
+      nowMs: NOW_MS + 9,
+      currentSessionId: current.sessionId,
+    });
+    expect(listed.sessions).toHaveLength(10);
+    expect(listed.session_cap_warning).toBe(SESSION_CAP_WARNING);
+    expect(listed.sessions.filter((row) => row.current)).toHaveLength(1);
+    expect(listed.sessions.find((row) => row.current)?.id).toBe(current.sessionId);
+    expect(listed.sessions[0]?.user_agent_label).toBe("ua-9");
+
+    const eleventh = await issueSessionForClaim(db, {
+      userId,
+      claimId: "clm_cap_10",
+      nowMs: NOW_MS + 10,
+      authRoot,
+      userAgentLabel: "ua-10",
+    });
+    expect(eleventh.kind).toBe("ok");
+    const after = sqlite
+      .prepare(
+        "SELECT id, revoked_at_ms, revocation_reason FROM sessions ORDER BY created_at_ms ASC",
+      )
+      .all() as { id: string; revoked_at_ms: number | null; revocation_reason: string | null }[];
+    expect(after).toHaveLength(11);
+    expect(after[0]?.revocation_reason).toBe("session_cap");
+    expect(after[0]?.revoked_at_ms).toBe(NOW_MS + 10);
+    expect(after.filter((row) => row.revoked_at_ms == null)).toHaveLength(10);
+
+    const listedAfter = await listSessionsForUser(db, { userId, nowMs: NOW_MS + 10 });
+    expect(listedAfter.session_cap_warning).toBe(SESSION_CAP_WARNING);
+    expect(listedAfter.sessions.find((row) => row.revocation_reason === "session_cap")).toBeTruthy();
+  });
+
+  it("refreshes authenticated_at_ms on the same row", async () => {
+    const { sqlite, db, sessionId } = await issuedSession();
+    const refreshed = await refreshSessionAuthenticatedAt(db, {
+      sessionId,
+      userId: parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!,
+      nowMs: NOW_MS + 60_000,
+    });
+    expect(refreshed.kind).toBe("ok");
+    const row = sqlite
+      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
+      .get(sessionId) as { authenticated_at_ms: number };
+    expect(row.authenticated_at_ms).toBe(NOW_MS + 60_000);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 1 });
+  });
+
+  it("revokes one owned session without touching others, and revoke-all clears the rest", async () => {
+    const { sqlite, db } = openMigratedControlPlane();
+    await bootstrapFounder(db, {
+      email: "Founder@Example.com",
+      legacyToken: "test-token",
+      signupMode: "invite_only",
+      nowMs: NOW_MS,
+      authRoot,
+      newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
+      newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
+    });
+    const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
+    if (!userId) throw new Error("expected founder id");
+    const a = await issueSessionForClaim(db, {
+      userId,
+      claimId: "clm_a",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "a",
+    });
+    const b = await issueSessionForClaim(db, {
+      userId,
+      claimId: "clm_b",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "b",
+    });
+    expect(a.kind).toBe("ok");
+    expect(b.kind).toBe("ok");
+    if (a.kind !== "ok" || b.kind !== "ok") return;
+
+    expect(await revokeOwnedSession(db, { sessionId: a.sessionId, userId, nowMs: NOW_MS + 2, reason: "user" })).toBe(
+      "ok",
+    );
+    const afterOne = sqlite.prepare("SELECT id, revoked_at_ms, revocation_reason FROM sessions").all() as {
+      id: string;
+      revoked_at_ms: number | null;
+      revocation_reason: string | null;
+    }[];
+    expect(afterOne.find((row) => row.id === a.sessionId)?.revocation_reason).toBe("user");
+    expect(afterOne.find((row) => row.id === b.sessionId)?.revoked_at_ms).toBeNull();
+
+    expect(await revokeAllSessionsForUser(db, { userId, nowMs: NOW_MS + 3 })).toBe(1);
+    const afterAll = sqlite.prepare("SELECT revoked_at_ms, revocation_reason FROM sessions").all() as {
+      revoked_at_ms: number | null;
+      revocation_reason: string | null;
+    }[];
+    expect(afterAll.every((row) => row.revoked_at_ms != null)).toBe(true);
+    expect(afterAll.map((row) => row.revocation_reason).sort()).toEqual(["revoke_all", "user"]);
   });
 });

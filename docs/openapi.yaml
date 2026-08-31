@@ -120,7 +120,9 @@ paths:
         fails. Sets a durable host-only `__Host-session` cookie
         (`Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=7776000`) so login
         survives browser restart. D1 still enforces a 30-day inactivity
-        timeout and 90-day absolute expiry.
+        timeout and 90-day absolute expiry. If the request already carries a
+        live session cookie for the same user, redemption refreshes
+        `authenticated_at_ms` on that row instead of inserting another session.
       requestBody:
         required: true
         content:
@@ -174,6 +176,92 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+
+  /api/auth/sessions:
+    get:
+      tags: [identity]
+      operationId: listAuthSessions
+      summary: List the caller's browser sessions
+      description: |
+        Returns session rows for the authenticated user (id, created,
+        authenticated, last-seen, idle/absolute expiry, revoked, reason,
+        user-agent label). Marks the current cookie session via
+        `current`. When the account is at the ten-session cap,
+        `session_cap_warning` is a non-null string the client can show
+        before the next login evicts the least-recently-used session.
+        CSRF is not required (GET).
+      responses:
+        "200":
+          description: Session list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSessionsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/sessions/revoke-all:
+    post:
+      tags: [identity]
+      operationId: revokeAllAuthSessions
+      summary: Revoke every browser session and log the caller out
+      description: |
+        Soft-revokes all of the caller's sessions. Cookie callers must send
+        `X-CSRF-Token`; recent-auth is not required. The current cookie is
+        cleared. Sends a security notification (no secrets; Resend tracking
+        click/open disabled). Single-session revoke does not send mail.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: All sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionRevokeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/sessions/{id}:
+    delete:
+      tags: [identity]
+      operationId: revokeAuthSession
+      summary: Revoke one browser session
+      description: |
+        Soft-revokes one of the caller's sessions. Cookie callers must send
+        `X-CSRF-Token`; recent-auth is not required. If the id is the current
+        session, the cookie is cleared. Does not send security mail.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^ses_"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionRevokeResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/readings:
     parameters:
@@ -855,6 +943,71 @@ components:
           const: session
 
     AuthLogoutResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    SessionListItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - current
+        - created_at_ms
+        - authenticated_at_ms
+        - last_seen_at_ms
+        - idle_expires_at_ms
+        - absolute_expires_at_ms
+        - revoked_at_ms
+        - revocation_reason
+        - user_agent_label
+      properties:
+        id:
+          type: string
+          minLength: 1
+        current:
+          type: boolean
+        created_at_ms:
+          type: integer
+        authenticated_at_ms:
+          type: integer
+        last_seen_at_ms:
+          type: integer
+        idle_expires_at_ms:
+          type: integer
+        absolute_expires_at_ms:
+          type: integer
+        revoked_at_ms:
+          type: integer
+          nullable: true
+        revocation_reason:
+          type: string
+          nullable: true
+        user_agent_label:
+          type: string
+          nullable: true
+
+    ListSessionsResponse:
+      type: object
+      additionalProperties: false
+      required: [sessions, session_cap_warning]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionListItem"
+        session_cap_warning:
+          type: string
+          nullable: true
+          description: |
+            Present when the account already has ten active sessions. The next
+            sign-in from another device revokes the least-recently-used session.
+
+    AuthSessionRevokeResponse:
       type: object
       additionalProperties: false
       required: [ok]

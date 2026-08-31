@@ -24,6 +24,7 @@ import { isLoopbackHost, isSameOriginRequest } from "./origin";
 import { parseRedemptionId, redeemLoginChallenge } from "./redeem";
 import { verifyCsrfToken } from "./csrf";
 import { authenticateSession, revokeSession } from "./sessions";
+import type { SendSecurityMail } from "./security-mail";
 import { sanitizeUserAgent } from "./user-agent";
 import type { RandomBytes } from "./credential";
 import type { UuidSource } from "./ids";
@@ -31,6 +32,7 @@ import type { AppBindings } from "../middleware";
 
 export interface AuthRuntime {
   sendMagicLink?: SendMagicLink;
+  sendSecurityMail?: SendSecurityMail;
   randomBytes?: RandomBytes;
   newUuid?: UuidSource;
   markMailSent?: (args: { challengeId: string; nowMs: number }) => Promise<void>;
@@ -184,6 +186,13 @@ export async function handleAuthRedeem(
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
+  const existing = await authenticateSession(db, {
+    cookieHeader: c.req.header("cookie"),
+    authRoot: roots.authRoot,
+    ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
+    nowMs,
+  });
+
   const result = await redeemLoginChallenge(db, {
     credential: parsed.data.credential,
     redemptionId,
@@ -191,6 +200,7 @@ export async function handleAuthRedeem(
     authRoot: roots.authRoot,
     ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
     userAgentLabel: sanitizeUserAgent(c.req.header("user-agent")),
+    ...(existing.kind === "ok" ? { stepUpSessionId: existing.principal.sessionId } : {}),
     randomBytes: runtime.randomBytes,
     newUuid: runtime.newUuid,
   });
@@ -200,6 +210,10 @@ export async function handleAuthRedeem(
   if (result.kind === "forbidden") return jsonAuth({ error: "forbidden" }, 403);
 
   logAuthEvent("magic_link_redeemed", { email: result.emailDisplay, session_id: result.sessionId });
+  const extraHeaders: HeadersInit = {};
+  if (result.credential) {
+    extraHeaders["set-cookie"] = sessionCookieHeader(result.credential);
+  }
   return jsonAuth(
     {
       tenant_id: String(result.userId),
@@ -208,7 +222,7 @@ export async function handleAuthRedeem(
       principal: "session",
     },
     200,
-    { "set-cookie": sessionCookieHeader(result.credential) },
+    extraHeaders,
   );
 }
 

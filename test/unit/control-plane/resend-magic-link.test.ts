@@ -9,7 +9,7 @@ import type { Env } from "../../../src/index";
 const verifyUrl = "https://reading.test.example/auth/verify#ml_secret";
 
 describe("buildMagicLinkResendPayload", () => {
-  it("sends to the delivery address with a plaintext URL and never EMAIL_TO or tracking", () => {
+  it("sends to the delivery address with a plaintext URL, never EMAIL_TO, and tracking disabled", () => {
     const payload = buildMagicLinkResendPayload(
       "reading-lite@test.example",
       "Invited@test.example",
@@ -18,7 +18,7 @@ describe("buildMagicLinkResendPayload", () => {
     expect(payload.from).toBe("reading-lite@test.example");
     expect(payload.to).toEqual(["Invited@test.example"]);
     expect(payload.text).toEqual(expect.stringContaining(verifyUrl));
-    expect("tracking" in payload).toBe(false);
+    expect(payload.tracking).toEqual({ click: false, open: false });
     expect(JSON.stringify(payload)).not.toContain("reader@test.example");
     expect(JSON.stringify(payload)).not.toContain("EMAIL_TO");
   });
@@ -40,10 +40,10 @@ describe("sendMagicLinkViaResend", () => {
     };
     await sendMagicLinkViaResend(env, "founder@test.example", verifyUrl, fetchImpl);
     expect(url).toBe(RESEND_EMAILS_URL);
-    const parsed = JSON.parse(body) as { to: string[]; text: string };
+    const parsed = JSON.parse(body) as { to: string[]; text: string; tracking?: { click: boolean; open: boolean } };
     expect(parsed.to).toEqual(["founder@test.example"]);
     expect(parsed.text).toContain(verifyUrl);
-    expect("tracking" in parsed).toBe(false);
+    expect(parsed.tracking).toEqual({ click: false, open: false });
     expect(body).not.toContain("reader@test.example");
     expect(body).not.toContain("re_test");
   });

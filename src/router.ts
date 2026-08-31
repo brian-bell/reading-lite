@@ -32,6 +32,11 @@ import {
   jsonAuth,
   type AuthRuntime,
 } from "./control-plane/auth-handlers";
+import {
+  handleListSessions,
+  handleRevokeAllSessions,
+  handleRevokeSession,
+} from "./control-plane/session-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
@@ -76,6 +81,11 @@ export function createApp(opts: AppOptions = {}) {
   app.post("/api/auth/challenge", (c) => handleAuthChallenge(c, authNowMs(), authRuntime));
   app.post("/api/auth/redeem", (c) => handleAuthRedeem(c, authNowMs(), authRuntime));
   app.post("/api/auth/logout", (c) => handleAuthLogout(c, authNowMs()));
+  app.use("/api/auth/sessions", requirePrincipal(authNowMs));
+  app.use("/api/auth/sessions/*", requirePrincipal(authNowMs));
+  app.get("/api/auth/sessions", (c) => handleListSessions(c, authNowMs()));
+  app.post("/api/auth/sessions/revoke-all", (c) => handleRevokeAllSessions(c, authNowMs(), authRuntime));
+  app.delete("/api/auth/sessions/:id", (c) => handleRevokeSession(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 

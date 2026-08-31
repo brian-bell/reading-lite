@@ -5,7 +5,8 @@ import type {
   ReprocessReadingBody,
   ReprocessReadingResponse,
   SubmitReadingResponse,
-  WhoamiResponse
+  WhoamiResponse,
+  ListSessionsResponse
 } from "./types";
 
 export class ApiError extends Error {
@@ -118,6 +119,44 @@ export async function logoutSession(): Promise<void> {
   }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to log out"));
+  }
+  rememberCsrfToken(undefined);
+}
+
+export async function listSessions(): Promise<ListSessionsResponse> {
+  const response = await apiFetch(new URL("/api/auth/sessions", window.location.origin));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to list sessions"));
+  }
+  return (await response.json()) as ListSessionsResponse;
+}
+
+export async function revokeSession(id: string): Promise<void> {
+  const response = await apiFetch(new URL(`/api/auth/sessions/${encodeURIComponent(id)}`, window.location.origin), {
+    method: "DELETE",
+    headers: mutationHeaders()
+  });
+  if (response.status === 401) {
+    rememberCsrfToken(undefined);
+    return;
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke session"));
+  }
+}
+
+export async function revokeAllSessions(): Promise<void> {
+  const response = await apiFetch(new URL("/api/auth/sessions/revoke-all", window.location.origin), {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({})
+  });
+  if (response.status === 401) {
+    rememberCsrfToken(undefined);
+    return;
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke sessions"));
   }
   rememberCsrfToken(undefined);
 }

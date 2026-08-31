@@ -323,4 +323,54 @@ describe("redeemLoginChallenge", () => {
     expect(rows[0]?.id).toBe(first.sessionId);
     expect(rows[0]?.revoked_at_ms).toBe(NOW_MS + 2);
   });
+
+  it("refreshes authenticated_at_ms on the current session instead of minting another row", async () => {
+    const { sqlite, db } = await seeded();
+    const issued = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(issued.kind).toBe("issued");
+    if (issued.kind !== "issued") return;
+    const first = await redeemLoginChallenge(db, {
+      credential: issued.credential,
+      redemptionId: "clm_step_first",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "first",
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+    expect(first.credential).toBeTruthy();
+
+    const next = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(next.kind).toBe("issued");
+    if (next.kind !== "issued") return;
+    const stepped = await redeemLoginChallenge(db, {
+      credential: next.credential,
+      redemptionId: "clm_step_up",
+      nowMs: NOW_MS + 60_000,
+      authRoot,
+      userAgentLabel: "step",
+      stepUpSessionId: first.sessionId,
+    });
+    expect(stepped.kind).toBe("ok");
+    if (stepped.kind !== "ok") return;
+    expect(stepped.sessionId).toBe(first.sessionId);
+    expect(stepped.credential).toBeNull();
+    const rows = sqlite.prepare("SELECT id, authenticated_at_ms FROM sessions").all() as {
+      id: string;
+      authenticated_at_ms: number;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(first.sessionId);
+    expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 60_000);
+  });
 });
