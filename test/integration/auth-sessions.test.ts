@@ -221,6 +221,16 @@ describe("session inspect and revoke", () => {
     expect(revoked.res.status).toBe(200);
     expect(securityMail).toHaveLength(1);
     expect(revoked.res.headers.get("set-cookie")).toBeNull();
+
+    const again: SecurityMail[] = [];
+    const second = await request("/api/auth/sessions/revoke-all", {
+      method: "POST",
+      authorization: "Bearer test-token",
+      body: {},
+      securityMail: again,
+    });
+    expect(second.res.status).toBe(200);
+    expect(again).toHaveLength(0);
   });
 
   it("refreshes authenticated_at_ms on redeem when a live same-user cookie is present", async () => {

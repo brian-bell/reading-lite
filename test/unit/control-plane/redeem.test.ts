@@ -373,4 +373,63 @@ describe("redeemLoginChallenge", () => {
     expect(rows[0]?.id).toBe(first.sessionId);
     expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 60_000);
   });
+
+  it("replays a consumed step-up against completed_session_id instead of minting", async () => {
+    const { sqlite, db } = await seeded();
+    const issued = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(issued.kind).toBe("issued");
+    if (issued.kind !== "issued") return;
+    const first = await redeemLoginChallenge(db, {
+      credential: issued.credential,
+      redemptionId: "clm_step_replay_first",
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: "first",
+    });
+    expect(first.kind).toBe("ok");
+    if (first.kind !== "ok") return;
+
+    const next = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    expect(next.kind).toBe("issued");
+    if (next.kind !== "issued") return;
+    const stepped = await redeemLoginChallenge(db, {
+      credential: next.credential,
+      redemptionId: "clm_step_replay",
+      nowMs: NOW_MS + 60_000,
+      authRoot,
+      userAgentLabel: "step",
+      stepUpSessionId: first.sessionId,
+    });
+    expect(stepped.kind).toBe("ok");
+    if (stepped.kind !== "ok") return;
+
+    const replay = await redeemLoginChallenge(db, {
+      credential: next.credential,
+      redemptionId: "clm_step_replay",
+      nowMs: NOW_MS + 90_000,
+      authRoot,
+      userAgentLabel: "replay",
+    });
+    expect(replay.kind).toBe("ok");
+    if (replay.kind !== "ok") return;
+    expect(replay.sessionId).toBe(first.sessionId);
+    expect(replay.credential).toBeNull();
+    const rows = sqlite.prepare("SELECT id, authenticated_at_ms FROM sessions").all() as {
+      id: string;
+      authenticated_at_ms: number;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(first.sessionId);
+    expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 90_000);
+  });
 });

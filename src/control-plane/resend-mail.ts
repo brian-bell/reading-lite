@@ -1,9 +1,6 @@
 import type { Env } from "../index";
 import { RESEND_EMAILS_URL } from "../modules/email";
 
-/** Explicitly disable Resend click/open tracking on auth and security mail. */
-export const RESEND_AUTH_TRACKING = { click: false, open: false } as const;
-
 export interface AuthResendMessage {
   to: string;
   subject: string;
@@ -11,6 +8,11 @@ export interface AuthResendMessage {
   html: string;
 }
 
+/**
+ * Auth and security mail omit a `tracking` field: the Send Email API has none.
+ * Click/open tracking is a domain setting (`PATCH /domains/:id`) and is off by
+ * default. Do not PATCH domains from the send path.
+ */
 export function buildAuthResendPayload(
   from: string,
   message: AuthResendMessage,
@@ -21,7 +23,6 @@ export function buildAuthResendPayload(
     subject: message.subject,
     text: message.text,
     html: message.html,
-    tracking: { ...RESEND_AUTH_TRACKING },
   };
 }
 

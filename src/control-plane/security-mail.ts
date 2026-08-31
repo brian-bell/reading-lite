@@ -1,8 +1,6 @@
 import type { Env } from "../index";
 import { logAuthEvent } from "./auth-log";
-import type { ControlPlaneDb } from "./db";
 import { isAuthMailAllowed } from "./mail-allowlist";
-import { storeLocalMagicLink } from "./magic-link-mail";
 import { sendAuthMailViaResend } from "./resend-mail";
 
 export type SecurityMailKind = "sessions_revoked_all";
@@ -43,7 +41,6 @@ export function assertNoSecrets(body: string): void {
 
 export async function deliverSecurityMail(
   env: Env,
-  db: ControlPlaneDb,
   input: {
     emailCanonical: string;
     emailDisplay: string;
@@ -69,12 +66,8 @@ export async function deliverSecurityMail(
     } else if (env.APP_ENV === "staging" || env.APP_ENV === "production") {
       await sendAuthMailViaResend(env, message);
     } else if (env.LOCAL_MAIL_SINK === "1") {
-      await storeLocalMagicLink(db, {
-        to: message.to,
-        subject: message.subject,
-        verifyUrl: "",
-        nowMs: input.nowMs,
-      });
+      // Do not write into dev_mail_outbox: that table is the magic-link mailbox.
+      logAuthEvent("security_mail_local", { email: input.emailDisplay, kind: input.kind });
     } else {
       logAuthEvent("security_mail_skipped", { email: input.emailDisplay, kind: input.kind });
       return;

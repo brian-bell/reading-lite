@@ -6,7 +6,7 @@ import { resolveLoginEligibility } from "./eligibility";
 import { matchSecretHmac } from "./hmac-match";
 import { parseChallengeId, type SessionId, type UserId, type UuidSource } from "./ids";
 import { lookupChallenge } from "./challenges";
-import { ensureUserWithDefaults, issueSessionForClaim, refreshSessionAuthenticatedAt } from "./sessions";
+import { ensureUserWithDefaults, issueSessionForClaim, refreshSessionAuthenticatedAt, sessionExistsForClaim } from "./sessions";
 
 export type RedeemResult =
   | { kind: "ok"; userId: UserId; sessionId: SessionId; credential: string | null; emailDisplay: string }
@@ -137,6 +137,27 @@ async function completeRedemption(
         kind: "ok",
         userId,
         sessionId: refreshed.sessionId,
+        credential: null,
+        emailDisplay,
+      };
+    }
+  }
+
+  // Step-up writes completed_session_id without a sessions row for this claim.
+  // Replaying the same redemption must resume that row, not insert (and LRU).
+  if (challenge.state === "consumed" && challenge.completed_session_id) {
+    const mintedForClaim = await sessionExistsForClaim(db, userId, input.redemptionId);
+    if (!mintedForClaim) {
+      const resumed = await refreshSessionAuthenticatedAt(db, {
+        sessionId: challenge.completed_session_id,
+        userId,
+        nowMs: input.nowMs,
+      });
+      if (resumed.kind !== "ok") return { kind: "invalid" };
+      return {
+        kind: "ok",
+        userId,
+        sessionId: resumed.sessionId,
         credential: null,
         emailDisplay,
       };

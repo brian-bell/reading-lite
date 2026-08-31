@@ -396,6 +396,15 @@ async function lookupSessionForClaim(
   );
 }
 
+export async function sessionExistsForClaim(
+  db: ControlPlaneDb,
+  userId: UserId,
+  claimId: string,
+): Promise<boolean> {
+  const row = await lookupSessionForClaim(db, userId, claimId);
+  return row != null;
+}
+
 async function rotateOwnSessionSecret(
   db: ControlPlaneDb,
   row: SessionRow,

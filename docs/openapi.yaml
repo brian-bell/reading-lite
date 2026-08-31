@@ -212,8 +212,10 @@ paths:
       description: |
         Soft-revokes all of the caller's sessions. Cookie callers must send
         `X-CSRF-Token`; recent-auth is not required. The current cookie is
-        cleared. Sends a security notification (no secrets; Resend tracking
-        click/open disabled). Single-session revoke does not send mail.
+        cleared. Sends a security notification (no secrets) only when at least
+        one session was actually revoked. Click/open tracking is a Resend
+        domain setting (off by default), not a send-payload field.
+        Single-session revoke does not send mail.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       responses:
