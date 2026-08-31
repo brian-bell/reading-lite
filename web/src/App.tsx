@@ -491,6 +491,9 @@ function LoginPage({
   );
 }
 
+const EMAIL_CHANGE_CONFIRM_HINT =
+  "Open this link in the signed-in browser that requested the email change.";
+
 function VerifyPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -504,6 +507,7 @@ function VerifyPage() {
       ? `clm_${crypto.randomUUID()}`
       : `clm_${Math.random().toString(36).slice(2)}`
   );
+  const emailChangeConfirm = searchParams.get("purpose") === "email_change";
 
   useEffect(() => {
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
@@ -531,6 +535,13 @@ function VerifyPage() {
               setBusy(true);
               setError(null);
               try {
+                if (emailChangeConfirm) {
+                  const me = await queryClient.fetchQuery({ queryKey: ["whoami"], queryFn: getWhoami });
+                  if (!me) {
+                    setError(EMAIL_CHANGE_CONFIRM_HINT);
+                    return;
+                  }
+                }
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
                 queryClient.removeQueries({ queryKey: ["sessions"] });
@@ -540,6 +551,14 @@ function VerifyPage() {
                 if (!whoami) throw new Error("failed to complete sign-in");
                 navigate(consumeLoginReturnPath(searchParams.get("next")), { replace: true });
               } catch (e) {
+                if (
+                  emailChangeConfirm &&
+                  e instanceof ApiError &&
+                  (e.status === 401 || e.status === 403)
+                ) {
+                  setError(EMAIL_CHANGE_CONFIRM_HINT);
+                  return;
+                }
                 setError(e instanceof Error ? e.message : "failed to complete sign-in");
               } finally {
                 setBusy(false);

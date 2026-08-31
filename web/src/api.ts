@@ -97,7 +97,7 @@ export async function requestLoginLink(email: string): Promise<void> {
 export async function redeemLoginLink(credential: string, redemptionId: string): Promise<WhoamiResponse> {
   const response = await apiFetch(new URL("/api/auth/redeem", window.location.origin), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({ credential, redemption_id: redemptionId })
   });
   if (!response.ok) {

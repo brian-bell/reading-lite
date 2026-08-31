@@ -23,6 +23,7 @@ export type RedeemResult =
       securityNotify?: { emailCanonical: string; emailDisplay: string; kind: "email_changed" };
     }
   | { kind: "invalid" }
+  | { kind: "unauthenticated" }
   | { kind: "conflict"; reason?: "claim" | "email_taken" }
   | { kind: "forbidden" };
 
@@ -35,6 +36,8 @@ export interface RedeemLoginInput {
   userAgentLabel: string | null;
   /** When set, refresh this live session instead of inserting another row. */
   stepUpSessionId?: string;
+  /** Cookie header contained a session cookie, even if it is expired or revoked. */
+  sessionCookiePresent?: boolean;
   randomBytes?: RandomBytes;
   newUuid?: UuidSource;
 }
@@ -69,6 +72,10 @@ export async function redeemLoginChallenge(
   }
   if (challenge.state === "revoked") return { kind: "invalid" };
   if (challengeExpired(challenge, input.nowMs)) return { kind: "invalid" };
+  if (challenge.purpose === EMAIL_CHANGE_PURPOSE) {
+    const gated = await requireEmailChangeSession(db, challenge, input);
+    if (gated.kind !== "ok") return gated;
+  }
 
   if (challenge.state === "issued") {
     const claimed = await db.run(
@@ -218,6 +225,10 @@ async function completeEmailChange(
   challenge: ChallengeRow,
   input: RedeemLoginInput,
 ): Promise<RedeemResult> {
+  const gated = await requireEmailChangeSession(db, challenge, input);
+  if (gated.kind !== "ok") return gated;
+  const confirmingSessionId = gated.sessionId;
+
   const userId = challenge.user_id ? parseUserId(challenge.user_id) : null;
   if (!userId) return { kind: "invalid" };
 
@@ -228,12 +239,6 @@ async function completeEmailChange(
   }>("SELECT email_canonical, email_display, status FROM users WHERE id = ?", userId);
   if (!user) return { kind: "invalid" };
   if (user.status !== "active") return { kind: "forbidden" };
-
-  const confirmingSessionId = await confirmingSessionForUser(db, {
-    sessionId: input.stepUpSessionId,
-    userId,
-    nowMs: input.nowMs,
-  });
 
   if (challenge.state === "consumed") {
     return {
@@ -249,19 +254,12 @@ async function completeEmailChange(
   const oldEmailCanonical = user.email_canonical;
   const oldEmailDisplay = user.email_display;
 
-  const revokeSessions: SqlStatement = confirmingSessionId
-    ? {
-        sql: `UPDATE sessions
-              SET revoked_at_ms = ?, revocation_reason = ?
-              WHERE user_id = ? AND revoked_at_ms IS NULL AND id != ?`,
-        params: [input.nowMs, "email_change", userId, confirmingSessionId],
-      }
-    : {
-        sql: `UPDATE sessions
-              SET revoked_at_ms = ?, revocation_reason = ?
-              WHERE user_id = ? AND revoked_at_ms IS NULL`,
-        params: [input.nowMs, "email_change", userId],
-      };
+  const revokeSessions: SqlStatement = {
+    sql: `UPDATE sessions
+          SET revoked_at_ms = ?, revocation_reason = ?
+          WHERE user_id = ? AND revoked_at_ms IS NULL AND id != ?`,
+    params: [input.nowMs, "email_change", userId, confirmingSessionId],
+  };
   const revokeTokens: SqlStatement = {
     sql: `UPDATE api_tokens SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL`,
     params: [input.nowMs, userId],
@@ -346,6 +344,34 @@ async function confirmingSessionForUser(
     input.nowMs,
   );
   return row ? sessionId : null;
+}
+
+/** Cookie-less / other-session redeem must not claim or swap. */
+async function requireEmailChangeSession(
+  db: ControlPlaneDb,
+  challenge: ChallengeRow,
+  input: RedeemLoginInput,
+): Promise<
+  | { kind: "ok"; sessionId: SessionId }
+  | { kind: "invalid" }
+  | { kind: "unauthenticated" }
+  | { kind: "forbidden" }
+> {
+  const userId = challenge.user_id ? parseUserId(challenge.user_id) : null;
+  if (!userId) return { kind: "invalid" };
+  if (input.sessionCookiePresent !== true) {
+    return { kind: "unauthenticated" };
+  }
+  const bound = challenge.bound_session_id ? parseSessionId(challenge.bound_session_id) : null;
+  const live = await confirmingSessionForUser(db, {
+    sessionId: input.stepUpSessionId,
+    userId,
+    nowMs: input.nowMs,
+  });
+  if (!bound || !live || live !== bound) {
+    return { kind: "forbidden" };
+  }
+  return { kind: "ok", sessionId: live };
 }
 
 async function burnEmailChangeChallenge(db: ControlPlaneDb, challengeId: string): Promise<void> {

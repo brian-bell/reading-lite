@@ -4,9 +4,13 @@ import { issueEmailChangeChallenge, issueLoginChallenge } from "../../../src/con
 import { MAGIC_LINK_TTL_MS, SESSION_COOKIE_NAME } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
-import { parseUserId } from "../../../src/control-plane/ids";
+import { parseUserId, type SessionId, type UserId } from "../../../src/control-plane/ids";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession, ensureUserWithDefaults } from "../../../src/control-plane/sessions";
+import {
+  authenticateSession,
+  ensureUserWithDefaults,
+  issueSessionForClaim,
+} from "../../../src/control-plane/sessions";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -49,6 +53,22 @@ async function loginFounder(db: ControlPlaneDb, redemptionId: string) {
   return redeemed;
 }
 
+async function liveSession(db: ControlPlaneDb, userId: UserId, claimId: string, nowMs = NOW_MS) {
+  const session = await issueSessionForClaim(db, {
+    userId,
+    claimId,
+    nowMs,
+    authRoot,
+    userAgentLabel: "test",
+  });
+  if (session.kind !== "ok") throw new Error("expected live session");
+  return session;
+}
+
+function withConfirmingSession(sessionId: SessionId | string) {
+  return { sessionCookiePresent: true as const, stepUpSessionId: String(sessionId) };
+}
+
 describe("email-change redeem", () => {
   it("swaps canonical email, keeps the confirming session, and revokes others plus api tokens", async () => {
     const { sqlite, db } = await seeded();
@@ -75,6 +95,7 @@ describe("email-change redeem", () => {
       emailCanonical: "new@example.com",
       emailDisplay: "New@example.com",
       userId: FOUNDER_ID,
+      sessionId: first.sessionId!,
       nowMs: NOW_MS + 4,
       authRoot,
     });
@@ -87,7 +108,7 @@ describe("email-change redeem", () => {
       nowMs: NOW_MS + 5,
       authRoot,
       userAgentLabel: "confirm",
-      stepUpSessionId: first.sessionId!,
+      ...withConfirmingSession(first.sessionId!),
     });
     expect(confirmed.kind).toBe("ok");
     if (confirmed.kind !== "ok") return;
@@ -136,13 +157,101 @@ describe("email-change redeem", () => {
     expect(otherAuth.kind).toBe("unauthenticated");
   });
 
+  it("does not swap, consume, or revoke when redeem is cookie-less", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await loginFounder(db, "clm_cookie_less_keep");
+    const change = await issueEmailChangeChallenge(db, {
+      emailCanonical: "new@example.com",
+      emailDisplay: "New@example.com",
+      userId: FOUNDER_ID,
+      sessionId: first.sessionId!,
+      nowMs: NOW_MS + 4,
+      authRoot,
+    });
+    expect(change.kind).toBe("issued");
+    if (change.kind !== "issued") return;
+
+    const denied = await redeemLoginChallenge(db, {
+      credential: change.credential,
+      redemptionId: "clm_cookie_less",
+      nowMs: NOW_MS + 5,
+      authRoot,
+      userAgentLabel: "other-device",
+      sessionCookiePresent: false,
+    });
+    expect(denied.kind).toBe("unauthenticated");
+    expect(
+      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(FOUNDER_ID),
+    ).toEqual({ email_canonical: "founder@example.com" });
+    expect(
+      sqlite.prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?").get(change.challengeId),
+    ).toEqual({ state: "issued", claim_id: null });
+    expect(
+      sqlite.prepare("SELECT revoked_at_ms FROM sessions WHERE id = ?").get(first.sessionId),
+    ).toEqual({ revoked_at_ms: null });
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at_ms IS NULL").get(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("does not swap when a different live session presents the link", async () => {
+    const { sqlite, db } = await seeded();
+    const first = await loginFounder(db, "clm_bound");
+    const other = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(other.kind).toBe("issued");
+    if (other.kind !== "issued") return;
+    const second = await redeemLoginChallenge(db, {
+      credential: other.credential,
+      redemptionId: "clm_other_device",
+      nowMs: NOW_MS + 3,
+      authRoot,
+      userAgentLabel: "other",
+    });
+    expect(second.kind).toBe("ok");
+    if (second.kind !== "ok" || !second.sessionId) return;
+
+    const change = await issueEmailChangeChallenge(db, {
+      emailCanonical: "new@example.com",
+      emailDisplay: "New@example.com",
+      userId: FOUNDER_ID,
+      sessionId: first.sessionId!,
+      nowMs: NOW_MS + 4,
+      authRoot,
+    });
+    expect(change.kind).toBe("issued");
+    if (change.kind !== "issued") return;
+
+    const denied = await redeemLoginChallenge(db, {
+      credential: change.credential,
+      redemptionId: "clm_wrong_session",
+      nowMs: NOW_MS + 5,
+      authRoot,
+      userAgentLabel: "other",
+      ...withConfirmingSession(second.sessionId),
+    });
+    expect(denied.kind).toBe("forbidden");
+    expect(
+      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(FOUNDER_ID),
+    ).toEqual({ email_canonical: "founder@example.com" });
+    expect(
+      sqlite.prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?").get(change.challengeId),
+    ).toEqual({ state: "issued", claim_id: null });
+  });
+
   it("is idempotent for the same claimant and rejects a competing claimant", async () => {
     const { db } = await seeded();
+    const firstSession = await loginFounder(db, "clm_keep_idem");
     const change = await issueEmailChangeChallenge(db, {
       emailCanonical: "new@example.com",
       emailDisplay: "new@example.com",
       userId: FOUNDER_ID,
-      nowMs: NOW_MS,
+      sessionId: firstSession.sessionId!,
+      nowMs: NOW_MS + 4,
       authRoot,
     });
     expect(change.kind).toBe("issued");
@@ -150,17 +259,19 @@ describe("email-change redeem", () => {
     const first = await redeemLoginChallenge(db, {
       credential: change.credential,
       redemptionId: "clm_retry",
-      nowMs: NOW_MS + 1,
+      nowMs: NOW_MS + 5,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(firstSession.sessionId!),
     });
     expect(first.kind).toBe("ok");
     const retry = await redeemLoginChallenge(db, {
       credential: change.credential,
       redemptionId: "clm_retry",
-      nowMs: NOW_MS + 2,
+      nowMs: NOW_MS + 6,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(firstSession.sessionId!),
     });
     expect(retry.kind).toBe("ok");
     if (retry.kind !== "ok") return;
@@ -169,20 +280,23 @@ describe("email-change redeem", () => {
     const competing = await redeemLoginChallenge(db, {
       credential: change.credential,
       redemptionId: "clm_other",
-      nowMs: NOW_MS + 3,
+      nowMs: NOW_MS + 7,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(firstSession.sessionId!),
     });
     expect(competing.kind).toBe("conflict");
   });
 
   it("rejects consumed, revoked, and expired challenges without swapping", async () => {
     const { sqlite, db } = await seeded();
+    const first = await loginFounder(db, "clm_reject_keep");
     const issued = await issueEmailChangeChallenge(db, {
       emailCanonical: "new@example.com",
       emailDisplay: "new@example.com",
       userId: FOUNDER_ID,
-      nowMs: NOW_MS,
+      sessionId: first.sessionId!,
+      nowMs: NOW_MS + 4,
       authRoot,
     });
     expect(issued.kind).toBe("issued");
@@ -192,9 +306,10 @@ describe("email-change redeem", () => {
     const revoked = await redeemLoginChallenge(db, {
       credential: issued.credential,
       redemptionId: "clm_revoked",
-      nowMs: NOW_MS + 1,
+      nowMs: NOW_MS + 5,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(first.sessionId!),
     });
     expect(revoked.kind).toBe("invalid");
 
@@ -202,7 +317,8 @@ describe("email-change redeem", () => {
       emailCanonical: "new@example.com",
       emailDisplay: "new@example.com",
       userId: FOUNDER_ID,
-      nowMs: NOW_MS + 2,
+      sessionId: first.sessionId!,
+      nowMs: NOW_MS + 6,
       authRoot,
     });
     expect(fresh.kind).toBe("issued");
@@ -210,9 +326,10 @@ describe("email-change redeem", () => {
     const expired = await redeemLoginChallenge(db, {
       credential: fresh.credential,
       redemptionId: "clm_expired",
-      nowMs: NOW_MS + 2 + MAGIC_LINK_TTL_MS,
+      nowMs: NOW_MS + 6 + MAGIC_LINK_TTL_MS,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(first.sessionId!),
     });
     expect(expired.kind).toBe("invalid");
 
@@ -247,6 +364,7 @@ describe("email-change redeem", () => {
       emailCanonical: "new@example.com",
       emailDisplay: "New@example.com",
       userId: FOUNDER_ID,
+      sessionId: first.sessionId!,
       nowMs: NOW_MS + 4,
       authRoot,
     });
@@ -269,7 +387,7 @@ describe("email-change redeem", () => {
       nowMs: NOW_MS + 6,
       authRoot,
       userAgentLabel: "confirm",
-      stepUpSessionId: first.sessionId!,
+      ...withConfirmingSession(first.sessionId!),
     });
     expect(retry.kind).toBe("ok");
     if (retry.kind !== "ok") return;
@@ -297,11 +415,13 @@ describe("email-change redeem", () => {
       nowMs: NOW_MS + 7,
       newUuid: () => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     });
+    const competitorSession = await liveSession(db, competitorId, "clm_competitor_session", NOW_MS + 8);
     const competing = await issueEmailChangeChallenge(db, {
       emailCanonical: "new@example.com",
       emailDisplay: "new@example.com",
       userId: competitorId,
-      nowMs: NOW_MS + 8,
+      sessionId: competitorSession.sessionId,
+      nowMs: NOW_MS + 9,
       authRoot,
     });
     expect(competing.kind).toBe("issued");
@@ -309,9 +429,10 @@ describe("email-change redeem", () => {
     const taken = await redeemLoginChallenge(db, {
       credential: competing.credential,
       redemptionId: "clm_partial_taken",
-      nowMs: NOW_MS + 9,
+      nowMs: NOW_MS + 10,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(competitorSession.sessionId),
     });
     expect(taken).toEqual({ kind: "conflict", reason: "email_taken" });
     expect(
@@ -321,18 +442,21 @@ describe("email-change redeem", () => {
 
   it("fail-closes when the new address is taken and on a uniqueness race", async () => {
     const { sqlite, db } = await seeded();
+    const founderSession = await loginFounder(db, "clm_founder_race");
     const otherId = await ensureUserWithDefaults(db, {
       emailCanonical: "taken@example.com",
       emailDisplay: "taken@example.com",
       nowMs: NOW_MS,
       newUuid: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
+    const otherSession = await liveSession(db, otherId, "clm_other_live", NOW_MS + 1);
 
     const occupied = await issueEmailChangeChallenge(db, {
       emailCanonical: "taken@example.com",
       emailDisplay: "taken@example.com",
       userId: FOUNDER_ID,
-      nowMs: NOW_MS,
+      sessionId: founderSession.sessionId!,
+      nowMs: NOW_MS + 2,
       authRoot,
     });
     expect(occupied.kind).toBe("issued");
@@ -340,9 +464,10 @@ describe("email-change redeem", () => {
     const denied = await redeemLoginChallenge(db, {
       credential: occupied.credential,
       redemptionId: "clm_taken",
-      nowMs: NOW_MS + 1,
+      nowMs: NOW_MS + 3,
       authRoot,
       userAgentLabel: null,
+      ...withConfirmingSession(founderSession.sessionId!),
     });
     expect(denied).toEqual({ kind: "conflict", reason: "email_taken" });
     expect(
@@ -357,14 +482,16 @@ describe("email-change redeem", () => {
       emailCanonical: "race@example.com",
       emailDisplay: "race@example.com",
       userId: FOUNDER_ID,
-      nowMs: NOW_MS + 2,
+      sessionId: founderSession.sessionId!,
+      nowMs: NOW_MS + 4,
       authRoot,
     });
     const otherChange = await issueEmailChangeChallenge(db, {
       emailCanonical: "other-new@example.com",
       emailDisplay: "other-new@example.com",
       userId: otherId,
-      nowMs: NOW_MS + 3,
+      sessionId: otherSession.sessionId,
+      nowMs: NOW_MS + 5,
       authRoot,
     });
     expect(founderChange.kind).toBe("issued");
@@ -390,16 +517,18 @@ describe("email-change redeem", () => {
       redeemLoginChallenge(racing, {
         credential: founderChange.credential,
         redemptionId: "clm_race_a",
-        nowMs: NOW_MS + 4,
+        nowMs: NOW_MS + 6,
         authRoot,
         userAgentLabel: null,
+        ...withConfirmingSession(founderSession.sessionId!),
       }),
       redeemLoginChallenge(racing, {
         credential: otherChange.credential,
         redemptionId: "clm_race_b",
-        nowMs: NOW_MS + 5,
+        nowMs: NOW_MS + 7,
         authRoot,
         userAgentLabel: null,
+        ...withConfirmingSession(otherSession.sessionId),
       }),
     ]);
     const kinds = [first.kind, second.kind].sort();

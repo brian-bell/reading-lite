@@ -11,6 +11,9 @@ describe("buildMagicLinkVerifyUrl", () => {
     expect(buildMagicLinkVerifyUrl("https://reading-lite.bbell.dev/", "ml_abc.def")).toBe(
       "https://reading-lite.bbell.dev/auth/verify#ml_abc.def",
     );
+    expect(buildMagicLinkVerifyUrl("https://reading-lite.bbell.dev/", "ml_abc.def", { purpose: "email_change" })).toBe(
+      "https://reading-lite.bbell.dev/auth/verify?purpose=email_change#ml_abc.def",
+    );
   });
 });
 

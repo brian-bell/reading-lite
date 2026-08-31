@@ -702,6 +702,53 @@ describe("App", () => {
     expect(screen.queryByText(/missing its secret/i)).not.toBeInTheDocument();
   });
 
+  it("tells the user to confirm email change from the requesting browser on 401", async () => {
+    let redeemed = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/redeem") {
+        redeemed = true;
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?purpose=email_change#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByText("Open this link in the signed-in browser that requested the email change.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/failed to complete sign-in/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Reading Library" })).not.toBeInTheDocument();
+    expect(redeemed).toBe(false);
+  });
+
+  it("tells the user to confirm email change from the requesting browser on 403", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/redeem") return jsonResponse({ error: "forbidden" }, 403);
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?purpose=email_change#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByText("Open this link in the signed-in browser that requested the email change.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/failed to complete sign-in/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Complete sign-in" })).toBeInTheDocument();
+  });
+
   it("renders reading detail fields (title, url, tldr, summary, entities)", async () => {
     stubJSON(manifest());
     render(<App initialPath="/readings/rd_ONE" />);

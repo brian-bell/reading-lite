@@ -4,7 +4,7 @@ import { issueEmailChangeChallenge, issueLoginChallenge } from "../../../src/con
 import { EMAIL_CHANGE_PURPOSE } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
-import { parseUserId } from "../../../src/control-plane/ids";
+import { parseSessionId, parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -107,6 +107,7 @@ describe("issueLoginChallenge", () => {
 });
 
 const FOUNDER_ID = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!;
+const DUMMY_SESSION_ID = parseSessionId("ses_550e8400-e29b-41d4-a716-446655440000")!;
 
 describe("issueEmailChangeChallenge", () => {
   it("binds the challenge to the caller and delivers to the requested new address", async () => {
@@ -115,6 +116,7 @@ describe("issueEmailChangeChallenge", () => {
       emailCanonical: "new@example.com",
       emailDisplay: "New@example.com",
       userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
       nowMs: NOW_MS,
       authRoot,
     });
@@ -122,18 +124,22 @@ describe("issueEmailChangeChallenge", () => {
     if (issued.kind !== "issued") return;
     expect(issued.deliveryEmail).toBe("New@example.com");
     const row = sqlite
-      .prepare("SELECT purpose, user_id, email_canonical, email_display FROM auth_challenges WHERE id = ?")
+      .prepare(
+        "SELECT purpose, user_id, email_canonical, email_display, bound_session_id FROM auth_challenges WHERE id = ?",
+      )
       .get(issued.challengeId) as {
       purpose: string;
       user_id: string;
       email_canonical: string;
       email_display: string;
+      bound_session_id: string | null;
     };
     expect(row).toEqual({
       purpose: EMAIL_CHANGE_PURPOSE,
       user_id: FOUNDER_ID,
       email_canonical: "new@example.com",
       email_display: "New@example.com",
+      bound_session_id: DUMMY_SESSION_ID,
     });
   });
 
@@ -143,6 +149,7 @@ describe("issueEmailChangeChallenge", () => {
       emailCanonical: "a@example.com",
       emailDisplay: "a@example.com",
       userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
       nowMs: NOW_MS,
       authRoot,
     });
@@ -150,6 +157,7 @@ describe("issueEmailChangeChallenge", () => {
       emailCanonical: "b@example.com",
       emailDisplay: "b@example.com",
       userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
       nowMs: NOW_MS + 1,
       authRoot,
     });

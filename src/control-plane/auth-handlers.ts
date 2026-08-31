@@ -2,12 +2,12 @@ import type { Context } from "hono";
 import { AuthChallengeBodySchema, AuthRedeemBodySchema, CSRF_HEADER } from "../schemas/api";
 import { EMAIL_CHANGE_PURPOSE, LOGIN_PURPOSE, type AuthChallengePurpose } from "./constants";
 import { admitAuthIp, admitAuthSend } from "./auth-rate-guard";
-import { issueEmailChangeChallenge, issueLoginChallenge } from "./challenges";
+import { issueEmailChangeChallenge, issueLoginChallenge, lookupChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
 import { resolveLoginEligibility } from "./eligibility";
 import { logAuthEvent } from "./auth-log";
 import { readAuthRoots } from "./auth-root";
-import { clearSessionCookieHeader, sessionCookieHeader } from "./cookies";
+import { clearSessionCookieHeader, readSessionCookie, sessionCookieHeader } from "./cookies";
 import { fromD1, type ControlPlaneDb } from "./db";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import {
@@ -28,8 +28,8 @@ import { verifyCsrfToken } from "./csrf";
 import { authenticateSession, revokeSession } from "./sessions";
 import { deliverSecurityMail, type SendSecurityMail } from "./security-mail";
 import { sanitizeUserAgent } from "./user-agent";
-import type { RandomBytes } from "./credential";
-import type { UuidSource } from "./ids";
+import { parseCredential, type RandomBytes } from "./credential";
+import { parseChallengeId, parseSessionId, type UuidSource } from "./ids";
 import type { AppBindings } from "../middleware";
 
 export interface AuthRuntime {
@@ -188,12 +188,30 @@ export async function handleAuthRedeem(
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
+  const cookieHeader = c.req.header("cookie");
+  const sessionCookiePresent = readSessionCookie(cookieHeader) !== null;
   const existing = await authenticateSession(db, {
-    cookieHeader: c.req.header("cookie"),
+    cookieHeader,
     authRoot: roots.authRoot,
     ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
     nowMs,
   });
+
+  const presented = parseCredential(parsed.data.credential, parseChallengeId);
+  if (presented) {
+    const preview = await lookupChallenge(db, presented.selector);
+    if (preview?.purpose === EMAIL_CHANGE_PURPOSE) {
+      if (!sessionCookiePresent) return jsonAuth({ error: "unauthorized" }, 401);
+      if (existing.kind !== "ok") return jsonAuth({ error: "forbidden" }, 403);
+      const csrfOk = await verifyCsrfToken({
+        token: c.req.header(CSRF_HEADER),
+        sessionId: existing.principal.sessionId,
+        authRoot: roots.authRoot,
+        ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
+      });
+      if (!csrfOk) return jsonAuth({ error: "forbidden" }, 403);
+    }
+  }
 
   const result = await redeemLoginChallenge(db, {
     credential: parsed.data.credential,
@@ -202,12 +220,15 @@ export async function handleAuthRedeem(
     authRoot: roots.authRoot,
     ...(roots.previousAuthRoot ? { previousAuthRoot: roots.previousAuthRoot } : {}),
     userAgentLabel: sanitizeUserAgent(c.req.header("user-agent")),
+    sessionCookiePresent,
     ...(existing.kind === "ok" ? { stepUpSessionId: existing.principal.sessionId } : {}),
     randomBytes: runtime.randomBytes,
     newUuid: runtime.newUuid,
   });
 
-  if (result.kind === "invalid") return jsonAuth({ error: "unauthorized" }, 401);
+  if (result.kind === "invalid" || result.kind === "unauthenticated") {
+    return jsonAuth({ error: "unauthorized" }, 401);
+  }
   if (result.kind === "conflict") {
     const error =
       result.reason === "email_taken" ? "email change could not be completed" : "challenge already claimed";
@@ -334,6 +355,9 @@ export async function handleEmailChangeRequest(
   }
 
   const principal = c.get("principal");
+  if (principal.kind !== "session") return jsonAuth({ error: "forbidden" }, 403);
+  const sessionId = parseSessionId(principal.sessionId);
+  if (!sessionId) return jsonAuth({ error: "unauthorized" }, 401);
   const current = await db.first<{ email_canonical: string }>(
     "SELECT email_canonical FROM users WHERE id = ?",
     String(principal.userId),
@@ -365,6 +389,7 @@ export async function handleEmailChangeRequest(
     emailCanonical,
     emailDisplay: parsed.data.email.trim(),
     userId: principal.userId,
+    sessionId,
     nowMs,
     authRoot: roots.authRoot,
     randomBytes: runtime.randomBytes,
@@ -376,7 +401,9 @@ export async function handleEmailChangeRequest(
     return jsonAuth({ ok: true }, 200);
   }
 
-  const verifyUrl = buildMagicLinkVerifyUrl(publicWebBase(c.env.WEB_BASE_URL, c.req.url), issued.credential);
+  const verifyUrl = buildMagicLinkVerifyUrl(publicWebBase(c.env.WEB_BASE_URL, c.req.url), issued.credential, {
+    purpose: EMAIL_CHANGE_PURPOSE,
+  });
   const rendered = renderEmailChangeMagicLinkMail(verifyUrl);
   try {
     const delivery = resolveMagicLinkDelivery(c.env, runtime);

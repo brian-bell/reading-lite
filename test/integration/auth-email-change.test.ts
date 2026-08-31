@@ -131,9 +131,35 @@ describe("verified email change", () => {
     expect(requested.sent).toHaveLength(1);
     expect(requested.sent[0]?.to).toBe("Fresh@test.example");
     expect(requested.sent[0]?.subject).toMatch(/confirm/i);
-    expect(requested.sent[0]?.verifyUrl).toContain("/auth/verify#");
+    expect(requested.sent[0]?.verifyUrl).toContain("/auth/verify?purpose=email_change#");
+
+    const credential = credentialFrom(requested.sent[0]!.verifyUrl);
+    const cookieless = await request("/api/auth/redeem", {
+      method: "POST",
+      body: { credential, redemption_id: "clm_email_nocookie" },
+    });
+    expect(cookieless.res.status).toBe(401);
+    expect(await cookieless.res.json()).toEqual({ error: "unauthorized" });
+    expect(cookieless.securityMail).toHaveLength(0);
+
+    const missingRedeemCsrf = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: session.cookie,
+      body: { credential, redemption_id: "clm_email_nocsrf" },
+    });
+    expect(missingRedeemCsrf.res.status).toBe(403);
 
     const other = await redeemUser("changer@test.example", "clm_email_other");
+    const otherRedeem = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { credential, redemption_id: "clm_email_other_device" },
+    });
+    expect(otherRedeem.res.status).toBe(403);
+    expect(await otherRedeem.res.json()).toEqual({ error: "forbidden" });
+    const stillOld = await request("/api/whoami", { cookie: session.cookie });
+    expect((await stillOld.res.json() as { email: string }).email).toBe("changer@test.example");
     const workerEnv = env as unknown as Env;
     const secretHmac = await hmacHex(
       await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
@@ -163,8 +189,9 @@ describe("verified email change", () => {
       {
         method: "POST",
         cookie: session.cookie,
+        csrf: session.csrf,
         body: {
-          credential: credentialFrom(requested.sent[0]!.verifyUrl),
+          credential,
           redemption_id: "clm_email_confirm",
         },
         securityMail,

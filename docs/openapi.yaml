@@ -126,10 +126,18 @@ paths:
 
         Challenges with `purpose=email_change` complete a verified email swap
         instead of issuing a session: they do not provision users or consult
-        signup eligibility. The unique canonical email is swapped
-        atomically; a uniqueness race fails closed. Other sessions and all
-        `api_tokens` are revoked; the confirming session (live cookie for the
-        same user) is kept. The previous address receives a security
+        signup eligibility. Confirm requires the live browser session that
+        called `POST /api/auth/email-change`. Cookie-less redeem returns 401
+        and does not swap, consume, revoke, or send security mail. A cookie
+        that is not that confirming session (other device, other session,
+        expired, or revoked) returns 403 with the same no-commit behavior.
+        A matching live confirming session must also send `Origin` and
+        `X-CSRF-Token` (403 on CSRF failure). Login redeem does not require
+        CSRF and still mints a session when no cookie is present.
+
+        The unique canonical email is swapped atomically; a uniqueness race
+        fails closed. Other sessions and all `api_tokens` are revoked; the
+        confirming session is kept. The previous address receives a security
         notification. Click/open tracking is a Resend domain setting (off by
         default), not a send-payload field.
       requestBody:
@@ -286,8 +294,9 @@ paths:
         Always returns a generic `{ ok: true }` so callers cannot enumerate
         whether that address is already taken. Issues a 15-minute
         `purpose=email_change` challenge bound to the caller `user_id` and
-        delivers the secret to the new address. Confirm via `POST /api/auth/redeem`
-        (fragment + explicit POST, same as login). Does not consult signup
+        the requesting session. Confirm via `POST /api/auth/redeem` from that
+        same signed-in browser (fragment + explicit POST). Cookie-less or
+        other-session redeem does not swap. Does not consult signup
         eligibility. Does not change staging `AUTH_MAIL_ALLOWLIST`.
         Click/open tracking is a Resend domain setting (off by default), not a
         send-payload field.

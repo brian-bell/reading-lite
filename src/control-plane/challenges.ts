@@ -8,7 +8,7 @@ import { formatCredential, mintSecretHex, type RandomBytes } from "./credential"
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
 import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import { resolveLoginEligibility } from "./eligibility";
-import { mintChallengeId, type ChallengeId, type UserId, type UuidSource } from "./ids";
+import { mintChallengeId, type ChallengeId, type SessionId, type UserId, type UuidSource } from "./ids";
 
 export interface IssueLoginChallengeInput {
   emailCanonical: string;
@@ -92,6 +92,7 @@ export interface IssueEmailChangeChallengeInput {
   emailCanonical: string;
   emailDisplay: string;
   userId: UserId;
+  sessionId: SessionId;
   nowMs: number;
   authRoot: AuthRoot;
   randomBytes?: RandomBytes;
@@ -116,15 +117,16 @@ export async function issueEmailChangeChallenge(
   };
   const insert = {
     sql: `INSERT INTO auth_challenges (
-            id, purpose, email_canonical, email_display, user_id,
+            id, purpose, email_canonical, email_display, user_id, bound_session_id,
             secret_hmac, hash_key_version, issued_at_ms, expires_at_ms, state
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued')`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued')`,
     params: [
       challengeId,
       EMAIL_CHANGE_PURPOSE,
       input.emailCanonical,
       input.emailDisplay,
       input.userId,
+      input.sessionId,
       secretHmac,
       input.authRoot.version,
       input.nowMs,
@@ -159,6 +161,7 @@ export async function lookupChallenge(
   email_canonical: string;
   email_display: string;
   user_id: string | null;
+  bound_session_id: string | null;
   secret_hmac: string;
   hash_key_version: number;
   issued_at_ms: number;
@@ -171,7 +174,7 @@ export async function lookupChallenge(
   completed_session_id: string | null;
 } | null> {
   return db.first(
-    `SELECT id, purpose, email_canonical, email_display, user_id, secret_hmac, hash_key_version,
+    `SELECT id, purpose, email_canonical, email_display, user_id, bound_session_id, secret_hmac, hash_key_version,
             issued_at_ms, expires_at_ms, state, claim_id, claimed_at_ms, consumed_at_ms,
             completed_user_id, completed_session_id
      FROM auth_challenges WHERE id = ?`,

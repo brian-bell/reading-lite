@@ -25,9 +25,16 @@ export function resolveMagicLinkDelivery(
   return { kind: "unavailable" };
 }
 
-export function buildMagicLinkVerifyUrl(webBaseUrl: string, credential: string): string {
+export function buildMagicLinkVerifyUrl(
+  webBaseUrl: string,
+  credential: string,
+  query?: { purpose?: string },
+): string {
   const base = webBaseUrl.replace(/\/+$/, "");
-  return `${base}${MAGIC_LINK_VERIFY_PATH}#${credential}`;
+  const params = new URLSearchParams();
+  if (query?.purpose) params.set("purpose", query.purpose);
+  const qs = params.toString() === "" ? "" : `?${params.toString()}`;
+  return `${base}${MAGIC_LINK_VERIFY_PATH}${qs}#${credential}`;
 }
 
 export function publicWebBase(webBaseUrl: string | undefined, requestUrl: string): string {
