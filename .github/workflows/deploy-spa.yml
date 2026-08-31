@@ -52,7 +52,7 @@ jobs:
           ref: ${{ steps.release.outputs.sha }}
       - name: Refuse a stale release
         run: |
-          git fetch --no-tags origin main
+          git fetch --no-tags origin main:refs/remotes/origin/main
           test "$(git rev-parse origin/main)" = "${{ steps.release.outputs.sha }}" || {
             echo "refusing stale SPA release: main advanced past ${{ steps.release.outputs.sha }}"
             exit 1

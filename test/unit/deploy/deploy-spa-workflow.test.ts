@@ -54,6 +54,9 @@ describe("coordinated production deployment workflows", () => {
     expect(workflow.jobs?.deploy?.if).toContain("conclusion == 'success'");
     expect(checkout?.with?.ref).toBe("${{ github.event.workflow_run.head_sha }}");
     expect(commands(workflow)).toContain("npm run ops -- deploy worker --env production --execute");
+    expect(commands(workflow)).toContain(
+      "git fetch --no-tags origin main:refs/remotes/origin/main",
+    );
     expect(commands(workflow)).toContain("git rev-parse origin/main");
     expect(upload?.with?.name).toBe("production-worker-release-sha");
   });
@@ -78,6 +81,7 @@ describe("coordinated production deployment workflows", () => {
     expect(workflow.jobs?.deploy?.if).toContain("conclusion == 'success'");
     expect(download?.with?.["run-id"]).toBe("${{ github.event.workflow_run.id }}");
     expect(checkout?.with?.ref).toBe("${{ steps.release.outputs.sha }}");
+    expect(allCommands).toContain("git fetch --no-tags origin main:refs/remotes/origin/main");
     expect(allCommands).toContain("git rev-parse origin/main");
     expect(allCommands).toContain("npm ci");
     expect(allCommands).toContain("npm run ops -- deploy web --branch main --execute");

@@ -35,7 +35,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
       - name: Refuse a stale release
         run: |
-          git fetch --no-tags origin main
+          git fetch --no-tags origin main:refs/remotes/origin/main
           test "$(git rev-parse origin/main)" = "${{ github.event.workflow_run.head_sha }}" || {
             echo "refusing stale Worker release: main advanced past ${{ github.event.workflow_run.head_sha }}"
             exit 1
