@@ -20,9 +20,20 @@ export class ApiError extends Error {
 
 const CSRF_HEADER = "x-csrf-token";
 let csrfToken: string | undefined;
+let whoamiGeneration = 0;
 
 function rememberCsrfToken(token: string | undefined): void {
   csrfToken = token && token !== "" ? token : undefined;
+}
+
+function rememberWhoamiCsrf(token: string | undefined, generation: number): void {
+  if (generation !== whoamiGeneration) return;
+  rememberCsrfToken(token);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw new DOMException("The operation was aborted.", "AbortError");
 }
 
 function jsonHeaders(extra?: Record<string, string>): Headers {
@@ -53,17 +64,21 @@ async function apiFetch(input: string | URL, init: RequestInit = {}): Promise<Re
   return fetch(new Request(input, { ...init, credentials: "include" }));
 }
 
-export async function getWhoami(): Promise<WhoamiResponse | null> {
-  const response = await apiFetch(new URL("/api/whoami", window.location.origin));
+export async function getWhoami(context?: { signal?: AbortSignal }): Promise<WhoamiResponse | null> {
+  const generation = ++whoamiGeneration;
+  const signal = context?.signal;
+  const response = await apiFetch(new URL("/api/whoami", window.location.origin), { signal });
+  throwIfAborted(signal);
   if (response.status === 401 || response.status === 403) {
-    rememberCsrfToken(undefined);
+    rememberWhoamiCsrf(undefined, generation);
     return null;
   }
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to load identity"));
   }
   const body = (await response.json()) as WhoamiResponse;
-  rememberCsrfToken(body.csrf_token);
+  throwIfAborted(signal);
+  rememberWhoamiCsrf(body.csrf_token, generation);
   return body;
 }
 
