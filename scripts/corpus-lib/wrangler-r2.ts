@@ -329,13 +329,23 @@ export async function keysForReading(
   });
 }
 
-const defaultRunner: Runner = (cmd, args) =>
+// Collect each stream as raw bytes and decode once at close. Decoding per
+// "data" chunk splits a multibyte UTF-8 character that straddles a chunk
+// boundary into U+FFFD replacement characters — which is how rebuild-list once
+// wrote em dashes in three production titles as "\uFFFD\uFFFD" (2026-08-30).
+export const defaultRunner: Runner = (cmd, args) =>
   new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { shell: false });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (d: Buffer) => stdout.push(d));
+    child.stderr.on("data", (d: Buffer) => stderr.push(d));
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    child.on("close", (code) =>
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      }),
+    );
   });
