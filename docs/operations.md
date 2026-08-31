@@ -125,19 +125,23 @@ npm run ops -- deploy worker --env production --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
-Merges to `main` also run `.github/workflows/deploy-worker.yml`: Worker
-typecheck + test, then the same `ops deploy worker --env production --execute`
-(pending remote D1 migrations, then upload). `workflow_dispatch` re-runs that
-path without a merge. The SPA is not part of it (`ops deploy web` stays
-operator-driven), and the workflow does not pass `--var`. `TENANT_DATA_PLANE`
-is pinned in `[env.production.vars]`, so this path keeps the gate on; only
-removing the pin rolls it off (see `docs/founder-cutover.md`).
+Merges to `main` run two independent production workflows. The Worker workflow,
+`.github/workflows/deploy-worker.yml`, runs Worker typecheck + test, then the
+same `ops deploy worker --env production --execute` path (pending remote D1
+migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
+pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
+the pin rolls it off (see `docs/founder-cutover.md`).
+
+The SPA workflow, `.github/workflows/deploy-spa.yml`, installs both lockfiles
+with `npm ci`, then runs the same `ops deploy web --branch main --execute` path
+to build `web/` and deploy `web/dist` to the production Pages branch. It does
+not deploy the Worker. Both workflows also support `workflow_dispatch`.
 
 GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Use the Edit Cloudflare Workers template, scoped to this account; include D1 Edit and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. Scope the token to this account and zone. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 
 The imported founder token expires after 90 days; re-running the same

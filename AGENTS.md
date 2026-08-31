@@ -119,8 +119,9 @@ matrix, not a substitute for real readings.
 - Merges to `main` deploy the production Worker via
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). GitHub
-  secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. The SPA is not
-  auto-deployed.
+  secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. A separate
+  `.github/workflows/deploy-spa.yml` installs the root and SPA lockfiles, builds
+  the SPA, and deploys it through `ops deploy web --branch main --execute`.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `X_API_BEARER_TOKEN` only for
