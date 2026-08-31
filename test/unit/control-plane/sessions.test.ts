@@ -52,7 +52,7 @@ async function issuedSession() {
     authRoot,
     userAgentLabel: "test",
   });
-  if (redeemed.kind !== "ok") throw new Error("expected session");
+  if (redeemed.kind !== "ok" || !redeemed.sessionId || !redeemed.credential) throw new Error("expected session");
   return {
     sqlite,
     db,

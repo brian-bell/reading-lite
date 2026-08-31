@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
-import { issueLoginChallenge } from "../../../src/control-plane/challenges";
+import { issueEmailChangeChallenge, issueLoginChallenge } from "../../../src/control-plane/challenges";
+import { EMAIL_CHANGE_PURPOSE } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
+import { parseSessionId, parseUserId } from "../../../src/control-plane/ids";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -101,6 +103,71 @@ describe("issueLoginChallenge", () => {
       .prepare("SELECT COUNT(*) AS n FROM auth_challenges WHERE state = 'issued'")
       .get() as { n: number };
     expect(issued.n).toBe(1);
+  });
+});
+
+const FOUNDER_ID = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!;
+const DUMMY_SESSION_ID = parseSessionId("ses_550e8400-e29b-41d4-a716-446655440000")!;
+
+describe("issueEmailChangeChallenge", () => {
+  it("binds the challenge to the caller and delivers to the requested new address", async () => {
+    const { sqlite, db } = await seeded();
+    const issued = await issueEmailChangeChallenge(db, {
+      emailCanonical: "new@example.com",
+      emailDisplay: "New@example.com",
+      userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(issued.kind).toBe("issued");
+    if (issued.kind !== "issued") return;
+    expect(issued.deliveryEmail).toBe("New@example.com");
+    const row = sqlite
+      .prepare(
+        "SELECT purpose, user_id, email_canonical, email_display, bound_session_id FROM auth_challenges WHERE id = ?",
+      )
+      .get(issued.challengeId) as {
+      purpose: string;
+      user_id: string;
+      email_canonical: string;
+      email_display: string;
+      bound_session_id: string | null;
+    };
+    expect(row).toEqual({
+      purpose: EMAIL_CHANGE_PURPOSE,
+      user_id: FOUNDER_ID,
+      email_canonical: "new@example.com",
+      email_display: "New@example.com",
+      bound_session_id: DUMMY_SESSION_ID,
+    });
+  });
+
+  it("revokes a prior email-change challenge for the same user even when the target differs", async () => {
+    const { sqlite, db } = await seeded();
+    await issueEmailChangeChallenge(db, {
+      emailCanonical: "a@example.com",
+      emailDisplay: "a@example.com",
+      userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    await issueEmailChangeChallenge(db, {
+      emailCanonical: "b@example.com",
+      emailDisplay: "b@example.com",
+      userId: FOUNDER_ID,
+      sessionId: DUMMY_SESSION_ID,
+      nowMs: NOW_MS + 1,
+      authRoot,
+    });
+    const rows = sqlite
+      .prepare("SELECT email_canonical, state FROM auth_challenges WHERE purpose = ? ORDER BY issued_at_ms")
+      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; state: string }[];
+    expect(rows).toEqual([
+      { email_canonical: "a@example.com", state: "revoked" },
+      { email_canonical: "b@example.com", state: "issued" },
+    ]);
   });
 });
 

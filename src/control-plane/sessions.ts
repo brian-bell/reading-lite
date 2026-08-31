@@ -363,6 +363,29 @@ export async function revokeAllSessionsForUser(
   return result.changes;
 }
 
+export async function revokeOtherSessionsForUser(
+  db: ControlPlaneDb,
+  input: { userId: UserId; exceptSessionId?: string; nowMs: number; reason: string },
+): Promise<number> {
+  if (!input.exceptSessionId) {
+    return revokeAllSessionsForUser(db, {
+      userId: input.userId,
+      nowMs: input.nowMs,
+      reason: input.reason,
+    });
+  }
+  const result = await db.run(
+    `UPDATE sessions
+     SET revoked_at_ms = ?, revocation_reason = ?
+     WHERE user_id = ? AND revoked_at_ms IS NULL AND id != ?`,
+    input.nowMs,
+    input.reason,
+    input.userId,
+    input.exceptSessionId,
+  );
+  return result.changes;
+}
+
 function sessionUsable(
   row: { revoked_at_ms: number | null; idle_expires_at_ms: number; absolute_expires_at_ms: number },
   nowMs: number,

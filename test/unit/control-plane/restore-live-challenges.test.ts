@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { restoreLiveLoginChallenges } from "../../../src/control-plane/auth-handlers";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
-import { issueLoginChallenge } from "../../../src/control-plane/challenges";
+import { issueEmailChangeChallenge, issueLoginChallenge } from "../../../src/control-plane/challenges";
+import { EMAIL_CHANGE_PURPOSE } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import { parseUserId } from "../../../src/control-plane/ids";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
+import { ensureUserWithDefaults, issueSessionForClaim } from "../../../src/control-plane/sessions";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -573,5 +576,269 @@ describe("restoreLiveLoginChallenges", () => {
       userAgentLabel: "test",
     });
     expect(firstRedeem.kind).toBe("ok");
+  });
+});
+
+describe("restoreLiveChallenges email_change", () => {
+  const FOUNDER_ID = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!;
+
+  it("restores a prior address when a later different-address challenge is rolled back", async () => {
+    const { sqlite, db } = await seeded();
+    const login = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(login.kind).toBe("issued");
+    if (login.kind !== "issued") return;
+    const session = await redeemLoginChallenge(db, {
+      credential: login.credential,
+      redemptionId: "clm_email_restore_login",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(session.kind).toBe("ok");
+    if (session.kind !== "ok" || !session.sessionId) return;
+
+    const toA = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-a@example.com",
+      emailDisplay: "address-a@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(toA.kind).toBe("issued");
+    if (toA.kind !== "issued") return;
+    markMailSent(sqlite, toA.challengeId, NOW_MS + 2);
+    const snapshot = [{ id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 }];
+
+    const toB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 3,
+      authRoot,
+    });
+    expect(toB.kind).toBe("issued");
+    if (toB.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, toB.challengeId, snapshot);
+
+    const rows = sqlite
+      .prepare(
+        "SELECT email_canonical, state FROM auth_challenges WHERE purpose = ? ORDER BY issued_at_ms",
+      )
+      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; state: string }[];
+    expect(rows).toEqual([
+      { email_canonical: "address-a@example.com", state: "issued" },
+      { email_canonical: "address-b@example.com", state: "revoked" },
+    ]);
+  });
+
+  it("restores every unused snapshot row, not the newest marked row in the union", async () => {
+    const { sqlite, db } = await seeded();
+    const login = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(login.kind).toBe("issued");
+    if (login.kind !== "issued") return;
+    const session = await redeemLoginChallenge(db, {
+      credential: login.credential,
+      redemptionId: "clm_email_restore_two_user_login",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(session.kind).toBe("ok");
+    if (session.kind !== "ok" || !session.sessionId) return;
+
+    const toA = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-a@example.com",
+      emailDisplay: "address-a@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(toA.kind).toBe("issued");
+    if (toA.kind !== "issued") return;
+    markMailSent(sqlite, toA.challengeId, NOW_MS + 2);
+
+    const otherId = await ensureUserWithDefaults(db, {
+      emailCanonical: "other@example.com",
+      emailDisplay: "other@example.com",
+      nowMs: NOW_MS + 3,
+      newUuid: () => "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    });
+    const otherSession = await issueSessionForClaim(db, {
+      userId: otherId,
+      claimId: "clm_other_restore_session",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "other",
+    });
+    expect(otherSession.kind).toBe("ok");
+    if (otherSession.kind !== "ok") return;
+    const otherB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: otherId,
+      sessionId: otherSession.sessionId,
+      nowMs: NOW_MS + 5,
+      authRoot,
+    });
+    expect(otherB.kind).toBe("issued");
+    if (otherB.kind !== "issued") return;
+    markMailSent(sqlite, otherB.challengeId, NOW_MS + 5);
+
+    const snapshot = [
+      { id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 },
+      { id: otherB.challengeId, state: "issued", issued_at_ms: NOW_MS + 5 },
+    ];
+    const callerB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 6,
+      authRoot,
+    });
+    expect(callerB.kind).toBe("issued");
+    if (callerB.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
+
+    const rows = sqlite
+      .prepare(
+        `SELECT email_canonical, user_id, state FROM auth_challenges
+         WHERE purpose = ? ORDER BY issued_at_ms`,
+      )
+      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; user_id: string; state: string }[];
+    expect(rows).toEqual([
+      { email_canonical: "address-a@example.com", user_id: FOUNDER_ID, state: "issued" },
+      { email_canonical: "address-b@example.com", user_id: otherId, state: "issued" },
+      { email_canonical: "address-b@example.com", user_id: FOUNDER_ID, state: "revoked" },
+    ]);
+  });
+
+  it("keeps restoring later snapshot ids when one restore unique-conflicts", async () => {
+    const { sqlite, db } = await seeded();
+    const login = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: NOW_MS,
+      authRoot,
+    });
+    expect(login.kind).toBe("issued");
+    if (login.kind !== "issued") return;
+    const session = await redeemLoginChallenge(db, {
+      credential: login.credential,
+      redemptionId: "clm_email_restore_unique_login",
+      nowMs: NOW_MS + 1,
+      authRoot,
+      userAgentLabel: "test",
+    });
+    expect(session.kind).toBe("ok");
+    if (session.kind !== "ok" || !session.sessionId) return;
+
+    const toA = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-a@example.com",
+      emailDisplay: "address-a@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 2,
+      authRoot,
+    });
+    expect(toA.kind).toBe("issued");
+    if (toA.kind !== "issued") return;
+
+    const otherId = await ensureUserWithDefaults(db, {
+      emailCanonical: "other@example.com",
+      emailDisplay: "other@example.com",
+      nowMs: NOW_MS + 3,
+      newUuid: () => "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    });
+    const otherSession = await issueSessionForClaim(db, {
+      userId: otherId,
+      claimId: "clm_unique_other_session",
+      nowMs: NOW_MS + 4,
+      authRoot,
+      userAgentLabel: "other",
+    });
+    expect(otherSession.kind).toBe("ok");
+    if (otherSession.kind !== "ok") return;
+    const otherB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: otherId,
+      sessionId: otherSession.sessionId,
+      nowMs: NOW_MS + 5,
+      authRoot,
+    });
+    expect(otherB.kind).toBe("issued");
+    if (otherB.kind !== "issued") return;
+
+    const snapshot = [
+      { id: otherB.challengeId, state: "issued", issued_at_ms: NOW_MS + 5 },
+      { id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 },
+    ];
+    const callerB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: FOUNDER_ID,
+      sessionId: session.sessionId,
+      nowMs: NOW_MS + 6,
+      authRoot,
+    });
+    expect(callerB.kind).toBe("issued");
+    if (callerB.kind !== "issued") return;
+
+    const thirdId = await ensureUserWithDefaults(db, {
+      emailCanonical: "third@example.com",
+      emailDisplay: "third@example.com",
+      nowMs: NOW_MS + 7,
+      newUuid: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    });
+    const thirdSession = await issueSessionForClaim(db, {
+      userId: thirdId,
+      claimId: "clm_unique_third_session",
+      nowMs: NOW_MS + 8,
+      authRoot,
+      userAgentLabel: "third",
+    });
+    expect(thirdSession.kind).toBe("ok");
+    if (thirdSession.kind !== "ok") return;
+    const thirdB = await issueEmailChangeChallenge(db, {
+      emailCanonical: "address-b@example.com",
+      emailDisplay: "address-b@example.com",
+      userId: thirdId,
+      sessionId: thirdSession.sessionId,
+      nowMs: NOW_MS + 9,
+      authRoot,
+    });
+    expect(thirdB.kind).toBe("issued");
+    if (thirdB.kind !== "issued") return;
+
+    await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
+
+    const rows = sqlite
+      .prepare(
+        `SELECT email_canonical, user_id, state FROM auth_challenges
+         WHERE purpose = ? ORDER BY issued_at_ms`,
+      )
+      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; user_id: string; state: string }[];
+    expect(rows).toEqual([
+      { email_canonical: "address-a@example.com", user_id: FOUNDER_ID, state: "issued" },
+      { email_canonical: "address-b@example.com", user_id: otherId, state: "revoked" },
+      { email_canonical: "address-b@example.com", user_id: FOUNDER_ID, state: "revoked" },
+      { email_canonical: "address-b@example.com", user_id: thirdId, state: "issued" },
+    ]);
   });
 });

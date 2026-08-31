@@ -97,7 +97,7 @@ export async function requestLoginLink(email: string): Promise<void> {
 export async function redeemLoginLink(credential: string, redemptionId: string): Promise<WhoamiResponse> {
   const response = await apiFetch(new URL("/api/auth/redeem", window.location.origin), {
     method: "POST",
-    headers: jsonHeaders(),
+    headers: mutationHeaders(),
     body: JSON.stringify({ credential, redemption_id: redemptionId })
   });
   if (!response.ok) {
@@ -151,6 +151,17 @@ export async function revokeAllSessions(): Promise<void> {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke sessions"));
   }
   rememberCsrfToken(undefined);
+}
+
+export async function requestEmailChange(email: string): Promise<void> {
+  const response = await apiFetch(new URL("/api/auth/email-change", window.location.origin), {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ email })
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to request email change"));
+  }
 }
 
 export type ListReadingsParams = {

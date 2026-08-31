@@ -702,6 +702,53 @@ describe("App", () => {
     expect(screen.queryByText(/missing its secret/i)).not.toBeInTheDocument();
   });
 
+  it("tells the user to confirm email change from the requesting browser on 401", async () => {
+    let redeemed = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/redeem") {
+        redeemed = true;
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?purpose=email_change#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByText("Open this link in the signed-in browser that requested the email change.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/failed to complete sign-in/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Reading Library" })).not.toBeInTheDocument();
+    expect(redeemed).toBe(false);
+  });
+
+  it("tells the user to confirm email change from the requesting browser on 403", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/redeem") return jsonResponse({ error: "forbidden" }, 403);
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?purpose=email_change#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(
+      await screen.findByText("Open this link in the signed-in browser that requested the email change.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/failed to complete sign-in/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Complete sign-in" })).toBeInTheDocument();
+  });
+
   it("renders reading detail fields (title, url, tldr, summary, entities)", async () => {
     stubJSON(manifest());
     render(<App initialPath="/readings/rd_ONE" />);
@@ -1396,5 +1443,58 @@ describe("App", () => {
     expect(fetchMock.mock.calls.some((c) => new URL((c[0] as Request).url).pathname === "/api/auth/logout")).toBe(
       false
     );
+  });
+
+  it("requests an email change with CSRF and shows a generic ack", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({ sessions: [], session_cap_warning: null });
+      }
+      if (url.pathname === "/api/auth/email-change") return jsonResponse({ ok: true });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByRole("heading", { name: "Change email" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("New email"), "new@example.com");
+    await user.click(screen.getByRole("button", { name: "Send confirmation" }));
+    expect(await screen.findByText(/if that address can be used/i)).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/email-change";
+    });
+    expect(post).toBeDefined();
+    expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(await (post![0] as Request).clone().json()).toEqual({ email: "new@example.com" });
+  });
+
+  it("asks for a fresh sign-in link when email change requires recent auth", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+        return jsonResponse({ sessions: [], session_cap_warning: null });
+      }
+      if (url.pathname === "/api/auth/email-change") {
+        return jsonResponse({ error: "recent authentication required" }, 403);
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.type(await screen.findByLabelText("New email"), "new@example.com");
+    await user.click(screen.getByRole("button", { name: "Send confirmation" }));
+    expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
+      "href",
+      "/login"
+    );
+    expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
   });
 });

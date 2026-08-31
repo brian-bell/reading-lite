@@ -121,8 +121,25 @@ paths:
         (`Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=7776000`) so login
         survives browser restart. D1 still enforces a 30-day inactivity
         timeout and 90-day absolute expiry. If the request already carries a
-        live session cookie for the same user, redemption refreshes
+        live session cookie for the same user, login redemption refreshes
         `authenticated_at_ms` on that row instead of inserting another session.
+
+        Challenges with `purpose=email_change` complete a verified email swap
+        instead of issuing a session: they do not provision users or consult
+        signup eligibility. Confirm requires the live browser session that
+        called `POST /api/auth/email-change`. Cookie-less redeem returns 401
+        and does not swap, consume, revoke, or send security mail. A cookie
+        that is not that confirming session (other device, other session,
+        expired, or revoked) returns 403 with the same no-commit behavior.
+        A matching live confirming session must also send `Origin` and
+        `X-CSRF-Token` (403 on CSRF failure). Login redeem does not require
+        CSRF and still mints a session when no cookie is present.
+
+        The unique canonical email is swapped atomically; a uniqueness race
+        fails closed. Other sessions and all `api_tokens` are revoked; the
+        confirming session is kept. The previous address receives a security
+        notification. Click/open tracking is a Resend domain setting (off by
+        default), not a send-payload field.
       requestBody:
         required: true
         content:
@@ -265,6 +282,51 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/auth/email-change:
+    post:
+      tags: [identity]
+      operationId: requestEmailChange
+      summary: Request a verified login-email change
+      description: |
+        Session cookie plus `X-CSRF-Token`. Requires recent magic-link
+        authentication (10 minutes). Body `{ email }` is the new address.
+        Always returns a generic `{ ok: true }` so callers cannot enumerate
+        whether that address is already taken. Issues a 15-minute
+        `purpose=email_change` challenge bound to the caller `user_id` and
+        the requesting session. Confirm via `POST /api/auth/redeem` from that
+        same signed-in browser (fragment + explicit POST). Cookie-less or
+        other-session redeem does not swap. Does not consult signup
+        eligibility. Does not change staging `AUTH_MAIL_ALLOWLIST`.
+        Click/open tracking is a Resend domain setting (off by default), not a
+        send-payload field.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthEmailChangeBody"
+      responses:
+        "200":
+          description: Generic acknowledgement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthChallengeResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
 
   /api/readings:
     parameters:
@@ -927,6 +989,15 @@ components:
           type: string
           minLength: 1
         redemption_id:
+          type: string
+          minLength: 1
+
+    AuthEmailChangeBody:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
           type: string
           minLength: 1
 

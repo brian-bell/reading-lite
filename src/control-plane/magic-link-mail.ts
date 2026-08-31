@@ -25,9 +25,16 @@ export function resolveMagicLinkDelivery(
   return { kind: "unavailable" };
 }
 
-export function buildMagicLinkVerifyUrl(webBaseUrl: string, credential: string): string {
+export function buildMagicLinkVerifyUrl(
+  webBaseUrl: string,
+  credential: string,
+  query?: { purpose?: string },
+): string {
   const base = webBaseUrl.replace(/\/+$/, "");
-  return `${base}${MAGIC_LINK_VERIFY_PATH}#${credential}`;
+  const params = new URLSearchParams();
+  if (query?.purpose) params.set("purpose", query.purpose);
+  const qs = params.toString() === "" ? "" : `?${params.toString()}`;
+  return `${base}${MAGIC_LINK_VERIFY_PATH}${qs}#${credential}`;
 }
 
 export function publicWebBase(webBaseUrl: string | undefined, requestUrl: string): string {
@@ -51,6 +58,26 @@ export function renderMagicLinkMail(verifyUrl: string): { subject: string; html:
     "<p>Use this link to sign in to reading-lite.</p>",
     "<p>It expires in 15 minutes and can be used once.</p>",
     `<p><a href="${escapeAttr(verifyUrl)}">Sign in</a></p>`,
+    `<p>${escapeText(verifyUrl)}</p>`,
+    "<p>If you did not request this, you can ignore this message.</p>",
+  ].join("\n");
+  return { subject, html, text };
+}
+
+export function renderEmailChangeMagicLinkMail(verifyUrl: string): { subject: string; html: string; text: string } {
+  const subject = "Confirm your reading-lite email";
+  const text = [
+    "Use this link to confirm a new login email for reading-lite.",
+    "It expires in 15 minutes and can be used once.",
+    "",
+    verifyUrl,
+    "",
+    "If you did not request this, you can ignore this message.",
+  ].join("\n");
+  const html = [
+    "<p>Use this link to confirm a new login email for reading-lite.</p>",
+    "<p>It expires in 15 minutes and can be used once.</p>",
+    `<p><a href="${escapeAttr(verifyUrl)}">Confirm email</a></p>`,
     `<p>${escapeText(verifyUrl)}</p>`,
     "<p>If you did not request this, you can ignore this message.</p>",
   ].join("\n");

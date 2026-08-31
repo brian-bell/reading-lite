@@ -82,6 +82,9 @@ export const AuthRedeemBodySchema = z.object({
 });
 export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
 
+export const AuthEmailChangeBodySchema = AuthChallengeBodySchema;
+export type AuthEmailChangeBody = z.infer<typeof AuthEmailChangeBodySchema>;
+
 export const SessionListItemSchema = z.object({
   id: z.string().min(1),
   current: z.boolean(),

@@ -197,3 +197,15 @@ async function persistRotatedHmac(
     },
   ]);
 }
+
+export async function revokeAllApiTokensForUser(
+  db: ControlPlaneDb,
+  input: { userId: string; nowMs: number },
+): Promise<number> {
+  const result = await db.run(
+    `UPDATE api_tokens SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL`,
+    input.nowMs,
+    input.userId,
+  );
+  return result.changes;
+}

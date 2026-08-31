@@ -25,6 +25,7 @@ import {
   logoutSession,
   redeemLoginLink,
   reprocessReading,
+  requestEmailChange,
   requestLoginLink,
   revokeAllSessions,
   revokeSession,
@@ -276,6 +277,9 @@ function AccountSecurityPage({
   });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [emailSubmitted, setEmailSubmitted] = useState(false);
+  const [needFreshSignIn, setNeedFreshSignIn] = useState(false);
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
@@ -314,6 +318,28 @@ function AccountSecurityPage({
     }
   }
 
+  async function onChangeEmail(event: { preventDefault: () => void }) {
+    event.preventDefault();
+    if (busyId) return;
+    setError(null);
+    setNeedFreshSignIn(false);
+    setEmailSubmitted(false);
+    setBusyId("email");
+    try {
+      await requestEmailChange(emailDraft);
+      setEmailSubmitted(true);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setNeedFreshSignIn(true);
+        setError("Recent sign-in required. Request a fresh sign-in link, then try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "failed to request email change");
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const listed = sessionsQuery.data;
   return (
     <section className="page account-security">
@@ -329,6 +355,11 @@ function AccountSecurityPage({
         </p>
       ) : null}
       {error ? <p className="error-message">{error}</p> : null}
+      {needFreshSignIn ? (
+        <p role="alert">
+          <Link to="/login">Request a fresh sign-in link</Link> to confirm a sensitive change.
+        </p>
+      ) : null}
       {sessionsQuery.isPending ? <StatusMessage>Loading</StatusMessage> : null}
       {sessionsQuery.isError ? (
         <IdentityError
@@ -368,6 +399,24 @@ function AccountSecurityPage({
             </li>
           ))}
         </ul>
+      ) : null}
+      <form className="token-form" onSubmit={(event) => void onChangeEmail(event)}>
+        <h2>Change email</h2>
+        <label htmlFor="change-email">New email</label>
+        <input
+          id="change-email"
+          type="email"
+          autoComplete="email"
+          value={emailDraft}
+          onChange={(event) => setEmailDraft(event.target.value)}
+          required
+        />
+        <button type="submit" disabled={busyId != null}>
+          Send confirmation
+        </button>
+      </form>
+      {emailSubmitted ? (
+        <p role="status">If that address can be used, we sent a short-lived confirmation link.</p>
       ) : null}
     </section>
   );
@@ -442,6 +491,9 @@ function LoginPage({
   );
 }
 
+const EMAIL_CHANGE_CONFIRM_HINT =
+  "Open this link in the signed-in browser that requested the email change.";
+
 function VerifyPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -455,6 +507,7 @@ function VerifyPage() {
       ? `clm_${crypto.randomUUID()}`
       : `clm_${Math.random().toString(36).slice(2)}`
   );
+  const emailChangeConfirm = searchParams.get("purpose") === "email_change";
 
   useEffect(() => {
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
@@ -482,6 +535,13 @@ function VerifyPage() {
               setBusy(true);
               setError(null);
               try {
+                if (emailChangeConfirm) {
+                  const me = await queryClient.fetchQuery({ queryKey: ["whoami"], queryFn: getWhoami });
+                  if (!me) {
+                    setError(EMAIL_CHANGE_CONFIRM_HINT);
+                    return;
+                  }
+                }
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
                 queryClient.removeQueries({ queryKey: ["sessions"] });
@@ -491,6 +551,14 @@ function VerifyPage() {
                 if (!whoami) throw new Error("failed to complete sign-in");
                 navigate(consumeLoginReturnPath(searchParams.get("next")), { replace: true });
               } catch (e) {
+                if (
+                  emailChangeConfirm &&
+                  e instanceof ApiError &&
+                  (e.status === 401 || e.status === 403)
+                ) {
+                  setError(EMAIL_CHANGE_CONFIRM_HINT);
+                  return;
+                }
                 setError(e instanceof Error ? e.message : "failed to complete sign-in");
               } finally {
                 setBusy(false);
