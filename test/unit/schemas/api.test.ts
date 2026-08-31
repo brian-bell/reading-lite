@@ -9,6 +9,7 @@ import {
   ListIndexItemSchema,
   ListIndexSchema,
   GetWhoamiResponseSchema,
+  ListSessionsResponseSchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -348,5 +349,29 @@ describe("GetWhoamiResponseSchema", () => {
     expect(() =>
       GetWhoamiResponseSchema.parse({ ...bearer, principal: "session", csrf_token: "short" }),
     ).toThrow();
+  });
+});
+
+describe("ListSessionsResponseSchema", () => {
+  it("accepts a current session and a cap warning", () => {
+    const body = {
+      sessions: [
+        {
+          id: "ses_550e8400-e29b-41d4-a716-446655440000",
+          current: true,
+          created_at_ms: 1,
+          authenticated_at_ms: 1,
+          last_seen_at_ms: 1,
+          idle_expires_at_ms: 2,
+          absolute_expires_at_ms: 3,
+          revoked_at_ms: null,
+          revocation_reason: null,
+          user_agent_label: "test",
+          usable: true,
+        },
+      ],
+      session_cap_warning: "at cap",
+    };
+    expect(ListSessionsResponseSchema.parse(body)).toEqual(body);
   });
 });

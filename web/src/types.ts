@@ -245,3 +245,22 @@ export interface WhoamiResponse {
   csrf_token?: string;
 }
 
+export interface SessionListItem {
+  id: string;
+  current: boolean;
+  created_at_ms: number;
+  authenticated_at_ms: number;
+  last_seen_at_ms: number;
+  idle_expires_at_ms: number;
+  absolute_expires_at_ms: number;
+  revoked_at_ms: number | null;
+  revocation_reason: string | null;
+  user_agent_label: string | null;
+  usable: boolean;
+}
+
+export interface ListSessionsResponse {
+  sessions: SessionListItem[];
+  session_cap_warning: string | null;
+}
+

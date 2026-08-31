@@ -5,6 +5,10 @@ export const SESSION_ABSOLUTE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const SESSION_COOKIE_MAX_AGE_SECONDS = 7_776_000;
 export const SESSION_LAST_SEEN_COALESCE_MS = 60 * 60 * 1000;
 export const MAX_ACTIVE_SESSIONS = 10;
+/** Fresh magic-link confirmation window for step-up (API tokens, email change, account delete). */
+export const RECENT_AUTH_WINDOW_MS = 10 * 60 * 1000;
+export const SESSION_CAP_WARNING =
+  "This account is at the 10-session limit. Signing in from another device will sign out the least recently used session.";
 
 export const SESSION_COOKIE_NAME = "__Host-session";
 /** Same-origin SPA path in the magic-link URL. Pages must SPA-fallback this route. */

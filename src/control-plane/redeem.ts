@@ -6,10 +6,10 @@ import { resolveLoginEligibility } from "./eligibility";
 import { matchSecretHmac } from "./hmac-match";
 import { parseChallengeId, type SessionId, type UserId, type UuidSource } from "./ids";
 import { lookupChallenge } from "./challenges";
-import { ensureUserWithDefaults, issueSessionForClaim } from "./sessions";
+import { ensureUserWithDefaults, issueSessionForClaim, refreshSessionAuthenticatedAt, sessionExistsForClaim } from "./sessions";
 
 export type RedeemResult =
-  | { kind: "ok"; userId: UserId; sessionId: SessionId; credential: string; emailDisplay: string }
+  | { kind: "ok"; userId: UserId; sessionId: SessionId; credential: string | null; emailDisplay: string }
   | { kind: "invalid" }
   | { kind: "conflict" }
   | { kind: "forbidden" };
@@ -21,6 +21,8 @@ export interface RedeemLoginInput {
   authRoot: AuthRoot;
   previousAuthRoot?: AuthRoot;
   userAgentLabel: string | null;
+  /** When set, refresh this live session instead of inserting another row. */
+  stepUpSessionId?: string;
   randomBytes?: RandomBytes;
   newUuid?: UuidSource;
 }
@@ -116,6 +118,52 @@ async function completeRedemption(
     newUuid: input.newUuid,
   });
 
+  // Consumed replay is pinned to the original completed session. A live cookie
+  // for a different same-user session must not refresh or overwrite that row.
+  // Step-up writes completed_session_id without a sessions row for this claim;
+  // replaying the same redemption must resume that row, not insert (and LRU).
+  if (challenge.state === "consumed" && challenge.completed_session_id) {
+    const mintedForClaim = await sessionExistsForClaim(db, userId, input.redemptionId);
+    if (!mintedForClaim) {
+      const resumed = await refreshSessionAuthenticatedAt(db, {
+        sessionId: challenge.completed_session_id,
+        userId,
+        nowMs: input.nowMs,
+      });
+      if (resumed.kind !== "ok") return { kind: "invalid" };
+      return {
+        kind: "ok",
+        userId,
+        sessionId: resumed.sessionId,
+        credential: null,
+        emailDisplay,
+      };
+    }
+  } else if (input.stepUpSessionId && challenge.state === "claimed") {
+    const refreshed = await refreshSessionAuthenticatedAt(db, {
+      sessionId: input.stepUpSessionId,
+      userId,
+      nowMs: input.nowMs,
+    });
+    if (refreshed.kind === "ok") {
+      await consumeChallenge(db, {
+        challengeId: challenge.id,
+        redemptionId: input.redemptionId,
+        nowMs: input.nowMs,
+        userId,
+        sessionId: refreshed.sessionId,
+        emailCanonical: challenge.email_canonical,
+      });
+      return {
+        kind: "ok",
+        userId,
+        sessionId: refreshed.sessionId,
+        credential: null,
+        emailDisplay,
+      };
+    }
+  }
+
   const session = await issueSessionForClaim(db, {
     userId,
     claimId: input.redemptionId,
@@ -127,23 +175,14 @@ async function completeRedemption(
   });
   if (session.kind !== "ok") return { kind: "invalid" };
 
-  await db.batch([
-    {
-      sql: `UPDATE auth_challenges
-            SET state = 'consumed',
-                consumed_at_ms = COALESCE(consumed_at_ms, ?),
-                completed_user_id = ?,
-                completed_session_id = ?
-            WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
-      params: [input.nowMs, userId, session.sessionId, challenge.id, input.redemptionId],
-    },
-    {
-      sql: `UPDATE signup_invites
-            SET consumed_at_ms = COALESCE(consumed_at_ms, ?)
-            WHERE email_canonical = ? AND consumed_at_ms IS NULL`,
-      params: [input.nowMs, challenge.email_canonical],
-    },
-  ]);
+  await consumeChallenge(db, {
+    challengeId: challenge.id,
+    redemptionId: input.redemptionId,
+    nowMs: input.nowMs,
+    userId,
+    sessionId: session.sessionId,
+    emailCanonical: challenge.email_canonical,
+  });
 
   return {
     kind: "ok",
@@ -152,4 +191,34 @@ async function completeRedemption(
     credential: session.credential,
     emailDisplay,
   };
+}
+
+async function consumeChallenge(
+  db: ControlPlaneDb,
+  input: {
+    challengeId: string;
+    redemptionId: string;
+    nowMs: number;
+    userId: UserId;
+    sessionId: SessionId;
+    emailCanonical: string;
+  },
+): Promise<void> {
+  await db.batch([
+    {
+      sql: `UPDATE auth_challenges
+            SET state = 'consumed',
+                consumed_at_ms = COALESCE(consumed_at_ms, ?),
+                completed_user_id = ?,
+                completed_session_id = ?
+            WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
+      params: [input.nowMs, input.userId, input.sessionId, input.challengeId, input.redemptionId],
+    },
+    {
+      sql: `UPDATE signup_invites
+            SET consumed_at_ms = COALESCE(consumed_at_ms, ?)
+            WHERE email_canonical = ? AND consumed_at_ms IS NULL`,
+      params: [input.nowMs, input.emailCanonical],
+    },
+  ]);
 }

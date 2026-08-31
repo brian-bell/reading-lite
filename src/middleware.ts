@@ -5,6 +5,7 @@ import { cookieCsrfRequired, verifyCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
 import { cookieAuthAllowed } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
+import { principalHasRecentAuth } from "./control-plane/recent-auth";
 import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
 
@@ -67,6 +68,20 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
     return undefined;
   };
 };
+
+/** Session principals only. Fresh magic-link confirmation within 10 minutes. Not mounted on corpus routes. */
+export const requireRecentAuth = (nowMs: () => number): MiddlewareHandler<AppBindings> => {
+  return async (c, next) => {
+    const principal = c.get("principal");
+    if (!principalHasRecentAuth(principal, nowMs())) {
+      return jsonNoStore(c, { error: "recent authentication required" }, 403);
+    }
+    await next();
+    return undefined;
+  };
+};
+
+export { isRecentAuth, principalHasRecentAuth } from "./control-plane/recent-auth";
 
 // Enforces the optional x-expected-tenant layout pin (reading-lite-1xk): when
 // the header is present, the request proceeds only if the layout it names is

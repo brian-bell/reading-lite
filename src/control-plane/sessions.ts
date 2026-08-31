@@ -2,6 +2,7 @@ import { FOUNDER_PLACEHOLDER_LIMITS } from "./bootstrap";
 import {
   MAX_ACTIVE_SESSIONS,
   SESSION_ABSOLUTE_TTL_MS,
+  SESSION_CAP_WARNING,
   SESSION_IDLE_TTL_MS,
   SESSION_LAST_SEEN_COALESCE_MS,
 } from "./constants";
@@ -32,7 +33,28 @@ interface SessionRow {
   idle_expires_at_ms: number;
   absolute_expires_at_ms: number;
   revoked_at_ms: number | null;
+  revocation_reason: string | null;
+  user_agent_label: string | null;
   created_from_claim_id: string;
+}
+
+export interface SessionListItem {
+  id: string;
+  current: boolean;
+  created_at_ms: number;
+  authenticated_at_ms: number;
+  last_seen_at_ms: number;
+  idle_expires_at_ms: number;
+  absolute_expires_at_ms: number;
+  revoked_at_ms: number | null;
+  revocation_reason: string | null;
+  user_agent_label: string | null;
+  usable: boolean;
+}
+
+export interface SessionListResult {
+  sessions: SessionListItem[];
+  session_cap_warning: string | null;
 }
 
 export async function ensureUserWithDefaults(
@@ -249,7 +271,102 @@ export async function revokeSession(
   );
 }
 
-function sessionUsable(row: SessionRow, nowMs: number): boolean {
+export async function listSessionsForUser(
+  db: ControlPlaneDb,
+  input: { userId: UserId; nowMs: number; currentSessionId?: string },
+): Promise<SessionListResult> {
+  const rows = await db.all<{
+    id: string;
+    created_at_ms: number;
+    authenticated_at_ms: number;
+    last_seen_at_ms: number;
+    idle_expires_at_ms: number;
+    absolute_expires_at_ms: number;
+    revoked_at_ms: number | null;
+    revocation_reason: string | null;
+    user_agent_label: string | null;
+  }>(
+    `SELECT id, created_at_ms, authenticated_at_ms, last_seen_at_ms,
+            idle_expires_at_ms, absolute_expires_at_ms, revoked_at_ms,
+            revocation_reason, user_agent_label
+     FROM sessions
+     WHERE user_id = ?
+     ORDER BY last_seen_at_ms DESC, created_at_ms DESC`,
+    input.userId,
+  );
+  let activeCount = 0;
+  const sessions = rows.map((row) => {
+    const usable = sessionUsable(row, input.nowMs);
+    if (usable) activeCount += 1;
+    return {
+      ...row,
+      usable,
+      current: input.currentSessionId != null && row.id === input.currentSessionId,
+    };
+  });
+  return {
+    sessions,
+    session_cap_warning: activeCount >= MAX_ACTIVE_SESSIONS ? SESSION_CAP_WARNING : null,
+  };
+}
+
+export async function refreshSessionAuthenticatedAt(
+  db: ControlPlaneDb,
+  input: { sessionId: string; userId: UserId; nowMs: number },
+): Promise<{ kind: "ok"; sessionId: SessionId } | { kind: "invalid" }> {
+  const sessionId = parseSessionId(input.sessionId);
+  if (!sessionId) return { kind: "invalid" };
+  const result = await db.run(
+    `UPDATE sessions
+     SET authenticated_at_ms = ?
+     WHERE id = ? AND user_id = ? AND revoked_at_ms IS NULL
+       AND idle_expires_at_ms > ? AND absolute_expires_at_ms > ?`,
+    input.nowMs,
+    sessionId,
+    input.userId,
+    input.nowMs,
+    input.nowMs,
+  );
+  if (result.changes === 0) return { kind: "invalid" };
+  return { kind: "ok", sessionId };
+}
+
+export async function revokeOwnedSession(
+  db: ControlPlaneDb,
+  input: { sessionId: string; userId: UserId; nowMs: number; reason: string },
+): Promise<"ok" | "not_found"> {
+  const sessionId = parseSessionId(input.sessionId);
+  if (!sessionId) return "not_found";
+  const row = await db.first<{ id: string; user_id: string; revoked_at_ms: number | null }>(
+    "SELECT id, user_id, revoked_at_ms FROM sessions WHERE id = ?",
+    sessionId,
+  );
+  if (!row || row.user_id !== input.userId) return "not_found";
+  if (row.revoked_at_ms == null) {
+    await revokeSession(db, sessionId, input.nowMs, input.reason);
+  }
+  return "ok";
+}
+
+export async function revokeAllSessionsForUser(
+  db: ControlPlaneDb,
+  input: { userId: UserId; nowMs: number; reason?: string },
+): Promise<number> {
+  const result = await db.run(
+    `UPDATE sessions
+     SET revoked_at_ms = ?, revocation_reason = ?
+     WHERE user_id = ? AND revoked_at_ms IS NULL`,
+    input.nowMs,
+    input.reason ?? "revoke_all",
+    input.userId,
+  );
+  return result.changes;
+}
+
+function sessionUsable(
+  row: { revoked_at_ms: number | null; idle_expires_at_ms: number; absolute_expires_at_ms: number },
+  nowMs: number,
+): boolean {
   return row.revoked_at_ms == null && row.idle_expires_at_ms > nowMs && row.absolute_expires_at_ms > nowMs;
 }
 
@@ -280,6 +397,15 @@ async function lookupSessionForClaim(
     claimId,
     userId,
   );
+}
+
+export async function sessionExistsForClaim(
+  db: ControlPlaneDb,
+  userId: UserId,
+  claimId: string,
+): Promise<boolean> {
+  const row = await lookupSessionForClaim(db, userId, claimId);
+  return row != null;
 }
 
 async function rotateOwnSessionSecret(
