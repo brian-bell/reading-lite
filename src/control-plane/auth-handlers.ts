@@ -8,7 +8,7 @@ import { resolveLoginEligibility } from "./eligibility";
 import { logAuthEvent } from "./auth-log";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, readSessionCookie, sessionCookieHeader } from "./cookies";
-import { fromD1, type ControlPlaneDb } from "./db";
+import { fromD1, isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import {
   buildMagicLinkVerifyUrl,
@@ -497,14 +497,6 @@ export async function restoreLiveChallenges(
   snapshot: { id: string; state: string; issued_at_ms: number }[],
 ): Promise<void> {
   try {
-    // Skip the whole rollback unless this unused issued row is still unused.
-    // A concurrent redeem may have claimed it after Resend actually delivered.
-    const revokedNew = await db.run(
-      `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
-      newChallengeId,
-    );
-    if (revokedNew.changes === 0) return;
-
     const meta = await db.first<{ email_canonical: string; purpose: string }>(
       `SELECT email_canonical, purpose FROM auth_challenges WHERE id = ?`,
       newChallengeId,
@@ -512,14 +504,17 @@ export async function restoreLiveChallenges(
     if (!meta) return;
 
     if (meta.purpose === EMAIL_CHANGE_PURPOSE) {
-      // Restore every unused row this issue() revoked (snapshot set), not one
-      // newest marked row in the target-email OR caller-user union.
-      for (const row of snapshot) {
-        if (row.id === newChallengeId) continue;
-        await restoreUnusedRevokedChallenge(db, row.id);
-      }
+      await restoreEmailChangeSnapshot(db, newChallengeId, snapshot);
       return;
     }
+
+    // Skip the whole login rollback unless this unused issued row is still unused.
+    // A concurrent redeem may have claimed it after Resend actually delivered.
+    const revokedNew = await db.run(
+      `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
+      newChallengeId,
+    );
+    if (revokedNew.changes === 0) return;
 
     const otherLive = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
@@ -582,6 +577,42 @@ export async function restoreLiveChallenges(
 }
 
 export const restoreLiveLoginChallenges = restoreLiveChallenges;
+
+/** Restore every unused snapshot row independently. Unique conflicts stay per-id. */
+async function restoreEmailChangeSnapshot(
+  db: ControlPlaneDb,
+  newChallengeId: string,
+  snapshot: { id: string; state: string; issued_at_ms: number }[],
+): Promise<void> {
+  const current = await db.first<{ state: string }>(
+    `SELECT state FROM auth_challenges WHERE id = ?`,
+    newChallengeId,
+  );
+  // Success path already used it. Concurrent issue() may have revoked it — still restore.
+  if (!current || current.state === "claimed" || current.state === "consumed") return;
+
+  if (current.state === "issued") {
+    await db.run(
+      `UPDATE auth_challenges SET state = 'revoked' WHERE id = ? AND state = 'issued'`,
+      newChallengeId,
+    );
+  }
+
+  const latest = await db.first<{ state: string }>(
+    `SELECT state FROM auth_challenges WHERE id = ?`,
+    newChallengeId,
+  );
+  if (!latest || latest.state === "claimed" || latest.state === "consumed") return;
+
+  for (const row of snapshot) {
+    if (row.id === newChallengeId) continue;
+    try {
+      await restoreUnusedRevokedChallenge(db, row.id);
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+    }
+  }
+}
 
 /** Same predicate issue uses when revoking live rows before insert. */
 function liveChallengeScope(args: {
