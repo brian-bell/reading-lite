@@ -10,7 +10,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: deploy-production-spa
+  group: deploy-production-release
   cancel-in-progress: false
 
 permissions:
@@ -50,13 +50,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ steps.release.outputs.sha }}
-      - name: Refuse a stale release
-        run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          test "$(git rev-parse origin/main)" = "${{ steps.release.outputs.sha }}" || {
-            echo "refusing stale SPA release: main advanced past ${{ steps.release.outputs.sha }}"
-            exit 1
-          }
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -80,4 +73,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npm run ops -- deploy web --branch main --execute
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "${{ steps.release.outputs.sha }}" || {
+            echo "refusing stale SPA release: main advanced past ${{ steps.release.outputs.sha }}"
+            exit 1
+          }
+          npm run ops -- deploy web --branch main --execute

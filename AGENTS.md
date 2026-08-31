@@ -120,9 +120,10 @@ matrix, not a substitute for real readings.
   `.github/workflows/deploy-worker.yml` (`ops deploy worker --env production
   --execute`, which applies pending remote D1 migrations then uploads). After
   that succeeds, `.github/workflows/deploy-spa.yml` deploys the same commit's
-  SPA through `ops deploy web --branch main --execute`. Both release stages
-  refuse stale commits. GitHub secrets: `CLOUDFLARE_API_TOKEN`,
-  `CLOUDFLARE_ACCOUNT_ID`.
+  SPA through `ops deploy web --branch main --execute`. A shared production
+  release lock serializes both workflows, and each rechecks for a stale commit
+  immediately before its deploy command. GitHub secrets:
+  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
 - Secrets via `wrangler secret put --env …`: `AUTH_ROOT_SECRET` and
   `OPENAI_API_KEY` always; `ANTHROPIC_API_KEY` only when
   `SUMMARIZER_PROVIDER=anthropic`; `X_API_BEARER_TOKEN` only for

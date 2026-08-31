@@ -137,8 +137,10 @@ After the Worker release succeeds, it publishes the released commit SHA for
 that SHA, installs both lockfiles with `npm ci`, then runs
 `ops deploy web --branch main --execute` to build `web/` and deploy `web/dist`
 to the production Pages branch. Both release stages refuse to deploy if `main`
-has advanced, so an older run cannot overwrite a newer production release.
-Neither release workflow has a manual trigger that can bypass the chain.
+has advanced at the deployment boundary, and one shared non-cancelling lock
+serializes Worker and SPA production commands. An older run therefore cannot
+overwrite a newer production release. Neither release workflow has a manual
+trigger that can bypass the chain.
 
 GitHub repository secrets (or the `production` environment):
 
