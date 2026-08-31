@@ -11,6 +11,14 @@ export const ConnectionSchema = z
   .strict();
 export type Connection = z.infer<typeof ConnectionSchema>;
 
+export const RelationshipJudgementSchema = z
+  .object({
+    novelty_verdict: NoveltyVerdictSchema,
+    connections: z.array(ConnectionSchema),
+  })
+  .strict();
+export type RelationshipJudgement = z.infer<typeof RelationshipJudgementSchema>;
+
 export const ReadingSummarySchema = z
   .object({
     title: z.string().min(1).max(120),
@@ -81,4 +89,28 @@ export const READING_SUMMARY_JSON_SCHEMA = {
     "connections",
     "summary_markdown",
   ],
+} as const;
+
+export const RELATIONSHIP_JUDGEMENT_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    novelty_verdict: {
+      type: "string",
+      enum: ["novel", "familiar", "duplicate"],
+    },
+    connections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", minLength: 1 },
+          reason: { type: "string", minLength: 1 },
+        },
+        required: ["id", "reason"],
+      },
+    },
+  },
+  required: ["novelty_verdict", "connections"],
 } as const;

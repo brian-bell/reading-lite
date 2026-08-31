@@ -905,17 +905,32 @@ function ReadingDetail() {
         <EntityGroup label="People" values={reading.people ?? []} />
         <EntityGroup label="Organizations" values={reading.orgs ?? []} />
       </section>
-      <ConnectionsPanel connections={reading.connections ?? []} />
+      <ConnectionsPanel
+        connections={reading.connections ?? []}
+        computedAt={reading.connections_computed_at}
+      />
       <ContentLinks id={reading.id} />
       <DiagnosticsPanel id={reading.id} />
     </section>
   );
 }
 
-function ConnectionsPanel({ connections }: { connections: Connection[] }) {
+function ConnectionsPanel({
+  connections,
+  computedAt,
+}: {
+  connections: Connection[];
+  computedAt?: string;
+}) {
   return (
     <section className="detail-section connections-panel">
       <h2>Connections</h2>
+      {computedAt ? (
+        <p className="connections-computed-at">
+          Connections as of{" "}
+          <time dateTime={computedAt}>{formatDate(computedAt)}</time>
+        </p>
+      ) : null}
       {connections.length === 0 ? (
         <p className="empty-state">No connections</p>
       ) : (

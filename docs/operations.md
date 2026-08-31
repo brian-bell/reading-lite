@@ -264,6 +264,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
 | `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
@@ -288,6 +289,43 @@ writes nothing.
 npm run ops -- corpus refresh-neighbours --tenant global
 npm run ops -- corpus refresh-neighbours --tenant global --execute
 ```
+
+`ops corpus refresh-connections` consumes that report and rejudges only the
+flagged readings. Plan mode validates the report tenant and every live target,
+prints the provider/model/effort, each selected judgement, and estimated
+synchronous cost, then exits without a provider call or storage write.
+
+```sh
+npm run ops -- corpus refresh-connections \
+  --tenant global --report ./refresh-report.json
+
+# Start with a controlled production write after pausing and draining every
+# corpus writer for the selected tenant.
+npm run ops -- corpus refresh-connections \
+  --tenant global --report ./refresh-report.json \
+  --execute --sole-writer --limit 1
+```
+
+Execute mode reads the target's stored summary and judges it only against live,
+ready neighbours carried by the report. It drops provider ids outside that
+set, preserves an existing connection object when the provider reaffirms its
+id, and replaces only `connections`, `novelty_verdict`, and
+`connections_computed_at`. Manifest writes use ETag CAS. The list index is
+written after successful manifest updates so its verdict matches the manifest.
+
+The manifest timestamp is the resume marker. If a manifest write succeeds but
+the list write fails, rerun with the same report: the command heals the list row
+without another paid judgement. `--limit` caps judgement and healing actions.
+Provider errors and lost CAS races leave the reading ready and never blind-write
+over newer state. The price estimate uses a four-UTF-8-bytes-per-token
+approximation, a 256-output-token assumption, and the dated price table printed
+by the command; it is a planning estimate, not a bill.
+
+Run a fresh neighbour refresh immediately before this command. The report must
+name the same `--tenant`; a mismatched selector is refused. The sole-writer
+window must cover provider calls, manifest CAS writes, and the final wholesale
+`index/list.json` put. The command also refuses the report if a target or
+candidate neighbour was reprocessed after the report was generated.
 
 `ops corpus rebuild-list` re-projects every indexed manifest through
 `manifestToIndexItem` and writes `index/list.json`. Use it after deploying a

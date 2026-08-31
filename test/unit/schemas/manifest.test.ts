@@ -6,7 +6,11 @@ import {
   ProcessingAttemptSchema,
   type Manifest,
 } from "../../../src/schemas/manifest";
-import { READING_SUMMARY_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
+import {
+  READING_SUMMARY_JSON_SCHEMA,
+  RELATIONSHIP_JUDGEMENT_JSON_SCHEMA,
+  RelationshipJudgementSchema,
+} from "../../../src/schemas/reading-summary";
 
 const baseReady: Manifest = {
   id: "rd_01ABCXYZ",
@@ -41,6 +45,17 @@ const baseReady: Manifest = {
 describe("ManifestSchema", () => {
   it("accepts a fully populated ready manifest", () => {
     expect(ManifestSchema.parse(baseReady)).toEqual(baseReady);
+  });
+
+  it("accepts an optional relationship computation time and rejects malformed dates", () => {
+    const at = "2026-08-31T12:00:00.000Z";
+    expect(
+      ManifestSchema.parse({ ...baseReady, connections_computed_at: at })
+        .connections_computed_at,
+    ).toBe(at);
+    expect(() =>
+      ManifestSchema.parse({ ...baseReady, connections_computed_at: "yesterday" }),
+    ).toThrow();
   });
 
   it("accepts OpenAI V2 usage on a ready manifest", () => {
@@ -347,6 +362,23 @@ describe("READING_SUMMARY_JSON_SCHEMA", () => {
           },
         },
       },
+    });
+  });
+});
+
+describe("RelationshipJudgementSchema", () => {
+  it("accepts only novelty and connections", () => {
+    const value = {
+      novelty_verdict: "familiar",
+      connections: [{ id: "rd_B", reason: "same finding" }],
+    };
+    expect(RelationshipJudgementSchema.parse(value)).toEqual(value);
+    expect(() =>
+      RelationshipJudgementSchema.parse({ ...value, title: "must not change" }),
+    ).toThrow();
+    expect(RELATIONSHIP_JUDGEMENT_JSON_SCHEMA).toMatchObject({
+      additionalProperties: false,
+      required: ["novelty_verdict", "connections"],
     });
   });
 });

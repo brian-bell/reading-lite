@@ -124,6 +124,7 @@ export interface Manifest {
   novelty_verdict?: NoveltyVerdict;
   similarity?: SimilaritySnapshot;
   connections?: Connection[];
+  connections_computed_at?: string;
   summary_markdown?: string;
 
   content_type: string;
@@ -263,4 +264,3 @@ export interface ListSessionsResponse {
   sessions: SessionListItem[];
   session_cap_warning: string | null;
 }
-
