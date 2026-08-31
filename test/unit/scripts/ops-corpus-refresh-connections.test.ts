@@ -239,6 +239,34 @@ binding = "READING_JOBS"
     expect(h.err.join("\n")).toMatch(/CAS lost/);
   });
 
+  it("continues after an execution read failure and flushes earlier successes", async () => {
+    const h = harness();
+    const originalCreateStorage = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await originalCreateStorage(...args);
+      const readManifest = storage.readManifest;
+      let rdCReads = 0;
+      storage.readManifest = async (keyPrefix) => {
+        if (keyPrefix.endsWith("rd_c") && ++rdCReads === 2) {
+          throw new Error("temporary R2 read failure");
+        }
+        return readManifest(keyPrefix);
+      };
+      return storage;
+    };
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(1);
+    expect(h.judge).toHaveBeenCalledOnce();
+    expect(h.writes).toHaveLength(1);
+    expect(h.listWrites).toHaveLength(1);
+    expect(h.err.join("\n")).toContain("rd_c: temporary R2 read failure");
+    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 1");
+  });
+
   it("drops a provider connection when the neighbour manifest is missing", async () => {
     const h = harness();
     h.manifests.delete("readings/2026/rd_b");
@@ -275,6 +303,52 @@ binding = "READING_JOBS"
         h.deps,
       ),
     ).rejects.toThrow(/neighbour rd_b changed.*regenerate/);
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.writes).toEqual([]);
+  });
+
+  it("reports an invalid target manifest as an incomplete plan", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    delete h.manifests.get("readings/2026/rd_a")!.manifest.content_type;
+    expect(
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+    ).toBe(1);
+    expect(h.err.join("\n")).toMatch(/rd_a.*invalid or mismatched/);
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.writes).toEqual([]);
+  });
+
+  it("reports a target without usable stored summary text as incomplete", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    h.manifests.get("readings/2026/rd_a")!.manifest.summary_markdown = "  ";
+    expect(
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+    ).toBe(1);
+    expect(h.err.join("\n")).toMatch(/rd_a.*no stored summary text/);
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.writes).toEqual([]);
+  });
+
+  it("continues planning but fails the run when a candidate manifest cannot be read", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a", "rd_c"])));
+    const originalRead = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await originalRead(...args);
+      const readManifest = storage.readManifest;
+      storage.readManifest = async (keyPrefix) => {
+        if (keyPrefix.endsWith("rd_b")) throw new Error("invalid JSON");
+        return readManifest(keyPrefix);
+      };
+      return storage;
+    };
+    expect(
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+    ).toBe(1);
+    expect(h.err.join("\n")).toContain("candidate rd_b: invalid JSON");
+    expect(h.err.join("\n")).toContain("invalid candidate manifest(s): rd_b");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
   });

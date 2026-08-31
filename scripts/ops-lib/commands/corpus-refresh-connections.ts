@@ -169,15 +169,26 @@ async function runCorpusRefreshConnections(
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
   const storedByPrefix = new Map<string, StoredRawManifest | null>();
+  const storedErrorsByPrefix = new Map<string, Error>();
   const readStored = async (row: ListIndexItem): Promise<StoredRawManifest | null> => {
+    const priorError = storedErrorsByPrefix.get(row.key_prefix);
+    if (priorError) throw priorError;
     if (storedByPrefix.has(row.key_prefix)) {
       return storedByPrefix.get(row.key_prefix) ?? null;
     }
-    const stored = await storage.readManifest(row.key_prefix);
-    storedByPrefix.set(row.key_prefix, stored);
-    return stored;
+    try {
+      const stored = await storage.readManifest(row.key_prefix);
+      storedByPrefix.set(row.key_prefix, stored);
+      return stored;
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      storedErrorsByPrefix.set(row.key_prefix, error);
+      throw error;
+    }
   };
   const liveReadyIds = new Set<string>();
+  const invalidCandidateIds = new Set<string>();
+  let planningFailed = false;
   const candidateIds = new Set(
     report.readings.flatMap((reading) =>
       reading.current_neighbours.map((neighbour) => neighbour.id),
@@ -186,7 +197,17 @@ async function runCorpusRefreshConnections(
   for (const id of candidateIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") continue;
-    const stored = await readStored(row);
+    let stored: StoredRawManifest | null;
+    try {
+      stored = await readStored(row);
+    } catch (error) {
+      planningFailed = true;
+      invalidCandidateIds.add(id);
+      deps.io.stderr(
+        `  ! candidate ${id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
     if (stored && validLiveManifest(stored.manifest, row)) {
       if (manifestChangedSinceReport(stored.manifest, report.generated_at)) {
         throw new Error(
@@ -194,12 +215,27 @@ async function runCorpusRefreshConnections(
         );
       }
       liveReadyIds.add(id);
+    } else if (stored) {
+      planningFailed = true;
+      invalidCandidateIds.add(id);
+      deps.io.stderr(`  ! candidate ${id}: live manifest is invalid or mismatched`);
     }
   }
   const actions: Action[] = [];
   let skipped = 0;
 
   for (const reportReading of report.readings) {
+    const invalidCandidates = reportReading.current_neighbours.filter((neighbour) =>
+      invalidCandidateIds.has(neighbour.id),
+    );
+    if (invalidCandidates.length > 0) {
+      skipped++;
+      planningFailed = true;
+      deps.io.stderr(
+        `  ! skip ${reportReading.id}: invalid candidate manifest(s): ${invalidCandidates.map((item) => item.id).join(", ")}`,
+      );
+      continue;
+    }
     const row = byId.get(reportReading.id);
     if (
       !row ||
@@ -211,10 +247,26 @@ async function runCorpusRefreshConnections(
       deps.io.stderr(`  ! skip ${reportReading.id}: live ready list row does not match report`);
       continue;
     }
-    const stored = await readStored(row);
-    if (!stored || !validTargetManifest(stored.manifest, reportReading)) {
+    let stored: StoredRawManifest | null;
+    try {
+      stored = await readStored(row);
+    } catch (error) {
       skipped++;
-      deps.io.stderr(`  ! skip ${reportReading.id}: live ready manifest does not match report`);
+      planningFailed = true;
+      deps.io.stderr(
+        `  ! skip ${reportReading.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    if (!stored) {
+      skipped++;
+      deps.io.stderr(`  ! skip ${reportReading.id}: live manifest is missing`);
+      continue;
+    }
+    if (!validTargetManifest(stored.manifest, reportReading)) {
+      skipped++;
+      planningFailed = true;
+      deps.io.stderr(`  ! skip ${reportReading.id}: live ready manifest is invalid or mismatched`);
       continue;
     }
     if (manifestChangedSinceReport(stored.manifest, report.generated_at)) {
@@ -238,6 +290,7 @@ async function runCorpusRefreshConnections(
       );
     } catch (error) {
       skipped++;
+      planningFailed = true;
       deps.io.stderr(
         `  ! skip ${reportReading.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -297,7 +350,7 @@ async function runCorpusRefreshConnections(
 
   if (!args.execute) {
     deps.io.stdout("PLAN - no provider call or storage write was made.");
-    return 0;
+    return planningFailed ? 1 : 0;
   }
   const soleWriter = soleWriterGuard({
     execute: true,
@@ -321,7 +374,16 @@ async function runCorpusRefreshConnections(
         healed++;
         continue;
       }
-      const current = await storage.readManifest(action.row.key_prefix);
+      let current: StoredRawManifest | null;
+      try {
+        current = await storage.readManifest(action.row.key_prefix);
+      } catch (error) {
+        failures++;
+        deps.io.stderr(
+          `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
       if (!current || !validTargetManifest(current.manifest, action.report)) {
         failures++;
         deps.io.stderr(`  ! ${action.report.id}: manifest changed before judgement`);
@@ -396,7 +458,7 @@ async function runCorpusRefreshConnections(
   deps.io.stdout(
     `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
   );
-  return failures > 0 || flushFailed ? 1 : 0;
+  return planningFailed || failures > 0 || flushFailed ? 1 : 0;
 }
 
 function validTargetManifest(

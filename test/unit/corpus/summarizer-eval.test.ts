@@ -274,6 +274,30 @@ describe("evaluation aggregation and reporting", () => {
     ).toEqual({ synchronous: 4.5675, batch: 2.28375 });
   });
 
+  it("prices every Anthropic model accepted by summarizer configuration", () => {
+    const models = [
+      "claude-sonnet-5",
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
+      "claude-opus-4-6",
+      "claude-opus-4-5-20251101",
+    ];
+    for (const model of models) {
+      expect(() =>
+        estimateCostUsd({
+          provider: "anthropic",
+          model,
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        }),
+      ).not.toThrow();
+    }
+  });
+
   it("aggregates p50/p95, pass rates, usage, and compact evidence", () => {
     const scores = [100, 200, 300, 400, 500].map((latencyMs, index) => ({
       observation: {
