@@ -1,4 +1,5 @@
 import { AwsClient } from "aws4fetch";
+import { parseRateLimitDelayMs } from "../../src/modules/http-retry";
 
 // Shared Cloudflare clients for the Node bulk scripts (corpus-recover
 // --batch). R2 over the S3 API (SigV4 via aws4fetch); Vectorize over the REST
@@ -233,16 +234,57 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
 // list/get/put objects this way even when CORPUS_R2_ACCESS_KEY is unset.
 // Slashes in keys stay literal (R2 REST requirement); other reserved
 // characters go through encodePath.
-export function makeR2RestClient(cfg: R2RestConfig, fetchFn: typeof fetch = fetch): R2InventoryClient {
+export interface RateLimitRetryDeps {
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+// The Cloudflare REST API (R2 objects, Vectorize) throttles bursts with 429s
+// (code 971 / 10000): the founder migration reads ~3 objects per row and probes
+// 2 vector ids per ready row, so a 500-row corpus is thousands of back-to-back
+// calls. Unlike the worker's fetchWithRetry (which surfaces 429 to the queue),
+// an operator CLI can simply wait: honor Retry-After when present, otherwise
+// back off 1s·2^n; either way the wait is capped, for a bounded number of tries. Anything else is
+// returned as-is for the caller's own status handling.
+const RATE_LIMIT_ATTEMPTS = 6;
+const RATE_LIMIT_BASE_MS = 1_000;
+const RATE_LIMIT_CAP_MS = 30_000;
+
+export function withRateLimitRetry(
+  fetchFn: typeof fetch,
+  deps: RateLimitRetryDeps = {},
+): (url: string, init: RequestInit) => Promise<Response> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? (() => Date.now());
+  return async (url, init) => {
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetchFn(url, init);
+      if (res.status !== 429 || attempt >= RATE_LIMIT_ATTEMPTS - 1) return res;
+      const hinted = parseRateLimitDelayMs(res.headers, now) ?? 0;
+      const backoff = RATE_LIMIT_BASE_MS * 2 ** attempt;
+      await res.text().catch(() => "");
+      // Clamp the final delay, not just the exponential term: a long or
+      // malformed server hint must not stall an operator command for hours.
+      await sleep(Math.min(RATE_LIMIT_CAP_MS, Math.max(hinted, backoff)));
+    }
+  };
+}
+
+export function makeR2RestClient(
+  cfg: R2RestConfig,
+  fetchFn: typeof fetch = fetch,
+  deps: RateLimitRetryDeps = {},
+): R2InventoryClient {
   const objectsBase = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/r2/buckets/${cfg.bucket}/objects`;
   const authHeader = `Bearer ${cfg.apiToken}`;
+  const send = withRateLimitRetry(fetchFn, deps);
 
   const objectUrl = (key: string) => `${objectsBase}/${encodePath(key)}`;
 
   const authedFetch = async (url: string, init: RequestInit): Promise<Response> => {
     const headers = new Headers(init.headers);
     headers.set("authorization", authHeader);
-    return fetchFn(url, { ...init, headers });
+    return send(url, { ...init, headers });
   };
 
   const throwIfUnsuccessfulJson = async (res: Response, action: string, key?: string): Promise<void> => {
@@ -450,16 +492,18 @@ function decodeXmlEntities(s: string): string {
 export function makeVectorizeClient(
   cfg: VectorizeConfig,
   fetchFn: typeof fetch = fetch,
+  deps: RateLimitRetryDeps = {},
 ): VectorizeAdminClient {
   const indexBase = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/vectorize/v2/indexes/${cfg.index}`;
   const authHeader = `Bearer ${cfg.apiToken}`;
+  const send = withRateLimitRetry(fetchFn, deps);
   return {
     async upsert(vectors) {
       if (vectors.length === 0) return;
       const ndjson = vectors
         .map((v) => JSON.stringify(cfg.namespace === undefined ? v : { ...v, namespace: cfg.namespace }))
         .join("\n");
-      const res = await fetchFn(`${indexBase}/upsert`, {
+      const res = await send(`${indexBase}/upsert`, {
         method: "POST",
         headers: {
           authorization: authHeader,
@@ -473,7 +517,7 @@ export function makeVectorizeClient(
       }
     },
     async query(vector, opts) {
-      const res = await fetchFn(`${indexBase}/query`, {
+      const res = await send(`${indexBase}/query`, {
         method: "POST",
         headers: { authorization: authHeader, "content-type": "application/json" },
         body: JSON.stringify({
@@ -492,7 +536,7 @@ export function makeVectorizeClient(
     },
     async getByIds(ids) {
       if (ids.length === 0) return [];
-      const res = await fetchFn(`${indexBase}/get_by_ids`, {
+      const res = await send(`${indexBase}/get_by_ids`, {
         method: "POST",
         headers: { authorization: authHeader, "content-type": "application/json" },
         body: JSON.stringify({ ids }),

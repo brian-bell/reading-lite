@@ -586,3 +586,107 @@ describe("tenant-namespaced Vectorize", () => {
     expect(JSON.parse(String(fetchFn.mock.calls[1]![1]!.body))).not.toHaveProperty("namespace");
   });
 });
+
+describe("makeVectorizeClient — 429 backoff", () => {
+  const cfg = { accountId: "acct123", index: "reading-lite", apiToken: "cf-token" };
+  const throttled = (headers?: Record<string, string>) =>
+    new Response(JSON.stringify({ success: false, errors: [{ code: 971, message: "Please wait" }] }), {
+      status: 429,
+      headers,
+    });
+
+  it("getByIds retries a 429 after the Retry-After delay and returns the eventual result", async () => {
+    const vectors = [{ id: "rd_a", values: [0.1] }];
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(throttled({ "retry-after": "2" }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: vectors, success: true }), { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.getByIds(["rd_a"])).resolves.toEqual(vectors);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(2_000);
+  });
+
+  it("upsert backs off exponentially when a 429 carries no Retry-After", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(throttled())
+      .mockResolvedValueOnce(throttled())
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.upsert([{ id: "x", values: [1], metadata: {} }])).resolves.toBeUndefined();
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000]);
+  });
+
+  it("clamps a long Retry-After hint to the 30s cap", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(throttled({ "retry-after": "3600" }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: [], success: true }), { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.getByIds(["rd_a"])).resolves.toEqual([]);
+    expect(sleep).toHaveBeenCalledWith(30_000);
+  });
+
+  it("gives up after the retry budget and surfaces the 429", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => throttled());
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.getByIds(["rd_a"])).rejects.toThrow(/Vectorize get_by_ids failed: 429/);
+    expect(fetchFn).toHaveBeenCalledTimes(6);
+    expect(sleep).toHaveBeenCalledTimes(5);
+  });
+
+  it("does not retry non-429 failures", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("no", { status: 500 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const vec = makeVectorizeClient(cfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(vec.query([1], { topK: 1 })).rejects.toThrow(/500/);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe("makeR2RestClient — 429 backoff", () => {
+  const restCfg = { accountId: "acct123", apiToken: "cf-token", bucket: "reading-lite" };
+
+  it("retries a throttled GET after Retry-After instead of reporting the object unreadable", async () => {
+    const fetchFn = vi
+      .fn<(input: any, init?: any) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: false, errors: [{ code: 971, message: "Please wait" }] }), {
+          status: 429,
+          headers: { "retry-after": "3" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('{"id":"rd_a"}', { status: 200 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(r2.get("index/by-id/rd_a")).resolves.toBe('{"id":"rd_a"}');
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(3_000);
+  });
+
+  it("gives up after the retry budget and surfaces the 429", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("throttled", { status: 429 }),
+    );
+    const sleep = vi.fn(async (_ms: number) => {});
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch, { sleep });
+
+    await expect(r2.get("index/by-id/rd_a")).rejects.toThrow(/429/);
+    expect(fetchFn).toHaveBeenCalledTimes(6);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
+  });
+});
