@@ -281,6 +281,40 @@ describe("ops corpus refresh-neighbours", () => {
     expect(calls.reports).toHaveLength(1);
   });
 
+  it("fails closed when a saturated query cannot establish the ready top-five", async () => {
+    const failedRows = Array.from({ length: 49 }, (_, index): RefreshRow => ({
+      ...NEIGHBOUR,
+      id: `rd_failed_${index}`,
+      status: "failed",
+      key_prefix: `readings/rd_failed_${index}`,
+    }));
+    const { deps, calls, lines } = makeDeps({
+      items: [READY, NEIGHBOUR, ...failedRows],
+      matches: [
+        { id: "rd_r", score: 1 },
+        ...failedRows.map((reading, index) => ({
+          id: reading.id,
+          score: 0.99 - index * 0.001,
+        })),
+      ],
+      manifest: {
+        ...VALID_MANIFEST,
+        novelty_verdict: "familiar",
+        connections: [{ id: "rd_n", reason: "still related" }],
+      },
+    });
+
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r"],
+      deps,
+    );
+
+    expect(code).toBe(1);
+    expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
+    expect(calls.puts).toHaveLength(0);
+    expect(lines.join("\n")).toContain("ready neighbourhood truncated for rd_r");
+  });
+
   it("plan mode still exits 0 when a vector is missing", async () => {
     const { deps } = makeDeps({ items: [READY], matches: null });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);

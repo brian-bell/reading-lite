@@ -28,7 +28,7 @@ import {
   type RefreshRow,
 } from "../../corpus-lib/refresh-neighbours";
 import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-similarity";
-import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
@@ -136,6 +136,7 @@ async function runCorpusRefreshNeighbours(
   const tenantSelector = operatorTenantSelector(tenant);
 
   const items = await r2.readListIndex(r2Deps);
+  const readyIds = new Set(items.filter((item) => item.status === "ready").map((item) => item.id));
   const plan = planRefresh(items, { only: opts.only, limit: opts.limit });
   const reportPath = path.resolve(opts.out);
   const now = new Date(deps.now()).toISOString();
@@ -188,6 +189,26 @@ async function runCorpusRefreshNeighbours(
         continue;
       }
       const normalized = normalizeVectorMatchIds(matches, tenant.namespace);
+      const expectedReadyNeighbours = Math.min(
+        SIMILAR_TOP_K,
+        Math.max(0, readyIds.size - (readyIds.has(t.id) ? 1 : 0)),
+      );
+      const observedReadyNeighbours = new Set(
+        normalized
+          .filter((match) => match.id !== t.id && readyIds.has(match.id))
+          .map((match) => match.id),
+      ).size;
+      if (
+        normalized.length >= REFRESH_QUERY_TOP_K &&
+        observedReadyNeighbours < expectedReadyNeighbours
+      ) {
+        errored++;
+        io.stderr(
+          `  ! ready neighbourhood truncated for ${t.id}: ` +
+          `${observedReadyNeighbours} ready candidate(s) in the ${REFRESH_QUERY_TOP_K}-result limit`,
+        );
+        continue;
+      }
       const snap = snapshotFor(t.id, normalized, now);
 
       // Connections (and tensions) live on the manifest, not the list row.
