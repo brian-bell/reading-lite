@@ -7,6 +7,7 @@ import {
   TOKEN_NAME_MAX,
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import {
@@ -206,6 +207,38 @@ describe("createApiToken", () => {
         )
         .get(),
     ).toEqual({ n: 0 });
+  });
+
+  it("detects mint success from batch changes even if a later SELECT would miss the row", async () => {
+    const { sqlite, db: inner, userId } = await seeded();
+    const db: ControlPlaneDb = {
+      first: async (sql, ...params) => {
+        if (sql.trim() === "SELECT id FROM api_tokens WHERE id = ?") {
+          throw new Error("admission must not SELECT after batch");
+        }
+        return inner.first(sql, ...params);
+      },
+      all: (sql, ...params) => inner.all(sql, ...params),
+      batch: (statements) => inner.batch(statements),
+      run: (sql, ...params) => inner.run(sql, ...params),
+    };
+
+    const created = await createApiToken(db, {
+      userId,
+      name: "replica-safe",
+      scopes: ["readings:read"],
+      nowMs: NOW_MS,
+      authRoot,
+      userAgentLabel: null,
+      newUuid: () => TOKEN_UUID,
+      randomBytes: () => SECRET_BYTES,
+    });
+    expect(created.kind).toBe("ok");
+    if (created.kind !== "ok") return;
+    expect(created.created.token).toBe(`tok_${TOKEN_UUID}.${"ab".repeat(32)}`);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE id = ?").get(created.created.id)).toEqual({
+      n: 1,
+    });
   });
 });
 

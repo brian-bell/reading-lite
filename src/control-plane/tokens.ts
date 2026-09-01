@@ -130,7 +130,7 @@ export async function createApiToken(
   const secret = mintSecretHex(input.randomBytes);
   const secretHmac = await hmacHex(await deriveHmacKey(input.authRoot, "api_token"), secret);
 
-  await db.batch([
+  const results = await db.batch([
     {
       sql: `INSERT INTO api_tokens (
               id, user_id, name, format, secret_hmac, hash_key_version,
@@ -163,8 +163,9 @@ export async function createApiToken(
     })),
   ]);
 
-  const inserted = await db.first<{ id: string }>("SELECT id FROM api_tokens WHERE id = ?", tokenId);
-  if (!inserted) return { kind: "cap" };
+  // Admission is the write's change count, not a follow-up SELECT: D1 without
+  // Sessions may serve that read from a replica that has not seen the insert.
+  if ((results[0]?.changes ?? 0) !== 1) return { kind: "cap" };
 
   return {
     kind: "ok",

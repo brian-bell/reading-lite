@@ -183,6 +183,7 @@ export function makeWranglerD1(opts: {
       for (const statement of statements) {
         await exec(statement.sql, statement.params);
       }
+      return statements.map(() => ({ changes: 0 }));
     },
     async run(sql, ...params) {
       await exec(sql, params);

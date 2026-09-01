@@ -182,8 +182,8 @@ function twoWriterRaceDb(inner: ControlPlaneDb): ControlPlaneDb {
     run: (sql, ...params) => inner.run(sql, ...params),
     async batch(statements) {
       const [head, ...rest] = statements;
-      if (!head) return;
-      await inner.run(head.sql, ...head.params);
+      if (!head) return [];
+      const results = [await inner.run(head.sql, ...head.params)];
       started += 1;
       if (started === 1) {
         firstWaiting = new Promise<void>((resolve) => {
@@ -194,8 +194,9 @@ function twoWriterRaceDb(inner: ControlPlaneDb): ControlPlaneDb {
         releaseFirst?.();
       }
       for (const statement of rest) {
-        await inner.run(statement.sql, ...statement.params);
+        results.push(await inner.run(statement.sql, ...statement.params));
       }
+      return results;
     },
   };
 }

@@ -102,7 +102,7 @@ describe("handleDeadLetter", () => {
         throw new Error("D1 hiccup");
       },
       all: async () => [],
-      batch: async () => {},
+      batch: async () => [],
       run: async () => ({ changes: 0 }),
     };
     await handleDeadLetter(msg, { db, nowMs: Date.now(), mark });

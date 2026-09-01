@@ -17,11 +17,12 @@ export function fromBetterSqlite(sqlite: Database.Database): ControlPlaneDb {
     },
     async batch(statements: readonly SqlStatement[]) {
       const apply = sqlite.transaction(() => {
-        for (const statement of statements) {
-          sqlite.prepare(statement.sql).run(...statement.params);
-        }
+        return statements.map((statement) => {
+          const info = sqlite.prepare(statement.sql).run(...statement.params);
+          return { changes: info.changes };
+        });
       });
-      apply();
+      return apply();
     },
     async run(sql, ...params) {
       const info = sqlite.prepare(sql).run(...params);
