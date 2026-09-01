@@ -67,7 +67,7 @@ Verdicts, from most to least likely:
 - "supersedes": one reading reports a later result, correction, or retraction that displaces what the other claims. side names the reading that supersedes ("a" or "b").
 - "qualifies": one reading explicitly narrows, bounds, or adds conditions to a claim the other makes generally. side names the reading that qualifies ("a" or "b").
 
-Choose "none" unless the tension is explicit in the summaries. For "none", side is null and reason is an empty string. Otherwise write one neutral clause naming both readings' positions, suitable to show beside either reading.`;
+Choose "none" unless the tension is explicit in the summaries. Judge supersession from what the summaries say, not from the order the readings were saved. For "none", side is null and reason is an empty string. Otherwise write one neutral clause naming both readings' positions, suitable to show beside either reading.`;
 
 export function buildTensionJudgementUserMessage(
   input: TensionJudgementInput,
@@ -80,7 +80,9 @@ function readingLines(label: "a" | "b", reading: TensionReading): string[] {
     `Reading ${label}: ${reading.id}`,
     `URL: ${reading.url}`,
     `Title: ${reading.title}`,
-    ...(reading.created_at ? [`Saved: ${reading.created_at}`] : []),
+    ...(reading.created_at
+      ? [`Saved to library (not the publication date): ${reading.created_at}`]
+      : []),
     `TL;DR: ${reading.tldr}`,
     "Stored summary:",
     reading.summary_markdown,

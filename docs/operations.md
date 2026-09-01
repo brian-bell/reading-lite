@@ -390,14 +390,17 @@ holder together with its judged record, so tier 1 stops flagging the holder.
 `DELETE /api/readings/:id` and `ops corpus purge-connections` leave inbound
 tensions alone; until the next tension refresh purges them, tier 1 flags each
 holder `stale_connection` and `refresh-connections` spends one relationship
-re-judgement on it. Run `refresh-tensions` in the same window to keep that
-to one call per holder. A successful reprocess rebuilds a manifest without its tensions on purpose; the
-partner's side is repaired the same way. A failed reprocess keeps them but
-still bumps `updated_at`, so that reading's pairs are re-judged once at the
-usual cost. Repairs are found among the readings the report or `--pair`
-names, not by a corpus-wide scan. A stale report (any reading it names was
-rewritten after it was generated) is refused even when `--pair` names the
-drifted reading; regenerate it or omit `--report`.
+re-judgement on it. Run `refresh-tensions` in the same window to keep that to
+one call per holder. A successful reprocess rebuilds a manifest without its
+tensions on purpose. The partner keeps its entry until a report or `--pair`
+brings the two readings into a run again: tier 1 flags neighbourhood drift,
+not summary changes, so that can take a while, and the pair is re-judged only
+when the report pairs them. A failed reprocess keeps the tensions but still
+bumps `updated_at`, so that reading's pairs are re-judged once at the usual
+cost. Repairs are found among the readings the report or `--pair` names, not
+by a corpus-wide scan. A stale report (any reading it names was rewritten
+after it was generated) is refused even when `--pair` names the drifted
+reading; regenerate it or omit `--report`.
 
 Deploy a Worker whose `ManifestSchema` knows `tensions` **before** the first
 production `--execute`: the Worker parses every manifest it reads with
