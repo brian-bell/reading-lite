@@ -1615,6 +1615,11 @@ components:
           type: string
           format: date-time
           description: Time of the latest relationship-only judgement
+        connections_neighbourhood_ids:
+          type: array
+          items:
+            type: string
+          description: Reading IDs considered by the latest relationship judgement (ingest or relationship-only refresh)
         summary_markdown:
           type: string
         content_type:

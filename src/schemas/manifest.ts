@@ -175,6 +175,7 @@ export const ManifestSchema = z
     similarity: SimilaritySnapshotSchema.optional(),
     connections: z.array(ConnectionSchema).optional(),
     connections_computed_at: z.string().datetime().optional(),
+    connections_neighbourhood_ids: z.array(z.string().min(1)).optional(),
     summary_markdown: z.string().optional(),
 
     content_type: z.string().min(1),

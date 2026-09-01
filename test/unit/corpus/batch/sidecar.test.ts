@@ -140,6 +140,43 @@ describe("batch sidecar I/O", () => {
     }
   });
 
+  it("round-trips judged candidate IDs and still loads a pre-upgrade sidecar without them", async () => {
+    const { dir, path } = await tempPath();
+    try {
+      const withIds = {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_1",
+        model: "m",
+        processingStatus: "in_progress",
+        resultsUrl: null,
+        targets: [{ ...target, neighbourhoodIds: ["rd_b", "rd_c"] }],
+      } as Sidecar;
+      await saveSidecar(path, withIds);
+      await expect(loadSidecar(path)).resolves.toMatchObject({
+        targets: [{ neighbourhoodIds: ["rd_b", "rd_c"] }],
+      });
+
+      await saveSidecar(path, {
+        version: 2,
+        provider: "anthropic",
+        phase: "submitted",
+        batchId: "msgbatch_1",
+        model: "m",
+        processingStatus: "in_progress",
+        resultsUrl: null,
+        targets: [target],
+      } as Sidecar);
+      const loaded = await loadSidecar(path);
+      expect(loaded && "targets" in loaded ? loaded.targets[0] : undefined).not.toHaveProperty(
+        "neighbourhoodIds",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("saves and loads a submitted OpenAI sidecar with pinned provider state", async () => {
     const { dir, path } = await tempPath();
     try {

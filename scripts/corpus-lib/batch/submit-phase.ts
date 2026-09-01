@@ -307,6 +307,7 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     // resumed run (the similar phase won't recompute it).
     queryEmbedTokens: st.queryEmbedTokens,
     similarity: st.similarity,
+    neighbourhoodIds: st.similar.map((neighbour) => neighbour.id),
   };
   if (
     st.extracted.freshActivation?.kind === "create-new" ||

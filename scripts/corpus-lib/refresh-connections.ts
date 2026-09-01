@@ -10,7 +10,9 @@ import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
 
 const RefreshFlagSchema = z.enum([
   "stale_connection",
+  "connection_below_floor",
   "new_neighbour",
+  "uncited_neighbour",
   "verdict_inconsistent",
 ]);
 
@@ -193,6 +195,7 @@ export function mergeRelationshipJudgement(
     connections,
     novelty_verdict: judgement.novelty_verdict,
     connections_computed_at: computedAt,
+    connections_neighbourhood_ids: [...allowedIds],
   };
   const parsed = ManifestSchema.safeParse(candidate);
   if (!parsed.success) {

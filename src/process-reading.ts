@@ -181,6 +181,7 @@ export async function processReading(
         sourceType: sourceTypeForArgs(args),
         summary: llm.reading,
         similarity: similaritySnapshot,
+        neighbourhoodIds: similarContext.map((neighbour) => neighbour.id),
         content: {
           content_type: extracted.content_type,
           content_status: extracted.content_status,

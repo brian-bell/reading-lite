@@ -148,6 +148,34 @@ describe("ops corpus refresh-neighbours", () => {
     expect(text).toContain("PLAN — corpus unchanged");
   });
 
+  it("reports an older uncited neighbour as a membership difference", async () => {
+    const olderNeighbour = { ...NEIGHBOUR, created_at: "2026-07-01T00:00:00.000Z" };
+    const { deps, calls, lines } = makeDeps({
+      items: [READY, olderNeighbour],
+      matches: [
+        { id: "rd_r", score: 1 },
+        {
+          id: "rd_n",
+          score: 0.72,
+          title: "Older neighbour",
+          created_at: olderNeighbour.created_at,
+        },
+      ],
+    });
+
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "rd_r"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(calls.reports[0]!.body).readings[0].reasons).toEqual([
+      "uncited_neighbour",
+      "verdict_inconsistent",
+    ]);
+    expect(lines.join("\n")).toContain("uncited_neighbour,verdict_inconsistent");
+  });
+
   it("--execute refreshes only drifted snapshots and preserves protected fields", async () => {
     const { deps, calls } = makeDeps({});
     const code = await corpusRefreshNeighboursCommand.run(
@@ -215,14 +243,14 @@ describe("ops corpus refresh-neighbours", () => {
   it("tenant mode queries by the prefixed id and strips the prefix from matches", async () => {
     const tenantId = "usr_11111111-1111-4111-8111-111111111111";
     const { deps, calls } = makeDeps({
-      items: [READY],
+      items: [READY, NEIGHBOUR],
       matches: [
         { id: `${tenantId}:rd_r`, score: 1 },
         { id: `${tenantId}:rd_n`, score: 0.6, title: "N", created_at: LATER },
       ],
     });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", tenantId, "--execute"],
+      ["--tenant", tenantId, "rd_r", "--execute"],
       deps,
     );
     expect(code).toBe(0);

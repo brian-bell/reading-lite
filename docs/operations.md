@@ -276,7 +276,25 @@ and a failed one preserves the ready manifest with
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later
-judgement slices. Plan mode does not mutate R2. `--execute` rewrites only
+judgement slices. The report compares stored connection IDs with the current
+floored ready-neighbourhood. It distinguishes missing or non-ready citations
+(`stale_connection`), still-ready citations that fell below the floor
+(`connection_below_floor`), uncited neighbours created after the last judgement
+(`new_neighbour`), and older uncited neighbours that now clear the floor
+(`uncited_neighbour`). Realtime ingest and the offline batch write phase persist
+the same candidate ID set on a ready manifest (`readyManifest`), including
+candidates the summarizer did not cite, so the first neighbour refresh already
+has a baseline. A later successful relationship-only judgement rewrites that
+set. Later refreshes compare that stored set with the current floored
+ready IDs in both directions, so a rejected candidate is not billed again while
+the same candidate set remains. A newly present older candidate receives
+`uncited_neighbour`; so does a previously considered uncited candidate that
+later falls below the floor or becomes non-ready. This baseline tracks ID
+membership; reprocessing the same candidate ID is not a membership change. The
+producer preserves live ingestion's selection order: raw
+Vectorize top five, similarity floor, then ready-ID intersection. It does not
+fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
+R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
 the same class of write `rebuild-list` guards with `--sole-writer`. Do not

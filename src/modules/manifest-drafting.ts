@@ -269,6 +269,14 @@ export interface ReadyFacts {
   content: ContentFacts;
   usage: { summarization: SummarizationUsage; openai_embedding_tokens: number };
   /**
+   * Floored neighbour IDs shown to the summarizer (the judged candidate set),
+   * including IDs the model did not cite. Undefined means the writer has no
+   * ingest baseline — a resumed pre-upgrade sidecar — and the field is omitted
+   * rather than invented as []. An empty array is a real judgement: no
+   * candidates were shown.
+   */
+  neighbourhoodIds?: string[];
+  /**
    * The finished attempt, stamped as last_attempt. `null` is the writer's
    * explicit statement that the writer has no attempt identity, including a
    * resumed pre-upgrade batch sidecar. Attempt identity is never fabricated.
@@ -298,6 +306,9 @@ export function readyManifest(facts: ReadyFacts, now: string): Manifest {
     novelty_verdict: facts.summary.novelty_verdict,
     ...(facts.similarity === undefined ? {} : { similarity: facts.similarity }),
     connections: facts.summary.connections,
+    ...(facts.neighbourhoodIds === undefined
+      ? {}
+      : { connections_neighbourhood_ids: facts.neighbourhoodIds }),
     summary_markdown: facts.summary.summary_markdown,
     ...facts.content,
     fetched_at: now,

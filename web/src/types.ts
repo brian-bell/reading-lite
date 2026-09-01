@@ -125,6 +125,7 @@ export interface Manifest {
   similarity?: SimilaritySnapshot;
   connections?: Connection[];
   connections_computed_at?: string;
+  connections_neighbourhood_ids?: string[];
   summary_markdown?: string;
 
   content_type: string;

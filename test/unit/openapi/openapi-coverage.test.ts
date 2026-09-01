@@ -142,6 +142,17 @@ describe("docs/openapi.yaml", () => {
     expect(manifest?.required ?? []).not.toContain("connections_computed_at");
   });
 
+  it("documents the optional neighbourhood considered by the latest relationship judgement", () => {
+    const manifest = loadSpec().components?.schemas?.Manifest as
+      | { properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+    expect(manifest?.properties?.connections_neighbourhood_ids).toMatchObject({
+      type: "array",
+      items: { type: "string" },
+    });
+    expect(manifest?.required ?? []).not.toContain("connections_neighbourhood_ids");
+  });
+
   it("documents X-CSRF-Token on cookie-mutating REST operations", () => {
     const doc = loadSpec();
     expect(doc.components?.parameters?.CsrfToken).toBeDefined();

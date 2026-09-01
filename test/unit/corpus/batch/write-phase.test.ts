@@ -209,6 +209,39 @@ describe("writeResults — success path", () => {
     });
   });
 
+  it("persists judged candidate IDs from the sidecar, including uncited ones", async () => {
+    const r2 = fakeR2();
+    await writeResults(
+      sidecar([
+        sidecarTarget({
+          neighbourhoodIds: ["rd_cited", "rd_rejected"],
+        }),
+      ]),
+      [
+        succeeded("rd_a", {
+          ...validReading,
+          novelty_verdict: "familiar",
+          connections: [{ id: "rd_cited", reason: "same topic" }],
+        }),
+      ],
+      deps(r2, fakeVectorize()),
+    );
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect(m.connections).toEqual([{ id: "rd_cited", reason: "same topic" }]);
+    expect(m.connections_neighbourhood_ids).toEqual(["rd_cited", "rd_rejected"]);
+  });
+
+  it("omits the ingest baseline when a pre-upgrade sidecar has no neighbourhood IDs", async () => {
+    const r2 = fakeR2();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, fakeVectorize()));
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect("connections_neighbourhood_ids" in m).toBe(false);
+  });
+
   it("writes the by-url and by-id pointers on success", async () => {
     const r2 = fakeR2();
     await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, fakeVectorize()));

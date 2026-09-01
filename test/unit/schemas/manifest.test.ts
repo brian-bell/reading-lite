@@ -58,6 +58,15 @@ describe("ManifestSchema", () => {
     ).toThrow();
   });
 
+  it("accepts the optional neighbourhood considered by the latest relationship judgement", () => {
+    expect(
+      ManifestSchema.parse({
+        ...baseReady,
+        connections_neighbourhood_ids: ["rd_A", "rd_B"],
+      }).connections_neighbourhood_ids,
+    ).toEqual(["rd_A", "rd_B"]);
+  });
+
   it("accepts OpenAI V2 usage on a ready manifest", () => {
     const usage = {
       summarization: {
