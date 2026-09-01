@@ -126,7 +126,8 @@ input {
   padding: 8px 12px;
 }
 
-.pager button:disabled {
+.pager button:disabled,
+.account-security button:disabled {
   background: #bcc6d0;
   cursor: not-allowed;
 }

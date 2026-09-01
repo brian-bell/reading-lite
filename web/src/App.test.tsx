@@ -1677,6 +1677,8 @@ describe("App", () => {
     expect(within(panel).getByText(/dead \(standard\) · revoked/)).toBeInTheDocument();
     expect(within(panel).getByText(/cap-0 \(legacy\) · usable/)).toBeInTheDocument();
     expect(screen.getByText(/10-token limit/)).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Create token" })).toBeDisabled();
+    expect(within(panel).getByLabelText("Name")).toBeDisabled();
     expect(within(panel).getAllByRole("button", { name: "Revoke" })).toHaveLength(10);
     expect(within(panel).getByLabelText("readings:delete")).toBeChecked();
     expect(within(panel).getByLabelText("readings:read")).toBeChecked();
@@ -1739,6 +1741,11 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Copy" }));
     expect(writeText).toHaveBeenCalledWith(mintedSecret);
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(mintedSecret)).not.toBeInTheDocument();
+    expect(screen.queryByText(/will not be shown again/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
 
     unmount();
     render(<App initialPath="/account/security" />);

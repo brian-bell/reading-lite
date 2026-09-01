@@ -320,6 +320,11 @@ function AccountSecurityPage({
   const [tokenExpiry, setTokenExpiry] = useState("");
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const listed = sessionsQuery.data;
+  const listedTokens = tokensQuery.data;
+  const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
+  const tokenCapReached = usableTokenCount >= TOKEN_CAP;
+  const createDisabled = busyId != null || tokenCapReached;
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
@@ -395,7 +400,7 @@ function AccountSecurityPage({
 
   async function onCreateToken(event: { preventDefault: () => void }) {
     event.preventDefault();
-    if (busyId) return;
+    if (busyId || tokenCapReached) return;
     const scopes = API_SCOPES.filter((scope) => tokenScopes.has(scope));
     if (scopes.length === 0) {
       setError("Select at least one scope.");
@@ -469,9 +474,11 @@ function AccountSecurityPage({
     }
   }
 
-  const listed = sessionsQuery.data;
-  const listedTokens = tokensQuery.data;
-  const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
+  function onDismissSecret() {
+    setRevealedToken(null);
+    setCopied(false);
+  }
+
   return (
     <section className="page account-security">
       <div className="page-heading">
@@ -585,8 +592,9 @@ function AccountSecurityPage({
             value={tokenName}
             onChange={(event) => setTokenName(event.target.value)}
             required
+            disabled={createDisabled}
           />
-          <fieldset className="token-scope-list">
+          <fieldset className="token-scope-list" disabled={createDisabled}>
             <legend>Scopes</legend>
             {API_SCOPES.map((scope) => (
               <label key={scope} htmlFor={`token-scope-${scope}`}>
@@ -608,8 +616,9 @@ function AccountSecurityPage({
             max={toDatetimeLocalValue(Date.now() + TOKEN_MAX_TTL_MS)}
             value={tokenExpiry}
             onChange={(event) => setTokenExpiry(event.target.value)}
+            disabled={createDisabled}
           />
-          <button type="submit" disabled={busyId != null}>
+          <button type="submit" disabled={createDisabled}>
             Create token
           </button>
         </form>
@@ -619,6 +628,9 @@ function AccountSecurityPage({
             <code className="token-secret">{revealedToken}</code>
             <button type="button" onClick={() => void onCopySecret()}>
               {copied ? "Copied" : "Copy"}
+            </button>
+            <button type="button" onClick={onDismissSecret}>
+              Dismiss
             </button>
           </div>
         ) : null}
