@@ -45,6 +45,7 @@ import {
   orderPair,
   overlapEvidence,
   pairKey,
+  purgeTensionPartner,
   tensionCandidates,
   type RawManifest,
   type RepairAction,
@@ -276,7 +277,10 @@ async function runCorpusRefreshTensions(
   // Repairs come first: a fresh one-sided judgement is mirrored for free and
   // must not be paid for again, while a stale one (partner reprocessed) is
   // dropped only when the pair is not about to be re-judged anyway.
-  const repairs = findOneSided(manifestsById, liveReadyIds);
+  const readyListIds = new Set(
+    items.flatMap((item) => (item.status === "ready" ? [item.id] : [])),
+  );
+  const repairs = findOneSided(manifestsById, readyListIds);
   const mirrorKeys = new Set(
     repairs.flatMap((repair) => (repair.kind === "drop" ? [] : [pairKey(repair.from, repair.to)])),
   );
@@ -450,6 +454,19 @@ async function runCorpusRefreshTensions(
           throw new Error("partner changed since the judgement; rerun to re-plan");
         }
         await writeSide(repair.to, repair.from, null, repair.judged_at, target);
+      } else if (repair.dangling) {
+        const target = await readLive(repair.on);
+        const row = byId.get(repair.partner);
+        if (row && row.status === "ready") throw new Error("partner is ready again; rerun to re-plan");
+        const merged = purgeTensionPartner(target.manifest, repair.partner);
+        if (!merged.ok) throw new Error(merged.error);
+        const wrote = await storage.putManifestIfMatch(
+          byId.get(repair.on)!.key_prefix,
+          merged.manifest,
+          target.etag,
+        );
+        if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
+        written++;
       } else {
         const target = await readLive(repair.on);
         await writeSide(repair.on, repair.partner, null, repair.judged_at, target);
@@ -473,6 +490,9 @@ function describeRepair(repair: RepairAction): string {
     case "mirror-judged":
       return `${repair.to}<-${repair.from}  repair mirror judged-at ${repair.judged_at} (no provider call)`;
     case "drop":
+      if (repair.dangling) {
+        return `${repair.on}  repair drop dangling tension -> ${repair.partner} (partner deleted or not ready)`;
+      }
       return repair.judged_at === undefined
         ? `${repair.on}  repair drop stale tension -> ${repair.partner} (partner reprocessed since)`
         : `${repair.on}  repair drop tension -> ${repair.partner} (partner judged none at ${repair.judged_at})`;
@@ -633,7 +653,8 @@ Execute mode writes each side's directional tension (contradicts, supersedes,
 superseded_by, qualifies, qualified_by) and a judged-pair record to BOTH
 manifests with ETag CAS, changing nothing else. index/list.json is not
 touched. A crash between the two writes leaves a one-sided pair that the next
-run mirrors without another paid call.
+run mirrors without another paid call; entries naming a deleted partner are
+purged the same way.
 
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json, except with --pair,

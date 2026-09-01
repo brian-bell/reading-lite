@@ -71,6 +71,8 @@ export type RepairAction =
       partner: string;
       /** When set, the partner's newer "none" verdict is recorded on `on` as well. */
       judged_at?: string;
+      /** The partner is deleted or not ready: purge the judged record too. */
+      dangling?: boolean;
     };
 
 export function orderPair(x: string, y: string): TensionPair {
@@ -293,10 +295,14 @@ export function mergeTensionSide(
 
 /**
  * Pairs whose two manifests disagree about a judgement, and the write that
- * reconciles them without a provider call. Pairs in `excludePairKeys` are
- * about to be judged afresh and are left to that write. A partner that is
- * missing or not ready is left dangling on purpose: tier 1 flags it as
- * `stale_connection`, exactly as it does for connections.
+ * reconciles them without a provider call. `readyIds` is every ready reading
+ * in the list index, not only the loaded ones: a partner that is absent from
+ * it was deleted (a ready reading never regresses to failed or pending), so
+ * its entries are purged from the holder — otherwise tier 1 would flag the
+ * holder `stale_connection` and refresh-connections would re-judge it every
+ * night. A ready partner that simply was not loaded cannot be reconciled and
+ * is skipped. Pairs in `excludePairKeys` are about to be judged afresh and
+ * are left to that write.
  */
 export function findOneSided(
   manifestsById: ReadonlyMap<string, RawManifest>,
@@ -315,6 +321,11 @@ export function findOneSided(
     const [x, y] = key.split("|") as [string, string];
     const mx = manifestsById.get(x);
     const my = manifestsById.get(y);
+    for (const [holder, partner, held] of [[x, y, mx], [y, x, my]] as const) {
+      if (held && readyIds.has(holder) && !readyIds.has(partner)) {
+        actions.push({ kind: "drop", on: holder, partner, dangling: true });
+      }
+    }
     if (!mx || !my || !readyIds.has(x) || !readyIds.has(y)) continue;
     const tx = tensionFor(mx, y);
     const ty = tensionFor(my, x);
@@ -385,6 +396,35 @@ export function findOneSided(
     }
   }
   return actions;
+}
+
+/**
+ * Remove every trace of a partner — its tension entry and its judged record —
+ * for a partner that no longer exists. Other entries and every other key are
+ * preserved verbatim.
+ */
+export function purgeTensionPartner(
+  rawManifest: unknown,
+  partnerId: string,
+): TensionMergeResult {
+  if (rawManifest === null || typeof rawManifest !== "object" || Array.isArray(rawManifest)) {
+    return { ok: false, error: "manifest is not an object" };
+  }
+  const raw = rawManifest as RawManifest;
+  const candidate: RawManifest = { ...raw };
+  for (const field of ["tensions", "tensions_judged"] as const) {
+    if (!Array.isArray(raw[field])) continue;
+    candidate[field] = (raw[field] as unknown[]).filter((item) => entryId(item) !== partnerId);
+  }
+  const parsed = ManifestSchema.safeParse(candidate);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return {
+      ok: false,
+      error: first ? `${first.path.join(".") || "(root)"}: ${first.message}` : "failed ManifestSchema",
+    };
+  }
+  return { ok: true, manifest: candidate };
 }
 
 export function buildTensionJudgementInput(

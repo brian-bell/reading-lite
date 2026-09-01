@@ -382,8 +382,10 @@ reports the pair as one-sided; the next run mirrors the inverse entry to the
 other side without a paid call as long as that side has not been reprocessed
 since the judgement. A partner reprocessed since (its `updated_at` is newer
 than the entry's `computed_at`) makes the stored judgement stale: the entry is
-dropped, and the pair is re-judged when the report next pairs them. A
-successful reprocess rebuilds a manifest without its tensions on purpose; the
+dropped, and the pair is re-judged when the report next pairs them. An entry
+whose partner is gone from the list index (deleted, since a ready reading
+never regresses to failed or pending) is purged from the holder together with
+its judged record, so tier 1 stops flagging the holder. A successful reprocess rebuilds a manifest without its tensions on purpose; the
 partner's side is repaired the same way. A failed reprocess keeps them but
 still bumps `updated_at`, so that reading's pairs are re-judged once at the
 usual cost. Repairs are found among the readings the report or `--pair`

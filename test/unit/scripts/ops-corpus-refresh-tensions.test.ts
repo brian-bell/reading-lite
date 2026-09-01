@@ -94,7 +94,7 @@ const supersedes = {
 };
 
 function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<string, unknown>> } = {}) {
-  const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c")];
+  const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c"), { ...listRow("rd_failed"), status: "failed" as const }];
   const manifests = new Map<string, { manifest: Record<string, unknown>; etag: string }>([
     ["readings/2026/rd_a", { manifest: manifest("rd_a", { people: ["Ada"] }), etag: "e-a" }],
     ["readings/2026/rd_b", { manifest: manifest("rd_b", { people: ["ada"] }), etag: "e-b" }],
@@ -326,6 +326,36 @@ describe("ops corpus refresh-tensions", () => {
     expect(await run(h, "--report", "r.json", "--pair", "rd_a,rd_b")).toBe(0);
     expect(h.out.join("\n")).toContain("Report: r.json (1 flagged)");
     expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge (--pair) score=0.900");
+  });
+
+  it("purges tensions and judged records whose partner was deleted or is not ready", async () => {
+    const h = harness();
+    h.stored("rd_c").tensions = [
+      { id: "rd_deleted", kind: "supersedes", reason: "gone", computed_at: EARLIER },
+      { id: "rd_failed", kind: "contradicts", reason: "never ready", computed_at: EARLIER },
+    ];
+    h.stored("rd_c").tensions_judged = [
+      { id: "rd_deleted", judged_at: EARLIER },
+      { id: "rd_failed", judged_at: EARLIER },
+    ];
+    h.stored("rd_c").connections = [{ id: "rd_deleted", reason: "still cited" }];
+    const before = structuredClone(h.stored("rd_c"));
+    h.out.length = 0;
+    expect(await run(h)).toBe(0);
+    expect(h.out.join("\n")).toContain("rd_c  repair drop dangling tension -> rd_deleted (partner deleted or not ready)");
+    expect(h.out.join("\n")).toContain("rd_c  repair drop dangling tension -> rd_failed (partner deleted or not ready)");
+    expect(h.writes).toEqual([]);
+
+    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
+    expect(h.judge).toHaveBeenCalledOnce();
+    const after = h.stored("rd_c");
+    expect(after.tensions).toEqual([]);
+    expect(after.tensions_judged).toEqual([]);
+    const { tensions: _t, tensions_judged: _j, ...rest } = after;
+    const { tensions: _bt, tensions_judged: _bj, ...beforeRest } = before;
+    expect(rest).toEqual(beforeRest);
+    expect(after.connections).toEqual([{ id: "rd_deleted", reason: "still cited" }]);
+    expect(after.updated_at).toBe(EARLIER);
   });
 
   it("caps judgement and repair actions with --limit", async () => {

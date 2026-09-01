@@ -12,6 +12,7 @@ import {
   overlapEvidence,
   pairKey,
   passesOverlapFilter,
+  purgeTensionPartner,
   tensionCandidates,
   type RawManifest,
 } from "../../../scripts/corpus-lib/refresh-tensions";
@@ -385,21 +386,68 @@ describe("findOneSided", () => {
     ]);
   });
 
-  it("leaves a dangling partner alone and mirrors a lone judged record", () => {
+  it("purges entries whose partner is missing from the list index", () => {
     const a = manifest("rd_a", { tensions: [forward], tensions_judged: [judgedA, { id: "rd_c", judged_at: T1 }] });
     const c = manifest("rd_c");
     expect(findOneSided(byId(a, c), ready("rd_a", "rd_c"))).toEqual([
+      { kind: "drop", on: "rd_a", partner: "rd_b", dangling: true },
       { kind: "mirror-judged", from: "rd_a", to: "rd_c", judged_at: T1 },
     ]);
-    expect(findOneSided(byId(a, c, manifest("rd_b", { status: "failed" })), ready("rd_a", "rd_c"))).toEqual([
-      { kind: "mirror-judged", from: "rd_a", to: "rd_c", judged_at: T1 },
+  });
+
+  it("purges entries whose partner is present but not ready", () => {
+    const a = manifest("rd_a", { tensions: [forward], tensions_judged: [judgedA] });
+    const b = manifest("rd_b", { status: "failed", tensions: [backward], tensions_judged: [judgedB] });
+    expect(findOneSided(byId(a, b), ready("rd_a"))).toEqual([
+      { kind: "drop", on: "rd_a", partner: "rd_b", dangling: true },
     ]);
+    const judgedOnly = manifest("rd_a", { tensions_judged: [{ id: "rd_gone", judged_at: T1 }] });
+    expect(findOneSided(byId(judgedOnly), ready("rd_a"))).toEqual([
+      { kind: "drop", on: "rd_a", partner: "rd_gone", dangling: true },
+    ]);
+  });
+
+  it("skips a ready partner that was not loaded, and a holder that is not ready", () => {
+    const a = manifest("rd_a", { tensions: [forward], tensions_judged: [judgedA] });
+    expect(findOneSided(byId(a), ready("rd_a", "rd_b"))).toEqual([]);
+    expect(findOneSided(byId(a), ready("rd_b"))).toEqual([]);
   });
 
   it("does not mirror a judged record onto a partner rewritten since", () => {
     const a = manifest("rd_a", { tensions_judged: [judgedA] });
     const b = manifest("rd_b", { updated_at: T2 });
     expect(findOneSided(byId(a, b), ready("rd_a", "rd_b"))).toEqual([]);
+  });
+});
+
+describe("purgeTensionPartner", () => {
+  it("removes the partner's entry and judged record and preserves everything else", () => {
+    const other = { id: "rd_c", kind: "contradicts", reason: "keep", computed_at: T0 };
+    const before = manifest("rd_a", {
+      connections: [{ id: "rd_gone", reason: "still cited" }],
+      tensions: [{ id: "rd_gone", kind: "supersedes", reason: "old", computed_at: T0 }, other],
+      tensions_judged: [{ id: "rd_gone", judged_at: T0 }, { id: "rd_c", judged_at: T0 }],
+    });
+    const out = purgeTensionPartner(before, "rd_gone");
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.manifest.tensions).toEqual([other]);
+    expect(out.manifest.tensions_judged).toEqual([{ id: "rd_c", judged_at: T0 }]);
+    const { tensions: _t, tensions_judged: _j, ...rest } = out.manifest;
+    const { tensions: _bt, tensions_judged: _bj, ...beforeRest } = before;
+    expect(rest).toEqual(beforeRest);
+    expect(out.manifest.connections).toBe(before.connections);
+    expect(out.manifest.updated_at).toBe(T0);
+    expect(JSON.stringify(Object.keys(out.manifest))).toBe(JSON.stringify(Object.keys(before)));
+  });
+
+  it("leaves a manifest without the fields untouched and fails closed on a non-object", () => {
+    const before = manifest("rd_a");
+    const out = purgeTensionPartner(before, "rd_gone");
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.manifest).toEqual(before);
+    expect(purgeTensionPartner(null, "rd_gone")).toMatchObject({ ok: false });
   });
 });
 
