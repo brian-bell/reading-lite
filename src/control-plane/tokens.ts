@@ -121,6 +121,8 @@ export async function createApiToken(
     return { kind: "invalid_expiry" };
   }
 
+  // Fast path only: two concurrent mints can both see active === 9. The
+  // INSERT … SELECT below is the admission gate and fails closed at 10.
   const active = await countActiveApiTokens(db, { userId: input.userId, nowMs: input.nowMs });
   if (active >= MAX_ACTIVE_TOKENS) return { kind: "cap" };
 
@@ -133,7 +135,12 @@ export async function createApiToken(
       sql: `INSERT INTO api_tokens (
               id, user_id, name, format, secret_hmac, hash_key_version,
               created_at_ms, expires_at_ms, user_agent_label
-            ) VALUES (?, ?, ?, 'standard', ?, ?, ?, ?, ?)`,
+            )
+            SELECT ?, ?, ?, 'standard', ?, ?, ?, ?, ?
+            WHERE (
+              SELECT COUNT(*) FROM api_tokens
+              WHERE user_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?
+            ) < ?`,
       params: [
         tokenId,
         input.userId,
@@ -143,13 +150,21 @@ export async function createApiToken(
         input.nowMs,
         expiresAtMs,
         input.userAgentLabel,
+        input.userId,
+        input.nowMs,
+        MAX_ACTIVE_TOKENS,
       ],
     },
     ...scopes.map((scope) => ({
-      sql: `INSERT INTO api_token_scopes (token_id, scope) VALUES (?, ?)`,
-      params: [tokenId, scope],
+      sql: `INSERT INTO api_token_scopes (token_id, scope)
+            SELECT ?, ?
+            WHERE EXISTS (SELECT 1 FROM api_tokens WHERE id = ?)`,
+      params: [tokenId, scope, tokenId],
     })),
   ]);
+
+  const inserted = await db.first<{ id: string }>("SELECT id FROM api_tokens WHERE id = ?", tokenId);
+  if (!inserted) return { kind: "cap" };
 
   return {
     kind: "ok",

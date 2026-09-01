@@ -294,4 +294,68 @@ describe("API token lifecycle", () => {
         .run();
     }
   });
+
+  it("closes a race when two creates compete for the last active slot", async () => {
+    const session = await redeemSession("clm_token_race");
+    const workerEnv = env as unknown as Env;
+    const userId = (
+      await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
+        .bind("founder@test.example")
+        .first<{ id: string }>()
+    )?.id;
+    expect(userId).toBeTruthy();
+    const listed = await request("/api/auth/tokens", { cookie: session.cookie });
+    const listBody = (await listed.res.json()) as { tokens: { id: string; usable: boolean }[] };
+    const active = listBody.tokens.filter((row) => row.usable);
+    const fillers: string[] = [];
+    for (let i = active.length; i < 9; i += 1) {
+      const id = `tok_aa0e8400-e29b-41d4-a716-44665544000${i}`;
+      const secretHmac = await hmacHex(
+        await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
+        `race-fill-${i}`,
+      );
+      await workerEnv.CONTROL_PLANE.prepare(
+        `INSERT INTO api_tokens (
+           id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+         ) VALUES (?, ?, ?, 'standard', ?, 1, ?, ?)`,
+      )
+        .bind(id, userId, `race-fill-${i}`, secretHmac, NOW_MS, NOW_MS + TOKEN_MAX_TTL_MS)
+        .run();
+      fillers.push(id);
+    }
+
+    const [first, second] = await Promise.all([
+      request("/api/auth/tokens", {
+        method: "POST",
+        cookie: session.cookie,
+        csrf: session.csrf,
+        body: { name: "race-a", scopes: ["readings:read"] },
+      }),
+      request("/api/auth/tokens", {
+        method: "POST",
+        cookie: session.cookie,
+        csrf: session.csrf,
+        body: { name: "race-b", scopes: ["readings:read"] },
+      }),
+    ]);
+    const statuses = [first.res.status, second.res.status].sort((a, b) => a - b);
+    expect(statuses).toEqual([201, 409]);
+    const loser = first.res.status === 409 ? first : second;
+    expect(await loser.res.json()).toEqual({ error: "too many active tokens" });
+
+    const after = await request("/api/auth/tokens", { cookie: session.cookie });
+    const afterBody = (await after.res.json()) as { tokens: { id: string; usable: boolean }[] };
+    expect(afterBody.tokens.filter((row) => row.usable)).toHaveLength(10);
+
+    const winner = first.res.status === 201 ? first : second;
+    const created = (await winner.res.json()) as CreatedToken;
+    await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ?")
+      .bind(NOW_MS, created.id)
+      .run();
+    for (const id of fillers) {
+      await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ?")
+        .bind(NOW_MS, id)
+        .run();
+    }
+  });
 });

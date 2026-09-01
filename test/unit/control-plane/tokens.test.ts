@@ -156,6 +156,57 @@ describe("createApiToken", () => {
     });
     expect(afterExpiry.kind).toBe("ok");
   });
+
+  it("admits only one of two concurrent mints competing for the last active slot", async () => {
+    const { sqlite, db, userId } = await seeded();
+    for (let i = 0; i < MAX_ACTIVE_TOKENS - 2; i += 1) {
+      const minted = await createApiToken(db, {
+        userId,
+        name: `fill-${i}`,
+        scopes: ["readings:read"],
+        nowMs: NOW_MS + i,
+        authRoot,
+        userAgentLabel: null,
+        newUuid: () => `770e8400-e29b-41d4-a716-44665544001${i}`,
+      });
+      expect(minted.kind).toBe("ok");
+    }
+    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS - 1);
+
+    const [first, second] = await Promise.all([
+      createApiToken(db, {
+        userId,
+        name: "race-a",
+        scopes: ["readings:read"],
+        nowMs: NOW_MS + 20,
+        authRoot,
+        userAgentLabel: null,
+        newUuid: () => "880e8400-e29b-41d4-a716-44665544000a",
+      }),
+      createApiToken(db, {
+        userId,
+        name: "race-b",
+        scopes: ["readings:read"],
+        nowMs: NOW_MS + 21,
+        authRoot,
+        userAgentLabel: null,
+        newUuid: () => "880e8400-e29b-41d4-a716-44665544000b",
+      }),
+    ]);
+
+    expect([first.kind, second.kind].sort()).toEqual(["cap", "ok"]);
+    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: MAX_ACTIVE_TOKENS });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS n FROM api_token_scopes s
+           LEFT JOIN api_tokens t ON t.id = s.token_id
+           WHERE t.id IS NULL`,
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
 });
 
 describe("listApiTokensForUser", () => {
