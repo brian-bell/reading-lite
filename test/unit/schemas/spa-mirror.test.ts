@@ -47,6 +47,15 @@ describe("SPA type mirror — Manifest", () => {
       connections: [],
       connections_computed_at: "2026-04-26T20:00:00.000Z",
       connections_neighbourhood_ids: ["rd_B"],
+      tensions: [
+        {
+          id: "rd_Y",
+          kind: "superseded_by",
+          reason: "rd_Y reports the later result",
+          computed_at: "2026-04-26T20:00:00.000Z",
+        },
+      ],
+      tensions_judged: [{ id: "rd_Z", judged_at: "2026-04-26T20:00:00.000Z" }],
       summary_markdown: "s",
       content_type: "text/html",
       content_status: "captured",

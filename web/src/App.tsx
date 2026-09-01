@@ -45,6 +45,8 @@ import type {
   ProcessingAttempt,
   ProcessingAttemptSummary,
   SessionListItem,
+  Tension,
+  TensionKind,
   WhoamiResponse
 } from "./types";
 import "./styles.css";
@@ -909,6 +911,7 @@ function ReadingDetail() {
         connections={reading.connections ?? []}
         computedAt={reading.connections_computed_at}
       />
+      <TensionsPanel tensions={reading.tensions ?? []} />
       <ContentLinks id={reading.id} />
       <DiagnosticsPanel id={reading.id} />
     </section>
@@ -939,6 +942,41 @@ function ConnectionsPanel({
             <li key={c.id}>
               <Link to={`/readings/${c.id}`}>{c.id}</Link>
               <span className="connection-reason"> — {c.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Labels read from this reading's point of view, matching TensionKind.
+const tensionKindLabels: Record<TensionKind, string> = {
+  contradicts: "Contradicts",
+  supersedes: "Supersedes",
+  superseded_by: "Superseded by",
+  qualifies: "Qualifies",
+  qualified_by: "Qualified by"
+};
+
+function TensionsPanel({ tensions }: { tensions: Tension[] }) {
+  return (
+    <section className="detail-section tensions-panel">
+      <h2>Tensions</h2>
+      {tensions.length === 0 ? (
+        <p className="empty-state">No tensions</p>
+      ) : (
+        <ul className="tensions">
+          {tensions.map((t) => (
+            <li key={t.id}>
+              <span className={`tension-kind tension-kind-${t.kind}`}>
+                {tensionKindLabels[t.kind] ?? t.kind}
+              </span>{" "}
+              <Link to={`/readings/${t.id}`}>{t.id}</Link>
+              <span className="tension-reason"> — {t.reason}</span>
+              <time className="tension-computed-at" dateTime={t.computed_at}>
+                {formatDate(t.computed_at)}
+              </time>
             </li>
           ))}
         </ul>

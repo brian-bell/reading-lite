@@ -29,6 +29,12 @@ const ANTHROPIC_PRICES: Record<
   },
 };
 
+// Planning-grade token estimate for a request body: four UTF-8 bytes per
+// token, never below one. Shared by the refresh commands' cost estimates.
+export function approximateTokens(text: string): number {
+  return Math.max(1, Math.ceil(Buffer.byteLength(text, "utf8") / 4));
+}
+
 function roundCost(value: number): number {
   return Math.round(value * 100_000_000) / 100_000_000;
 }

@@ -30,6 +30,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "backfill-similarity",
     "refresh-neighbours",
     "refresh-connections",
+    "refresh-tensions",
     "backfill-vectors",
     "migrate-founder",
     "normalize-tags",
