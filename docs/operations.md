@@ -383,9 +383,15 @@ other side without a paid call as long as that side has not been reprocessed
 since the judgement. A partner reprocessed since (its `updated_at` is newer
 than the entry's `computed_at`) makes the stored judgement stale: the entry is
 dropped, and the pair is re-judged when the report next pairs them. An entry
-whose partner is gone from the list index (deleted, since a ready reading
-never regresses to failed or pending) is purged from the holder together with
-its judged record, so tier 1 stops flagging the holder. A successful reprocess rebuilds a manifest without its tensions on purpose; the
+whose partner is not a ready list row (deleted, in practice: a ready reading
+does not normally regress to failed or pending, and one that comes back ready
+is rebuilt without tensions and must be re-judged anyway) is purged from the
+holder together with its judged record, so tier 1 stops flagging the holder.
+`DELETE /api/readings/:id` and `ops corpus purge-connections` leave inbound
+tensions alone; until the next tension refresh purges them, tier 1 flags each
+holder `stale_connection` and `refresh-connections` spends one relationship
+re-judgement on it. Run `refresh-tensions` in the same window to keep that
+to one call per holder. A successful reprocess rebuilds a manifest without its tensions on purpose; the
 partner's side is repaired the same way. A failed reprocess keeps them but
 still bumps `updated_at`, so that reading's pairs are re-judged once at the
 usual cost. Repairs are found among the readings the report or `--pair`

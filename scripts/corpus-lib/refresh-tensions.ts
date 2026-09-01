@@ -297,7 +297,8 @@ export function mergeTensionSide(
  * Pairs whose two manifests disagree about a judgement, and the write that
  * reconciles them without a provider call. `readyIds` is every ready reading
  * in the list index, not only the loaded ones: a partner that is absent from
- * it was deleted (a ready reading never regresses to failed or pending), so
+ * it was deleted in practice (a ready reading does not normally regress, and
+ * one that returns is rebuilt without tensions and re-judged anyway), so
  * its entries are purged from the holder — otherwise tier 1 would flag the
  * holder `stale_connection` and refresh-connections would re-judge it every
  * night. A ready partner that simply was not loaded cannot be reconciled and

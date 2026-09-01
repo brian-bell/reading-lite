@@ -455,9 +455,10 @@ async function runCorpusRefreshTensions(
         }
         await writeSide(repair.to, repair.from, null, repair.judged_at, target);
       } else if (repair.dangling) {
+        // The plan-time list snapshot is authoritative under --sole-writer;
+        // a partner that later comes back ready is rebuilt without tensions
+        // and must be re-judged anyway.
         const target = await readLive(repair.on);
-        const row = byId.get(repair.partner);
-        if (row && row.status === "ready") throw new Error("partner is ready again; rerun to re-plan");
         const merged = purgeTensionPartner(target.manifest, repair.partner);
         if (!merged.ok) throw new Error(merged.error);
         const wrote = await storage.putManifestIfMatch(
