@@ -65,7 +65,13 @@ export interface TensionCandidate extends TensionPair {
 export type RepairAction =
   | { kind: "mirror"; from: string; to: string; entry: Tension }
   | { kind: "mirror-judged"; from: string; to: string; judged_at: string }
-  | { kind: "drop"; on: string; partner: string };
+  | {
+      kind: "drop";
+      on: string;
+      partner: string;
+      /** When set, the partner's newer "none" verdict is recorded on `on` as well. */
+      judged_at?: string;
+    };
 
 export function orderPair(x: string, y: string): TensionPair {
   const [a, b] = x < y ? [x, y] : [y, x];
@@ -316,6 +322,24 @@ export function findOneSided(
     if (tx || ty) {
       if (tx && ty && ty.kind === inverseKind(tx.kind) && ty.computed_at === tx.computed_at) {
         continue;
+      }
+      // Exactly one side holds an entry. If the empty side remembers a newer
+      // judgement, that judgement was "none" and its second write was lost:
+      // the surviving entry is the stale half, not the missing one.
+      if (!tx || !ty) {
+        const entrySide = tx ? x : y;
+        const emptySide = tx ? y : x;
+        const entry = (tx ?? ty)!;
+        const emptyJudged = judgedRecord(tx ? my : mx, entrySide);
+        if (emptyJudged && timestamp(emptyJudged.judged_at) > timestamp(entry.computed_at)) {
+          actions.push({
+            kind: "drop",
+            on: entrySide,
+            partner: emptySide,
+            judged_at: emptyJudged.judged_at,
+          });
+          continue;
+        }
       }
       const fromX = !ty || (tx !== null && timestamp(tx.computed_at) >= timestamp(ty.computed_at));
       const source = fromX ? tx! : ty!;

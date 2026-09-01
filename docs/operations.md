@@ -382,9 +382,13 @@ other side without a paid call as long as that side has not been reprocessed
 since the judgement. A partner reprocessed since (its `updated_at` is newer
 than the entry's `computed_at`) makes the stored judgement stale: the entry is
 dropped, and the pair is re-judged when the report next pairs them. A
-reprocess rebuilds a manifest without its tensions on purpose; the partner's
-side is repaired the same way. Repairs are found among the readings the report
-or `--pair` names, not by a corpus-wide scan.
+successful reprocess rebuilds a manifest without its tensions on purpose; the
+partner's side is repaired the same way. A failed reprocess keeps them but
+still bumps `updated_at`, so that reading's pairs are re-judged once at the
+usual cost. Repairs are found among the readings the report or `--pair`
+names, not by a corpus-wide scan. A stale report (any reading it names was
+rewritten after it was generated) is refused even with `--pair`; regenerate
+it or point `--report` at a path that does not exist.
 
 Deploy a Worker whose `ManifestSchema` knows `tensions` **before** the first
 production `--execute`: the Worker parses every manifest it reads with

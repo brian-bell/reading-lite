@@ -344,6 +344,22 @@ describe("findOneSided", () => {
     ]);
   });
 
+  it("drops the surviving entry when the empty side remembers a newer none verdict", () => {
+    // A re-judge returned none at T2: rd_a's write landed (entry removed,
+    // judged T2) but rd_b's write was lost, so rd_b still holds the T1 entry.
+    const a = manifest("rd_a", { tensions_judged: [{ id: "rd_b", judged_at: T2 }] });
+    const b = manifest("rd_b", { tensions: [backward], tensions_judged: [judgedB] });
+    expect(findOneSided(byId(a, b), ready("rd_a", "rd_b"))).toEqual([
+      { kind: "drop", on: "rd_b", partner: "rd_a", judged_at: T2 },
+    ]);
+    // The same shape with an older judged record on the empty side is a lost
+    // positive write and is mirrored as before.
+    const aOlder = manifest("rd_a", { tensions_judged: [{ id: "rd_b", judged_at: T0 }] });
+    expect(findOneSided(byId(aOlder, b), ready("rd_a", "rd_b"))).toEqual([
+      { kind: "mirror", from: "rd_b", to: "rd_a", entry: forward },
+    ]);
+  });
+
   it("takes the newer of two disagreeing entries as the source", () => {
     const a = manifest("rd_a", { tensions: [{ ...forward, computed_at: T2, reason: "newest" }] });
     const b = manifest("rd_b", { tensions: [{ ...backward, kind: "contradicts" }] });

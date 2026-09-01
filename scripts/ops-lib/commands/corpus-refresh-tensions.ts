@@ -198,11 +198,12 @@ async function runCorpusRefreshTensions(
 
   // Every reading a report pair or --pair could name. Manifests are read once
   // for planning; execute re-reads each side for a fresh ETag before writing.
-  const wanted = new Set<string>();
+  const reportIds = new Set<string>();
   for (const reading of report?.readings ?? []) {
-    wanted.add(reading.id);
-    for (const neighbour of reading.current_neighbours) wanted.add(neighbour.id);
+    reportIds.add(reading.id);
+    for (const neighbour of reading.current_neighbours) reportIds.add(neighbour.id);
   }
+  const wanted = new Set(reportIds);
   for (const [a, b] of args.pairs) {
     wanted.add(a);
     wanted.add(b);
@@ -238,7 +239,7 @@ async function runCorpusRefreshTensions(
       deps.io.stderr(`  ! ${id}: live ready manifest is invalid or mismatched`);
       continue;
     }
-    if (report && !pairIds.has(id) && manifestChangedSinceReport(stored.manifest, report.generated_at)) {
+    if (report && reportIds.has(id) && manifestChangedSinceReport(stored.manifest, report.generated_at)) {
       throw new Error(
         `report is stale: ${id} changed after ${report.generated_at}; regenerate it`,
       );
@@ -279,12 +280,19 @@ async function runCorpusRefreshTensions(
   );
   const actions: Action[] = [];
   let skippedJudged = 0;
+  let skippedRepairPending = 0;
   for (const candidate of [...candidates.values()].sort((x, y) => x.key.localeCompare(y.key))) {
     const a = manifestsById.get(candidate.a)!;
     const b = manifestsById.get(candidate.b)!;
-    if (candidate.source === "report" && (isPairJudged(a, b) || mirrorKeys.has(candidate.key))) {
-      skippedJudged++;
-      continue;
+    if (candidate.source === "report") {
+      if (isPairJudged(a, b)) {
+        skippedJudged++;
+        continue;
+      }
+      if (mirrorKeys.has(candidate.key)) {
+        skippedRepairPending++;
+        continue;
+      }
     }
     let input: TensionJudgementInput;
     try {
@@ -318,7 +326,8 @@ async function runCorpusRefreshTensions(
   deps.io.stdout(`Provider: ${provider.provider} ${provider.model} effort=${provider.effort}`);
   deps.io.stdout(`Mode: ${args.execute ? "EXECUTE" : "PLAN"}`);
   deps.io.stdout(
-    `Selected actions: ${selected.length}; below overlap threshold: ${filteredOut}; already judged: ${skippedJudged}\n`,
+    `Selected actions: ${selected.length}; below overlap threshold: ${filteredOut}; ` +
+      `already judged: ${skippedJudged}; repair pending: ${skippedRepairPending}\n`,
   );
 
   let estimatedTotal = 0;
@@ -441,7 +450,7 @@ async function runCorpusRefreshTensions(
         await writeSide(repair.to, repair.from, null, repair.judged_at, target);
       } else {
         const target = await readLive(repair.on);
-        await writeSide(repair.on, repair.partner, null, undefined, target);
+        await writeSide(repair.on, repair.partner, null, repair.judged_at, target);
       }
       repaired++;
     } catch (error) {
@@ -462,7 +471,9 @@ function describeRepair(repair: RepairAction): string {
     case "mirror-judged":
       return `${repair.to}<-${repair.from}  repair mirror judged-at ${repair.judged_at} (no provider call)`;
     case "drop":
-      return `${repair.on}  repair drop stale tension -> ${repair.partner} (partner reprocessed since)`;
+      return repair.judged_at === undefined
+        ? `${repair.on}  repair drop stale tension -> ${repair.partner} (partner reprocessed since)`
+        : `${repair.on}  repair drop tension -> ${repair.partner} (partner judged none at ${repair.judged_at})`;
   }
 }
 

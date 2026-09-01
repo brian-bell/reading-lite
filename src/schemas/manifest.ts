@@ -185,8 +185,8 @@ export const ManifestSchema = z
     connections_computed_at: z.string().datetime().optional(),
     connections_neighbourhood_ids: z.array(z.string().min(1)).optional(),
     // Written only by `ops corpus refresh-tensions`; ingest never produces
-    // them and a reprocess rebuilds the manifest without them (the partner's
-    // entry is then repaired or re-judged by the next refresh).
+    // them and a successful reprocess rebuilds the manifest without them (the
+    // partner's entry is then repaired or re-judged by the next refresh).
     tensions: z.array(TensionSchema).optional(),
     tensions_judged: z.array(TensionJudgedSchema).optional(),
     summary_markdown: z.string().optional(),

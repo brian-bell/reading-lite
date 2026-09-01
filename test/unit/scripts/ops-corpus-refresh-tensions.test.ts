@@ -160,7 +160,7 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("rd_a<->rd_b  judge score=0.900 people=[ada] orgs=(none) keywords=0(0.00) cited=(none)");
     expect(text).toContain("input≈900 output=128 cost≈$0.004000");
     expect(text).not.toContain("rd_a<->rd_c");
-    expect(text).toContain("Selected actions: 1; below overlap threshold: 1; already judged: 0");
+    expect(text).toContain("Selected actions: 1; below overlap threshold: 1; already judged: 0; repair pending: 0");
     expect(text).toContain("Estimated synchronous cost: $0.004000");
     expect(text).toContain("no provider call or storage write");
     expect(h.judge).not.toHaveBeenCalled();
@@ -229,7 +229,7 @@ describe("ops corpus refresh-tensions", () => {
     h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
     h.stored("rd_b").tensions_judged = [{ id: "rd_a", judged_at: AT }];
     expect(await run(h, "--execute", "--sole-writer")).toBe(0);
-    expect(h.out.join("\n")).toContain("Selected actions: 0; below overlap threshold: 1; already judged: 1");
+    expect(h.out.join("\n")).toContain("Selected actions: 0; below overlap threshold: 1; already judged: 1; repair pending: 0");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
   });
@@ -265,6 +265,7 @@ describe("ops corpus refresh-tensions", () => {
 
     h.out.length = 0;
     expect(await run(h)).toBe(0);
+    expect(h.out.join("\n")).toContain("already judged: 0; repair pending: 1");
     expect(h.out.join("\n")).toContain("rd_b<-rd_a  repair mirror supersedes (no provider call)");
     expect(h.out.join("\n")).toContain("Estimated synchronous cost: $0.000000");
 
@@ -294,6 +295,25 @@ describe("ops corpus refresh-tensions", () => {
       { id: "rd_c", judged_at: EARLIER },
       { id: "rd_b", judged_at: AT },
     ]);
+  });
+
+  it("finishes a lost none verdict by dropping the partner's surviving entry", async () => {
+    const h = harness();
+    h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
+    h.stored("rd_b").tensions = [{ id: "rd_a", kind: "supersedes", reason: "old", computed_at: EARLIER }];
+    h.stored("rd_b").tensions_judged = [{ id: "rd_a", judged_at: EARLIER }];
+    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.out.join("\n")).toContain(`rd_b  repair drop tension -> rd_a (partner judged none at ${AT})`);
+    expect(h.stored("rd_b").tensions).toEqual([]);
+    expect(h.stored("rd_b").tensions_judged).toEqual([{ id: "rd_a", judged_at: AT }]);
+    expect(h.stored("rd_a")).not.toHaveProperty("tensions");
+  });
+
+  it("refuses a stale report even when --pair names the drifted reading", async () => {
+    const h = harness();
+    h.stored("rd_b").updated_at = JUDGED_AT;
+    await expect(run(h, "--pair", "rd_a,rd_b")).rejects.toThrow(/rd_b changed after.*regenerate/);
   });
 
   it("caps judgement and repair actions with --limit", async () => {

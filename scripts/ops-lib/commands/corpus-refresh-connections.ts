@@ -35,6 +35,7 @@ import {
 } from "../../lib/cf-clients";
 import {
   SUMMARIZER_PRICE_DATE,
+  approximateTokens,
   estimateSummarizationCostUsd,
 } from "../../summarizer-eval/pricing";
 import {
@@ -623,10 +624,6 @@ function estimateAnthropic(
     cache_read_input_tokens: 0,
   }).synchronous;
   return { inputTokens, outputTokens: ASSUMED_OUTPUT_TOKENS, costUsd };
-}
-
-function approximateTokens(text: string): number {
-  return Math.max(1, Math.ceil(Buffer.byteLength(text, "utf8") / 4));
 }
 
 async function createDefaultStorage(
