@@ -373,6 +373,21 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("rd_b<-rd_c  repair mirror contradicts");
   });
 
+  it("still repairs a pair whose paid judgement was cut by --limit", async () => {
+    const h = harness();
+    // rd_a|rd_c is a candidate (shared person) sorted after rd_a|rd_b, so
+    // --limit 1 cuts its judgement; its stale one-sided entry must still drop.
+    h.stored("rd_c").people = ["Ada"];
+    h.stored("rd_c").tensions = [{ id: "rd_a", kind: "qualifies", reason: "old", computed_at: EARLIER }];
+    h.stored("rd_a").updated_at = "2026-06-01T00:00:00.000Z";
+    expect(await run(h, "--limit", "1")).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("rd_a<->rd_b  judge");
+    expect(text).not.toContain("rd_a<->rd_c  judge");
+    expect(text).toContain("rd_c  repair drop stale tension -> rd_a (partner reprocessed since)");
+    expect(text).toContain("Selected actions: 2;");
+  });
+
   it("fails on an explicitly passed report that does not exist even with --pair", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(null);

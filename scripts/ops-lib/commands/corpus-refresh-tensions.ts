@@ -314,24 +314,19 @@ async function runCorpusRefreshTensions(
     }
     actions.push({ kind: "judge", candidate, input, estimate: provider.estimate(input) });
   }
+  // --limit caps paid judgements only; repairs are free, and the dangling
+  // purges among them are what stop tier 1 from re-flagging holders nightly.
+  // A repair yields only to a judge that will actually run this time.
+  const selected: Action[] =
+    args.limit === undefined ? actions : actions.slice(0, args.limit);
   const judgedKeys = new Set(
-    actions.flatMap((action) => (action.kind === "judge" ? [action.candidate.key] : [])),
+    selected.flatMap((action) => (action.kind === "judge" ? [action.candidate.key] : [])),
   );
   for (const repair of repairs) {
     const key = repair.kind === "drop" ? pairKey(repair.on, repair.partner) : pairKey(repair.from, repair.to);
     if (judgedKeys.has(key)) continue;
-    actions.push({ kind: "repair", repair });
+    selected.push({ kind: "repair", repair });
   }
-
-  // --limit caps paid judgements only; repairs are free, and the dangling
-  // purges among them are what stop tier 1 from re-flagging holders nightly.
-  const selected =
-    args.limit === undefined
-      ? actions
-      : [
-          ...actions.filter((action) => action.kind === "judge").slice(0, args.limit),
-          ...actions.filter((action) => action.kind === "repair"),
-        ];
   deps.io.stdout(`Bucket: ${args.bucket}`);
   deps.io.stdout(`Tenant: ${selector}`);
   deps.io.stdout(
