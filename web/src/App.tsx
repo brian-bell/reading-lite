@@ -16,12 +16,14 @@ import {
 
 import {
   ApiError,
+  createToken,
   fetchContentBlob,
   getReadingDiagnostics,
   getReading,
   getWhoami,
   listReadings,
   listSessions,
+  listTokens,
   logoutSession,
   redeemLoginLink,
   reprocessReading,
@@ -29,6 +31,7 @@ import {
   requestLoginLink,
   revokeAllSessions,
   revokeSession,
+  revokeToken,
   submitReading,
   type ContentKind
 } from "./api";
@@ -38,16 +41,19 @@ import {
   rememberLoginReturnPath,
   safeReadingReturnPath
 } from "./login-return-path";
-import type {
-  Connection,
-  ListReading,
-  ManifestStatus,
-  ProcessingAttempt,
-  ProcessingAttemptSummary,
-  SessionListItem,
-  Tension,
-  TensionKind,
-  WhoamiResponse
+import {
+  API_SCOPES,
+  type ApiScopeName,
+  type ApiTokenListItem,
+  type Connection,
+  type ListReading,
+  type ManifestStatus,
+  type ProcessingAttempt,
+  type ProcessingAttemptSummary,
+  type SessionListItem,
+  type Tension,
+  type TensionKind,
+  type WhoamiResponse
 } from "./types";
 import "./styles.css";
 
@@ -64,6 +70,7 @@ function dropIdentityCaches(queryClient: QueryClient): void {
   queryClient.removeQueries({ queryKey: ["reading"] });
   queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
   queryClient.removeQueries({ queryKey: ["sessions"] });
+  queryClient.removeQueries({ queryKey: ["tokens"] });
 }
 
 export function App({ initialPath }: AppProps) {
@@ -265,6 +272,18 @@ function formatSessionTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+const TOKEN_CAP = 10;
+const TOKEN_CAP_WARNING =
+  "This account is at the 10-token limit. Revoke a token before creating another.";
+const RECENT_AUTH_REQUIRED =
+  "Recent sign-in required. Request a fresh sign-in link, then try again.";
+
+function tokenStatusLabel(token: ApiTokenListItem): string {
+  if (token.revoked_at_ms != null) return "revoked";
+  if (!token.usable) return "expired";
+  return "usable";
+}
+
 function AccountSecurityPage({
   identity,
   onSignedOut
@@ -277,15 +296,29 @@ function AccountSecurityPage({
     queryKey: ["sessions", identity.user_id],
     queryFn: listSessions
   });
+  const tokensQuery = useQuery({
+    queryKey: ["tokens", identity.user_id],
+    queryFn: listTokens
+  });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [emailDraft, setEmailDraft] = useState("");
   const [emailSubmitted, setEmailSubmitted] = useState(false);
   const [needFreshSignIn, setNeedFreshSignIn] = useState(false);
+  const [tokenName, setTokenName] = useState("");
+  const [tokenScopes, setTokenScopes] = useState<Set<ApiScopeName>>(() => new Set(API_SCOPES));
+  const [tokenExpiry, setTokenExpiry] = useState("");
+  const [revealedToken, setRevealedToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
     onSignedOut();
+  }
+
+  function markFreshSignInRequired() {
+    setNeedFreshSignIn(true);
+    setError(RECENT_AUTH_REQUIRED);
   }
 
   async function onRevoke(session: SessionListItem) {
@@ -332,8 +365,7 @@ function AccountSecurityPage({
       setEmailSubmitted(true);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-        setNeedFreshSignIn(true);
-        setError("Recent sign-in required. Request a fresh sign-in link, then try again.");
+        markFreshSignInRequired();
       } else {
         setError(err instanceof Error ? err.message : "failed to request email change");
       }
@@ -342,7 +374,85 @@ function AccountSecurityPage({
     }
   }
 
+  function toggleTokenScope(scope: ApiScopeName) {
+    setTokenScopes((current) => {
+      const next = new Set(current);
+      if (next.has(scope)) next.delete(scope);
+      else next.add(scope);
+      return next;
+    });
+  }
+
+  async function onCreateToken(event: { preventDefault: () => void }) {
+    event.preventDefault();
+    if (busyId) return;
+    const scopes = API_SCOPES.filter((scope) => tokenScopes.has(scope));
+    if (scopes.length === 0) {
+      setError("Select at least one scope.");
+      return;
+    }
+    let expiresAtMs: number | undefined;
+    if (tokenExpiry !== "") {
+      const parsed = Date.parse(tokenExpiry);
+      if (!Number.isFinite(parsed)) {
+        setError("Enter a valid expiry.");
+        return;
+      }
+      expiresAtMs = parsed;
+    }
+    setError(null);
+    setNeedFreshSignIn(false);
+    setBusyId("token-create");
+    try {
+      const created = await createToken({
+        name: tokenName,
+        scopes,
+        ...(expiresAtMs !== undefined ? { expires_at_ms: expiresAtMs } : {})
+      });
+      setRevealedToken(created.token);
+      setCopied(false);
+      setTokenName("");
+      setTokenScopes(new Set(API_SCOPES));
+      setTokenExpiry("");
+      await tokensQuery.refetch();
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        markFreshSignInRequired();
+      } else {
+        setError(err instanceof Error ? err.message : "failed to create token");
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRevokeToken(token: ApiTokenListItem) {
+    if (busyId) return;
+    setError(null);
+    setBusyId(token.id);
+    try {
+      await revokeToken(token.id);
+      await tokensQuery.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to revoke token");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onCopySecret() {
+    if (!revealedToken) return;
+    try {
+      await navigator.clipboard.writeText(revealedToken);
+      setCopied(true);
+    } catch {
+      setError("failed to copy token");
+    }
+  }
+
   const listed = sessionsQuery.data;
+  const listedTokens = tokensQuery.data;
+  const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
   return (
     <section className="page account-security">
       <div className="page-heading">
@@ -402,6 +512,96 @@ function AccountSecurityPage({
           ))}
         </ul>
       ) : null}
+      <section className="api-tokens" aria-labelledby="api-tokens-heading">
+        <h2 id="api-tokens-heading">API tokens</h2>
+        {usableTokenCount >= TOKEN_CAP ? (
+          <p className="session-cap-warning" role="status">
+            {TOKEN_CAP_WARNING}
+          </p>
+        ) : null}
+        {tokensQuery.isPending ? <StatusMessage>Loading tokens</StatusMessage> : null}
+        {tokensQuery.isError ? (
+          <IdentityError
+            error={tokensQuery.error instanceof Error ? tokensQuery.error : new Error("failed to list tokens")}
+            onRetry={() => void tokensQuery.refetch()}
+          />
+        ) : null}
+        {listedTokens ? (
+          <ul className="session-list">
+            {listedTokens.tokens.map((token) => (
+              <li
+                key={token.id}
+                className={
+                  token.revoked_at_ms != null ? "session-revoked" : token.usable ? undefined : "session-expired"
+                }
+              >
+                <div>
+                  <p>
+                    {token.name} ({token.format}) · {tokenStatusLabel(token)}
+                  </p>
+                  <p className="session-meta">{token.scopes.join(", ")}</p>
+                  <p className="session-meta">
+                    Created {formatSessionTime(token.created_at_ms)} · expires{" "}
+                    {formatSessionTime(token.expires_at_ms)} ·{" "}
+                    {token.last_used_at_ms != null
+                      ? `last used ${formatSessionTime(token.last_used_at_ms)}`
+                      : "never used"}
+                  </p>
+                </div>
+                {token.usable ? (
+                  <button type="button" onClick={() => void onRevokeToken(token)} disabled={busyId != null}>
+                    Revoke
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <form className="token-create-form" onSubmit={(event) => void onCreateToken(event)}>
+          <label htmlFor="token-name">Name</label>
+          <input
+            id="token-name"
+            type="text"
+            maxLength={80}
+            value={tokenName}
+            onChange={(event) => setTokenName(event.target.value)}
+            required
+          />
+          <fieldset className="token-scope-list">
+            <legend>Scopes</legend>
+            {API_SCOPES.map((scope) => (
+              <label key={scope} htmlFor={`token-scope-${scope}`}>
+                <input
+                  id={`token-scope-${scope}`}
+                  type="checkbox"
+                  checked={tokenScopes.has(scope)}
+                  onChange={() => toggleTokenScope(scope)}
+                />{" "}
+                {scope}
+              </label>
+            ))}
+          </fieldset>
+          <label htmlFor="token-expiry">Expires (optional)</label>
+          <input
+            id="token-expiry"
+            type="datetime-local"
+            value={tokenExpiry}
+            onChange={(event) => setTokenExpiry(event.target.value)}
+          />
+          <button type="submit" disabled={busyId != null}>
+            Create token
+          </button>
+        </form>
+        {revealedToken ? (
+          <div className="token-reveal" role="status">
+            <p>Copy this token now. It will not be shown again.</p>
+            <code className="token-secret">{revealedToken}</code>
+            <button type="button" onClick={() => void onCopySecret()}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        ) : null}
+      </section>
       <form className="token-form" onSubmit={(event) => void onChangeEmail(event)}>
         <h2>Change email</h2>
         <label htmlFor="change-email">New email</label>

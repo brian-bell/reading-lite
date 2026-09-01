@@ -6,7 +6,10 @@ import type {
   ReprocessReadingResponse,
   SubmitReadingResponse,
   WhoamiResponse,
-  ListSessionsResponse
+  ListSessionsResponse,
+  CreateTokenBody,
+  CreateTokenResponse,
+  ListTokensResponse
 } from "./types";
 
 export class ApiError extends Error {
@@ -161,6 +164,36 @@ export async function requestEmailChange(email: string): Promise<void> {
   });
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to request email change"));
+  }
+}
+
+export async function listTokens(): Promise<ListTokensResponse> {
+  const response = await apiFetch(new URL("/api/auth/tokens", window.location.origin));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to list tokens"));
+  }
+  return (await response.json()) as ListTokensResponse;
+}
+
+export async function createToken(body: CreateTokenBody): Promise<CreateTokenResponse> {
+  const response = await apiFetch(new URL("/api/auth/tokens", window.location.origin), {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to create token"));
+  }
+  return (await response.json()) as CreateTokenResponse;
+}
+
+export async function revokeToken(id: string): Promise<void> {
+  const response = await apiFetch(new URL(`/api/auth/tokens/${encodeURIComponent(id)}`, window.location.origin), {
+    method: "DELETE",
+    headers: mutationHeaders()
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke token"));
   }
 }
 

@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { loginNextStorageKey } from "./login-return-path";
 import { clearMagicLinkCredential } from "./magic-link-credential";
-import type { ListReading, Manifest, ListReadingsResponse, ReadingDiagnostics } from "./types";
+import type {
+  ApiTokenListItem,
+  ListReading,
+  Manifest,
+  ListReadingsResponse,
+  ReadingDiagnostics
+} from "./types";
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -116,6 +122,29 @@ const sessionWhoami = {
   csrf_token: "ab".repeat(32)
 };
 
+const ALL_SCOPES = ["readings:read", "readings:write", "readings:import", "readings:delete"] as const;
+const mintedSecret = "tok_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa." + "ab".repeat(32);
+
+function apiToken(overrides: Partial<ApiTokenListItem> = {}): ApiTokenListItem {
+  return {
+    id: "tok_11111111-1111-4111-8111-111111111111",
+    name: "ops",
+    format: "standard",
+    scopes: [...ALL_SCOPES],
+    created_at_ms: 1,
+    expires_at_ms: 2,
+    revoked_at_ms: null,
+    last_used_at_ms: null,
+    user_agent_label: "Firefox",
+    usable: true,
+    ...overrides
+  };
+}
+
+function emptySessions() {
+  return { sessions: [], session_cap_warning: null };
+}
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -129,6 +158,12 @@ function stubJSON(body: unknown, status = 200) {
     if (url.pathname === "/api/whoami") {
       if (status === 401) return jsonResponse({ error: "unauthorized" }, 401);
       return jsonResponse(sessionWhoami);
+    }
+    if (url.pathname === "/api/auth/sessions") {
+      return jsonResponse({ sessions: [], session_cap_warning: null });
+    }
+    if (url.pathname === "/api/auth/tokens") {
+      return jsonResponse({ tokens: [] });
     }
     return jsonResponse(body, status);
   });
@@ -1250,6 +1285,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions") {
         return jsonResponse({
           sessions: [
@@ -1286,6 +1324,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions") {
         return jsonResponse({
           sessions: [
@@ -1351,6 +1392,9 @@ describe("App", () => {
       if (url.pathname === "/api/whoami") {
         if (signedOut) return jsonResponse({ error: "unauthorized" }, 401);
         return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
       }
       if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
         return jsonResponse({
@@ -1440,6 +1484,9 @@ describe("App", () => {
         identity = "b";
         return jsonResponse({ ok: true });
       }
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
         if (identity === "a") {
           return jsonResponse({
@@ -1485,6 +1532,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
         return jsonResponse({
           sessions: [
@@ -1531,6 +1581,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
         return jsonResponse({ sessions: [], session_cap_warning: null });
       }
@@ -1558,6 +1611,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
       if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
         return jsonResponse({ sessions: [], session_cap_warning: null });
       }
@@ -1573,6 +1629,176 @@ describe("App", () => {
     render(<App initialPath="/account/security" />);
     await user.type(await screen.findByLabelText("New email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Send confirmation" }));
+    expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
+      "href",
+      "/login"
+    );
+    expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
+  });
+
+  it("lists usable, expired, and revoked tokens and warns at the 10-token cap", async () => {
+    const tokens = [
+      apiToken({ name: "live", usable: true }),
+      apiToken({
+        id: "tok_22222222-2222-4222-8222-222222222222",
+        name: "old",
+        usable: false,
+        expires_at_ms: 1
+      }),
+      apiToken({
+        id: "tok_33333333-3333-4333-8333-333333333333",
+        name: "dead",
+        usable: false,
+        revoked_at_ms: 4
+      }),
+      ...Array.from({ length: 9 }, (_, i) =>
+        apiToken({
+          id: `tok_44444444-4444-4444-8444-44444444444${i}`,
+          name: `cap-${i}`,
+          format: i === 0 ? "legacy" : "standard"
+        })
+      )
+    ];
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/live \(standard\) · usable/)).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "API tokens" });
+    expect(within(panel).getByText(/old \(standard\) · expired/)).toBeInTheDocument();
+    expect(within(panel).getByText(/dead \(standard\) · revoked/)).toBeInTheDocument();
+    expect(within(panel).getByText(/cap-0 \(legacy\) · usable/)).toBeInTheDocument();
+    expect(screen.getByText(/10-token limit/)).toBeInTheDocument();
+    expect(within(panel).getAllByRole("button", { name: "Revoke" })).toHaveLength(10);
+    expect(within(panel).getByLabelText("readings:delete")).toBeChecked();
+    expect(within(panel).getByLabelText("readings:read")).toBeChecked();
+    expect(within(panel).getByLabelText("readings:write")).toBeChecked();
+    expect(within(panel).getByLabelText("readings:import")).toBeChecked();
+  });
+
+  it("reveals a minted token once, copies it, and sends CSRF on create", async () => {
+    let listed = [apiToken({ name: "legacy", format: "legacy" })];
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: listed });
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "POST") {
+        listed = [
+          apiToken({
+            id: "tok_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            name: "laptop"
+          }),
+          ...listed
+        ];
+        return jsonResponse(
+          {
+            token: mintedSecret,
+            id: "tok_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            name: "laptop",
+            scopes: [...ALL_SCOPES],
+            created_at_ms: 1,
+            expires_at_ms: 2
+          },
+          201
+        );
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    const { unmount } = render(<App initialPath="/account/security" />);
+    const panel = await screen.findByRole("region", { name: "API tokens" });
+    await user.type(within(panel).getByLabelText("Name"), "laptop");
+    await user.click(within(panel).getByRole("button", { name: "Create token" }));
+    expect(await screen.findByText(mintedSecret)).toBeInTheDocument();
+    expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/tokens";
+    });
+    expect(post).toBeDefined();
+    expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(await (post![0] as Request).clone().json()).toEqual({
+      name: "laptop",
+      scopes: [...ALL_SCOPES]
+    });
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith(mintedSecret);
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+    unmount();
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/laptop \(standard\) · usable/)).toBeInTheDocument();
+    expect(screen.queryByText(mintedSecret)).not.toBeInTheDocument();
+    expect(screen.queryByText(/will not be shown again/i)).not.toBeInTheDocument();
+  });
+
+  it("revokes a token with CSRF", async () => {
+    let listed = [apiToken()];
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: listed });
+      }
+      if (url.pathname === `/api/auth/tokens/${listed[0].id}` && request.method === "DELETE") {
+        listed = [{ ...listed[0], usable: false, revoked_at_ms: 9 }];
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const panel = await screen.findByRole("region", { name: "API tokens" });
+    await user.click(await within(panel).findByRole("button", { name: "Revoke" }));
+    await waitFor(() => {
+      expect(screen.getByText(/ops \(standard\) · revoked/)).toBeInTheDocument();
+    });
+    const del = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "DELETE" && new URL(req.url).pathname.startsWith("/api/auth/tokens/");
+    });
+    expect(del).toBeDefined();
+    expect((del![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(within(panel).queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
+  });
+
+  it("asks for a fresh sign-in link when creating a token requires recent auth", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "POST") {
+        return jsonResponse({ error: "recent authentication required" }, 403);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const panel = await screen.findByRole("region", { name: "API tokens" });
+    await user.type(within(panel).getByLabelText("Name"), "ops");
+    await user.click(within(panel).getByRole("button", { name: "Create token" }));
     expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
       "href",
       "/login"

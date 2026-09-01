@@ -28,3 +28,10 @@ Object.defineProperty(window, "localStorage", {
   configurable: true,
   value: storage
 });
+
+Object.defineProperty(navigator, "clipboard", {
+  configurable: true,
+  value: {
+    writeText: async () => undefined
+  }
+});

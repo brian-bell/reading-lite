@@ -289,3 +289,44 @@ export interface ListSessionsResponse {
   sessions: SessionListItem[];
   session_cap_warning: string | null;
 }
+
+// Mirrors ApiScopeName / token schemas in ../../src/schemas/api.ts.
+export const API_SCOPES = [
+  "readings:read",
+  "readings:write",
+  "readings:import",
+  "readings:delete"
+] as const;
+export type ApiScopeName = (typeof API_SCOPES)[number];
+
+export interface CreateTokenBody {
+  name: string;
+  scopes: ApiScopeName[];
+  expires_at_ms?: number;
+}
+
+export interface CreateTokenResponse {
+  token: string;
+  id: string;
+  name: string;
+  scopes: ApiScopeName[];
+  created_at_ms: number;
+  expires_at_ms: number;
+}
+
+export interface ApiTokenListItem {
+  id: string;
+  name: string;
+  format: "legacy" | "standard";
+  scopes: ApiScopeName[];
+  created_at_ms: number;
+  expires_at_ms: number;
+  revoked_at_ms: number | null;
+  last_used_at_ms: number | null;
+  user_agent_label: string | null;
+  usable: boolean;
+}
+
+export interface ListTokensResponse {
+  tokens: ApiTokenListItem[];
+}
