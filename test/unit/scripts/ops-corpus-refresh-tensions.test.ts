@@ -205,12 +205,12 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.out.join("\n")).toContain("Judged: 1; manifests written: 2; repaired: 0; failures: 0");
   });
 
-  it("lets --pair bypass the overlap filter and the judged skip, and works without a report", async () => {
+  it("lets --pair bypass the overlap filter and the judged skip, and ignores the default report", async () => {
     const h = harness();
-    h.readReport.mockResolvedValue(null);
     h.stored("rd_a").tensions_judged = [{ id: "rd_c", judged_at: JUDGED_AT }];
     h.stored("rd_c").tensions_judged = [{ id: "rd_a", judged_at: JUDGED_AT }];
     expect(await run(h, "--pair", "rd_a,rd_c", "--execute", "--sole-writer")).toBe(0);
+    expect(h.readReport).not.toHaveBeenCalled();
     expect(h.out.join("\n")).toContain("Report: none (--pair only)");
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.stored("rd_c").tensions).toEqual([
@@ -310,10 +310,22 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.stored("rd_a")).not.toHaveProperty("tensions");
   });
 
-  it("refuses a stale report even when --pair names the drifted reading", async () => {
+  it("refuses an explicitly passed stale report even when --pair names the drifted reading", async () => {
     const h = harness();
     h.stored("rd_b").updated_at = JUDGED_AT;
-    await expect(run(h, "--pair", "rd_a,rd_b")).rejects.toThrow(/rd_b changed after.*regenerate/);
+    await expect(run(h, "--report", "r.json", "--pair", "rd_a,rd_b")).rejects.toThrow(
+      /rd_b changed after.*regenerate/,
+    );
+    expect(h.readReport).toHaveBeenCalledWith("r.json");
+  });
+
+  it("combines an explicit report with --pair and forces the hand-picked pair", async () => {
+    const h = harness();
+    h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
+    h.stored("rd_b").tensions_judged = [{ id: "rd_a", judged_at: AT }];
+    expect(await run(h, "--report", "r.json", "--pair", "rd_a,rd_b")).toBe(0);
+    expect(h.out.join("\n")).toContain("Report: r.json (1 flagged)");
+    expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge (--pair) score=0.900");
   });
 
   it("caps judgement and repair actions with --limit", async () => {

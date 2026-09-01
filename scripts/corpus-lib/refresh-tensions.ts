@@ -359,7 +359,10 @@ export function findOneSided(
           },
         });
       } else {
+        // The judgement predates the target's rewrite, so it is stale on both
+        // sides; clear whatever survives so the pair is re-judged clean.
         actions.push({ kind: "drop", on: from, partner: to });
+        if (tx && ty) actions.push({ kind: "drop", on: to, partner: from });
       }
       continue;
     }

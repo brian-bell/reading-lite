@@ -373,6 +373,18 @@ describe("findOneSided", () => {
     ]);
   });
 
+  it("clears both sides when disagreeing entries predate the target's rewrite", () => {
+    const a = manifest("rd_a", { tensions: [{ ...forward, computed_at: T1 }] });
+    const b = manifest("rd_b", {
+      tensions: [{ ...backward, kind: "contradicts", computed_at: T0 }],
+      updated_at: T2,
+    });
+    expect(findOneSided(byId(a, b), ready("rd_a", "rd_b"))).toEqual([
+      { kind: "drop", on: "rd_a", partner: "rd_b" },
+      { kind: "drop", on: "rd_b", partner: "rd_a" },
+    ]);
+  });
+
   it("leaves a dangling partner alone and mirrors a lone judged record", () => {
     const a = manifest("rd_a", { tensions: [forward], tensions_judged: [judgedA, { id: "rd_c", judged_at: T1 }] });
     const c = manifest("rd_c");

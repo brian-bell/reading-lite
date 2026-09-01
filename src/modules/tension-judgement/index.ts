@@ -96,7 +96,7 @@ export function buildOpenAITensionRequestBody(
     model,
     store: false,
     reasoning: { effort: reasoningEffort },
-    max_output_tokens: 512,
+    max_output_tokens: 1024,
     instructions: TENSION_JUDGEMENT_INSTRUCTIONS,
     input: [
       {
@@ -125,7 +125,7 @@ export function buildAnthropicTensionRequestBody(
 ): object {
   return {
     model,
-    max_tokens: 512,
+    max_tokens: 1024,
     thinking: { type: "disabled" },
     output_config: { effort },
     system: [

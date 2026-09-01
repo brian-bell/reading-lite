@@ -360,7 +360,8 @@ every free repair, and writes nothing.
 ```sh
 npm run ops -- corpus refresh-tensions --tenant global --report ./refresh-report.json
 
-# Hand-pick a pair known to conflict; the report is optional with --pair.
+# Hand-pick a pair known to conflict. With --pair the report is read only
+# when --report is passed explicitly.
 npm run ops -- corpus refresh-tensions \
   --tenant global --pair rd_older,rd_retraction --execute --sole-writer
 ```
@@ -387,8 +388,8 @@ partner's side is repaired the same way. A failed reprocess keeps them but
 still bumps `updated_at`, so that reading's pairs are re-judged once at the
 usual cost. Repairs are found among the readings the report or `--pair`
 names, not by a corpus-wide scan. A stale report (any reading it names was
-rewritten after it was generated) is refused even with `--pair`; regenerate
-it or point `--report` at a path that does not exist.
+rewritten after it was generated) is refused even when `--pair` names the
+drifted reading; regenerate it or omit `--report`.
 
 Deploy a Worker whose `ManifestSchema` knows `tensions` **before** the first
 production `--execute`: the Worker parses every manifest it reads with

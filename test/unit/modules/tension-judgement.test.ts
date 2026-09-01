@@ -81,7 +81,7 @@ describe("tension judgement prompt", () => {
       schema: { required: ["verdict", "side", "reason"], additionalProperties: false },
     });
     expect(openai.store).toBe(false);
-    expect(openai.max_output_tokens).toBe(512);
+    expect(openai.max_output_tokens).toBe(1024);
 
     const anthropic = buildAnthropicTensionRequestBody(input, "claude-sonnet-5", "high") as any;
     expect(anthropic.tools).toHaveLength(1);

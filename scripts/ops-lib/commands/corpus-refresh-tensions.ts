@@ -77,7 +77,8 @@ const ASSUMED_OUTPUT_TOKENS = 128;
 
 interface Args {
   tenant?: string;
-  report: string;
+  /** null when --pair was given without an explicit --report. */
+  report: string | null;
   bucket: string;
   execute: boolean;
   soleWriter: boolean;
@@ -123,7 +124,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
       args: argv,
       options: {
         tenant: { type: "string" },
-        report: { type: "string", default: "refresh-report.json" },
+        report: { type: "string" },
         bucket: {
           type: "string",
           default: process.env.READING_LITE_BUCKET ?? "reading-lite",
@@ -155,7 +156,8 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
   }
   return {
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
-    report: values.report!,
+    // A hand-picked pair does not implicitly consume a leftover report in cwd.
+    report: values.report ?? (pairs.length > 0 ? null : "refresh-report.json"),
     bucket: values.bucket!,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -181,7 +183,7 @@ async function runCorpusRefreshTensions(
 
   const tenant = requireOperatorTenant(args.tenant);
   const selector = operatorTenantSelector(tenant);
-  const rawReport = await deps.readReport(args.report);
+  const rawReport = args.report === null ? null : await deps.readReport(args.report);
   if (rawReport === null && args.pairs.length === 0) {
     throw new Error(
       `report ${args.report} not found; run corpus refresh-neighbours first or pass --pair`,
@@ -634,7 +636,8 @@ touched. A crash between the two writes leaves a one-sided pair that the next
 run mirrors without another paid call.
 
 Options:
-  --report <path>      Tier-one report. Default: ./refresh-report.json (optional with --pair).
+  --report <path>      Tier-one report. Default: ./refresh-report.json, except with --pair,
+                       which reads a report only when --report is passed explicitly.
   --pair <a>,<b>       Hand-pick a pair (repeatable); bypasses the overlap filter and judged skip.
   --limit <n>          Cap selected judgement and repair actions.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
