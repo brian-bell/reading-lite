@@ -1,10 +1,11 @@
+import { TOKEN_MAX_TTL_MS } from "./constants";
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
 import type { ControlPlaneDb, SqlStatement } from "./db";
 import { canonicalizeEmail } from "./email";
 import { mintTokenId, mintUserId, parseTokenId, parseUserId, type TokenId, type UserId } from "./ids";
 import { API_SCOPES } from "./principal";
 
-export const TOKEN_MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export { TOKEN_MAX_TTL_MS };
 
 export const FOUNDER_PLACEHOLDER_LIMITS = {
   submissions_per_hour: 20,

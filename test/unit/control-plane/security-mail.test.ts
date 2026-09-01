@@ -24,6 +24,14 @@ describe("renderSecurityMail", () => {
       /secret|token|cookie|credential|authorization|hmac/i,
     );
   });
+
+  it("describes an API key create without secrets", () => {
+    const rendered = renderSecurityMail("api_token_created");
+    expect(rendered.subject).toMatch(/API key created/i);
+    expect(`${rendered.subject}\n${rendered.text}\n${rendered.html}`).not.toMatch(
+      /secret|token|cookie|credential|authorization|hmac/i,
+    );
+  });
 });
 
 describe("buildAuthResendPayload", () => {

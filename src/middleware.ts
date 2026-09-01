@@ -81,6 +81,18 @@ export const requireRecentAuth = (nowMs: () => number): MiddlewareHandler<AppBin
   };
 };
 
+/** Token lifecycle routes are browser-session only. Bearer callers get 403. */
+export const requireSession = (): MiddlewareHandler<AppBindings> => {
+  return async (c, next) => {
+    const principal = c.get("principal");
+    if (!principal || principal.kind !== "session") {
+      return jsonNoStore(c, { error: "forbidden" }, 403);
+    }
+    await next();
+    return undefined;
+  };
+};
+
 export { isRecentAuth, principalHasRecentAuth } from "./control-plane/recent-auth";
 
 // Enforces the optional x-expected-tenant layout pin (reading-lite-1xk): when

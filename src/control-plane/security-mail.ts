@@ -3,7 +3,7 @@ import { logAuthEvent } from "./auth-log";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import { sendAuthMailViaResend } from "./resend-mail";
 
-export type SecurityMailKind = "sessions_revoked_all" | "email_changed";
+export type SecurityMailKind = "sessions_revoked_all" | "email_changed" | "api_token_created";
 
 export interface SecurityMail {
   to: string;
@@ -27,6 +27,20 @@ export function renderSecurityMail(kind: SecurityMailKind): { subject: string; h
       "<p>The login email for your reading-lite account was changed.</p>",
       "<p>If you did this, no action is needed.</p>",
       "<p>If you did not, request a new sign-in link immediately.</p>",
+    ].join("\n");
+    return { subject, html, text };
+  }
+  if (kind === "api_token_created") {
+    const subject = "reading-lite: API key created";
+    const text = [
+      "A new API key was created for your reading-lite account.",
+      "If you did this, no action is needed.",
+      "If you did not, revoke unused keys and request a new sign-in link immediately.",
+    ].join("\n");
+    const html = [
+      "<p>A new API key was created for your reading-lite account.</p>",
+      "<p>If you did this, no action is needed.</p>",
+      "<p>If you did not, revoke unused keys and request a new sign-in link immediately.</p>",
     ].join("\n");
     return { subject, html, text };
   }

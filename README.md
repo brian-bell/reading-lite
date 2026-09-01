@@ -152,6 +152,9 @@ out. Origin checks still apply to cookie writes.
 | `GET /api/auth/sessions` | Caller's sessions (current marked). `usable` is false for revoked or idle/absolute-expired rows; expired rows stay in the list. `session_cap_warning` when at the 10-session cap. |
 | `DELETE /api/auth/sessions/:id` | Cookie CSRF. Revokes one session; current also clears the cookie. No security mail. |
 | `POST /api/auth/sessions/revoke-all` | Cookie CSRF, no recent-auth. Revokes every session, logs the caller out, sends security mail. |
+| `POST /api/auth/tokens` | Session-only, cookie CSRF, recent-auth. Body `{ name, scopes, expires_at_ms? }`. 201 `{ token, id, name, scopes, created_at_ms, expires_at_ms }` with `tok_….hex` once. Default 90d; 409 at 10 active (including founder legacy). Security mail on create. |
+| `GET /api/auth/tokens` | Session-only. Lists metadata without secrets; `usable` is false for revoked or expired rows. |
+| `DELETE /api/auth/tokens/:id` | Session-only, cookie CSRF, no recent-auth. Soft-revokes; 404 if not owned. No security mail. |
 | `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
 | `POST /api/readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
 | `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |

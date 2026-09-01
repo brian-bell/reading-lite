@@ -4,7 +4,12 @@ export const SESSION_ABSOLUTE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 /** Durable cookie lifetime: 90 days. Must be set so login survives browser restart. */
 export const SESSION_COOKIE_MAX_AGE_SECONDS = 7_776_000;
 export const SESSION_LAST_SEEN_COALESCE_MS = 60 * 60 * 1000;
+export const TOKEN_LAST_USED_COALESCE_MS = SESSION_LAST_SEEN_COALESCE_MS;
+export const TOKEN_MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const MAX_ACTIVE_SESSIONS = 10;
+export const MAX_ACTIVE_TOKENS = 10;
+/** Display name on minted API tokens. */
+export const TOKEN_NAME_MAX = 80;
 /** Fresh magic-link confirmation window for step-up (API tokens, email change, account delete). */
 export const RECENT_AUTH_WINDOW_MS = 10 * 60 * 1000;
 export const SESSION_CAP_WARNING =

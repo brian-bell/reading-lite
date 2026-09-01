@@ -478,4 +478,20 @@ describe("consumeProcessReadingMessage", () => {
     expect(process).not.toHaveBeenCalled();
     expect(expired.ack).toHaveBeenCalledOnce();
   });
+
+  it("acks a revoked or expired api_token actor envelope without processing", async () => {
+    const { sqlite, db } = await seededFounder();
+    const process = vi.fn();
+    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = ?").run(NOW_MS);
+    const revoked = fakeMessage(founderEnvelope());
+    await consumeProcessReadingMessage(revoked, { db, nowMs: NOW_MS, process });
+    expect(process).not.toHaveBeenCalled();
+    expect(revoked.ack).toHaveBeenCalledOnce();
+
+    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = NULL, expires_at_ms = ?").run(NOW_MS);
+    const expired = fakeMessage(founderEnvelope());
+    await consumeProcessReadingMessage(expired, { db, nowMs: NOW_MS, process });
+    expect(process).not.toHaveBeenCalled();
+    expect(expired.ack).toHaveBeenCalledOnce();
+  });
 });

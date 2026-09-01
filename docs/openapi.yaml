@@ -283,6 +283,111 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/auth/tokens:
+    get:
+      tags: [identity]
+      operationId: listAuthTokens
+      summary: List the caller's API tokens
+      description: |
+        Session cookie only (bearer 403). CSRF is not required (GET). Returns
+        token metadata without secrets (`id`, name, format, scopes, timestamps,
+        `usable`). Revoked and expired rows stay in the list with
+        `usable: false`. The founder legacy token is included.
+      responses:
+        "200":
+          description: Token list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTokensResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+    post:
+      tags: [identity]
+      operationId: createAuthToken
+      summary: Mint a standard API token
+      description: |
+        Session cookie plus `X-CSRF-Token`. Requires recent magic-link
+        authentication (10 minutes). Bearer 403. Body `{ name, scopes,
+        expires_at_ms? }`. Mints `format=standard` HMAC material and returns
+        the `tok_{uuid}.{hex}` credential once. Default expiry is 90 days;
+        `expires_at_ms` may not exceed now + 90 days. Empty or unknown scopes
+        are rejected. At 10 active tokens (including the founder legacy row)
+        returns 409. Sends a security notification on create (no secrets).
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCreateTokenBody"
+      responses:
+        "201":
+          description: Token minted (secret returned once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthCreateTokenResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden principal, CSRF, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: Ten active tokens already exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+              example:
+                error: too many active tokens
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/tokens/{id}:
+    delete:
+      tags: [identity]
+      operationId: revokeAuthToken
+      summary: Revoke one API token
+      description: |
+        Session cookie plus `X-CSRF-Token`. Recent-auth is not required.
+        Bearer 403. Soft-revokes a token owned by the caller. Does not send
+        security mail. Does not mark pending work failed; queued jobs recheck
+        the token on admit. 404 if the id is not owned.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^tok_"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokenRevokeResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/auth/email-change:
     post:
       tags: [identity]
@@ -1088,6 +1193,119 @@ components:
             sign-in from another device revokes the least-recently-used session.
 
     AuthSessionRevokeResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    ApiScopeName:
+      type: string
+      enum:
+        - readings:read
+        - readings:write
+        - readings:import
+        - readings:delete
+
+    AuthCreateTokenBody:
+      type: object
+      additionalProperties: false
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ApiScopeName"
+        expires_at_ms:
+          type: integer
+          description: Absolute expiry. Defaults to now + 90 days; must not exceed that bound.
+
+    AuthCreateTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [token, id, name, scopes, created_at_ms, expires_at_ms]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          description: One-time `tok_{uuid}.{hex}` credential. Never stored.
+        id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiScopeName"
+        created_at_ms:
+          type: integer
+        expires_at_ms:
+          type: integer
+
+    ApiTokenListItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - format
+        - scopes
+        - created_at_ms
+        - expires_at_ms
+        - revoked_at_ms
+        - last_used_at_ms
+        - user_agent_label
+        - usable
+      properties:
+        id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        format:
+          type: string
+          enum: [legacy, standard]
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiScopeName"
+        created_at_ms:
+          type: integer
+        expires_at_ms:
+          type: integer
+        revoked_at_ms:
+          type: integer
+          nullable: true
+        last_used_at_ms:
+          type: integer
+          nullable: true
+        user_agent_label:
+          type: string
+          nullable: true
+        usable:
+          type: boolean
+
+    ListTokensResponse:
+      type: object
+      additionalProperties: false
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiTokenListItem"
+
+    AuthTokenRevokeResponse:
       type: object
       additionalProperties: false
       required: [ok]

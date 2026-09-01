@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { authenticateBearer } from "../../../src/control-plane/authenticate";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
+import { TOKEN_LAST_USED_COALESCE_MS } from "../../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
@@ -249,5 +250,42 @@ describe("authenticateBearer", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok" || result.principal.kind !== "api_token") return;
     expect(result.principal.tokenId).toBe(founder.tokenId);
+  });
+
+  it("coalesces last-used writes to at most once per hour", async () => {
+    const { sqlite, db, founder } = await seeded();
+    const first = await authenticateBearer(db, {
+      authorization: "Bearer test-token",
+      authRoot,
+      nowMs: NOW_MS,
+    });
+    expect(first.kind).toBe("ok");
+    const afterFirst = sqlite
+      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
+      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    expect(afterFirst.last_used_at_ms).toBe(NOW_MS);
+
+    const withinHour = await authenticateBearer(db, {
+      authorization: "Bearer test-token",
+      authRoot,
+      nowMs: NOW_MS + TOKEN_LAST_USED_COALESCE_MS - 1,
+    });
+    expect(withinHour.kind).toBe("ok");
+    const unchanged = sqlite
+      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
+      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    expect(unchanged.last_used_at_ms).toBe(NOW_MS);
+
+    const laterMs = NOW_MS + TOKEN_LAST_USED_COALESCE_MS;
+    const afterHour = await authenticateBearer(db, {
+      authorization: "Bearer test-token",
+      authRoot,
+      nowMs: laterMs,
+    });
+    expect(afterHour.kind).toBe("ok");
+    const touched = sqlite
+      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
+      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    expect(touched.last_used_at_ms).toBe(laterMs);
   });
 });
