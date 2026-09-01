@@ -80,6 +80,7 @@ interface Args {
   tenant?: string;
   /** null when --pair was given without an explicit --report. */
   report: string | null;
+  reportExplicit: boolean;
   bucket: string;
   execute: boolean;
   soleWriter: boolean;
@@ -159,6 +160,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     // A hand-picked pair does not implicitly consume a leftover report in cwd.
     report: values.report ?? (pairs.length > 0 ? null : "refresh-report.json"),
+    reportExplicit: values.report !== undefined,
     bucket: values.bucket!,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -185,7 +187,7 @@ async function runCorpusRefreshTensions(
   const tenant = requireOperatorTenant(args.tenant);
   const selector = operatorTenantSelector(tenant);
   const rawReport = args.report === null ? null : await deps.readReport(args.report);
-  if (rawReport === null && args.pairs.length === 0) {
+  if (rawReport === null && (args.reportExplicit || args.pairs.length === 0)) {
     throw new Error(
       `report ${args.report} not found; run corpus refresh-neighbours first or pass --pair`,
     );
@@ -321,7 +323,15 @@ async function runCorpusRefreshTensions(
     actions.push({ kind: "repair", repair });
   }
 
-  const selected = args.limit === undefined ? actions : actions.slice(0, args.limit);
+  // --limit caps paid judgements only; repairs are free, and the dangling
+  // purges among them are what stop tier 1 from re-flagging holders nightly.
+  const selected =
+    args.limit === undefined
+      ? actions
+      : [
+          ...actions.filter((action) => action.kind === "judge").slice(0, args.limit),
+          ...actions.filter((action) => action.kind === "repair"),
+        ];
   deps.io.stdout(`Bucket: ${args.bucket}`);
   deps.io.stdout(`Tenant: ${selector}`);
   deps.io.stdout(
@@ -370,6 +380,7 @@ async function runCorpusRefreshTensions(
   let written = 0;
   let repaired = 0;
   let failures = 0;
+  let skippedSincePlan = 0;
   const fail = (label: string, error: unknown) => {
     failures++;
     deps.io.stderr(`  ! ${label}: ${error instanceof Error ? error.message : String(error)}`);
@@ -414,7 +425,11 @@ async function runCorpusRefreshTensions(
         fail(key, error);
         continue;
       }
-      if (source === "report" && isPairJudged(a.manifest, b.manifest)) continue;
+      if (source === "report" && isPairJudged(a.manifest, b.manifest)) {
+        skippedSincePlan++;
+        deps.io.stderr(`  ! skip ${key}: judged since the plan was made`);
+        continue;
+      }
       try {
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
         const result = await provider.judge(input);
@@ -479,7 +494,8 @@ async function runCorpusRefreshTensions(
   }
 
   deps.io.stdout(
-    `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; failures: ${failures}`,
+    `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; ` +
+      `skipped since plan: ${skippedSincePlan}; failures: ${failures}`,
   );
   return planningFailed || failures > 0 ? 1 : 0;
 }
@@ -661,7 +677,7 @@ Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json, except with --pair,
                        which reads a report only when --report is passed explicitly.
   --pair <a>,<b>       Hand-pick a pair (repeatable); bypasses the overlap filter and judged skip.
-  --limit <n>          Cap selected judgement and repair actions.
+  --limit <n>          Cap paid judgement actions; free repairs always run.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

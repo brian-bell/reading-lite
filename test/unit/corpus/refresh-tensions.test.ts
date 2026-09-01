@@ -329,12 +329,10 @@ describe("findOneSided", () => {
     ]);
   });
 
-  it("is quiet for a consistent pair and for a pair about to be judged", () => {
+  it("is quiet for a consistent pair", () => {
     const a = manifest("rd_a", { tensions: [forward], tensions_judged: [judgedA] });
     const b = manifest("rd_b", { tensions: [backward], tensions_judged: [judgedB] });
     expect(findOneSided(byId(a, b), ready("rd_a", "rd_b"))).toEqual([]);
-    const lonely = manifest("rd_b");
-    expect(findOneSided(byId(a, lonely), ready("rd_a", "rd_b"), new Set(["rd_a|rd_b"]))).toEqual([]);
   });
 
   it("drops the stale side when the partner was reprocessed after the judgement", () => {

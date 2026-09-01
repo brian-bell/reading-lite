@@ -375,7 +375,7 @@ and is remembered so the pair is not re-judged nightly. Only `tensions` and
 `tensions_judged` change; `updated_at`, connections, and every summary field
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
-manifests.
+manifests. `--limit` caps paid judgements only; free repairs always run.
 
 The two writes are not atomic. If the second CAS write loses, the command
 reports the pair as one-sided; the next run mirrors the inverse entry to the

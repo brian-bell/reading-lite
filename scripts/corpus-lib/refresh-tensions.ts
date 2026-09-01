@@ -302,13 +302,11 @@ export function mergeTensionSide(
  * its entries are purged from the holder — otherwise tier 1 would flag the
  * holder `stale_connection` and refresh-connections would re-judge it every
  * night. A ready partner that simply was not loaded cannot be reconciled and
- * is skipped. Pairs in `excludePairKeys` are about to be judged afresh and
- * are left to that write.
+ * is skipped. The caller drops repairs for pairs it is about to judge afresh.
  */
 export function findOneSided(
   manifestsById: ReadonlyMap<string, RawManifest>,
   readyIds: ReadonlySet<string>,
-  excludePairKeys: ReadonlySet<string> = new Set(),
 ): RepairAction[] {
   const keys = new Set<string>();
   for (const [id, manifest] of manifestsById) {
@@ -318,7 +316,6 @@ export function findOneSided(
   }
   const actions: RepairAction[] = [];
   for (const key of [...keys].sort()) {
-    if (excludePairKeys.has(key)) continue;
     const [x, y] = key.split("|") as [string, string];
     const mx = manifestsById.get(x);
     const my = manifestsById.get(y);

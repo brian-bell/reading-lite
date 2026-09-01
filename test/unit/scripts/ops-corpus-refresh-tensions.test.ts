@@ -202,7 +202,7 @@ describe("ops corpus refresh-tensions", () => {
     });
     expect(h.listWrites).toEqual([]);
     expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge (--pair)");
-    expect(h.out.join("\n")).toContain("Judged: 1; manifests written: 2; repaired: 0; failures: 0");
+    expect(h.out.join("\n")).toContain("Judged: 1; manifests written: 2; repaired: 0; skipped since plan: 0; failures: 0");
   });
 
   it("lets --pair bypass the overlap filter and the judged skip, and ignores the default report", async () => {
@@ -275,7 +275,7 @@ describe("ops corpus refresh-tensions", () => {
       tensions: [{ id: "rd_a", kind: "supersedes", reason: "rd_b retracts rd_a", computed_at: JUDGED_AT }],
       tensions_judged: [{ id: "rd_a", judged_at: JUDGED_AT }],
     });
-    expect(h.out.join("\n")).toContain("Judged: 0; manifests written: 1; repaired: 1; failures: 0");
+    expect(h.out.join("\n")).toContain("Judged: 0; manifests written: 1; repaired: 1; skipped since plan: 0; failures: 0");
   });
 
   it("drops a stale one-sided tension whose partner was reprocessed since", async () => {
@@ -358,13 +358,28 @@ describe("ops corpus refresh-tensions", () => {
     expect(after.updated_at).toBe(EARLIER);
   });
 
-  it("caps judgement and repair actions with --limit", async () => {
+  it("caps paid judgements with --limit while free repairs always run", async () => {
     const h = harness();
     h.stored("rd_c").tensions = [{ id: "rd_b", kind: "contradicts", reason: "r", computed_at: AT }];
+    h.stored("rd_c").people = ["Ada"];
+    h.readReport.mockResolvedValue(
+      JSON.stringify(report([{ id: "rd_a", neighbours: ["rd_b", "rd_c"] }])),
+    );
     expect(await run(h, "--limit", "1")).toBe(0);
-    expect(h.out.join("\n")).toContain("Selected actions: 1;");
-    expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge");
-    expect(h.out.join("\n")).not.toContain("repair mirror");
+    const text = h.out.join("\n");
+    expect(text).toContain("Selected actions: 2;");
+    expect(text).toContain("rd_a<->rd_b  judge");
+    expect(text).not.toContain("rd_a<->rd_c  judge");
+    expect(text).toContain("rd_b<-rd_c  repair mirror contradicts");
+  });
+
+  it("fails on an explicitly passed report that does not exist even with --pair", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(null);
+    await expect(run(h, "--report", "typo.json", "--pair", "rd_a,rd_b")).rejects.toThrow(
+      /report typo.json not found/,
+    );
+    expect(h.judge).not.toHaveBeenCalled();
   });
 
   it("does not write the second side when the first CAS loses", async () => {
