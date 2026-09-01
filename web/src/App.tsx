@@ -273,10 +273,20 @@ function formatSessionTime(ms: number): string {
 }
 
 const TOKEN_CAP = 10;
+const TOKEN_MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const TOKEN_CAP_WARNING =
   "This account is at the 10-token limit. Revoke a token before creating another.";
 const RECENT_AUTH_REQUIRED =
   "Recent sign-in required. Request a fresh sign-in link, then try again.";
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function toDatetimeLocalValue(ms: number): string {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
 
 function tokenStatusLabel(token: ApiTokenListItem): string {
   if (token.revoked_at_ms != null) return "revoked";
@@ -394,8 +404,17 @@ function AccountSecurityPage({
     let expiresAtMs: number | undefined;
     if (tokenExpiry !== "") {
       const parsed = Date.parse(tokenExpiry);
+      const nowMs = Date.now();
       if (!Number.isFinite(parsed)) {
         setError("Enter a valid expiry.");
+        return;
+      }
+      if (parsed <= nowMs) {
+        setError("Expiry must be in the future.");
+        return;
+      }
+      if (parsed > nowMs + TOKEN_MAX_TTL_MS) {
+        setError("Expiry cannot be more than 90 days from now.");
         return;
       }
       expiresAtMs = parsed;
@@ -585,6 +604,8 @@ function AccountSecurityPage({
           <input
             id="token-expiry"
             type="datetime-local"
+            min={toDatetimeLocalValue(Date.now())}
+            max={toDatetimeLocalValue(Date.now() + TOKEN_MAX_TTL_MS)}
             value={tokenExpiry}
             onChange={(event) => setTokenExpiry(event.target.value)}
           />
@@ -593,8 +614,8 @@ function AccountSecurityPage({
           </button>
         </form>
         {revealedToken ? (
-          <div className="token-reveal" role="status">
-            <p>Copy this token now. It will not be shown again.</p>
+          <div className="token-reveal">
+            <p role="status">Copy this token now. It will not be shown again.</p>
             <code className="token-secret">{revealedToken}</code>
             <button type="button" onClick={() => void onCopySecret()}>
               {copied ? "Copied" : "Copy"}

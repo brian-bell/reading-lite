@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { onlineManager } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1724,7 +1724,8 @@ describe("App", () => {
     await user.type(within(panel).getByLabelText("Name"), "laptop");
     await user.click(within(panel).getByRole("button", { name: "Create token" }));
     expect(await screen.findByText(mintedSecret)).toBeInTheDocument();
-    expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/will not be shown again/i);
+    expect(screen.getByRole("status")).not.toHaveTextContent(mintedSecret);
     const post = fetchMock.mock.calls.find((c) => {
       const req = c[0] as Request;
       return req.method === "POST" && new URL(req.url).pathname === "/api/auth/tokens";
@@ -1804,5 +1805,44 @@ describe("App", () => {
       "/login"
     );
     expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
+  });
+
+  it("rejects a past or over-max expiry before minting", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "POST") {
+        return jsonResponse({ error: "invalid body" }, 400);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const panel = await screen.findByRole("region", { name: "API tokens" });
+    const expiry = within(panel).getByLabelText("Expires (optional)");
+    expect(expiry).toHaveAttribute("min");
+    expect(expiry).toHaveAttribute("max");
+    await user.type(within(panel).getByLabelText("Name"), "ops");
+
+    fireEvent.change(expiry, { target: { value: "2000-01-01T00:00" } });
+    fireEvent.submit(expiry.closest("form")!);
+    expect(await screen.findByText("Expiry must be in the future.")).toBeInTheDocument();
+
+    fireEvent.change(expiry, { target: { value: "2099-01-01T00:00" } });
+    fireEvent.submit(expiry.closest("form")!);
+    expect(await screen.findByText("Expiry cannot be more than 90 days from now.")).toBeInTheDocument();
+
+    expect(
+      fetchMock.mock.calls.some((c) => {
+        const req = c[0] as Request;
+        return req.method === "POST" && new URL(req.url).pathname === "/api/auth/tokens";
+      })
+    ).toBe(false);
   });
 });
