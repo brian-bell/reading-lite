@@ -27,6 +27,28 @@ export interface Connection {
   reason: string;
 }
 
+// Mirrors TensionKindSchema / TensionSchema / TensionJudgedSchema in
+// src/schemas/reading-summary.ts. `kind` reads from this reading's point of
+// view: "supersedes" means this reading supersedes `id`.
+export type TensionKind =
+  | "contradicts"
+  | "supersedes"
+  | "superseded_by"
+  | "qualifies"
+  | "qualified_by";
+
+export interface Tension {
+  id: string;
+  kind: TensionKind;
+  reason: string;
+  computed_at: string;
+}
+
+export interface TensionJudged {
+  id: string;
+  judged_at: string;
+}
+
 export interface ManifestError {
   code: string;
   message: string;
@@ -126,6 +148,8 @@ export interface Manifest {
   connections?: Connection[];
   connections_computed_at?: string;
   connections_neighbourhood_ids?: string[];
+  tensions?: Tension[];
+  tensions_judged?: TensionJudged[];
   summary_markdown?: string;
 
   content_type: string;

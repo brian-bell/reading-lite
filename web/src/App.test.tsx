@@ -816,6 +816,77 @@ describe("App", () => {
     expect(within(panel).getByText(/no connections/i)).toBeInTheDocument();
   });
 
+  it("renders a directional tension from this reading's point of view", async () => {
+    stubJSON(
+      manifest({
+        tensions: [
+          {
+            id: "rd_TWO",
+            kind: "superseded_by",
+            reason: "rd_TWO reports the retraction",
+            computed_at: "2026-08-31T12:00:00.000Z"
+          }
+        ]
+      })
+    );
+    render(<App initialPath="/readings/rd_ONE" />);
+    const heading = await screen.findByRole("heading", { name: "Tensions" });
+    const panel = heading.closest("section") as HTMLElement;
+    expect(within(panel).getByText("Superseded by")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "rd_TWO" })).toHaveAttribute(
+      "href",
+      "/readings/rd_TWO"
+    );
+    expect(within(panel).getByText(/reports the retraction/)).toBeInTheDocument();
+    expect(within(panel).getByText(/aug 31, 2026/i)).toHaveAttribute(
+      "datetime",
+      "2026-08-31T12:00:00.000Z"
+    );
+  });
+
+  it("renders the other side of the same pair with the inverse label", async () => {
+    stubJSON(
+      manifest({
+        id: "rd_TWO",
+        url: "https://example.com/two",
+        tensions: [
+          {
+            id: "rd_ONE",
+            kind: "supersedes",
+            reason: "rd_TWO reports the retraction",
+            computed_at: "2026-08-31T12:00:00.000Z"
+          },
+          {
+            id: "rd_THREE",
+            kind: "contradicts",
+            reason: "opposing claims about caffeine",
+            computed_at: "2026-08-31T12:00:00.000Z"
+          }
+        ]
+      })
+    );
+    render(<App initialPath="/readings/rd_TWO" />);
+    const heading = await screen.findByRole("heading", { name: "Tensions" });
+    const panel = heading.closest("section") as HTMLElement;
+    expect(within(panel).getByText("Supersedes")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "rd_ONE" })).toHaveAttribute(
+      "href",
+      "/readings/rd_ONE"
+    );
+    expect(within(panel).getByText("Contradicts")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "rd_THREE" })).toBeInTheDocument();
+    expect(within(panel).getByText(/opposing claims/)).toBeInTheDocument();
+  });
+
+  it("renders an empty tensions state for readings without any", async () => {
+    stubJSON(manifest());
+    render(<App initialPath="/readings/rd_ONE" />);
+    const heading = await screen.findByRole("heading", { name: "Tensions" });
+    const panel = heading.closest("section") as HTMLElement;
+    expect(within(panel).getByText(/no tensions/i)).toBeInTheDocument();
+    expect(within(panel).queryByRole("link")).not.toBeInTheDocument();
+  });
+
   it("renders diagnostics from the diagnostics endpoint", async () => {
     const fetchMock = vi.fn<(req: Request) => Promise<Response>>(async (req) => {
       const url = new URL(req.url);

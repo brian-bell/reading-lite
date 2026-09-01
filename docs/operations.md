@@ -265,6 +265,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
 | `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
+| `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
@@ -344,6 +345,67 @@ name the same `--tenant`; a mismatched selector is refused. The sole-writer
 window must cover provider calls, manifest CAS writes, and the final wholesale
 `index/list.json` put. The command also refuses the report if a target or
 candidate neighbour was reprocessed after the report was generated.
+
+`ops corpus refresh-tensions` is the pairwise sibling. It reads the same
+report, pairs every flagged reading with each live ready neighbour, collapses
+both directions onto one pair, and keeps only pairs whose stored manifests
+share a named person or organization, at least a fifth of their keywords
+(Jaccard ≥ `TENSION_KEYWORD_JACCARD_MIN` in
+`scripts/corpus-lib/refresh-tensions.ts`), or an existing connection. Tags
+and the similarity score alone never qualify. Pairs both sides already
+remember judging (`tensions_judged`) since their last ingest write are skipped.
+Plan mode prints each pair with its overlap evidence and estimated cost plus
+every free repair, and writes nothing.
+
+```sh
+npm run ops -- corpus refresh-tensions --tenant global --report ./refresh-report.json
+
+# Hand-pick a pair known to conflict. With --pair the report is read only
+# when --report is passed explicitly.
+npm run ops -- corpus refresh-tensions \
+  --tenant global --pair rd_older,rd_retraction --execute --sole-writer
+```
+
+Execute mode makes one pairwise provider call per selected pair and writes
+each side's directional entry — `contradicts` (symmetric), `supersedes` /
+`superseded_by`, `qualifies` / `qualified_by`, always from that reading's point
+of view with one shared reason — plus a `tensions_judged` record to BOTH
+manifests with ETag CAS. A `none` verdict removes any prior entry for the pair
+and is remembered so the pair is not re-judged nightly. Only `tensions` and
+`tensions_judged` change; `updated_at`, connections, and every summary field
+stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
+the overlap filter and the judged skip but both sides must still be live ready
+manifests. `--limit` caps paid judgements only; free repairs always run.
+
+The two writes are not atomic. If the second CAS write loses, the command
+reports the pair as one-sided; the next run mirrors the inverse entry to the
+other side without a paid call as long as that side has not been reprocessed
+since the judgement. A partner reprocessed since (its `updated_at` is newer
+than the entry's `computed_at`) makes the stored judgement stale: the entry is
+dropped, and the pair is re-judged when the report next pairs them. An entry
+whose partner is not a ready list row (deleted, in practice: a ready reading
+does not normally regress to failed or pending, and one that comes back ready
+is rebuilt without tensions and must be re-judged anyway) is purged from the
+holder together with its judged record, so tier 1 stops flagging the holder.
+`DELETE /api/readings/:id` and `ops corpus purge-connections` leave inbound
+tensions alone; until the next tension refresh purges them, tier 1 flags each
+holder `stale_connection` and `refresh-connections` spends one relationship
+re-judgement on it. Run `refresh-tensions` in the same window to keep that to
+one call per holder. A successful reprocess rebuilds a manifest without its
+tensions on purpose. The partner keeps its entry until a report or `--pair`
+brings the two readings into a run again: tier 1 flags neighbourhood drift,
+not summary changes, so that can take a while, and the pair is re-judged only
+when the report pairs them. A failed reprocess keeps the tensions but still
+bumps `updated_at`, so that reading's pairs are re-judged once at the usual
+cost. Repairs are found among the readings the report or `--pair` names, not
+by a corpus-wide scan. A stale report (any reading it names was rewritten
+after it was generated) is refused even when `--pair` names the drifted
+reading; regenerate it or omit `--report`.
+
+Deploy a Worker whose `ManifestSchema` knows `tensions` **before** the first
+production `--execute`: the Worker parses every manifest it reads with
+`.strip()`, so an older Worker rewriting a manifest (a reprocess or a
+preserve-and-roll-forward) would silently drop the field.
 
 `ops corpus rebuild-list` re-projects every indexed manifest through
 `manifestToIndexItem` and writes `index/list.json`. Use it after deploying a

@@ -83,6 +83,9 @@ const REQUIRED_SCHEMAS = [
   "PostReadingReprocessBody",
   "ListReadingsResponse",
   "Manifest",
+  "Tension",
+  "TensionKind",
+  "TensionJudged",
   "ActivatedReading",
   "LookupResponse",
   "PostReadingsSimilarBody",
@@ -151,6 +154,33 @@ describe("docs/openapi.yaml", () => {
       items: { type: "string" },
     });
     expect(manifest?.required ?? []).not.toContain("connections_neighbourhood_ids");
+  });
+
+  it("documents optional directional tensions on the manifest", () => {
+    const doc = loadSpec();
+    const manifest = doc.components?.schemas?.Manifest as
+      | { properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+    expect(manifest?.properties?.tensions).toMatchObject({
+      type: "array",
+      items: { $ref: "#/components/schemas/Tension" },
+    });
+    expect(manifest?.properties?.tensions_judged).toMatchObject({
+      type: "array",
+      items: { $ref: "#/components/schemas/TensionJudged" },
+    });
+    expect(manifest?.required ?? []).not.toContain("tensions");
+    expect(manifest?.required ?? []).not.toContain("tensions_judged");
+    const kind = doc.components?.schemas?.TensionKind as { enum?: string[] } | undefined;
+    expect(kind?.enum).toEqual([
+      "contradicts",
+      "supersedes",
+      "superseded_by",
+      "qualifies",
+      "qualified_by",
+    ]);
+    const tension = doc.components?.schemas?.Tension as { required?: string[] } | undefined;
+    expect(tension?.required).toEqual(["id", "kind", "reason", "computed_at"]);
   });
 
   it("documents X-CSRF-Token on cookie-mutating REST operations", () => {

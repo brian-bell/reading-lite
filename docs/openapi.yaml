@@ -1438,6 +1438,44 @@ components:
           type: string
           minLength: 1
 
+    TensionKind:
+      type: string
+      description: >-
+        Directional relationship from this reading's point of view.
+        `supersedes` means this reading supersedes `id`; `superseded_by` means
+        `id` supersedes this reading; likewise `qualifies` / `qualified_by`.
+        `contradicts` is symmetric.
+      enum: [contradicts, supersedes, superseded_by, qualifies, qualified_by]
+
+    Tension:
+      type: object
+      additionalProperties: false
+      required: [id, kind, reason, computed_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        kind:
+          $ref: "#/components/schemas/TensionKind"
+        reason:
+          type: string
+          minLength: 1
+        computed_at:
+          type: string
+          format: date-time
+
+    TensionJudged:
+      type: object
+      additionalProperties: false
+      required: [id, judged_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        judged_at:
+          type: string
+          format: date-time
+
     OpenAISummarizationUsage:
       type: object
       additionalProperties: false
@@ -1620,6 +1658,20 @@ components:
           items:
             type: string
           description: Reading IDs considered by the latest relationship judgement (ingest or relationship-only refresh)
+        tensions:
+          type: array
+          description: >-
+            Directional tensions written by the offline tension refresh; never
+            produced by ingest.
+          items:
+            $ref: "#/components/schemas/Tension"
+        tensions_judged:
+          type: array
+          description: >-
+            Pairwise tension judgements already made (including "none"
+            verdicts) so a stable pair is not re-judged.
+          items:
+            $ref: "#/components/schemas/TensionJudged"
         summary_markdown:
           type: string
         content_type:

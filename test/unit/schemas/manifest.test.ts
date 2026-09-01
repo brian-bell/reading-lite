@@ -10,6 +10,10 @@ import {
   READING_SUMMARY_JSON_SCHEMA,
   RELATIONSHIP_JUDGEMENT_JSON_SCHEMA,
   RelationshipJudgementSchema,
+  TENSION_JUDGEMENT_JSON_SCHEMA,
+  TensionJudgementSchema,
+  TensionKindSchema,
+  TensionSchema,
 } from "../../../src/schemas/reading-summary";
 
 const baseReady: Manifest = {
@@ -65,6 +69,47 @@ describe("ManifestSchema", () => {
         connections_neighbourhood_ids: ["rd_A", "rd_B"],
       }).connections_neighbourhood_ids,
     ).toEqual(["rd_A", "rd_B"]);
+  });
+
+  it("round-trips directional tensions and judged-pair memory", () => {
+    const at = "2026-08-31T12:00:00.000Z";
+    const tensions = TensionKindSchema.options.map((kind, index) => ({
+      id: `rd_${index}`,
+      kind,
+      reason: `because ${kind}`,
+      computed_at: at,
+    }));
+    const tensions_judged = [{ id: "rd_none", judged_at: at }];
+    const parsed = ManifestSchema.parse({ ...baseReady, tensions, tensions_judged });
+    expect(parsed.tensions).toEqual(tensions);
+    expect(parsed.tensions_judged).toEqual(tensions_judged);
+    expect(ManifestSchema.parse(baseReady).tensions).toBeUndefined();
+    expect(ManifestSchema.parse(baseReady).tensions_judged).toBeUndefined();
+  });
+
+  it("rejects malformed tensions", () => {
+    const at = "2026-08-31T12:00:00.000Z";
+    const good = { id: "rd_b", kind: "contradicts", reason: "r", computed_at: at };
+    for (const bad of [
+      { ...good, kind: "agrees" },
+      { ...good, reason: "" },
+      { ...good, id: "" },
+      { ...good, computed_at: "yesterday" },
+      { ...good, extra: true },
+      { id: "rd_b", kind: "contradicts", reason: "r" },
+    ]) {
+      expect(() => ManifestSchema.parse({ ...baseReady, tensions: [bad] })).toThrow();
+      expect(() => TensionSchema.parse(bad)).toThrow();
+    }
+    expect(() =>
+      ManifestSchema.parse({ ...baseReady, tensions_judged: [{ id: "rd_b" }] }),
+    ).toThrow();
+    expect(() =>
+      ManifestSchema.parse({
+        ...baseReady,
+        tensions_judged: [{ id: "rd_b", judged_at: at, kind: "contradicts" }],
+      }),
+    ).toThrow();
   });
 
   it("accepts OpenAI V2 usage on a ready manifest", () => {
@@ -329,6 +374,26 @@ describe("EmitReadingToolInputSchema", () => {
     expect(() => EmitReadingToolInputSchema.parse(without)).toThrow();
   });
 
+  it("rejects tensions from the ingest summarizer contract", () => {
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, tensions: [] }),
+    ).toThrow();
+    expect(() =>
+      EmitReadingToolInputSchema.parse({ ...valid, tensions_judged: [] }),
+    ).toThrow();
+    expect(Object.keys(READING_SUMMARY_JSON_SCHEMA.properties)).not.toContain("tensions");
+    expect(Object.keys(RELATIONSHIP_JUDGEMENT_JSON_SCHEMA.properties)).not.toContain(
+      "tensions",
+    );
+    expect(() =>
+      RelationshipJudgementSchema.parse({
+        novelty_verdict: "novel",
+        connections: [],
+        tensions: [],
+      }),
+    ).toThrow();
+  });
+
   it("rejects unknown summary and connection fields", () => {
     expect(() =>
       EmitReadingToolInputSchema.parse({ ...valid, unexpected: true }),
@@ -404,5 +469,47 @@ describe("ByUrlPointerSchema", () => {
 
   it("rejects empty key_prefix", () => {
     expect(() => ByUrlPointerSchema.parse({ id: "rd_x", key_prefix: "" })).toThrow();
+  });
+});
+
+describe("TensionJudgementSchema", () => {
+  it("accepts every verdict shape the judge may return", () => {
+    for (const judgement of [
+      { verdict: "none", side: null, reason: "" },
+      { verdict: "contradicts", side: null, reason: "opposing claims" },
+      { verdict: "supersedes", side: "a", reason: "newer result" },
+      { verdict: "supersedes", side: "b", reason: "newer result" },
+      { verdict: "qualifies", side: "a", reason: "narrower scope" },
+      { verdict: "qualifies", side: "b", reason: "narrower scope" },
+    ]) {
+      expect(TensionJudgementSchema.parse(judgement)).toEqual(judgement);
+    }
+  });
+
+  it("rejects a side on symmetric verdicts, a missing side on directional ones, and empty reasons", () => {
+    for (const bad of [
+      { verdict: "none", side: "a", reason: "" },
+      { verdict: "contradicts", side: "b", reason: "r" },
+      { verdict: "supersedes", side: null, reason: "r" },
+      { verdict: "qualifies", side: null, reason: "r" },
+      { verdict: "contradicts", side: null, reason: "  " },
+      { verdict: "agrees", side: null, reason: "r" },
+      { verdict: "none", side: null, reason: "", extra: 1 },
+      { verdict: "none", reason: "" },
+    ]) {
+      expect(() => TensionJudgementSchema.parse(bad)).toThrow();
+    }
+  });
+
+  it("keeps the strict JSON schema aligned with the zod contract", () => {
+    expect(TENSION_JUDGEMENT_JSON_SCHEMA.required).toEqual(["verdict", "side", "reason"]);
+    expect(TENSION_JUDGEMENT_JSON_SCHEMA.additionalProperties).toBe(false);
+    expect(TENSION_JUDGEMENT_JSON_SCHEMA.properties.verdict.enum).toEqual([
+      "none",
+      "contradicts",
+      "supersedes",
+      "qualifies",
+    ]);
+    expect(TENSION_JUDGEMENT_JSON_SCHEMA.properties.side.enum).toEqual(["a", "b", null]);
   });
 });

@@ -415,6 +415,27 @@ describe("readyManifest", () => {
     });
   });
 
+  it("never emits tensions — they belong to the offline refresh, not ingest", () => {
+    const manifest = readyManifest(
+      {
+        identity: IDENTITY,
+        sourceType: "url",
+        summary: SUMMARY,
+        content: {
+          content_type: "text/html",
+          content_status: "captured",
+          content_bytes: 900,
+          content_sha256: "e".repeat(64),
+        },
+        usage: USAGE,
+        attempt: null,
+      },
+      NOW,
+    );
+    expect(manifest).not.toHaveProperty("tensions");
+    expect(manifest).not.toHaveProperty("tensions_judged");
+  });
+
   it("attempt: null omits last_attempt — the writer states it has no attempt identity", () => {
     const manifest = readyManifest(
       {

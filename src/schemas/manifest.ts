@@ -3,6 +3,8 @@ import {
   ConnectionSchema,
   NoveltyVerdictSchema,
   ReadingSummarySchema,
+  TensionJudgedSchema,
+  TensionSchema,
   type ReadingSummary,
 } from "./reading-summary";
 
@@ -10,11 +12,17 @@ export {
   ConnectionSchema,
   NoveltyVerdictSchema,
   ReadingSummarySchema,
+  TensionJudgedSchema,
+  TensionKindSchema,
+  TensionSchema,
 } from "./reading-summary";
 export type {
   Connection,
   NoveltyVerdict,
   ReadingSummary,
+  Tension,
+  TensionJudged,
+  TensionKind,
 } from "./reading-summary";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -176,6 +184,11 @@ export const ManifestSchema = z
     connections: z.array(ConnectionSchema).optional(),
     connections_computed_at: z.string().datetime().optional(),
     connections_neighbourhood_ids: z.array(z.string().min(1)).optional(),
+    // Written only by `ops corpus refresh-tensions`; ingest never produces
+    // them and a successful reprocess rebuilds the manifest without them (the
+    // partner's entry is then repaired or re-judged by the next refresh).
+    tensions: z.array(TensionSchema).optional(),
+    tensions_judged: z.array(TensionJudgedSchema).optional(),
     summary_markdown: z.string().optional(),
 
     content_type: z.string().min(1),

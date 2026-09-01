@@ -483,6 +483,38 @@ h2 {
   margin-bottom: 4px;
 }
 
+.tensions {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tension-kind {
+  background: #fff4e5;
+  border: 1px solid #f0c98a;
+  border-radius: 999px;
+  color: #7a4b00;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.tension-kind-contradicts {
+  background: #fdecec;
+  border-color: #f0a8a8;
+  color: #8a1f1f;
+}
+
+.tension-computed-at {
+  color: #5c6b7f;
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .diagnostics-grid {
   display: grid;
   gap: 8px;
