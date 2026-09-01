@@ -258,4 +258,26 @@ describe("mergeRelationshipJudgement", () => {
       ),
     ).toEqual([]);
   });
+
+  it("reflags a rejected candidate after it leaves the judged neighbourhood", () => {
+    const out = mergeRelationshipJudgement(
+      manifest(),
+      { novelty_verdict: "familiar", connections: [] },
+      new Set(["rd_b"]),
+      LATER,
+    );
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(
+      diffNeighbourhood(
+        out.manifest as never,
+        [{ id: "rd_b", score: SIMILARITY_FLOOR - 0.01, created_at: "2026-01-02T00:00:00.000Z" }],
+        [
+          { id: "rd_a", status: "ready", created_at: "2026-01-01T00:00:00.000Z" },
+          { id: "rd_b", status: "ready", created_at: "2026-01-02T00:00:00.000Z" },
+        ],
+        LATER,
+      ),
+    ).toEqual(["uncited_neighbour", "verdict_inconsistent"]);
+  });
 });

@@ -329,8 +329,9 @@ export const corpusRefreshNeighboursCommand: CommandDefinition<CorpusRefreshNeig
 Queries Vectorize with each ready reading's stored vector (no embedding calls)
 and diffs the current floored ready-neighbourhood against stored connections
 and novelty_verdict. The report distinguishes missing or non-ready citations,
-ready citations below the floor, new uncited neighbours, and older uncited
-neighbours that entered since the latest relationship judgement. Prints the
+ready citations below the floor, new uncited neighbours, and uncited candidate-set
+drift against the latest judged neighbourhood (an older reading entering, or a
+rejected candidate later leaving). Prints the
 staleness inventory and always writes
 refresh-report.json — the input contract for later judgement slices.
 

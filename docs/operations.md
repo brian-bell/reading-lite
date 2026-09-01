@@ -283,12 +283,13 @@ floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`new_neighbour`), and older uncited neighbours that now clear the floor
 (`uncited_neighbour`). A successful relationship judgement stores the full
 candidate ID set in `connections_neighbourhood_ids`, including candidates the
-judge rejected. Later refreshes compare against that baseline, so a rejected
-candidate is not billed again while the same candidate set remains. A newly
-present older candidate is evidence that the neighbourhood changed after the
-judgement and receives `uncited_neighbour`. This baseline tracks ID membership;
-reprocessing the same candidate ID is not a membership change. The producer
-preserves live ingestion's selection order: raw
+judge rejected. Later refreshes compare that stored set with the current floored
+ready IDs in both directions, so a rejected candidate is not billed again while
+the same candidate set remains. A newly present older candidate receives
+`uncited_neighbour`; so does a previously considered uncited candidate that
+later falls below the floor or becomes non-ready. This baseline tracks ID
+membership; reprocessing the same candidate ID is not a membership change. The
+producer preserves live ingestion's selection order: raw
 Vectorize top five, similarity floor, then ready-ID intersection. It does not
 fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
 R2. `--execute` rewrites only

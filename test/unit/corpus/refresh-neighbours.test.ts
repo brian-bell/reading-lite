@@ -287,6 +287,68 @@ describe("diffNeighbourhood", () => {
     expect(flags).toEqual([]);
   });
 
+  it("flags uncited_neighbour when a rejected candidate later falls below the floor", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "related" }],
+        connections_computed_at: LATER,
+        connections_neighbourhood_ids: ["rd_b", "rd_c"],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_b", score: 0.7, created_at: EARLIER },
+        { id: "rd_c", score: SIMILARITY_FLOOR - 0.01, created_at: EARLIER },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual(["uncited_neighbour"]);
+  });
+
+  it("flags uncited_neighbour when a rejected candidate later becomes non-ready", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "related" }],
+        connections_computed_at: LATER,
+        connections_neighbourhood_ids: ["rd_b", "rd_c"],
+        novelty_verdict: "familiar",
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_b", score: 0.7, created_at: EARLIER },
+        { id: "rd_c", score: 0.8, created_at: EARLIER },
+      ],
+      [
+        { id: "rd_a", status: "ready", created_at: AT },
+        { id: "rd_b", status: "ready", created_at: EARLIER },
+        { id: "rd_c", status: "failed", created_at: EARLIER },
+      ],
+      LATER,
+    );
+
+    expect(flags).toEqual(["uncited_neighbour"]);
+  });
+
+  it("keeps a cited departure on connection_below_floor even when it is in the judged set", () => {
+    const flags = diffNeighbourhood(
+      row({
+        connections: [{ id: "rd_b", reason: "was related" }],
+        connections_computed_at: LATER,
+        connections_neighbourhood_ids: ["rd_b"],
+      }),
+      [
+        { id: "rd_a", score: 1 },
+        { id: "rd_b", score: SIMILARITY_FLOOR - 0.01 },
+      ],
+      readyList,
+      LATER,
+    );
+
+    expect(flags).toEqual(["connection_below_floor"]);
+  });
+
   it("reflags an older uncited candidate after it enters the judged neighbourhood", () => {
     const flags = diffNeighbourhood(
       row({

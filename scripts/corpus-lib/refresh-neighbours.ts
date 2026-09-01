@@ -204,13 +204,20 @@ export function diffNeighbourhood(
     return createdMs > judgedMs;
   };
   if (uncited.some(isNewNeighbour)) flags.push("new_neighbour");
-  if (
+  const uncitedEntered =
     uncited.some(
       (neighbour) =>
         !isNewNeighbour(neighbour) &&
         (!hasJudgedNeighbourhood || !judgedNeighbourhood.has(neighbour.id)),
-    )
-  ) {
+    );
+  // The other direction of the same ID-set comparison: a rejected candidate
+  // lives only in connections_neighbourhood_ids. If it later drops out of the
+  // ready floored set, uncited[] is empty for that id and connection_below_floor
+  // ignores it, so compare judged IDs against relatedIds too.
+  const uncitedLeft =
+    hasJudgedNeighbourhood &&
+    [...judgedNeighbourhood].some((id) => !cited.has(id) && !relatedIds.has(id));
+  if (uncitedEntered || uncitedLeft) {
     flags.push("uncited_neighbour");
   }
 
