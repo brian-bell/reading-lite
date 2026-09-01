@@ -200,8 +200,25 @@ describe("submitBatch", () => {
     expect(t.extractedBytes).toBe(new TextEncoder().encode("# Article\n\nbody").byteLength);
     // query-embedding cost carried through so a resumed write still records it.
     expect(t.queryEmbedTokens).toBe(12);
+    expect(t.neighbourhoodIds).toEqual([]);
     expect(t.preserveReadyManifest?.status).toBe("ready");
     expect(t.preserveReadyManifest?.tldr).toBe("old tldr");
+  });
+
+  it("carries the judged candidate IDs so a resumed write can persist them", async () => {
+    const batch = fakeBatch();
+    const { sidecar } = await submitBatch(
+      [
+        summarizeTarget({
+          similar: [
+            { id: "rd_cited", url: "https://example.com/cited", score: 0.8 },
+            { id: "rd_rejected", url: "https://example.com/rejected", score: 0.7 },
+          ],
+        }),
+      ],
+      { model: "m", effort: "low", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() },
+    );
+    expect(sidecar.targets[0]!.neighbourhoodIds).toEqual(["rd_cited", "rd_rejected"]);
   });
 
   it("takes raw-object fields from the fresh extract when re-extracted", async () => {

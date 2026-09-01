@@ -434,6 +434,50 @@ describe("readyManifest", () => {
     );
     expect("last_attempt" in manifest).toBe(false);
     expect("similarity" in manifest).toBe(false);
+    expect("connections_neighbourhood_ids" in manifest).toBe(false);
+  });
+
+  it("persists the judged candidate set, including IDs the summarizer did not cite", () => {
+    const manifest = readyManifest(
+      {
+        identity: IDENTITY,
+        sourceType: "url",
+        summary: SUMMARY,
+        neighbourhoodIds: ["rd_other", "rd_rejected"],
+        content: {
+          content_type: "text/html",
+          content_status: "captured",
+          content_bytes: 1,
+          content_sha256: "e".repeat(64),
+        },
+        usage: USAGE,
+        attempt: null,
+      },
+      NOW,
+    );
+    expect(manifest.connections).toEqual([{ id: "rd_other", reason: "same topic" }]);
+    expect(manifest.connections_neighbourhood_ids).toEqual(["rd_other", "rd_rejected"]);
+  });
+
+  it("persists an empty judged candidate set as a real ingest baseline", () => {
+    const manifest = readyManifest(
+      {
+        identity: IDENTITY,
+        sourceType: "url",
+        summary: { ...SUMMARY, connections: [] },
+        neighbourhoodIds: [],
+        content: {
+          content_type: "text/html",
+          content_status: "captured",
+          content_bytes: 1,
+          content_sha256: "e".repeat(64),
+        },
+        usage: USAGE,
+        attempt: null,
+      },
+      NOW,
+    );
+    expect(manifest.connections_neighbourhood_ids).toEqual([]);
   });
 
   it("refuses a non-succeeded or unfinished attempt", () => {

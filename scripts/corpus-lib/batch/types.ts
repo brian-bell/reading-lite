@@ -97,6 +97,9 @@ export interface SidecarTarget {
   // Same reason: the similar phase measures it and does not re-run on resume.
   // Optional so sidecars written before this field still load.
   similarity?: SimilaritySnapshot;
+  // Floored neighbour IDs shown to the summarizer. Optional so sidecars written
+  // before this field still load; write-phase then omits the ingest baseline.
+  neighbourhoodIds?: string[];
   // Only fresh ingest sets this. Both batch paths now eagerly claim by-url before
   // submit, but they differ on terminal failure: a fresh ingest *created* the
   // slot, so write-phase releases that exact claim (set true for create-new /

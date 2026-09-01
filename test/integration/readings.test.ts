@@ -535,6 +535,7 @@ describe("two-tenant save-to-ready lifecycle", () => {
         status: string;
         novelty_verdict?: string;
         connections?: Array<{ id: string; reason: string }>;
+        connections_neighbourhood_ids?: string[];
         similarity?: { count: number };
       };
     }
@@ -548,12 +549,14 @@ describe("two-tenant save-to-ready lifecycle", () => {
     expect(founderFirst.similarity?.count).toBe(0);
     expect(founderFirst.novelty_verdict).toBe("novel");
     expect(founderFirst.connections).toEqual([]);
+    expect(founderFirst.connections_neighbourhood_ids).toEqual([]);
     expect(founderSecond.status).toBe("ready");
     expect(founderSecond.similarity?.count).toBe(1);
     expect(founderSecond.novelty_verdict).toBe("familiar");
     expect(founderSecond.connections).toEqual([
       { id: founderFirst.id, reason: "covers the same ground" },
     ]);
+    expect(founderSecond.connections_neighbourhood_ids).toEqual([founderFirst.id]);
 
     // The other tenant's first save: the stub scores every same-namespace
     // vector at 0.9 (well above SIMILARITY_FLOOR), so if the founder's two
@@ -564,6 +567,7 @@ describe("two-tenant save-to-ready lifecycle", () => {
     expect(otherFirst.similarity?.count).toBe(0);
     expect(otherFirst.novelty_verdict).toBe("novel");
     expect(otherFirst.connections).toEqual([]);
+    expect(otherFirst.connections_neighbourhood_ids).toEqual([]);
 
     // Stronger than the manifest checks: the other tenant's summarize request
     // must not mention any reading id at all — the founder's library never
@@ -1037,24 +1041,29 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         createExecutionContext(),
       );
       return (await detail.json()) as {
+        id: string;
         status: string;
         similarity?: { count: number; max?: number; mean?: number; computed_at: string };
+        connections_neighbourhood_ids?: string[];
       };
     };
 
     // First reading: nothing in the index yet, so the neighbourhood is empty.
-    // That must be recorded as count 0 rather than a fabricated score.
+    // That must be recorded as count 0 rather than a fabricated score, and as
+    // an empty judged candidate set rather than omitting the baseline.
     const first = await submit("https://example.com/sim-first");
     expect(first.status).toBe("ready");
     expect(first.similarity?.count).toBe(0);
     expect(first.similarity?.max).toBeUndefined();
     expect(first.similarity?.computed_at).toEqual(expect.any(String));
+    expect(first.connections_neighbourhood_ids).toEqual([]);
 
     // Second reading now has the first as a neighbour, at the stub's 0.9.
     const second = await submit("https://example.com/sim-second");
     expect(second.similarity?.count).toBe(1);
     expect(second.similarity?.max).toBeCloseTo(0.9, 10);
     expect(second.similarity?.mean).toBeCloseTo(0.9, 10);
+    expect(second.connections_neighbourhood_ids).toEqual([first.id]);
   });
 
   it("makes a new URL discoverable by lookup before processing finishes", async () => {

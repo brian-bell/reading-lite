@@ -281,9 +281,11 @@ floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`stale_connection`), still-ready citations that fell below the floor
 (`connection_below_floor`), uncited neighbours created after the last judgement
 (`new_neighbour`), and older uncited neighbours that now clear the floor
-(`uncited_neighbour`). A successful relationship judgement stores the full
-candidate ID set in `connections_neighbourhood_ids`, including candidates the
-judge rejected. Later refreshes compare that stored set with the current floored
+(`uncited_neighbour`). Realtime ingest and the offline batch write phase persist
+the same candidate ID set on a ready manifest (`readyManifest`), including
+candidates the summarizer did not cite, so the first neighbour refresh already
+has a baseline. A later successful relationship-only judgement rewrites that
+set. Later refreshes compare that stored set with the current floored
 ready IDs in both directions, so a rejected candidate is not billed again while
 the same candidate set remains. A newly present older candidate receives
 `uncited_neighbour`; so does a previously considered uncited candidate that

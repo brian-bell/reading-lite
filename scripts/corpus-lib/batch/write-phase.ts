@@ -355,6 +355,7 @@ async function writeNormalizedResults(
         sourceType: target.sourceType,
         summary: reading,
         ...(target.similarity === undefined ? {} : { similarity: target.similarity }),
+        ...(target.neighbourhoodIds === undefined ? {} : { neighbourhoodIds: target.neighbourhoodIds }),
         content: contentFactsOf(target),
         usage: { summarization: usage, openai_embedding_tokens: embeddingTokens },
         attempt: terminalAttempt(target, "succeeded", finishedAt),

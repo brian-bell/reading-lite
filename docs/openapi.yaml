@@ -1619,7 +1619,7 @@ components:
           type: array
           items:
             type: string
-          description: Reading IDs considered by the latest relationship-only judgement
+          description: Reading IDs considered by the latest relationship judgement (ingest or relationship-only refresh)
         summary_markdown:
           type: string
         content_type:
