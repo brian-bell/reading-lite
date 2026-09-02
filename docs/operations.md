@@ -293,19 +293,13 @@ Never run a production refresh with `--tenant global`. That selector still
 resolves to the legacy pre-cutover layout, which no longer receives readings;
 refreshing it spends judgements on a copy nobody reads.
 
-Credentials for production differ per command. `refresh-neighbours` reaches R2
-and Vectorize through the wrangler CLI, so it wants a `wrangler login` or a
-`CLOUDFLARE_API_TOKEN`, not R2 S3 keys. `refresh-connections` and
-`refresh-tensions` read R2 through the inventory client, which needs an
-account id plus either `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY` or an
-R2-capable `CORPUS_CF_API_TOKEN` / `CLOUDFLARE_API_TOKEN` — and **prefers the
-S3 keys whenever both are present**. A typical `.corpus.vars` holds
-staging-scoped S3 keys that 403 against the production bucket, and because
-that file is loaded on every run they silently win over an otherwise correct
-production token. Source production S3 keys from outside the repo, or take the
-staging keys out of `.corpus.vars` before the run (see the credentials row of
-the cutover log in `docs/founder-cutover.md`). `--execute` additionally needs
-the summarizer provider key from the secrets table above.
+Production credentials do not live in the repo either. The S3 keys in a
+typical `.corpus.vars` are scoped to the staging bucket and 403 against the
+production bucket, and `refresh-connections` / `refresh-tensions` prefer S3
+keys over a Cloudflare API token whenever both are present, so stale staging
+keys silently win over an otherwise correct token. Source production keys from
+outside the repo; the credentials row of the cutover log in
+`docs/founder-cutover.md` records what an actual production run needed.
 
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
