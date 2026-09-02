@@ -228,8 +228,10 @@ Operator notes (origin var, production route) live in
 A small React SPA in `web/` renders the list (with search + tag chips),
 submission form, and detail page (TL;DR, summary markdown, entities,
 connections, content links). Browser login uses a magic-link cookie session
-(identity + logout in the top bar). It does not store bearer material in
-`localStorage` or `sessionStorage`.
+(identity + logout in the top bar). The Security page lists sessions and API
+tokens, and toggles immediate-notification mail (`notify_immediate`; uncheck
+to opt out). It does not store bearer material in `localStorage` or
+`sessionStorage`.
 
 ```sh
 # In one terminal — Worker:
