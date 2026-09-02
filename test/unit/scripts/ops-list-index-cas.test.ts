@@ -172,6 +172,61 @@ describe("casMergeListIndex", () => {
     expect(fake.writes).toHaveLength(0);
   });
 
+  it("re-reads after a transient write failure and reports it if it never lands", async () => {
+    // The transport refuses to retry a conditional PUT, so a 500 arrives as a
+    // throw. Re-reading is safe here, and a permanent error must not be
+    // reported as contention.
+    let puts = 0;
+    const client: ListIndexCasClient = {
+      getWithEtag: async () => ({
+        body: JSON.stringify({ version: 1, items: [row("rd_a")] }),
+        etag: "e0",
+      }),
+      putIfMatch: async () => {
+        puts++;
+        if (puts === 1) throw new Error("R2 PUT failed: 500");
+        return puts > 2;
+      },
+    };
+
+    await casMergeListIndex(client, KEY, [{ id: "rd_a", similarity: SNAPSHOT }], noWait().deps);
+    // Throw, lost CAS, then the write that lands.
+    expect(puts).toBe(3);
+  });
+
+  it("reports the transport failure rather than blaming contention", async () => {
+    const client: ListIndexCasClient = {
+      getWithEtag: async () => ({
+        body: JSON.stringify({ version: 1, items: [row("rd_a")] }),
+        etag: "e0",
+      }),
+      putIfMatch: async () => {
+        throw new Error("R2 PUT failed: 503");
+      },
+    };
+
+    await expect(
+      casMergeListIndex(client, KEY, [{ id: "rd_a", similarity: SNAPSHOT }], {
+        ...noWait().deps,
+        maxAttempts: 2,
+      }),
+    ).rejects.toThrow(/last failure: R2 PUT failed: 503/);
+  });
+
+  it("rejects a row that carries no id", async () => {
+    const client: ListIndexCasClient = {
+      getWithEtag: async () => ({
+        body: JSON.stringify({ version: 1, items: [row("rd_a"), null] }),
+        etag: "e0",
+      }),
+      putIfMatch: async () => true,
+    };
+
+    await expect(
+      casMergeListIndex(client, KEY, [{ id: "rd_a", similarity: SNAPSHOT }], noWait().deps),
+    ).rejects.toThrow(/has a row with no string id/);
+  });
+
   it("rejects a document with no items array", async () => {
     const client: ListIndexCasClient = {
       getWithEtag: async () => ({ body: JSON.stringify({ version: 1 }), etag: "e0" }),

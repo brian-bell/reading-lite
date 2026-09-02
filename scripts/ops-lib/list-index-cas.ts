@@ -113,6 +113,7 @@ export async function casMergeListIndex(
 ): Promise<void> {
   if (patches.length === 0) return;
   const cas = resolveDeps(deps);
+  let lastPutError: unknown;
 
   for (let attempt = 0; attempt < cas.maxAttempts; attempt++) {
     const object = await client.getWithEtag(key);
@@ -128,12 +129,23 @@ export async function casMergeListIndex(
     if (object.etag === "") throw new Error(`${key} was read without an ETag`);
 
     const merged = mergeListRows(parseItems(object.body, key), patches);
-    const written = await client.putIfMatch(
-      key,
-      JSON.stringify({ version: 1, items: merged }),
-      object.etag,
-      { contentType: "application/json" },
-    );
+    // A conditional PUT is not retried by the transport (a lost response could
+    // make a claim look already-taken), so a transient failure arrives here as
+    // a throw. Re-reading is the safe answer for this write: the next attempt
+    // either sees our own landed write and re-derives the same rows, or merges
+    // the patches again onto whatever is live. Only the last failure is
+    // reported, so a permanent error is not buried under "contention".
+    let written = false;
+    try {
+      written = await client.putIfMatch(
+        key,
+        JSON.stringify({ version: 1, items: merged }),
+        object.etag,
+        { contentType: "application/json" },
+      );
+    } catch (error) {
+      lastPutError = error;
+    }
     if (written) return;
 
     if (attempt < cas.maxAttempts - 1) {
@@ -141,15 +153,23 @@ export async function casMergeListIndex(
     }
   }
 
-  throw new Error(
-    `${key} write failed: exhausted ${cas.maxAttempts} CAS attempts under contention`,
-  );
+  const cause = lastPutError === undefined
+    ? " under contention"
+    : `; last failure: ${lastPutError instanceof Error ? lastPutError.message : String(lastPutError)}`;
+  throw new Error(`${key} write failed: exhausted ${cas.maxAttempts} CAS attempts${cause}`);
 }
 
 function parseItems(body: string, key: string): Array<{ id: string }> {
   const parsed: unknown = JSON.parse(body);
   const items = (parsed as { items?: unknown } | null)?.items;
   if (!Array.isArray(items)) throw new Error(`${key} has no items array`);
+  // Guard the shape the merge indexes on, so a damaged document fails with a
+  // sentence about the document rather than a TypeError from the merge.
+  for (const item of items) {
+    if (item === null || typeof item !== "object" || typeof (item as { id?: unknown }).id !== "string") {
+      throw new Error(`${key} has a row with no string id`);
+    }
+  }
   return items as Array<{ id: string }>;
 }
 
