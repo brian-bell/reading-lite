@@ -341,10 +341,11 @@ approximation, a 256-output-token assumption, and the dated price table printed
 by the command; it is a planning estimate, not a bill. Execute mode prints the
 tokens the provider reported for each judgement and a run total (`Usage: …`),
 counted as soon as the call returns so a judgement that is billed but then
-fails to write still appears. Reasoning tokens are shown for OpenAI, which
-reports them separately and bills them as output; Anthropic folds them into
-its output count and the column is omitted. The input column excludes Anthropic
-cache reads and writes, which are billed on top of it.
+fails to write still appears. The reasoning column is the reasoning share of
+the output count, not an extra charge on top of it; OpenAI breaks that share
+out, Anthropic does not, so the column is shown only for OpenAI. The input
+column excludes Anthropic cache reads and writes, which are billed on top of
+it.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer

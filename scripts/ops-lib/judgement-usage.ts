@@ -2,9 +2,9 @@
 // the tokens the provider actually reported instead of only the pre-run
 // estimate, whose output assumption ignores reasoning entirely.
 //
-// OpenAI reports reasoning tokens separately (they are billed as output);
-// Anthropic folds them into output_tokens and reports no separate figure, so
-// the reasoning column is omitted for Anthropic rather than shown as a
+// The reasoning column is the reasoning share of the output count, not an
+// extra charge on top of it: OpenAI breaks that share out, so it is shown;
+// Anthropic does not, so the column is omitted rather than shown as a
 // misleading zero.
 //
 // The counts here are the plain input and output figures. Cache tokens are
