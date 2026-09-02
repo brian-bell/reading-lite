@@ -13,12 +13,17 @@ afterEach(() => {
 });
 
 describe("parseTurnstileSiteKey", () => {
-  it("keeps a non-empty site key and treats null or blank as absent", () => {
+  it("keeps a non-empty site key and treats null as no widget", () => {
     expect(parseTurnstileSiteKey("1x00000000000000000000AA")).toBe("1x00000000000000000000AA");
     expect(parseTurnstileSiteKey(" 1x00000000000000000000AA ")).toBe("1x00000000000000000000AA");
     expect(parseTurnstileSiteKey(null)).toBeNull();
-    expect(parseTurnstileSiteKey("")).toBeNull();
-    expect(parseTurnstileSiteKey("   ")).toBeNull();
+  });
+
+  it("rejects omitted, blank, or non-string site keys instead of no-widget mode", () => {
+    expect(() => parseTurnstileSiteKey(undefined)).toThrow("failed to load sign-in options");
+    expect(() => parseTurnstileSiteKey("")).toThrow("failed to load sign-in options");
+    expect(() => parseTurnstileSiteKey("   ")).toThrow("failed to load sign-in options");
+    expect(() => parseTurnstileSiteKey(1)).toThrow("failed to load sign-in options");
   });
 });
 

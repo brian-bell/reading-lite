@@ -93,8 +93,18 @@ export async function getLoginOptions(): Promise<AuthLoginOptionsResponse> {
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to load sign-in options"));
   }
-  const body = (await response.json()) as { turnstile_site_key?: unknown };
-  return { turnstile_site_key: parseTurnstileSiteKey(body.turnstile_site_key) };
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("failed to load sign-in options");
+  }
+  if (body === null || typeof body !== "object" || !("turnstile_site_key" in body)) {
+    throw new Error("failed to load sign-in options");
+  }
+  return {
+    turnstile_site_key: parseTurnstileSiteKey((body as { turnstile_site_key: unknown }).turnstile_site_key)
+  };
 }
 
 export async function requestLoginLink(email: string, turnstileToken?: string): Promise<void> {

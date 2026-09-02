@@ -90,7 +90,10 @@ export function resetTurnstileLoaderForTests(): void {
 }
 
 export function parseTurnstileSiteKey(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed === "" ? null : trimmed;
+  if (value === null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed !== "") return trimmed;
+  }
+  throw new Error("failed to load sign-in options");
 }

@@ -162,13 +162,30 @@ describe("login-options and magic-link challenge", () => {
     expect(req.credentials).toBe("include");
   });
 
-  it("treats a null or blank login-options site key as no widget", async () => {
+  it("treats a null login-options site key as no widget", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ turnstile_site_key: null }));
     vi.stubGlobal("fetch", fetchMock);
     expect(await getLoginOptions()).toEqual({ turnstile_site_key: null });
+  });
 
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ turnstile_site_key: "  " })));
-    expect(await getLoginOptions()).toEqual({ turnstile_site_key: null });
+  it("rejects a 200 login-options body that omits or mangles turnstile_site_key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({}))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ turnstile_site_key: 1 }))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ turnstile_site_key: "" }))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
   });
 
   it("omits turnstile_token unless a token is provided", async () => {
