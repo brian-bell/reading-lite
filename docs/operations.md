@@ -623,11 +623,18 @@ that succeeded.
 
 The total time a pass will spend waiting out limits is bounded by
 `--max-backoff`, which defaults to `10m` and takes a duration (`600s`,
-`600000ms`, `20m`; a bare number is seconds) between `30s` and `30m`. Below the
-floor the pass would stop on the first limit it met, since one honoured window
-already costs up to 60 s; above the ceiling the budget has stopped bounding the
-sole-writer window it exists to bound. Both ends catch the same unit confusion:
-`10` is ten seconds, `600m` is ten hours. What counts against it is the
+`600000ms`, `20m`; a bare number is seconds).
+
+**`--max-backoff` accepts `30s` to `30m`, inclusive; anything outside that range
+is a usage error (exit 2).** Below the floor the pass would stop on the first
+limit it met, since one honoured window already costs up to 60 s; above the
+ceiling the budget has stopped bounding the sole-writer window it exists to
+bound. Both ends catch the same unit confusion: `10` is ten seconds, `600m` is
+ten hours. A cron entry carrying a larger value from before this range existed
+now fails at parse time rather than running unbounded — `2h` was a documented
+example here and is no longer accepted.
+
+What counts against it is the
 window each limit opens, not each worker that reports one, so a whole round of
 workers walking into the same wall is a single charge — and a limit landing
 inside a window already open costs nothing at all. It is charged when the
