@@ -1181,7 +1181,10 @@ describe("App", () => {
     holdFirstWhoami();
     await clicked;
 
-    await user.type(screen.getByLabelText(/submit a url/i), "https://example.com/new");
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Complete sign-in" })).not.toBeInTheDocument();
+    });
+    await user.type(await screen.findByLabelText(/submit a url/i), "https://example.com/new");
     await user.click(screen.getByRole("button", { name: /submit/i }));
     await waitFor(() => {
       const post = fetchMock.mock.calls.find((c) => {
@@ -1258,6 +1261,9 @@ describe("App", () => {
       <App initialPath="/auth/verify?next=/account/security#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
     );
     await user.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Complete sign-in" })).not.toBeInTheDocument();
+    });
     expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
     expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
