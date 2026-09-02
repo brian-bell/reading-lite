@@ -122,12 +122,14 @@ export interface VectorizeConfig {
 // outcome there, and it is what these callers already handled. Everything
 // else — reads, listings, plain puts, deletes — repeats safely.
 //
-// The deadline covers the whole request including the response body, not just
-// its headers, because a body that stops arriving mid-stream is the same stall
-// as one that never starts. It applies to every makeR2Client caller (the bulk
-// ingest, recover, migrate, purge and teardown commands as well as the
-// refresh), which previously had no request deadline at all; 30s is far above
-// what any object this corpus stores needs.
+// One deadline spans the whole request, headers and body, because a body that
+// stops arriving mid-stream is the same stall as one that never starts. The
+// caller reads the body after the attempt loop has returned, so a stall that
+// late aborts out of res.text()/res.arrayBuffer() as an error rather than a
+// retry — bounded, which is the point, but not repeated. It applies to every
+// makeR2Client caller (the bulk ingest, recover, migrate, purge and teardown
+// commands as well as the refresh), which previously had no request deadline
+// at all; 30s is far above what any object this corpus stores needs.
 export const S3_REQUEST_TIMEOUT_MS = 30_000;
 const S3_REQUEST_ATTEMPTS = 3;
 const S3_RETRY_BASE_MS = 250;
@@ -182,8 +184,10 @@ export function makeR2Client(
     for (let attempt = 0; ; attempt++) {
       const last = !retryable || attempt >= maxAttempts - 1;
       let wait = Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt);
+      // Signed outside the try: a signing failure is a bad credential or a bad
+      // key, and repeating it only delays the message by three attempts.
+      const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
       try {
-        const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
         const res = await fetchFn(signed);
         if (last || !isTransientStatus(res.status)) return res;
         if (res.status === 429) {

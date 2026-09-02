@@ -51,6 +51,7 @@ import {
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
   createRefreshTimer,
+  printTiming,
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
@@ -172,7 +173,7 @@ async function runCorpusRefreshConnections(
   try {
     return await refreshConnections(args, deps, timer);
   } finally {
-    deps.io.stdout(`\n${timer.format()}`);
+    printTiming(timer, deps.io.stdout);
   }
 }
 

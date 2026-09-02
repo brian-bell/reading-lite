@@ -35,7 +35,12 @@ import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { createRefreshTimer, timedNeighboursR2, type RefreshTimer } from "../refresh-timing";
+import {
+  createRefreshTimer,
+  printTiming,
+  timedNeighboursR2,
+  type RefreshTimer,
+} from "../refresh-timing";
 
 export interface CorpusRefreshNeighboursR2 {
   readListIndex: (deps: R2Deps) => Promise<RefreshRow[]>;
@@ -137,7 +142,7 @@ async function runCorpusRefreshNeighbours(
   try {
     return await refreshNeighbours(opts, deps, timer);
   } finally {
-    deps.io.stdout(`\n${timer.format()}`);
+    printTiming(timer, deps.io.stdout);
   }
 }
 

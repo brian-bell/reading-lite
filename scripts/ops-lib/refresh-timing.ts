@@ -10,9 +10,11 @@
 //
 // Durations come from the command's injected `now`, the same clock the
 // commands already use for manifest timestamps, so tests drive them with a
-// fake clock instead of real waiting. A phase appears in the block only when
-// it was used, in the order it was first used, which is the order the pass
-// performs them.
+// fake clock instead of real waiting. That clock is wall time, not a monotonic
+// one: a clock step mid-pass (NTP, suspend/resume) shows up in the numbers.
+//
+// A phase appears in the block only when it was used, in the order it was
+// first used, which is the order the pass performs them.
 
 import type { CorpusRefreshNeighboursR2 } from "./commands/corpus-refresh-neighbours";
 import type { RefreshConnectionsStorage } from "./commands/corpus-refresh-connections";
@@ -32,6 +34,17 @@ export interface RefreshTimer {
   measured<T>(phase: string, fn: () => Promise<T>): Promise<{ value: T; ms: number }>;
   /** The `Timing:` block, without a trailing newline. */
   format(): string;
+  /** True once at least one call has been timed. */
+  used(): boolean;
+}
+
+/**
+ * Prints the block, unless nothing was timed — a run that failed on its
+ * arguments has no phases to report, and `total 0.000s` under a usage error is
+ * noise.
+ */
+export function printTiming(timer: RefreshTimer, write: (line: string) => void): void {
+  if (timer.used()) write(`\n${timer.format()}`);
 }
 
 interface Phase {
@@ -76,6 +89,7 @@ export function createRefreshTimer(now: () => number): RefreshTimer {
     measure: async (phase, fn) => (await measured(phase, fn)).value,
     measured,
     format: () => formatTiming([...phases.entries()], now() - start),
+    used: () => phases.size > 0,
   };
 }
 

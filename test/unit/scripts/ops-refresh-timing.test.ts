@@ -3,6 +3,7 @@ import {
   PHASE_MANIFEST_READ,
   PHASE_PLANNING_READS,
   createRefreshTimer,
+  printTiming,
   timedNeighboursR2,
   timedRefreshStorage,
 } from "../../../scripts/ops-lib/refresh-timing";
@@ -49,6 +50,18 @@ describe("refresh timing block", () => {
       }),
     ).rejects.toThrow("timed out");
     expect(timer.format()).toMatch(/manifest read\s+1 call\s+30.000s/);
+  });
+
+  it("prints nothing when the run failed before it timed anything", async () => {
+    const lines: string[] = [];
+    const timer = createRefreshTimer(fakeClock(10));
+    printTiming(timer, (line) => lines.push(line));
+    expect(lines).toEqual([]);
+
+    await timer.measure("list read", async () => 0);
+    printTiming(timer, (line) => lines.push(line));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Timing:");
   });
 
   it("omits phases that never ran and keeps first-use order", async () => {
