@@ -51,9 +51,11 @@ import {
   type ApiScopeName,
   type ApiTokenListItem,
   type Connection,
+  type DigestCadence,
   type ListReading,
   type ListTokensResponse,
   type ManifestStatus,
+  type PostAuthSettingsBody,
   type ProcessingAttempt,
   type ProcessingAttemptSummary,
   type SessionListItem,
@@ -61,6 +63,7 @@ import {
   type TensionKind,
   type WhoamiResponse
 } from "./types";
+import { listIanaTimeZones } from "./time-zone";
 import "./styles.css";
 
 type AppProps = {
@@ -333,6 +336,26 @@ function pruneRevokedTokenIds(queryClient: QueryClient, tokens: ApiTokenListItem
   if (next.size !== current.size) queryClient.setQueryData(TOKEN_REVOKED_IDS_KEY, next);
 }
 
+const DIGEST_CADENCE_OPTIONS: { value: DigestCadence; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" }
+];
+
+const DIGEST_WEEKDAY_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+  { value: 7, label: "Sunday" }
+];
+
+function digestHourLabel(hour: number): string {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
 function AccountSecurityPage({
   identity,
   onSignedOut
@@ -447,19 +470,38 @@ function AccountSecurityPage({
     }
   }
 
-  async function onToggleNotifyImmediate(event: { currentTarget: { checked: boolean } }) {
+  async function onUpdateSettings(body: PostAuthSettingsBody) {
     if (busyId) return;
-    const notifyImmediate = event.currentTarget.checked;
     setError(null);
     setBusyId("settings");
     try {
-      const updated = await updateAuthSettings(notifyImmediate);
+      const updated = await updateAuthSettings(body);
       queryClient.setQueryData(["settings", identity.user_id], updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to update settings");
     } finally {
       setBusyId(null);
     }
+  }
+
+  async function onToggleNotifyImmediate(event: { currentTarget: { checked: boolean } }) {
+    await onUpdateSettings({ notify_immediate: event.currentTarget.checked });
+  }
+
+  async function onDigestField(
+    patch: Pick<
+      PostAuthSettingsBody,
+      "digest_cadence" | "time_zone" | "digest_hour_local" | "digest_weekday"
+    >
+  ) {
+    if (!settings) return;
+    await onUpdateSettings({
+      notify_immediate: settings.notify_immediate,
+      digest_cadence: patch.digest_cadence ?? settings.digest_cadence,
+      time_zone: patch.time_zone ?? settings.time_zone,
+      digest_hour_local: patch.digest_hour_local ?? settings.digest_hour_local,
+      digest_weekday: patch.digest_weekday ?? settings.digest_weekday
+    });
   }
 
   function toggleTokenScope(scope: ApiScopeName) {
@@ -610,6 +652,91 @@ function AccountSecurityPage({
             <p className="session-meta">
               Immediate mail on a successful reading. Uncheck to opt out. Mail goes to your current verified
               address.
+            </p>
+          </>
+        ) : null}
+      </section>
+      <section className="digest-schedule" aria-labelledby="digest-schedule-heading">
+        <h2 id="digest-schedule-heading">Digest email</h2>
+        {settings ? (
+          <>
+            <div className="digest-schedule-fields">
+              <label htmlFor="digest-cadence">
+                Cadence
+                <select
+                  id="digest-cadence"
+                  value={settings.digest_cadence}
+                  onChange={(event) =>
+                    void onDigestField({ digest_cadence: event.currentTarget.value as DigestCadence })
+                  }
+                  disabled={busyId != null}
+                >
+                  {DIGEST_CADENCE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {settings.digest_cadence !== "off" ? (
+                <>
+                  <label htmlFor="digest-time-zone">
+                    Time zone
+                    <select
+                      id="digest-time-zone"
+                      value={settings.time_zone}
+                      onChange={(event) => void onDigestField({ time_zone: event.currentTarget.value })}
+                      disabled={busyId != null}
+                    >
+                      {listIanaTimeZones(settings.time_zone).map((zone) => (
+                        <option key={zone} value={zone}>
+                          {zone}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label htmlFor="digest-hour-local">
+                    Local hour
+                    <select
+                      id="digest-hour-local"
+                      value={settings.digest_hour_local}
+                      onChange={(event) =>
+                        void onDigestField({ digest_hour_local: Number(event.currentTarget.value) })
+                      }
+                      disabled={busyId != null}
+                    >
+                      {Array.from({ length: 24 }, (_, hour) => (
+                        <option key={hour} value={hour}>
+                          {digestHourLabel(hour)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {settings.digest_cadence === "weekly" ? (
+                    <label htmlFor="digest-weekday">
+                      Weekday
+                      <select
+                        id="digest-weekday"
+                        value={settings.digest_weekday}
+                        onChange={(event) =>
+                          void onDigestField({ digest_weekday: Number(event.currentTarget.value) })
+                        }
+                        disabled={busyId != null}
+                      >
+                        {DIGEST_WEEKDAY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+            <p className="session-meta">
+              Daily or weekly digest of new ready readings. Off skips digest mail. Independent of immediate
+              email. Hour, weekday, and time zone stay saved when off.
             </p>
           </>
         ) : null}

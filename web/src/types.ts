@@ -341,7 +341,9 @@ export interface ListTokensResponse {
 // Mirrors DigestCadenceSchema / UserSettingsResponseSchema / PostAuthSettingsBodySchema
 // in src/schemas/api.ts. GET /api/auth/settings returns the full row; POST writes
 // `notify_immediate` plus optional digest schedule fields. Digest opt-out is
-// cadence `off`, not `notify_immediate`.
+// cadence `off`, not `notify_immediate`. `digest_hour_local` is 0–23;
+// `digest_weekday` is ISO 8601 Monday=1 through Sunday=7. Hour, weekday, and
+// time zone still persist when cadence is off.
 export type DigestCadence = "off" | "daily" | "weekly";
 
 export interface UserSettingsResponse {
