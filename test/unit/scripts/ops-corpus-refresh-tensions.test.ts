@@ -195,12 +195,77 @@ describe("ops corpus refresh-tensions", () => {
     ).toBe(0);
     const text = h.out.join("\n");
     expect(text).toMatch(/planning reads\s+3 calls\s+0\.090s/);
-    // One judged pair: both sides re-read for a fresh ETag, both written.
-    expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
+    // One judged pair, and no side of it written earlier in the pass: both
+    // writes go out against the ETags planning kept, so nothing is re-read.
+    expect(text).not.toContain("manifest read");
     expect(text).toMatch(/provider\s+1 call\s+0\.010s/);
     expect(text).toMatch(/manifest write\s+2 calls/);
     expect(text).not.toContain("list write");
     expect(text).toContain("rd_a|rd_b  usage input=100 output=20 reasoning=0 ms=10");
+  });
+
+  /** Wraps `createStorage` so a test can see every manifest key that is read. */
+  function countReads(h: ReturnType<typeof harness>): string[] {
+    const reads: string[] = [];
+    const create = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await create(...args);
+      const readManifest = storage.readManifest;
+      storage.readManifest = async (keyPrefix) => {
+        reads.push(keyPrefix);
+        return readManifest(keyPrefix);
+      };
+      return storage;
+    };
+    return reads;
+  }
+
+  it("re-reads only a side an earlier pair in the same pass wrote", async () => {
+    const h = harness();
+    const reads = countReads(h);
+    // Two pairs sharing rd_a. In key order rd_a|rd_b runs first and writes
+    // both its sides, so rd_a|rd_c must read rd_a again for a live ETag —
+    // and rd_c, untouched so far, still comes from the planning read.
+    expect(await run(h, "--report", "refresh-report.json", "--pair", "rd_a,rd_c", "--execute", "--sole-writer")).toBe(0);
+    expect(h.judge).toHaveBeenCalledTimes(2);
+    expect(reads).toEqual([
+      "readings/2026/rd_a",
+      "readings/2026/rd_b",
+      "readings/2026/rd_c",
+      "readings/2026/rd_a",
+    ]);
+    expect(h.stored("rd_a").tensions).toHaveLength(2);
+    expect(h.stored("rd_c").tensions).toHaveLength(1);
+  });
+
+  it("detects a manifest changed since planning through the CAS alone", async () => {
+    const h = harness();
+    const create = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await create(...args);
+      const putManifestIfMatch = storage.putManifestIfMatch;
+      // A conditional write that actually compares: a stale ETag loses.
+      storage.putManifestIfMatch = async (keyPrefix, next, etag) =>
+        h.manifests.get(keyPrefix)?.etag === etag
+          ? putManifestIfMatch(keyPrefix, next, etag)
+          : false;
+      return storage;
+    };
+    // rd_a is rewritten underneath the pass while its judgement is in flight.
+    h.judge.mockImplementationOnce(async () => {
+      h.manifests.set("readings/2026/rd_a", {
+        manifest: manifest("rd_a", { people: ["Ada"] }),
+        etag: "e-a-someone-else",
+      });
+      return supersedes;
+    });
+    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
+    expect(h.err.join("\n")).toContain(
+      "  ! rd_a|rd_b: manifest CAS lost; no overwrite performed",
+    );
+    // Neither side was written: the loser aborts before its partner's write.
+    expect(h.stored("rd_a")).not.toHaveProperty("tensions");
+    expect(h.stored("rd_b")).not.toHaveProperty("tensions");
   });
 
   it("lists candidate pairs with overlap evidence and cost in plan mode without provider or storage writes", async () => {

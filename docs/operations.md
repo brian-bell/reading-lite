@@ -351,8 +351,8 @@ reads did not.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads` — the
-manifests read while planning — `manifest read` for the re-reads an execute
-pass makes, `vectorize query`, `provider`, `manifest write`, `list write`),
+manifests read while planning — `manifest read` for reads outside a planning
+pass, `vectorize query`, `provider`, `manifest write`, `list write`),
 each with its call count and total wall time, then the run total. The block is
 printed even when the pass ends in an error, and failed calls are counted, since
 a stalled read is exactly the wall time worth seeing. Execute mode also prints
@@ -444,8 +444,12 @@ Execute mode reads the target's stored summary and judges it only against live,
 ready neighbours carried by the report. It drops provider ids outside that
 set, preserves an existing connection object when the provider reaffirms its
 id, and replaces only `connections`, `novelty_verdict`, and
-`connections_computed_at`. Manifest writes use ETag CAS. The list index is
-written after successful manifest updates so its verdict matches the manifest.
+`connections_computed_at`. Manifest writes use ETag CAS against the ETag the
+planning read returned — execute re-reads nothing — so a manifest that changed
+between the plan and the write loses that conditional write and is reported as
+a CAS loss. Under `--sole-writer` nothing should change in that window. The
+list index is written after successful manifest updates so its verdict matches
+the manifest.
 
 The manifest timestamp is the resume marker. If a manifest write succeeds but
 the list write fails, rerun with the same report: the command heals the list row
@@ -544,7 +548,9 @@ Execute mode makes one pairwise provider call per selected pair and writes
 each side's directional entry — `contradicts` (symmetric), `supersedes` /
 `superseded_by`, `qualifies` / `qualified_by`, always from that reading's point
 of view with one shared reason — plus a `tensions_judged` record to BOTH
-manifests with ETag CAS. A `none` verdict removes any prior entry for the pair
+manifests with ETag CAS, against the ETags the planning reads returned; only a
+side an earlier action in the same pass already wrote is read again. A `none`
+verdict removes any prior entry for the pair
 and is remembered so the pair is not re-judged nightly. Only `tensions` and
 `tensions_judged` change; `updated_at`, connections, and every summary field
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses

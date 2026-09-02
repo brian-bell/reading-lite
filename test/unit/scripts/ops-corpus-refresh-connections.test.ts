@@ -212,7 +212,7 @@ describe("ops corpus refresh-connections", () => {
     expect(h.out.join("\n")).toMatch(/planning reads\s+\d+ calls/);
   });
 
-  it("separates planning reads from the execute pass and times each judgement", async () => {
+  it("times the planning reads and each judgement, with no execute-pass read", async () => {
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
@@ -224,10 +224,10 @@ describe("ops corpus refresh-connections", () => {
       ),
     ).toBe(0);
     const text = h.out.join("\n");
-    // Three manifests read while planning; each judged target re-read once for
-    // a fresh ETag before its call.
+    // Three manifests read while planning, and none afterwards: each write
+    // goes out against the ETag its planning read returned.
     expect(text).toMatch(/planning reads\s+3 calls\s+0\.050s/);
-    expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
+    expect(text).not.toContain("manifest read");
     expect(text).toMatch(/provider\s+2 calls\s+0\.020s/);
     expect(text).toMatch(/manifest write\s+2 calls/);
     expect(text).toMatch(/list write\s+1 call/);
@@ -346,17 +346,99 @@ binding = "READING_JOBS"
     expect(h.err.join("\n")).toMatch(/CAS lost/);
   });
 
-  it("continues after an execution read failure and flushes earlier successes", async () => {
+  it("reads every manifest once, with no per-action re-read on execute", async () => {
+    const h = harness();
+    const reads: string[] = [];
+    const originalCreateStorage = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await originalCreateStorage(...args);
+      const readManifest = storage.readManifest;
+      storage.readManifest = async (keyPrefix) => {
+        reads.push(keyPrefix);
+        return readManifest(keyPrefix);
+      };
+      return storage;
+    };
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+    expect(h.judge).toHaveBeenCalledTimes(2);
+    // rd_a and rd_c are the targets, rd_b their shared candidate: three
+    // manifests, three reads. Planning already holds the ETag each write
+    // needs, so the execute pass adds no read of its own.
+    expect([...reads].sort()).toEqual([
+      "readings/2026/rd_a",
+      "readings/2026/rd_b",
+      "readings/2026/rd_c",
+    ]);
+  });
+
+  it("detects a manifest changed since planning through the CAS alone", async () => {
+    const h = harness();
+    const originalCreateStorage = h.deps.createStorage;
+    h.deps.createStorage = async (...args) => {
+      const storage = await originalCreateStorage(...args);
+      const putManifestIfMatch = storage.putManifestIfMatch;
+      // A conditional write that actually compares: a stale ETag loses.
+      storage.putManifestIfMatch = async (keyPrefix, next, etag) => {
+        if (h.manifests.get(keyPrefix)?.etag !== etag) {
+          h.writes.push({ keyPrefix, manifest: next, etag });
+          return false;
+        }
+        return putManifestIfMatch(keyPrefix, next, etag);
+      };
+      return storage;
+    };
+    // rd_a is rewritten underneath the pass while its judgement is in flight.
+    h.judge.mockImplementationOnce(async () => {
+      h.manifests.set("readings/2026/rd_a", {
+        manifest: manifest("rd_a"),
+        etag: "e-a-someone-else",
+      });
+      return {
+        judgement: {
+          novelty_verdict: "familiar" as const,
+          connections: [{ id: "rd_b", reason: "related" }],
+        },
+        usage: {
+          provider: "openai" as const,
+          model: "gpt-5.6-terra",
+          input_tokens: 100,
+          output_tokens: 20,
+          reasoning_tokens: 0,
+          cached_input_tokens: 0,
+          cache_write_tokens: 0,
+        },
+      };
+    });
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(1);
+    expect(h.err.join("\n")).toContain(
+      "  ! rd_a: manifest CAS lost; no overwrite performed",
+    );
+    // Nothing was overwritten, the pass finished its other action, and the
+    // loser contributes no list-row verdict.
+    expect(h.manifests.get("readings/2026/rd_a")!.etag).toBe("e-a-someone-else");
+    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 1");
+    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("novel");
+    expect(h.items().find((row) => row.id === "rd_c")?.novelty_verdict).toBe("familiar");
+  });
+
+  it("continues after a planning read failure and flushes earlier successes", async () => {
     const h = harness();
     const originalCreateStorage = h.deps.createStorage;
     h.deps.createStorage = async (...args) => {
       const storage = await originalCreateStorage(...args);
       const readManifest = storage.readManifest;
-      let rdCReads = 0;
       storage.readManifest = async (keyPrefix) => {
-        if (keyPrefix.endsWith("rd_c") && ++rdCReads === 2) {
-          throw new Error("temporary R2 read failure");
-        }
+        if (keyPrefix.endsWith("rd_c")) throw new Error("temporary R2 read failure");
         return readManifest(keyPrefix);
       };
       return storage;
@@ -371,7 +453,7 @@ binding = "READING_JOBS"
     expect(h.writes).toHaveLength(1);
     expect(h.listWrites).toHaveLength(1);
     expect(h.err.join("\n")).toContain("rd_c: temporary R2 read failure");
-    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 1");
+    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 0");
   });
 
   it("drops a provider connection when the neighbour manifest is missing", async () => {

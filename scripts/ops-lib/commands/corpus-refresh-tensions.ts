@@ -264,8 +264,8 @@ async function refreshTensions(
   timer: RefreshTimer,
 ): Promise<number> {
   // Planning and execute read the same manifests through the same call, so the
-  // phase label is what separates the fixed planning cost from the per-pair
-  // re-reads every execute pass pays on top of it.
+  // phase label is what separates the fixed planning cost from the re-reads
+  // execute makes of the sides it has already written.
   let manifestReadPhase = PHASE_PLANNING_READS;
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
@@ -299,7 +299,9 @@ async function refreshTensions(
   const byId = new Map(items.map((item) => [item.id, item]));
 
   // Every reading a report pair or --pair could name. Manifests are read once
-  // for planning; execute re-reads each side for a fresh ETag before writing.
+  // for planning, ETag included, and execute writes against that ETag. A side
+  // an earlier action in the same pass wrote is the one exception: its ETag is
+  // gone, so `readLive` drops it from the cache and reads it again.
   const reportIds = new Set<string>();
   for (const reading of report?.readings ?? []) {
     reportIds.add(reading.id);
@@ -311,6 +313,7 @@ async function refreshTensions(
     wanted.add(b);
   }
   const manifestsById = new Map<string, RawManifest>();
+  const liveById = new Map<string, StoredRawManifest>();
   const liveReadyIds = new Set<string>();
   let planningFailed = false;
   const pairIds = new Set(args.pairs.flat());
@@ -358,6 +361,7 @@ async function refreshTensions(
       );
     }
     manifestsById.set(id, stored.manifest);
+    liveById.set(id, stored);
     liveReadyIds.add(id);
   }
 
@@ -501,7 +505,13 @@ async function refreshTensions(
           `the rest of this pass will fail fast`,
       ),
   });
+  // The manifest to write against: the one planning read and validated, until
+  // a write in this pass invalidates its ETag. Nothing outside the pass can
+  // invalidate it silently — a manifest that changed since planning loses the
+  // conditional write below, which is what reports it.
   const readLive = async (id: string): Promise<StoredRawManifest> => {
+    const planned = liveById.get(id);
+    if (planned) return planned;
     const row = byId.get(id);
     if (!row) throw new Error("no list row");
     const current = await storage.readManifest(row.key_prefix);
@@ -532,6 +542,9 @@ async function refreshTensions(
     ): Promise<void> => {
       const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
       if (!merged.ok) throw new Error(merged.error);
+      // The ETag is spent either way: a win supersedes it, a loss proves it
+      // was already stale. Whoever reads this side next reads it fresh.
+      liveById.delete(id);
       const wrote = await storage.putManifestIfMatch(
         byId.get(id)!.key_prefix,
         merged.manifest,
@@ -560,9 +573,7 @@ async function refreshTensions(
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
         // The one place a rate limit is observed for the whole pass: wait for
         // any window another worker opened before adding to it. The wait sits
-        // here, after the re-reads, because it is the paid call it is pacing;
-        // the ETags it waited on are still current, since --sole-writer is the
-        // only writer.
+        // here rather than earlier because it is the paid call it is pacing.
         await gate.wait();
         const { value: result, ms: providerMs } = await timer.measured(
           PHASE_PROVIDER,
@@ -617,6 +628,7 @@ async function refreshTensions(
         const target = await readLive(repair.on);
         const merged = purgeTensionPartner(target.manifest, repair.partner);
         if (!merged.ok) throw new Error(merged.error);
+        liveById.delete(repair.on);
         const wrote = await storage.putManifestIfMatch(
           byId.get(repair.on)!.key_prefix,
           merged.manifest,
