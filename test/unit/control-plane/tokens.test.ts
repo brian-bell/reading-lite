@@ -240,6 +240,53 @@ describe("createApiToken", () => {
       n: 1,
     });
   });
+
+  it("admits a mint after revoke even when a stale COUNT still reports the cap", async () => {
+    const { sqlite, db: inner, userId } = await seeded();
+    for (let i = 0; i < MAX_ACTIVE_TOKENS - 1; i += 1) {
+      const minted = await createApiToken(inner, {
+        userId,
+        name: `t${i}`,
+        scopes: ["readings:read"],
+        nowMs: NOW_MS + i,
+        authRoot,
+        userAgentLabel: null,
+        newUuid: () => `770e8400-e29b-41d4-a716-44665544002${i}`,
+      });
+      expect(minted.kind).toBe("ok");
+      if (minted.kind !== "ok") return;
+      if (i === 0) {
+        expect(await revokeOwnedApiToken(inner, { tokenId: minted.created.id, userId, nowMs: NOW_MS + 50 })).toBe(
+          "ok",
+        );
+      }
+    }
+    expect(await countActiveApiTokens(inner, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS - 1);
+
+    const db: ControlPlaneDb = {
+      first: async <T>(sql: string, ...params: unknown[]) => {
+        if (/SELECT COUNT\(\*\) AS n FROM api_tokens/i.test(sql)) {
+          return { n: MAX_ACTIVE_TOKENS } as T;
+        }
+        return inner.first<T>(sql, ...params);
+      },
+      all: (sql, ...params) => inner.all(sql, ...params),
+      batch: (statements) => inner.batch(statements),
+      run: (sql, ...params) => inner.run(sql, ...params),
+    };
+    const created = await createApiToken(db, {
+      userId,
+      name: "after-stale-count",
+      scopes: ["readings:read"],
+      nowMs: NOW_MS + 60,
+      authRoot,
+      userAgentLabel: null,
+      newUuid: () => "880e8400-e29b-41d4-a716-44665544000c",
+    });
+    expect(created.kind).toBe("ok");
+    expect(await countActiveApiTokens(inner, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: MAX_ACTIVE_TOKENS + 1 });
+  });
 });
 
 describe("listApiTokensForUser", () => {

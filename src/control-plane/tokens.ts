@@ -121,11 +121,8 @@ export async function createApiToken(
     return { kind: "invalid_expiry" };
   }
 
-  // Fast path only: two concurrent mints can both see active === 9. The
-  // INSERT … SELECT below is the admission gate and fails closed at 10.
-  const active = await countActiveApiTokens(db, { userId: input.userId, nowMs: input.nowMs });
-  if (active >= MAX_ACTIVE_TOKENS) return { kind: "cap" };
-
+  // No pre-count: a replica can still report 10 after a revoke. Admission is
+  // only the INSERT … SELECT WHERE count < 10 (results[0].changes !== 1 → cap).
   const tokenId = mintTokenId(input.newUuid);
   const secret = mintSecretHex(input.randomBytes);
   const secretHmac = await hmacHex(await deriveHmacKey(input.authRoot, "api_token"), secret);
