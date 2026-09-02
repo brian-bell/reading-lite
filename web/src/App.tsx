@@ -73,6 +73,7 @@ function dropIdentityCaches(queryClient: QueryClient): void {
   queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
   queryClient.removeQueries({ queryKey: ["sessions"] });
   queryClient.removeQueries({ queryKey: ["tokens"] });
+  queryClient.removeQueries({ queryKey: ["token-revoked-ids"] });
 }
 
 export function App({ initialPath }: AppProps) {
@@ -296,6 +297,37 @@ function tokenStatusLabel(token: ApiTokenListItem): string {
   return "usable";
 }
 
+const TOKEN_REVOKED_IDS_KEY = ["token-revoked-ids"] as const;
+
+function revokedTokenIds(queryClient: QueryClient): Set<string> {
+  return queryClient.getQueryData<Set<string>>(TOKEN_REVOKED_IDS_KEY) ?? new Set();
+}
+
+function rememberRevokedTokenId(queryClient: QueryClient, tokenId: string): void {
+  const next = new Set(revokedTokenIds(queryClient));
+  next.add(tokenId);
+  queryClient.setQueryData(TOKEN_REVOKED_IDS_KEY, next);
+}
+
+function applyRevokedTokenOverlay(tokens: ApiTokenListItem[], overlay: Set<string>): ApiTokenListItem[] {
+  if (overlay.size === 0) return tokens;
+  return tokens.map((row) =>
+    overlay.has(row.id) && row.usable
+      ? { ...row, usable: false, revoked_at_ms: row.revoked_at_ms ?? Date.now() }
+      : row
+  );
+}
+
+function pruneRevokedTokenIds(queryClient: QueryClient, tokens: ApiTokenListItem[]): void {
+  const current = revokedTokenIds(queryClient);
+  if (current.size === 0) return;
+  const next = new Set(current);
+  for (const row of tokens) {
+    if (next.has(row.id) && !row.usable) next.delete(row.id);
+  }
+  if (next.size !== current.size) queryClient.setQueryData(TOKEN_REVOKED_IDS_KEY, next);
+}
+
 function AccountSecurityPage({
   identity,
   onSignedOut
@@ -310,7 +342,17 @@ function AccountSecurityPage({
   });
   const tokensQuery = useQuery({
     queryKey: ["tokens", identity.user_id],
-    queryFn: listTokens
+    queryFn: async () => {
+      const listed = await listTokens();
+      pruneRevokedTokenIds(queryClient, listed.tokens);
+      return listed;
+    }
+  });
+  const revokedOverlayQuery = useQuery({
+    queryKey: TOKEN_REVOKED_IDS_KEY,
+    queryFn: async () => new Set<string>(),
+    initialData: () => new Set<string>(),
+    staleTime: Infinity
   });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -323,7 +365,10 @@ function AccountSecurityPage({
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const listed = sessionsQuery.data;
-  const listedTokens = tokensQuery.data;
+  const overlay = revokedOverlayQuery.data ?? new Set<string>();
+  const listedTokens = tokensQuery.data
+    ? { tokens: applyRevokedTokenOverlay(tokensQuery.data.tokens, overlay) }
+    : tokensQuery.data;
   const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
   const tokenCapReached = usableTokenCount >= TOKEN_CAP;
   const createDisabled = busyId != null || tokenCapReached;
@@ -458,6 +503,7 @@ function AccountSecurityPage({
     setBusyId(token.id);
     try {
       await revokeToken(token.id);
+      rememberRevokedTokenId(queryClient, token.id);
       const markUnusable = (current: ListTokensResponse | undefined) => {
         if (!current) return current;
         return {
@@ -684,11 +730,17 @@ function LoginPage({
   const [error, setError] = useState<string | null>(null);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
+  const emailLocked = Boolean(stepUp && identity);
+  const emailValue = emailLocked && identity ? identity.email : email;
 
   useLayoutEffect(() => {
     if (identity && !stepUp) return;
     rememberLoginReturnPath(next);
   }, [identity, next, stepUp]);
+
+  useLayoutEffect(() => {
+    if (emailLocked && identity) setEmail(identity.email);
+  }, [emailLocked, identity]);
 
   if (identity && !stepUp) {
     const dest = safeAppReturnPath(next) ?? "/";
@@ -713,7 +765,7 @@ function LoginPage({
           event.preventDefault();
           setError(null);
           try {
-            await requestLoginLink(email);
+            await requestLoginLink(emailValue);
             setSubmitted(true);
           } catch (e) {
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
@@ -721,14 +773,18 @@ function LoginPage({
         }}
       >
         <label htmlFor="login-email">Email</label>
-        <input
-          id="login-email"
-          type="email"
-          autoComplete="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          required
-        />
+          <input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            value={emailValue}
+            onChange={(event) => {
+              if (emailLocked) return;
+              setEmail(event.target.value);
+            }}
+            required
+            readOnly={emailLocked}
+          />
         <button type="submit">Email me a link</button>
       </form>
       {submitted ? (
@@ -796,7 +852,7 @@ function VerifyPage() {
                 }
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
-                queryClient.removeQueries({ queryKey: ["sessions"] });
+                dropIdentityCaches(queryClient);
                 await queryClient.cancelQueries({ queryKey: ["whoami"] });
                 await queryClient.resetQueries({ queryKey: ["whoami"] });
                 const whoami = await queryClient.fetchQuery({ queryKey: ["whoami"] });

@@ -479,7 +479,9 @@ describe("App", () => {
     await waitFor(() => {
       expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/account/security");
     });
-    await user.type(screen.getByLabelText("Email"), "reader@example.com");
+    const emailField = screen.getByLabelText("Email");
+    expect(emailField).toHaveValue("reader@example.com");
+    expect(emailField).toHaveAttribute("readonly");
     await user.click(screen.getByRole("button", { name: "Email me a link" }));
     expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
     const challenge = fetchMock.mock.calls.find((c) => {
@@ -487,6 +489,7 @@ describe("App", () => {
       return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
     });
     expect(challenge).toBeDefined();
+    expect(await (challenge![0] as Request).clone().json()).toEqual({ email: "reader@example.com" });
   });
 
   it("strips the magic-link fragment and only redeems after an explicit click", async () => {
@@ -721,6 +724,48 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
     expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
+  });
+
+  it("does not keep the previous mailbox after redeeming while a session is live", async () => {
+    const otherWhoami = {
+      tenant_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      user_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      principal: "session" as const,
+      tenant_data_plane: true,
+      email: "other@example.com",
+      csrf_token: "cd".repeat(32)
+    };
+    let mailbox: "a" | "b" = "a";
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        return jsonResponse(mailbox === "a" ? sessionWhoami : otherWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        mailbox = "b";
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        if (mailbox === "a") {
+          return jsonResponse({ tokens: [apiToken({ name: "prior-token" })] });
+        }
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?next=/account/security#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    expect(await screen.findByText("reader@example.com")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("other@example.com")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
+    expect(screen.queryByText("reader@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByText(/prior-token/)).not.toBeInTheDocument();
   });
 
   it("returns home after Continue when next is an open redirect", async () => {
@@ -1879,6 +1924,15 @@ describe("App", () => {
       expect(within(panel).getByRole("button", { name: "Create token" })).toBeEnabled();
     });
     expect(screen.getByText(/cap-0 \(standard\) · revoked/)).toBeInTheDocument();
+    expect(screen.queryByText(/10-token limit/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Readings" }));
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Security" }));
+    expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
+    const panelAgain = await screen.findByRole("region", { name: "API tokens" });
+    expect(await within(panelAgain).findByText(/cap-0 \(standard\) · revoked/)).toBeInTheDocument();
+    expect(within(panelAgain).getByRole("button", { name: "Create token" })).toBeEnabled();
     expect(screen.queryByText(/10-token limit/)).not.toBeInTheDocument();
   });
 
