@@ -195,6 +195,43 @@ describe("makeR2Client", () => {
   });
 });
 
+describe("makeR2Client getWithEtag", () => {
+  it("returns body and unquoted ETag from a single GET", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response('{"id":"rd_a"}', { status: 200, headers: { etag: '"abc123"' } }),
+    );
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+
+    await expect(r2.getWithEtag("readings/2026/rd_a/manifest.json")).resolves.toEqual({
+      body: '{"id":"rd_a"}',
+      etag: "abc123",
+    });
+    // The point of the call: one request where LIST+GET used to be two.
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("GET");
+    expect(req.url).toContain("readings/2026/rd_a/manifest.json");
+  });
+
+  it("returns null for a missing object", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(r2.getWithEtag("missing")).resolves.toBeNull();
+  });
+
+  it("throws on a non-404 failure", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 403 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 403 boom/);
+  });
+
+  it("reports an empty ETag rather than inventing one", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("{}", { status: 200 }));
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(r2.getWithEtag("k")).resolves.toEqual({ body: "{}", etag: "" });
+  });
+});
+
 describe("makeR2RestClient", () => {
   const restCfg = { accountId: "acct123", apiToken: "cf-token", bucket: "reading-lite-staging" };
 
@@ -327,6 +364,39 @@ describe("makeR2RestClient", () => {
     expect(forbidden.message).toBe("R2 PUT readings/a/manifest.json failed: HTTP 403");
     expect(`${malformed.message}\n${forbidden.message}`).not.toContain(secret);
     expect(`${malformed.message}\n${forbidden.message}`).not.toContain("body body");
+  });
+});
+
+describe("makeR2RestClient getWithEtag", () => {
+  const restCfg = { accountId: "acct123", apiToken: "cf-token", bucket: "reading-lite-staging" };
+
+  it("normalizes the weak ETag the REST API returns and reads in one request", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response('{"id":"rd_a"}', { status: 200, headers: { etag: 'W/"abc123"' } }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+
+    await expect(r2.getWithEtag("readings/2026/rd_a/manifest.json")).resolves.toEqual({
+      body: '{"id":"rd_a"}',
+      etag: "abc123",
+    });
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const url = fetchFn.mock.calls[0]![0] as string;
+    expect(url).toContain("/r2/buckets/reading-lite-staging/objects/readings/2026/rd_a/manifest.json");
+  });
+
+  it("returns null for a missing object", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await expect(r2.getWithEtag("missing")).resolves.toBeNull();
+  });
+
+  it("throws on a non-404 failure", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ message: "nope" }] }), { status: 403 }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 403 nope/);
   });
 });
 

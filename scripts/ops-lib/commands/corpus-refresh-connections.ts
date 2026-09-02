@@ -29,6 +29,7 @@ import {
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import {
   r2InventoryClientFromVars,
   refreshS3RequestDeps,
@@ -165,6 +166,14 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
 // The block prints in a finally: the passes worth timing most are the ones
 // that end in a thrown stale-report or storage error, having already spent
 // minutes of planning reads.
+// Planning reads are independent GETs against R2, so the pass costs
+// requests x latency only because it issued them one at a time. Eight is what
+// the staging probe measured as the point where added parallelism stops paying
+// (8 concurrent GETs took 178 ms against 73 ms for one) and is well inside R2's
+// per-bucket limits. Results are collected by input position, so the plan
+// output and its snapshots do not depend on which read finishes first.
+export const PLANNING_READ_CONCURRENCY = 8;
+
 async function runCorpusRefreshConnections(
   argv: string[],
   deps: CorpusRefreshConnectionsDeps,
@@ -229,6 +238,31 @@ async function refreshConnections(
       throw error;
     }
   };
+  // Fills the same cache `readStored` reads, with the reads overlapped. Each
+  // outcome, success or failure, is recorded rather than thrown, so the loops
+  // below still report every problem in their own order and against their own
+  // message. A row this misses is simply read on demand, one at a time.
+  const prefetchStored = async (rows: readonly ListIndexItem[]): Promise<void> => {
+    const pending: string[] = [];
+    const queued = new Set<string>();
+    for (const row of rows) {
+      const keyPrefix = row.key_prefix;
+      if (queued.has(keyPrefix) || storedByPrefix.has(keyPrefix)) continue;
+      if (storedErrorsByPrefix.has(keyPrefix)) continue;
+      queued.add(keyPrefix);
+      pending.push(keyPrefix);
+    }
+    await mapWithConcurrency(pending, PLANNING_READ_CONCURRENCY, async (keyPrefix) => {
+      try {
+        storedByPrefix.set(keyPrefix, await storage.readManifest(keyPrefix));
+      } catch (cause) {
+        storedErrorsByPrefix.set(
+          keyPrefix,
+          cause instanceof Error ? cause : new Error(String(cause)),
+        );
+      }
+    });
+  };
   const liveReadyIds = new Set<string>();
   const invalidCandidateIds = new Set<string>();
   let planningFailed = false;
@@ -237,6 +271,10 @@ async function refreshConnections(
       reading.current_neighbours.map((neighbour) => neighbour.id),
     ),
   );
+  const candidateRows = [...candidateIds]
+    .map((id) => byId.get(id))
+    .filter((row): row is ListIndexItem => row !== undefined && row.status === "ready");
+  await prefetchStored(candidateRows);
   for (const id of candidateIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") continue;
@@ -267,10 +305,34 @@ async function refreshConnections(
   const actions: Action[] = [];
   let skipped = 0;
 
-  for (const reportReading of report.readings) {
-    const invalidCandidates = reportReading.current_neighbours.filter((neighbour) =>
+  const invalidCandidatesOf = (reportReading: RefreshConnectionsReportReading) =>
+    reportReading.current_neighbours.filter((neighbour) =>
       invalidCandidateIds.has(neighbour.id),
     );
+  // The live row a report reading names, or undefined when the corpus has
+  // moved under the report. Shared with the prefetch below so the two agree on
+  // exactly which manifests this pass is going to read.
+  const targetRow = (reportReading: RefreshConnectionsReportReading) => {
+    const row = byId.get(reportReading.id);
+    if (
+      !row ||
+      row.status !== "ready" ||
+      row.key_prefix !== reportReading.key_prefix ||
+      row.url !== reportReading.url
+    ) {
+      return undefined;
+    }
+    return row;
+  };
+  await prefetchStored(
+    report.readings
+      .filter((reportReading) => invalidCandidatesOf(reportReading).length === 0)
+      .map(targetRow)
+      .filter((row): row is ListIndexItem => row !== undefined),
+  );
+
+  for (const reportReading of report.readings) {
+    const invalidCandidates = invalidCandidatesOf(reportReading);
     if (invalidCandidates.length > 0) {
       skipped++;
       planningFailed = true;
@@ -279,13 +341,8 @@ async function refreshConnections(
       );
       continue;
     }
-    const row = byId.get(reportReading.id);
-    if (
-      !row ||
-      row.status !== "ready" ||
-      row.key_prefix !== reportReading.key_prefix ||
-      row.url !== reportReading.url
-    ) {
+    const row = targetRow(reportReading);
+    if (!row) {
       skipped++;
       deps.io.stderr(`  ! skip ${reportReading.id}: live ready list row does not match report`);
       continue;
@@ -716,15 +773,14 @@ export function storageFromClient(
       if (body === null) throw new Error(`${LIST_INDEX_KEY} not found`);
       return ListIndexSchema.parse(JSON.parse(body)).items;
     },
+    // One GET. The ETag CAS needs comes back on the read response, so the
+    // LIST that used to fetch it alongside the body is gone: half the requests,
+    // and no window in which the two halves disagree.
     async readManifest(keyPrefix) {
       const key = rooted(layout.manifestKey(keyPrefix));
-      const [objects, body] = await Promise.all([
-        client.listObjects(key),
-        client.get(key),
-      ]);
-      const object = objects.find((candidate) => candidate.key === key);
-      if (!object || body === null) return null;
-      const raw: unknown = JSON.parse(body);
+      const object = await client.getWithEtag(key);
+      if (object === null) return null;
+      const raw: unknown = JSON.parse(object.body);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         throw new Error(`manifest ${keyPrefix} is not an object`);
       }

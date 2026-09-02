@@ -54,6 +54,7 @@ import {
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
+import { mapWithConcurrency } from "../../lib/concurrency";
 import { r2InventoryClientFromVars, refreshS3RequestDeps } from "../../lib/cf-clients";
 import {
   SUMMARIZER_PRICE_DATE,
@@ -84,6 +85,7 @@ import {
   type RefreshTimer,
 } from "../refresh-timing";
 import {
+  PLANNING_READ_CONCURRENCY,
   parseProductionWorkerVars,
   storageFromClient,
   type JudgeTransportOverrides,
@@ -258,7 +260,24 @@ async function refreshTensions(
   const liveReadyIds = new Set<string>();
   let planningFailed = false;
   const pairIds = new Set(args.pairs.flat());
-  for (const id of [...wanted].sort()) {
+  const wantedIds = [...wanted].sort();
+  const wantedRows = wantedIds
+    .map((id) => byId.get(id))
+    .filter((row): row is ListIndexItem => row !== undefined && row.status === "ready");
+  // The reads are independent, so they overlap; the loop below still walks the
+  // ids in sorted order, which is what fixes the order manifests enter
+  // `manifestsById` and therefore the plan the candidates are built from.
+  const prefetched = new Map<string, StoredRawManifest | null>();
+  const prefetchErrors = new Map<string, Error>();
+  const pending = [...new Set(wantedRows.map((row) => row.key_prefix))];
+  await mapWithConcurrency(pending, PLANNING_READ_CONCURRENCY, async (keyPrefix) => {
+    try {
+      prefetched.set(keyPrefix, await storage.readManifest(keyPrefix));
+    } catch (cause) {
+      prefetchErrors.set(keyPrefix, cause instanceof Error ? cause : new Error(String(cause)));
+    }
+  });
+  for (const id of wantedIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") {
       if (pairIds.has(id)) {
@@ -269,7 +288,11 @@ async function refreshTensions(
     }
     let stored: StoredRawManifest | null;
     try {
-      stored = await storage.readManifest(row.key_prefix);
+      const failed = prefetchErrors.get(row.key_prefix);
+      if (failed) throw failed;
+      stored = prefetched.has(row.key_prefix)
+        ? prefetched.get(row.key_prefix) ?? null
+        : await storage.readManifest(row.key_prefix);
     } catch (error) {
       planningFailed = true;
       deps.io.stderr(`  ! ${id}: ${error instanceof Error ? error.message : String(error)}`);

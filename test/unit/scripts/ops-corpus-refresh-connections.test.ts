@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
 import {
   corpusRefreshConnectionsCommand,
   parseProductionWorkerVars,
+  storageFromClient,
   type CorpusRefreshConnectionsDeps,
   type RefreshConnectionsStorage,
 } from "../../../scripts/ops-lib/commands/corpus-refresh-connections";
@@ -175,7 +177,10 @@ describe("ops corpus refresh-connections", () => {
     const text = h.out.join("\n");
     expect(text).toContain("Timing:");
     expect(text).toMatch(/list read\s+1 call\s+0\.010s/);
-    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    // Three reads, overlapped: the phase total is the sum of the call
+    // durations, which under concurrency is longer than the wall time they
+    // actually took.
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.050s/);
     expect(text).not.toMatch(/^ {2}provider\s+\d+ call/m);
     expect(text).not.toContain("manifest write");
   });
@@ -205,7 +210,7 @@ describe("ops corpus refresh-connections", () => {
     const text = h.out.join("\n");
     // Three manifests read while planning; each judged target re-read once for
     // a fresh ETag before its call.
-    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.050s/);
     expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
     expect(text).toMatch(/provider\s+2 calls\s+0\.020s/);
     expect(text).toMatch(/manifest write\s+2 calls/);
@@ -456,5 +461,185 @@ binding = "READING_JOBS"
     expect(await corpusRefreshConnectionsCommand.run(argv, h.deps)).toBe(0);
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
+  });
+});
+
+/**
+ * A minimal R2InventoryClient that records every method call, so a test can
+ * assert how many requests one manifest read costs.
+ */
+function fakeInventoryClient(objects: Map<string, { body: string; etag: string }>) {
+  const calls: string[] = [];
+  const client = {
+    async get(key: string) {
+      calls.push(`get ${key}`);
+      return objects.get(key)?.body ?? null;
+    },
+    async getWithEtag(key: string) {
+      calls.push(`getWithEtag ${key}`);
+      const found = objects.get(key);
+      return found ? { body: found.body, etag: found.etag } : null;
+    },
+    async listObjects(prefix?: string) {
+      calls.push(`listObjects ${prefix ?? ""}`);
+      return [...objects.entries()]
+        .filter(([key]) => prefix === undefined || key.startsWith(prefix))
+        .map(([key, value]) => ({ key, size: value.body.length, etag: value.etag }));
+    },
+    async put(key: string) {
+      calls.push(`put ${key}`);
+    },
+    async putIfAbsent() {
+      return true;
+    },
+    async putIfMatch(key: string, _body: unknown, etag: string) {
+      calls.push(`putIfMatch ${key} ${etag}`);
+      return true;
+    },
+    async head() {
+      return true;
+    },
+    async delete() {},
+    async listKeys() {
+      return [...objects.keys()];
+    },
+    async getBytes() {
+      return null;
+    },
+  } as unknown as R2InventoryClient;
+  return { client, calls };
+}
+
+describe("storageFromClient", () => {
+  const key = "t/readings/2026/rd_a/manifest.json";
+
+  it("reads a manifest with a single request", async () => {
+    const { client, calls } = fakeInventoryClient(
+      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),
+    );
+    const storage = storageFromClient(client, "t/");
+
+    await expect(storage.readManifest("readings/2026/rd_a")).resolves.toEqual({
+      manifest: manifest("rd_a"),
+      etag: "e-a",
+    });
+    // One GET, not the LIST+GET pair this used to need for the ETag.
+    expect(calls).toEqual([`getWithEtag ${key}`]);
+  });
+
+  it("returns null for a manifest that is not there", async () => {
+    const { client, calls } = fakeInventoryClient(new Map());
+    const storage = storageFromClient(client, "t/");
+
+    await expect(storage.readManifest("readings/2026/rd_a")).resolves.toBeNull();
+    expect(calls).toEqual([`getWithEtag ${key}`]);
+  });
+
+  it("rejects a manifest body that is not a JSON object", async () => {
+    const { client } = fakeInventoryClient(new Map([[key, { body: "[1,2]", etag: "e-a" }]]));
+    const storage = storageFromClient(client, "t/");
+
+    await expect(storage.readManifest("readings/2026/rd_a")).rejects.toThrow(
+      /manifest readings\/2026\/rd_a is not an object/,
+    );
+  });
+
+  it("passes the ETag from the read straight back to the CAS write", async () => {
+    const { client, calls } = fakeInventoryClient(
+      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),
+    );
+    const storage = storageFromClient(client, "t/");
+
+    const stored = await storage.readManifest("readings/2026/rd_a");
+    await storage.putManifestIfMatch("readings/2026/rd_a", { id: "rd_a" }, stored!.etag);
+    expect(calls).toEqual([`getWithEtag ${key}`, `putIfMatch ${key} e-a`]);
+  });
+});
+
+/** Tracks overlap and resolves later ids first, so ordering cannot be luck. */
+function trackingStorage(
+  items: ReturnType<typeof listRow>[],
+  manifests: Map<string, { manifest: Record<string, unknown>; etag: string }>,
+) {
+  let inFlight = 0;
+  let peak = 0;
+  const completed: string[] = [];
+  const storage: RefreshConnectionsStorage = {
+    readListIndex: async () => items,
+    readManifest: async (keyPrefix) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      // Later key prefixes finish first, so an in-order result can only come
+      // from collecting by input position rather than by completion.
+      await new Promise((resolve) => setTimeout(resolve, keyPrefix.endsWith("9") ? 0 : 2));
+      inFlight--;
+      completed.push(keyPrefix);
+      return manifests.get(keyPrefix) ?? null;
+    },
+    putManifestIfMatch: async () => true,
+    writeListIndex: async () => {},
+  };
+  return { storage, peak: () => peak, completed };
+}
+
+describe("ops corpus refresh-connections planning read concurrency", () => {
+  const COUNT = 20;
+  const ids = Array.from({ length: COUNT }, (_, i) => `rd_${String(i).padStart(2, "0")}`);
+  const neighbourOf = (id: string) => `nb_${id.slice(3)}`;
+
+  function scaled() {
+    const items = [...ids, ...ids.map(neighbourOf)].map(listRow);
+    const manifests = new Map(
+      items.map((row) => [row.key_prefix, { manifest: manifest(row.id), etag: `e-${row.id}` }]),
+    );
+    const tracked = trackingStorage(items, manifests);
+    const h = harness();
+    const scaledReport = {
+      ...report(),
+      readings: ids.map((id) => ({
+        id,
+        key_prefix: `readings/2026/${id}`,
+        url: `https://example.com/${id}`,
+        reasons: ["new_neighbour"],
+        novelty_verdict: "novel",
+        connections: [],
+        current_neighbours: [
+          {
+            id: neighbourOf(id),
+            score: 0.9,
+            title: neighbourOf(id),
+            tldr: `Summary ${neighbourOf(id)}`,
+            created_at: "2026-01-02T00:00:00.000Z",
+          },
+        ],
+      })),
+    };
+    h.readReport.mockResolvedValue(JSON.stringify(scaledReport));
+    h.createStorage.mockResolvedValue(tracked.storage);
+    return { h, tracked };
+  }
+
+  it("overlaps planning reads up to the cap and keeps plan output in report order", async () => {
+    const { h, tracked } = scaled();
+
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+
+    expect(tracked.peak()).toBe(8);
+    // Proof the fixture actually completes out of order, so the assertion below
+    // is about collection order rather than a coincidentally serial run.
+    expect(tracked.completed).not.toEqual([...tracked.completed].sort());
+    const planned = h.out
+      .filter((line) => line.includes("  judge reasons="))
+      .map((line) => line.trim().split(/\s+/)[0]);
+    expect(planned).toEqual(ids);
+  });
+
+  it("reads every manifest once across both planning waves", async () => {
+    const { h, tracked } = scaled();
+
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+
+    expect(tracked.completed).toHaveLength(COUNT * 2);
+    expect(new Set(tracked.completed).size).toBe(COUNT * 2);
   });
 });

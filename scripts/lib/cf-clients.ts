@@ -34,6 +34,15 @@ export interface R2ObjectBody {
   contentType: string | null;
 }
 
+// A text read that also carries the object's ETag, so a caller that needs a
+// CAS token gets it from the GET response instead of a second LIST request.
+export interface R2ObjectText {
+  body: string;
+  // The ETag with its quotes and any weak-validator prefix stripped, matching
+  // R2ObjectMeta.etag, so a value from either surface works with putIfMatch.
+  etag: string;
+}
+
 // The inventory-grade superset the founder migration needs (reading-lite-
 // s1k.6.1): size/etag listings for exact copy plans and byte-faithful reads
 // for binary-safe copies. A separate interface so the many in-memory R2Client
@@ -42,6 +51,7 @@ export interface R2InventoryClient extends R2Client {
   putIfMatch(key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions): Promise<boolean>;
   listObjects(prefix?: string): Promise<R2ObjectMeta[]>;
   getBytes(key: string): Promise<R2ObjectBody | null>;
+  getWithEtag(key: string): Promise<R2ObjectText | null>;
 }
 
 export interface VectorizeUpsertVector {
@@ -287,6 +297,15 @@ export function makeR2Client(
       return (await listObjects()).map((o) => o.key);
     },
     listObjects,
+    async getWithEtag(key) {
+      const res = await signedFetch(key, { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
+      }
+      return { body: await res.text(), etag: normalizeEtag(res.headers.get("etag") ?? undefined) };
+    },
     async getBytes(key) {
       const res = await signedFetch(key, { method: "GET" });
       if (res.status === 404) return null;
@@ -487,6 +506,15 @@ export function makeR2RestClient(
       return (await listObjects()).map((o) => o.key);
     },
     listObjects,
+    async getWithEtag(key) {
+      const res = await authedFetch(objectUrl(key), { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        await throwIfUnsuccessfulJson(res, "GET", key);
+        return null;
+      }
+      return { body: await res.text(), etag: normalizeEtag(res.headers.get("etag") ?? undefined) };
+    },
     async getBytes(key) {
       const res = await authedFetch(objectUrl(key), { method: "GET" });
       if (res.status === 404) return null;
@@ -528,7 +556,7 @@ export function makeR2RestClient(
         objects.push({
           key: item.key,
           size: Number(item.size ?? 0),
-          etag: normalizeRestEtag(item.etag),
+          etag: normalizeEtag(item.etag),
         });
       }
       const info = json.result_info;
@@ -538,7 +566,9 @@ export function makeR2RestClient(
   }
 }
 
-function normalizeRestEtag(etag: string | undefined): string {
+// R2 quotes ETags, and the REST API prefixes them with the weak validator
+// marker. Strip both so every surface reports the same token.
+function normalizeEtag(etag: string | undefined): string {
   if (!etag) return "";
   return etag.replace(/^W\//, "").replaceAll('"', "");
 }
