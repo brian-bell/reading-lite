@@ -73,7 +73,16 @@ export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
 
 export const AuthChallengeBodySchema = z.object({
   email: z.string().min(1),
-  turnstile_token: z.string().optional(),
+  // Widget-less clients may send JSON null. Null/blank must parse as omitted
+  // (never 400) so invite_only/closed ignore extras and open skips send with
+  // generic {ok:true}.
+  turnstile_token: z
+    .string()
+    .nullish()
+    .transform((value) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    }),
 });
 export type AuthChallengeBody = z.infer<typeof AuthChallengeBodySchema>;
 

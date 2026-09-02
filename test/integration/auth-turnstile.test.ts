@@ -355,6 +355,19 @@ describe("open-mode Turnstile on POST /api/auth/challenge", () => {
       expect(challenge.sent).toHaveLength(0);
       expect(calls).toHaveLength(0);
       expect(await userExists(workerEnv, email)).toBe(false);
+
+      const withNull = await request(
+        "/api/auth/challenge",
+        {
+          method: "POST",
+          body: { email, turnstile_token: null },
+          fetch: siteverifyFetch("ok", calls),
+        },
+        workerEnv,
+      );
+      expect(withNull.res.status).toBe(200);
+      expect(await withNull.res.json()).toEqual({ ok: true });
+      expect(withNull.sent).toHaveLength(0);
     } finally {
       if (origSecret === undefined) delete workerEnv.TURNSTILE_SECRET_KEY;
       else workerEnv.TURNSTILE_SECRET_KEY = origSecret;

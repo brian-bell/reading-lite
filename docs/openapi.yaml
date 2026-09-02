@@ -1110,10 +1110,11 @@ components:
           minLength: 1
         turnstile_token:
           type: string
+          nullable: true
           description: |
             Open-mode challenges that would send mail. invite_only and closed
-            ignore this field. Empty or omitted is treated as missing (generic
-            `{ ok: true }`, no send) rather than 400.
+            ignore this field. Null, blank, or omitted is treated as missing
+            (generic `{ ok: true }`, no send) rather than 400.
 
     AuthChallengeResponse:
       type: object

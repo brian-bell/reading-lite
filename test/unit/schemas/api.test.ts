@@ -433,6 +433,18 @@ describe("AuthChallengeBodySchema", () => {
     });
   });
 
+  it("treats a null or blank turnstile_token as omitted", () => {
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: null })).toEqual({
+      email: "a@example.com",
+    });
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: "" })).toEqual({
+      email: "a@example.com",
+    });
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: "   " })).toEqual({
+      email: "a@example.com",
+    });
+  });
+
   it("does not require turnstile_token on email-change bodies", () => {
     expect(AuthEmailChangeBodySchema.parse({ email: "a@example.com" })).toEqual({ email: "a@example.com" });
     expect("turnstile_token" in AuthEmailChangeBodySchema.parse({ email: "a@example.com", turnstile_token: "x" })).toBe(
