@@ -358,9 +358,10 @@ printed even when the pass ends in an error, and failed calls are counted, since
 a stalled read is exactly the wall time worth seeing. Execute mode also prints
 `ms=` per judgement beside its token usage. Two things the counts do not say:
 they count storage calls, not HTTP requests (a `refresh-neighbours` manifest
-read is a wrangler process around one), and a time
-includes any retry and its backoff, so one unusually slow call may be a call
-that quietly retried. Record the block: it is the baseline a later run or a
+read is one request on the direct path but a whole wrangler process around one
+on the wrangler path, which is most of why the same row times so differently
+between them), and a time includes any retry and its backoff, so one unusually
+slow call may be a call that quietly retried. Record the block: it is the baseline a later run or a
 performance change is compared against, and it is what tells a slow pass apart
 from a hung one.
 
