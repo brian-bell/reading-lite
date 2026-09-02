@@ -4,9 +4,10 @@
 //
 // Zero LLM / embedding spend: each reading is queried by the vector it already
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
-// inventory, and writes refresh-report.json; --execute also rewrites drifted
-// `manifest.similarity` snapshots with the same one-field discipline as
-// `corpus backfill-similarity`. After a successful putManifest, the list row is
+// inventory, and writes refresh-report.json; --execute (which requires
+// --sole-writer, because the closing index/list.json rewrite is a plain put)
+// also rewrites drifted `manifest.similarity` snapshots with the same
+// one-field discipline as `corpus backfill-similarity`. After a successful putManifest, the list row is
 // the resumability marker for index/list.json: a retry that finds a current
 // manifest and a stale list row copies manifest.similarity onto the row —
 // never the fresh measurement, which can differ within the epsilon. A null,
@@ -31,6 +32,7 @@ import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-si
 import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
+import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 
@@ -61,6 +63,7 @@ interface Opts {
   vectorizeIndex?: string;
   remote: boolean;
   execute: boolean;
+  soleWriter: boolean;
   limit?: number;
   out: string;
 }
@@ -71,11 +74,13 @@ function parseRefreshArgs(argv: string[]): Opts {
     bucket: process.env.READING_LITE_BUCKET ?? "reading-lite",
     remote: true,
     execute: false,
+    soleWriter: false,
     out: "refresh-report.json",
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--execute") opts.execute = true;
+    else if (a === "--sole-writer") opts.soleWriter = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
@@ -127,6 +132,16 @@ async function runCorpusRefreshNeighbours(
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
   const tenant = requireOperatorTenant(opts.tenant);
+  // --execute ends in a wholesale plain put of index/list.json, not a CAS write,
+  // so a concurrent realtime write can be clobbered. Same bound rebuild-list
+  // draws, and the same flag the tier-2/3 refresh commands require.
+  const soleWriter = soleWriterGuard({
+    execute: opts.execute,
+    acknowledged: opts.soleWriter,
+    tool: "ops corpus refresh-neighbours",
+  });
+  if (soleWriter.message) io.stderr(soleWriter.message);
+  if (!soleWriter.proceed) throw new UsageError("--execute requires --sole-writer");
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const tenantSelector = operatorTenantSelector(tenant);
 
@@ -335,7 +350,7 @@ rejected candidate later leaving). Prints the
 staleness inventory and always writes
 refresh-report.json — the input contract for later judgement slices.
 
---execute rewrites only drifted manifest.similarity snapshots (count change or
+--execute --sole-writer rewrites only drifted manifest.similarity snapshots (count change or
 |Δmax|/|Δmean| ≥ 0.02). It does not change status, vectors, title, tldr, tags,
 keywords, entities, or summary_markdown, and it does not re-roll a summary.
 A second immediate --execute writes nothing.
@@ -343,7 +358,8 @@ A second immediate --execute writes nothing.
 Plan by default. The report is written in both modes.
 
 Run --execute when nothing is being submitted: the list.json rewrite is a plain
-put, not a CAS write, so a concurrent queue write could be lost.
+put, not a CAS write, so a concurrent queue write could be lost. --execute is
+refused without --sole-writer for that reason.
 
 Options:
   --limit <n>         Cap how many readings are measured this pass.
@@ -353,6 +369,8 @@ Options:
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --local             Use the local miniflare bucket.
   --execute           Write drifted snapshots and flush the list index.
+                      Requires --sole-writer.
+  --sole-writer       Required with --execute: assert all corpus writers are paused.
   --help              Show this message.`,
   defaultDeps: (io: CommandIo): CorpusRefreshNeighboursDeps => ({
     io,

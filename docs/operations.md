@@ -298,15 +298,15 @@ fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
 R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
-the same class of write `rebuild-list` guards with `--sole-writer`. Do not
-run `--execute` while submissions are in flight: a concurrent queue write
-can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
+the same class of write `rebuild-list` guards with `--sole-writer`. For that
+reason `--execute` is refused without `--sole-writer`: do not run it while
+submissions are in flight, because a concurrent queue write can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
 entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant global
-npm run ops -- corpus refresh-neighbours --tenant global --execute
+npm run ops -- corpus refresh-neighbours --tenant global --execute --sole-writer
 ```
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
