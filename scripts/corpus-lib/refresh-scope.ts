@@ -242,13 +242,15 @@ export function incrementalScope(
   if (base.kind === "full") return base;
 
   const known = new Set(list.map((row) => row.id));
+  const statusById = new Map(list.map((row) => [row.id, row.status]));
   const scope = new Set<string>(base.changed);
   // Every changed reading is examined even once one has already forced a full
   // sweep. The queries are already made and the decision is already taken; what
-  // the extra pass buys is the count in the reason, which is the only way an
+  // the extra pass buys is the counts in the reason, which are the only way an
   // operator can tell "one unusual reading escalated tonight" from "this corpus
   // saturates every night and --since-last-run is buying nothing".
   const missing: string[] = [];
+  const vectorless: string[] = [];
   const saturated: string[] = [];
 
   for (const id of base.changed) {
@@ -257,7 +259,15 @@ export function incrementalScope(
       continue;
     }
     const matches = reverseNeighbours.get(id) ?? null;
-    if (matches === null) continue;
+    if (matches === null) {
+      // A ready reading owes the corpus a vector. Without one there is nothing
+      // to scope its former neighbours from, and the row count does not shrink
+      // to say so — a sweep is the only honest answer. A non-ready reading
+      // having no vector is ordinary, and its citers are reached through the
+      // vectors that remain.
+      if (statusById.get(id) === "ready") vectorless.push(id);
+      continue;
+    }
     if (isSaturated(matches)) {
       saturated.push(id);
       continue;
@@ -268,22 +278,26 @@ export function incrementalScope(
     }
   }
 
+  // One reason carrying every count, rather than the first cause found: a
+  // transient query failure must not hide that the other forty changed
+  // readings all saturated.
+  const causes: string[] = [];
   if (missing.length > 0) {
-    return {
-      kind: "full",
-      reason:
-        `no reverse-neighbour result for ${missing[0]}` +
-        `${missing.length > 1 ? ` and ${missing.length - 1} more` : ""}` +
-        ` (of ${base.changed.length} changed)`,
-    };
+    causes.push(`${missing.length} unanswered reverse quer(ies), first ${missing[0]}`);
+  }
+  if (vectorless.length > 0) {
+    causes.push(`${vectorless.length} ready reading(s) with no vector, first ${vectorless[0]}`);
   }
   if (saturated.length > 0) {
+    causes.push(
+      `${saturated.length} saturated reverse neighbourhood(s) ` +
+      `(no match below ${REVERSE_SCORE_BOUND.toFixed(2)}), first ${saturated[0]}`,
+    );
+  }
+  if (causes.length > 0) {
     return {
       kind: "full",
-      reason:
-        `reverse neighbourhood saturated for ${saturated.length} of ` +
-        `${base.changed.length} changed reading(s), first ${saturated[0]} ` +
-        `(no match below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
+      reason: `${causes.join("; ")} — of ${base.changed.length} changed reading(s)`,
     };
   }
 
@@ -319,10 +333,10 @@ export function describeScope(scope: RefreshScope): string {
  * escalation is too important to rest on an ordering nobody guarantees.
  */
 function isSaturated(matches: readonly { score: number }[]): boolean {
-  // Empty is unknown, not complete. A vector that exists always matches itself
-  // — the direct adapter turns an empty result into "no vector" for exactly
-  // that reason — so an empty list arriving here is an output shape we do not
-  // recognise, the same class of thing queryByVectorId now throws on.
+  // Empty is unknown, not complete — a vector that exists always matches
+  // itself. The command normalises both adapters' spellings of "no reverse
+  // set" to null before this, so an empty list should not arrive; treating it
+  // as unknown keeps the rule safe if one ever does.
   if (matches.length === 0) return true;
   if (matches.length < REVERSE_TOP_K) return false;
   return Math.min(...matches.map((match) => match.score)) >= REVERSE_SCORE_BOUND;

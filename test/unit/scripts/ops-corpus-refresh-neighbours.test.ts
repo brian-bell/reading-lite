@@ -779,7 +779,7 @@ describe("ops corpus refresh-neighbours", () => {
       // scope escalated rather than quietly measuring less.
       expect(code).toBe(1);
       const text = lines.join("\n");
-      expect(text).toContain("Scope: full — no reverse-neighbour result for rd_r");
+      expect(text).toContain("Scope: full — 1 unanswered reverse quer(ies), first rd_r");
       expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K)).toHaveLength(2);
     });
 

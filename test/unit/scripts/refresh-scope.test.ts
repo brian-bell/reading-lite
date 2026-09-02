@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MARKER_CLOCK_SKEW_MS,
   REVERSE_SCORE_BOUND,
   REVERSE_TOP_K,
   buildRefreshState,
@@ -128,13 +129,38 @@ describe("incrementalScope", () => {
   });
 
   it("takes a row with no usable timestamps into scope", () => {
-    const list = [row("rd_undated", { created_at: undefined, updated_at: undefined })];
+    const list = [
+      row("rd_undated", { created_at: undefined, updated_at: undefined, status: "failed" }),
+    ];
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 1 }),
       reverse({ rd_undated: null }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_undated"] });
+  });
+
+  // A ready reading owes the corpus a vector. Without one there is nothing to
+  // scope its former neighbours from, and no row count shrinks to say so.
+  it("escalates to full when a changed READY reading has no vector to query", () => {
+    const scope = incrementalScope(
+      [row("rd_gone", { updated_at: AFTER }), row("rd_other")],
+      marker({ list_row_count: 2 }),
+      reverse({ rd_gone: null }),
+    );
+    expect(scope.kind).toBe("full");
+    expect((scope as { reason: string }).reason).toContain("no vector");
+  });
+
+  // A non-ready one having none is ordinary; its citers are reached through
+  // the vectors that remain.
+  it("does not escalate when a changed NON-READY reading has no vector", () => {
+    const scope = incrementalScope(
+      [row("rd_failed", { status: "failed", updated_at: AFTER }), row("rd_other")],
+      marker({ list_row_count: 2 }),
+      reverse({ rd_failed: null }),
+    );
+    expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_failed"] });
   });
 
   // A reading that becomes non-ready keeps its vector where it is, so the
@@ -276,8 +302,28 @@ describe("incrementalScope", () => {
     );
     expect(scope).toEqual({
       kind: "full",
-      reason: "no reverse-neighbour result for rd_new (of 1 changed)",
+      reason:
+        "1 unanswered reverse quer(ies), first rd_new — of 1 changed reading(s)",
     });
+  });
+
+  // A transient failure must not hide that everything else saturated: the
+  // saturation rate is the number that says whether the flag is worth running.
+  it("reports every cause of an escalation, not the first one found", () => {
+    const dense = Array.from({ length: REVERSE_TOP_K }, (_, i) => ({
+      id: `rd_${i}`,
+      score: 0.9 - i / 1000,
+    }));
+    const scope = incrementalScope(
+      [row("rd_a", { updated_at: AFTER }), row("rd_b", { updated_at: AFTER })],
+      marker({ list_row_count: 2 }),
+      reverse({ rd_b: dense }),
+    );
+    const reason = (scope as { reason: string }).reason;
+    expect(scope.kind).toBe("full");
+    expect(reason).toContain("1 unanswered reverse quer(ies), first rd_a");
+    expect(reason).toContain("1 saturated reverse neighbourhood(s)");
+    expect(reason).toContain("of 2 changed reading(s)");
   });
 
   // The reason has to carry the rate, not just the trigger: an operator
@@ -302,8 +348,9 @@ describe("incrementalScope", () => {
     expect(scope).toEqual({
       kind: "full",
       reason:
-        "reverse neighbourhood saturated for 2 of 2 changed reading(s), " +
-        `first rd_a (no match below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
+        "2 saturated reverse neighbourhood(s) " +
+        `(no match below ${REVERSE_SCORE_BOUND.toFixed(2)}), first rd_a ` +
+        "— of 2 changed reading(s)",
     });
   });
 
@@ -335,6 +382,26 @@ describe("incrementalScope", () => {
 });
 
 describe("changedSince", () => {
+  // The marker is written by the operator's clock and compared against
+  // timestamps written by the Worker's. Without the margin, a few minutes of
+  // forward skew drops a reading from every future scope, permanently and
+  // invisibly.
+  it("reaches back a margin, so a forward-skewed operator clock loses nothing", () => {
+    const justBefore = new Date(Date.parse(LAST_RUN) - 60_000).toISOString();
+    const wellBefore = new Date(
+      Date.parse(LAST_RUN) - MARKER_CLOCK_SKEW_MS - 60_000,
+    ).toISOString();
+    const base = changedSince(
+      [
+        row("rd_skewed", { updated_at: justBefore }),
+        row("rd_settled", { updated_at: wellBefore }),
+      ],
+      marker({ list_row_count: 2 }),
+    );
+    expect(base).toMatchObject({ kind: "incremental", changed: ["rd_skewed"] });
+  });
+
+
   it("hands the command the same changed ids the scope is derived from", () => {
     const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
     const base = changedSince(list, marker({ list_row_count: 2 }));

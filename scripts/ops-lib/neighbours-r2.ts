@@ -210,9 +210,14 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
       // Routing through wrangler-r2's own parser is what keeps the two
       // adapters' neighbour objects identical: VectorizeMatch is the raw wire
       // object wrangler prints, just typed.
-      return matches
-        .map((match) => parseVectorQueryMatch(match))
-        .filter((m): m is RefreshNeighbour => m !== null);
+      const parsed = matches.map((match) => parseVectorQueryMatch(match));
+      // Same rule as the wrangler adapter: a dropped entry costs the measuring
+      // caller one neighbour, but it costs the metadata-less scoping caller its
+      // page count, which is how a truncated reverse set is recognised.
+      if (opts?.metadata === false && parsed.some((match) => match === null)) {
+        throw new Error(`unexpected vectorize match entry for ${id}`);
+      }
+      return parsed.filter((m): m is RefreshNeighbour => m !== null);
     },
 
     async putManifest(keyPrefix, body, r2Deps) {

@@ -303,22 +303,23 @@ async function resolveScope(args: {
         tenant.namespace,
         { metadata: false },
       );
-      if (matches === null) {
-        // The scope narrows on an unanswered question here: this reading owns no
-        // vector to query, so nothing brings its former neighbours in. Visible
-        // rather than silent, because the row-count check does not cover a
-        // vector that vanished while its list row survived.
-        io.stderr(`  ! no vector to scope from for ${id} — its neighbours are not in scope`);
-        reverse.set(id, null);
-        continue;
+      // Both storage paths must hand the planner the same thing for the same
+      // corpus, or `--via` would decide whether a night sweeps. The wrangler
+      // adapter reports a missing vector through its stderr phrase and can
+      // still return an empty array; the direct one turns empty into null. An
+      // empty reverse set is meaningless either way — a vector that exists
+      // matches itself — so both spellings become null here.
+      const parsed =
+        matches === null || matches.length === 0
+          ? null
+          : normalizeVectorMatchIds(matches, tenant.namespace).map((match) => ({
+              id: match.id,
+              score: match.score,
+            }));
+      if (parsed === null) {
+        io.stderr(`  ! no reverse neighbourhood for ${id}`);
       }
-      reverse.set(
-        id,
-        normalizeVectorMatchIds(matches, tenant.namespace).map((match) => ({
-          id: match.id,
-          score: match.score,
-        })),
-      );
+      reverse.set(id, parsed);
     } catch (e) {
       io.stderr(
         `  ! reverse-neighbour query failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,

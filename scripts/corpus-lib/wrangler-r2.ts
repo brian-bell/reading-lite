@@ -222,7 +222,16 @@ export async function queryByVectorId(
   if (!Array.isArray(matches)) {
     throw new Error(`unexpected vectorize query output for ${id}: no matches array`);
   }
-  return matches.map(parseVectorQueryMatch).filter((m): m is VectorQueryMatch => m !== null);
+  const parsedMatches = matches.map((match: unknown) => parseVectorQueryMatch(match));
+  // A dropped entry costs the measurement pass one neighbour, but it costs a
+  // reverse-neighbour scoping query its page count — a truncated hundred would
+  // arrive as ninety-nine and read as a complete set, narrowing the scope on a
+  // response we did not understand. So the metadata-less caller gets an error
+  // where the measuring one gets tolerance.
+  if (deps.metadata === false && parsedMatches.some((match) => match === null)) {
+    throw new Error(`unexpected vectorize match entry for ${id}`);
+  }
+  return parsedMatches.filter((m): m is VectorQueryMatch => m !== null);
 }
 
 // Exported so the direct (S3/REST) tier-1 adapter maps matches through exactly
