@@ -50,7 +50,9 @@ import { createPrefetchingReader } from "../planning-reads";
 import { judgeRetryDeps } from "../judge-retry";
 import {
   createRateLimitGate,
+  judgeWithRateLimitRetry,
   parseConcurrencyFlag,
+  parseMaxBackoffFlag,
   realSleep,
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
@@ -64,7 +66,7 @@ import {
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
-import { RateLimitedError, type RetryDeps } from "../../../src/modules/http-retry";
+import { type RetryDeps } from "../../../src/modules/http-retry";
 import {
   addUsage,
   emptyUsageTotals,
@@ -83,6 +85,7 @@ interface Args {
   soleWriter: boolean;
   limit?: number;
   concurrency: number;
+  maxBackoffMs: number;
 }
 
 export interface StoredRawManifest {
@@ -144,10 +147,10 @@ interface Action {
 interface ExecuteOutcome {
   stdout: string[];
   stderr: string[];
-  kind: "judged" | "healed" | "failed";
+  kind: "judged" | "healed" | "failed" | "skipped";
   /**
-   * The verdict to flush onto the list row. Read for every outcome that is
-   * not a failure, `undefined` included: a manifest whose `novelty_verdict`
+   * The verdict to flush onto the list row. Read for every outcome that
+   * judged or healed, `undefined` included: a manifest whose `novelty_verdict`
    * is absent is exactly the drift a heal exists to clear off the row.
    */
   verdict: ListIndexItem["novelty_verdict"];
@@ -171,6 +174,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
         concurrency: { type: "string" },
+        "max-backoff": { type: "string" },
       },
       allowPositionals: false,
     }));
@@ -192,6 +196,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
     soleWriter: values["sole-writer"] === true,
     ...(limit === undefined ? {} : { limit }),
     concurrency: parseConcurrencyFlag(values.concurrency),
+    maxBackoffMs: parseMaxBackoffFlag(values["max-backoff"]),
   };
 }
 
@@ -454,18 +459,21 @@ async function refreshConnections(
   let judged = 0;
   let healed = 0;
   let flushFailed = false;
+  let ceilingSkipped = 0;
   const usageTotals = emptyUsageTotals();
   const gate = createRateLimitGate({
     now: deps.now,
     sleep: deps.sleep,
+    maxBackoffMs: args.maxBackoffMs,
     onPause: (ms) =>
       deps.io.stderr(
         `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
       ),
-    onGiveUp: (consecutive) =>
+    onCeiling: (totalMs) =>
       deps.io.stderr(
-        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
-          `the rest of this pass will fail fast`,
+        `  ! the next backoff would pass this pass's ${formatSeconds(args.maxBackoffMs)} ` +
+          `rate-limit ceiling (${formatSeconds(totalMs)} of it already spent); ` +
+          `not dispatching any more judgements`,
       ),
   });
 
@@ -484,12 +492,23 @@ async function refreshConnections(
       outcome.stderr.push(`  ! ${action.report.id}: ${message}`);
       return outcome;
     };
+    const ceilingSkip = (): ExecuteOutcome => {
+      outcome.kind = "skipped";
+      outcome.stderr.push(
+        `  ! skip ${action.report.id}: backoff ceiling reached before this action ran`,
+      );
+      return outcome;
+    };
     if (action.kind === "heal") {
       outcome.kind = "healed";
       outcome.verdict = action.stored.manifest
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     }
+    // The ceiling stops the paid work only: every heal is above this line and
+    // runs, for the same reason `--limit` caps judgements and never the free
+    // repairs. Only the provider call below is worth stopping for.
+    if (gate.stopped()) return ceilingSkip();
     // No re-read: planning read this manifest and kept its ETag, and a report
     // names a reading once, so nothing earlier in this pass can have written
     // it. The conditional write below is what detects a manifest that changed
@@ -504,12 +523,13 @@ async function refreshConnections(
       // window another worker opened before adding to it. The wait sits here
       // rather than earlier because it is the paid call it is pacing.
       await gate.wait();
-      const { value: result, ms: providerMs } = await timer.measured(
-        PHASE_PROVIDER,
-        () => provider.judge(input),
+      // Woken by the ceiling rather than by the window expiring: this action
+      // never called the provider, so it is skipped, not failed.
+      if (gate.stopped()) return ceilingSkip();
+      const { value: result, ms: providerMs } = await judgeWithRateLimitRetry(
+        gate,
+        () => timer.measured(PHASE_PROVIDER, () => provider.judge(input)),
       );
-      // A call that came back is the evidence the limit is not sustained.
-      gate.succeeded();
       // Carried on the outcome whatever happens next, so the run total covers
       // every call billed, including judgements whose write later fails.
       outcome.usage = result.usage;
@@ -534,7 +554,6 @@ async function refreshConnections(
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     } catch (error) {
-      if (error instanceof RateLimitedError) gate.close(error.retryAfterMs);
       return failWith(error instanceof Error ? error.message : String(error));
     }
   };
@@ -569,12 +588,15 @@ async function refreshConnections(
         if (outcome.usage) addUsage(usageTotals, outcome.usage);
         // Keyed on the outcome, not on the value: a heal whose manifest has
         // no verdict must still clear the stale one off the list row, or it
-        // is re-planned every run and never fixed.
-        if (outcome.kind !== "failed") {
+        // is re-planned every run and never fixed. Which is exactly why the
+        // two outcomes that read a verdict have to be named: a skip never read
+        // the manifest at all, and would otherwise clear a row that is right.
+        if (outcome.kind === "judged" || outcome.kind === "healed") {
           verdictUpdates.set(selected[index]!.report.id, outcome.verdict);
         }
         if (outcome.kind === "judged") judged++;
         else if (outcome.kind === "healed") healed++;
+        else if (outcome.kind === "skipped") ceilingSkipped++;
         else failures++;
       },
     );
@@ -599,10 +621,11 @@ async function refreshConnections(
   }
 
   deps.io.stdout(
-    `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
+    `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}` +
+      (ceilingSkipped > 0 ? `; skipped at the backoff ceiling: ${ceilingSkipped}` : ""),
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  return planningFailed || failures > 0 || flushFailed ? 1 : 0;
+  return planningFailed || failures > 0 || flushFailed || ceilingSkipped > 0 ? 1 : 0;
 }
 
 function validTargetManifest(
@@ -861,6 +884,9 @@ Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json.
   --limit <n>          Cap selected judgement or list-heal actions.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
+  --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
+                       before it stops dispatching judgements; free repairs still
+                       run. Default: 10m (bare = seconds).
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

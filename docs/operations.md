@@ -482,48 +482,70 @@ Execute mode runs several judgements at once. `--concurrency <n>` sets how
 many, defaulting to 4 — the ingest queue runs at 3 against the same provider
 account, so this is deliberately close to it — and refusing anything above 16,
 so a mistyped flag cannot fan a hundred paid calls at that account. Results are
-collected and printed in plan order however the calls complete, and every counter (`Judged`, `list
-rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
-output and its exit code do not depend on which call returned first. The one
-line that is not in plan order is the rate-limit pause below, which prints when
-it happens because that is the point of it. The cost of that ordering is that a
-finished action's line waits for the ones planned before it, so a single slow
-call holds back the lines behind it; the `Timing:` block at the end is still
-what separates a slow pass from a hung one. Pass `--concurrency 1` for a
-strictly sequential pass — the rate-limit backoff below still applies.
+collected and printed in plan order however the calls complete, and every
+counter (`Judged`, `list rows healed`, `failures`, `Usage:`) is folded in that
+same order, so a run's output and its exit code do not depend on which call
+returned first. The lines that are not in plan order are the rate-limit pause
+and the backoff ceiling below, which print when they happen because that is the
+point of them. The cost of that ordering is that a finished action's line waits
+for the ones planned before it, so a single slow call holds back the lines
+behind it; the `Timing:` block at the end is still what separates a slow pass
+from a hung one. Pass `--concurrency 1` for a strictly sequential pass — the
+rate-limit backoff below still applies.
 
 Two things the pass does not do concurrently. It never has two judgements
 holding the same reading at once — in `refresh-tensions`, where a reading sits
 in several pairs, an action waits until every reading it writes is free, so
 concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
-away. And when a judgement comes back rate limited (a 429 that outlived the
-judge's own retry), the whole pass backs off together: the rate-limited action
-is counted as a failure exactly as it would be sequentially, and no worker
-*starts* another judgement until the provider's `Retry-After` has passed
-(defaulting to 8 s, capped at 60 s so a wild header cannot park a sole-writer
-window). Calls already in flight when the window opens still finish, and are
-still billed. The pause prints as `provider rate limited; pausing new
-judgements for …`. The run does not abort, and it does not silently re-bill the
-action that hit the limit.
+away. And when a judgement comes back rate limited, the whole pass backs off
+together. The judge's own retry never covers a 429 — it retries 5xx and network
+faults, and turns the first 429 into a typed error immediately rather than
+sleeping inside the provider call — so this backoff is the only thing pacing a
+rate limit: no worker *starts* another judgement until the provider's
+`Retry-After` has passed (defaulting to 8 s, capped at 60 s so a wild header
+cannot park a sole-writer window). Calls already in flight when the window opens
+still finish, and are still billed. The pause prints as `provider rate limited;
+pausing new judgements for …`. Workers wake together at the end of a window, so
+a limit that is still in force costs one more round of 429s before the next
+pause.
 
-A wall the pass cannot get past is bounded. After five backoff windows in a row
-with no judgement succeeding in between, the limit is not transient, so the pass
-stops waiting altogether (`provider rate limited N times in a row; no longer
-pausing…`) and fails the rest fast — which is what a sequential run did — rather
-than sitting on the sole-writer window for the length of the plan. Any
-judgement that comes back resets that run and restores the backing off: while
-anything is getting through, the pass is making progress between windows and
-the pauses are doing their job.
+The action that hit the limit gets one more attempt, once that window clears. A
+429 is usually a queue that has moved on by the time the window is over, so the
+retry is what keeps a transient limit costing the pass a pause rather than a
+reading. A second 429 on the same action is not a blip: it is counted as a
+failure, exactly as a sequential run would have counted it, and never retried a
+third time. The run does not abort, and it does not silently re-bill an action
+that succeeded.
 
-What that does **not** bound is a partial limit — some calls 429, some succeed —
-because every success resets the run. Such a pass keeps pausing for as long as
-the provider keeps limiting, and can hold the sole-writer window considerably
-longer than the same plan would have taken sequentially, which never paused at
-all. It is still making progress, and each pause is at most 60 s; but if the
-`provider rate limited; pausing` line keeps appearing, the window is being spent
-waiting, and the run is better stopped and retried when the provider is quieter.
-Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
-from the manifests as it always does.
+The total time a pass will spend waiting out limits is bounded by
+`--max-backoff`, which defaults to `10m` and takes a duration (`600s`,
+`600000ms`, `2h`; a bare number is seconds). What counts against it is the
+window each limit opens, not each worker that reports one, so a whole round of
+workers walking into the same wall is a single charge — and a limit landing
+inside a window already open costs nothing at all. It is charged when the
+window opens rather than measured as it is served, so a pass whose workers were
+mid-call for part of a window is charged more than the wall time it actually
+lost; the budget bounds the stall from above. When the next window would
+overrun it, the pass stops dispatching judgements: it prints `the next backoff
+would pass this pass's … rate-limit ceiling`, lets the judgements already in
+flight finish and write their results, reports every judgement it did not reach
+as `skip …: backoff ceiling reached before this action ran`, and exits
+non-zero. That is what keeps a hard-limited provider from sitting on a scarce
+sole-writer window for the length of the plan. The skipped judgements were
+never touched, so a rerun when the provider is quieter picks them up unchanged.
+
+The budget is cumulative for the whole pass and nothing resets it, so a long
+pass against a provider that limits intermittently can reach the ceiling while
+still making progress between windows. That is deliberate — the bound is on how
+much of the sole-writer window a pass may spend waiting, not on how badly it is
+being limited — but it is the case to raise `--max-backoff` for.
+
+The ceiling bounds the paid work only, on the same rule as `--limit`: a list
+heal or an integrity repair makes no provider call and cannot be rate limited,
+so the pass still runs the free work behind the ceiling before it exits.
+
+Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
+rerun resumes from the manifests as it always does.
 
 Because the calls overlap, every `Timing:` row a concurrent action produces —
 `provider`, `manifest write`, and for `refresh-tensions` `manifest read` — sums
@@ -569,8 +591,9 @@ and is remembered so the pair is not re-judged nightly. Only `tensions` and
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
-`--concurrency` works as it does for `refresh-connections` above, including the
-rule that two actions touching the same reading never run at once.
+`--concurrency` and `--max-backoff` work as they do for `refresh-connections`
+above, including the rule that two actions touching the same reading never run
+at once.
 Execute mode prints the provider token usage of each judgement and a run total
 on the same terms as `refresh-connections` above.
 

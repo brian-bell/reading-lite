@@ -1,30 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { UsageError } from "../../../scripts/ops-lib/contract";
+import { RateLimitedError } from "../../../src/modules/http-retry";
 import {
   DEFAULT_EXECUTE_CONCURRENCY,
+  DEFAULT_MAX_BACKOFF_MS,
   MAX_EXECUTE_CONCURRENCY,
-  RATE_LIMIT_CONSECUTIVE_LIMIT,
   RATE_LIMIT_DEFAULT_BACKOFF_MS,
   RATE_LIMIT_MAX_BACKOFF_MS,
   createRateLimitGate,
+  judgeWithRateLimitRetry,
   parseConcurrencyFlag,
+  parseMaxBackoffFlag,
 } from "../../../scripts/ops-lib/execute-pool";
 
-function gateHarness(startMs = 1_000) {
-  let now = startMs;
+function gateHarness(options: { startMs?: number; maxBackoffMs?: number } = {}) {
+  let now = options.startMs ?? 1_000;
   const sleeps: number[] = [];
   const pauses: number[] = [];
-  const giveUps: number[] = [];
+  const ceilings: number[] = [];
   const gate = createRateLimitGate({
     now: () => now,
     sleep: async (ms) => {
       sleeps.push(ms);
       now += ms;
     },
+    maxBackoffMs: options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS,
     onPause: (ms) => pauses.push(ms),
-    onGiveUp: (consecutive) => giveUps.push(consecutive),
+    onCeiling: (totalMs) => ceilings.push(totalMs),
   });
-  return { gate, sleeps, pauses, giveUps, advance: (ms: number) => (now += ms) };
+  return { gate, sleeps, pauses, ceilings, advance: (ms: number) => (now += ms) };
 }
 
 describe("parseConcurrencyFlag", () => {
@@ -55,12 +59,49 @@ describe("parseConcurrencyFlag", () => {
   });
 });
 
+describe("parseMaxBackoffFlag", () => {
+  it("defaults to the captain's ten minutes", () => {
+    expect(parseMaxBackoffFlag(undefined)).toBe(DEFAULT_MAX_BACKOFF_MS);
+    expect(DEFAULT_MAX_BACKOFF_MS).toBe(10 * 60_000);
+  });
+
+  it("reads every unit it documents, and seconds when none is given", () => {
+    expect(parseMaxBackoffFlag("90")).toBe(90_000);
+    expect(parseMaxBackoffFlag("90s")).toBe(90_000);
+    expect(parseMaxBackoffFlag("500ms")).toBe(500);
+    expect(parseMaxBackoffFlag("10m")).toBe(600_000);
+    expect(parseMaxBackoffFlag("2h")).toBe(7_200_000);
+  });
+
+  it("rejects a non-duration or a zero as a usage error", () => {
+    for (const raw of ["0", "0m", "-5", "5 m", "five", "", "5x", "1.5m"]) {
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
+    }
+  });
+
+  it("rejects Infinity, NaN, and any other non-finite parsed wait", () => {
+    // Enough digits that Number() is Infinity, and a finite magnitude whose
+    // hours overflow the product. `ms <= 0` would still pass both, and the
+    // hard ceiling would never trip.
+    for (const raw of [
+      `1${"0".repeat(400)}`,
+      `1${"0".repeat(400)}ms`,
+      `1${"0".repeat(400)}s`,
+      `1${"0".repeat(304)}h`,
+    ]) {
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(/finite positive duration/);
+    }
+  });
+});
+
 describe("createRateLimitGate", () => {
   it("lets every worker through until a limit is reported", async () => {
     const h = gateHarness();
     await h.gate.wait();
     await h.gate.wait();
     expect(h.sleeps).toEqual([]);
+    expect(h.gate.stopped()).toBe(false);
   });
 
   it("holds a worker for the provider's Retry-After", async () => {
@@ -135,120 +176,125 @@ describe("createRateLimitGate", () => {
     await h.gate.wait();
     expect(h.sleeps).toEqual([RATE_LIMIT_DEFAULT_BACKOFF_MS]);
   });
+});
 
-  it("stops pausing once the limit is plainly sustained", async () => {
-    const h = gateHarness();
-    for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-      h.gate.close(60_000);
-      await h.gate.wait();
-    }
-    expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
-    expect(h.giveUps).toEqual([]);
+describe("createRateLimitGate backoff ceiling", () => {
+  it("charges the budget only what each limit actually adds to the stall", () => {
+    const h = gateHarness({ maxBackoffMs: 25_000 });
+    h.gate.close(10_000);
+    // A whole round of workers reporting the same wall inside the open window
+    // is one charge, not one per worker.
+    for (let worker = 0; worker < 20; worker++) h.gate.close(10_000);
+    expect(h.pauses).toEqual([10_000]);
+    expect(h.gate.stopped()).toBe(false);
 
-    h.gate.close(60_000);
-
-    // One round past the limit the pass stops paying for waits and fails the
-    // rest fast, rather than holding the sole-writer window indefinitely.
-    expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
-    const before = h.sleeps.length;
-    await h.gate.wait();
-    expect(h.sleeps).toHaveLength(before);
-    // And it stays given up, without repeating the notice.
-    h.gate.close(60_000);
-    await h.gate.wait();
-    expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
-    expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    // Extending a 10s window by 5s costs the budget the 5s, not another 10.
+    h.gate.close(15_000);
+    expect(h.pauses).toEqual([10_000, 15_000]);
+    expect(h.gate.stopped()).toBe(false);
+    expect(h.ceilings).toEqual([]);
   });
 
-  it("a judgement that comes back lets the pass back off again later", async () => {
-    const h = gateHarness();
-    for (let attempt = 0; attempt <= RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-      h.gate.close(60_000);
+  it("stops the pass once the next window would overrun the ceiling", async () => {
+    const h = gateHarness({ maxBackoffMs: 25_000 });
+    for (let round = 0; round < 2; round++) {
+      h.gate.close(10_000);
       await h.gate.wait();
     }
-    expect(h.giveUps).toHaveLength(1);
+    expect(h.pauses).toEqual([10_000, 10_000]);
+    expect(h.gate.stopped()).toBe(false);
 
-    // The provider lifts the limit and the pass gets a judgement through: a
-    // later, genuinely transient limit must be waited out, not ignored.
-    h.gate.succeeded();
-    const before = h.pauses.length;
-    h.gate.close(60_000);
+    h.gate.close(10_000);
+    // 20s spent, 10s more asked for, 25s allowed: the pass stops rather than
+    // opening a window it cannot afford, and reports what it did spend.
+    expect(h.gate.stopped()).toBe(true);
+    expect(h.ceilings).toEqual([20_000]);
+    expect(h.pauses).toEqual([10_000, 10_000]);
+
+    // And it stays stopped, without pausing again or repeating the notice.
+    const sleptBefore = h.sleeps.length;
+    h.gate.close(10_000);
     await h.gate.wait();
-    expect(h.pauses).toHaveLength(before + 1);
+    expect(h.sleeps).toHaveLength(sleptBefore);
+    expect(h.ceilings).toEqual([20_000]);
   });
 
-  it("a judgement that comes back resets the run toward the limit", async () => {
-    const h = gateHarness();
-    for (let run = 0; run < 4; run++) {
-      for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-        h.gate.close(60_000);
-        await h.gate.wait();
-      }
-      h.gate.succeeded();
-    }
-    // Twenty rate limits, none of them consecutive past the run: still pausing.
-    expect(h.giveUps).toEqual([]);
-    expect(h.pauses).toHaveLength(4 * RATE_LIMIT_CONSECUTIVE_LIMIT);
+  it("leaves a window already open standing, so workers parked on it are not woken early", async () => {
+    const h = gateHarness({ maxBackoffMs: 12_000 });
+    h.gate.close(10_000);
+    const parked = h.gate.wait();
+    h.gate.close(RATE_LIMIT_MAX_BACKOFF_MS);
+    expect(h.gate.stopped()).toBe(true);
+    await parked;
+    // The 10s it was already paying for, and nothing added on top.
+    expect(h.sleeps).toEqual([10_000]);
   });
 });
 
-describe("createRateLimitGate window counting", () => {
-  it("counts one window however many workers report the same limit", async () => {
-    let now = 1_000;
-    const pauses: number[] = [];
-    const giveUps: number[] = [];
-    const gate = createRateLimitGate({
-      now: () => now,
-      sleep: async () => {},
-      onPause: (ms) => pauses.push(ms),
-      onGiveUp: (consecutive) => giveUps.push(consecutive),
-    });
-    // Far more concurrent 429s than the give-up limit, all inside one window.
-    for (let worker = 0; worker < RATE_LIMIT_CONSECUTIVE_LIMIT * 4; worker++) {
-      gate.close(1_000);
-    }
-    expect(pauses).toEqual([1_000]);
-    expect(giveUps).toEqual([]);
-    // Only once the window has elapsed does the next limit start a new round.
-    now += 1_000;
-    gate.close(1_000);
-    expect(pauses).toEqual([1_000, 1_000]);
+describe("judgeWithRateLimitRetry", () => {
+  const limited = (retryAfterMs: number | null) =>
+    new RateLimitedError(429, retryAfterMs, "https://api.example/judge");
+
+  it("returns the first answer without touching the gate", async () => {
+    const h = gateHarness();
+    expect(await judgeWithRateLimitRetry(h.gate, async () => "ok")).toBe("ok");
+    expect(h.pauses).toEqual([]);
   });
-});
 
-describe("createRateLimitGate round floor", () => {
-  it("counts one round for a burst that a short Retry-After lets outlive its window", async () => {
-    let now = 1_000;
-    const pauses: number[] = [];
-    const giveUps: number[] = [];
-    const gate = createRateLimitGate({
-      now: () => now,
-      sleep: async (ms) => {
-        now += ms;
-      },
-      onPause: (ms) => pauses.push(ms),
-      onGiveUp: (consecutive) => giveUps.push(consecutive),
+  it("retries once, after the window its own 429 opened has cleared", async () => {
+    const h = gateHarness();
+    let attempts = 0;
+    const value = await judgeWithRateLimitRetry(h.gate, async () => {
+      attempts++;
+      if (attempts === 1) throw limited(3_000);
+      return "second time";
     });
+    expect(value).toBe("second time");
+    expect(attempts).toBe(2);
+    // The whole pass backed off for the window, and this action waited it out
+    // before spending again.
+    expect(h.pauses).toEqual([3_000]);
+    expect(h.sleeps).toEqual([3_000]);
+  });
 
-    // Four workers of one round report a one-second limit a second apart, so
-    // every 429 after the first finds the previous window already expired.
-    for (let worker = 0; worker < 4; worker++) {
-      gate.close(1_000);
-      now += 1_000;
-    }
+  it("fails the action on a second 429 rather than retrying again", async () => {
+    const h = gateHarness();
+    let attempts = 0;
+    await expect(
+      judgeWithRateLimitRetry(h.gate, async () => {
+        attempts++;
+        throw limited(3_000);
+      }),
+    ).rejects.toThrow(RateLimitedError);
+    expect(attempts).toBe(2);
+    // The retry's own 429 still tells the rest of the pass the wall is there.
+    expect(h.pauses).toEqual([3_000, 3_000]);
+  });
 
-    // Four windows, because each really had to be waited out — but one round,
-    // so the breaker is nowhere near firing.
-    expect(pauses).toHaveLength(4);
-    expect(giveUps).toEqual([]);
+  it("does not retry a failure that is not a rate limit", async () => {
+    const h = gateHarness();
+    let attempts = 0;
+    await expect(
+      judgeWithRateLimitRetry(h.gate, async () => {
+        attempts++;
+        throw new Error("provider returned nonsense");
+      }),
+    ).rejects.toThrow(/nonsense/);
+    expect(attempts).toBe(1);
+    expect(h.pauses).toEqual([]);
+  });
 
-    // Only once a default backoff has actually elapsed does the next limit
-    // count as a new round.
-    now += RATE_LIMIT_DEFAULT_BACKOFF_MS;
-    for (let round = 0; round < RATE_LIMIT_CONSECUTIVE_LIMIT; round++) {
-      gate.close(60_000);
-      now += 60_000;
-    }
-    expect(giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
+  it("does not retry into a wall the pass has already given up waiting out", async () => {
+    const h = gateHarness({ maxBackoffMs: 1_000 });
+    let attempts = 0;
+    await expect(
+      judgeWithRateLimitRetry(h.gate, async () => {
+        attempts++;
+        throw limited(30_000);
+      }),
+    ).rejects.toThrow(RateLimitedError);
+    expect(attempts).toBe(1);
+    expect(h.gate.stopped()).toBe(true);
+    expect(h.sleeps).toEqual([]);
   });
 });
