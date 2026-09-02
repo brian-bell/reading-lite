@@ -5,8 +5,9 @@ info:
   summary: Personal reading corpus on Cloudflare Workers
   description: |
     Submit a URL (or import Markdown), get a structured summary, and search the
-    corpus. All routes except `/health` and the magic-link challenge/redeem endpoints
-    require authentication.     Browser sessions use a host-only `__Host-session`
+    corpus. All routes except `/health`, `GET /api/auth/login-options`, and the
+    magic-link challenge/redeem endpoints require authentication. Browser sessions
+    use a host-only `__Host-session`
     cookie; programmatic clients use `Authorization: Bearer`. Scopes gate each
     reading operation (`readings:read`, `readings:write`, `readings:import`,
     `readings:delete`). Cookie-authenticated POST and DELETE requests also
@@ -76,6 +77,32 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
+  /api/auth/login-options:
+    get:
+      tags: [identity]
+      operationId: getAuthLoginOptions
+      summary: Public Turnstile site key for the login widget
+      security: []
+      description: |
+        Unauthenticated, same-origin, `Cache-Control: no-store`. Chrome omits
+        `Origin` on same-origin GET; this endpoint allows a missing Origin when
+        `Sec-Fetch-Site: same-origin` (same gate as `GET /api/whoami`). A
+        cross-site Origin is 403. Returns `{ turnstile_site_key }` as the
+        configured public widget key when `signup_mode` is `open` and
+        `TURNSTILE_SITE_KEY` is set; otherwise `null`. Does not disclose
+        whether any email exists, is invited, or is suspended.
+      responses:
+        "200":
+          description: Login widget options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthLoginOptionsResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
   /api/auth/challenge:
     post:
       tags: [identity]
@@ -85,11 +112,19 @@ paths:
       description: |
         Same-origin. Always returns a generic `{ ok: true }` so callers cannot
         enumerate users or invites. Existing active users can request a link in
-        every signup mode. Unknown addresses are eligible only when current
-        policy plus a `signup_invites` row allow provisioning. Issuing a new
-        login challenge revokes any prior unconsumed challenge for that
-        canonical email. The 15-minute secret is delivered out of band and
-        lives in the SPA URL fragment, not this response.
+        every signup mode. Unknown addresses are eligible when current policy
+        is `open`, or when policy is `invite_only` and a live `signup_invites`
+        row allows provisioning. `closed` never provisions unknown addresses
+        (an invite row is not enough). Open-mode challenges that would send
+        mail require a successful Turnstile verification when the secret is
+        configured; local skip/fail-open if the secret is unset;
+        staging/production fail-closed (missing secret, siteverify errors, or
+        `success ≠ true` skip send). Invalid or missing `turnstile_token` still
+        returns `{ ok: true }` and skips send (`magic_link_turnstile_rejected`).
+        invite_only and closed ignore an extra token. Issuing a new login
+        challenge revokes any prior unconsumed challenge for that canonical
+        email. The 15-minute secret is delivered out of band and lives in the
+        SPA URL fragment, not this response.
       requestBody:
         required: true
         content:
@@ -1075,6 +1110,13 @@ components:
         email:
           type: string
           minLength: 1
+        turnstile_token:
+          type: string
+          nullable: true
+          description: |
+            Open-mode challenges that would send mail. invite_only and closed
+            ignore this field. Null, blank, or omitted is treated as missing
+            (generic `{ ok: true }`, no send) rather than 400.
 
     AuthChallengeResponse:
       type: object
@@ -1084,6 +1126,19 @@ components:
         ok:
           type: boolean
           const: true
+
+    AuthLoginOptionsResponse:
+      type: object
+      additionalProperties: false
+      required: [turnstile_site_key]
+      properties:
+        turnstile_site_key:
+          type: string
+          minLength: 1
+          nullable: true
+          description: |
+            Public Turnstile site key when `signup_mode` is `open` and
+            `TURNSTILE_SITE_KEY` is configured; otherwise null.
 
     AuthRedeemBody:
       type: object

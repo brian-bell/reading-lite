@@ -82,6 +82,13 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
 | `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
+| `TURNSTILE_SECRET_KEY` | required to send open-mode magic-link mail on staging/production — Cloudflare siteverify secret (**never** in `[vars]`). Local skip/fail-open when unset; staging/production fail-closed (missing secret, siteverify errors, or `success ≠ true` → no-send `{ok:true}`) |
+
+Public widget key `TURNSTILE_SITE_KEY` is a `[vars]` value, not a secret.
+`GET /api/auth/login-options` returns `{ turnstile_site_key }` only when
+`signup_mode` is `open` and the key is configured; otherwise the field is
+`null`. It never reports whether an email exists. Staging bootstrap stays
+`invite_only` (`signupModeForEnv`); do not flip staging to open by default.
 
 Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
 `OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `high` in

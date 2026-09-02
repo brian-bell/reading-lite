@@ -12,6 +12,9 @@ import {
   ListSessionsResponseSchema,
   ListTokensResponseSchema,
   PostAuthTokensBodySchema,
+  AuthChallengeBodySchema,
+  AuthEmailChangeBodySchema,
+  AuthLoginOptionsResponseSchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -418,5 +421,47 @@ describe("ListTokensResponseSchema", () => {
       ],
     };
     expect(ListTokensResponseSchema.parse(body)).toEqual(body);
+  });
+});
+
+describe("AuthChallengeBodySchema", () => {
+  it("accepts email alone and an optional turnstile_token", () => {
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com" })).toEqual({ email: "a@example.com" });
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: "tok" })).toEqual({
+      email: "a@example.com",
+      turnstile_token: "tok",
+    });
+  });
+
+  it("treats a null or blank turnstile_token as omitted", () => {
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: null })).toEqual({
+      email: "a@example.com",
+    });
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: "" })).toEqual({
+      email: "a@example.com",
+    });
+    expect(AuthChallengeBodySchema.parse({ email: "a@example.com", turnstile_token: "   " })).toEqual({
+      email: "a@example.com",
+    });
+  });
+
+  it("does not require turnstile_token on email-change bodies", () => {
+    expect(AuthEmailChangeBodySchema.parse({ email: "a@example.com" })).toEqual({ email: "a@example.com" });
+    expect("turnstile_token" in AuthEmailChangeBodySchema.parse({ email: "a@example.com", turnstile_token: "x" })).toBe(
+      false,
+    );
+  });
+});
+
+describe("AuthLoginOptionsResponseSchema", () => {
+  it("accepts a site key or null", () => {
+    expect(AuthLoginOptionsResponseSchema.parse({ turnstile_site_key: "1x00000000000000000000AA" })).toEqual({
+      turnstile_site_key: "1x00000000000000000000AA",
+    });
+    expect(AuthLoginOptionsResponseSchema.parse({ turnstile_site_key: null })).toEqual({ turnstile_site_key: null });
+  });
+
+  it("rejects an empty site key string", () => {
+    expect(() => AuthLoginOptionsResponseSchema.parse({ turnstile_site_key: "" })).toThrow();
   });
 });

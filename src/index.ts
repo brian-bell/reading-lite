@@ -56,6 +56,11 @@ export interface Env {
   // production/staging keep the founder corpus visible until s1k.6 copies it.
   TENANT_DATA_PLANE?: string;
   LOCAL_MAIL_SINK?: string;
+  // Public Turnstile widget site key. GET /api/auth/login-options returns it
+  // only when signup_mode is open. The matching secret is TURNSTILE_SECRET_KEY
+  // (wrangler secret; never a [vars] value).
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
   RETRY_MAX_ATTEMPTS?: string;
   RETRY_BASE_DELAY_MS?: string;
   RETRY_MAX_DELAY_MS?: string;

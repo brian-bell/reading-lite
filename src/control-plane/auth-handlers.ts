@@ -1,11 +1,17 @@
 import type { Context } from "hono";
-import { AuthChallengeBodySchema, AuthRedeemBodySchema, CSRF_HEADER } from "../schemas/api";
+import {
+  AuthChallengeBodySchema,
+  AuthEmailChangeBodySchema,
+  AuthRedeemBodySchema,
+  CSRF_HEADER,
+} from "../schemas/api";
 import { EMAIL_CHANGE_PURPOSE, LOGIN_PURPOSE, type AuthChallengePurpose } from "./constants";
-import { admitAuthIp, admitAuthSend } from "./auth-rate-guard";
+import { admitAuthIp, admitAuthSend, connectingIp } from "./auth-rate-guard";
 import { issueEmailChangeChallenge, issueLoginChallenge, lookupChallenge } from "./challenges";
 import { canonicalizeEmail } from "./email";
-import { resolveLoginEligibility } from "./eligibility";
+import { loadSignupMode, resolveLoginEligibility } from "./eligibility";
 import { logAuthEvent } from "./auth-log";
+import { turnstileSiteKey, verifyTurnstileToken } from "./turnstile";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, readSessionCookie, sessionCookieHeader } from "./cookies";
 import { fromD1, isUniqueConstraintError, type ControlPlaneDb } from "./db";
@@ -22,7 +28,7 @@ import {
 } from "./magic-link-mail";
 import { sendMagicLinkViaResend } from "./resend-magic-link";
 import { sendAuthMailViaResend } from "./resend-mail";
-import { isLoopbackHost, isSameOriginRequest } from "./origin";
+import { cookieAuthAllowed, isLoopbackHost, isSameOriginRequest } from "./origin";
 import { parseRedemptionId, redeemLoginChallenge } from "./redeem";
 import { verifyCsrfToken } from "./csrf";
 import { authenticateSession, revokeSession } from "./sessions";
@@ -38,9 +44,11 @@ export interface AuthRuntime {
   randomBytes?: RandomBytes;
   newUuid?: UuidSource;
   markMailSent?: (args: { challengeId: string; nowMs: number }) => Promise<void>;
+  fetch?: typeof fetch;
 }
 
 const ChallengeBodySchema = AuthChallengeBodySchema;
+const EmailChangeBodySchema = AuthEmailChangeBodySchema;
 const RedeemBodySchema = AuthRedeemBodySchema;
 
 export function jsonAuth(body: unknown, status: number, extraHeaders?: HeadersInit): Response {
@@ -56,6 +64,33 @@ export function requireSameOrigin(c: Context<AppBindings>): boolean {
     url: c.req.url,
     webBaseUrl: c.env.WEB_BASE_URL,
   });
+}
+
+/**
+ * Unauthenticated same-origin config for the login widget.
+ * Returns the Turnstile site key only when signup is open and the key is set.
+ * Does not disclose whether any email exists.
+ *
+ * Chrome omits Origin on same-origin GET. Mirror whoami: allow missing Origin
+ * when Sec-Fetch-Site is same-origin. Cross-site stays 403.
+ */
+export async function handleLoginOptions(c: Context<AppBindings>): Promise<Response> {
+  if (
+    !cookieAuthAllowed({
+      method: c.req.method,
+      origin: c.req.header("origin"),
+      secFetchSite: c.req.header("sec-fetch-site"),
+      url: c.req.url,
+      webBaseUrl: c.env.WEB_BASE_URL,
+    })
+  ) {
+    return jsonAuth({ error: "forbidden origin" }, 403);
+  }
+  if (!c.env.CONTROL_PLANE) return jsonAuth({ error: "auth misconfigured" }, 500);
+  const mode = await loadSignupMode(fromD1(c.env.CONTROL_PLANE));
+  const configured = turnstileSiteKey(c.env);
+  const turnstile_site_key = mode === "open" && configured ? configured : null;
+  return jsonAuth({ turnstile_site_key }, 200);
 }
 
 export async function handleAuthChallenge(
@@ -102,6 +137,22 @@ export async function handleAuthChallenge(
   if (eligibility.kind === "ineligible") {
     logAuthEvent("magic_link_skipped", { email: parsed.data.email });
     return jsonAuth({ ok: true }, 200);
+  }
+
+  // Open mode: every challenge that would send mail (known or unknown) needs a
+  // successful Turnstile verify. invite_only/closed ignore extra tokens.
+  const mode = await loadSignupMode(db);
+  if (mode === "open") {
+    const verified = await verifyTurnstileToken({
+      env: c.env,
+      token: parsed.data.turnstile_token,
+      fetchImpl: runtime.fetch,
+      remoteIp: connectingIp(c.req.raw),
+    });
+    if (!verified) {
+      logAuthEvent("magic_link_turnstile_rejected");
+      return jsonAuth({ ok: true }, 200);
+    }
   }
 
   const sendAdmitted = await admitAuthSend(c.env, emailCanonical);
@@ -335,7 +386,7 @@ export async function handleEmailChangeRequest(
   runtime: AuthRuntime,
 ): Promise<Response> {
   const json = await c.req.json().catch(() => null);
-  const parsed = ChallengeBodySchema.safeParse(json);
+  const parsed = EmailChangeBodySchema.safeParse(json);
   if (!parsed.success) return jsonAuth({ error: "invalid body" }, 400);
 
   let emailCanonical: string;
