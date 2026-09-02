@@ -687,7 +687,9 @@ async function refreshNeighbours(
   // the pass did everything it could for it, the answer will not change until
   // someone repairs it, and pinning the marker on it would hold the whole scope
   // at an ever-older timestamp. Those are carried on the marker instead, and
-  // the run still exits non-zero so they stay visible.
+  // the run exits 3 so they stay visible. Unless there were only those: a whole
+  // scope nothing could be measured in is a failure of the pass, not of its
+  // readings, and it stops the marker like any other unfinished one.
   if (!flushFailed && errored === 0 && !configurationFailure) {
     await advanceMarker({
       opts,
