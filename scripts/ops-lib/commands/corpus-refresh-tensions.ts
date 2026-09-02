@@ -162,7 +162,20 @@ interface ExecuteOutcome {
   usage?: TensionJudgementResult["usage"];
 }
 
-/** The reading ids an execute action reads and writes, held for its duration. */
+/** How an action names itself when something outside its own handling fails. */
+function describeAction(action: Action): string {
+  return action.kind === "judge" ? action.candidate.key : describeRepair(action.repair);
+}
+
+/**
+ * The reading ids an execute action reads and writes, held for its duration.
+ *
+ * Holding a key blocks a later action, so the pool may dispatch a repair ahead
+ * of a judge that is waiting on one. That is safe because a repair's staleness
+ * guard compares the live `updated_at` against a plan-time timestamp, and no
+ * write this command makes moves `updated_at` (`mergeTensionSide` preserves it
+ * verbatim): no action in the pass can make another action's guard trip.
+ */
 function actionKeys(action: Action): string[] {
   if (action.kind === "judge") return [action.candidate.a, action.candidate.b];
   const repair = action.repair;
@@ -619,7 +632,23 @@ async function refreshTensions(
     // same ETag, both pay for a judgement, and the second would lose the CAS:
     // failures and spend that a sequential pass never produces.
     actionKeys,
-    runAction,
+    // `runAction` reports its own failures, but an unforeseen throw would abort
+    // the pass with the results behind it unaccounted for, so the last word on
+    // that belongs here rather than to the pool.
+    async (action) => {
+      try {
+        return await runAction(action);
+      } catch (error) {
+        return {
+          stdout: [],
+          stderr: [
+            `  ! ${describeAction(action)}: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+          written: 0,
+          failed: true,
+        };
+      }
+    },
     (outcome) => {
       for (const line of outcome.stdout) deps.io.stdout(line);
       for (const line of outcome.stderr) deps.io.stderr(line);

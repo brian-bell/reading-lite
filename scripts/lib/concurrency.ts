@@ -67,8 +67,11 @@ export async function mapWithConcurrency<T, R>(
 // tests rely on without waiting for the whole pass to finish, which matters
 // when the pass is minutes of provider calls.
 //
-// As with `mapWithConcurrency`, a rejection aborts the pass. Callers wanting
-// per-item failure isolation catch inside `fn` and return a result object.
+// As with `mapWithConcurrency`, a rejection aborts the pass: workers stop
+// pulling, the ones in flight are awaited, every result that completed before
+// the gap is still emitted, and the first error observed is rethrown. Callers
+// wanting per-item failure isolation catch inside `fn` and return a result
+// object instead.
 export async function runKeyedPool<T, R>(
   items: readonly T[],
   limit: number,
@@ -128,7 +131,12 @@ export async function runKeyedPool<T, R>(
         // this is unreachable; say so loudly rather than returning and leaving
         // those items silently unrun.
         if (inFlight === 0) {
-          throw new Error("runKeyedPool deadlocked: pending items with no holder");
+          // Reported the same way as any other failure rather than thrown from
+          // here, so the siblings still in flight are awaited and the parked
+          // workers are woken before the caller sees it.
+          failures.push(new Error("runKeyedPool deadlocked: pending items with no holder"));
+          wake();
+          return;
         }
         await new Promise<void>((resolve) => waiters.push(resolve));
         continue;
@@ -149,5 +157,10 @@ export async function runKeyedPool<T, R>(
   };
 
   await Promise.all(Array.from({ length: workers }, () => worker()));
+  // Items that finished behind the failure are still handed over: their work
+  // is done and, for these commands, already written, so dropping them would
+  // leave the caller's accounting short of what actually happened. The prefix
+  // stops at the failed item, which has no result to emit.
+  flush();
   if (failures.length > 0) throw failures[0];
 }

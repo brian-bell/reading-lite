@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import {
   DEFAULT_EXECUTE_CONCURRENCY,
+  MAX_EXECUTE_CONCURRENCY,
   RATE_LIMIT_CONSECUTIVE_LIMIT,
   RATE_LIMIT_DEFAULT_BACKOFF_MS,
   RATE_LIMIT_MAX_BACKOFF_MS,
@@ -41,6 +42,16 @@ describe("parseConcurrencyFlag", () => {
     for (const raw of ["0", "-1", "2.5", "many", ""]) {
       expect(() => parseConcurrencyFlag(raw)).toThrow(UsageError);
     }
+  });
+
+  it("refuses a figure that would fan a mistyped flag at the shared org", () => {
+    expect(parseConcurrencyFlag(String(MAX_EXECUTE_CONCURRENCY))).toBe(
+      MAX_EXECUTE_CONCURRENCY,
+    );
+    expect(() => parseConcurrencyFlag(String(MAX_EXECUTE_CONCURRENCY + 1))).toThrow(
+      /above the 16 this command allows/,
+    );
+    expect(() => parseConcurrencyFlag("400")).toThrow(UsageError);
   });
 });
 
@@ -147,6 +158,23 @@ describe("createRateLimitGate", () => {
     await h.gate.wait();
     expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
     expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+  });
+
+  it("a judgement that comes back lets the pass back off again later", async () => {
+    const h = gateHarness();
+    for (let attempt = 0; attempt <= RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
+      h.gate.close(1_000);
+      await h.gate.wait();
+    }
+    expect(h.giveUps).toHaveLength(1);
+
+    // The provider lifts the limit and the pass gets a judgement through: a
+    // later, genuinely transient limit must be waited out, not ignored.
+    h.gate.succeeded();
+    const before = h.pauses.length;
+    h.gate.close(1_000);
+    await h.gate.wait();
+    expect(h.pauses).toHaveLength(before + 1);
   });
 
   it("a judgement that comes back resets the run toward the limit", async () => {

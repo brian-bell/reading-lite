@@ -261,3 +261,24 @@ describe("runKeyedPool", () => {
     expect(emitted.map((entry) => entry.result)).toEqual([1, 2, 3]);
   });
 });
+
+describe("runKeyedPool abort", () => {
+  it("still emits the results that landed before the gap", async () => {
+    const emitted: number[] = [];
+    await expect(
+      runKeyedPool(
+        [0, 1, 2, 3],
+        2,
+        () => [],
+        async (item: number) => {
+          if (item === 1) throw new Error("boom");
+          await Promise.resolve();
+          return item;
+        },
+        (result: number) => emitted.push(result),
+      ),
+    ).rejects.toThrow("boom");
+    // Item 0 completed and must not be dropped; the pass stops at the gap.
+    expect(emitted).toEqual([0]);
+  });
+});

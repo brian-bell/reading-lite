@@ -50,11 +50,24 @@ export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
  */
 export const RATE_LIMIT_CONSECUTIVE_LIMIT = 5;
 
+/**
+ * Ceiling on `--concurrency`. The default of 4 was chosen for the shared
+ * provider org; a mistyped `--concurrency 400` would fan four hundred paid
+ * calls at that same org, which is the thing the default is protecting. Well
+ * above any figure the plan contemplates, and low enough to catch a typo.
+ */
+export const MAX_EXECUTE_CONCURRENCY = 16;
+
 export function parseConcurrencyFlag(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_EXECUTE_CONCURRENCY;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new UsageError(`--concurrency ${JSON.stringify(raw)} is not a positive integer`);
+  }
+  if (value > MAX_EXECUTE_CONCURRENCY) {
+    throw new UsageError(
+      `--concurrency ${value} is above the ${MAX_EXECUTE_CONCURRENCY} this command allows`,
+    );
   }
   return value;
 }
@@ -83,7 +96,11 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
   let gaveUp = false;
   return {
     succeeded() {
+      // Clears the give-up too: a limit the provider has plainly lifted must
+      // not leave the rest of a long pass permanently unwilling to back off
+      // when a later, genuinely transient one arrives.
       consecutive = 0;
+      gaveUp = false;
     },
     close(retryAfterMs) {
       if (gaveUp) return;

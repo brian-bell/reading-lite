@@ -552,7 +552,23 @@ async function refreshConnections(
       // One reading per action, and a report names a reading once, so tier 2
       // never actually contends; the key still states what the action owns.
       (action) => [action.report.id],
-      runAction,
+      // `runAction` reports its own failures, but an unforeseen throw would
+      // abort the pass with the results behind it unaccounted for, so the last
+      // word on that belongs here rather than to the pool.
+      async (action) => {
+        try {
+          return await runAction(action);
+        } catch (error) {
+          return {
+            stdout: [],
+            stderr: [
+              `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
+            ],
+            kind: "failed" as const,
+            verdict: undefined,
+          };
+        }
+      },
       (outcome, index) => {
         for (const line of outcome.stdout) deps.io.stdout(line);
         for (const line of outcome.stderr) deps.io.stderr(line);

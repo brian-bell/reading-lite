@@ -464,7 +464,8 @@ it.
 
 Execute mode runs several judgements at once. `--concurrency <n>` sets how
 many, defaulting to 4 — the ingest queue runs at 3 against the same provider
-account, so this is deliberately close to it. Results are collected and printed
+account, so this is deliberately close to it — and refusing anything above 16,
+so a mistyped flag cannot fan a hundred paid calls at that account. Results are collected and printed
 in plan order however the calls complete, and every counter (`Judged`, `list
 rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
 output and its exit code do not depend on which call returned first. The one
@@ -491,7 +492,9 @@ judgement succeeding in between, the limit is not transient, so the pass stops
 waiting altogether (`provider rate limited N times in a row; no longer
 pausing…`) and fails the rest fast — which is what a sequential run did — rather
 than sitting on the sole-writer window for the length of the plan. Any
-judgement that comes back resets that run.
+judgement that comes back resets that run, and restores the backing off, so a
+limit early in a long pass does not leave the rest of it unwilling to wait out
+a later one.
 
 Because the calls overlap, the `Timing:` block's `provider` row sums the call
 durations rather than the wall time they occupied; the `total` row is the one
