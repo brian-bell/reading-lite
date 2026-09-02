@@ -16,7 +16,7 @@ export type TurnstileRenderOptions = {
   theme?: "light" | "dark" | "auto";
   appearance?: "always" | "execute" | "interaction-only";
   callback?: (token: string) => void;
-  "error-callback"?: (errorCode?: string) => void;
+  "error-callback"?: (errorCode?: string) => boolean | void;
   "expired-callback"?: () => void;
   "timeout-callback"?: () => void;
 };

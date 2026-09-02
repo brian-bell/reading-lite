@@ -49,7 +49,7 @@ describe("TurnstileWidget", () => {
     expect(onToken).toHaveBeenCalledWith(null);
   });
 
-  it("resets the widget when the challenge errors, expires, or times out", async () => {
+  it("resets the widget when the challenge expires or times out, but not on error", async () => {
     const onToken = vi.fn();
     const reset = vi.fn();
     const renderWidget = vi.fn((_container: HTMLElement | string, options: TurnstileRenderOptions) => {
@@ -67,12 +67,13 @@ describe("TurnstileWidget", () => {
     const options = renderWidget.mock.calls[0]![1];
 
     onToken.mockClear();
-    options["error-callback"]?.("100");
+    expect(options["error-callback"]?.("110200")).toBe(true);
     expect(onToken).toHaveBeenCalledWith(null);
-    expect(reset).toHaveBeenCalledWith("widget-1");
+    expect(reset).not.toHaveBeenCalled();
 
     options["expired-callback"]?.();
     options["timeout-callback"]?.();
-    expect(reset).toHaveBeenCalledTimes(3);
+    expect(reset).toHaveBeenCalledTimes(2);
+    expect(reset).toHaveBeenCalledWith("widget-1");
   });
 });

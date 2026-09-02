@@ -35,7 +35,12 @@ export function TurnstileWidget({
         sitekey: siteKey,
         theme: "light",
         callback: (token) => onTokenRef.current(token),
-        "error-callback": recycle,
+        "error-callback": () => {
+          // Auto-retry is the default. Reset here would stack retries and can
+          // tight-loop on persistent client errors (invalid sitekey/domain).
+          onTokenRef.current(null);
+          return true;
+        },
         "expired-callback": recycle,
         "timeout-callback": recycle
       });
