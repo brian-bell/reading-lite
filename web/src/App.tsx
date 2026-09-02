@@ -734,6 +734,8 @@ function LoginPage({
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [widgetEpoch, setWidgetEpoch] = useState(0);
   const [widgetLoadError, setWidgetLoadError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
   const emailLocked = Boolean(stepUp && identity);
@@ -745,7 +747,8 @@ function LoginPage({
   const siteKey = optionsQuery.data?.turnstile_site_key ?? null;
   const widgetRequired = siteKey != null;
   const optionsBlocked = optionsQuery.isPending || optionsQuery.isError;
-  const submitBlocked = optionsBlocked || widgetLoadError != null || (widgetRequired && !turnstileToken);
+  const submitBlocked =
+    optionsBlocked || submitting || widgetLoadError != null || (widgetRequired && !turnstileToken);
 
   useLayoutEffect(() => {
     if (identity && !stepUp) return;
@@ -781,12 +784,15 @@ function LoginPage({
         className="token-form login-form"
         onSubmit={async (event) => {
           event.preventDefault();
-          setError(null);
+          if (submittingRef.current) return;
           if (optionsBlocked || widgetLoadError != null) return;
           if (widgetRequired && !turnstileToken) {
             setError("Complete the check before requesting a link.");
             return;
           }
+          submittingRef.current = true;
+          setSubmitting(true);
+          setError(null);
           const token = turnstileToken;
           try {
             await requestLoginLink(emailValue, token ?? undefined);
@@ -795,6 +801,8 @@ function LoginPage({
             setSubmitted(false);
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
           } finally {
+            submittingRef.current = false;
+            setSubmitting(false);
             setTurnstileToken(null);
             if (widgetRequired) setWidgetEpoch((epoch) => epoch + 1);
           }

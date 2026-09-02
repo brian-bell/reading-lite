@@ -26,13 +26,18 @@ export function TurnstileWidget({
     const mount = (api: TurnstileApi) => {
       if (cancelled || !containerRef.current) return;
       apiRef.current = api;
+      const recycle = () => {
+        onTokenRef.current(null);
+        const widgetId = widgetIdRef.current;
+        if (widgetId) api.reset(widgetId);
+      };
       widgetIdRef.current = api.render(containerRef.current, {
         sitekey: siteKey,
         theme: "light",
         callback: (token) => onTokenRef.current(token),
-        "error-callback": () => onTokenRef.current(null),
-        "expired-callback": () => onTokenRef.current(null),
-        "timeout-callback": () => onTokenRef.current(null)
+        "error-callback": recycle,
+        "expired-callback": recycle,
+        "timeout-callback": recycle
       });
     };
 

@@ -48,4 +48,31 @@ describe("TurnstileWidget", () => {
     });
     expect(onToken).toHaveBeenCalledWith(null);
   });
+
+  it("resets the widget when the challenge errors, expires, or times out", async () => {
+    const onToken = vi.fn();
+    const reset = vi.fn();
+    const renderWidget = vi.fn((_container: HTMLElement | string, options: TurnstileRenderOptions) => {
+      options.callback?.("widget-ok");
+      return "widget-1";
+    });
+    window.turnstile = {
+      render: renderWidget,
+      reset,
+      remove: vi.fn()
+    };
+
+    render(<TurnstileWidget siteKey="1x00000000000000000000AA" onToken={onToken} />);
+    await waitFor(() => expect(renderWidget).toHaveBeenCalledTimes(1));
+    const options = renderWidget.mock.calls[0]![1];
+
+    onToken.mockClear();
+    options["error-callback"]?.("100");
+    expect(onToken).toHaveBeenCalledWith(null);
+    expect(reset).toHaveBeenCalledWith("widget-1");
+
+    options["expired-callback"]?.();
+    options["timeout-callback"]?.();
+    expect(reset).toHaveBeenCalledTimes(3);
+  });
 });
