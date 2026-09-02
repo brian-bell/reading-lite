@@ -68,6 +68,12 @@ import {
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
+  addUsage,
+  emptyUsageTotals,
+  formatUsage,
+  formatUsageTotals,
+} from "../judgement-usage";
+import {
   parseProductionWorkerVars,
   storageFromClient,
   type RefreshConnectionsStorage,
@@ -376,6 +382,7 @@ async function runCorpusRefreshTensions(
   let repaired = 0;
   let failures = 0;
   let skippedSincePlan = 0;
+  const usageTotals = emptyUsageTotals();
   const fail = (label: string, error: unknown) => {
     failures++;
     deps.io.stderr(`  ! ${label}: ${error instanceof Error ? error.message : String(error)}`);
@@ -429,6 +436,10 @@ async function runCorpusRefreshTensions(
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
         const result = await provider.judge(input);
         judged++;
+        // Counted before the writes so the report covers every call billed,
+        // including judgements whose manifest writes later fail.
+        addUsage(usageTotals, result.usage);
+        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)}`);
         const computedAt = new Date(deps.now()).toISOString();
         const sides = deriveTensionSides(result.judgement, { a: aId, b: bId }, computedAt);
         await writeSide(aId, bId, sides.a, computedAt, a);
@@ -492,6 +503,7 @@ async function runCorpusRefreshTensions(
     `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; ` +
       `skipped since plan: ${skippedSincePlan}; failures: ${failures}`,
   );
+  deps.io.stdout(formatUsageTotals(usageTotals));
   return planningFailed || failures > 0 ? 1 : 0;
 }
 
@@ -666,7 +678,8 @@ superseded_by, qualifies, qualified_by) and a judged-pair record to BOTH
 manifests with ETag CAS, changing nothing else. index/list.json is not
 touched. A crash between the two writes leaves a one-sided pair that the next
 run mirrors without another paid call; entries naming a deleted partner are
-purged the same way.
+purged the same way. It prints the provider token usage of each judgement and a
+run total.
 
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json, except with --pair,

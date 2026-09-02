@@ -187,6 +187,8 @@ binding = "READING_JOBS"
     expect(h.out.join("\n")).toContain("candidates=rd_b@0.900");
     expect(h.out.join("\n")).toContain("Estimated synchronous cost: $0.010000");
     expect(h.out.join("\n")).toContain("no provider call or storage write");
+    expect(h.out.join("\n")).not.toContain("usage input=");
+    expect(h.out.join("\n")).not.toContain("Usage:");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
     expect(h.listWrites).toEqual([]);
@@ -225,6 +227,31 @@ binding = "READING_JOBS"
     });
     expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
     expect(h.items().find((row) => row.id === "rd_c")?.novelty_verdict).toBe("novel");
+  });
+
+  it("prints the provider usage per judgement and a run total", async () => {
+    const h = harness();
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+    expect(h.judge).toHaveBeenCalledTimes(2);
+    expect(h.out.join("\n")).toContain("rd_a  usage input=100 output=20 reasoning=0");
+    expect(h.out.join("\n")).toContain("rd_c  usage input=100 output=20 reasoning=0");
+    expect(h.out.join("\n")).toContain("Usage: 2 judgements; input=200 output=40 reasoning=0");
+  });
+
+  it("counts the usage of a judgement whose manifest write then loses CAS", async () => {
+    const h = harness({ cas: false });
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "1"],
+        h.deps,
+      ),
+    ).toBe(1);
+    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
   });
 
   it("does not blind-write or update the list after a manifest CAS loss", async () => {
