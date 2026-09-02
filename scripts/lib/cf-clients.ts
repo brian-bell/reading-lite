@@ -105,7 +105,44 @@ export interface VectorizeConfig {
   namespace?: string;
 }
 
-export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2InventoryClient {
+// A refresh pass is thousands of sequential S3 requests, so both halves of
+// this matter: without a deadline one stalled connection blocks the whole loop
+// for as long as the OS keeps the socket open (a refresh run has hung this
+// way), and without a retry one transient read ends the command with exit 1.
+//
+// Every attempt gets a fresh deadline, and the request is re-signed each time
+// because a SigV4 signature carries the timestamp it was made at.
+//
+// Retries cover writes as well as reads. A conditional PUT whose response was
+// lost may already have landed, so the retry can come back 412 and be reported
+// as a lost CAS — but that is also what an un-retried timeout reports, and
+// only the retry can turn a genuinely failed attempt into a success, so it is
+// never the worse of the two. No manifest is written twice either way: the
+// ETag the second attempt carries matches only the version the first replaced.
+export const S3_REQUEST_TIMEOUT_MS = 30_000;
+const S3_REQUEST_ATTEMPTS = 3;
+const S3_RETRY_BASE_MS = 250;
+const S3_RETRY_CAP_MS = 2_000;
+
+export interface S3RequestDeps {
+  sleep?: (ms: number) => Promise<void>;
+  /** Per-attempt deadline. Default 30s. */
+  timeoutMs?: number;
+  /** Attempts per request, including the first. Default 3. */
+  maxAttempts?: number;
+  /** Deadline signal factory; injected so tests need no real timers. */
+  timeoutSignal?: (ms: number) => AbortSignal;
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+export function makeR2Client(
+  cfg: R2Config,
+  fetchFn: typeof fetch = fetch,
+  deps: S3RequestDeps = {},
+): R2InventoryClient {
   const aws = new AwsClient({
     accessKeyId: cfg.accessKeyId,
     secretAccessKey: cfg.secretAccessKey,
@@ -113,17 +150,31 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     region: "auto",
   });
   const base = `https://${cfg.accountId}.r2.cloudflarestorage.com/${cfg.bucket}`;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const timeoutMs = deps.timeoutMs ?? S3_REQUEST_TIMEOUT_MS;
+  const maxAttempts = Math.max(1, deps.maxAttempts ?? S3_REQUEST_ATTEMPTS);
+  const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
 
   // aws.sign() returns a signed Request, which we then hand to the injected
   // fetch — keeps signing intact while making the network call stubbable.
-  const signedFetch = async (key: string, init: RequestInit): Promise<Response> => {
-    const signed = await aws.sign(`${base}/${encodePath(key)}`, init);
-    return fetchFn(signed);
+  const send = async (url: string, init: RequestInit): Promise<Response> => {
+    for (let attempt = 0; ; attempt++) {
+      const last = attempt >= maxAttempts - 1;
+      try {
+        const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
+        const res = await fetchFn(signed);
+        if (last || !isTransientStatus(res.status)) return res;
+        await res.text().catch(() => "");
+      } catch (error) {
+        if (last) throw error;
+      }
+      await sleep(Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt));
+    }
   };
-  const signedBucketFetch = async (params: URLSearchParams, init: RequestInit): Promise<Response> => {
-    const signed = await aws.sign(`${base}?${params.toString()}`, init);
-    return fetchFn(signed);
-  };
+  const signedFetch = (key: string, init: RequestInit): Promise<Response> =>
+    send(`${base}/${encodePath(key)}`, init);
+  const signedBucketFetch = (params: URLSearchParams, init: RequestInit): Promise<Response> =>
+    send(`${base}?${params.toString()}`, init);
 
   return {
     async put(key, body, opts) {

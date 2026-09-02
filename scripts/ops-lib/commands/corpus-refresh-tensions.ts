@@ -73,9 +73,18 @@ import {
   formatUsage,
   formatUsageTotals,
 } from "../judgement-usage";
+import { judgeRetryDeps } from "../judge-retry";
+import {
+  PHASE_MANIFEST_READ,
+  PHASE_PLANNING_READS,
+  PHASE_PROVIDER,
+  createRefreshTimer,
+  timedRefreshStorage,
+} from "../refresh-timing";
 import {
   parseProductionWorkerVars,
   storageFromClient,
+  type JudgeTransportOverrides,
   type RefreshConnectionsStorage,
   type StoredRawManifest,
 } from "./corpus-refresh-connections";
@@ -179,6 +188,12 @@ async function runCorpusRefreshTensions(
   argv: string[],
   deps: CorpusRefreshTensionsDeps,
 ): Promise<number> {
+  const timer = createRefreshTimer(deps.now);
+  const printTiming = () => deps.io.stdout(`\n${timer.format()}`);
+  // Planning and execute read the same manifests through the same call, so the
+  // phase label is what separates the fixed planning cost from the per-pair
+  // re-reads every execute pass pays on top of it.
+  let manifestReadPhase = PHASE_PLANNING_READS;
   const args = parseRefreshTensionsArgs(argv);
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
@@ -203,7 +218,11 @@ async function runCorpusRefreshTensions(
       ? null
       : parseRefreshConnectionsReport(JSON.parse(rawReport) as unknown, selector);
   const provider = await deps.loadProvider(args.execute);
-  const storage = await deps.createStorage(args.bucket, tenant.keyRoot);
+  const storage = timedRefreshStorage(
+    await deps.createStorage(args.bucket, tenant.keyRoot),
+    timer,
+    () => manifestReadPhase,
+  );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
 
@@ -368,8 +387,10 @@ async function runCorpusRefreshTensions(
 
   if (!args.execute) {
     deps.io.stdout("PLAN - no provider call or storage write was made.");
+    printTiming();
     return planningFailed ? 1 : 0;
   }
+  manifestReadPhase = PHASE_MANIFEST_READ;
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -434,12 +455,15 @@ async function runCorpusRefreshTensions(
       }
       try {
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
-        const result = await provider.judge(input);
+        const { value: result, ms: providerMs } = await timer.measured(
+          PHASE_PROVIDER,
+          () => provider.judge(input),
+        );
         judged++;
         // Counted before the writes so the report covers every call billed,
         // including judgements whose manifest writes later fail.
         addUsage(usageTotals, result.usage);
-        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)}`);
+        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)} ms=${providerMs}`);
         const computedAt = new Date(deps.now()).toISOString();
         const sides = deriveTensionSides(result.judgement, { a: aId, b: bId }, computedAt);
         await writeSide(aId, bId, sides.a, computedAt, a);
@@ -504,6 +528,7 @@ async function runCorpusRefreshTensions(
       `skipped since plan: ${skippedSincePlan}; failures: ${failures}`,
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
+  printTiming();
   return planningFailed || failures > 0 ? 1 : 0;
 }
 
@@ -580,7 +605,10 @@ async function defaultProviderVars(): Promise<Record<string, string | undefined>
 export function tensionProviderFromVars(
   vars: Record<string, string | undefined>,
   execute: boolean,
+  transport: JudgeTransportOverrides = {},
 ): TensionProviderPlan {
+  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
     const model = vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL;
@@ -607,7 +635,8 @@ export function tensionProviderFromVars(
       },
       judge: (input) =>
         judgeTension(input, {
-          fetch: globalThis.fetch,
+          fetch: fetchImpl,
+          retry,
           provider,
           openaiApiKey: vars.OPENAI_API_KEY ?? "",
           openaiModel: model,
@@ -639,7 +668,8 @@ export function tensionProviderFromVars(
     },
     judge: (input) =>
       judgeTension(input, {
-        fetch: globalThis.fetch,
+        fetch: fetchImpl,
+        retry,
         provider,
         openaiApiKey: vars.OPENAI_API_KEY ?? "",
         anthropicApiKey: vars.ANTHROPIC_API_KEY,

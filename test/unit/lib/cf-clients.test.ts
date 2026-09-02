@@ -690,3 +690,97 @@ describe("makeR2RestClient — 429 backoff", () => {
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
   });
 });
+
+describe("makeR2Client request timeout and transient retry", () => {
+  const okResponse = () => new Response("body", { status: 200 });
+  const abortError = () => new DOMException("The operation was aborted.", "TimeoutError");
+
+  function harness(
+    responses: Array<Response | Error>,
+    overrides: Parameters<typeof makeR2Client>[2] = {},
+  ) {
+    let call = 0;
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => {
+      const next = responses[Math.min(call++, responses.length - 1)]!;
+      if (next instanceof Error || next instanceof DOMException) throw next;
+      return next;
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+    const signals: number[] = [];
+    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch, {
+      sleep,
+      timeoutSignal: (ms) => {
+        signals.push(ms);
+        return new AbortController().signal;
+      },
+      ...overrides,
+    });
+    return { r2, fetchFn, sleep, signals };
+  }
+
+  it("aborts every request after 30 seconds", async () => {
+    const h = harness([okResponse()]);
+    await h.r2.get("readings/2026/rd_a/manifest.json");
+    expect(h.signals).toEqual([30_000]);
+    const req = h.fetchFn.mock.calls[0]![0] as Request;
+    expect(req.signal).toBeDefined();
+  });
+
+  it("retries a 5xx and returns the eventual success", async () => {
+    const h = harness([new Response("slow down", { status: 503 }), okResponse()]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([250]);
+    // A fresh deadline per attempt, so a slow first try cannot starve the retry.
+    expect(h.signals).toEqual([30_000, 30_000]);
+  });
+
+  it("retries a throttled request", async () => {
+    const h = harness([new Response("throttled", { status: 429 }), okResponse()]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after three attempts and surfaces the last failure", async () => {
+    const h = harness([new Response("boom", { status: 500 })]);
+    await expect(h.r2.get("k")).rejects.toThrow(/R2 GET k failed: 500/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 500]);
+  });
+
+  it("retries a timed-out request and rethrows the abort once the budget is spent", async () => {
+    const h = harness([abortError()]);
+    await expect(h.r2.get("k")).rejects.toThrow(/aborted/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers when only the first attempt times out", async () => {
+    const h = harness([abortError(), okResponse()]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry an absent object or a lost CAS", async () => {
+    const missing = harness([new Response("no", { status: 404 })]);
+    await expect(missing.r2.get("k")).resolves.toBeNull();
+    expect(missing.fetchFn).toHaveBeenCalledTimes(1);
+
+    const conflict = harness([new Response("conflict", { status: 412 })]);
+    await expect(conflict.r2.putIfMatch("k", "next", "abc")).resolves.toBe(false);
+    expect(conflict.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a transient LIST page without restarting the listing", async () => {
+    const page = (truncated: boolean) =>
+      new Response(
+        `<ListBucketResult><IsTruncated>${truncated}</IsTruncated>` +
+          `<Contents><Key>a</Key><Size>1</Size><ETag>&quot;e&quot;</ETag></Contents>` +
+          (truncated ? "<NextContinuationToken>t1</NextContinuationToken>" : "") +
+          `</ListBucketResult>`,
+        { status: 200 },
+      );
+    const h = harness([page(true), new Response("boom", { status: 503 }), page(false)]);
+    await expect(h.r2.listKeys()).resolves.toEqual(["a", "a"]);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+  });
+});

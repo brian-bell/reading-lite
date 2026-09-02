@@ -333,6 +333,23 @@ Source production keys from outside the repo; the credentials row of the
 cutover log in `docs/founder-cutover.md` records what an actual production run
 needed.
 
+All three refresh commands end every pass, plan or execute, with a `Timing:`
+block: one row per phase the pass used (`list read`, `planning reads` — the
+manifests read while planning — `manifest read` for the re-reads an execute
+pass makes, `vectorize query`, `provider`, `manifest write`, `list write`),
+each with its call count and total wall time, then the run total. Failed calls
+are counted too, since a stalled read is exactly the wall time worth seeing.
+Execute mode also prints `ms=` per judgement beside its token usage. Record the
+block: it is the baseline a later run or a performance change is compared
+against, and it is what tells a slow pass apart from a hung one.
+
+The two robustness limits behind those numbers: every S3 request carries a
+30-second deadline and is retried up to three times on a timeout, a network
+fault, a 5xx, or a 429, so one transient read no longer ends the run; and each
+judgement call retries 5xx the same way, while a 429 surfaces as a
+`RateLimitedError` naming the retry-after the provider asked for — that one
+means slow the run down, not re-run it immediately.
+
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later

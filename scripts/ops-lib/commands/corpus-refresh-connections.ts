@@ -45,6 +45,15 @@ import {
   type CommandIo,
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { judgeRetryDeps } from "../judge-retry";
+import {
+  PHASE_MANIFEST_READ,
+  PHASE_PLANNING_READS,
+  PHASE_PROVIDER,
+  createRefreshTimer,
+  timedRefreshStorage,
+} from "../refresh-timing";
+import type { RetryDeps } from "../../../src/modules/http-retry";
 import {
   addUsage,
   emptyUsageTotals,
@@ -154,6 +163,12 @@ async function runCorpusRefreshConnections(
   argv: string[],
   deps: CorpusRefreshConnectionsDeps,
 ): Promise<number> {
+  const timer = createRefreshTimer(deps.now);
+  const printTiming = () => deps.io.stdout(`\n${timer.format()}`);
+  // Planning and execute read the same manifests through the same call, so the
+  // phase label is what separates the fixed planning cost from the per-action
+  // re-read every execute pass pays on top of it.
+  let manifestReadPhase = PHASE_PLANNING_READS;
   const args = parseRefreshConnectionsArgs(argv);
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
@@ -172,7 +187,11 @@ async function runCorpusRefreshConnections(
     selector,
   );
   const provider = await deps.loadProvider(args.execute);
-  const storage = await deps.createStorage(args.bucket, tenant.keyRoot);
+  const storage = timedRefreshStorage(
+    await deps.createStorage(args.bucket, tenant.keyRoot),
+    timer,
+    () => manifestReadPhase,
+  );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
   const storedByPrefix = new Map<string, StoredRawManifest | null>();
@@ -357,8 +376,10 @@ async function runCorpusRefreshConnections(
 
   if (!args.execute) {
     deps.io.stdout("PLAN - no provider call or storage write was made.");
+    printTiming();
     return planningFailed ? 1 : 0;
   }
+  manifestReadPhase = PHASE_MANIFEST_READ;
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -411,11 +432,16 @@ async function runCorpusRefreshConnections(
           action.report,
           liveReportNeighbours(action.report, liveReadyIds),
         );
-        const result = await provider.judge(input);
+        const { value: result, ms: providerMs } = await timer.measured(
+          PHASE_PROVIDER,
+          () => provider.judge(input),
+        );
         // Counted before the write so the report covers every call billed,
         // including judgements whose manifest write later fails.
         addUsage(usageTotals, result.usage);
-        deps.io.stdout(`  ${action.report.id}  ${formatUsage(result.usage)}`);
+        deps.io.stdout(
+          `  ${action.report.id}  ${formatUsage(result.usage)} ms=${providerMs}`,
+        );
         const merged = mergeRelationshipJudgement(
           current.manifest,
           result.judgement,
@@ -471,6 +497,7 @@ async function runCorpusRefreshConnections(
     `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
+  printTiming();
   return planningFailed || failures > 0 || flushFailed ? 1 : 0;
 }
 
@@ -547,10 +574,18 @@ async function defaultProviderVars(): Promise<Record<string, string | undefined>
   };
 }
 
-function providerFromVars(
+export interface JudgeTransportOverrides {
+  fetch?: typeof fetch;
+  retry?: RetryDeps;
+}
+
+export function providerFromVars(
   vars: Record<string, string | undefined>,
   execute: boolean,
+  transport: JudgeTransportOverrides = {},
 ): RelationshipProviderPlan {
+  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
     const model = vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL;
@@ -565,7 +600,8 @@ function providerFromVars(
       estimate: (input) => estimateOpenAI(input, model, effort),
       judge: (input) =>
         judgeRelationships(input, {
-          fetch: globalThis.fetch,
+          fetch: fetchImpl,
+          retry,
           provider,
           openaiApiKey: vars.OPENAI_API_KEY ?? "",
           openaiModel: model,
@@ -589,7 +625,8 @@ function providerFromVars(
     estimate: (input) => estimateAnthropic(input, model, effort),
     judge: (input) =>
       judgeRelationships(input, {
-        fetch: globalThis.fetch,
+        fetch: fetchImpl,
+        retry,
         provider,
         openaiApiKey: vars.OPENAI_API_KEY ?? "",
         anthropicApiKey: vars.ANTHROPIC_API_KEY,
