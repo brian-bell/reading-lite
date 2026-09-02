@@ -382,7 +382,9 @@ binding = "READING_JOBS"
     h.deps.createStorage = async (...args) => {
       const storage = await originalCreateStorage(...args);
       const putManifestIfMatch = storage.putManifestIfMatch;
-      // A conditional write that actually compares: a stale ETag loses.
+      // A conditional write that actually compares: a stale ETag loses. The
+      // loser is still recorded, because `h.writes` is the attempts the pass
+      // made, not the writes that landed.
       storage.putManifestIfMatch = async (keyPrefix, next, etag) => {
         if (h.manifests.get(keyPrefix)?.etag !== etag) {
           h.writes.push({ keyPrefix, manifest: next, etag });

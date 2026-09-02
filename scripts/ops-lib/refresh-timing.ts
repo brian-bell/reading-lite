@@ -153,10 +153,11 @@ export function timedNeighboursR2(
 }
 
 /**
- * Times the tier-2/3 storage surface. Manifest reads are split between
- * planning and execute by `manifestReadPhase`, which the command flips when
- * it stops planning, because the fixed planning cost every invocation repays
- * is the number a later slice is trying to remove.
+ * Times the tier-2/3 storage surface. `manifestReadPhase` is what a command
+ * uses to say which reads are the fixed planning cost every invocation repays
+ * and which are not: tier 3 flips it when it stops planning, since it re-reads
+ * a side it has already written, while tier 2 reads nothing after planning and
+ * passes the planning phase throughout.
  */
 export function timedRefreshStorage(
   storage: RefreshConnectionsStorage,
