@@ -241,6 +241,27 @@ function selectStorage(
 const REVERSE_QUERY_FAILURE_BUDGET = 3;
 
 /**
+ * The exit-code contract this command answers on, documented in
+ * docs/operations.md. It splits the one thing an operator has to decide from
+ * the exit status alone: whether the next action is theirs (re-run the pass, or
+ * fix the index/credentials/contention behind it) or a reading's.
+ *
+ * 0 — nothing outstanding.
+ * 1 — real work left undone: a whole-pass configuration failure, a failed
+ *     query/write/flush, or contention the pass could not get through. The
+ *     operator re-runs or repairs infrastructure, and the marker did not move
+ *     past whatever was missed.
+ * 3 — the pass itself completed, and its marker advanced, but specific readings
+ *     need a human: no indexed vector, or a manifest that fails ManifestSchema.
+ *     Re-running changes nothing until they are repaired.
+ *
+ * 2 stays the CLI's usage code (scripts/ops-lib/cli.ts) and is not used here.
+ */
+const EXIT_OK = 0;
+const EXIT_INCOMPLETE = 1;
+const EXIT_NEEDS_ATTENTION = 3;
+
+/**
  * How the operator narrowed this pass below its scope, for the report header.
  * A `--limit` that was never reached narrowed nothing, and saying otherwise
  * would have the report call a pass partial while the marker records it as
@@ -644,6 +665,21 @@ async function refreshNeighbours(
     );
   }
 
+  // Readings the pass finished with and cannot measure until someone repairs
+  // them, as against `errored`, which is work this pass still owes the corpus.
+  const unmeasurable = noVector + invalid;
+  // A pass the operator narrowed by hand covers neither the corpus nor its
+  // scope — the same condition under which `advanceMarker` stands down — so
+  // "nothing was measured" there says nothing about the configuration. Naming
+  // one broken reading with --only is not a misconfigured index.
+  const handNarrowed = opts.only.length > 0 || plan.truncated;
+  // Zero measurements out of a non-empty scope is not a corpus with a lot of
+  // broken readings; it is a pass that could not read the corpus at all. A
+  // wrong --vectorize index, a wrong tenant namespace, or an expired token all
+  // look exactly like this, and advancing the marker on one would silently
+  // declare the whole scope refreshed and never look at it again.
+  const configurationFailure = !handNarrowed && plan.targets.length > 0 && measured === 0;
+
   // What stops the marker is an unfinished pass, not an unmeasurable reading.
   // A failed query, an unparseable manifest, a failed write or a failed flush
   // all leave work this pass owed the corpus undone, so the next one must sweep
@@ -652,7 +688,7 @@ async function refreshNeighbours(
   // someone repairs it, and pinning the marker on it would hold the whole scope
   // at an ever-older timestamp. Those are carried on the marker instead, and
   // the run still exits non-zero so they stay visible.
-  if (!flushFailed && errored === 0) {
+  if (!flushFailed && errored === 0 && !configurationFailure) {
     await advanceMarker({
       opts,
       r2,
@@ -671,24 +707,45 @@ async function refreshNeighbours(
     });
   }
 
-  const failed = noVector + errored + invalid;
-  if (flushFailed || errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
-    if (flushFailed) {
-      io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
-    }
-    if (errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
-      const n = opts.execute ? failed : errored + invalid;
-      io.stderr(
-        `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
-      );
-    }
-    return 1;
+  // An unfinished pass owes the corpus another one; an unmeasurable reading
+  // owes a repair. Only the first is the operator's to re-run.
+  const incomplete = flushFailed || errored > 0;
+  if (flushFailed) {
+    io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
+  }
+  if (errored + unmeasurable > 0) {
+    io.stderr(
+      `\n${errored + unmeasurable} of ${plan.targets.length} attempted reading(s) were not ` +
+        `${opts.execute ? "refreshed" : "measured"} — ` +
+        (incomplete
+          ? "run incomplete."
+          : "the pass finished; these readings need repair before they can be measured."),
+    );
+  }
+
+  if (configurationFailure) {
+    io.stderr(
+      `\nConfiguration failure: 0 of ${plan.targets.length} reading(s) in scope could be ` +
+        `measured (no vector: ${noVector}, failed: ${errored}, schema-invalid: ${invalid}). ` +
+        "A whole scope that answers this way is a wrong Vectorize index, a wrong tenant " +
+        "namespace, or an expired credential far more often than it is a broken corpus, so " +
+        "neither run marker advanced and the next pass measures the same scope. Exit 1.",
+    );
+    return EXIT_INCOMPLETE;
+  }
+  if (incomplete) return EXIT_INCOMPLETE;
+  if (unmeasurable > 0) {
+    io.stderr(
+      `Exit 3: the pass completed${opts.execute ? " and its marker advanced" : ""}; ` +
+        `${unmeasurable} reading(s) need human attention before they can be measured.`,
+    );
+    return EXIT_NEEDS_ATTENTION;
   }
 
   if (!opts.execute) {
     io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
   }
-  return 0;
+  return EXIT_OK;
 }
 
 /**
@@ -904,12 +961,26 @@ way.
 
 A reading with no indexed vector, or a manifest that fails ManifestSchema, is
 unmeasurable rather than unfinished: the pass records its id on the marker,
-measures it again on every later pass while it stays ready, and still exits 1.
+measures it again on every later pass while it stays ready, and exits 3.
 (One that stops being ready leaves the marker; it returns through its own
 timestamps when it is ready again, or through the weekly sweep.)
 A failed query, an unparseable manifest, a failed write or a failed list flush
 does hold the marker back, because the next pass has to sweep to find what this
 one left undone.
+
+Exit codes:
+  0  Nothing outstanding.
+  1  Real work left undone and the marker did not move past it: a failed query,
+     write or list flush — or a configuration failure, meaning a non-empty scope
+     of which nothing at all could be measured (a wrong --vectorize index, a
+     wrong --tenant namespace, or an expired credential looks exactly like
+     this). Re-run, or fix the infrastructure, then re-run.
+  2  Usage error (the CLI's, not this command's).
+  3  The pass completed and its marker advanced, but some readings need a human:
+     no indexed vector, or a manifest that fails ManifestSchema. Re-running
+     changes nothing until they are repaired.
+A pass narrowed by --only or a --limit that truncated it never claims a
+configuration failure: it measured a subset it was told to measure.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).

@@ -70,6 +70,8 @@ function makeDeps(opts: {
   /** Per-id match override, so a reverse query can answer differently. */
   matchesFor?: (id: string, topK: number) => RefreshNeighbour[] | null | undefined;
   manifest?: unknown;
+  /** Per-key-prefix manifest override, so one reading can be broken and another not. */
+  manifestFor?: (keyPrefix: string) => unknown | undefined;
   manifestThrow?: string;
   queryThrow?: (id: string) => Error | undefined;
   listEtag?: string;
@@ -103,8 +105,10 @@ function makeDeps(opts: {
         if (opts.stateWriteThrow) throw new Error(opts.stateWriteThrow);
         calls.stateWrites.push(state);
       },
-      readManifest: async () => {
+      readManifest: async (keyPrefix) => {
         if (opts.manifestThrow) throw new Error(opts.manifestThrow);
+        const override = opts.manifestFor?.(keyPrefix);
+        if (override !== undefined) return override;
         return opts.manifest === undefined ? { ...VALID_MANIFEST } : opts.manifest;
       },
       queryByVectorId: async (_index, id, topK, namespace, queryOpts) => {
@@ -392,7 +396,10 @@ describe("ops corpus refresh-neighbours", () => {
     expect(calls.reports).toHaveLength(0);
   });
 
-  it("a missing vector makes an execute run incomplete (exit 1)", async () => {
+  // The only reading in scope owns no vector, so the pass measured nothing at
+  // all: a configuration failure rather than one broken reading (exit 1), and
+  // the report is still written.
+  it("a scope of one whose vector is missing is a configuration failure (exit 1)", async () => {
     const { deps, calls } = makeDeps({ items: [READY], matches: null });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--execute", "--sole-writer"], deps);
     expect(code).toBe(1);
@@ -400,10 +407,24 @@ describe("ops corpus refresh-neighbours", () => {
     expect(calls.reports).toHaveLength(1);
   });
 
-  it("plan mode still exits 0 when a vector is missing", async () => {
-    const { deps } = makeDeps({ items: [READY], matches: null });
+  it("plan mode reports a whole unmeasurable scope as a configuration failure too", async () => {
+    const { deps, lines } = makeDeps({ items: [READY], matches: null });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
-    expect(code).toBe(0);
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toMatch(/Configuration failure: 0 of 1 reading\(s\) in scope/);
+  });
+
+  // One unmeasurable reading among measured ones is the reading's problem, not
+  // the operator's: exit 3, not the configuration failure above.
+  it("exits 3 in plan mode when some readings are unmeasurable and others are not", async () => {
+    const { deps, lines } = makeDeps({
+      matchesFor: (id) => (id === "rd_r" ? null : undefined),
+    });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(3);
+    const text = lines.join("\n");
+    expect(text).not.toContain("Configuration failure");
+    expect(text).toMatch(/need human attention/);
   });
 
   it("honours --out for the report path", async () => {
@@ -494,11 +515,14 @@ describe("ops corpus refresh-neighbours", () => {
       manifest: { ...VALID_MANIFEST, connections: [{ id: "rd_n" }] },
     });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "rd_r"], deps);
-    expect(code).toBe(1);
+    // The operator named this reading, so measuring none of it says nothing
+    // about the configuration: a broken reading needing repair, exit 3.
+    expect(code).toBe(3);
     expect(calls.puts).toHaveLength(0);
     expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
     expect(lines.join("\n")).toMatch(/manifest fails ManifestSchema for rd_r/);
-    expect(lines.join("\n")).toMatch(/not measured — run incomplete/);
+    expect(lines.join("\n")).toMatch(/these readings need repair/);
+    expect(lines.join("\n")).not.toContain("Configuration failure");
   });
 
   it("execute fails closed on a schema-invalid manifest even without snapshot drift", async () => {
@@ -518,7 +542,7 @@ describe("ops corpus refresh-neighbours", () => {
       ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
-    expect(code).toBe(1);
+    expect(code).toBe(3);
     expect(calls.puts).toHaveLength(0);
     expect(calls.indexWrites).toBe(0);
     expect(JSON.parse(calls.reports[0]!.body).readings).toEqual([]);
@@ -981,7 +1005,9 @@ describe("ops corpus refresh-neighbours", () => {
         deps,
       );
       // Still flagged: the reading is unmeasured and the operator must see it.
-      expect(code).toBe(1);
+      // Exit 3 rather than 1 — the pass did its job, this one reading needs a
+      // human, and re-running the pass will not change that.
+      expect(code).toBe(3);
       expect(calls.stateWrites).toEqual([
         {
           version: 2,
@@ -999,15 +1025,57 @@ describe("ops corpus refresh-neighbours", () => {
     it("records a manifest that fails ManifestSchema as unmeasurable too", async () => {
       const { deps, calls } = makeDeps({
         state: MARKER,
-        items: [READY],
-        manifest: { ...VALID_MANIFEST, status: "not-a-status" },
+        // rd_n measures normally, so the pass is a partial gap rather than the
+        // whole-scope configuration failure below.
+        manifestFor: (keyPrefix) =>
+          keyPrefix === "readings/rd_r"
+            ? { ...VALID_MANIFEST, status: "not-a-status" }
+            : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(3);
+      expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
+    });
+
+    // The distinction this whole contract turns on. Above: a few unmeasurable
+    // readings among measured ones — the marker advances past them and the exit
+    // says "a reading needs a human". Here: nothing in a non-empty scope could
+    // be measured, which is what a wrong index or namespace looks like — the
+    // marker freezes and the exit says "the operator has infrastructure to fix".
+    it("freezes both markers and exits 1 when nothing in a non-empty scope was measured", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        // Every target answers "no vector", as a query against the wrong
+        // Vectorize index or the wrong tenant namespace does.
+        matches: null,
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(1);
-      expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
+      expect(calls.stateWrites).toEqual([]);
+      const text = lines.join("\n");
+      expect(text).toContain("Configuration failure: 0 of 2 reading(s) in scope could be measured");
+      expect(text).toContain("no vector: 2");
+      expect(text).toContain("neither run marker advanced");
+    });
+
+    // An empty scope is a quiet night, not a failure: nothing to measure is
+    // exactly what an incremental pass hopes to find.
+    it("exits 0 on an empty scope rather than calling it a configuration failure", async () => {
+      // Nothing has moved since the marker, so no reading is in scope at all.
+      const { deps, calls, lines } = makeDeps({ state: MARKER, matches: null });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).not.toContain("Configuration failure");
+      expect(calls.stateWrites).toHaveLength(1);
     });
 
     // The retried id enters the scope without entering `changed`: treating a
@@ -1301,6 +1369,77 @@ describe("ops corpus refresh-neighbours", () => {
       expect(code).toBe(0);
       expect(calls.puts.map((p) => p.key).sort()).toEqual(["readings/rd_n", "readings/rd_r"]);
       expect(calls.indexWrites).toBe(1);
+    });
+
+    // One place that pins the whole contract, so a later change to any single
+    // failure mode has to say which side of the 1/3 line it lands on.
+    describe("exit-code contract", () => {
+      it("exits 0 when every target measured and nothing is outstanding", async () => {
+        const { deps } = makeDeps({ state: MARKER });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(0);
+      });
+
+      it("exits 1 when a measurement failed — the operator re-runs", async () => {
+        const { deps, calls } = makeDeps({
+          state: MARKER,
+          queryThrow: (id) => (id === "rd_r" ? new Error("503") : undefined),
+        });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(1);
+        expect(calls.stateWrites).toEqual([]);
+      });
+
+      it("exits 1 when the list flush failed — the operator re-runs", async () => {
+        const { deps, calls } = makeDeps({
+          state: MARKER,
+          items: [{ ...READY, similarity: undefined }, NEIGHBOUR],
+        });
+        deps.r2.mergeListRows = async () => {
+          throw new Error("put index/list.json failed: 500");
+        };
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(1);
+        expect(calls.stateWrites).toEqual([]);
+      });
+
+      it("exits 1 when nothing in a non-empty scope could be measured", async () => {
+        const { deps, calls } = makeDeps({ state: MARKER, matches: null });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(1);
+        expect(calls.stateWrites).toEqual([]);
+      });
+
+      it("exits 3 when the pass completed and only specific readings need a human", async () => {
+        const { deps, calls } = makeDeps({
+          state: MARKER,
+          matchesFor: (id) => (id === "rd_r" ? null : undefined),
+        });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(3);
+        // The pass completed, so the marker moved and carried the id forward.
+        expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
+      });
+
+      it("documents the exit codes in help", () => {
+        expect(corpusRefreshNeighboursCommand.helpText).toContain("Exit codes:");
+        expect(corpusRefreshNeighboursCommand.helpText).toMatch(/3 {2}The pass completed/);
+      });
     });
 
     it("rejects --since-last-run together with --full", async () => {

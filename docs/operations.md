@@ -501,11 +501,26 @@ not report the corpus as covered.
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
 `unmeasurable_ids` on the marker, measures it again on every later pass until it
-is repaired, and still exits 1 so it stays visible — the marker advances past it
+is repaired, and exits 3 so it stays visible — the marker advances past it
 rather than pinning the whole scope on an ever-older timestamp. A failed query,
 an unparseable manifest, a failed manifest write or a failed `index/list.json`
-flush is different: that pass left work undone, so the marker stays where it was
-and the next pass sweeps.
+flush is different: that pass left work undone, so the marker stays where it was,
+the next pass sweeps, and the exit is 1.
+
+**A whole scope of unmeasurable readings is a different thing again.** A
+non-empty scope of which *nothing at all* was measured is not a corpus with a lot
+of broken readings; it is a pass that could not read the corpus. A wrong
+`--vectorize` index, a wrong `--tenant` namespace, and an expired Vectorize
+credential all present as every target reporting "no vector". Advancing the
+marker there would declare the whole scope refreshed on the strength of zero
+measurements and never look at it again, so the pass instead leaves both
+`last_run_at` and `last_full_run_at` where they were, prints
+`Configuration failure: 0 of N reading(s) in scope could be measured` with the
+`no vector` / `failed` / `schema-invalid` breakdown, and exits 1. An empty scope
+is untouched by this: a quiet night measures nothing and exits 0. So is a pass
+narrowed by `--only` or by a `--limit` that truncated it — it measured the
+subset it was told to, which says nothing about the configuration, so naming one
+broken reading with `--only` exits 3, not 1.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -531,6 +546,45 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 # Weekly.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
 ```
+
+### Refresh exit codes
+
+`ops corpus refresh-neighbours` distinguishes work the *operator* owns from work
+a *reading* owns, so a nightly schedule can alert on one and file the other:
+
+| Code | Meaning | Who acts |
+|---|---|---|
+| 0 | Nothing outstanding. | nobody |
+| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator — re-run, or fix the index/credentials first |
+| 2 | Usage error (unknown flag, missing `--tenant`, bad `--max-backoff`). Enforced by the CLI, not the command. | operator — fix the invocation |
+| 3 | The pass completed and its marker advanced, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+
+The line between 1 and 3 is whether re-running the same command could help. It
+can after a 1 and cannot after a 3, which is why a 3 is not a page: the ids are
+on the marker under `unmeasurable_ids` and every later pass retries them.
+
+There is no cron wrapper script in this repository — the nightly and weekly
+invocations above are meant to be scheduled directly — so a scheduler wanting
+this distinction has to make it itself:
+
+```sh
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --since-last-run --execute --sole-writer
+case $? in
+  0) ;;            # clean
+  3) file_ticket ;; # specific readings need repair; the pass itself was fine
+  *) page ;;        # 1 (re-run or fix infrastructure) or 2 (bad invocation)
+esac
+```
+
+`refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
+non-zero cause they have — a planning read that failed, a judgement that failed,
+a lost manifest CAS, a failed list flush, a `--max-backoff` ceiling — is a
+re-run-or-fix case, which is code 1 under the same rule. Code 3 stays reserved
+in those two commands rather than mapped onto their nearest analogue (a live
+manifest that is invalid at plan time), because that condition currently shares
+one `planningFailed` flag with transient read errors, and splitting it is a
+separate change.
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,
