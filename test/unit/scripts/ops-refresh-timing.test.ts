@@ -127,7 +127,7 @@ describe("timed storage wrappers", () => {
     await r2.putManifest("readings/2026/rd_a", {}, deps);
     await r2.mergeListRows([{ id: "rd_a" }], deps);
     await r2.writeRefreshState(
-      { version: 1, last_run_at: "2026-08-22T12:00:00.000Z", list_row_count: 1 },
+      { version: 1, last_run_at: "2026-08-22T12:00:00.000Z", ready_ids: ["rd_a"] },
       deps,
     );
 

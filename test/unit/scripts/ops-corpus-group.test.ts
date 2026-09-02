@@ -420,9 +420,20 @@ describe("ops corpus backfill-vectors", () => {
     created_at: "2026-08-01T00:00:00.000Z", updated_at: "2026-08-01T00:00:00.000Z",
   };
 
-  function makeDeps() {
+  const MARKER = {
+    version: 1 as const,
+    last_run_at: "2026-08-22T12:00:00.000Z",
+    ready_ids: ["rd_v"],
+  };
+
+  function makeDeps(marker: unknown = MARKER) {
     const { io: cio, lines } = io();
-    const calls = { embeds: 0, upserts: 0, writersMade: 0 };
+    const calls = {
+      embeds: 0,
+      upserts: 0,
+      writersMade: 0,
+      markerWrites: [] as unknown[],
+    };
     const deps: CorpusBackfillVectorsDeps = {
       io: cio,
       r2: {
@@ -434,6 +445,10 @@ describe("ops corpus backfill-vectors", () => {
         ],
         vectorExists: async () => false,
         readManifest: async () => READY_MANIFEST,
+        readRefreshState: async () => marker,
+        writeRefreshState: async (state) => {
+          calls.markerWrites.push(state);
+        },
       },
       makeWriters: async () => {
         calls.writersMade++;
@@ -501,6 +516,52 @@ describe("ops corpus backfill-vectors", () => {
       [`${tenantId}:rd_v`],
     ]);
     expect(upserts[0]?.[0]?.metadata?.tenant_id).toBe(tenantId);
+  });
+
+  // A restored vector moves neighbourhoods without moving any timestamp or
+  // ETag a tier-1 incremental scope can read, so the marker has to say so
+  // itself rather than rely on the operator remembering --full.
+  it("invalidates the tier-1 run marker after restoring a vector", async () => {
+    const { deps, calls, lines } = makeDeps();
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(0);
+    expect(calls.markerWrites).toEqual([
+      { ...MARKER, invalidated_by: "corpus backfill-vectors (1 vector(s) restored)" },
+    ]);
+    expect(lines.join("\n")).toContain("Run marker invalidated");
+  });
+
+  it("leaves the run marker alone in plan mode", async () => {
+    const { deps, calls } = makeDeps();
+    await corpusBackfillVectorsCommand.run(["--tenant", "global"], deps);
+    expect(calls.markerWrites).toEqual([]);
+  });
+
+  it("writes no marker when there is nothing usable to invalidate", async () => {
+    for (const stored of [null, { version: 9 }]) {
+      const { deps, calls, lines } = makeDeps(stored);
+      const code = await corpusBackfillVectorsCommand.run(
+        ["--tenant", "global", "--execute"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.markerWrites).toEqual([]);
+      expect(lines.join("\n")).toContain("the next refresh pass already sweeps");
+    }
+  });
+
+  // The next pass would scope narrowly around vectors it cannot see, so the run
+  // is not clean and the operator is told what to run instead.
+  it("fails the run when the marker cannot be invalidated", async () => {
+    const { deps, lines } = makeDeps();
+    deps.r2.writeRefreshState = async () => {
+      throw new Error("no write");
+    };
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(1);
+    const text = lines.join("\n");
+    expect(text).toContain("could not invalidate the tier-1 run marker: no write");
+    expect(text).toContain("refresh-neighbours --full");
   });
 
   it("fails closed without --tenant", async () => {

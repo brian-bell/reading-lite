@@ -257,6 +257,49 @@ binding = "READING_JOBS"
     });
   });
 
+  // A nightly log that does not say what tier 1 measured cannot be read as
+  // covering the corpus: an incremental report and a full one list flagged
+  // readings identically.
+  describe("scope header", () => {
+    it("prints an incremental scope, its reason, and how it was narrowed", async () => {
+      const h = harness();
+      h.readReport.mockResolvedValue(
+        JSON.stringify({
+          ...report(["rd_a"]),
+          scope: {
+            kind: "incremental",
+            reason: "4 reading(s) changed since 2026-08-21T00:00:00.000Z",
+            since: "2026-08-21T00:00:00.000Z",
+            readings_in_scope: 9,
+            narrowed_by: "--limit 3",
+          },
+        }),
+      );
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(h.out.join("\n")).toContain(
+        "Scope: incremental (9 reading(s)) — 4 reading(s) changed since " +
+          "2026-08-21T00:00:00.000Z; narrowed by --limit 3",
+      );
+    });
+
+    it("prints a full scope with the reason the pass could not be narrowed", async () => {
+      const h = harness();
+      h.readReport.mockResolvedValue(
+        JSON.stringify({ ...report(["rd_a"]), scope: { kind: "full", reason: "--full" } }),
+      );
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(h.out.join("\n")).toContain("Scope: full — --full");
+    });
+
+    // Reports written before the scope header exists were full passes, but the
+    // file does not say so, and the header must not claim more than it reads.
+    it("says the scope is unstated when the report carries no header", async () => {
+      const h = harness();
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(h.out.join("\n")).toContain("Scope: unstated — the report predates the scope header");
+    });
+  });
+
   it("prints every planned judgement and estimated cost without provider or storage writes", async () => {
     const h = harness();
     expect(

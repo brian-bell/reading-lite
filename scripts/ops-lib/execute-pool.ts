@@ -58,6 +58,26 @@ export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
 export const DEFAULT_MAX_BACKOFF_MS = 600_000;
 
 /**
+ * Floor on `--max-backoff`. A single honoured window already costs up to
+ * RATE_LIMIT_MAX_BACKOFF_MS, so a budget below that stops the pass on the first
+ * 429 it meets — which reads as "the provider is down" when it is not. Set to
+ * half a minute so the smallest budget an operator can ask for still buys a
+ * real window, and a typo of `--max-backoff 10` (ten seconds, not ten minutes)
+ * is refused rather than silently gutting the pass.
+ */
+export const MIN_MAX_BACKOFF_MS = 30_000;
+
+/**
+ * Ceiling on `--max-backoff`. The budget's job is to bound the sole-writer
+ * window a rate-limited pass sits on; half an hour is already longer than a
+ * full tier takes, so a budget above it has stopped bounding anything. It is
+ * also what catches the other half of the unit confusion: `--max-backoff 600`
+ * is ten minutes, but `--max-backoff 600m` is ten hours of held sole-writer
+ * window, and only one of them is a figure anybody meant.
+ */
+export const MAX_MAX_BACKOFF_MS = 1_800_000;
+
+/**
  * Ceiling on `--concurrency`. The default of 4 was chosen for the shared
  * provider org; a mistyped `--concurrency 400` would fan four hundred paid
  * calls at that same org, which is the thing the default is protecting. Well
@@ -109,7 +129,26 @@ export function parseMaxBackoffFlag(raw: string | undefined): number {
       `--max-backoff ${JSON.stringify(raw)} must be a finite positive duration`,
     );
   }
+  if (ms < MIN_MAX_BACKOFF_MS) {
+    throw new UsageError(
+      `--max-backoff ${JSON.stringify(raw)} is below the ${formatDuration(MIN_MAX_BACKOFF_MS)} ` +
+      "this command allows — a smaller budget stops the pass on its first rate limit " +
+      "(the bare unit is seconds, so 10m is ten minutes and 10 is ten seconds)",
+    );
+  }
+  if (ms > MAX_MAX_BACKOFF_MS) {
+    throw new UsageError(
+      `--max-backoff ${JSON.stringify(raw)} is above the ${formatDuration(MAX_MAX_BACKOFF_MS)} ` +
+      "this command allows — the budget exists to bound how long a rate-limited pass " +
+      "holds the sole-writer window",
+    );
+  }
   return ms;
+}
+
+/** `30s` / `30m` for a bound, so the message names the unit it is judging. */
+function formatDuration(ms: number): string {
+  return ms % 60_000 === 0 ? `${ms / 60_000}m` : `${ms / 1_000}s`;
 }
 
 export interface RateLimitGate {

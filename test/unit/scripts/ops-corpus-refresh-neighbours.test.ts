@@ -702,7 +702,7 @@ describe("ops corpus refresh-neighbours", () => {
     const MARKER: RefreshState = {
       version: 1,
       last_run_at: "2026-08-21T00:00:00.000Z",
-      list_row_count: 2,
+      ready_ids: ["rd_n", "rd_r"],
     };
 
     /** Both list rows unchanged since the marker, so nothing is in scope. */
@@ -776,7 +776,7 @@ describe("ops corpus refresh-neighbours", () => {
         updated_at: "2026-08-21T12:00:00.000Z",
       }));
       const { deps, calls, lines } = makeDeps({
-        state: { ...MARKER, list_row_count: changed.length },
+        state: { ...MARKER, ready_ids: changed.map((row) => row.id) },
         items: changed,
         queryThrow: () => new Error("401"),
       });
@@ -827,16 +827,50 @@ describe("ops corpus refresh-neighbours", () => {
       }
     });
 
-    it("sweeps when the corpus lost a row, which no timestamp can name", async () => {
+    it("sweeps when the corpus lost a reading, which no timestamp can name", async () => {
       const { deps, lines } = makeDeps({
-        state: { ...MARKER, list_row_count: 5 },
+        state: { ...MARKER, ready_ids: ["rd_n", "rd_purged", "rd_r"] },
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run"],
         deps,
       );
       expect(code).toBe(0);
-      expect(lines.join("\n")).toContain("Scope: full — 3 list row(s) removed since the last run");
+      expect(lines.join("\n")).toContain(
+        "Scope: full — 1 ready reading(s) removed since the last run, first rd_purged",
+      );
+    });
+
+    // Row counts cannot see this: the list is LONGER than the marker's, and two
+    // readings are still gone.
+    it("sweeps on a purge whose ingests more than replaced the missing rows", async () => {
+      const { deps, lines } = makeDeps({
+        state: { ...MARKER, ready_ids: ["rd_gone_a", "rd_gone_b"] },
+        items: [READY, NEIGHBOUR, { ...NEIGHBOUR, id: "rd_n2", key_prefix: "readings/rd_n2" }],
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        "Scope: full — 2 ready reading(s) removed since the last run, first rd_gone_a",
+      );
+    });
+
+    it("sweeps while the marker carries a backfill-vectors invalidation", async () => {
+      const { deps, lines } = makeDeps({
+        state: { ...MARKER, invalidated_by: "corpus backfill-vectors (3 vector(s) restored)" },
+        listEtag: "etag-1",
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        "Scope: full — run marker invalidated by corpus backfill-vectors (3 vector(s) restored)",
+      );
     });
 
     it("records the scope in the report header", async () => {
@@ -887,7 +921,7 @@ describe("ops corpus refresh-neighbours", () => {
         {
           version: 1,
           last_run_at: "2026-08-22T12:00:00.000Z",
-          list_row_count: 2,
+          ready_ids: ["rd_n", "rd_r"],
         },
       ]);
     });
@@ -932,6 +966,83 @@ describe("ops corpus refresh-neighbours", () => {
       expect(calls.stateWrites).toHaveLength(1);
     });
 
+    // Holding the marker on a reading nobody can measure pins the whole scope
+    // on an ever-older timestamp: nothing about a vectorless reading's row will
+    // move when its vector comes back, so the marker carries the id instead and
+    // every later pass measures it again.
+    it("advances the marker past unmeasurable readings, recording them for retry", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        // rd_r owns no vector; rd_n measures normally.
+        matchesFor: (id) => (id === "rd_r" ? null : undefined),
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      // Still flagged: the reading is unmeasured and the operator must see it.
+      expect(code).toBe(1);
+      expect(calls.stateWrites).toEqual([
+        {
+          version: 1,
+          last_run_at: "2026-08-22T12:00:00.000Z",
+          last_full_run_at: "2026-08-22T12:00:00.000Z",
+          ready_ids: ["rd_n", "rd_r"],
+          unmeasurable_ids: ["rd_r"],
+        },
+      ]);
+      expect(lines.join("\n")).toContain(
+        "Carried on the run marker for retry: 1 unmeasurable reading(s).",
+      );
+    });
+
+    it("records a manifest that fails ManifestSchema as unmeasurable too", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        items: [READY],
+        manifest: { ...VALID_MANIFEST, status: "not-a-status" },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(1);
+      expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
+    });
+
+    // The retried id enters the scope without entering `changed`: treating a
+    // vectorless reading as changed would escalate the very pass that exists to
+    // retry it.
+    it("measures a carried unmeasurable reading on a later quiet night", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, unmeasurable_ids: ["rd_r"] },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.queries.map((query) => query.id)).toEqual(["rd_r"]);
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: incremental (1 reading(s))");
+      expect(text).toContain("1 unmeasurable reading(s) carried forward");
+    });
+
+    // A failed query, an unparseable manifest or a failed write leaves work
+    // this pass owed the corpus undone, so the next one still has to sweep.
+    it("holds the marker back when a measurement failed rather than was impossible", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        queryThrow: (id) => (id === "rd_r" ? new Error("boom") : undefined),
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(1);
+      expect(calls.stateWrites).toEqual([]);
+    });
+
     // A written marker is an optimisation, not corpus state: every snapshot the
     // pass owed R2 is already committed when it is attempted.
     it("does not fail a completed pass whose marker write failed", async () => {
@@ -950,7 +1061,7 @@ describe("ops corpus refresh-neighbours", () => {
       // One reading whose stored snapshot already matches the measurement, so
       // the pass writes nothing at all.
       const quiet = makeDeps({
-        state: { ...MARKER, list_row_count: 1 },
+        state: { ...MARKER, ready_ids: ["rd_r"] },
         listEtag: "etag-1",
         items: [READY],
         matches: [{ id: "rd_r", score: 1 }],

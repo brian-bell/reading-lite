@@ -346,6 +346,43 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.out.join("\n")).toContain("Judged: 1; manifests written: 2; repaired: 0; skipped since plan: 0; failures: 0");
   });
 
+  // Same reason as tier 2: without this line a nightly log cannot be told from
+  // one covering the whole corpus.
+  describe("scope header", () => {
+    it("prints the tier-1 scope the report was written under", async () => {
+      const h = harness();
+      h.readReport.mockResolvedValue(
+        JSON.stringify({
+          ...report(),
+          scope: {
+            kind: "incremental",
+            reason: "2 reading(s) changed since 2026-08-21T00:00:00.000Z",
+            since: "2026-08-21T00:00:00.000Z",
+            readings_in_scope: 5,
+          },
+        }),
+      );
+      expect(await run(h)).toBe(0);
+      expect(h.out.join("\n")).toContain(
+        "Scope: incremental (5 reading(s)) — 2 reading(s) changed since 2026-08-21T00:00:00.000Z",
+      );
+    });
+
+    it("says the scope is unstated when the report carries no header", async () => {
+      const h = harness();
+      expect(await run(h)).toBe(0);
+      expect(h.out.join("\n")).toContain("Scope: unstated — the report predates the scope header");
+    });
+
+    // A --pair-only pass came from no report, so there is no tier-1 scope to
+    // name and printing one would name a scope nothing here came from.
+    it("prints no scope line for a --pair-only pass", async () => {
+      const h = harness();
+      expect(await run(h, "--pair", "rd_a,rd_c", "--execute", "--sole-writer")).toBe(0);
+      expect(h.out.join("\n")).not.toContain("Scope:");
+    });
+  });
+
   it("lets --pair bypass the overlap filter and the judged skip, and ignores the default report", async () => {
     const h = harness();
     h.stored("rd_a").tensions_judged = [{ id: "rd_c", judged_at: JUDGED_AT }];

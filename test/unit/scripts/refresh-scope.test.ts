@@ -30,7 +30,7 @@ function row(id: string, over: Partial<RefreshRow> = {}): RefreshRow {
 }
 
 function marker(over: Partial<RefreshState> = {}): RefreshState {
-  return { version: 1, last_run_at: LAST_RUN, list_row_count: 0, ...over };
+  return { version: 1, last_run_at: LAST_RUN, ready_ids: [], ...over };
 }
 
 function reverse(entries: Record<string, ReverseMatches>): Map<string, ReverseMatches> {
@@ -43,14 +43,14 @@ describe("parseRefreshState", () => {
       previous: null,
       runAt: LAST_RUN,
       full: true,
-      listRowCount: 553,
+      readyIds: ["rd_b", "rd_a"],
       listEtag: "abc123",
     });
     expect(built).toEqual({
       version: 1,
       last_run_at: LAST_RUN,
       last_full_run_at: LAST_RUN,
-      list_row_count: 553,
+      ready_ids: ["rd_a", "rd_b"],
       list_etag: "abc123",
     });
     expect(parseRefreshState(JSON.parse(JSON.stringify(built)))).toEqual(built);
@@ -62,13 +62,34 @@ describe("parseRefreshState", () => {
       previous,
       runAt: AFTER,
       full: false,
-      listRowCount: 4,
+      readyIds: ["rd_a"],
     });
     expect(built).toEqual({
       version: 1,
       last_run_at: AFTER,
       last_full_run_at: BEFORE,
-      list_row_count: 4,
+      ready_ids: ["rd_a"],
+    });
+  });
+
+  it("records unmeasurable ids from this pass only, and clears an invalidation", () => {
+    const previous = marker({
+      unmeasurable_ids: ["rd_repaired"],
+      invalidated_by: "corpus backfill-vectors",
+    });
+    const built = buildRefreshState({
+      previous,
+      runAt: AFTER,
+      full: true,
+      readyIds: ["rd_a", "rd_stuck"],
+      unmeasurableIds: ["rd_stuck", "rd_stuck"],
+    });
+    expect(built).toEqual({
+      version: 1,
+      last_run_at: AFTER,
+      last_full_run_at: AFTER,
+      ready_ids: ["rd_a", "rd_stuck"],
+      unmeasurable_ids: ["rd_stuck"],
     });
   });
 
@@ -76,22 +97,36 @@ describe("parseRefreshState", () => {
     expect(parseRefreshState(null)).toBeNull();
     expect(parseRefreshState("{}")).toBeNull();
     expect(parseRefreshState([])).toBeNull();
-    expect(parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_row_count: 1 })).toBeNull();
-    expect(parseRefreshState({ version: 1, last_run_at: "nonsense", list_row_count: 1 })).toBeNull();
+    expect(parseRefreshState({ version: 2, last_run_at: LAST_RUN, ready_ids: [] })).toBeNull();
+    expect(parseRefreshState({ version: 1, last_run_at: "nonsense", ready_ids: [] })).toBeNull();
     expect(parseRefreshState({ version: 1, last_run_at: LAST_RUN })).toBeNull();
-    expect(parseRefreshState({ version: 1, last_run_at: LAST_RUN, list_row_count: -1 })).toBeNull();
-    expect(parseRefreshState({ version: 1, last_run_at: LAST_RUN, list_row_count: 1.5 })).toBeNull();
+    expect(parseRefreshState({ version: 1, last_run_at: LAST_RUN, ready_ids: 3 })).toBeNull();
+    expect(parseRefreshState({ version: 1, last_run_at: LAST_RUN, ready_ids: [7] })).toBeNull();
+  });
+
+  // Dropping either of these would narrow a later pass on data that is not
+  // there, so the whole marker is unusable instead — which sweeps.
+  it("rejects a marker whose retry list or invalidation is malformed", () => {
+    expect(
+      parseRefreshState({ version: 1, last_run_at: LAST_RUN, ready_ids: [], unmeasurable_ids: "rd_a" }),
+    ).toBeNull();
+    expect(
+      parseRefreshState({ version: 1, last_run_at: LAST_RUN, ready_ids: [], invalidated_by: 7 }),
+    ).toBeNull();
+    expect(
+      parseRefreshState({ version: 1, last_run_at: LAST_RUN, ready_ids: [], invalidated_by: "" }),
+    ).toBeNull();
   });
 
   it("drops an unusable last_full_run_at rather than the whole marker", () => {
     const parsed = parseRefreshState({
       version: 1,
       last_run_at: LAST_RUN,
-      list_row_count: 2,
+      ready_ids: ["rd_b", "rd_a"],
       last_full_run_at: "not a date",
       list_etag: "",
     });
-    expect(parsed).toEqual({ version: 1, last_run_at: LAST_RUN, list_row_count: 2 });
+    expect(parsed).toEqual({ version: 1, last_run_at: LAST_RUN, ready_ids: ["rd_a", "rd_b"] });
   });
 });
 
@@ -101,16 +136,98 @@ describe("incrementalScope", () => {
     expect(scope).toEqual({ kind: "full", reason: "no usable run marker" });
   });
 
-  it("escalates to full when rows were removed since the marker", () => {
-    const scope = incrementalScope([row("rd_a")], marker({ list_row_count: 3 }), reverse({}));
-    expect(scope).toEqual({ kind: "full", reason: "2 list row(s) removed since the last run" });
+  it("escalates to full when a ready reading the marker saw has left the list", () => {
+    const scope = incrementalScope(
+      [row("rd_a")],
+      marker({ ready_ids: ["rd_a", "rd_gone", "rd_also_gone"] }),
+      reverse({}),
+    );
+    expect(scope).toEqual({
+      kind: "full",
+      reason: "2 ready reading(s) removed since the last run, first rd_gone",
+    });
+  });
+
+  // The whole reason the marker records ids rather than a row count: a day that
+  // purges two readings and ingests three leaves MORE rows than the marker saw,
+  // so a count says nothing moved while two neighbourhoods silently lost a
+  // member.
+  it("escalates on a same-day purge that a growing row count would hide", () => {
+    const list = [
+      row("rd_keep"),
+      row("rd_new1", { created_at: AFTER, updated_at: AFTER }),
+      row("rd_new2", { created_at: AFTER, updated_at: AFTER }),
+      row("rd_new3", { created_at: AFTER, updated_at: AFTER }),
+    ];
+    const before = marker({ ready_ids: ["rd_keep", "rd_purged1", "rd_purged2"] });
+    expect(list.length).toBeGreaterThan(before.ready_ids.length);
+    const scope = incrementalScope(
+      list,
+      before,
+      reverse({
+        rd_new1: [{ id: "rd_new1", score: 1 }],
+        rd_new2: [{ id: "rd_new2", score: 1 }],
+        rd_new3: [{ id: "rd_new3", score: 1 }],
+      }),
+    );
+    expect(scope).toEqual({
+      kind: "full",
+      reason: "2 ready reading(s) removed since the last run, first rd_purged1",
+    });
+  });
+
+  // A ready row that merely stopped being ready is still in the list; its own
+  // timestamps put it in `changed`, and its vector is queried from there.
+  it("does not read a status flip as a removal", () => {
+    const list = [row("rd_flipped", { status: "failed", updated_at: AFTER })];
+    const scope = incrementalScope(
+      list,
+      marker({ ready_ids: ["rd_flipped"] }),
+      reverse({ rd_flipped: null }),
+    );
+    expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_flipped"] });
+  });
+
+  it("escalates to full while the marker carries an invalidation", () => {
+    const scope = incrementalScope(
+      [row("rd_a")],
+      marker({ ready_ids: ["rd_a"], invalidated_by: "corpus backfill-vectors (2 vector(s) restored)" }),
+      reverse({}),
+      // Even a byte-identical list index, which otherwise ends the pass in one
+      // read: the vectors moved under it.
+      "same-etag",
+    );
+    expect(scope).toEqual({
+      kind: "full",
+      reason: "run marker invalidated by corpus backfill-vectors (2 vector(s) restored)",
+    });
+  });
+
+  // A reading with no vector, or an invalid manifest, is not changed by being
+  // repaired — nothing about its row moves — so the marker carries it and every
+  // later pass measures it again.
+  it("carries previously unmeasurable readings into scope without treating them as changed", () => {
+    const list = [row("rd_stuck"), row("rd_quiet")];
+    const scope = incrementalScope(
+      list,
+      marker({ ready_ids: ["rd_stuck", "rd_quiet"], unmeasurable_ids: ["rd_stuck", "rd_purged"] }),
+      reverse({}),
+    );
+    expect(scope).toMatchObject({
+      kind: "incremental",
+      ids: ["rd_stuck"],
+      changed: [],
+    });
+    expect((scope as { reason: string }).reason).toContain(
+      "1 unmeasurable reading(s) carried forward",
+    );
   });
 
   it("takes a reading created since the marker into scope", () => {
     const list = [row("rd_old"), row("rd_new", { created_at: AFTER, updated_at: AFTER })];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2 }),
+      marker(),
       // An isolated reading: the only match is itself. A short result is a
       // complete one, so this must not read as a truncated neighbourhood.
       reverse({ rd_new: [{ id: "rd_new", score: 1 }] }),
@@ -122,7 +239,7 @@ describe("incrementalScope", () => {
     const list = [row("rd_old"), row("rd_redone", { updated_at: AFTER })];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({ rd_redone: [{ id: "rd_redone", score: 1 }] }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_redone"] });
@@ -134,7 +251,7 @@ describe("incrementalScope", () => {
     ];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({ rd_undated: null }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_undated"] });
@@ -145,7 +262,7 @@ describe("incrementalScope", () => {
   it("escalates to full when a changed READY reading has no vector to query", () => {
     const scope = incrementalScope(
       [row("rd_gone", { updated_at: AFTER }), row("rd_other")],
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({ rd_gone: null }),
     );
     expect(scope.kind).toBe("full");
@@ -157,7 +274,7 @@ describe("incrementalScope", () => {
   it("does not escalate when a changed NON-READY reading has no vector", () => {
     const scope = incrementalScope(
       [row("rd_failed", { status: "failed", updated_at: AFTER }), row("rd_other")],
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({ rd_failed: null }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_failed"] });
@@ -173,7 +290,7 @@ describe("incrementalScope", () => {
     ];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2 }),
+      marker(),
       // A trailing below-bound match is what says the results ran out before
       // the bound did; without one the reverse set is treated as truncated.
       reverse({
@@ -197,7 +314,7 @@ describe("incrementalScope", () => {
     ];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({ rd_moved: [{ id: "rd_citer", score: REVERSE_SCORE_BOUND - 0.01 }] }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_moved"] });
@@ -212,7 +329,7 @@ describe("incrementalScope", () => {
     ];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 4 }),
+      marker(),
       reverse({
         rd_new: [
           { id: "rd_new", score: 1 },
@@ -229,7 +346,7 @@ describe("incrementalScope", () => {
     const list = [row("rd_new", { created_at: AFTER, updated_at: AFTER })];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({
         rd_new: [
           { id: "rd_purged", score: 0.9 },
@@ -247,7 +364,7 @@ describe("incrementalScope", () => {
     }));
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({ rd_new: matches }),
     );
     expect(scope.kind).toBe("full");
@@ -259,7 +376,7 @@ describe("incrementalScope", () => {
   it("escalates to full on an empty reverse result", () => {
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({ rd_new: [] }),
     );
     expect(scope.kind).toBe("full");
@@ -270,7 +387,7 @@ describe("incrementalScope", () => {
   it("does not escalate on a short result whose matches are all above the bound", () => {
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER }), row("rd_near")],
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({
         rd_new: [
           { id: "rd_new", score: 1 },
@@ -291,7 +408,7 @@ describe("incrementalScope", () => {
     }));
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({ rd_new: matches }),
     );
     expect(scope.kind).toBe("incremental");
@@ -304,7 +421,7 @@ describe("incrementalScope", () => {
     }));
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({ rd_new: matches }),
     );
     expect(scope.kind).toBe("incremental");
@@ -313,7 +430,7 @@ describe("incrementalScope", () => {
   it("escalates to full when a changed reading has no reverse-neighbour result", () => {
     const scope = incrementalScope(
       [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
-      marker({ list_row_count: 1 }),
+      marker(),
       reverse({}),
     );
     expect(scope).toEqual({
@@ -332,7 +449,7 @@ describe("incrementalScope", () => {
     }));
     const scope = incrementalScope(
       [row("rd_a", { updated_at: AFTER }), row("rd_b", { updated_at: AFTER })],
-      marker({ list_row_count: 2 }),
+      marker(),
       reverse({ rd_b: dense }),
     );
     const reason = (scope as { reason: string }).reason;
@@ -358,7 +475,7 @@ describe("incrementalScope", () => {
         row("rd_b", { updated_at: AFTER }),
         row("rd_c"),
       ],
-      marker({ list_row_count: 3 }),
+      marker(),
       reverse({ rd_a: dense, rd_b: dense }),
     );
     expect(scope).toEqual({
@@ -374,7 +491,7 @@ describe("incrementalScope", () => {
     const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2, list_etag: "same" }),
+      marker({ list_etag: "same" }),
       reverse({}),
       "same",
     );
@@ -389,7 +506,7 @@ describe("incrementalScope", () => {
     const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
     const scope = incrementalScope(
       list,
-      marker({ list_row_count: 2, list_etag: "old" }),
+      marker({ list_etag: "old" }),
       reverse({ rd_a: [{ id: "rd_a", score: 1 }] }),
       "new",
     );
@@ -412,7 +529,7 @@ describe("changedSince", () => {
         row("rd_skewed", { updated_at: justBefore }),
         row("rd_settled", { updated_at: wellBefore }),
       ],
-      marker({ list_row_count: 2 }),
+      marker(),
     );
     expect(base).toMatchObject({ kind: "incremental", changed: ["rd_skewed"] });
   });
@@ -420,7 +537,7 @@ describe("changedSince", () => {
 
   it("hands the command the same changed ids the scope is derived from", () => {
     const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
-    const base = changedSince(list, marker({ list_row_count: 2 }));
+    const base = changedSince(list, marker());
     expect(base).toEqual({
       kind: "incremental",
       since: LAST_RUN,

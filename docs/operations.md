@@ -299,7 +299,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--since-last-run` measures only what changed; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
+| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
@@ -454,8 +454,9 @@ moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, or a deleted one), fewer list rows than the marker recorded (a purge
-names nothing a timestamp can find), a failed reverse query, a changed *ready*
+first run, or a deleted one), a marker invalidated by `corpus backfill-vectors`,
+a ready reading the marker recorded that has since left the list (a purge names
+nothing a timestamp can find), a failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown — never a narrower pass. A short result is a complete
@@ -475,18 +476,28 @@ A reading the scope does bring in is measured like any other target, so its
 `similarity` snapshot and its list row are brought current in the same pass —
 nothing about being in scope defers a measurement to the sweep.
 
-Three things a nightly pass does not bring in, all of them waiting for the
-weekly sweep. A reprocess that moves a vector far enough to leave a stranger's
-floored neighbourhood: the reverse query runs against the vector's new position,
-and where that stranger had never judged it, its stored `similarity` snapshot
-and list row — which the API and the SPA serve — go stale until the sweep. A day
-that purges as many readings as it ingests: the escalation compares list row
-counts, so a net-zero day does not trigger it. And any Vectorize-only write —
-`corpus backfill-vectors` restores vectors with R2 read-only, so no row
-timestamp and no list ETag moves while neighbourhoods do; run a `--full` pass
-after one. The last two are what reading-lite-s1k rl-perf-7b closes, by
-recording a digest of ready ids instead of a count and by having
-`backfill-vectors` invalidate the marker.
+One thing a nightly pass does not bring in, and it waits for the weekly sweep: a
+reprocess that moves a vector far enough to leave a stranger's floored
+neighbourhood. The reverse query runs against the vector's new position, and
+where that stranger had never judged it, its stored `similarity` snapshot and
+list row — which the API and the SPA serve — go stale until the sweep.
+
+A purge and a Vectorize-only write used to be on that list and are not any more.
+The marker records the ready ids it saw, not a row count, so a day that purges
+two readings and ingests three still escalates and names the first missing id.
+And `corpus backfill-vectors` stamps `invalidated_by` on the marker when it
+restores anything, so the next pass sweeps on its own — R2 stays read-only apart
+from that one stamp, which is the point: nothing else it does moves a timestamp
+an incremental scope can read.
+
+A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
+unmeasurable rather than unfinished. The pass records its id under
+`unmeasurable_ids` on the marker, measures it again on every later pass until it
+is repaired, and still exits 1 so it stays visible — the marker advances past it
+rather than pinning the whole scope on an ever-older timestamp. A failed query,
+an unparseable manifest, a failed manifest write or a failed `index/list.json`
+flush is different: that pass left work undone, so the marker stays where it was
+and the next pass sweeps.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -516,7 +527,11 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-wri
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,
 prints the provider/model/effort, each selected judgement, and estimated
-synchronous cost, then exits without a provider call or storage write.
+synchronous cost, then exits without a provider call or storage write. Both
+tier-2 and tier-3 passes echo the report's scope header (`Scope: incremental
+(12 reading(s)) — …`, or `Scope: unstated …` for a report written before the
+header existed), so a nightly log says on its own whether it covers a scoped
+subset or the whole corpus.
 
 ```sh
 npm run ops -- corpus refresh-connections \
@@ -600,7 +615,11 @@ that succeeded.
 
 The total time a pass will spend waiting out limits is bounded by
 `--max-backoff`, which defaults to `10m` and takes a duration (`600s`,
-`600000ms`, `2h`; a bare number is seconds). What counts against it is the
+`600000ms`, `20m`; a bare number is seconds) between `30s` and `30m`. Below the
+floor the pass would stop on the first limit it met, since one honoured window
+already costs up to 60 s; above the ceiling the budget has stopped bounding the
+sole-writer window it exists to bound. Both ends catch the same unit confusion:
+`10` is ten seconds, `600m` is ten hours. What counts against it is the
 window each limit opens, not each worker that reports one, so a whole round of
 workers walking into the same wall is a single charge — and a limit landing
 inside a window already open costs nothing at all. It is charged when the

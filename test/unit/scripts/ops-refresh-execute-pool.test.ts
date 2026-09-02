@@ -5,6 +5,8 @@ import {
   DEFAULT_EXECUTE_CONCURRENCY,
   DEFAULT_MAX_BACKOFF_MS,
   MAX_EXECUTE_CONCURRENCY,
+  MAX_MAX_BACKOFF_MS,
+  MIN_MAX_BACKOFF_MS,
   RATE_LIMIT_DEFAULT_BACKOFF_MS,
   RATE_LIMIT_MAX_BACKOFF_MS,
   createRateLimitGate,
@@ -68,9 +70,36 @@ describe("parseMaxBackoffFlag", () => {
   it("reads every unit it documents, and seconds when none is given", () => {
     expect(parseMaxBackoffFlag("90")).toBe(90_000);
     expect(parseMaxBackoffFlag("90s")).toBe(90_000);
-    expect(parseMaxBackoffFlag("500ms")).toBe(500);
+    expect(parseMaxBackoffFlag("90000ms")).toBe(90_000);
     expect(parseMaxBackoffFlag("10m")).toBe(600_000);
-    expect(parseMaxBackoffFlag("2h")).toBe(7_200_000);
+  });
+
+  // A budget under a single honoured window stops the pass on its first 429,
+  // which reads as a dead provider; the unit confusion behind it (10 meaning
+  // ten minutes) is the mistake this catches.
+  it("rejects a budget below the 30s floor, naming the bare unit", () => {
+    for (const raw of ["10", "29s", "1ms", "29999ms"]) {
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(/is below the 30s this command allows/);
+    }
+    expect(() => parseMaxBackoffFlag("10")).toThrow(/bare unit is seconds/);
+    expect(parseMaxBackoffFlag("30s")).toBe(MIN_MAX_BACKOFF_MS);
+  });
+
+  // Above half an hour the budget has stopped bounding the sole-writer window
+  // it exists to bound — `600m` for `600` is the other half of the same typo.
+  it("rejects a budget above the 30m ceiling", () => {
+    for (const raw of ["31m", "2h", "600m", "1801s"]) {
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(/is above the 30m this command allows/);
+    }
+    expect(() => parseMaxBackoffFlag("2h")).toThrow(/holds the sole-writer window/);
+    expect(parseMaxBackoffFlag("30m")).toBe(MAX_MAX_BACKOFF_MS);
+  });
+
+  it("keeps the default inside its own bounds", () => {
+    expect(DEFAULT_MAX_BACKOFF_MS).toBeGreaterThanOrEqual(MIN_MAX_BACKOFF_MS);
+    expect(DEFAULT_MAX_BACKOFF_MS).toBeLessThanOrEqual(MAX_MAX_BACKOFF_MS);
   });
 
   it("rejects a non-duration or a zero as a usage error", () => {

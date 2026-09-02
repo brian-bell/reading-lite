@@ -5,8 +5,16 @@
 // parse) but makes no OpenAI request and no external write; --execute embeds
 // and upserts. --local is rejected outright: Vectorize has no local store, so
 // a "local" run would mutate the real index.
+//
+// The one R2 write it does make is to the tier-1 run marker. Restoring a vector
+// moves neighbourhoods without moving any row timestamp or the list ETag, which
+// is exactly what `corpus refresh-neighbours --since-last-run` scopes from — so
+// a restored vector would be invisible to every incremental pass until the next
+// weekly sweep. Stamping `invalidated_by` on the marker makes the next pass
+// sweep on its own, rather than on an operator remembering to pass --full.
 
 import { runVectorBackfill, type VectorBackfillResult, type VectorBackfillRow } from "../../corpus-lib/backfill-vectors";
+import { parseRefreshState } from "../../corpus-lib/refresh-scope";
 import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
 import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
@@ -19,6 +27,9 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
     readListIndex: (deps: R2Deps) => Promise<VectorBackfillRow[]>;
     vectorExists: (index: string, id: string, namespace?: string) => Promise<boolean>;
     readManifest: (keyPrefix: string, deps: R2Deps) => Promise<unknown>;
+    /** The tier-1 run marker, unparsed; `null` only when confirmed absent. */
+    readRefreshState: (deps: R2Deps) => Promise<unknown | null>;
+    writeRefreshState: (state: unknown, deps: R2Deps) => Promise<void>;
   };
   // Execute-only: resolves credentials (throwing when absent, BEFORE any read
   // work) and returns the paid/write seams. Never called in plan mode.
@@ -172,7 +183,61 @@ async function runCorpusBackfillVectors(
     }
   }
 
-  return result.problems.length > 0 ? 1 : 0;
+  const markerFailed =
+    opts.execute && result.restoredIds.length > 0
+      ? !(await invalidateRefreshMarker(deps, r2Deps, result.restoredIds.length))
+      : false;
+
+  return result.problems.length > 0 || markerFailed ? 1 : 0;
+}
+
+/**
+ * Tells the tier-1 run marker that vectors moved under it. Returns false only
+ * when the marker is still standing and still says a narrower pass is safe.
+ *
+ * An absent or unusable marker needs no stamp: `changedSince` already reads
+ * both as "sweep". Stamping an already-stamped marker is skipped for the same
+ * reason — the first reason is the one that names when the corpus diverged.
+ */
+async function invalidateRefreshMarker(
+  deps: CorpusBackfillVectorsDeps,
+  r2Deps: R2Deps,
+  restored: number,
+): Promise<boolean> {
+  const { io, r2 } = deps;
+  let raw: unknown;
+  try {
+    raw = await r2.readRefreshState(r2Deps);
+  } catch (error) {
+    io.stderr(
+      `  ! could not read the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    io.stderr("    Run `corpus refresh-neighbours --full` next: an incremental pass would miss these vectors.");
+    return false;
+  }
+  const state = raw === null ? null : parseRefreshState(raw);
+  if (state === null) {
+    io.stdout("Run marker: absent or unusable — the next refresh pass already sweeps.");
+    return true;
+  }
+  if (state.invalidated_by !== undefined) {
+    io.stdout(`Run marker: already invalidated by ${state.invalidated_by}.`);
+    return true;
+  }
+  try {
+    await r2.writeRefreshState(
+      { ...state, invalidated_by: `corpus backfill-vectors (${restored} vector(s) restored)` },
+      r2Deps,
+    );
+    io.stdout("Run marker invalidated: the next refresh pass will sweep the whole corpus.");
+    return true;
+  } catch (error) {
+    io.stderr(
+      `  ! could not invalidate the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    io.stderr("    Run `corpus refresh-neighbours --full` next: an incremental pass would miss these vectors.");
+    return false;
+  }
 }
 
 export const corpusBackfillVectorsCommand: CommandDefinition<CorpusBackfillVectorsDeps> = {
@@ -187,6 +252,12 @@ valid ready manifest with a non-empty TL;DR. The parsed manifest supplies the
 embedding input and metadata. The command never rewrites a manifest or list
 row. Vectorize has no local store, so --local is rejected rather than touching
 the remote index during an operation presented as local.
+
+An --execute run that restored anything also invalidates the tier-1 run marker
+at index/refresh-state.json, so the next \`corpus refresh-neighbours\` pass
+sweeps the whole corpus even under --since-last-run: a restored vector moves
+neighbourhoods without moving any timestamp an incremental scope can read. If
+that stamp cannot be written the run exits 1 and says to pass --full.
 
 Plan is the default and makes no OpenAI request or external write. --execute
 uses ${OPENAI_EMBEDDING_MODEL} and upserts 1536-dimensional vectors with url,
@@ -215,6 +286,10 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
       vectorExists: async (index, id, namespace) =>
         (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id, { namespace }),
       readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
+      readRefreshState: async (d) =>
+        (await import("../../corpus-lib/wrangler-r2")).readRefreshState(d),
+      writeRefreshState: async (state, d) =>
+        (await import("../../corpus-lib/wrangler-r2")).writeRefreshState(state, d),
     },
     makeWriters: async (vectorizeIndex, namespace) => {
       // Imports stay inside so plan mode and help never resolve credentials

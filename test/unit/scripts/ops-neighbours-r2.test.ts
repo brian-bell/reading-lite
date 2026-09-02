@@ -365,7 +365,7 @@ describe("directNeighboursR2 — manifest and list reads", () => {
       version: 1 as const,
       last_run_at: "2026-08-22T12:00:00.000Z",
       last_full_run_at: "2026-08-15T12:00:00.000Z",
-      list_row_count: 42,
+      ready_ids: ["rd_a", "rd_b"],
       list_etag: "etag-1",
     };
     const written: string[] = [];

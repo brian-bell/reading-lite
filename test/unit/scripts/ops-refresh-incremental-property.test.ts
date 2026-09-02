@@ -221,7 +221,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const marker: RefreshState = {
         version: 1,
         last_run_at: MARKER_AT,
-        list_row_count: before.length,
+        ready_ids: before.map((reading) => reading.id),
       };
 
       const full = await run(after, ["--full"], marker);
@@ -261,7 +261,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const incremental = await run(after, ["--since-last-run"], {
         version: 1,
         last_run_at: MARKER_AT,
-        list_row_count: before.length,
+        ready_ids: before.map((reading) => reading.id),
       });
       if (incremental.measured.size < after.length) narrowed++;
     }
@@ -275,7 +275,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
     const { deps, queried } = makeDeps(after, {
       version: 1,
       last_run_at: MARKER_AT,
-      list_row_count: before.length,
+      ready_ids: before.map((reading) => reading.id),
     });
     await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
     const reverse = queried.filter((q) => q.topK !== SIMILAR_TOP_K + 1);
