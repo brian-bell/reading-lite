@@ -18,6 +18,7 @@ import {
   ApiError,
   createToken,
   fetchContentBlob,
+  getLoginOptions,
   getReadingDiagnostics,
   getReading,
   getWhoami,
@@ -35,6 +36,7 @@ import {
   submitReading,
   type ContentKind
 } from "./api";
+import { TurnstileWidget } from "./TurnstileWidget";
 import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-link-credential";
 import {
   consumeLoginReturnPath,
@@ -729,10 +731,19 @@ function LoginPage({
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
   const emailLocked = Boolean(stepUp && identity);
   const emailValue = emailLocked && identity ? identity.email : email;
+  const optionsQuery = useQuery({
+    queryKey: ["login-options"],
+    queryFn: getLoginOptions
+  });
+  const siteKey = optionsQuery.data?.turnstile_site_key ?? null;
+  const widgetRequired = siteKey != null;
+  const optionsBlocked = optionsQuery.isPending;
+  const submitBlocked = optionsBlocked || (widgetRequired && !turnstileToken);
 
   useLayoutEffect(() => {
     if (identity && !stepUp) return;
@@ -742,6 +753,10 @@ function LoginPage({
   useLayoutEffect(() => {
     if (emailLocked && identity) setEmail(identity.email);
   }, [emailLocked, identity]);
+
+  useEffect(() => {
+    if (!widgetRequired) setTurnstileToken(null);
+  }, [widgetRequired]);
 
   if (identity && !stepUp) {
     const dest = safeAppReturnPath(next) ?? "/";
@@ -761,12 +776,17 @@ function LoginPage({
         <h1>Sign in</h1>
       </div>
       <form
-        className="token-form"
+        className="token-form login-form"
         onSubmit={async (event) => {
           event.preventDefault();
           setError(null);
+          if (optionsBlocked) return;
+          if (widgetRequired && !turnstileToken) {
+            setError("Complete the check before requesting a link.");
+            return;
+          }
           try {
-            await requestLoginLink(emailValue);
+            await requestLoginLink(emailValue, turnstileToken ?? undefined);
             setSubmitted(true);
           } catch (e) {
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
@@ -786,7 +806,10 @@ function LoginPage({
             required
             readOnly={emailLocked}
           />
-        <button type="submit">Email me a link</button>
+        {widgetRequired && siteKey ? <TurnstileWidget siteKey={siteKey} onToken={setTurnstileToken} /> : null}
+        <button type="submit" disabled={submitBlocked}>
+          Email me a link
+        </button>
       </form>
       {submitted ? (
         <p role="status">If that address can sign in, we sent a short-lived link.</p>

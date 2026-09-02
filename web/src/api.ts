@@ -1,4 +1,6 @@
+import { parseTurnstileSiteKey } from "./turnstile";
 import type {
+  AuthLoginOptionsResponse,
   ListReadingsResponse,
   Manifest,
   ReadingDiagnostics,
@@ -86,11 +88,23 @@ export async function getWhoami(context?: { signal?: AbortSignal }): Promise<Who
   return body;
 }
 
-export async function requestLoginLink(email: string): Promise<void> {
+export async function getLoginOptions(): Promise<AuthLoginOptionsResponse> {
+  const response = await apiFetch(new URL("/api/auth/login-options", window.location.origin));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to load sign-in options"));
+  }
+  const body = (await response.json()) as { turnstile_site_key?: unknown };
+  return { turnstile_site_key: parseTurnstileSiteKey(body.turnstile_site_key) };
+}
+
+export async function requestLoginLink(email: string, turnstileToken?: string): Promise<void> {
+  const token = turnstileToken?.trim();
+  const body: { email: string; turnstile_token?: string } = { email };
+  if (token) body.turnstile_token = token;
   const response = await apiFetch(new URL("/api/auth/challenge", window.location.origin), {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ email })
+    body: JSON.stringify(body)
   });
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to request sign-in link"));

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { loginNextStorageKey, STEP_UP_LOGIN_HREF } from "./login-return-path";
 import { clearMagicLinkCredential } from "./magic-link-credential";
+import { resetTurnstileLoaderForTests, type TurnstileRenderOptions } from "./turnstile";
 import type {
   ApiTokenListItem,
   ListReading,
@@ -122,6 +123,35 @@ const sessionWhoami = {
   csrf_token: "ab".repeat(32)
 };
 
+const TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000AA";
+
+function installTurnstileMock(options?: { autoToken?: string }) {
+  const renderWidget = vi.fn((_container: HTMLElement | string, opts: TurnstileRenderOptions) => {
+    if (options?.autoToken && opts.callback) opts.callback(options.autoToken);
+    return "widget-1";
+  });
+  window.turnstile = {
+    render: renderWidget,
+    reset: vi.fn(),
+    remove: vi.fn()
+  };
+  return {
+    renderWidget,
+    complete(token: string) {
+      const last = renderWidget.mock.calls.at(-1);
+      last?.[1]?.callback?.(token);
+    }
+  };
+}
+
+function challengeCall(fetchMock: ReturnType<typeof vi.fn>): Request | undefined {
+  const found = fetchMock.mock.calls.find((c) => {
+    const req = c[0] as Request;
+    return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
+  });
+  return found ? (found[0] as Request) : undefined;
+}
+
 const ALL_SCOPES = ["readings:read", "readings:write", "readings:import", "readings:delete"] as const;
 const mintedSecret = "tok_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa." + "ab".repeat(32);
 
@@ -155,6 +185,9 @@ function jsonResponse(body: unknown, status = 200) {
 function stubJSON(body: unknown, status = 200) {
   const fetchMock = vi.fn(async (request: Request) => {
     const url = new URL(request.url);
+    if (url.pathname === "/api/auth/login-options") {
+      return jsonResponse({ turnstile_site_key: null });
+    }
     if (url.pathname === "/api/whoami") {
       if (status === 401) return jsonResponse({ error: "unauthorized" }, 401);
       return jsonResponse(sessionWhoami);
@@ -182,6 +215,8 @@ describe("App", () => {
     cleanup();
     clearMagicLinkCredential();
     onlineManager.setOnline(true);
+    delete window.turnstile;
+    resetTurnstileLoaderForTests();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -435,6 +470,7 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") return jsonResponse({ turnstile_site_key: null });
       if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
       return jsonResponse({ error: "unexpected" }, 500);
     });
@@ -443,16 +479,23 @@ describe("App", () => {
 
     render(<App initialPath="/login" />);
     await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Email me a link" }));
 
-    await waitFor(() => {
-      const challenge = fetchMock.mock.calls.find((c) => {
-        const req = c[0] as Request;
-        return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
-      });
-      expect(challenge).toBeDefined();
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
     });
+    expect(await challenge.clone().json()).toEqual({ email: "invited@example.com" });
     expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Human check" })).not.toBeInTheDocument();
+    const optionsReq = fetchMock.mock.calls
+      .map((c) => c[0] as Request)
+      .find((req) => new URL(req.url).pathname === "/api/auth/login-options");
+    expect(optionsReq).toBeDefined();
+    expect(optionsReq!.method).toBe("GET");
+    expect(optionsReq!.credentials).toBe("include");
   });
 
   it("redirects a signed-in visitor away from /login unless step-up is requested", async () => {
@@ -465,6 +508,7 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/login-options") return jsonResponse({ turnstile_site_key: null });
       if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens") return jsonResponse({ tokens: [] });
@@ -482,14 +526,135 @@ describe("App", () => {
     const emailField = screen.getByLabelText("Email");
     expect(emailField).toHaveValue("reader@example.com");
     expect(emailField).toHaveAttribute("readonly");
+    expect(screen.queryByRole("group", { name: "Human check" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Email me a link" }));
     expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
-    const challenge = fetchMock.mock.calls.find((c) => {
-      const req = c[0] as Request;
-      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
-    });
+    const challenge = challengeCall(fetchMock);
     expect(challenge).toBeDefined();
-    expect(await (challenge![0] as Request).clone().json()).toEqual({ email: "reader@example.com" });
+    expect(await challenge!.clone().json()).toEqual({ email: "reader@example.com" });
+  });
+
+  it("does not render a Turnstile widget when login-options returns a null site key", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") return jsonResponse({ turnstile_site_key: null });
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    installTurnstileMock();
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "anyone@example.com");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    expect(screen.queryByRole("group", { name: "Human check" })).not.toBeInTheDocument();
+    expect(window.turnstile?.render).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
+    });
+    expect(await challenge.clone().json()).toEqual({ email: "anyone@example.com" });
+  });
+
+  it("shows the Turnstile widget for every email when login-options returns a site key", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnstile = installTurnstileMock();
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    expect(await screen.findByRole("group", { name: "Human check" })).toBeInTheDocument();
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalled());
+    expect(turnstile.renderWidget.mock.calls[0]![1]).toMatchObject({ sitekey: TURNSTILE_TEST_SITE_KEY });
+
+    await user.type(screen.getByLabelText("Email"), "unknown@example.com");
+    expect(screen.getByRole("group", { name: "Human check" })).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Email"));
+    await user.type(screen.getByLabelText("Email"), "reader@example.com");
+    expect(screen.getByRole("group", { name: "Human check" })).toBeInTheDocument();
+    expect(challengeCall(fetchMock)).toBeUndefined();
+  });
+
+  it("requires a Turnstile token before challenge when a site key is present", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnstile = installTurnstileMock();
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+    expect(challengeCall(fetchMock)).toBeUndefined();
+
+    turnstile.complete("widget-ok");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
+    });
+    expect(await challenge.clone().json()).toEqual({
+      email: "invited@example.com",
+      turnstile_token: "widget-ok"
+    });
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
+  });
+
+  it("sends a Turnstile token on step-up login when a site key is present", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens") return jsonResponse({ tokens: [] });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnstile = installTurnstileMock({ autoToken: "step-up-token" });
+    const user = userEvent.setup();
+
+    render(<App initialPath={STEP_UP_LOGIN_HREF} />);
+    expect(await screen.findByRole("group", { name: "Human check" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
+    });
+    expect(await challenge.clone().json()).toEqual({
+      email: "reader@example.com",
+      turnstile_token: "step-up-token"
+    });
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
   });
 
   it("strips the magic-link fragment and only redeems after an explicit click", async () => {
