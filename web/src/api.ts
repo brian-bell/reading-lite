@@ -279,11 +279,11 @@ export async function getAuthSettings(): Promise<UserSettingsResponse> {
   return parseUserSettings(body);
 }
 
-export async function updateAuthSettings(body: PostAuthSettingsBody): Promise<UserSettingsResponse> {
+export async function updateAuthSettings(payload: PostAuthSettingsBody): Promise<UserSettingsResponse> {
   const response = await apiFetch(new URL("/api/auth/settings", window.location.origin), {
     method: "POST",
     headers: mutationHeaders(),
-    body: JSON.stringify(body)
+    body: JSON.stringify(payload)
   });
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to update settings"));
