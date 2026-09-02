@@ -490,15 +490,24 @@ still billed. The pause prints as `provider rate limited; pausing new
 judgements for …`. The run does not abort, and it does not silently re-bill the
 action that hit the limit.
 
-The pause is bounded too. After five backoff windows in a row with no
-judgement succeeding in between, the limit is not transient, so the pass stops
-waiting altogether (`provider rate limited N times in a row; no longer
+A wall the pass cannot get past is bounded. After five backoff windows in a row
+with no judgement succeeding in between, the limit is not transient, so the pass
+stops waiting altogether (`provider rate limited N times in a row; no longer
 pausing…`) and fails the rest fast — which is what a sequential run did — rather
 than sitting on the sole-writer window for the length of the plan. Any
 judgement that comes back resets that run and restores the backing off: while
 anything is getting through, the pass is making progress between windows and
-the pauses are doing their job, and a limit early in a long pass should not
-leave the rest of it unwilling to wait out a later one.
+the pauses are doing their job.
+
+What that does **not** bound is a partial limit — some calls 429, some succeed —
+because every success resets the run. Such a pass keeps pausing for as long as
+the provider keeps limiting, and can hold the sole-writer window considerably
+longer than the same plan would have taken sequentially, which never paused at
+all. It is still making progress, and each pause is at most 60 s; but if the
+`provider rate limited; pausing` line keeps appearing, the window is being spent
+waiting, and the run is better stopped and retried when the provider is quieter.
+Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
+from the manifests as it always does.
 
 Because the calls overlap, the `Timing:` block's `provider` and `manifest read`
 rows sum the call durations rather than the wall time they occupied — the same
