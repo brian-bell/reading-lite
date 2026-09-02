@@ -421,9 +421,9 @@ describe("ops corpus backfill-vectors", () => {
   };
 
   const MARKER = {
-    version: 1 as const,
+    version: 2 as const,
     last_run_at: "2026-08-22T12:00:00.000Z",
-    ready_ids: ["rd_v"],
+    list_ids: ["rd_v"],
   };
 
   function makeDeps(marker: unknown = MARKER) {
@@ -521,13 +521,36 @@ describe("ops corpus backfill-vectors", () => {
   // A restored vector moves neighbourhoods without moving any timestamp or
   // ETag a tier-1 incremental scope can read, so the marker has to say so
   // itself rather than rely on the operator remembering --full.
-  it("invalidates the tier-1 run marker after restoring a vector", async () => {
+  it("invalidates the tier-1 run marker before it upserts anything", async () => {
     const { deps, calls, lines } = makeDeps();
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const order: string[] = [];
+    const stampedFirst = { ...deps };
+    stampedFirst.r2 = {
+      ...deps.r2,
+      writeRefreshState: async (state) => {
+        order.push("marker");
+        calls.markerWrites.push(state);
+      },
+    };
+    stampedFirst.makeWriters = async () => ({
+      embedMany: async (inputs) => ({
+        embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0)),
+      }),
+      upsert: async () => {
+        order.push("upsert");
+      },
+    });
+    const code = await corpusBackfillVectorsCommand.run(
+      ["--tenant", "global", "--execute"],
+      stampedFirst,
+    );
     expect(code).toBe(0);
     expect(calls.markerWrites).toEqual([
-      { ...MARKER, invalidated_by: "corpus backfill-vectors (1 vector(s) restored)" },
+      { ...MARKER, invalidated_by: "corpus backfill-vectors" },
     ]);
+    // Crash-safety: a process killed after the upsert and before a trailing
+    // stamp would leave restored vectors no later pass can find.
+    expect(order).toEqual(["marker", "upsert"]);
     expect(lines.join("\n")).toContain("Run marker invalidated");
   });
 
@@ -550,18 +573,20 @@ describe("ops corpus backfill-vectors", () => {
     }
   });
 
-  // The next pass would scope narrowly around vectors it cannot see, so the run
-  // is not clean and the operator is told what to run instead.
-  it("fails the run when the marker cannot be invalidated", async () => {
-    const { deps, lines } = makeDeps();
+  // Nothing later in the run could put this right, so the run stops before it
+  // spends anything rather than leaving a stale scope behind.
+  it("stops before embedding when the marker cannot be invalidated", async () => {
+    const { deps, calls, lines } = makeDeps();
     deps.r2.writeRefreshState = async () => {
       throw new Error("no write");
     };
     const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
     expect(code).toBe(1);
+    expect(calls.embeds).toBe(0);
+    expect(calls.upserts).toBe(0);
     const text = lines.join("\n");
     expect(text).toContain("could not invalidate the tier-1 run marker: no write");
-    expect(text).toContain("refresh-neighbours --full");
+    expect(text).toContain("Nothing was embedded or upserted");
   });
 
   it("fails closed without --tenant", async () => {

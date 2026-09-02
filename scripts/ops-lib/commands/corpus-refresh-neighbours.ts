@@ -38,6 +38,7 @@ import {
   type RefreshRow,
 } from "../../corpus-lib/refresh-neighbours";
 import {
+  REFRESH_STATE_VERSION,
   REVERSE_TOP_K,
   buildRefreshState,
   changedSince,
@@ -272,8 +273,22 @@ async function readMarker(
   }
   if (raw === null) return null;
   const state = parseRefreshState(raw);
-  if (state === null) stderr("  ! run marker is not a usable refresh state");
+  // An older marker and a damaged one are the same null and very different
+  // instructions to the operator: one needs looking at, the other is answered
+  // by this pass rewriting it.
+  if (state === null) stderr(markerRejectionReason(raw));
   return state;
+}
+
+function markerRejectionReason(raw: unknown): string {
+  const version =
+    raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as { version?: unknown }).version
+      : undefined;
+  return typeof version === "number" && version < REFRESH_STATE_VERSION
+    ? `  ! run marker is version ${version}, which predates the purge check ` +
+      `(version ${REFRESH_STATE_VERSION}) — sweeping once and rewriting it`
+    : "  ! run marker is not a usable refresh state";
 }
 
 /**
@@ -710,14 +725,35 @@ async function advanceMarker(args: {
     io.stdout("Run marker unchanged: this pass measured a subset of its scope.");
     return;
   }
+  // The marker this pass read is minutes old — a full pass over the production
+  // corpus takes sixteen — and neither writer of this object holds a lock or a
+  // conditional put. A `corpus backfill-vectors` that stamped `invalidated_by`
+  // meanwhile is asking for a sweep this pass did not do, and overwriting the
+  // stamp would silently lose that request: the one failure the stamp exists to
+  // prevent. Re-read, and stand down rather than advance.
+  const invalidatedSince = await invalidationArrivedDuringPass(args);
+  if (invalidatedSince === "unknown") {
+    io.stderr(
+      "  ! could not re-read the run marker before advancing it — leaving it alone, " +
+      "so the next incremental run will sweep.",
+    );
+    return;
+  }
+  if (invalidatedSince !== null) {
+    io.stdout(
+      `Run marker unchanged: invalidated by ${invalidatedSince} while this pass ran, ` +
+      "so the next pass still owes the corpus a sweep.",
+    );
+    return;
+  }
   const state = buildRefreshState({
     previous: args.marker,
     runAt: args.runAt,
     full: args.scope.kind === "full",
-    // Ready ids only: a reading with no vector takes no neighbourhood with it
-    // when it is purged, so it is not what the next pass's purge check is
-    // asking about.
-    readyIds: args.items.filter((row) => row.status === "ready").map((row) => row.id),
+    // Every id, not just the ready ones: status is not a statement about vector
+    // ownership, so a non-ready row leaving the list can still take an indexed
+    // vector — and a neighbourhood — with it.
+    listIds: args.items.map((row) => row.id),
     ...(args.unmeasurableIds.length === 0 ? {} : { unmeasurableIds: args.unmeasurableIds }),
     ...(args.listEtag === undefined ? {} : { listEtag: args.listEtag }),
   });
@@ -737,6 +773,29 @@ async function advanceMarker(args: {
       "the next incremental run will sweep.",
     );
   }
+}
+
+/**
+ * The invalidation stamped on the run marker while this pass ran, `null` when
+ * there is none, or `"unknown"` when the re-read failed. An invalidation that
+ * was already there when the pass started is not one: it is what made this pass
+ * a sweep, and this pass answered it.
+ */
+async function invalidationArrivedDuringPass(args: {
+  r2: CorpusRefreshNeighboursR2;
+  r2Deps: R2Deps;
+  marker: RefreshState | null;
+}): Promise<string | null | "unknown"> {
+  let live: RefreshState | null;
+  try {
+    const raw = await args.r2.readRefreshState(args.r2Deps);
+    live = raw === null ? null : parseRefreshState(raw);
+  } catch {
+    return "unknown";
+  }
+  const now = live?.invalidated_by;
+  if (now === undefined) return null;
+  return now === args.marker?.invalidated_by ? null : now;
 }
 
 // Credentials the direct path may use, in the same precedence the tier-2/3

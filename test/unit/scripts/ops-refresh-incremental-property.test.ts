@@ -219,9 +219,9 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const before = generateCorpus(rand, 4 + Math.floor(rand() * 8), T0);
       const after = mutate(before, rand);
       const marker: RefreshState = {
-        version: 1,
+        version: 2,
         last_run_at: MARKER_AT,
-        ready_ids: before.map((reading) => reading.id),
+        list_ids: before.map((reading) => reading.id),
       };
 
       const full = await run(after, ["--full"], marker);
@@ -259,9 +259,9 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const before = generateCorpus(rand, 6 + Math.floor(rand() * 6), T0);
       const after = mutate(before, rand);
       const incremental = await run(after, ["--since-last-run"], {
-        version: 1,
+        version: 2,
         last_run_at: MARKER_AT,
-        ready_ids: before.map((reading) => reading.id),
+        list_ids: before.map((reading) => reading.id),
       });
       if (incremental.measured.size < after.length) narrowed++;
     }
@@ -273,9 +273,9 @@ describe("incremental tier-1 scope, on generated corpora", () => {
     const before = generateCorpus(rand, 6, T0);
     const after = mutate(before, rand);
     const { deps, queried } = makeDeps(after, {
-      version: 1,
+      version: 2,
       last_run_at: MARKER_AT,
-      ready_ids: before.map((reading) => reading.id),
+      list_ids: before.map((reading) => reading.id),
     });
     await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
     const reverse = queried.filter((q) => q.topK !== SIMILAR_TOP_K + 1);

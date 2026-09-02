@@ -700,9 +700,9 @@ describe("ops corpus refresh-neighbours", () => {
 
   describe("incremental scope", () => {
     const MARKER: RefreshState = {
-      version: 1,
+      version: 2,
       last_run_at: "2026-08-21T00:00:00.000Z",
-      ready_ids: ["rd_n", "rd_r"],
+      list_ids: ["rd_n", "rd_r"],
     };
 
     /** Both list rows unchanged since the marker, so nothing is in scope. */
@@ -776,7 +776,7 @@ describe("ops corpus refresh-neighbours", () => {
         updated_at: "2026-08-21T12:00:00.000Z",
       }));
       const { deps, calls, lines } = makeDeps({
-        state: { ...MARKER, ready_ids: changed.map((row) => row.id) },
+        state: { ...MARKER, list_ids: changed.map((row) => row.id) },
         items: changed,
         queryThrow: () => new Error("401"),
       });
@@ -829,7 +829,7 @@ describe("ops corpus refresh-neighbours", () => {
 
     it("sweeps when the corpus lost a reading, which no timestamp can name", async () => {
       const { deps, lines } = makeDeps({
-        state: { ...MARKER, ready_ids: ["rd_n", "rd_purged", "rd_r"] },
+        state: { ...MARKER, list_ids: ["rd_n", "rd_purged", "rd_r"] },
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run"],
@@ -837,7 +837,7 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(code).toBe(0);
       expect(lines.join("\n")).toContain(
-        "Scope: full — 1 ready reading(s) removed since the last run, first rd_purged",
+        "Scope: full — 1 reading(s) removed since the last run, first rd_purged",
       );
     });
 
@@ -845,7 +845,7 @@ describe("ops corpus refresh-neighbours", () => {
     // readings are still gone.
     it("sweeps on a purge whose ingests more than replaced the missing rows", async () => {
       const { deps, lines } = makeDeps({
-        state: { ...MARKER, ready_ids: ["rd_gone_a", "rd_gone_b"] },
+        state: { ...MARKER, list_ids: ["rd_gone_a", "rd_gone_b"] },
         items: [READY, NEIGHBOUR, { ...NEIGHBOUR, id: "rd_n2", key_prefix: "readings/rd_n2" }],
       });
       const code = await corpusRefreshNeighboursCommand.run(
@@ -854,7 +854,7 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(code).toBe(0);
       expect(lines.join("\n")).toContain(
-        "Scope: full — 2 ready reading(s) removed since the last run, first rd_gone_a",
+        "Scope: full — 2 reading(s) removed since the last run, first rd_gone_a",
       );
     });
 
@@ -919,9 +919,9 @@ describe("ops corpus refresh-neighbours", () => {
       expect(code).toBe(0);
       expect(executed.calls.stateWrites).toEqual([
         {
-          version: 1,
+          version: 2,
           last_run_at: "2026-08-22T12:00:00.000Z",
-          ready_ids: ["rd_n", "rd_r"],
+          list_ids: ["rd_n", "rd_r"],
         },
       ]);
     });
@@ -984,10 +984,10 @@ describe("ops corpus refresh-neighbours", () => {
       expect(code).toBe(1);
       expect(calls.stateWrites).toEqual([
         {
-          version: 1,
+          version: 2,
           last_run_at: "2026-08-22T12:00:00.000Z",
           last_full_run_at: "2026-08-22T12:00:00.000Z",
-          ready_ids: ["rd_n", "rd_r"],
+          list_ids: ["rd_n", "rd_r"],
           unmeasurable_ids: ["rd_r"],
         },
       ]);
@@ -1043,6 +1043,80 @@ describe("ops corpus refresh-neighbours", () => {
       expect(calls.stateWrites).toEqual([]);
     });
 
+    // A full pass takes minutes and neither writer of this object holds a lock,
+    // so a `corpus backfill-vectors` can stamp the marker while it runs. Writing
+    // the pass's own marker over that stamp would clear a sweep nobody did —
+    // the exact failure the stamp exists to prevent.
+    it("leaves the marker alone when a backfill invalidated it mid-pass", async () => {
+      let reads = 0;
+      const { deps, calls, lines } = makeDeps({ state: MARKER });
+      const base = deps.r2.readRefreshState;
+      deps.r2.readRefreshState = async (d) => {
+        reads++;
+        const state = await base(d);
+        return reads === 1
+          ? state
+          : { ...(state as Record<string, unknown>), invalidated_by: "corpus backfill-vectors" };
+      };
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toEqual([]);
+      expect(lines.join("\n")).toContain(
+        "Run marker unchanged: invalidated by corpus backfill-vectors while this pass ran",
+      );
+    });
+
+    // The stamp that made THIS pass a sweep is answered by it, so it must not
+    // read as a concurrent one and pin the marker forever.
+    it("advances past the invalidation that made this pass a sweep", async () => {
+      const { deps, calls } = makeDeps({
+        state: { ...MARKER, invalidated_by: "corpus backfill-vectors" },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toHaveLength(1);
+      expect(calls.stateWrites[0]).not.toHaveProperty("invalidated_by");
+    });
+
+    it("leaves the marker alone when it cannot be re-read before the write", async () => {
+      let reads = 0;
+      const { deps, calls, lines } = makeDeps({ state: MARKER });
+      const base = deps.r2.readRefreshState;
+      deps.r2.readRefreshState = async (d) => {
+        reads++;
+        if (reads > 1) throw new Error("transient");
+        return base(d);
+      };
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toEqual([]);
+      expect(lines.join("\n")).toContain("could not re-read the run marker before advancing it");
+    });
+
+    // An older marker and a damaged one need different things from an operator.
+    it("names a version-1 marker as predating the purge check", async () => {
+      const { deps, lines } = makeDeps({
+        state: { version: 1, last_run_at: "2026-08-21T00:00:00.000Z", list_row_count: 2 },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("run marker is version 1, which predates the purge check");
+      expect(text).toContain("Scope: full — no usable run marker");
+    });
+
     // A written marker is an optimisation, not corpus state: every snapshot the
     // pass owed R2 is already committed when it is attempted.
     it("does not fail a completed pass whose marker write failed", async () => {
@@ -1061,7 +1135,7 @@ describe("ops corpus refresh-neighbours", () => {
       // One reading whose stored snapshot already matches the measurement, so
       // the pass writes nothing at all.
       const quiet = makeDeps({
-        state: { ...MARKER, ready_ids: ["rd_r"] },
+        state: { ...MARKER, list_ids: ["rd_r"] },
         listEtag: "etag-1",
         items: [READY],
         matches: [{ id: "rd_r", score: 1 }],

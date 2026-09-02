@@ -362,10 +362,10 @@ describe("directNeighboursR2 — manifest and list reads", () => {
 
   it("round-trips the run marker under the tenant root", async () => {
     const state = {
-      version: 1 as const,
+      version: 2 as const,
       last_run_at: "2026-08-22T12:00:00.000Z",
       last_full_run_at: "2026-08-15T12:00:00.000Z",
-      ready_ids: ["rd_a", "rd_b"],
+      list_ids: ["rd_a", "rd_b"],
       list_etag: "etag-1",
     };
     const written: string[] = [];

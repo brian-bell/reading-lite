@@ -454,9 +454,11 @@ moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, or a deleted one), a marker invalidated by `corpus backfill-vectors`,
-a ready reading the marker recorded that has since left the list (a purge names
-nothing a timestamp can find), a failed reverse query, a changed *ready*
+first run, a deleted one, or one written before this check existed — the marker
+is version 2 and a version-1 marker is rejected with a message that says so), a
+marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
+that has since left the list (a purge names nothing a timestamp can find), a
+failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown — never a narrower pass. A short result is a complete
@@ -483,12 +485,15 @@ where that stranger had never judged it, its stored `similarity` snapshot and
 list row — which the API and the SPA serve — go stale until the sweep.
 
 A purge and a Vectorize-only write used to be on that list and are not any more.
-The marker records the ready ids it saw, not a row count, so a day that purges
+The marker records the list ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
-And `corpus backfill-vectors` stamps `invalidated_by` on the marker when it
-restores anything, so the next pass sweeps on its own — R2 stays read-only apart
-from that one stamp, which is the point: nothing else it does moves a timestamp
-an incremental scope can read.
+(Every id, not just the ready ones: a non-ready row can still own an indexed
+vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
+stamps `invalidated_by` on the marker before its first upsert, so the next pass
+sweeps on its own — that stamp is the only R2 object it writes, and it needs an
+R2 write credential for it. A refresh pass that finds an invalidation stamped
+while it was running leaves the marker alone rather than clearing a sweep it
+did not perform.
 
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
@@ -638,7 +643,10 @@ The budget is cumulative for the whole pass and nothing resets it, so a long
 pass against a provider that limits intermittently can reach the ceiling while
 still making progress between windows. That is deliberate — the bound is on how
 much of the sole-writer window a pass may spend waiting, not on how badly it is
-being limited — but it is the case to raise `--max-backoff` for.
+being limited — but it is the case to raise `--max-backoff` for, up to its `30m`
+ceiling. A pass that still cannot finish inside that is one to split with
+`--limit` and resume when the provider is quieter, not one to park on the
+sole-writer window for hours.
 
 The ceiling bounds the paid work only, on the same rule as `--limit`: a list
 heal or an integrity repair makes no provider call and cannot be rate limited,

@@ -58,12 +58,15 @@ export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
 export const DEFAULT_MAX_BACKOFF_MS = 600_000;
 
 /**
- * Floor on `--max-backoff`. A single honoured window already costs up to
- * RATE_LIMIT_MAX_BACKOFF_MS, so a budget below that stops the pass on the first
- * 429 it meets — which reads as "the provider is down" when it is not. Set to
- * half a minute so the smallest budget an operator can ask for still buys a
- * real window, and a typo of `--max-backoff 10` (ten seconds, not ten minutes)
- * is refused rather than silently gutting the pass.
+ * Floor on `--max-backoff`. Its job is the unit confusion: the bare unit is
+ * seconds, so `--max-backoff 10` meant as ten minutes is a budget of ten
+ * seconds — below the 8s default backoff plus anything, and the pass stops on
+ * the first 429 it meets while the operator believes it will wait out ten
+ * minutes of them. Half a minute is well under any budget the runbook
+ * contemplates and well over every value that can only be a typo. It does not
+ * promise that a 30s budget survives a window (RATE_LIMIT_MAX_BACKOFF_MS is
+ * 60s, so one wild Retry-After can still exhaust it) — only that a budget this
+ * small was asked for on purpose.
  */
 export const MIN_MAX_BACKOFF_MS = 30_000;
 
@@ -132,7 +135,7 @@ export function parseMaxBackoffFlag(raw: string | undefined): number {
   if (ms < MIN_MAX_BACKOFF_MS) {
     throw new UsageError(
       `--max-backoff ${JSON.stringify(raw)} is below the ${formatDuration(MIN_MAX_BACKOFF_MS)} ` +
-      "this command allows — a smaller budget stops the pass on its first rate limit " +
+      "this command allows — a budget that small stops the pass on its first rate limit " +
       "(the bare unit is seconds, so 10m is ten minutes and 10 is ten seconds)",
     );
   }
