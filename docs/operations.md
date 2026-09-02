@@ -296,7 +296,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--since-last-run` measures only what changed; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
@@ -344,7 +344,10 @@ halves — an R2 credential for the manifests and a Cloudflare API token for
 Vectorize, which has no S3 access-key path — so R2 keys alone stay on wrangler.
 `--via wrangler` forces the old path, `--via direct` forces the new one (and
 fails with the missing credential rather than falling back), and `--local`
-always uses wrangler because nothing else can reach the miniflare bucket.
+always uses wrangler because nothing else can reach the miniflare bucket. A
+direct run also prints the Cloudflare account it resolved (`Account: …`) under
+that line: the bucket name alone does not say whose bucket, and the trap above
+is precisely a shell that loaded the wrong credential file.
 Direct is the reason to prefer it: it removes the ~0.8s of Node start-up the
 wrangler path paid on every Vectorize query and every manifest read. Measured on
 staging (29 ready readings, plan mode): 46.6s over wrangler against 10.0s
@@ -356,7 +359,10 @@ at all.
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads` — the
 manifests read while planning — `manifest read` for reads outside a planning
-pass, `vectorize query`, `provider`, `manifest write`, `list write`),
+pass, `vectorize query`, `reverse query` — the scoping queries an incremental
+tier-1 pass makes, kept apart from the measurement ones because the scope
+trades one for the other — `run marker`, `provider`, `manifest write`,
+`list write`),
 each with its call count and total wall time, then the run total. The block is
 printed even when the pass ends in an error, and failed calls are counted, since
 a stalled read is exactly the wall time worth seeing. Execute mode also prints
@@ -429,6 +435,41 @@ writes nothing.
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT"
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
+```
+
+**Scope.** By default (`--full`) the pass measures every ready reading, which
+is O(N) whatever changed — the immediate rerun in run A measured 553 readings
+in 16 minutes and wrote none of them. `--since-last-run` measures only the
+readings whose neighbourhood could have moved since the run marker stored at
+`index/refresh-state.json` (per tenant): those created or reprocessed since it,
+the readings that cite them, and the reverse neighbourhood of each changed
+vector (one topK-100 metadata-less query per changed reading, keeping matches
+at or above 0.45 — well under the 0.5 floor, so a reading that near cannot
+gain or lose a floored neighbour). The scope and its reason are printed
+(`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
+
+It escalates to a full sweep whenever that reasoning runs out: no marker (the
+first run, or a deleted one), fewer list rows than the marker recorded (a purge
+names nothing a timestamp can find), a failed reverse query, or a reverse
+neighbourhood still saturated at topK — never a narrower pass.
+
+An incremental report is a statement about its scope, not about the corpus: a
+persistent flag on a reading nobody touched — the backfill's 394
+`connection_below_floor` rows, say — stays invisible until that reading enters
+scope. **Run `--full` weekly**; `--full` remains the default until a staging
+proof of the incremental path is recorded here.
+
+Only a complete `--execute` pass advances the marker (a plan pass writes no
+snapshots, and `--only`/`--limit` measure a subset on purpose, so neither
+does), and `last_full_run_at` moves only on a full sweep. A failed marker write
+does not fail the run: the cost is the next pass sweeping.
+
+```sh
+# Nightly.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --since-last-run --execute --sole-writer
+# Weekly.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
 ```
 

@@ -84,7 +84,7 @@ describe("chooseNeighboursBackend", () => {
           CORPUS_CF_API_TOKEN: "tok",
         },
       }),
-    ).toEqual({ backend: "direct", reason: "CORPUS_R2_* keys" });
+    ).toEqual({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" });
   });
 
   it("picks direct on CLOUDFLARE_API_TOKEN alone", () => {
@@ -93,7 +93,7 @@ describe("chooseNeighboursBackend", () => {
         local: false,
         vars: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
       }),
-    ).toEqual({ backend: "direct", reason: "CLOUDFLARE_API_TOKEN" });
+    ).toEqual({ backend: "direct", reason: "CLOUDFLARE_API_TOKEN", accountId: "acct" });
   });
 
   // Vectorize has no S3 access-key path, so R2 keys without a token cannot
@@ -148,12 +148,29 @@ describe("chooseNeighboursBackend", () => {
   });
 
   it("names the chosen path and why in the header line", () => {
-    expect(describeBackend({ backend: "direct", reason: "CORPUS_R2_* keys" })).toBe(
+    expect(describeBackend({ backend: "direct", reason: "CORPUS_R2_* keys" })).toEqual([
       "Storage: direct (S3/REST) — CORPUS_R2_* keys",
-    );
-    expect(describeBackend({ backend: "wrangler", reason: "--local" })).toBe(
+    ]);
+    expect(describeBackend({ backend: "wrangler", reason: "--local" })).toEqual([
       "Storage: wrangler — --local",
-    );
+    ]);
+  });
+
+  // Which account's bucket, not just which bucket: staging and production
+  // spell some corpus names alike, and the direct path takes the account from
+  // whichever credential file the shell happened to load.
+  it("names the Cloudflare account the direct path addresses", () => {
+    expect(
+      describeBackend({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" }),
+    ).toEqual(["Storage: direct (S3/REST) — CORPUS_R2_* keys", "Account: acct"]);
+  });
+
+  // The wrangler path resolves its own account from `wrangler login`, so this
+  // command has nothing to report about it.
+  it("says nothing about the account on the wrangler path", () => {
+    expect(
+      describeBackend({ backend: "wrangler", reason: "--via wrangler", accountId: "acct" }),
+    ).toEqual(["Storage: wrangler — --via wrangler"]);
   });
 });
 
@@ -175,6 +192,17 @@ describe("directNeighboursR2 — queryByVectorId", () => {
       returnMetadata: "all",
       namespace: "usr_1",
     });
+  });
+
+  // A reverse-neighbour scoping query reads ids and scores only; asking a
+  // hundred readings for their title, tldr and tags is transfer for nothing.
+  it("asks for no metadata when the caller says it wants none", async () => {
+    const fetchFn = stub(() => vectorizeResponse([{ id: "usr_1:rd_a", score: 1 }]));
+    await adapter(fetchFn).queryByVectorId("reading-lite-staging", "usr_1:rd_a", 100, "usr_1", {
+      metadata: false,
+    });
+    const body = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toMatchObject({ topK: 100, returnMetadata: "none" });
   });
 
   it("omits the namespace for the pre-tenant global index", async () => {
@@ -303,9 +331,53 @@ describe("directNeighboursR2 — manifest and list reads", () => {
     const fetchFn = stub(() =>
       new Response(JSON.stringify({ version: 1, items: [{ id: "rd_a" }] }), { status: 200 }),
     );
-    await expect(adapter(fetchFn).readListIndex(TENANT)).resolves.toEqual([{ id: "rd_a" }]);
+    await expect(adapter(fetchFn).readListIndex(TENANT)).resolves.toEqual({
+      items: [{ id: "rd_a" }],
+    });
     const req = fetchFn.mock.calls[0]![0] as Request;
     expect(req.url).toContain("reading-lite-staging/u/usr_1/index/list.json");
+  });
+
+  it("returns the list index ETag, which is what an incremental run compares against", async () => {
+    const fetchFn = stub(() => listIndexResponse([listRow("rd_a")], "etag-1"));
+    await expect(adapter(fetchFn).readListIndex(TENANT)).resolves.toMatchObject({
+      etag: "etag-1",
+    });
+  });
+
+  it("round-trips the run marker under the tenant root", async () => {
+    const state = {
+      version: 1 as const,
+      last_run_at: "2026-08-22T12:00:00.000Z",
+      last_full_run_at: "2026-08-15T12:00:00.000Z",
+      list_row_count: 42,
+      list_etag: "etag-1",
+    };
+    const written: string[] = [];
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (request.method === "PUT") {
+        written.push(await request.text());
+        return new Response("", { status: 200 });
+      }
+      return new Response(written[written.length - 1] ?? "", { status: 200 });
+    });
+    const r2 = adapter(fetchFn as unknown as FetchStub);
+    await r2.writeRefreshState(state, TENANT);
+    expect(await r2.readRefreshState(TENANT)).toEqual(state);
+    const putUrl = (fetchFn.mock.calls[0]![0] as Request).url;
+    expect(putUrl).toContain("reading-lite-staging/u/usr_1/index/refresh-state.json");
+  });
+
+  // The first incremental run on a corpus has no marker, and absent must be
+  // distinguishable from unreadable: absent means sweep, unreadable is an error.
+  it("reports an absent run marker as null and a failed read as an error", async () => {
+    await expect(
+      adapter(stub(() => new Response("", { status: 404 }))).readRefreshState(GLOBAL),
+    ).resolves.toBeNull();
+    await expect(
+      adapter(stub(() => new Response("boom", { status: 500 }))).readRefreshState(GLOBAL),
+    ).rejects.toThrow();
   });
 
   it("refuses to run against a missing list index", async () => {

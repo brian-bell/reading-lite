@@ -32,6 +32,13 @@ export interface BackendChoice {
   backend: NeighboursBackend;
   /** Why this backend was chosen, for the command header. */
   reason: string;
+  /**
+   * The Cloudflare account the direct path will address, when the credentials
+   * name one. Printed in the header: a bucket name alone does not say which
+   * account's bucket, and staging and production spell some of them the same.
+   * Absent on the wrangler path, which resolves its own account.
+   */
+  accountId?: string;
 }
 
 /** The narrow slice of the Vectorize client tier 1 needs. */
@@ -82,19 +89,25 @@ export function chooseNeighboursBackend(inputs: BackendInputs): BackendChoice {
     // here means --local alone, which only wrangler can serve.
     return { backend: "wrangler", reason: "--local" };
   }
-  if (inputs.via === "direct") return { backend: "direct", reason: "--via direct" };
+  const accountId = first(inputs.vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
+  const account = accountId === undefined ? {} : { accountId };
+  if (inputs.via === "direct") return { backend: "direct", reason: "--via direct", ...account };
   const credential = directCredential(inputs.vars);
-  if (credential) return { backend: "direct", reason: credential };
+  if (credential) return { backend: "direct", reason: credential, ...account };
   return {
     backend: "wrangler",
     reason: "no CORPUS_R2_*/CLOUDFLARE_API_TOKEN credentials",
   };
 }
 
-/** Header line naming the path a pass actually ran over. */
-export function describeBackend(choice: BackendChoice): string {
+/** Header lines naming the path a pass actually ran over, and where. */
+export function describeBackend(choice: BackendChoice): string[] {
   const label = choice.backend === "direct" ? "direct (S3/REST)" : "wrangler";
-  return `Storage: ${label} — ${choice.reason}`;
+  const lines = [`Storage: ${label} — ${choice.reason}`];
+  if (choice.backend === "direct" && choice.accountId !== undefined) {
+    lines.push(`Account: ${choice.accountId}`);
+  }
+  return lines;
 }
 
 export interface DirectNeighboursDeps {
@@ -139,15 +152,33 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
       const key = rooted(layout.listIndexKey(), r2Deps);
       // The client throws on a read error and answers null only for a 404, so
       // a transient failure cannot be mistaken for an empty corpus — the same
-      // reason wrangler-r2 reads this one strictly.
-      const raw = await client(r2Deps).get(key);
-      if (raw === null) {
+      // reason wrangler-r2 reads this one strictly. Read with the ETag: it
+      // costs nothing over a plain GET and it is what lets the next incremental
+      // run recognise a byte-identical index.
+      const object = await client(r2Deps).getWithEtag(key);
+      if (object === null) {
         throw new Error(`could not read ${layout.listIndexKey()} from bucket ${r2Deps.bucket}`);
       }
-      const parsed: unknown = JSON.parse(raw);
+      const parsed: unknown = JSON.parse(object.body);
       const items = (parsed as { items?: unknown }).items;
       if (!Array.isArray(items)) throw new Error(`${layout.listIndexKey()} has no items array`);
-      return items as RefreshRow[];
+      return { items: items as RefreshRow[], ...(object.etag === "" ? {} : { etag: object.etag }) };
+    },
+
+    // The run marker. A 404 is the only absence — the first incremental run on
+    // a corpus, or one whose marker was deleted — and every other failure
+    // throws, because "unreadable" must not read as "never ran".
+    async readRefreshState(r2Deps) {
+      const raw = await client(r2Deps).get(rooted(layout.refreshStateKey(), r2Deps));
+      return raw === null ? null : JSON.parse(raw);
+    },
+
+    async writeRefreshState(state, r2Deps) {
+      await client(r2Deps).put(
+        rooted(layout.refreshStateKey(), r2Deps),
+        JSON.stringify(state),
+        { contentType: "application/json" },
+      );
     },
 
     async readManifest(keyPrefix, r2Deps) {
@@ -160,10 +191,13 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
       return raw === null ? null : JSON.parse(raw);
     },
 
-    async queryByVectorId(indexName, id, topK, namespace) {
+    async queryByVectorId(indexName, id, topK, namespace, opts) {
       const matches = await index(indexName, namespace).queryById(id, {
         topK,
-        returnMetadata: true,
+        // Metadata is the measurement pass's payload (title/tldr/tags/
+        // created_at go straight into the report); a reverse-neighbour scoping
+        // query reads only ids and scores, and asks for none.
+        returnMetadata: opts?.metadata !== false,
       });
       // A present vector always matches itself, so an empty list is the
       // missing-vector signal and nothing else — the same outcome wrangler

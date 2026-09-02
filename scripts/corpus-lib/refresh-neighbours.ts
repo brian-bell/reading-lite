@@ -98,22 +98,39 @@ export interface RefreshReportReading {
   current_neighbours: RefreshReportNeighbour[];
 }
 
+/**
+ * What the run looked at. A full report is a statement about the whole ready
+ * corpus; an incremental one is a statement about the readings whose
+ * neighbourhood could have moved since `since` (see refresh-scope.ts), and a
+ * reading missing from it may simply never have been measured.
+ */
+export interface RefreshReportScope {
+  kind: "full" | "incremental";
+  reason: string;
+  since?: string;
+  readings_in_scope?: number;
+}
+
 export interface RefreshReport {
   version: 1;
   generated_at: string;
   tenant: string;
   floor: number;
+  scope?: RefreshReportScope;
   readings: RefreshReportReading[];
 }
 
 export function planRefresh(
   items: RefreshRow[],
-  opts: { only?: string[]; limit?: number } = {},
+  opts: { only?: string[]; limit?: number; scope?: ReadonlySet<string> } = {},
 ): RefreshPlan {
   const only = opts.only && opts.only.length > 0 ? new Set(opts.only) : null;
   let skippedNotReady = 0;
   const targets: RefreshRow[] = [];
   for (const it of items) {
+    // The incremental scope (refresh-scope.ts) and --only compose: an operator
+    // naming ids gets exactly those, intersected with what the scope allows.
+    if (opts.scope !== undefined && !opts.scope.has(it.id)) continue;
     if (only && !only.has(it.id)) continue;
     if (it.status !== "ready") {
       skippedNotReady++;
@@ -264,6 +281,7 @@ export function buildReportReading(
 export function buildRefreshReport(opts: {
   generatedAt: string;
   tenant: string;
+  scope?: RefreshReportScope;
   readings: RefreshReportReading[];
 }): RefreshReport {
   return {
@@ -271,6 +289,7 @@ export function buildRefreshReport(opts: {
     generated_at: opts.generatedAt,
     tenant: opts.tenant,
     floor: SIMILARITY_FLOOR,
+    ...(opts.scope === undefined ? {} : { scope: opts.scope }),
     readings: opts.readings,
   };
 }

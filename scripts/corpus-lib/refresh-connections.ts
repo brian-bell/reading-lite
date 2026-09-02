@@ -43,12 +43,25 @@ const ReportReadingSchema = z
   })
   .strict();
 
+// What the tier-1 pass measured. Optional: reports written before the
+// incremental scope existed carry no header, and an absent scope reads the same
+// way a full one does — the whole ready corpus was looked at.
+const ReportScopeSchema = z
+  .object({
+    kind: z.enum(["full", "incremental"]),
+    reason: z.string().min(1),
+    since: z.string().datetime().optional(),
+    readings_in_scope: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 export const RefreshConnectionsReportSchema = z
   .object({
     version: z.literal(1),
     generated_at: z.string().datetime(),
     tenant: z.string().min(1),
     floor: z.number(),
+    scope: ReportScopeSchema.optional(),
     readings: z.array(ReportReadingSchema),
   })
   .strict()

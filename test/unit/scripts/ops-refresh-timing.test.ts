@@ -91,14 +91,21 @@ describe("timed storage wrappers", () => {
       {
         readListIndex: async () => {
           calls.push("readListIndex");
-          return [];
+          return { items: [] };
+        },
+        readRefreshState: async () => {
+          calls.push("readRefreshState");
+          return null;
+        },
+        writeRefreshState: async (state) => {
+          calls.push(`writeRefreshState:${state.last_run_at}`);
         },
         readManifest: async (keyPrefix) => {
           calls.push(`readManifest:${keyPrefix}`);
           return { id: "rd_a" };
         },
-        queryByVectorId: async (index, id, topK, namespace) => {
-          calls.push(`query:${index}:${id}:${topK}:${namespace}`);
+        queryByVectorId: async (index, id, topK, namespace, opts) => {
+          calls.push(`query:${index}:${id}:${topK}:${namespace}:${opts?.metadata ?? "default"}`);
           return [];
         },
         putManifest: async (keyPrefix) => {
@@ -113,20 +120,31 @@ describe("timed storage wrappers", () => {
     const deps = { bucket: "b", keyRoot: "", remote: true };
 
     await r2.readListIndex(deps);
+    await r2.readRefreshState(deps);
+    await r2.queryByVectorId("idx", "usr:rd_a", 100, "usr", { metadata: false });
     await r2.queryByVectorId("idx", "usr:rd_a", 6, "usr");
     expect(await r2.readManifest("readings/2026/rd_a", deps)).toEqual({ id: "rd_a" });
     await r2.putManifest("readings/2026/rd_a", {}, deps);
     await r2.mergeListRows([{ id: "rd_a" }], deps);
+    await r2.writeRefreshState(
+      { version: 1, last_run_at: "2026-08-22T12:00:00.000Z", list_row_count: 1 },
+      deps,
+    );
 
     expect(calls).toEqual([
       "readListIndex",
-      "query:idx:usr:rd_a:6:usr",
+      "readRefreshState",
+      "query:idx:usr:rd_a:100:usr:false",
+      "query:idx:usr:rd_a:6:usr:default",
       "readManifest:readings/2026/rd_a",
       "putManifest:readings/2026/rd_a",
       "mergeListRows",
+      "writeRefreshState:2026-08-22T12:00:00.000Z",
     ]);
     const block = timer.format();
     expect(block).toContain("list read");
+    expect(block).toContain("run marker");
+    expect(block).toContain("reverse query");
     expect(block).toContain("vectorize query");
     expect(block).toContain("manifest read");
     expect(block).toContain("manifest write");

@@ -16,6 +16,13 @@
 // both modes — connections are not on the list row, and a schema-drifted
 // manifest would skew the diff (storedConnections drops malformed entries,
 // inventing new_neighbour or hiding stale_connection).
+//
+// What the pass measures is a separate decision from how it measures it.
+// --full (the default) is every ready reading; --since-last-run narrows to the
+// readings whose neighbourhood could have moved since the run marker at
+// index/refresh-state.json, which this command reads, hands to the pure planner
+// in corpus-lib/refresh-scope.ts along with one reverse-neighbour query per
+// changed reading, and advances only after a complete --execute pass.
 
 import path from "node:path";
 import { loadDotVars } from "../../lib/dotvars";
@@ -30,6 +37,17 @@ import {
   type RefreshReportReading,
   type RefreshRow,
 } from "../../corpus-lib/refresh-neighbours";
+import {
+  REVERSE_TOP_K,
+  buildRefreshState,
+  changedSince,
+  describeScope,
+  incrementalScope,
+  parseRefreshState,
+  type RefreshScope,
+  type RefreshState,
+  type ReverseMatches,
+} from "../../corpus-lib/refresh-scope";
 import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-similarity";
 import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
@@ -52,13 +70,23 @@ import {
 } from "../neighbours-r2";
 
 export interface CorpusRefreshNeighboursR2 {
-  readListIndex: (deps: R2Deps) => Promise<RefreshRow[]>;
+  /**
+   * The live index and, where the backend has one, its ETag — the token an
+   * incremental run compares against its marker to recognise an untouched
+   * corpus. The wrangler CLI exposes no ETag, so that path returns none and the
+   * scope falls back to the row timestamps.
+   */
+  readListIndex: (deps: R2Deps) => Promise<{ items: RefreshRow[]; etag?: string }>;
+  /** The stored run marker, unparsed; `null` only when confirmed absent. */
+  readRefreshState: (deps: R2Deps) => Promise<unknown | null>;
+  writeRefreshState: (state: RefreshState, deps: R2Deps) => Promise<void>;
   readManifest: (keyPrefix: string, deps: R2Deps) => Promise<any | null>;
   queryByVectorId: (
     index: string,
     id: string,
     topK: number,
     namespace?: string,
+    opts?: { metadata?: boolean },
   ) => Promise<RefreshNeighbour[] | null>;
   putManifest: (keyPrefix: string, body: unknown, deps: R2Deps) => Promise<void>;
   /**
@@ -94,6 +122,9 @@ interface Opts {
   remote: boolean;
   execute: boolean;
   soleWriter: boolean;
+  /** False only under --since-last-run: full is the default until the proof lands. */
+  full: boolean;
+  fullExplicit: boolean;
   limit?: number;
   out: string;
 }
@@ -105,12 +136,17 @@ function parseRefreshArgs(argv: string[]): Opts {
     remote: true,
     execute: false,
     soleWriter: false,
+    full: true,
+    fullExplicit: false,
     out: "refresh-report.json",
   };
+  let sinceLastRun = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--execute") opts.execute = true;
     else if (a === "--sole-writer") opts.soleWriter = true;
+    else if (a === "--full") opts.fullExplicit = true;
+    else if (a === "--since-last-run") sinceLastRun = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
@@ -126,6 +162,12 @@ function parseRefreshArgs(argv: string[]): Opts {
   if (opts.via === "direct" && !opts.remote) {
     throw new UsageError("--via direct cannot be combined with --local");
   }
+  // The two scope flags say opposite things; picking one silently would let a
+  // nightly cron think it ran incrementally while it swept.
+  if (sinceLastRun && opts.fullExplicit) {
+    throw new UsageError("--since-last-run cannot be combined with --full");
+  }
+  opts.full = !sinceLastRun;
   return opts;
 }
 
@@ -191,6 +233,88 @@ function selectStorage(
   return { choice: requested, storage: direct() };
 }
 
+/**
+ * The stored run marker, or `null` for "measure everything". A marker that
+ * cannot be read is reported and treated as absent: the pass then sweeps, which
+ * is the safe direction — the alternative, aborting, turns a transient R2 blip
+ * into a night with no refresh at all.
+ */
+async function readMarker(
+  r2: CorpusRefreshNeighboursR2,
+  r2Deps: R2Deps,
+  stderr: (line: string) => void,
+): Promise<RefreshState | null> {
+  let raw: unknown;
+  try {
+    raw = await r2.readRefreshState(r2Deps);
+  } catch (e) {
+    stderr(`  ! run marker unreadable: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  if (raw === null) return null;
+  const state = parseRefreshState(raw);
+  if (state === null) stderr("  ! run marker is not a usable refresh state — sweeping instead");
+  return state;
+}
+
+/**
+ * The incremental scope: which readings this pass has to measure. The reverse
+ * queries are made here and handed to the pure planner as data, so every scope
+ * rule stays unit-testable without an index.
+ *
+ * A reverse query that fails leaves its id out of the map, which the planner
+ * reads as "the scope cannot be trusted" and escalates. Nothing about a failed
+ * scoping query is allowed to shrink the pass.
+ */
+async function resolveScope(args: {
+  r2: CorpusRefreshNeighboursR2;
+  io: CommandIo;
+  items: RefreshRow[];
+  marker: RefreshState | null;
+  tenant: { namespace?: string };
+  vectorizeIndex: string;
+  listEtag?: string;
+}): Promise<RefreshScope> {
+  const { r2, io, items, marker, tenant, vectorizeIndex, listEtag } = args;
+  const base = changedSince(items, marker, listEtag);
+  if (base.kind === "full") return base;
+
+  const statusById = new Map(items.map((row) => [row.id, row.status]));
+  const reverse = new Map<string, ReverseMatches>();
+  for (const id of base.changed) {
+    // Only a ready reading owns a vector to query from. A changed row that is
+    // not ready contributes its citers and nothing else, which is recorded as
+    // an answered query rather than a missing one.
+    if (statusById.get(id) !== "ready") {
+      reverse.set(id, null);
+      continue;
+    }
+    try {
+      const matches = await r2.queryByVectorId(
+        vectorizeIndex,
+        tenantVectorId(tenant.namespace, id),
+        REVERSE_TOP_K,
+        tenant.namespace,
+        { metadata: false },
+      );
+      reverse.set(
+        id,
+        matches === null
+          ? null
+          : normalizeVectorMatchIds(matches, tenant.namespace).map((match) => ({
+              id: match.id,
+              score: match.score,
+            })),
+      );
+    } catch (e) {
+      io.stderr(
+        `  ! reverse-neighbour query failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  return incrementalScope(items, marker, reverse, listEtag);
+}
+
 // The block prints in a finally: the passes worth timing most are the ones
 // that end in a thrown stale-report or storage error, having already spent
 // minutes of reads.
@@ -235,14 +359,23 @@ async function refreshNeighbours(
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const tenantSelector = operatorTenantSelector(tenant);
 
-  const items = await r2.readListIndex(r2Deps);
-  const plan = planRefresh(items, { only: opts.only, limit: opts.limit });
-  const reportPath = path.resolve(opts.out);
+  const { items, etag: listEtag } = await r2.readListIndex(r2Deps);
   const now = new Date(deps.now()).toISOString();
+  const marker = opts.full ? null : await readMarker(r2, r2Deps, io.stderr);
+  const scope = opts.full
+    ? { kind: "full" as const, reason: "--full" }
+    : await resolveScope({ r2, io, items, marker, tenant, vectorizeIndex, listEtag });
+  const plan = planRefresh(items, {
+    only: opts.only,
+    limit: opts.limit,
+    ...(scope.kind === "incremental" ? { scope: new Set(scope.ids) } : {}),
+  });
+  const reportPath = path.resolve(opts.out);
 
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
   io.stdout(`Vectorize: ${vectorizeIndex}`);
-  io.stdout(describeBackend(choice));
+  for (const line of describeBackend(choice)) io.stdout(line);
+  io.stdout(describeScope(scope));
   io.stdout(`Corpus: ${items.length} readings`);
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
@@ -377,6 +510,16 @@ async function refreshNeighbours(
   const report = buildRefreshReport({
     generatedAt: now,
     tenant: tenantSelector,
+    // Recorded in the header because an incremental report is a statement about
+    // its scope, not about the corpus: a reading absent from it was either
+    // measured and found fresh, or never looked at this run.
+    scope: {
+      kind: scope.kind,
+      reason: scope.reason,
+      ...(scope.kind === "incremental"
+        ? { since: scope.since, readings_in_scope: scope.ids.length }
+        : {}),
+    },
     readings: flagged,
   });
   await deps.mkdir(path.dirname(reportPath));
@@ -416,10 +559,75 @@ async function refreshNeighbours(
     return 1;
   }
 
+  await advanceMarker({
+    opts,
+    r2,
+    r2Deps,
+    io,
+    marker,
+    scope,
+    items,
+    // The flush rewrote index/list.json, so the ETag this pass read is already
+    // superseded. Recording it would be recording a token no future read can
+    // ever match; the next run falls back to the row timestamps instead.
+    ...(scored.size > 0 || listEtag === undefined ? {} : { listEtag }),
+    runAt: now,
+  });
+
   if (!opts.execute) {
     io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
   }
   return 0;
+}
+
+/**
+ * Stores the run marker the next incremental pass scopes against.
+ *
+ * Only a complete --execute pass may advance it, because the marker asserts
+ * something stronger than "we looked": every reading in scope was measured AND
+ * whatever drifted was written. A plan pass writes no snapshot, and --only /
+ * --limit deliberately measure a subset, so both leave the marker where it is
+ * and the readings they skipped stay in the next run's scope. Failures already
+ * returned non-zero before this point.
+ *
+ * `last_full_run_at` moves only on a full sweep — it is what a weekly-sweep
+ * policy is judged against.
+ */
+async function advanceMarker(args: {
+  opts: Opts;
+  r2: CorpusRefreshNeighboursR2;
+  r2Deps: R2Deps;
+  io: CommandIo;
+  marker: RefreshState | null;
+  scope: RefreshScope;
+  items: RefreshRow[];
+  listEtag?: string;
+  runAt: string;
+}): Promise<void> {
+  const { opts, io } = args;
+  if (!opts.execute) return;
+  if (opts.only.length > 0 || opts.limit !== undefined) {
+    io.stdout("Run marker unchanged: --only/--limit measured a subset of the scope.");
+    return;
+  }
+  const state = buildRefreshState({
+    previous: args.marker,
+    runAt: args.runAt,
+    full: args.scope.kind === "full",
+    listRowCount: args.items.length,
+    ...(args.listEtag === undefined ? {} : { listEtag: args.listEtag }),
+  });
+  try {
+    await args.r2.writeRefreshState(state, args.r2Deps);
+    io.stdout(`Run marker updated (${state.last_run_at}).`);
+  } catch (e) {
+    // Not a failed run: every snapshot this pass owed the corpus is written.
+    // The cost of a lost marker is the next pass sweeping instead of scoping.
+    io.stderr(
+      `  ! run marker write failed: ${e instanceof Error ? e.message : String(e)} — ` +
+      "the next incremental run will sweep.",
+    );
+  }
 }
 
 // Credentials the direct path may use, in the same precedence the tier-2/3
@@ -496,7 +704,22 @@ refused without --sole-writer for that reason.
 The direct path removes the ~0.8s child-process spawn the wrangler path pays on
 every Vectorize query and every manifest read, and needs no wrangler at all.
 
+Scope. --full (the default) measures every ready reading, as this command
+always has. --since-last-run measures only the readings whose neighbourhood
+could have moved since the run marker at index/refresh-state.json: those
+created or reprocessed since it, the readings that cite them, and the reverse
+neighbourhood of each changed vector (a topK-${REVERSE_TOP_K} query). It escalates to a
+full sweep whenever that reasoning runs out — no marker, rows removed since the
+marker, a failed reverse query, or a reverse neighbourhood saturated at topK.
+An incremental report is a statement about its scope: a persistent flag on a
+reading nobody touched stays invisible until the next full sweep, so run --full
+weekly. The scope and its reason are printed and recorded in the report header.
+
+Only a complete --execute pass advances the marker, and --only/--limit never do.
+
 Options:
+  --since-last-run    Measure only the readings in scope (see above).
+  --full              Measure every ready reading. The default.
   --limit <n>         Cap how many readings are measured this pass.
   --out <path>        Report path. Default: ./refresh-report.json
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
@@ -518,11 +741,19 @@ Options:
     r2: {
       readListIndex: async (d) => {
         const items = await (await import("../../corpus-lib/wrangler-r2")).readListIndex(d);
-        return items as RefreshRow[];
+        // No ETag: `wrangler r2 object get` prints the body and nothing else.
+        return { items: items as RefreshRow[] };
       },
+      readRefreshState: async (d) =>
+        (await import("../../corpus-lib/wrangler-r2")).readRefreshState(d),
+      writeRefreshState: async (state, d) =>
+        (await import("../../corpus-lib/wrangler-r2")).writeRefreshState(state, d),
       readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
-      queryByVectorId: async (index, id, topK, namespace) =>
-        (await import("../../corpus-lib/wrangler-r2")).queryByVectorId(index, id, topK, { namespace }),
+      queryByVectorId: async (index, id, topK, namespace, opts) =>
+        (await import("../../corpus-lib/wrangler-r2")).queryByVectorId(index, id, topK, {
+          namespace,
+          ...(opts?.metadata === undefined ? {} : { metadata: opts.metadata }),
+        }),
       putManifest: async (kp, body, d) => (await import("../../corpus-lib/wrangler-put")).putManifest(kp, body, d),
       // Read-merge-write over wrangler, which offers no conditional put: the
       // merge is against the list index as it stands at flush time, so rows the
@@ -545,9 +776,11 @@ Options:
       };
       return {
         readListIndex: async (d) => (await lazy()).readListIndex(d),
+        readRefreshState: async (d) => (await lazy()).readRefreshState(d),
+        writeRefreshState: async (state, d) => (await lazy()).writeRefreshState(state, d),
         readManifest: async (kp, d) => (await lazy()).readManifest(kp, d),
-        queryByVectorId: async (index, id, topK, ns) =>
-          (await lazy()).queryByVectorId(index, id, topK, ns),
+        queryByVectorId: async (index, id, topK, ns, opts) =>
+          (await lazy()).queryByVectorId(index, id, topK, ns, opts),
         putManifest: async (kp, body, d) => (await lazy()).putManifest(kp, body, d),
         mergeListRows: async (patches, d) => (await lazy()).mergeListRows(patches, d),
       };
