@@ -527,12 +527,12 @@ describe("processReading immediate notification recipient", () => {
   it("keeps the manifest ready when recipient lookup throws", async () => {
     const workerEnv = env as unknown as Env;
     const origPrepare = workerEnv.CONTROL_PLANE.prepare.bind(workerEnv.CONTROL_PLANE);
-    workerEnv.CONTROL_PLANE.prepare = ((sql: string, ...rest: unknown[]) => {
-      if (typeof sql === "string" && sql.includes("LEFT JOIN user_settings")) {
+    workerEnv.CONTROL_PLANE.prepare = (sql: string) => {
+      if (sql.includes("LEFT JOIN user_settings")) {
         throw new Error("d1 lookup failed");
       }
-      return origPrepare(sql, ...rest);
-    }) as typeof origPrepare;
+      return origPrepare(sql);
+    };
 
     const fetchFn = makeStubFetch();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
