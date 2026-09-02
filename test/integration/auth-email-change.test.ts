@@ -101,18 +101,63 @@ async function redeemUser(email: string, redemptionId: string) {
   return { cookie: cookie!, csrf: body.csrf_token, userId: body.user_id, email: body.email };
 }
 
+async function insertReadToken(userId: string) {
+  const workerEnv = env as unknown as Env;
+  const secretHmac = await hmacHex(
+    await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
+    "cd".repeat(32),
+  );
+  const now = Date.parse(NOW);
+  const tokenId = `tok_${crypto.randomUUID()}`;
+  await workerEnv.CONTROL_PLANE.prepare(
+    `INSERT INTO api_tokens (
+       id, user_id, name, format, secret_hmac, hash_key_version,
+       created_at_ms, expires_at_ms
+     ) VALUES (?, ?, 'cli', 'standard', ?, 1, ?, ?)`,
+  )
+    .bind(tokenId, userId, secretHmac, now, now + 90 * 24 * 60 * 60 * 1000)
+    .run();
+  await workerEnv.CONTROL_PLANE.prepare(
+    "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')",
+  )
+    .bind(tokenId)
+    .run();
+  return { tokenId, bearer: `Bearer ${tokenId}.cd${"cd".repeat(31)}` };
+}
+
 describe("verified email change", () => {
-  it("acks generically, requires CSRF and recent-auth, then swaps via redeem", async () => {
-    const session = await redeemUser("changer@test.example", "clm_email_req");
-    const occupied = await redeemUser("taken@test.example", "clm_taken_user");
+  it("requires CSRF for email-change request and redeem", async () => {
+    const session = await redeemUser("csrf-changer@test.example", "clm_csrf_req");
 
     const missingCsrf = await request("/api/auth/email-change", {
       method: "POST",
       cookie: session.cookie,
-      body: { email: "fresh@test.example" },
+      body: { email: "csrf-fresh@test.example" },
     });
     expect(missingCsrf.res.status).toBe(403);
     expect(missingCsrf.sent).toHaveLength(0);
+
+    const requested = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { email: "csrf-fresh@test.example" },
+    });
+    expect(requested.res.status).toBe(200);
+    expect(requested.sent).toHaveLength(1);
+    const credential = credentialFrom(requested.sent[0]!.verifyUrl);
+
+    const missingRedeemCsrf = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: session.cookie,
+      body: { credential, redemption_id: "clm_csrf_nocsrf" },
+    });
+    expect(missingRedeemCsrf.res.status).toBe(403);
+  });
+
+  it("acks occupied targets generically", async () => {
+    const session = await redeemUser("occ-changer@test.example", "clm_occ_req");
+    const occupied = await redeemUser("occ-taken@test.example", "clm_occ_taken");
 
     const occupiedAck = await request("/api/auth/email-change", {
       method: "POST",
@@ -122,68 +167,47 @@ describe("verified email change", () => {
     });
     expect(occupiedAck.res.status).toBe(200);
     expect(await occupiedAck.res.json()).toEqual({ ok: true });
+  });
+
+  it("swaps via redeem and revokes other sessions and tokens", async () => {
+    const session = await redeemUser("swap-changer@test.example", "clm_swap_req");
 
     const requested = await request("/api/auth/email-change", {
       method: "POST",
       cookie: session.cookie,
       csrf: session.csrf,
-      body: { email: "Fresh@test.example" },
+      body: { email: "Swap-Fresh@test.example" },
     });
     expect(requested.res.status).toBe(200);
     expect(await requested.res.json()).toEqual({ ok: true });
     expect(requested.sent).toHaveLength(1);
-    expect(requested.sent[0]?.to).toBe("Fresh@test.example");
+    expect(requested.sent[0]?.to).toBe("Swap-Fresh@test.example");
     expect(requested.sent[0]?.subject).toMatch(/confirm/i);
     expect(requested.sent[0]?.verifyUrl).toContain("/auth/verify?purpose=email_change#");
 
     const credential = credentialFrom(requested.sent[0]!.verifyUrl);
     const cookieless = await request("/api/auth/redeem", {
       method: "POST",
-      body: { credential, redemption_id: "clm_email_nocookie" },
+      body: { credential, redemption_id: "clm_swap_nocookie" },
     });
     expect(cookieless.res.status).toBe(401);
     expect(await cookieless.res.json()).toEqual({ error: "unauthorized" });
     expect(cookieless.securityMail).toHaveLength(0);
 
-    const missingRedeemCsrf = await request("/api/auth/redeem", {
-      method: "POST",
-      cookie: session.cookie,
-      body: { credential, redemption_id: "clm_email_nocsrf" },
-    });
-    expect(missingRedeemCsrf.res.status).toBe(403);
-
-    const other = await redeemUser("changer@test.example", "clm_email_other");
+    const other = await redeemUser("swap-changer@test.example", "clm_swap_other");
     const otherRedeem = await request("/api/auth/redeem", {
       method: "POST",
       cookie: other.cookie,
       csrf: other.csrf,
-      body: { credential, redemption_id: "clm_email_other_device" },
+      body: { credential, redemption_id: "clm_swap_other_device" },
     });
     expect(otherRedeem.res.status).toBe(403);
     expect(await otherRedeem.res.json()).toEqual({ error: "forbidden" });
     const stillOld = await request("/api/whoami", { cookie: session.cookie });
-    expect((await stillOld.res.json() as { email: string }).email).toBe("changer@test.example");
-    const workerEnv = env as unknown as Env;
-    const secretHmac = await hmacHex(
-      await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
-      "cd".repeat(32),
-    );
-    const now = Date.parse(NOW);
-    const tokenId = `tok_${crypto.randomUUID()}`;
-    await workerEnv.CONTROL_PLANE.prepare(
-      `INSERT INTO api_tokens (
-         id, user_id, name, format, secret_hmac, hash_key_version,
-         created_at_ms, expires_at_ms
-       ) VALUES (?, ?, 'cli', 'standard', ?, 1, ?, ?)`,
-    )
-      .bind(tokenId, session.userId, secretHmac, now, now + 90 * 24 * 60 * 60 * 1000)
-      .run();
-    await workerEnv.CONTROL_PLANE.prepare(
-      "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')",
-    )
-      .bind(tokenId)
-      .run();
-    const tokenBefore = await request("/api/whoami", { authorization: `Bearer ${tokenId}.cd${"cd".repeat(31)}` });
+    expect((await stillOld.res.json() as { email: string }).email).toBe("swap-changer@test.example");
+
+    const { bearer } = await insertReadToken(session.userId);
+    const tokenBefore = await request("/api/whoami", { authorization: bearer });
     expect(tokenBefore.res.status).toBe(200);
 
     const securityMail: SecurityMail[] = [];
@@ -195,7 +219,7 @@ describe("verified email change", () => {
         csrf: session.csrf,
         body: {
           credential,
-          redemption_id: "clm_email_confirm",
+          redemption_id: "clm_swap_confirm",
         },
         securityMail,
       },
@@ -203,29 +227,34 @@ describe("verified email change", () => {
     expect(confirmed.res.status).toBe(200);
     expect(cookieFrom(confirmed.res)).toBeNull();
     const body = (await confirmed.res.json()) as { email: string };
-    expect(body.email).toBe("Fresh@test.example");
+    expect(body.email).toBe("Swap-Fresh@test.example");
     expect(securityMail).toHaveLength(1);
     expect(securityMail[0]?.kind).toBe("email_changed");
-    expect(securityMail[0]?.to).toBe("changer@test.example");
+    expect(securityMail[0]?.to).toBe("swap-changer@test.example");
     expect(`${securityMail[0]?.subject}\n${securityMail[0]?.text}`).not.toMatch(
       /secret|token|cookie|credential|authorization|hmac/i,
     );
 
     const whoami = await request("/api/whoami", { cookie: session.cookie });
     expect(whoami.res.status).toBe(200);
-    expect((await whoami.res.json() as { email: string }).email).toBe("Fresh@test.example");
+    expect((await whoami.res.json() as { email: string }).email).toBe("Swap-Fresh@test.example");
 
     const otherWhoami = await request("/api/whoami", { cookie: other.cookie });
     expect(otherWhoami.res.status).toBe(401);
 
-    const tokenAfter = await request("/api/whoami", { authorization: `Bearer ${tokenId}.cd${"cd".repeat(31)}` });
+    const tokenAfter = await request("/api/whoami", { authorization: bearer });
     expect(tokenAfter.res.status).toBe(401);
+  });
 
+  it("requires recent authentication to request an email change", async () => {
+    const session = await redeemUser("stale-changer@test.example", "clm_stale_req");
     const staleEnv = env as unknown as Env;
     const current = (
-      await staleEnv.CONTROL_PLANE.prepare("SELECT id FROM sessions WHERE revoked_at_ms IS NULL LIMIT 1").first<{
-        id: string;
-      }>()
+      await staleEnv.CONTROL_PLANE.prepare(
+        "SELECT id FROM sessions WHERE user_id = ? AND revoked_at_ms IS NULL LIMIT 1",
+      )
+        .bind(session.userId)
+        .first<{ id: string }>()
     )?.id;
     expect(current).toBeTruthy();
     await staleEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
@@ -235,7 +264,7 @@ describe("verified email change", () => {
       method: "POST",
       cookie: session.cookie,
       csrf: session.csrf,
-      body: { email: "later@test.example" },
+      body: { email: "stale-later@test.example" },
     });
     expect(stale.res.status).toBe(403);
     expect(await stale.res.json()).toEqual({ error: "recent authentication required" });
