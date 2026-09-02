@@ -20,6 +20,14 @@
 // restored, no stamp, and no way for a re-run to notice (it would find the
 // vectors already indexed and restore nothing). Stamping first can only ever
 // cost a full sweep that was not strictly owed, which is the cheap direction.
+//
+// A run that restored something stamps a SECOND time when it is done, with a
+// different value. Neither this command nor the refresh pass holds a lock on
+// the marker, so a refresh that began after the opening stamp can sweep while
+// vectors are still arriving and then clear the stamp; the closing one is a
+// value that pass never saw, which is what makes it stand down instead. Every
+// stamp carries this run's clock for the same reason — one run must never
+// answer for another's.
 
 import { runVectorBackfill, type VectorBackfillResult, type VectorBackfillRow } from "../../corpus-lib/backfill-vectors";
 import { parseRefreshState } from "../../corpus-lib/refresh-scope";
@@ -49,6 +57,8 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
       metadata?: Record<string, unknown>;
     }[]) => Promise<void>;
   }>;
+  /** Stamps the run marker, so one run's invalidation is identifiably its own. */
+  now: () => number;
 }
 
 interface Opts {
@@ -129,6 +139,8 @@ async function runCorpusBackfillVectors(
   ): Promise<void> => {
     throw new Error("internal error: plan mode attempted a Vectorize write");
   };
+  // One clock read for both stamps, so a run is identifiable by it.
+  const runAt = new Date(deps.now()).toISOString();
   if (opts.execute) {
     // Awaited before any read so a missing credential fails the run up front,
     // matching the retired standalone script.
@@ -136,7 +148,10 @@ async function runCorpusBackfillVectors(
     // Before the first upsert, and fatal: an unstamped marker would let the
     // next incremental refresh scope narrowly around vectors it cannot see, and
     // nothing later in this run can put that right.
-    if (!(await invalidateRefreshMarker(deps, r2Deps))) return 1;
+    if (!(await invalidateRefreshMarker(deps, r2Deps, `started ${runAt}`))) {
+      io.stderr("    Nothing was embedded or upserted.");
+      return 1;
+    }
   }
 
   const result: VectorBackfillResult = await runVectorBackfill(
@@ -195,31 +210,57 @@ async function runCorpusBackfillVectors(
     }
   }
 
-  return result.problems.length > 0 ? 1 : 0;
+  // A second stamp, after the last upsert, and only when something was actually
+  // restored. The first one cannot cover a refresh pass that started between it
+  // and these vectors landing: that pass would sweep without them and then
+  // clear the stamp, which is why the closing stamp carries a different value —
+  // the refresh pass compares what it read against what is there now, and a
+  // stamp it has not seen makes it stand down.
+  const closingFailed =
+    opts.execute && result.restoredIds.length > 0
+      ? !(await invalidateRefreshMarker(deps, r2Deps, `finished ${runAt}`))
+      : false;
+  if (closingFailed) {
+    io.stderr("    Run `corpus refresh-neighbours --full` next: these vectors are already restored.");
+  }
+
+  return result.problems.length > 0 || closingFailed ? 1 : 0;
 }
 
 /**
- * Tells the tier-1 run marker that vectors are about to move under it. Returns
- * false only when the marker is still standing and still says a narrower pass
- * is safe, which is the one state this command must not leave behind.
+ * Tells the tier-1 run marker that vectors are moving under it, stamping
+ * `phase` (this run's clock, so the value is its own). Returns false only when
+ * the marker is still standing and still says a narrower pass is safe, which is
+ * the one state this command must not leave behind.
  *
  * An absent or unusable marker needs no stamp: `changedSince` already reads
- * both as "sweep". Stamping an already-stamped marker is skipped for the same
- * reason — the first reason is the one that names when the corpus diverged.
+ * both as "sweep". An already-stamped one IS overwritten, unlike the absent
+ * case: another run's stamp is another run's, and a refresh pass answering that
+ * one would clear it and go on to miss this run's vectors.
  */
 async function invalidateRefreshMarker(
   deps: CorpusBackfillVectorsDeps,
   r2Deps: R2Deps,
+  phase: string,
 ): Promise<boolean> {
   const { io, r2 } = deps;
+  const stamp = `corpus backfill-vectors ${phase}`;
   let raw: unknown;
   try {
     raw = await r2.readRefreshState(r2Deps);
   } catch (error) {
+    // A marker whose JSON does not parse is unusable, not unreachable — the
+    // adapters parse inside the read — and an unusable marker already sweeps.
+    // Blocking a repair command on a damaged marker, under a message about
+    // credentials, would be the wrong failure for the wrong reason.
+    if (error instanceof SyntaxError) {
+      io.stdout("Run marker: unparseable — the next refresh pass already sweeps.");
+      return true;
+    }
     io.stderr(
       `  ! could not read the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
     );
-    io.stderr("    Nothing was embedded or upserted; fix the R2 credential and re-run.");
+    io.stderr("    Fix the R2 credential and re-run.");
     return false;
   }
   const state = raw === null ? null : parseRefreshState(raw);
@@ -227,22 +268,14 @@ async function invalidateRefreshMarker(
     io.stdout("Run marker: absent or unusable — the next refresh pass already sweeps.");
     return true;
   }
-  if (state.invalidated_by !== undefined) {
-    io.stdout(`Run marker: already invalidated by ${state.invalidated_by}.`);
-    return true;
-  }
   try {
-    await r2.writeRefreshState(
-      { ...state, invalidated_by: "corpus backfill-vectors" },
-      r2Deps,
-    );
-    io.stdout("Run marker invalidated: the next refresh pass will sweep the whole corpus.");
+    await r2.writeRefreshState({ ...state, invalidated_by: stamp }, r2Deps);
+    io.stdout(`Run marker invalidated (${stamp}): the next refresh pass will sweep.`);
     return true;
   } catch (error) {
     io.stderr(
       `  ! could not invalidate the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
     );
-    io.stderr("    Nothing was embedded or upserted; fix the R2 credential and re-run.");
     return false;
   }
 }
@@ -290,6 +323,7 @@ CORPUS_VECTORIZE_ACCOUNT_ID / CORPUS_R2_ACCOUNT_ID / CLOUDFLARE_ACCOUNT_ID,
 and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
   defaultDeps: (io: CommandIo): CorpusBackfillVectorsDeps => ({
     io,
+    now: () => Date.now(),
     r2: {
       readListIndex: async (d) =>
         (await (await import("../../corpus-lib/wrangler-r2")).readListIndex(d)) as VectorBackfillRow[],

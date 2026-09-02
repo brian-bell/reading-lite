@@ -385,9 +385,11 @@ export function incrementalScope(
   // that exists to retry it.
   // Ready rows only, because those are the ones planRefresh will actually
   // measure: a carried id that has since gone non-ready would otherwise inflate
-  // the scope count tiers 2 and 3 print without ever being looked at. It comes
-  // back on its own — going ready again moves its timestamps, which is what
-  // `changed` reads.
+  // the scope count tiers 2 and 3 print without ever being looked at. Dropping
+  // it is not permanent for the ordinary case — a reprocess that lands ready
+  // moves the row's timestamps, which is what `changed` reads — but a repair
+  // that touches neither the list row nor the vector index does wait for the
+  // weekly sweep.
   const carried = (marker?.unmeasurable_ids ?? []).filter(
     (id) => statusById.get(id) === "ready",
   );

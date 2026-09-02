@@ -426,6 +426,8 @@ describe("ops corpus backfill-vectors", () => {
     list_ids: ["rd_v"],
   };
 
+  const RUN_AT = "2026-08-22T12:00:00.000Z";
+
   function makeDeps(marker: unknown = MARKER) {
     const { io: cio, lines } = io();
     const calls = {
@@ -445,11 +447,15 @@ describe("ops corpus backfill-vectors", () => {
         ],
         vectorExists: async () => false,
         readManifest: async () => READY_MANIFEST,
-        readRefreshState: async () => marker,
+        readRefreshState: async () => {
+          if (marker instanceof Error) throw marker;
+          return marker;
+        },
         writeRefreshState: async (state) => {
           calls.markerWrites.push(state);
         },
       },
+      now: () => Date.parse(RUN_AT),
       makeWriters: async () => {
         calls.writersMade++;
         return {
@@ -521,18 +527,18 @@ describe("ops corpus backfill-vectors", () => {
   // A restored vector moves neighbourhoods without moving any timestamp or
   // ETag a tier-1 incremental scope can read, so the marker has to say so
   // itself rather than rely on the operator remembering --full.
-  it("invalidates the tier-1 run marker before it upserts anything", async () => {
+  it("stamps the run marker either side of the upsert, with a value of its own", async () => {
     const { deps, calls, lines } = makeDeps();
     const order: string[] = [];
-    const stampedFirst = { ...deps };
-    stampedFirst.r2 = {
+    const traced = { ...deps };
+    traced.r2 = {
       ...deps.r2,
       writeRefreshState: async (state) => {
         order.push("marker");
         calls.markerWrites.push(state);
       },
     };
-    stampedFirst.makeWriters = async () => ({
+    traced.makeWriters = async () => ({
       embedMany: async (inputs) => ({
         embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0)),
       }),
@@ -540,18 +546,41 @@ describe("ops corpus backfill-vectors", () => {
         order.push("upsert");
       },
     });
-    const code = await corpusBackfillVectorsCommand.run(
-      ["--tenant", "global", "--execute"],
-      stampedFirst,
-    );
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], traced);
     expect(code).toBe(0);
     expect(calls.markerWrites).toEqual([
-      { ...MARKER, invalidated_by: "corpus backfill-vectors" },
+      { ...MARKER, invalidated_by: `corpus backfill-vectors started ${RUN_AT}` },
+      { ...MARKER, invalidated_by: `corpus backfill-vectors finished ${RUN_AT}` },
     ]);
-    // Crash-safety: a process killed after the upsert and before a trailing
-    // stamp would leave restored vectors no later pass can find.
-    expect(order).toEqual(["marker", "upsert"]);
+    // The opening stamp is crash-safety: a process killed after the upsert and
+    // before any stamp would leave restored vectors no later pass can find. The
+    // closing one covers a refresh pass that started between them, swept
+    // without these vectors, and would otherwise clear the opening stamp.
+    expect(order).toEqual(["marker", "upsert", "marker"]);
     expect(lines.join("\n")).toContain("Run marker invalidated");
+  });
+
+  // Another run's stamp is another run's: a refresh answering it would clear it
+  // and go on to miss the vectors this run is about to write.
+  it("overwrites a stamp left by an earlier backfill", async () => {
+    const { deps, calls } = makeDeps({ ...MARKER, invalidated_by: "corpus backfill-vectors started 2026-01-01T00:00:00.000Z" });
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(0);
+    expect(calls.markerWrites).toHaveLength(2);
+    expect((calls.markerWrites[0] as { invalidated_by: string }).invalidated_by).toBe(
+      `corpus backfill-vectors started ${RUN_AT}`,
+    );
+  });
+
+  // A damaged marker already makes the next refresh sweep, so it must not block
+  // a repair command under a message about credentials.
+  it("proceeds when the stored marker is unparseable JSON", async () => {
+    const { deps, calls, lines } = makeDeps(new SyntaxError("Unexpected token }"));
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(0);
+    expect(calls.upserts).toBe(1);
+    expect(calls.markerWrites).toEqual([]);
+    expect(lines.join("\n")).toContain("Run marker: unparseable");
   });
 
   it("leaves the run marker alone in plan mode", async () => {
@@ -587,6 +616,21 @@ describe("ops corpus backfill-vectors", () => {
     const text = lines.join("\n");
     expect(text).toContain("could not invalidate the tier-1 run marker: no write");
     expect(text).toContain("Nothing was embedded or upserted");
+  });
+
+  // The vectors are already in the index by then, so the operator is told to
+  // sweep rather than to re-run.
+  it("fails the run when the closing stamp cannot be written", async () => {
+    const { deps, calls, lines } = makeDeps();
+    let writes = 0;
+    deps.r2.writeRefreshState = async () => {
+      writes++;
+      if (writes > 1) throw new Error("no write");
+    };
+    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(1);
+    expect(calls.upserts).toBe(1);
+    expect(lines.join("\n")).toContain("refresh-neighbours --full");
   });
 
   it("fails closed without --tenant", async () => {

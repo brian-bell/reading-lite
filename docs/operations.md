@@ -489,11 +489,14 @@ The marker records the list ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
 (Every id, not just the ready ones: a non-ready row can still own an indexed
 vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
-stamps `invalidated_by` on the marker before its first upsert, so the next pass
-sweeps on its own — that stamp is the only R2 object it writes, and it needs an
-R2 write credential for it. A refresh pass that finds an invalidation stamped
-while it was running leaves the marker alone rather than clearing a sweep it
-did not perform.
+stamps `invalidated_by` on the marker before its first upsert — and again, with
+a different value, after its last — so the next pass sweeps on its own. That
+marker is the only R2 object it writes, and it needs an R2 write credential for
+it; a stamp it cannot write before upserting stops the run before it spends
+anything. A refresh pass that finds a stamp it did not start with leaves the
+marker alone rather than clearing a sweep it did not perform, which is what the
+second stamp is for: a pass that swept while vectors were still arriving must
+not report the corpus as covered.
 
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
