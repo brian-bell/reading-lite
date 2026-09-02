@@ -99,7 +99,14 @@ export function parseMaxBackoffFlag(raw: string | undefined): number {
     );
   }
   const ms = Number(match[1]) * DURATION_UNITS_MS[match[2] ?? "s"]!;
-  if (ms <= 0) throw new UsageError(`--max-backoff ${JSON.stringify(raw)} must be positive`);
+  // Enough digits, or a finite magnitude times a unit, can overflow Number to
+  // Infinity. That still passes `ms <= 0`, and then every later
+  // `spentMs + added > maxBackoffMs` is false, so the ceiling is silently off.
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new UsageError(
+      `--max-backoff ${JSON.stringify(raw)} must be a finite positive duration`,
+    );
+  }
   return ms;
 }
 

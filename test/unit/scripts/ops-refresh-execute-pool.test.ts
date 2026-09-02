@@ -78,6 +78,21 @@ describe("parseMaxBackoffFlag", () => {
       expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
     }
   });
+
+  it("rejects Infinity, NaN, and any other non-finite parsed wait", () => {
+    // Enough digits that Number() is Infinity, and a finite magnitude whose
+    // hours overflow the product. `ms <= 0` would still pass both, and the
+    // hard ceiling would never trip.
+    for (const raw of [
+      `1${"0".repeat(400)}`,
+      `1${"0".repeat(400)}ms`,
+      `1${"0".repeat(400)}s`,
+      `1${"0".repeat(304)}h`,
+    ]) {
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(UsageError);
+      expect(() => parseMaxBackoffFlag(raw)).toThrow(/finite positive duration/);
+    }
+  });
 });
 
 describe("createRateLimitGate", () => {
