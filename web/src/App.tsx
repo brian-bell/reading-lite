@@ -825,7 +825,10 @@ function LoginPage({
           <TurnstileWidget
             key={widgetEpoch}
             siteKey={siteKey}
-            onToken={setTurnstileToken}
+            onToken={(token) => {
+              setTurnstileToken(token);
+              if (token) setWidgetLoadError(null);
+            }}
             onError={(error) => setWidgetLoadError(error.message)}
           />
         ) : null}

@@ -35,10 +35,13 @@ export function TurnstileWidget({
         sitekey: siteKey,
         theme: "light",
         callback: (token) => onTokenRef.current(token),
-        "error-callback": () => {
+        "error-callback": (errorCode?: string) => {
           // Auto-retry is the default. Reset here would stack retries and can
           // tight-loop on persistent client errors (invalid sitekey/domain).
+          // Returning true claims the error; surface it so LoginPage can Retry.
           onTokenRef.current(null);
+          const detail = errorCode && errorCode !== "" ? ` (${errorCode})` : "";
+          onErrorRef.current?.(new Error(`Turnstile check failed${detail}`));
           return true;
         },
         "expired-callback": recycle,

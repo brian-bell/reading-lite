@@ -51,6 +51,7 @@ describe("TurnstileWidget", () => {
 
   it("resets the widget when the challenge expires or times out, but not on error", async () => {
     const onToken = vi.fn();
+    const onError = vi.fn();
     const reset = vi.fn();
     const renderWidget = vi.fn((_container: HTMLElement | string, options: TurnstileRenderOptions) => {
       options.callback?.("widget-ok");
@@ -62,13 +63,16 @@ describe("TurnstileWidget", () => {
       remove: vi.fn()
     };
 
-    render(<TurnstileWidget siteKey="1x00000000000000000000AA" onToken={onToken} />);
+    render(<TurnstileWidget siteKey="1x00000000000000000000AA" onToken={onToken} onError={onError} />);
     await waitFor(() => expect(renderWidget).toHaveBeenCalledTimes(1));
     const options = renderWidget.mock.calls[0]![1];
 
     onToken.mockClear();
     expect(options["error-callback"]?.("110200")).toBe(true);
     expect(onToken).toHaveBeenCalledWith(null);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Turnstile check failed (110200)" })
+    );
     expect(reset).not.toHaveBeenCalled();
 
     options["expired-callback"]?.();
