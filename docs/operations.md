@@ -413,10 +413,12 @@ Vectorize top five, similarity floor, then ready-ID intersection. It does not
 fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
 R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
-≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
-the same class of write `rebuild-list` guards with `--sole-writer`. For that
-reason `--execute` is refused without `--sole-writer`: do not run it while
-submissions are in flight, because a concurrent queue write can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
+≥ 0.02) and then flushes `index/list.json` by merging only the `similarity`
+field of the rows it measured onto the live index, so a row added or rewritten
+while the pass ran is no longer reverted. On the wrangler path that merge is
+still an unconditional put — the read→put window is unguarded — so `--execute`
+is refused without `--sole-writer`: do not run it while
+submissions are in flight. Leaves status, vectors, title, tldr, tags, keywords,
 entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
@@ -452,7 +454,9 @@ a CAS loss. The judgement is made before that write, so a CAS loss is a
 judgement already paid for and thrown away — a run of them is a run of wasted
 spend, not just wasted writes. Under `--sole-writer` nothing should change in
 that window. The list index is written after successful manifest updates so its
-verdict matches the manifest.
+verdict matches the manifest: that flush is itself an `If-Match`
+read-merge-write, retried with jittered backoff, and it writes only the
+`novelty_verdict` of the rows this run judged or healed.
 
 The manifest timestamp is the resume marker. If a manifest write succeeds but
 the list write fails, rerun with the same report: the command heals the list row

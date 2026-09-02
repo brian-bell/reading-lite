@@ -54,6 +54,7 @@ import {
   realSleep,
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
+import { casMergeListIndex, type ListRowPatch } from "../list-index-cas";
 import {
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
@@ -97,7 +98,12 @@ export interface RefreshConnectionsStorage {
     manifest: Record<string, unknown>,
     etag: string,
   ): Promise<boolean>;
-  writeListIndex(items: ListIndexItem[]): Promise<void>;
+  /**
+   * Applies this run's `novelty_verdict` decisions to index/list.json as a CAS
+   * read-merge-write, so rows the run never judged keep whatever the live
+   * document has for them.
+   */
+  mergeListRows(patches: ListRowPatch[]): Promise<void>;
 }
 
 export interface RelationshipProviderPlan {
@@ -574,13 +580,15 @@ async function refreshConnections(
     );
   } finally {
     if (verdictUpdates.size > 0) {
-      const updated = items.map((item) =>
-        verdictUpdates.has(item.id)
-          ? { ...item, novelty_verdict: verdictUpdates.get(item.id) }
-          : item,
-      );
+      // One patch per judged or healed row. The key is always present, so an
+      // undefined verdict clears the stale one off the row rather than leaving
+      // it to be re-planned every run.
+      const patches: ListRowPatch[] = [...verdictUpdates].map(([id, novelty_verdict]) => ({
+        id,
+        novelty_verdict,
+      }));
       try {
-        await storage.writeListIndex(updated);
+        await storage.mergeListRows(patches);
       } catch (error) {
         flushFailed = true;
         deps.io.stderr(
@@ -823,12 +831,8 @@ export function storageFromClient(
         { contentType: "application/json" },
       );
     },
-    async writeListIndex(items) {
-      await client.put(
-        rooted(LIST_INDEX_KEY),
-        JSON.stringify({ version: 1, items }),
-        { contentType: "application/json" },
-      );
+    async mergeListRows(patches) {
+      await casMergeListIndex(client, rooted(LIST_INDEX_KEY), patches);
     },
   };
 }
@@ -847,7 +851,9 @@ provider call or storage write.
 
 Execute mode updates only connections, novelty_verdict, and
 connections_computed_at, then synchronizes each list-row verdict. It requires a
-sole-writer window and uses manifest ETag CAS writes. Completed manifests are
+sole-writer window and uses ETag CAS writes for both the manifests and the
+closing index/list.json flush, which merges only the verdicts of the rows it
+judged onto the live index. Completed manifests are
 resume markers, so a rerun heals a stale list row without another paid call. It
 prints the provider token usage of each judgement and a run total.
 

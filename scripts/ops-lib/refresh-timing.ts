@@ -147,8 +147,10 @@ export function timedNeighboursR2(
       timer.measure(PHASE_VECTORIZE_QUERY, () => r2.queryByVectorId(index, id, topK, namespace)),
     putManifest: (keyPrefix, body, deps) =>
       timer.measure(PHASE_MANIFEST_WRITE, () => r2.putManifest(keyPrefix, body, deps)),
-    writeListIndex: (items, deps) =>
-      timer.measure(PHASE_LIST_WRITE, () => r2.writeListIndex(items, deps)),
+    // One phase, whatever the flush costs internally: a CAS retry is part of
+    // the list write, not a separate kind of call.
+    mergeListRows: (patches, deps) =>
+      timer.measure(PHASE_LIST_WRITE, () => r2.mergeListRows(patches, deps)),
   };
 }
 
@@ -170,6 +172,7 @@ export function timedRefreshStorage(
       timer.measure(manifestReadPhase(), () => storage.readManifest(keyPrefix)),
     putManifestIfMatch: (keyPrefix, manifest, etag) =>
       timer.measure(PHASE_MANIFEST_WRITE, () => storage.putManifestIfMatch(keyPrefix, manifest, etag)),
-    writeListIndex: (items) => timer.measure(PHASE_LIST_WRITE, () => storage.writeListIndex(items)),
+    mergeListRows: (patches) =>
+      timer.measure(PHASE_LIST_WRITE, () => storage.mergeListRows(patches)),
   };
 }

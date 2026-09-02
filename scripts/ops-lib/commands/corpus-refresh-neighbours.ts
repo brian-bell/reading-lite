@@ -5,7 +5,8 @@
 // Zero LLM / embedding spend: each reading is queried by the vector it already
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
 // inventory, and writes refresh-report.json; --execute (which requires
-// --sole-writer, because the closing index/list.json rewrite is a plain put)
+// --sole-writer, because the closing index/list.json flush is an unguarded
+// read-merge-write on the wrangler path)
 // also rewrites drifted `manifest.similarity` snapshots with the same
 // one-field discipline as `corpus backfill-similarity`. After a successful putManifest, the list row is
 // the resumability marker for index/list.json: a retry that finds a current
@@ -36,6 +37,7 @@ import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { mergeListRows as mergeRowPatches, type ListRowPatch } from "../list-index-cas";
 import {
   createRefreshTimer,
   printTiming,
@@ -59,7 +61,12 @@ export interface CorpusRefreshNeighboursR2 {
     namespace?: string,
   ) => Promise<RefreshNeighbour[] | null>;
   putManifest: (keyPrefix: string, body: unknown, deps: R2Deps) => Promise<void>;
-  writeListIndex: (items: RefreshRow[], deps: R2Deps) => Promise<void>;
+  /**
+   * Applies this run's `similarity` snapshots to index/list.json, merging them
+   * onto the live document rather than putting back the rows read at the start
+   * of the pass.
+   */
+  mergeListRows: (patches: ListRowPatch[], deps: R2Deps) => Promise<void>;
 }
 
 export interface CorpusRefreshNeighboursDeps extends BaseDeps {
@@ -213,9 +220,10 @@ async function refreshNeighbours(
   const r2 = timedNeighboursR2(storage, timer);
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
   const tenant = requireOperatorTenant(opts.tenant);
-  // --execute ends in a wholesale plain put of index/list.json, not a CAS write,
-  // so a concurrent realtime write can be clobbered. Same bound rebuild-list
-  // draws, and the same flag the tier-2/3 refresh commands require.
+  // --execute ends in a read-merge-write of index/list.json. The merge no
+  // longer reverts rows this pass never measured, but wrangler has no
+  // conditional put, so a concurrent write landing inside the read→put window
+  // is still lost. Same flag the tier-2/3 refresh commands require.
   const soleWriter = soleWriterGuard({
     execute: opts.execute,
     acknowledged: opts.soleWriter,
@@ -250,12 +258,9 @@ async function refreshNeighbours(
 
   const flushIndex = async (): Promise<void> => {
     if (!opts.execute || scored.size === 0) return;
-    const updated = items.map((i) => {
-      const snap = scored.get(i.id);
-      return snap === undefined ? i : { ...i, similarity: snap };
-    });
-    await r2.writeListIndex(updated, r2Deps);
-    io.stdout(`index/list.json rewritten (${scored.size} row(s) updated).`);
+    const patches: ListRowPatch[] = [...scored].map(([id, similarity]) => ({ id, similarity }));
+    await r2.mergeListRows(patches, r2Deps);
+    io.stdout(`index/list.json updated (${scored.size} row(s) merged).`);
   };
 
   let flushFailed = false;
@@ -484,9 +489,11 @@ A second immediate --execute writes nothing.
 
 Plan by default. The report is written in both modes.
 
-Run --execute when nothing is being submitted: the list.json rewrite is a plain
-put, not a CAS write, so a concurrent queue write could be lost. --execute is
-refused without --sole-writer for that reason.
+The closing list.json flush merges only the similarity field of the rows this
+pass measured onto the live index, so rows written elsewhere while it ran are
+kept. It is still not a conditional write on the wrangler path, so run
+--execute when nothing is being submitted: --execute is refused without
+--sole-writer for that reason.
 
 The direct path removes the ~0.8s child-process spawn the wrangler path pays on
 every Vectorize query and every manifest read. Its closing index/list.json
@@ -522,8 +529,16 @@ Options:
       queryByVectorId: async (index, id, topK, namespace) =>
         (await import("../../corpus-lib/wrangler-r2")).queryByVectorId(index, id, topK, { namespace }),
       putManifest: async (kp, body, d) => (await import("../../corpus-lib/wrangler-put")).putManifest(kp, body, d),
-      writeListIndex: async (items, d) =>
-        (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
+      // Read-merge-write over wrangler, which offers no conditional put: the
+      // merge is against the list index as it stands at flush time, so rows the
+      // pass never measured survive, but the window between this read and the
+      // put is unguarded. That window is the remaining reason --execute wants a
+      // sole-writer window here; the tier-2 flush closes it with If-Match.
+      mergeListRows: async (patches, d) => {
+        const { readListIndex, writeListIndex } = await import("../../corpus-lib/wrangler-r2");
+        const live = (await readListIndex(d)) as RefreshRow[];
+        await writeListIndex(mergeRowPatches(live, patches) as never, d);
+      },
     },
     // Built on demand: a wrangler pass and `--help` must resolve no credentials
     // and load no client module.
