@@ -3,6 +3,7 @@ import {
   FOUNDER_PLACEHOLDER_LIMITS,
   TOKEN_MAX_TTL_MS,
   bootstrapFounder,
+  signupModeForEnv,
 } from "../../../src/control-plane/bootstrap";
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
@@ -231,5 +232,13 @@ describe("bootstrapFounder", () => {
     expect(result.createdToken).toBe(false);
     const tokens = await db.all<{ id: string }>("SELECT id FROM api_tokens");
     expect(tokens).toHaveLength(1);
+  });
+});
+
+describe("signupModeForEnv", () => {
+  it("keeps staging invite_only, local open, and production closed", () => {
+    expect(signupModeForEnv("local")).toBe("open");
+    expect(signupModeForEnv("staging")).toBe("invite_only");
+    expect(signupModeForEnv("production")).toBe("closed");
   });
 });

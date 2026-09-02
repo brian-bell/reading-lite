@@ -30,6 +30,7 @@
 #   `wrangler secret put OPENAI_API_KEY --env staging`
 #   `wrangler secret put X_API_BEARER_TOKEN --env staging`  (for X status URLs)
 #   `wrangler secret put ANTHROPIC_API_KEY --env staging`  (only for SUMMARIZER_PROVIDER=anthropic)
+#   `wrangler secret put TURNSTILE_SECRET_KEY --env staging`  (required before open-mode signup)
 #
 # Production setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite`
@@ -40,6 +41,7 @@
 #   `wrangler secret put OPENAI_API_KEY --env production`
 #   `wrangler secret put X_API_BEARER_TOKEN --env production`  (for X status URLs)
 #   `wrangler secret put ANTHROPIC_API_KEY --env production`  (only for SUMMARIZER_PROVIDER=anthropic)
+#   `wrangler secret put TURNSTILE_SECRET_KEY --env production`  (required before open-mode signup)
 
 name = "reading-lite-dev"
 main = "src/index.ts"
@@ -63,6 +65,11 @@ class_name = "AuthRateGuard"
 #   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
 #   RESEND_API_KEY       — required on staging/production for auth magic-link
 #                          mail (also used for per-reading notifications)
+#   TURNSTILE_SECRET_KEY — Cloudflare Turnstile siteverify secret (never in
+#                          [vars]). Local open-mode skip/fail-open when unset;
+#                          staging/production fail-closed (treat as no-send
+#                          `{ok:true}` if missing, siteverify errors, or
+#                          success≠true). Required to send mail in open mode.
 
 [vars]
 # Comma-separated list of origins allowed by CORS. Empty disables CORS preflight.
@@ -80,6 +87,10 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 EMAIL_TO = ""
 WEB_BASE_URL = "http://127.0.0.1:5173"
+# Public Turnstile widget site key. GET /api/auth/login-options returns it only
+# when signup_mode is open. Omit until open-mode signup is enabled.
+# Never put TURNSTILE_SECRET_KEY in [vars] — that is a wrangler secret.
+# TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
 # Local-only magic-link outbox. Never set on staging or production.
 LOCAL_MAIL_SINK = "1"
 # Tenant-prefixed R2 keys (u/{tenantId}/…). Local and staging stay unset: "1"
@@ -133,6 +144,10 @@ EMAIL_TO = ""
 # Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
 AUTH_MAIL_ALLOWLIST = ""
 WEB_BASE_URL = "https://reading-lite-staging.bbell.dev/"
+# Public Turnstile site key. Returned by GET /api/auth/login-options only when
+# signup_mode is open. Staging bootstrap stays invite_only — leave unset until
+# an explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
+# TURNSTILE_SITE_KEY = ""
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
@@ -212,6 +227,10 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = "bellbm@gmail.com"
 WEB_BASE_URL = "https://reading-lite.bbell.dev/"
+# Public Turnstile site key. Returned by GET /api/auth/login-options only when
+# signup_mode is open. Production bootstrap stays closed — leave unset until an
+# explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
+# TURNSTILE_SITE_KEY = ""
 # Founder corpus cutover completed 2026-08-31 (docs/founder-cutover.md): every
 # production read/write is tenant-rooted (u/{tenantId}/ keys, namespaced
 # vectors). Pinned here so ordinary deploys keep the gate on. Rollback is

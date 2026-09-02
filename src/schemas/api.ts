@@ -73,6 +73,7 @@ export type GetWhoamiResponse = z.infer<typeof GetWhoamiResponseSchema>;
 
 export const AuthChallengeBodySchema = z.object({
   email: z.string().min(1),
+  turnstile_token: z.string().optional(),
 });
 export type AuthChallengeBody = z.infer<typeof AuthChallengeBodySchema>;
 
@@ -82,8 +83,15 @@ export const AuthRedeemBodySchema = z.object({
 });
 export type AuthRedeemBody = z.infer<typeof AuthRedeemBodySchema>;
 
-export const AuthEmailChangeBodySchema = AuthChallengeBodySchema;
+export const AuthEmailChangeBodySchema = z.object({
+  email: z.string().min(1),
+});
 export type AuthEmailChangeBody = z.infer<typeof AuthEmailChangeBodySchema>;
+
+export const AuthLoginOptionsResponseSchema = z.object({
+  turnstile_site_key: z.string().min(1).nullable(),
+});
+export type AuthLoginOptionsResponse = z.infer<typeof AuthLoginOptionsResponseSchema>;
 
 export const SessionListItemSchema = z.object({
   id: z.string().min(1),

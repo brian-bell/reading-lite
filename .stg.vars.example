@@ -37,6 +37,11 @@ X_API_BEARER_TOKEN=
 # Required only when SUMMARIZER_PROVIDER=anthropic.
 ANTHROPIC_API_KEY=
 RESEND_API_KEY=
+# Optional. Staging bootstrap is invite_only (no Turnstile required). Set these
+# before flipping signup_mode to open. TURNSTILE_SECRET_KEY is a wrangler secret
+# (`wrangler secret put TURNSTILE_SECRET_KEY --env staging`), never a [vars] value.
+# TURNSTILE_SITE_KEY=
+# TURNSTILE_SECRET_KEY=
 
 # Informational overrides; the deployed staging defaults live in wrangler.toml.
 SUMMARIZER_PROVIDER=openai

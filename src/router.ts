@@ -32,6 +32,7 @@ import {
   handleAuthRedeem,
   handleDevMailbox,
   handleEmailChangeRequest,
+  handleLoginOptions,
   jsonAuth,
   type AuthRuntime,
 } from "./control-plane/auth-handlers";
@@ -86,6 +87,7 @@ export function createApp(opts: AppOptions = {}) {
 
   const authNowMs = () => Date.parse(services.now());
 
+  app.get("/api/auth/login-options", (c) => handleLoginOptions(c));
   app.post("/api/auth/challenge", (c) => handleAuthChallenge(c, authNowMs(), authRuntime));
   app.post("/api/auth/redeem", (c) => handleAuthRedeem(c, authNowMs(), authRuntime));
   app.post("/api/auth/logout", (c) => handleAuthLogout(c, authNowMs()));

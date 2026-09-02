@@ -129,8 +129,9 @@ Secrets are set with `wrangler secret put` — see
 Machine-readable contract: [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI
 3.1). Keep it in lockstep with `src/router.ts` and `src/schemas/`.
 
-All routes except `/health` and `POST /api/auth/challenge` /
-`POST /api/auth/redeem` require authentication (bearer token or the host-only
+All routes except `/health`, `GET /api/auth/login-options`, and
+`POST /api/auth/challenge` / `POST /api/auth/redeem` require authentication
+(bearer token or the host-only
 session cookie). After cutover the founder legacy bearer is imported by
 `founder-bootstrap` from `READER_API_TOKEN`; runtime auth looks it up in D1
 and does not fall back to the secret itself. Magic-link login issues a durable
@@ -146,7 +147,8 @@ out. Origin checks still apply to cookie writes.
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `GET /api/whoami` | Authenticated principal identity (`tenant_id`, `user_id`, `principal`, `tenant_data_plane`, `email`). Session principals also receive `csrf_token`. No scope beyond auth. |
-| `POST /api/auth/challenge` | Same-origin. Body `{ email }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. |
+| `GET /api/auth/login-options` | Unauthenticated, same-origin, `no-store`. `{ turnstile_site_key }` is the site key when `signup_mode` is `open` and `TURNSTILE_SITE_KEY` is configured, otherwise `null`. Does not disclose whether any email exists. |
+| `POST /api/auth/challenge` | Same-origin. Body `{ email, turnstile_token? }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. Open mode that would send mail requires a successful Turnstile verify (local fail-open if the secret is unset; staging/production fail-closed). Invalid/missing token still `{ ok: true }` and skips send. invite_only/closed ignore extra tokens. |
 | `POST /api/auth/redeem` | Same-origin. Body `{ credential, redemption_id }`. Sets `__Host-session` (`Max-Age=7776000`). A live same-user session cookie refreshes `authenticated_at_ms` instead of minting another row. |
 | `POST /api/auth/logout` | Same-origin. Cookie CSRF (`X-CSRF-Token`). Revokes the D1 session and clears the cookie. |
 | `GET /api/auth/sessions` | Caller's sessions (current marked). `usable` is false for revoked or idle/absolute-expired rows; expired rows stay in the list. `session_cap_warning` when at the 10-session cap. |
