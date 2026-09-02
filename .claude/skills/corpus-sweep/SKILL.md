@@ -75,7 +75,7 @@ conference talk. No canonicalization rule can pair those, and none should —
 mis-group unrelated readings. The assertion has to come from you:
 
 ```bash
-npm run ops -- corpus sweep --tenant global --drop rd_TWEET --keep rd_VIDEO --execute
+npm run ops -- corpus sweep --tenant "$TENANT" --drop rd_TWEET --keep rd_VIDEO --execute
 ```
 
 This builds a normal one-group plan, so it keeps every safety property the
@@ -93,20 +93,20 @@ video never makes — and the drop is irreversible short of re-importing.
 
 ```bash
 # Report every duplicate group in the corpus (read-only).
-npm run ops -- corpus sweep --tenant global
+npm run ops -- corpus sweep --tenant "$TENANT"
 
 # Plan one known duplicate — by reading id, or by any URL spelling of it.
-npm run ops -- corpus sweep --tenant global rd_PQ132K3HK5
-npm run ops -- corpus sweep --tenant global https://youtu.be/0oXOOlqVu5M
+npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5
+npm run ops -- corpus sweep --tenant "$TENANT" https://youtu.be/0oXOOlqVu5M
 
 # Apply.
-npm run ops -- corpus sweep --tenant global rd_PQ132K3HK5 --execute
+npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 --execute
 
 # Keep the copy the ranking would not have picked.
-npm run ops -- corpus sweep --tenant global rd_A --keep rd_B --execute
+npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B --execute
 ```
 
-`--tenant` is required on every corpus command: `global` addresses the pre-tenant layout production data lives under today; a `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
 `READING_LITE_BUCKET` env, then `reading-lite`), `--vectorize <index>` (defaults
 to the bucket name — they match in every environment), `--local`, `--execute`,
@@ -133,7 +133,7 @@ reading.
 To refresh the measured score (no LLM call, no re-summarization, no tag churn):
 
 ```bash
-npm run ops -- corpus backfill-similarity rd_KEEPER --rescore --execute
+npm run ops -- corpus backfill-similarity --tenant "$TENANT" rd_KEEPER --rescore --execute
 ```
 
 The `novelty_verdict` label itself only refreshes on a **reprocess**, which

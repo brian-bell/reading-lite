@@ -96,9 +96,9 @@ Operator workflows live behind the unified plan-first CLI: `npm run ops --
 <group> <command> [options]`. Every command with durable side effects plans by
 default and acts only with `--execute`, e.g. `npm run ops -- deploy worker
 --env staging --execute`, `npm run ops -- founder bootstrap --email
-founder@example.com --execute`, `npm run ops -- corpus recover --tenant global --index
-./index.json --execute`. See `docs/operations.md` or `--help` for the full
-matrix.
+founder@example.com --execute`, `npm run ops -- corpus recover --tenant "$TENANT" --index
+./index.json --execute`. Production `$TENANT` is `GET /api/whoami` `tenant_id`
+(see `docs/operations.md` or `--help` for the full matrix).
 
 Production summarizer comparisons on live readings (N ids/URLs, OpenAI
 efforts including max, optional Anthropic Sonnet, GET-only, no production
@@ -194,7 +194,9 @@ Pointers only — the details live in the named files' comments.
   `[env.production.vars]`, so ordinary deploys (incl. merge-to-main) keep the
   gate on; rollback is removing the pin. Legacy global objects and bare-id
   vectors are still in the bucket/index pending a separate signed-off
-  deletion — `--tenant global` operator commands still see them. Default
+  deletion — `--tenant global` operator commands still see them; live
+  production corpus ops use `--tenant "$TENANT"` from whoami (see
+  `docs/operations.md`). Default
   `--bucket` is production `reading-lite`. Copy, never move; restore missing
   vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
@@ -222,7 +224,7 @@ Pointers only — the details live in the named files' comments.
 - Turndown/linkedom quirks and the raw-DOM salvage path are documented in
   `src/modules/extractor/index.ts`.
 - Do not remove `nodejs_compat`; Worker dependencies and scripts rely on it.
-- Offline batch tools (`ops corpus ingest --tenant global --execute`, `ops corpus recover --tenant global --batch
+- Offline batch tools (`ops corpus ingest --tenant "$TENANT" --execute`, `ops corpus recover --tenant "$TENANT" --batch
   --execute`) refuse to submit without `--sole-writer` — pause/drain the
   realtime writer first (`scripts/corpus-lib/sole-writer.ts`). Both resume from
   sidecars and never recreate a batch; claim/release/crash-resume semantics are

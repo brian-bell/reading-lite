@@ -32,27 +32,27 @@ A Cloudflare session that can read R2: `wrangler login`, or `CLOUDFLARE_API_TOKE
 
 ```bash
 # Plan first (reads + classifies, prints counts and paths, writes nothing).
-npm run ops -- corpus audit --tenant global
+npm run ops -- corpus audit --tenant "$TENANT"
 
 # Fast inventory (one list.json read) into the current directory.
-npm run ops -- corpus audit --tenant global --execute
+npm run ops -- corpus audit --tenant "$TENANT" --execute
 
 # Write somewhere specific.
-npm run ops -- corpus audit --tenant global --out ~/Desktop/reading-lite-extracted --execute
+npm run ops -- corpus audit --tenant "$TENANT" --out ~/Desktop/reading-lite-extracted --execute
 
 # Also scan ready pragmaticengineer/substack readings for paywall teasers
 # (reads each one's content — slower).
-npm run ops -- corpus audit --tenant global --teasers --execute
+npm run ops -- corpus audit --tenant "$TENANT" --teasers --execute
 
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
-npm run ops -- corpus audit --tenant global --deep --execute
+npm run ops -- corpus audit --tenant "$TENANT" --deep --execute
 
-# An alternate R2 bucket, or the local miniflare cache.
+# An alternate R2 bucket, or the local miniflare cache (gate-off: --tenant global).
 npm run ops -- corpus audit --tenant global --bucket some-other-bucket --execute
 npm run ops -- corpus audit --tenant global --local --execute
 ```
 
-`--tenant` is required on every corpus command: `global` addresses the pre-tenant layout production data lives under today; a `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
 
 ## How categories are decided

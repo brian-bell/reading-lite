@@ -287,6 +287,10 @@ Re-plan after every repair. Execute aborts before any write when
 
 ### Stale list rows
 
+These repairs must target the pre-tenant **source** layout (`--tenant global`),
+not the founder destination. migrate-founder copies from global into
+`u/{$TENANT}/`.
+
 ```sh
 npm run ops -- corpus rebuild-list --tenant global --bucket "$BUCKET"
 npm run ops -- corpus rebuild-list --tenant global --bucket "$BUCKET" \
@@ -297,6 +301,9 @@ Rebuild-list is a plain put of `index/list.json`. Requires `--sole-writer`.
 Then re-plan migrate-founder.
 
 ### Missing legacy vectors
+
+Same source-layout rule: restore the **bare-id** vector that migrate-founder
+will re-upsert into the founder namespace. `--tenant "$TENANT"` would miss it.
 
 ```sh
 npm run ops -- corpus backfill-vectors --tenant global --bucket "$BUCKET" \
@@ -608,5 +615,6 @@ Quirks worth knowing:
 
 Still pending: the separate, signed-off deletion of global-layout objects and
 bare-id vectors (3606 objects, 547 vectors). Until then `--tenant global`
-operator commands still see the legacy copy.
+operator commands still see the legacy copy. Live production corpus ops use
+`--tenant "$TENANT"` from whoami (see `docs/operations.md`), not `global`.
 
