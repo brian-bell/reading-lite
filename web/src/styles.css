@@ -205,6 +205,21 @@ input {
   margin: 24px 0 8px;
 }
 
+.notify-immediate {
+  margin-bottom: 8px;
+}
+
+.notify-immediate-toggle {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+}
+
+.notify-immediate-toggle input {
+  margin-top: 0.25em;
+}
+
 .token-create-form {
   display: grid;
   gap: 8px;

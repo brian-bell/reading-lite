@@ -12,7 +12,8 @@ import type {
   ListReading,
   Manifest,
   ListReadingsResponse,
-  ReadingDiagnostics
+  ReadingDiagnostics,
+  UserSettingsResponse
 } from "./types";
 
 function manifest(overrides: Partial<Manifest> = {}): Manifest {
@@ -187,6 +188,21 @@ function emptySessions() {
   return { sessions: [], session_cap_warning: null };
 }
 
+function defaultSettings(overrides: Partial<UserSettingsResponse> = {}): UserSettingsResponse {
+  return {
+    user_id: sessionWhoami.user_id,
+    schema_version: 1,
+    notify_immediate: true,
+    digest_cadence: "off",
+    time_zone: "UTC",
+    digest_hour_local: 9,
+    digest_weekday: 1,
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    ...overrides
+  };
+}
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -209,6 +225,9 @@ function stubJSON(body: unknown, status = 200) {
     }
     if (url.pathname === "/api/auth/tokens") {
       return jsonResponse({ tokens: [] });
+    }
+    if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+      return jsonResponse(defaultSettings());
     }
     return jsonResponse(body, status);
   });
@@ -1250,6 +1269,9 @@ describe("App", () => {
         signedIn = true;
         return jsonResponse({ ok: true });
       }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens") return jsonResponse({ tokens: [] });
       return jsonResponse(emptyPage);
@@ -1286,6 +1308,9 @@ describe("App", () => {
       if (url.pathname === "/api/auth/redeem") {
         mailbox = "b";
         return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
       }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
@@ -1933,6 +1958,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -1972,6 +2000,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -2040,6 +2071,9 @@ describe("App", () => {
       if (url.pathname === "/api/whoami") {
         if (signedOut) return jsonResponse({ error: "unauthorized" }, 401);
         return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
       }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
@@ -2132,6 +2166,9 @@ describe("App", () => {
         identity = "b";
         return jsonResponse({ ok: true });
       }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -2180,6 +2217,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -2229,6 +2269,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -2259,6 +2302,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
       }
@@ -2282,6 +2328,196 @@ describe("App", () => {
       STEP_UP_LOGIN_HREF
     );
     expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
+  });
+
+  it("loads the immediate-email toggle from GET /api/auth/settings", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    const toggle = await screen.findByLabelText("Email me when a reading is ready");
+    expect(toggle).toBeChecked();
+    expect(screen.getByRole("heading", { name: "Immediate email" })).toBeInTheDocument();
+    expect(screen.getByText(/uncheck to opt out/i)).toBeInTheDocument();
+    const get = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "GET" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(get).toBeDefined();
+    expect((get![0] as Request).credentials).toBe("include");
+    expect((get![0] as Request).headers.get("x-csrf-token")).toBeNull();
+  });
+
+  it("opts out by POSTing notify_immediate false with CSRF", async () => {
+    let row = defaultSettings();
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(row);
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        row = { ...row, notify_immediate: false, updated_at_ms: 9 };
+        return jsonResponse(row);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const toggle = await screen.findByLabelText("Email me when a reading is ready");
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(post).toBeDefined();
+    expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(await (post![0] as Request).clone().json()).toEqual({ notify_immediate: false });
+  });
+
+  it("opts in by POSTing notify_immediate true with CSRF", async () => {
+    let row = defaultSettings({ notify_immediate: false });
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(row);
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        row = { ...row, notify_immediate: true, updated_at_ms: 9 };
+        return jsonResponse(row);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const toggle = await screen.findByLabelText("Email me when a reading is ready");
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toBeChecked());
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(post).toBeDefined();
+    expect((post![0] as Request).headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(await (post![0] as Request).clone().json()).toEqual({ notify_immediate: true });
+  });
+
+  it("shows a POST 403 without asking for recent-auth step-up", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({ error: "forbidden" }, 403);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const toggle = await screen.findByLabelText("Email me when a reading is ready");
+    await user.click(toggle);
+    expect(await screen.findByText("forbidden")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request a fresh sign-in link" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/recent sign-in required/i)).not.toBeInTheDocument();
+    expect(toggle).toBeChecked();
+  });
+
+  it("hides the toggle when GET settings is 404", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse({ error: "not found" }, 404);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText("not found")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email me when a reading is ready")).not.toBeInTheDocument();
+  });
+
+  it("does not leak the previous account's notify_immediate after logout", async () => {
+    const otherWhoami = {
+      tenant_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      user_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      principal: "session" as const,
+      tenant_data_plane: true,
+      email: "other@example.com",
+      csrf_token: "cd".repeat(32)
+    };
+    let identity: "a" | "b" = "a";
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (identity === "a") return jsonResponse(sessionWhoami);
+        return jsonResponse(otherWhoami);
+      }
+      if (url.pathname === "/api/auth/logout") {
+        identity = "b";
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        if (identity === "a") return jsonResponse(defaultSettings({ notify_immediate: false }));
+        return jsonResponse(defaultSettings({ user_id: otherWhoami.user_id, notify_immediate: true }));
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByLabelText("Email me when a reading is ready")).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+    expect(await screen.findByText("other@example.com")).toBeInTheDocument();
+    if (!screen.queryByRole("heading", { name: "Security" })) {
+      await user.click(screen.getByRole("link", { name: "Security" }));
+    }
+    expect(await screen.findByLabelText("Email me when a reading is ready")).toBeChecked();
   });
 
   it("lists usable, expired, and revoked tokens and warns at the 10-token cap", async () => {
@@ -2310,6 +2546,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens });
@@ -2340,6 +2579,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: listed });
@@ -2408,6 +2650,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: listed });
@@ -2446,6 +2691,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens });
@@ -2483,6 +2731,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
@@ -2511,6 +2762,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ tokens: [] });
@@ -2555,6 +2809,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         await held;
@@ -2588,6 +2845,9 @@ describe("App", () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
       if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
       if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
         return jsonResponse({ error: "failed to list tokens" }, 500);

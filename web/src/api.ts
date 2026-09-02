@@ -11,7 +11,9 @@ import type {
   ListSessionsResponse,
   CreateTokenBody,
   CreateTokenResponse,
-  ListTokensResponse
+  ListTokensResponse,
+  DigestCadence,
+  UserSettingsResponse
 } from "./types";
 
 export class ApiError extends Error {
@@ -219,6 +221,79 @@ export async function revokeToken(id: string): Promise<void> {
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to revoke token"));
   }
+}
+
+const DIGEST_CADENCES = new Set<DigestCadence>(["off", "daily", "weekly"]);
+
+function isInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value);
+}
+
+function parseUserSettings(body: unknown): UserSettingsResponse {
+  if (body === null || typeof body !== "object") {
+    throw new Error("failed to load settings");
+  }
+  const row = body as Record<string, unknown>;
+  const cadence = row.digest_cadence;
+  if (
+    typeof row.user_id !== "string" ||
+    row.user_id === "" ||
+    !isInteger(row.schema_version) ||
+    typeof row.notify_immediate !== "boolean" ||
+    typeof cadence !== "string" ||
+    !DIGEST_CADENCES.has(cadence as DigestCadence) ||
+    typeof row.time_zone !== "string" ||
+    row.time_zone === "" ||
+    !isInteger(row.digest_hour_local) ||
+    !isInteger(row.digest_weekday) ||
+    !isInteger(row.created_at_ms) ||
+    !isInteger(row.updated_at_ms)
+  ) {
+    throw new Error("failed to load settings");
+  }
+  return {
+    user_id: row.user_id,
+    schema_version: row.schema_version,
+    notify_immediate: row.notify_immediate,
+    digest_cadence: cadence as DigestCadence,
+    time_zone: row.time_zone,
+    digest_hour_local: row.digest_hour_local,
+    digest_weekday: row.digest_weekday,
+    created_at_ms: row.created_at_ms,
+    updated_at_ms: row.updated_at_ms
+  };
+}
+
+export async function getAuthSettings(): Promise<UserSettingsResponse> {
+  const response = await apiFetch(new URL("/api/auth/settings", window.location.origin));
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to load settings"));
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("failed to load settings");
+  }
+  return parseUserSettings(body);
+}
+
+export async function updateAuthSettings(notifyImmediate: boolean): Promise<UserSettingsResponse> {
+  const response = await apiFetch(new URL("/api/auth/settings", window.location.origin), {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ notify_immediate: notifyImmediate })
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessageOf(response, "failed to update settings"));
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("failed to load settings");
+  }
+  return parseUserSettings(body);
 }
 
 export type ListReadingsParams = {

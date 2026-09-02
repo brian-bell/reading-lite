@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getLoginOptions, getWhoami, requestLoginLink, submitReading } from "./api";
-import type { WhoamiResponse } from "./types";
+import {
+  getAuthSettings,
+  getLoginOptions,
+  getWhoami,
+  requestLoginLink,
+  submitReading,
+  updateAuthSettings
+} from "./api";
+import type { UserSettingsResponse, WhoamiResponse } from "./types";
 
 const staleToken = "cd".repeat(32);
 const freshToken = "ab".repeat(32);
@@ -201,6 +208,117 @@ describe("login-options and magic-link challenge", () => {
     expect(await (fetchMock.mock.calls[1][0] as Request).clone().json()).toEqual({
       email: "invited@example.com",
       turnstile_token: "widget-ok"
+    });
+  });
+});
+
+const settingsRow: UserSettingsResponse = {
+  user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
+  schema_version: 1,
+  notify_immediate: true,
+  digest_cadence: "off",
+  time_zone: "UTC",
+  digest_hour_local: 9,
+  digest_weekday: 1,
+  created_at_ms: 1,
+  updated_at_ms: 2
+};
+
+describe("GET/POST /api/auth/settings", () => {
+  it("loads the full settings row same-origin with credentials", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(settingsRow);
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await getAuthSettings()).toEqual(settingsRow);
+    const req = fetchMock.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("GET");
+    expect(new URL(req.url).pathname).toBe("/api/auth/settings");
+    expect(req.credentials).toBe("include");
+    expect(req.headers.get("x-csrf-token")).toBeNull();
+  });
+
+  it("rejects a 200 settings body that omits or mangles notify_immediate", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ ...settingsRow, notify_immediate: 1 }))
+    );
+    await expect(getAuthSettings()).rejects.toThrow("failed to load settings");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ ...settingsRow, digest_cadence: "monthly" }))
+    );
+    await expect(getAuthSettings()).rejects.toThrow("failed to load settings");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ readings: [] }))
+    );
+    await expect(getAuthSettings()).rejects.toThrow("failed to load settings");
+  });
+
+  it("surfaces GET 404 as ApiError without treating the body as a row", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ error: "not found" }, 404))
+    );
+    await expect(getAuthSettings()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+      message: "not found"
+    });
+  });
+
+  it("POSTs notify_immediate only with the whoami CSRF HMAC", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami(freshToken));
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({ ...settingsRow, notify_immediate: false, updated_at_ms: 3 });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await getWhoami()).toMatchObject({ csrf_token: freshToken });
+    expect(await updateAuthSettings(false)).toEqual({
+      ...settingsRow,
+      notify_immediate: false,
+      updated_at_ms: 3
+    });
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(post).toBeDefined();
+    const req = post![0] as Request;
+    expect(req.credentials).toBe("include");
+    expect(req.headers.get("x-csrf-token")).toBe(freshToken);
+    expect(await req.clone().json()).toEqual({ notify_immediate: false });
+  });
+
+  it("does not treat POST 403 as success", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami(freshToken));
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({ error: "forbidden" }, 403);
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getWhoami();
+    await expect(updateAuthSettings(true)).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
+      message: "forbidden"
     });
   });
 });

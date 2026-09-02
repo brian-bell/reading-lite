@@ -22,6 +22,7 @@ import {
   getReadingDiagnostics,
   getReading,
   getWhoami,
+  getAuthSettings,
   listReadings,
   listSessions,
   listTokens,
@@ -34,6 +35,7 @@ import {
   revokeSession,
   revokeToken,
   submitReading,
+  updateAuthSettings,
   type ContentKind
 } from "./api";
 import { TurnstileWidget } from "./TurnstileWidget";
@@ -75,6 +77,7 @@ function dropIdentityCaches(queryClient: QueryClient): void {
   queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
   queryClient.removeQueries({ queryKey: ["sessions"] });
   queryClient.removeQueries({ queryKey: ["tokens"] });
+  queryClient.removeQueries({ queryKey: ["settings"] });
   queryClient.removeQueries({ queryKey: ["token-revoked-ids"] });
 }
 
@@ -350,6 +353,10 @@ function AccountSecurityPage({
       return listed;
     }
   });
+  const settingsQuery = useQuery({
+    queryKey: ["settings", identity.user_id],
+    queryFn: getAuthSettings
+  });
   const revokedOverlayQuery = useQuery({
     queryKey: TOKEN_REVOKED_IDS_KEY,
     queryFn: async () => revokedTokenIds(queryClient),
@@ -368,6 +375,7 @@ function AccountSecurityPage({
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const listed = sessionsQuery.data;
+  const settings = settingsQuery.data;
   const overlay = revokedOverlayQuery.data ?? new Set<string>();
   const listedTokens = tokensQuery.data
     ? { tokens: applyRevokedTokenOverlay(tokensQuery.data.tokens, overlay) }
@@ -434,6 +442,21 @@ function AccountSecurityPage({
       } else {
         setError(err instanceof Error ? err.message : "failed to request email change");
       }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onToggleNotifyImmediate(event: { currentTarget: { checked: boolean } }) {
+    if (busyId) return;
+    const notifyImmediate = event.currentTarget.checked;
+    setError(null);
+    setBusyId("settings");
+    try {
+      const updated = await updateAuthSettings(notifyImmediate);
+      queryClient.setQueryData(["settings", identity.user_id], updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to update settings");
     } finally {
       setBusyId(null);
     }
@@ -561,6 +584,36 @@ function AccountSecurityPage({
           <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a sensitive change.
         </p>
       ) : null}
+      <section className="notify-immediate" aria-labelledby="notify-immediate-heading">
+        <h2 id="notify-immediate-heading">Immediate email</h2>
+        {settingsQuery.isPending ? <StatusMessage>Loading settings</StatusMessage> : null}
+        {settingsQuery.isError ? (
+          <IdentityError
+            error={
+              settingsQuery.error instanceof Error ? settingsQuery.error : new Error("failed to load settings")
+            }
+            onRetry={() => void settingsQuery.refetch()}
+          />
+        ) : null}
+        {settings ? (
+          <>
+            <label className="notify-immediate-toggle" htmlFor="notify-immediate">
+              <input
+                id="notify-immediate"
+                type="checkbox"
+                checked={settings.notify_immediate}
+                onChange={(event) => void onToggleNotifyImmediate(event)}
+                disabled={busyId != null}
+              />
+              Email me when a reading is ready
+            </label>
+            <p className="session-meta">
+              Immediate mail on a successful reading. Uncheck to opt out. Mail goes to your current verified
+              address.
+            </p>
+          </>
+        ) : null}
+      </section>
       {sessionsQuery.isPending ? <StatusMessage>Loading</StatusMessage> : null}
       {sessionsQuery.isError ? (
         <IdentityError
