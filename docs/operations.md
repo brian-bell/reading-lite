@@ -513,10 +513,11 @@ waiting, and the run is better stopped and retried when the provider is quieter.
 Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
 from the manifests as it always does.
 
-Because the calls overlap, the `Timing:` block's `provider` row (and, for
-`refresh-tensions`, `manifest read`) sums the call durations rather than the
-wall time they occupied — the same way `planning reads` already did — so under
-`--concurrency` it can exceed the run's own total. The `total` row is the one to compare between runs.
+Because the calls overlap, every `Timing:` row a concurrent action produces —
+`provider`, `manifest write`, and for `refresh-tensions` `manifest read` — sums
+the call durations rather than the wall time they occupied, the same way
+`planning reads` already did, so under `--concurrency` a row can exceed the
+run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
