@@ -193,6 +193,9 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
     // only place the corpus-wide document is rewritten: an If-Match
     // read-merge-write, so the rows this pass measured get their fresh
     // similarity and every other row keeps whatever the live index has.
+    // Whichever client `deps.r2` built has to carry ETags and honour If-Match.
+    // Both do: the tier-2/3 manifest CAS already depends on that over the same
+    // two clients, S3-keyed and CLOUDFLARE_API_TOKEN-only alike.
     async mergeListRows(patches, r2Deps) {
       await casMergeListIndex(
         client(r2Deps),
