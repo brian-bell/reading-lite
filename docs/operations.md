@@ -280,7 +280,8 @@ readings are written under the founder's `usr_…` namespace, so export it once
 and reuse it:
 
 ```sh
-export TENANT=usr_...
+# Fill in, then paste.
+export TENANT=usr_…   # production whoami.tenant_id
 ```
 
 Take that id from an authenticated `GET /api/whoami` against production. The
@@ -293,15 +294,18 @@ resolves to the legacy pre-cutover layout, which no longer receives readings;
 refreshing it spends judgements on a copy nobody reads.
 
 Credentials for production differ per command. `refresh-neighbours` reaches R2
-and Vectorize through the wrangler CLI, so it needs a wrangler login rather
-than raw keys. `refresh-connections` and `refresh-tensions` use the inventory
-client, which accepts either `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY`
-or an R2-capable `CORPUS_CF_API_TOKEN` — and **prefers the S3 keys whenever
-both are present**. A typical `.corpus.vars` holds staging-scoped S3 keys that
-403 against the production bucket, and they silently win over an otherwise
-correct production token. Source production S3 keys from outside the repo, or
-clear the staging keys from the environment first (see the credentials row of
-the cutover log in `docs/founder-cutover.md`).
+and Vectorize through the wrangler CLI, so it wants a `wrangler login` or a
+`CLOUDFLARE_API_TOKEN`, not R2 S3 keys. `refresh-connections` and
+`refresh-tensions` read R2 through the inventory client, which needs an
+account id plus either `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY` or an
+R2-capable `CORPUS_CF_API_TOKEN` / `CLOUDFLARE_API_TOKEN` — and **prefers the
+S3 keys whenever both are present**. A typical `.corpus.vars` holds
+staging-scoped S3 keys that 403 against the production bucket, and because
+that file is loaded on every run they silently win over an otherwise correct
+production token. Source production S3 keys from outside the repo, or take the
+staging keys out of `.corpus.vars` before the run (see the credentials row of
+the cutover log in `docs/founder-cutover.md`). `--execute` additionally needs
+the summarizer provider key from the secrets table above.
 
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
