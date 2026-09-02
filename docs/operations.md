@@ -467,8 +467,10 @@ many, defaulting to 4 — the ingest queue runs at 3 against the same provider
 account, so this is deliberately close to it. Results are collected and printed
 in plan order however the calls complete, and every counter (`Judged`, `list
 rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
-output and its exit code do not depend on which call returned first. Pass
-`--concurrency 1` to get the old strictly sequential pass back.
+output and its exit code do not depend on which call returned first. The one
+line that is not in plan order is the rate-limit pause below, which prints when
+it happens because that is the point of it. Pass `--concurrency 1` to get the
+old strictly sequential pass back.
 
 Two things the pass does not do concurrently. It never has two judgements
 holding the same reading at once — in `refresh-tensions`, where a reading sits

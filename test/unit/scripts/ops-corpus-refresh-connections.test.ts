@@ -477,6 +477,27 @@ binding = "READING_JOBS"
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
   });
+
+  it("heals a list row whose judged manifest carries no verdict at all", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    // Judged for this report, but the manifest has no verdict while the row
+    // still claims one: the drift a heal exists to clear.
+    const stored = h.manifests.get("readings/2026/rd_a")!.manifest;
+    stored.connections_computed_at = JUDGED_AT;
+    delete stored.novelty_verdict;
+
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.out.join("\n")).toContain("Judged: 0; list rows healed: 1; failures: 0");
+    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBeUndefined();
+  });
 });
 
 /**

@@ -140,8 +140,12 @@ interface ExecuteOutcome {
   stdout: string[];
   stderr: string[];
   kind: "judged" | "healed" | "failed";
-  /** Present when the run has a list-row verdict to flush for this reading. */
-  verdict?: ListIndexItem["novelty_verdict"];
+  /**
+   * The verdict to flush onto the list row. Read for every outcome that is
+   * not a failure, `undefined` included: a manifest whose `novelty_verdict`
+   * is absent is exactly the drift a heal exists to clear off the row.
+   */
+  verdict: ListIndexItem["novelty_verdict"];
   /** Present whenever the provider was called and billed. */
   usage?: RelationshipJudgementResult["usage"];
 }
@@ -461,7 +465,12 @@ async function refreshConnections(
   // action has been folded, so overlapping the calls cannot reorder the run's
   // output or its accounting.
   const runAction = async (action: Action): Promise<ExecuteOutcome> => {
-    const outcome: ExecuteOutcome = { stdout: [], stderr: [], kind: "failed" };
+    const outcome: ExecuteOutcome = {
+      stdout: [],
+      stderr: [],
+      kind: "failed",
+      verdict: undefined,
+    };
     const failWith = (message: string): ExecuteOutcome => {
       outcome.stderr.push(`  ! ${action.report.id}: ${message}`);
       return outcome;
@@ -541,7 +550,10 @@ async function refreshConnections(
         for (const line of outcome.stdout) deps.io.stdout(line);
         for (const line of outcome.stderr) deps.io.stderr(line);
         if (outcome.usage) addUsage(usageTotals, outcome.usage);
-        if (outcome.verdict !== undefined) {
+        // Keyed on the outcome, not on the value: a heal whose manifest has
+        // no verdict must still clear the stale one off the list row, or it
+        // is re-planned every run and never fixed.
+        if (outcome.kind !== "failed") {
           verdictUpdates.set(selected[index]!.report.id, outcome.verdict);
         }
         if (outcome.kind === "judged") judged++;
