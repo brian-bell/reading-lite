@@ -479,27 +479,26 @@ account, so this is deliberately close to it — and refusing anything above 16,
 so a mistyped flag cannot fan a hundred paid calls at that account. Results are
 collected and printed in plan order however the calls complete, and every
 counter (`Judged`, `list rows healed`, `failures`, `Usage:`) is folded in that
-same order, so a run's
-output and its exit code do not depend on which call returned first. The one
-line that is not in plan order is the rate-limit pause below, which prints when
-it happens because that is the point of it. The cost of that ordering is that a
-finished action's line waits for the ones planned before it, so a single slow
-call holds back the lines behind it; the `Timing:` block at the end is still
-what separates a slow pass from a hung one. Pass `--concurrency 1` for a
-strictly sequential pass — the rate-limit backoff below still applies.
+same order, so a run's output and its exit code do not depend on which call
+returned first. The lines that are not in plan order are the rate-limit pause
+and the backoff ceiling below, which print when they happen because that is the
+point of them. The cost of that ordering is that a finished action's line waits
+for the ones planned before it, so a single slow call holds back the lines
+behind it; the `Timing:` block at the end is still what separates a slow pass
+from a hung one. Pass `--concurrency 1` for a strictly sequential pass — the
+rate-limit backoff below still applies.
 
 Two things the pass does not do concurrently. It never has two judgements
 holding the same reading at once — in `refresh-tensions`, where a reading sits
 in several pairs, an action waits until every reading it writes is free, so
 concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
 away. And when a judgement comes back rate limited (a 429 that outlived the
-judge's own retry), the whole pass backs off together: the rate-limited action
-is counted as a failure exactly as it would be sequentially, and no worker
-*starts* another judgement until the provider's `Retry-After` has passed
-(defaulting to 8 s, capped at 60 s so a wild header cannot park a sole-writer
-window). Calls already in flight when the window opens still finish, and are
+judge's own retry), the whole pass backs off together: no worker *starts*
+another judgement until the provider's `Retry-After` has passed (defaulting to
+8 s, capped at 60 s so a wild header cannot park a sole-writer window). Calls already in flight when the window opens still finish, and are
 still billed. The pause prints as `provider rate limited; pausing new
-judgements for …`.
+judgements for …`. Workers wake together at the end of a window, so a limit that
+is still in force costs one more round of 429s before the next pause.
 
 The action that hit the limit gets one more attempt, once that window clears. A
 429 is usually a queue that has moved on by the time the window is over, so the
