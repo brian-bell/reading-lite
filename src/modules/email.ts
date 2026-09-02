@@ -26,6 +26,7 @@ export interface EmailDeps {
   from: string;
   to: string;
   retry?: RetryDeps;
+  idempotencyKey?: string;
 }
 
 export interface SendReadingEmailInput {
@@ -72,12 +73,16 @@ export async function postResendEmail(
   payload: { from: string; to: string; subject: string; html: string; text: string },
   deps: EmailDeps,
 ): Promise<SendReadingEmailResult> {
+  const headers = new Headers({
+    authorization: `Bearer ${deps.apiKey}`,
+    "content-type": "application/json",
+  });
+  if (deps.idempotencyKey) {
+    headers.set("Idempotency-Key", deps.idempotencyKey);
+  }
   const init: RequestInit = {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${deps.apiKey}`,
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify(payload),
   };
 

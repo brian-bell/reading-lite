@@ -132,10 +132,14 @@ describe("sendDigestEmail", () => {
         apiKey: "re_secret",
         from: "reading-lite@from.example",
         to: "reader-display@example.com",
+        idempotencyKey: "usr_test:weekly:2026-W36",
       },
     );
     expect(out.id).toBe("re_digest");
-    const body = JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)) as {
+    const init = fetchFn.mock.calls[0]![1]!;
+    const headers = new Headers(init.headers);
+    expect(headers.get("Idempotency-Key")).toBe("usr_test:weekly:2026-W36");
+    const body = JSON.parse(String(init.body)) as {
       to: string;
       subject: string;
       html: string;

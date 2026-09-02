@@ -7,7 +7,10 @@
  * delayed/retried job in the same period still sends. Fan-out also
  * re-enqueues current-period `pending` rows (via `currentPeriodKey`) so a
  * producer miss through the due hour can still land on DIGEST_JOBS later
- * that day/week. A `queue.send` failure after this tick *inserted* a pending
+ * that day/week. Leftover re-enqueue only applies to *stale* pending rows
+ * (`DIGEST_PENDING_STALE_MS` = 15 minutes, one `*/15` cron interval — longer
+ * than the digest 429 retry cap of 5 minutes) so an in-flight or mid-retry
+ * job is not double-queued. A `queue.send` failure after this tick *inserted* a pending
  * claim deletes that row so a later tick can claim again. An already-existing
  * `pending` row is left in place: it belongs to an earlier enqueue still in
  * flight. Each tenant is claimed+enqueued in its own try/catch so one failure
@@ -36,6 +39,7 @@ import {
   finalizeDigestDelivery,
   getDigestDelivery,
   listPendingDigestDeliveries,
+  touchPendingDigestDelivery,
   type DigestDeliveryKey,
   type DigestSkipReason,
 } from "./control-plane/digest-ledger";
@@ -58,6 +62,16 @@ import { readingStoreFor } from "./modules/stores/reading-store";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
+
+/**
+ * Age a pending ledger row must reach before fan-out may `queue.send` again.
+ * One `*/15` cron interval, and longer than the digest 429 retry cap (5 min).
+ */
+export const DIGEST_PENDING_STALE_MS = 15 * 60_000;
+
+export function isStaleDigestPending(updatedAtMs: number, nowMs: number): boolean {
+  return nowMs - updatedAtMs >= DIGEST_PENDING_STALE_MS;
+}
 
 export function isDigestQueue(name: string): boolean {
   return (DIGEST_QUEUE_NAMES as readonly string[]).includes(name);
@@ -128,7 +142,7 @@ export function selectDueDigestUsers(
   return due;
 }
 
-/** Due-hour users plus leftover pending rows still in the current local period. */
+/** Due-hour users plus leftover *stale* pending rows still in the current local period. */
 export function selectFanOutDigestUsers(
   rows: readonly EnabledDigestRow[],
   pendingIds: ReadonlySet<string>,
@@ -171,7 +185,9 @@ export async function fanOutDueDigests(
   const db = fromD1(env.CONTROL_PLANE);
   const now = new Date(deps.nowMs);
   const pendingIds = new Set(
-    (await listPendingDigestDeliveries(db)).map((key) => digestDeliveryKeyId(key)),
+    (await listPendingDigestDeliveries(db))
+      .filter((row) => isStaleDigestPending(row.updated_at_ms, deps.nowMs))
+      .map((key) => digestDeliveryKeyId(key)),
   );
   const due = selectFanOutDigestUsers(await listEnabledDigestUsers(db), pendingIds, now);
   let enqueued = 0;
@@ -187,6 +203,10 @@ export async function fanOutDueDigests(
       if (!tenantId || !userId) continue;
       const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
       if (claim === "terminal") continue;
+      if (claim === "pending") {
+        const existing = await getDigestDelivery(db, key);
+        if (!existing || !isStaleDigestPending(existing.updated_at_ms, deps.nowMs)) continue;
+      }
       try {
         await queue.send(
           digestEnvelopeV1({
@@ -196,6 +216,9 @@ export async function fanOutDueDigests(
             cadence: row.digest_cadence,
           }),
         );
+        if (claim === "pending") {
+          await touchPendingDigestDelivery(db, key, deps.nowMs);
+        }
         enqueued += 1;
       } catch (error) {
         if (claim === "inserted") {
@@ -315,6 +338,7 @@ export async function processDigestJob(
         from: verdict.from,
         to: verdict.to,
         retry: deps.retry,
+        idempotencyKey: digestDeliveryKeyId(key),
       },
     );
     await finalizeDigestDelivery(

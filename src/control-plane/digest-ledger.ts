@@ -92,15 +92,39 @@ export async function deletePendingDigestDelivery(
 
 export async function listPendingDigestDeliveries(
   db: ControlPlaneDb,
-): Promise<DigestDeliveryKey[]> {
-  const rows = await db.all<{ user_id: string; cadence: "daily" | "weekly"; period_key: string }>(
-    `SELECT user_id, cadence, period_key FROM digest_deliveries WHERE status = 'pending'`,
+): Promise<Array<DigestDeliveryKey & { updated_at_ms: number }>> {
+  const rows = await db.all<{
+    user_id: string;
+    cadence: "daily" | "weekly";
+    period_key: string;
+    updated_at_ms: number;
+  }>(
+    `SELECT user_id, cadence, period_key, updated_at_ms FROM digest_deliveries WHERE status = 'pending'`,
   );
   return rows.map((row) => ({
     userId: row.user_id,
     cadence: row.cadence,
     periodKey: row.period_key,
+    updated_at_ms: row.updated_at_ms,
   }));
+}
+
+/** Mark a still-pending row as recently re-enqueued so the next tick treats it as fresh. */
+export async function touchPendingDigestDelivery(
+  db: ControlPlaneDb,
+  key: DigestDeliveryKey,
+  nowMs: number,
+): Promise<boolean> {
+  const updated = await db.run(
+    `UPDATE digest_deliveries
+        SET updated_at_ms = ?
+      WHERE user_id = ? AND cadence = ? AND period_key = ? AND status = 'pending'`,
+    nowMs,
+    key.userId,
+    key.cadence,
+    key.periodKey,
+  );
+  return updated.changes === 1;
 }
 
 export function digestDeliveryKeyId(key: DigestDeliveryKey): string {

@@ -95,7 +95,7 @@ export function renderDigestText(input: DigestEmailInput): string {
 
 export async function sendDigestEmail(
   input: DigestEmailInput,
-  deps: EmailDeps,
+  deps: EmailDeps & { idempotencyKey: string },
 ): Promise<SendReadingEmailResult> {
   if (input.items.length === 0) {
     throw new Error("sendDigestEmail: refusing empty window");

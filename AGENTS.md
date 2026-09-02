@@ -211,6 +211,9 @@ Pointers only — the details live in the named files' comments.
   Digest send is Resend to the current verified `email_display` (never
   `EMAIL_TO`, never `LOCAL_MAIL_SINK`). Empty windows skip and close the
   period. Resend 429 retries the job and leaves the ledger `pending`.
+  Fan-out re-enqueues leftover pending only after `DIGEST_PENDING_STALE_MS`
+  (15 minutes / one cron interval). Digest Resend POSTs set `Idempotency-Key`
+  to `digestDeliveryKeyId`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

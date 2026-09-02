@@ -86,6 +86,7 @@ describe("sendReadingEmail", () => {
     const headers = new Headers(init.headers);
     expect(headers.get("authorization")).toBe("Bearer re_secret");
     expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("Idempotency-Key")).toBeNull();
     const body = JSON.parse(init.body as string);
     expect(body.from).toBe("reading-lite@from.example");
     expect(body.to).toBe("reader@to.example");

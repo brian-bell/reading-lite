@@ -6,6 +6,7 @@ import {
   deletePendingDigestDelivery,
   finalizeDigestDelivery,
   getDigestDelivery,
+  touchPendingDigestDelivery,
 } from "../../../src/control-plane/digest-ledger";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
@@ -68,5 +69,18 @@ describe("digest_deliveries ledger CAS", () => {
     await finalizeDigestDelivery(db, KEY, { status: "sent" }, NOW_MS + 2);
     expect(await deletePendingDigestDelivery(db, KEY)).toBe(false);
     expect(await getDigestDelivery(db, KEY)).toMatchObject({ status: "sent" });
+  });
+
+  it("touches only a pending row so a later tick can treat it as fresh", async () => {
+    const { db } = await bootstrapped();
+    await claimPendingDigestDelivery(db, KEY, NOW_MS);
+    expect(await touchPendingDigestDelivery(db, KEY, NOW_MS + 1)).toBe(true);
+    expect(await getDigestDelivery(db, KEY)).toMatchObject({
+      status: "pending",
+      updated_at_ms: NOW_MS + 1,
+      created_at_ms: NOW_MS,
+    });
+    await finalizeDigestDelivery(db, KEY, { status: "sent" }, NOW_MS + 2);
+    expect(await touchPendingDigestDelivery(db, KEY, NOW_MS + 3)).toBe(false);
   });
 });

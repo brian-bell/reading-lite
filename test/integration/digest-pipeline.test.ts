@@ -1,12 +1,14 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
-import { getDigestDelivery } from "../../src/control-plane/digest-ledger";
+import { digestDeliveryKeyId, getDigestDelivery } from "../../src/control-plane/digest-ledger";
 import { fromD1 } from "../../src/control-plane/db";
 import {
   consumeDigestMessage,
+  DIGEST_PENDING_STALE_MS,
   fanOutDueDigests,
   handleDigestDeadLetter,
+  isStaleDigestPending,
   processDigestJob,
 } from "../../src/digest-pipeline";
 import worker, { type Env } from "../../src/index";
@@ -85,6 +87,15 @@ async function resetState(): Promise<void> {
   installDigestQueue();
 }
 
+describe("isStaleDigestPending", () => {
+  it("treats one cron interval as stale and younger rows as fresh", () => {
+    expect(isStaleDigestPending(NOW_MS, NOW_MS)).toBe(false);
+    expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS - 1)).toBe(false);
+    expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS)).toBe(true);
+    expect(DIGEST_PENDING_STALE_MS).toBe(15 * 60_000);
+  });
+});
+
 describe("digest fan-out + send-time skips", () => {
   beforeEach(resetState);
 
@@ -115,7 +126,10 @@ describe("digest fan-out + send-time skips", () => {
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
       enqueued: 1,
     });
-    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + 15 * 60_000 })).toEqual({
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS - 1 })).toEqual({
+      enqueued: 0,
+    });
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS })).toEqual({
       enqueued: 1,
     });
     expect(queued).toHaveLength(2);
@@ -309,7 +323,7 @@ describe("digest fan-out + send-time skips", () => {
     ).toMatchObject({ status: "pending" });
   });
 
-  it("keeps an existing pending claim when a duplicate queue.send fails", async () => {
+  it("does not re-enqueue a fresh pending claim on a later due tick", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
       enqueued: 1,
@@ -323,11 +337,10 @@ describe("digest fan-out + send-time skips", () => {
     ).toMatchObject({ status: "pending" });
 
     installRejectingDigestQueue();
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + 60_000 })).toEqual({
       enqueued: 0,
     });
-    consoleErr.mockRestore();
+    expect(queued).toHaveLength(0);
 
     expect(
       await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
@@ -338,7 +351,7 @@ describe("digest fan-out + send-time skips", () => {
     ).toMatchObject({ status: "pending" });
   });
 
-  it("re-enqueues a current-period pending row after the due hour", async () => {
+  it("re-enqueues a stale current-period pending row after the due hour", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
@@ -350,7 +363,7 @@ describe("digest fan-out + send-time skips", () => {
          (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
        VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
     )
-      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
+      .bind(FOUNDER_TENANT_ID, laterMs - DIGEST_PENDING_STALE_MS, laterMs - DIGEST_PENDING_STALE_MS)
       .run();
 
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
@@ -365,6 +378,23 @@ describe("digest fan-out + send-time skips", () => {
         cadence: "daily",
       },
     ]);
+  });
+
+  it("does not re-enqueue a fresh leftover pending row after the due hour", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
+    await env.CONTROL_PLANE.prepare(
+      `INSERT INTO digest_deliveries
+         (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+       VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
+    )
+      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
+      .run();
+
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
+      enqueued: 0,
+    });
+    expect(queued).toEqual([]);
   });
 
   it("wires scheduled() to due+enqueue with frozen scheduledTime", async () => {
@@ -565,6 +595,21 @@ describe("digest send isolation (196 B2)", () => {
     }
     expect(fetchFn).toHaveBeenCalledTimes(2);
     const bodies = resendBodies(fetchFn);
+    const keys = fetchFn.mock.calls.map((call) => new Headers(call[1]?.headers).get("Idempotency-Key"));
+    expect(keys.sort()).toEqual(
+      [
+        digestDeliveryKeyId({
+          userId: FOUNDER_TENANT_ID,
+          cadence: "daily",
+          periodKey: "2026-09-02",
+        }),
+        digestDeliveryKeyId({
+          userId: OTHER_TENANT_ID,
+          cadence: "daily",
+          periodKey: "2026-09-02",
+        }),
+      ].sort(),
+    );
     expect(bodies.map((b) => b.to).sort()).toEqual(
       ["founder@test.example", "other@test.example"].sort(),
     );
