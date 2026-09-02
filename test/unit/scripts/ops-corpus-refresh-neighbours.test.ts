@@ -7,6 +7,12 @@ import {
 import { UsageError, type CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshNeighbour, RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
 import type { ListRowPatch } from "../../../scripts/ops-lib/list-index-cas";
+import { SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import {
+  REVERSE_SCORE_BOUND,
+  REVERSE_TOP_K,
+  type RefreshState,
+} from "../../../scripts/corpus-lib/refresh-scope";
 
 function io(): { io: CommandIo; lines: string[] } {
   const lines: string[] = [];
@@ -61,30 +67,57 @@ const VALID_MANIFEST = {
 function makeDeps(opts: {
   items?: RefreshRow[];
   matches?: RefreshNeighbour[] | null;
+  /** Per-id match override, so a reverse query can answer differently. */
+  matchesFor?: (id: string, topK: number) => RefreshNeighbour[] | null | undefined;
   manifest?: unknown;
   manifestThrow?: string;
   queryThrow?: (id: string) => Error | undefined;
+  listEtag?: string;
+  state?: unknown;
+  stateThrow?: string;
+  stateWriteThrow?: string;
 }) {
   const { io: cio, lines } = io();
   const calls = {
-    queries: [] as Array<{ id: string; namespace: string | undefined }>,
+    queries: [] as Array<{ id: string; topK: number; namespace: string | undefined; metadata?: boolean }>,
     puts: [] as Array<{ key: string; body: Record<string, unknown> }>,
     indexWrites: 0,
+    stateReads: 0,
+    stateWrites: [] as unknown[],
     reports: [] as Array<{ path: string; body: string }>,
     mkdirs: [] as string[],
   };
   const deps: CorpusRefreshNeighboursDeps = {
     io: cio,
     r2: {
-      readListIndex: async () => opts.items ?? [READY, NEIGHBOUR],
+      readListIndex: async () => ({
+        items: opts.items ?? [READY, NEIGHBOUR],
+        ...(opts.listEtag === undefined ? {} : { etag: opts.listEtag }),
+      }),
+      readRefreshState: async () => {
+        calls.stateReads++;
+        if (opts.stateThrow) throw new Error(opts.stateThrow);
+        return opts.state ?? null;
+      },
+      writeRefreshState: async (state) => {
+        if (opts.stateWriteThrow) throw new Error(opts.stateWriteThrow);
+        calls.stateWrites.push(state);
+      },
       readManifest: async () => {
         if (opts.manifestThrow) throw new Error(opts.manifestThrow);
         return opts.manifest === undefined ? { ...VALID_MANIFEST } : opts.manifest;
       },
-      queryByVectorId: async (_index, id, _topK, namespace) => {
-        calls.queries.push({ id, namespace });
+      queryByVectorId: async (_index, id, topK, namespace, queryOpts) => {
+        calls.queries.push({
+          id,
+          topK,
+          namespace,
+          ...(queryOpts?.metadata === undefined ? {} : { metadata: queryOpts.metadata }),
+        });
         const thrown = opts.queryThrow?.(id);
         if (thrown) throw thrown;
+        const override = opts.matchesFor?.(id, topK);
+        if (override !== undefined) return override;
         if (opts.matches === null) return null;
         return opts.matches ?? [
           { id: "rd_r", score: 1 },
@@ -298,7 +331,7 @@ describe("ops corpus refresh-neighbours", () => {
       deps,
     );
     expect(code).toBe(0);
-    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, namespace: tenantId }]);
+    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, topK: SIMILAR_TOP_K + 1, namespace: tenantId }]);
     expect(calls.puts[0]!.body.similarity).toEqual({
       count: 1,
       max: 0.6,
@@ -662,6 +695,408 @@ describe("ops corpus refresh-neighbours", () => {
 
     it("documents --via in help", async () => {
       expect(corpusRefreshNeighboursCommand.helpText).toContain("--via <path>");
+    });
+  });
+
+  describe("incremental scope", () => {
+    const MARKER: RefreshState = {
+      version: 1,
+      last_run_at: "2026-08-21T00:00:00.000Z",
+      list_row_count: 2,
+    };
+
+    /** Both list rows unchanged since the marker, so nothing is in scope. */
+    function quietCorpus() {
+      return makeDeps({ state: MARKER });
+    }
+
+    it("measures everything by default, whatever the marker says", async () => {
+      const { deps, calls, lines } = quietCorpus();
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+      expect(code).toBe(0);
+      // Read, but not scoped against: a full pass overwrites the marker, so it
+      // needs the stored one to build the next from.
+      expect(calls.stateReads).toBe(1);
+      expect(calls.queries).toHaveLength(2);
+      expect(lines.join("\n")).toContain("Scope: full — --full");
+    });
+
+    it("measures nothing when no reading has moved since the marker", async () => {
+      const { deps, calls, lines } = quietCorpus();
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateReads).toBe(1);
+      expect(calls.queries).toEqual([]);
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: incremental (0 reading(s))");
+      expect(text).toContain("To measure: 0");
+    });
+
+    it("measures a changed reading and its reverse neighbourhood, asking for no metadata", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        items: [{ ...READY, updated_at: "2026-08-21T12:00:00.000Z" }, NEIGHBOUR],
+        matchesFor: (_id, topK) =>
+          topK === REVERSE_TOP_K
+            ? [
+                { id: "rd_r", score: 1 },
+                { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.01 },
+                // Below the bound: the evidence that the results ran out
+                // before the bound did, so the reverse set is complete.
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+              ]
+            : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      const reverse = calls.queries.filter((q) => q.topK === REVERSE_TOP_K);
+      expect(reverse).toEqual([
+        { id: "rd_r", topK: REVERSE_TOP_K, namespace: undefined, metadata: false },
+      ]);
+      // The changed reading and the neighbour its vector reaches, both measured.
+      const measured = calls.queries.filter((q) => q.topK !== REVERSE_TOP_K).map((q) => q.id);
+      expect(measured.sort()).toEqual(["rd_n", "rd_r"]);
+      expect(lines.join("\n")).toContain("Scope: incremental (2 reading(s))");
+    });
+
+    // The list read uses the R2 credential and the query uses the Vectorize
+    // one, so a bad token passes the read and fails every query. Spending one
+    // per changed reading before sweeping would cost more than the sweep.
+    it("stops scoping after a run of failed reverse queries", async () => {
+      const changed = Array.from({ length: 10 }, (_, i) => ({
+        ...READY,
+        id: `rd_${i}`,
+        key_prefix: `readings/rd_${i}`,
+        updated_at: "2026-08-21T12:00:00.000Z",
+      }));
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, list_row_count: changed.length },
+        items: changed,
+        queryThrow: () => new Error("401"),
+      });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toHaveLength(3);
+      // The reason counts what was attempted, not the whole changed set: the
+      // seven ids after the stop were never asked, and reporting them as
+      // failures would inflate the rate the reason exists to make trustworthy.
+      expect(lines.join("\n")).toContain(
+        "Scope: full — 3 reverse-neighbour queries failed in a row after 3 of 10 changed reading(s)",
+      );
+    });
+
+    it("sweeps when the reverse query for a changed reading fails", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        items: [{ ...READY, updated_at: "2026-08-21T12:00:00.000Z" }, NEIGHBOUR],
+        queryThrow: (id) => (id === "rd_r" ? new Error("boom") : undefined),
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      // rd_r's measurement query fails too, so the pass is incomplete — but the
+      // scope escalated rather than quietly measuring less.
+      expect(code).toBe(1);
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: full — 1 unanswered reverse quer(ies), first rd_r");
+      expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K)).toHaveLength(2);
+    });
+
+    it("sweeps when the marker is absent, unreadable, or unusable", async () => {
+      for (const opts of [
+        {},
+        { stateThrow: "transient" },
+        { state: { version: 9 } },
+      ] as const) {
+        const { deps, lines } = makeDeps({ ...opts });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--since-last-run"],
+          deps,
+        );
+        expect(code).toBe(0);
+        expect(lines.join("\n")).toContain("Scope: full");
+      }
+    });
+
+    it("sweeps when the corpus lost a row, which no timestamp can name", async () => {
+      const { deps, lines } = makeDeps({
+        state: { ...MARKER, list_row_count: 5 },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain("Scope: full — 3 list row(s) removed since the last run");
+    });
+
+    it("records the scope in the report header", async () => {
+      const { deps, calls } = quietCorpus();
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
+      const report = JSON.parse(calls.reports[0]!.body);
+      expect(report.scope).toEqual({
+        kind: "incremental",
+        reason: "0 reading(s) changed since 2026-08-21T00:00:00.000Z",
+        since: "2026-08-21T00:00:00.000Z",
+        readings_in_scope: 0,
+      });
+    });
+
+    // A `full` report claims to cover the ready corpus; a hand-picked or capped
+    // pass does not, and the report is the only place a later reader can learn
+    // that it was narrowed.
+    it("records --only and a --limit that truncated in the report scope", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER, items: [READY, NEIGHBOUR] });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "1"], deps);
+      expect(JSON.parse(calls.reports[0]!.body).scope).toEqual({
+        kind: "full",
+        reason: "--full",
+        narrowed_by: "--limit 1",
+      });
+    });
+
+    // The report and the marker have to agree: a limit that never truncated
+    // narrowed nothing, and the pass is complete by both accounts.
+    it("does not call a pass narrowed by a --limit it never reached", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "500"], deps);
+      expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
+    });
+
+    it("advances the marker only on a complete execute pass", async () => {
+      const { deps, calls } = quietCorpus();
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
+      expect(calls.stateWrites).toEqual([]);
+
+      const executed = quietCorpus();
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        executed.deps,
+      );
+      expect(code).toBe(0);
+      expect(executed.calls.stateWrites).toEqual([
+        {
+          version: 1,
+          last_run_at: "2026-08-22T12:00:00.000Z",
+          list_row_count: 2,
+        },
+      ]);
+    });
+
+    it("records a full sweep as the last full run", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(calls.stateWrites[0]).toMatchObject({
+        last_run_at: "2026-08-22T12:00:00.000Z",
+        last_full_run_at: "2026-08-22T12:00:00.000Z",
+      });
+    });
+
+    // --only names a subset, and --limit cuts one; advancing the marker would
+    // claim the readings they skipped had been refreshed.
+    it("leaves the marker alone when --only or --limit narrowed the pass", async () => {
+      for (const flags of [["rd_r"], ["--limit", "1"]]) {
+        const { deps, calls, lines } = makeDeps({ state: MARKER });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer", ...flags],
+          deps,
+        );
+        expect(code).toBe(0);
+        expect(calls.stateWrites).toEqual([]);
+        expect(lines.join("\n")).toContain("Run marker unchanged");
+      }
+    });
+
+    // A limit used as a runaway-cost valve and never reached has measured its
+    // whole scope; pinning the marker on the flag alone would make every later
+    // night sweep for no reason.
+    it("advances the marker when --limit never cut the plan short", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "500"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toHaveLength(1);
+    });
+
+    // A written marker is an optimisation, not corpus state: every snapshot the
+    // pass owed R2 is already committed when it is attempted.
+    it("does not fail a completed pass whose marker write failed", async () => {
+      const { deps, lines } = makeDeps({ state: MARKER, stateWriteThrow: "no write" });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain("run marker write failed: no write");
+    });
+
+    // The ETag this pass read is superseded by its own list flush, so recording
+    // it would store a token no later read can match.
+    it("stores the list ETag only when the pass did not rewrite the index", async () => {
+      // One reading whose stored snapshot already matches the measurement, so
+      // the pass writes nothing at all.
+      const quiet = makeDeps({
+        state: { ...MARKER, list_row_count: 1 },
+        listEtag: "etag-1",
+        items: [READY],
+        matches: [{ id: "rd_r", score: 1 }],
+      });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        quiet.deps,
+      );
+      expect(quiet.calls.indexWrites).toBe(0);
+      expect(quiet.calls.stateWrites[0]).toMatchObject({ list_etag: "etag-1" });
+
+      const flushed = makeDeps({
+        state: MARKER,
+        listEtag: "etag-1",
+        items: [{ ...READY, similarity: undefined }, NEIGHBOUR],
+      });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        flushed.deps,
+      );
+      expect(flushed.calls.indexWrites).toBe(1);
+      expect(flushed.calls.stateWrites[0]).not.toHaveProperty("list_etag");
+    });
+
+    // Status is not a statement about vector ownership: a reprocess-in-flight
+    // row can still have a live vector, and its neighbours are exactly who
+    // needs re-measuring.
+    it("queries the reverse neighbourhood of a changed reading whatever its status", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        items: [
+          { ...READY, status: "pending", updated_at: "2026-08-21T12:00:00.000Z" },
+          NEIGHBOUR,
+        ],
+        matchesFor: (_id, topK) =>
+          topK === REVERSE_TOP_K
+            ? [
+                { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.1 },
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+              ]
+            : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toHaveLength(1);
+      // The pending reading owns no snapshot to refresh, but the neighbour its
+      // vector still reaches is measured.
+      expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K).map((q) => q.id)).toEqual([
+        "rd_n",
+      ]);
+    });
+
+    // The marker must never be newer than the list it describes, or a reading
+    // activated between the two reads is invisible to every later pass.
+    it("stamps the marker no later than the list it read", async () => {
+      const { deps, calls } = quietCorpus();
+      let listReadAt = 0;
+      const clock = (() => {
+        let value = Date.parse("2026-08-22T12:00:00Z");
+        return () => (value += 1000);
+      })();
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        {
+          ...deps,
+          now: clock,
+          r2: {
+            ...deps.r2,
+            readListIndex: async (d) => {
+              listReadAt = clock();
+              return deps.r2.readListIndex(d);
+            },
+          },
+        },
+      );
+      expect(code).toBe(0);
+      const written = calls.stateWrites[0] as { last_run_at: string };
+      expect(Date.parse(written.last_run_at)).toBeLessThan(listReadAt);
+    });
+
+    // A scope is an economy, not a permission: an operator naming an id is
+    // asserting intent, and gets that reading measured whatever the scope says.
+    // Resolving a scope at all would be a reverse query per changed reading
+    // spent on an answer that cannot change the outcome.
+    it("measures an --only id the scope would have excluded, and resolves no scope", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        items: [READY, { ...NEIGHBOUR, updated_at: "2026-08-21T12:00:00.000Z" }],
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "rd_r"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.queries).toEqual([
+        { id: "rd_r", topK: SIMILAR_TOP_K + 1, namespace: undefined },
+      ]);
+      expect(lines.join("\n")).toContain("Scope: full — --only names 1 reading(s)");
+    });
+
+    // A reading the planner brings into scope is not merely flagged for tier 2:
+    // it is measured like any other target, so its stored similarity snapshot
+    // and its list row are brought current in the same pass.
+    it("rewrites the snapshot and list row of a reading pulled in by a reverse query", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        // Only rd_r changed. rd_n is the stranger its vector reaches, and its
+        // list row carries a stale snapshot.
+        items: [
+          { ...READY, updated_at: "2026-08-21T12:00:00.000Z" },
+          { ...NEIGHBOUR, similarity: { count: 4, max: 0.9, computed_at: AT } },
+        ],
+        matchesFor: (_id, topK) =>
+          topK === REVERSE_TOP_K
+            ? [
+                { id: "rd_r", score: 1 },
+                { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.2 },
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+              ]
+            : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.puts.map((p) => p.key).sort()).toEqual(["readings/rd_n", "readings/rd_r"]);
+      expect(calls.indexWrites).toBe(1);
+    });
+
+    it("rejects --since-last-run together with --full", async () => {
+      const { deps } = makeDeps({});
+      await expect(
+        corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--since-last-run", "--full"],
+          deps,
+        ),
+      ).rejects.toThrow(/--since-last-run cannot be combined with --full/);
+    });
+
+    it("documents both scope flags in help", () => {
+      expect(corpusRefreshNeighboursCommand.helpText).toContain("--since-last-run");
+      expect(corpusRefreshNeighboursCommand.helpText).toContain("--full ");
     });
   });
 });

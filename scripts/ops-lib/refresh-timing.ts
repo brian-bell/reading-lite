@@ -31,6 +31,8 @@ export const PHASE_MANIFEST_WRITE = "manifest write";
 export const PHASE_LIST_WRITE = "list write";
 export const PHASE_PROVIDER = "provider";
 export const PHASE_VECTORIZE_QUERY = "vectorize query";
+export const PHASE_REVERSE_QUERY = "reverse query";
+export const PHASE_RUN_MARKER = "run marker";
 
 export interface RefreshTimer {
   /** Times one awaited call into `phase`, counting failures too. */
@@ -141,10 +143,20 @@ export function timedNeighboursR2(
 ): CorpusRefreshNeighboursR2 {
   return {
     readListIndex: (deps) => timer.measure(PHASE_LIST_READ, () => r2.readListIndex(deps)),
+    readRefreshState: (deps) => timer.measure(PHASE_RUN_MARKER, () => r2.readRefreshState(deps)),
+    writeRefreshState: (state, deps) =>
+      timer.measure(PHASE_RUN_MARKER, () => r2.writeRefreshState(state, deps)),
     readManifest: (keyPrefix, deps) =>
       timer.measure(PHASE_MANIFEST_READ, () => r2.readManifest(keyPrefix, deps)),
-    queryByVectorId: (index, id, topK, namespace) =>
-      timer.measure(PHASE_VECTORIZE_QUERY, () => r2.queryByVectorId(index, id, topK, namespace)),
+    // Two phases for one call, because the incremental scope is exactly the
+    // trade of one against the other: a metadata-less query is a reverse
+    // neighbourhood being scoped, and the measurement pass always wants the
+    // metadata it puts in the report.
+    queryByVectorId: (index, id, topK, namespace, opts) =>
+      timer.measure(
+        opts?.metadata === false ? PHASE_REVERSE_QUERY : PHASE_VECTORIZE_QUERY,
+        () => r2.queryByVectorId(index, id, topK, namespace, opts),
+      ),
     putManifest: (keyPrefix, body, deps) =>
       timer.measure(PHASE_MANIFEST_WRITE, () => r2.putManifest(keyPrefix, body, deps)),
     // One phase, whatever the flush costs internally: a CAS retry is part of

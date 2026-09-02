@@ -216,6 +216,26 @@ describe("queryByVectorId", () => {
     await expect(queryByVectorId("idx", "rd_a", 6, { run })).rejects.toThrow(/unexpected/i);
   });
 
+  it("asks for no metadata when the caller says it wants none", async () => {
+    const run: Runner = async (_cmd, args) => {
+      expect(args[args.indexOf("--return-metadata") + 1]).toBe("none");
+      return { code: 0, stdout: JSON.stringify({ count: 0, matches: [] }), stderr: "" };
+    };
+    expect(await queryByVectorId("idx", "rd_a", 100, { run, metadata: false })).toEqual([]);
+  });
+
+  // The same rule as the two cases above. On the incremental-refresh scoping
+  // path a null would be read as an answered query and shrink the scope, so an
+  // unrecognised shape has to escalate rather than look empty.
+  it("throws when the parsed output carries no matches array", async () => {
+    const run: Runner = async () => ({
+      code: 0,
+      stdout: JSON.stringify({ count: 0 }),
+      stderr: "",
+    });
+    await expect(queryByVectorId("idx", "rd_a", 6, { run })).rejects.toThrow(/no matches array/i);
+  });
+
   it("ignores malformed match entries rather than passing junk on", async () => {
     const out = await queryByVectorId("idx", "rd_a", 6, {
       run: ok([{ id: "rd_b", score: 0.5 }, { id: 7 }, { score: 0.2 }]),
@@ -270,7 +290,9 @@ describe("tenant-rooted R2Deps", () => {
     const calls: string[][] = [];
     const run: Runner = async (_cmd, args) => {
       calls.push(args.map(String));
-      return { code: 0, stdout: "{}", stderr: "" };
+      // A well-formed empty query result: `queryByVectorId` treats a payload
+      // with no matches array as an output shape it does not recognise.
+      return { code: 0, stdout: '{"count":0,"matches":[]}', stderr: "" };
     };
     return { calls, run };
   }

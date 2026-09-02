@@ -25,6 +25,11 @@ export const READINGS_PREFIX = "readings/";
 export const EXTRACTED_FILE = "extracted.md";
 export const RAW_PREFIX = "raw.";
 export const ATTEMPTS_PREFIX = "attempts/";
+// The nightly-refresh run marker. Written only by the operator CLI
+// (`corpus refresh-neighbours`), read by nothing in the Worker — but it is a
+// corpus object under the tenant root, so its spelling belongs here with the
+// rest of them.
+export const REFRESH_STATE_KEY = "index/refresh-state.json";
 export const BY_URL_PREFIX = "index/by-url/";
 export const BY_ID_PREFIX = "index/by-id/";
 
@@ -49,6 +54,8 @@ export interface R2KeyLayout {
   readonly keyRoot: string;
   // index/list.json — the single list-index object.
   listIndexKey(): string;
+  // index/refresh-state.json — the nightly-refresh run marker.
+  refreshStateKey(): string;
   // The scan prefix covering every reading's objects (manifest rebuild).
   readingsPrefix(): string;
   // The prefix covering one reading's objects (diagnostics listing).
@@ -70,6 +77,7 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
   return {
     keyRoot,
     listIndexKey: () => abs(LIST_INDEX_KEY),
+    refreshStateKey: () => abs(REFRESH_STATE_KEY),
     readingsPrefix: () => abs(READINGS_PREFIX),
     readingObjectsPrefix: (keyPrefix) => abs(`${keyPrefix}/`),
     manifestKey: (keyPrefix) => abs(`${keyPrefix}/${MANIFEST_FILE}`),

@@ -28,6 +28,7 @@ describe("r2KeyLayout with the global (pre-tenant) root", () => {
 
   it("builds every object key from the shared vocabulary", () => {
     expect(layout.listIndexKey()).toBe("index/list.json");
+    expect(layout.refreshStateKey()).toBe("index/refresh-state.json");
     expect(layout.readingsPrefix()).toBe("readings/");
     expect(layout.readingObjectsPrefix(kp)).toBe(`${kp}/`);
     expect(layout.manifestKey(kp)).toBe(`${kp}/manifest.json`);
@@ -52,6 +53,7 @@ describe("r2KeyLayout with a tenant root", () => {
   it("prefixes the root onto every object key", () => {
     expect(layout.keyRoot).toBe(root);
     expect(layout.listIndexKey()).toBe(`${root}index/list.json`);
+    expect(layout.refreshStateKey()).toBe(`${root}index/refresh-state.json`);
     expect(layout.readingsPrefix()).toBe(`${root}readings/`);
     expect(layout.readingObjectsPrefix(kp)).toBe(`${root}${kp}/`);
     expect(layout.manifestKey(kp)).toBe(`${root}${kp}/manifest.json`);

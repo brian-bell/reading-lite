@@ -175,14 +175,17 @@ export async function queryByVectorId(
   index: string,
   id: string,
   topK: number,
-  deps: Pick<R2Deps, "run"> & { namespace?: string } = {},
+  deps: Pick<R2Deps, "run"> & { namespace?: string; metadata?: boolean } = {},
 ): Promise<VectorQueryMatch[] | null> {
   const run = deps.run ?? defaultRunner;
   const { code, stdout, stderr } = await run("wrangler", [
     "vectorize", "query", index,
     "--vector-id", id,
     "--top-k", String(topK),
-    "--return-metadata", "all",
+    // The measurement pass wants title/tldr/tags/created_at for the report; a
+    // reverse-neighbour scoping query wants ids and scores only, and asking for
+    // a hundred readings' metadata to discard it is pure transfer.
+    "--return-metadata", deps.metadata === false ? "none" : "all",
     // Tenant-namespaced queries (s1k.4.3): a namespaced query can only match
     // vectors in that namespace, mirroring the worker's similarityStoreFor.
     ...(deps.namespace === undefined ? [] : ["--namespace", deps.namespace]),
@@ -212,8 +215,23 @@ export async function queryByVectorId(
     throw new Error(`could not parse vectorize query output for ${id}`);
   }
   const matches = (parsed as { matches?: unknown }).matches;
-  if (!Array.isArray(matches)) return null;
-  return matches.map(parseVectorQueryMatch).filter((m): m is VectorQueryMatch => m !== null);
+  // Same rule as the two cases above: only the known not-found phrase means
+  // "no vector". JSON with no matches array is an output shape we do not
+  // recognise, and reporting it as absence would let a malformed response
+  // shrink an incremental refresh scope instead of escalating it.
+  if (!Array.isArray(matches)) {
+    throw new Error(`unexpected vectorize query output for ${id}: no matches array`);
+  }
+  const parsedMatches = matches.map((match: unknown) => parseVectorQueryMatch(match));
+  // A dropped entry costs the measurement pass one neighbour, but it costs a
+  // reverse-neighbour scoping query its page count — a truncated hundred would
+  // arrive as ninety-nine and read as a complete set, narrowing the scope on a
+  // response we did not understand. So the metadata-less caller gets an error
+  // where the measuring one gets tolerance.
+  if (deps.metadata === false && parsedMatches.some((match) => match === null)) {
+    throw new Error(`unexpected vectorize match entry for ${id}`);
+  }
+  return parsedMatches.filter((m): m is VectorQueryMatch => m !== null);
 }
 
 // Exported so the direct (S3/REST) tier-1 adapter maps matches through exactly
@@ -284,21 +302,45 @@ export async function vectorExists(
 // Rewrites index/list.json wholesale (a plain put, not a CAS write — run when
 // nothing is being submitted so a concurrent queue write can't be lost).
 export async function writeListIndex(items: ListItem[], deps: R2Deps): Promise<void> {
+  await writeJsonObject(layout.listIndexKey(), { version: 1, items }, deps);
+}
+
+// One unconditional JSON put. The wrangler CLI writes from a file, so every
+// caller would otherwise repeat the same temp-file dance. `r2 object put` has
+// no If-Match, which is why this stays a sole-writer path and the direct
+// adapter owns the conditional writes.
+export async function writeJsonObject(key: string, body: unknown, deps: R2Deps): Promise<void> {
   const run = deps.run ?? defaultRunner;
-  const dir = await mkdtemp(join(tmpdir(), "corpus-drop-"));
-  const file = join(dir, "list.json");
+  const dir = await mkdtemp(join(tmpdir(), "corpus-put-"));
+  // The basename is cosmetic — wrangler names the object from the bucket path —
+  // but deriving it from the key keeps a leaked temp file traceable.
+  const file = join(dir, key.split("/").pop() || "object.json");
   try {
-    await writeFile(file, JSON.stringify({ version: 1, items }), "utf8");
+    await writeFile(file, JSON.stringify(body), "utf8");
     const args = [
-      "r2", "object", "put", bucketPath(layout.listIndexKey(), deps),
+      "r2", "object", "put", bucketPath(key, deps),
       "--file", file, "--content-type", "application/json",
     ];
     if (deps.remote !== false) args.push("--remote");
     const { code, stderr } = await run("wrangler", args);
-    if (code !== 0) throw new Error(`put ${layout.listIndexKey()} failed: ${stderr.trim()}`);
+    if (code !== 0) throw new Error(`put ${key} failed: ${stderr.trim()}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+// The nightly-refresh run marker. Read strictly so the two outcomes stay
+// distinguishable at this layer: null is a confirmed-absent marker, and a
+// failed read throws. Both end in a full sweep — the command catches the throw
+// and says so on stderr — but only because the command decided that, and it can
+// only report the difference if this function keeps it.
+export async function readRefreshState(deps: R2Deps): Promise<unknown | null> {
+  const raw = await readObjectStrict(layout.refreshStateKey(), deps);
+  return raw === null ? null : JSON.parse(raw);
+}
+
+export async function writeRefreshState(state: unknown, deps: R2Deps): Promise<void> {
+  await writeJsonObject(layout.refreshStateKey(), state, deps);
 }
 
 // Every deletable key under one reading's id-scoped prefix, including its by-url
