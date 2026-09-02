@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   dryRunR2,
   makeR2Client,
+  refreshS3RequestDeps,
   makeR2RestClient,
   makeVectorizeClient,
   r2InventoryClientFromVars,
@@ -688,5 +689,167 @@ describe("makeR2RestClient — 429 backoff", () => {
     await expect(r2.get("index/by-id/rd_a")).rejects.toThrow(/429/);
     expect(fetchFn).toHaveBeenCalledTimes(6);
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
+  });
+});
+
+describe("makeR2Client request timeout and transient retry", () => {
+  // The deadline and retry are the corpus refresh commands' policy, so every
+  // case below builds the client with refreshS3RequestDeps(); the last case in
+  // this block covers what every other caller still gets.
+  const okResponse = () => new Response("body", { status: 200 });
+  const abortError = () => new DOMException("The operation was aborted.", "TimeoutError");
+
+  function harness(
+    responses: Array<Response | Error>,
+    overrides: Parameters<typeof makeR2Client>[2] = {},
+  ) {
+    let call = 0;
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => {
+      const next = responses[Math.min(call++, responses.length - 1)]!;
+      if (next instanceof Error || next instanceof DOMException) throw next;
+      return next;
+    });
+    const sleep = vi.fn(async (_ms: number) => {});
+    const signals: number[] = [];
+    const r2 = makeR2Client(
+      r2Config,
+      fetchFn as unknown as typeof fetch,
+      refreshS3RequestDeps({
+        sleep,
+        timeoutSignal: (ms) => {
+          signals.push(ms);
+          return new AbortController().signal;
+        },
+        ...overrides,
+      }),
+    );
+    return { r2, fetchFn, sleep, signals };
+  }
+
+  it("is a 30s deadline and three attempts wherever it is opted into", () => {
+    expect(refreshS3RequestDeps()).toMatchObject({ timeoutMs: 30_000, maxAttempts: 3 });
+  });
+
+  it("aborts every request after 30 seconds", async () => {
+    const h = harness([okResponse()]);
+    await h.r2.get("readings/2026/rd_a/manifest.json");
+    expect(h.signals).toEqual([30_000]);
+    const req = h.fetchFn.mock.calls[0]![0] as Request;
+    expect(req.signal).toBeDefined();
+  });
+
+  it("retries a 5xx and returns the eventual success", async () => {
+    const h = harness([new Response("slow down", { status: 503 }), okResponse()]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([250]);
+    // A fresh deadline per attempt, so a slow first try cannot starve the retry.
+    expect(h.signals).toEqual([30_000, 30_000]);
+  });
+
+  it("retries a throttled request and waits as long as R2 asked", async () => {
+    const h = harness([
+      new Response("throttled", { status: 429, headers: { "retry-after": "5" } }),
+      okResponse(),
+    ]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([5_000]);
+  });
+
+  it("clamps an absurd throttle hint and falls back to backoff without one", async () => {
+    const huge = harness([
+      new Response("throttled", { status: 429, headers: { "retry-after": "86400" } }),
+      okResponse(),
+    ]);
+    await expect(huge.r2.get("k")).resolves.toBe("body");
+    expect(huge.sleep.mock.calls.map(([ms]) => ms)).toEqual([30_000]);
+
+    const unhinted = harness([new Response("throttled", { status: 429 }), okResponse()]);
+    await expect(unhinted.r2.get("k")).resolves.toBe("body");
+    expect(unhinted.sleep.mock.calls.map(([ms]) => ms)).toEqual([250]);
+  });
+
+  it("gives up after three attempts and surfaces the last failure", async () => {
+    const h = harness([new Response("boom", { status: 500 })]);
+    await expect(h.r2.get("k")).rejects.toThrow(/R2 GET k failed: 500/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 500]);
+  });
+
+  it("retries a timed-out request and rethrows the abort once the budget is spent", async () => {
+    const h = harness([abortError()]);
+    await expect(h.r2.get("k")).rejects.toThrow(/aborted/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers when only the first attempt times out", async () => {
+    const h = harness([abortError(), okResponse()]);
+    await expect(h.r2.get("k")).resolves.toBe("body");
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry an absent object or a lost CAS", async () => {
+    const missing = harness([new Response("no", { status: 404 })]);
+    await expect(missing.r2.get("k")).resolves.toBeNull();
+    expect(missing.fetchFn).toHaveBeenCalledTimes(1);
+
+    const conflict = harness([new Response("conflict", { status: 412 })]);
+    await expect(conflict.r2.putIfMatch("k", "next", "abc")).resolves.toBe(false);
+    expect(conflict.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a conditional PUT, whose repeat could see its own write", async () => {
+    // A lost response on a landed putIfAbsent would come back 412 and read as
+    // "someone else owns this URL", stranding an orphan ownership pointer.
+    const absent = harness([new Response("boom", { status: 500 })]);
+    await expect(absent.r2.putIfAbsent("index/by-url/a", "{}")).rejects.toThrow(/R2 PUT/);
+    expect(absent.fetchFn).toHaveBeenCalledTimes(1);
+
+    const cas = harness([new Response("boom", { status: 503 })]);
+    await expect(cas.r2.putIfMatch("k", "next", "abc")).rejects.toThrow(/R2 PUT/);
+    expect(cas.fetchFn).toHaveBeenCalledTimes(1);
+    // The deadline still applies to the single attempt.
+    expect(cas.signals).toEqual([30_000]);
+  });
+
+  it("retries an unconditional PUT, which repeats to the same bytes", async () => {
+    const h = harness([new Response("boom", { status: 503 }), okResponse()]);
+    await expect(h.r2.put("index/list.json", "{}")).resolves.toBeUndefined();
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a status the server will never serve", async () => {
+    const h = harness([new Response("nope", { status: 501 })]);
+    await expect(h.r2.get("k")).rejects.toThrow(/R2 GET k failed: 501/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves every other caller on one attempt and no deadline", async () => {
+    // corpus-ingest, corpus-recover, corpus-migrate-founder, purge-connections
+    // and staging-teardown build the client without the refresh policy; a
+    // deadline they were never written against must not appear under them.
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("boom", { status: 503 }),
+    );
+    const bare = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(bare.get("k")).rejects.toThrow(/R2 GET k failed: 503/);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect((fetchFn.mock.calls[0]![0] as Request).signal.aborted).toBe(false);
+    expect((fetchFn.mock.calls[0]![0] as Request).signal.reason).toBeUndefined();
+  });
+
+  it("retries a transient LIST page without restarting the listing", async () => {
+    const page = (truncated: boolean) =>
+      new Response(
+        `<ListBucketResult><IsTruncated>${truncated}</IsTruncated>` +
+          `<Contents><Key>a</Key><Size>1</Size><ETag>&quot;e&quot;</ETag></Contents>` +
+          (truncated ? "<NextContinuationToken>t1</NextContinuationToken>" : "") +
+          `</ListBucketResult>`,
+        { status: 200 },
+      );
+    const h = harness([page(true), new Response("boom", { status: 503 }), page(false)]);
+    await expect(h.r2.listKeys()).resolves.toEqual(["a", "a"]);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
   });
 });

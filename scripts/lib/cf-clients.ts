@@ -105,7 +105,85 @@ export interface VectorizeConfig {
   namespace?: string;
 }
 
-export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2InventoryClient {
+// A refresh pass is thousands of sequential S3 requests, so both halves of
+// this matter: without a deadline one stalled connection blocks the whole loop
+// for as long as the OS keeps the socket open (a refresh run has hung this
+// way), and without a retry one transient read ends the command with exit 1.
+//
+// Both are opt-in, and only the corpus refresh commands opt in
+// (refreshS3RequestDeps below). A client built without them behaves exactly as
+// it always has: one attempt, no deadline. The bulk ingest, recover, migrate,
+// purge and teardown commands move objects on their own schedules and were
+// never the subject of this measurement, so they keep the behaviour they were
+// written and run against.
+//
+// Every attempt gets a fresh deadline, and the request is re-signed each time
+// because a SigV4 signature carries the timestamp it was made at.
+//
+// Conditional PUTs are the exception: they are NOT retried. A putIfAbsent or
+// putIfMatch whose response was lost may already have landed, and the retry
+// then sees its own write and returns false — "already owned" for the by-url
+// ownership claim, "CAS lost" for a manifest. Callers read that as someone
+// else holding the slot, which for the claim means an orphan pointer owning a
+// URL no reading was activated for. A thrown transient error is the honest
+// outcome there, and it is what these callers already handled. Everything
+// else — reads, listings, plain puts, deletes — repeats safely.
+//
+// One deadline spans the whole request, headers and body, because a body that
+// stops arriving mid-stream is the same stall as one that never starts. The
+// caller reads the body after the attempt loop has returned, so a stall that
+// late aborts out of res.text()/res.arrayBuffer() as an error rather than a
+// retry — bounded, which is the point, but not repeated. 30s is far above what
+// any manifest or list index the refresh touches needs.
+export const S3_REQUEST_TIMEOUT_MS = 30_000;
+export const S3_REQUEST_ATTEMPTS = 3;
+const S3_RETRY_BASE_MS = 250;
+const S3_RETRY_CAP_MS = 2_000;
+// A throttle is not a blip: when R2 says how long to wait, waiting less is
+// three wasted attempts inside a second. Honour the hint, clamped the way the
+// REST client below clamps it so a long or malformed one cannot stall a
+// command for hours.
+const S3_RATE_LIMIT_CAP_MS = 30_000;
+
+export interface S3RequestDeps {
+  sleep?: (ms: number) => Promise<void>;
+  /** Clock for reading a `Retry-After` date; injected for tests. */
+  now?: () => number;
+  /** Per-attempt deadline. Omitted (the default) means no deadline. */
+  timeoutMs?: number;
+  /** Attempts per request, including the first. Default 1, i.e. no retry. */
+  maxAttempts?: number;
+  /** Deadline signal factory; injected so tests need no real timers. */
+  timeoutSignal?: (ms: number) => AbortSignal;
+}
+
+/**
+ * The policy the corpus refresh commands run their S3 storage on: a 30-second
+ * deadline per attempt and three attempts for anything safe to repeat. Pass it
+ * to `makeR2Client` or `r2InventoryClientFromVars`; everything that does not is
+ * left on the single-attempt, no-deadline behaviour it has always had.
+ */
+export function refreshS3RequestDeps(overrides: S3RequestDeps = {}): S3RequestDeps {
+  return {
+    timeoutMs: S3_REQUEST_TIMEOUT_MS,
+    maxAttempts: S3_REQUEST_ATTEMPTS,
+    ...overrides,
+  };
+}
+
+// 501 and 505 are the two 5xx a server returns because it will never serve the
+// request; repeating them only delays the error. Every other 5xx is treated as
+// transient, including ones R2 has not been seen to return.
+function isTransientStatus(status: number): boolean {
+  if (status === 429) return true;
+  return status >= 500 && status !== 501 && status !== 505;
+}
+
+export function makeR2Client(
+  cfg: R2Config,
+  fetchFn: typeof fetch = fetch,
+  deps: S3RequestDeps = {},
+): R2InventoryClient {
   const aws = new AwsClient({
     accessKeyId: cfg.accessKeyId,
     secretAccessKey: cfg.secretAccessKey,
@@ -113,17 +191,46 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     region: "auto",
   });
   const base = `https://${cfg.accountId}.r2.cloudflarestorage.com/${cfg.bucket}`;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const timeoutMs = deps.timeoutMs;
+  const maxAttempts = Math.max(1, deps.maxAttempts ?? 1);
+  const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
+  const now = deps.now ?? (() => Date.now());
 
   // aws.sign() returns a signed Request, which we then hand to the injected
   // fetch — keeps signing intact while making the network call stubbable.
-  const signedFetch = async (key: string, init: RequestInit): Promise<Response> => {
-    const signed = await aws.sign(`${base}/${encodePath(key)}`, init);
-    return fetchFn(signed);
+  const send = async (
+    url: string,
+    init: RequestInit,
+    retryable = true,
+  ): Promise<Response> => {
+    for (let attempt = 0; ; attempt++) {
+      const last = !retryable || attempt >= maxAttempts - 1;
+      let wait = Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt);
+      // Signed outside the try: a signing failure is a bad credential or a bad
+      // key, and repeating it only delays the message by three attempts.
+      const signed = await aws.sign(
+        url,
+        timeoutMs === undefined ? init : { ...init, signal: timeoutSignal(timeoutMs) },
+      );
+      try {
+        const res = await fetchFn(signed);
+        if (last || !isTransientStatus(res.status)) return res;
+        if (res.status === 429) {
+          const hinted = parseRateLimitDelayMs(res.headers, now) ?? 0;
+          wait = Math.min(S3_RATE_LIMIT_CAP_MS, Math.max(hinted, wait));
+        }
+        await res.text().catch(() => "");
+      } catch (error) {
+        if (last) throw error;
+      }
+      await sleep(wait);
+    }
   };
-  const signedBucketFetch = async (params: URLSearchParams, init: RequestInit): Promise<Response> => {
-    const signed = await aws.sign(`${base}?${params.toString()}`, init);
-    return fetchFn(signed);
-  };
+  const signedFetch = (key: string, init: RequestInit, retryable = true): Promise<Response> =>
+    send(`${base}/${encodePath(key)}`, init, retryable);
+  const signedBucketFetch = (params: URLSearchParams, init: RequestInit): Promise<Response> =>
+    send(`${base}?${params.toString()}`, init);
 
   return {
     async put(key, body, opts) {
@@ -138,7 +245,7 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     async putIfAbsent(key, body, opts) {
       const headers: Record<string, string> = { "if-none-match": "*" };
       if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers });
+      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
       if (res.ok) return true;
       if (res.status === 412 || res.status === 409) return false;
       const text = await res.text().catch(() => "");
@@ -147,7 +254,7 @@ export function makeR2Client(cfg: R2Config, fetchFn: typeof fetch = fetch): R2In
     async putIfMatch(key, body, etag, opts) {
       const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
       if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers });
+      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
       if (res.ok) return true;
       if (res.status === 412 || res.status === 409) return false;
       const text = await res.text().catch(() => "");
@@ -447,6 +554,7 @@ export function r2InventoryClientFromVars(
   vars: Record<string, string | undefined>,
   bucket: string,
   fetchFn: typeof fetch = fetch,
+  deps: S3RequestDeps = {},
 ): R2InventoryClient {
   const accountId = firstDefined(vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
   const accessKeyId = vars.CORPUS_R2_ACCESS_KEY;
@@ -456,10 +564,15 @@ export function r2InventoryClientFromVars(
     throw new Error("missing credential: CORPUS_R2_ACCOUNT_ID or CLOUDFLARE_ACCOUNT_ID (env or .corpus.vars)");
   }
   if (accessKeyId && secretAccessKey) {
-    return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn);
+    return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn, deps);
   }
   if (apiToken) {
-    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn);
+    // The REST client has its own 429 backoff and no deadline, so it takes only
+    // the two fields it can honour. A caller that asked for the refresh policy
+    // does not get a deadline on this credential path — the operations note
+    // records that, and the Timing: block is what makes a stall there visible.
+    const { sleep, now } = deps;
+    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn, { sleep, now });
   }
   throw new Error(
     "missing credential: CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN (env or .corpus.vars)",

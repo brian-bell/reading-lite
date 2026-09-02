@@ -114,7 +114,49 @@ function makeDeps(opts: {
   return { deps, lines, calls };
 }
 
+/** A fake clock that advances a fixed step on every read. */
+function fakeClock(stepMs: number, startMs = Date.parse("2026-08-22T12:00:00Z")) {
+  let value = startMs - stepMs;
+  return () => {
+    value += stepMs;
+    return value;
+  };
+}
+
 describe("ops corpus refresh-neighbours", () => {
+  it("prints a Timing block naming every phase the pass used", async () => {
+    const { deps, lines } = makeDeps({});
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {
+      ...deps,
+      now: fakeClock(10),
+    });
+    expect(code).toBe(0);
+    const text = lines.join("\n");
+    expect(text).toContain("Timing:");
+    expect(text).toMatch(/list read\s+1 call\s+0\.010s/);
+    // Two ready readings measured: one Vectorize query and one manifest read each.
+    expect(text).toMatch(/vectorize query\s+2 calls\s+0\.020s/);
+    expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
+    expect(text).toMatch(/total\s+0\.\d\d\ds/);
+    // Plan mode writes nothing, so the write phases never ran.
+    expect(text).not.toContain("manifest write");
+    expect(text).not.toContain("list write");
+  });
+
+  it("times the writes an execute pass makes and still prints the block on a failed run", async () => {
+    const { deps, lines } = makeDeps({ manifestThrow: "unparseable" });
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "--execute", "--sole-writer"],
+      { ...deps, now: fakeClock(5) },
+    );
+    expect(code).toBe(1);
+    const text = lines.join("\n");
+    expect(text).toContain("Timing:");
+    // The failed reads are counted: a stalled read is exactly the wall time an
+    // operator needs to see.
+    expect(text).toMatch(/manifest read\s+2 calls/);
+  });
+
   it("plan mode queries and writes the report but does not mutate R2", async () => {
     const { deps, calls, lines } = makeDeps({});
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);

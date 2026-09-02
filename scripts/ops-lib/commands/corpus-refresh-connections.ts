@@ -31,6 +31,7 @@ import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
 import {
   r2InventoryClientFromVars,
+  refreshS3RequestDeps,
   type R2InventoryClient,
 } from "../../lib/cf-clients";
 import {
@@ -45,6 +46,17 @@ import {
   type CommandIo,
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { judgeRetryDeps } from "../judge-retry";
+import {
+  PHASE_MANIFEST_READ,
+  PHASE_PLANNING_READS,
+  PHASE_PROVIDER,
+  createRefreshTimer,
+  printTiming,
+  timedRefreshStorage,
+  type RefreshTimer,
+} from "../refresh-timing";
+import type { RetryDeps } from "../../../src/modules/http-retry";
 import {
   addUsage,
   emptyUsageTotals,
@@ -150,11 +162,31 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
   };
 }
 
+// The block prints in a finally: the passes worth timing most are the ones
+// that end in a thrown stale-report or storage error, having already spent
+// minutes of planning reads.
 async function runCorpusRefreshConnections(
   argv: string[],
   deps: CorpusRefreshConnectionsDeps,
 ): Promise<number> {
   const args = parseRefreshConnectionsArgs(argv);
+  const timer = createRefreshTimer(deps.now);
+  try {
+    return await refreshConnections(args, deps, timer);
+  } finally {
+    printTiming(timer, deps.io.stdout);
+  }
+}
+
+async function refreshConnections(
+  args: Args,
+  deps: CorpusRefreshConnectionsDeps,
+  timer: RefreshTimer,
+): Promise<number> {
+  // Planning and execute read the same manifests through the same call, so the
+  // phase label is what separates the fixed planning cost from the per-action
+  // re-read every execute pass pays on top of it.
+  let manifestReadPhase = PHASE_PLANNING_READS;
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
       execute: true,
@@ -172,7 +204,11 @@ async function runCorpusRefreshConnections(
     selector,
   );
   const provider = await deps.loadProvider(args.execute);
-  const storage = await deps.createStorage(args.bucket, tenant.keyRoot);
+  const storage = timedRefreshStorage(
+    await deps.createStorage(args.bucket, tenant.keyRoot),
+    timer,
+    () => manifestReadPhase,
+  );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
   const storedByPrefix = new Map<string, StoredRawManifest | null>();
@@ -359,6 +395,7 @@ async function runCorpusRefreshConnections(
     deps.io.stdout("PLAN - no provider call or storage write was made.");
     return planningFailed ? 1 : 0;
   }
+  manifestReadPhase = PHASE_MANIFEST_READ;
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -411,11 +448,16 @@ async function runCorpusRefreshConnections(
           action.report,
           liveReportNeighbours(action.report, liveReadyIds),
         );
-        const result = await provider.judge(input);
+        const { value: result, ms: providerMs } = await timer.measured(
+          PHASE_PROVIDER,
+          () => provider.judge(input),
+        );
         // Counted before the write so the report covers every call billed,
         // including judgements whose manifest write later fails.
         addUsage(usageTotals, result.usage);
-        deps.io.stdout(`  ${action.report.id}  ${formatUsage(result.usage)}`);
+        deps.io.stdout(
+          `  ${action.report.id}  ${formatUsage(result.usage)} ms=${providerMs}`,
+        );
         const merged = mergeRelationshipJudgement(
           current.manifest,
           result.judgement,
@@ -547,10 +589,18 @@ async function defaultProviderVars(): Promise<Record<string, string | undefined>
   };
 }
 
-function providerFromVars(
+export interface JudgeTransportOverrides {
+  fetch?: typeof fetch;
+  retry?: RetryDeps;
+}
+
+export function providerFromVars(
   vars: Record<string, string | undefined>,
   execute: boolean,
+  transport: JudgeTransportOverrides = {},
 ): RelationshipProviderPlan {
+  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
     const model = vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL;
@@ -565,7 +615,8 @@ function providerFromVars(
       estimate: (input) => estimateOpenAI(input, model, effort),
       judge: (input) =>
         judgeRelationships(input, {
-          fetch: globalThis.fetch,
+          fetch: fetchImpl,
+          retry,
           provider,
           openaiApiKey: vars.OPENAI_API_KEY ?? "",
           openaiModel: model,
@@ -589,7 +640,8 @@ function providerFromVars(
     estimate: (input) => estimateAnthropic(input, model, effort),
     judge: (input) =>
       judgeRelationships(input, {
-        fetch: globalThis.fetch,
+        fetch: fetchImpl,
+        retry,
         provider,
         openaiApiKey: vars.OPENAI_API_KEY ?? "",
         anthropicApiKey: vars.ANTHROPIC_API_KEY,
@@ -642,7 +694,14 @@ async function createDefaultStorage(
   bucket: string,
   keyRoot: string,
 ): Promise<RefreshConnectionsStorage> {
-  const client = r2InventoryClientFromVars(defaultStorageVars(), bucket);
+  // The deadline and transient retry are the refresh commands' policy, not
+  // every ops command's: opt in here rather than in the shared client.
+  const client = r2InventoryClientFromVars(
+    defaultStorageVars(),
+    bucket,
+    globalThis.fetch,
+    refreshS3RequestDeps(),
+  );
   return storageFromClient(client, keyRoot);
 }
 

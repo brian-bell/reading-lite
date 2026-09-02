@@ -333,6 +333,46 @@ Source production keys from outside the repo; the credentials row of the
 cutover log in `docs/founder-cutover.md` records what an actual production run
 needed.
 
+All three refresh commands end every pass, plan or execute, with a `Timing:`
+block: one row per phase the pass used (`list read`, `planning reads` — the
+manifests read while planning — `manifest read` for the re-reads an execute
+pass makes, `vectorize query`, `provider`, `manifest write`, `list write`),
+each with its call count and total wall time, then the run total. The block is
+printed even when the pass ends in an error, and failed calls are counted, since
+a stalled read is exactly the wall time worth seeing. Execute mode also prints
+`ms=` per judgement beside its token usage. Two things the counts do not say:
+they count storage calls, not HTTP requests (a `refresh-connections` or
+`refresh-tensions` manifest read is currently a LIST plus a GET), and a time
+includes any retry and its backoff, so one unusually slow call may be a call
+that quietly retried. Record the block: it is the baseline a later run or a
+performance change is compared against, and it is what tells a slow pass apart
+from a hung one.
+
+Two robustness limits sit behind those numbers. `refresh-connections` and
+`refresh-tensions` reach R2 over the S3 API when `CORPUS_R2_*` keys are set,
+and every request on that path carries a 30-second deadline and gets up to
+three attempts on a timeout, a network fault, a 5xx, or a 429 (honouring
+`Retry-After`), so one transient read no longer ends the run. Conditional
+writes are the exception: they get the deadline but are never repeated, because
+a retry can see its own landed write and report a lost race that did not
+happen. Both commands' judgement calls retry 5xx the same way, and a 429
+surfaces as a `RateLimitedError` naming the retry-after the provider asked for
+— that one is a signal to pause and rerun later, not to rerun immediately, and
+nothing in the command paces itself for you yet.
+
+Those limits are these two commands' policy and nothing else's. The other ops
+commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
+`corpus migrate-founder`, `corpus purge-connections`, `staging teardown` — keep
+the single attempt and the absent deadline they were written and run against.
+
+Nor do the limits cover the other two storage paths, or the provider.
+`refresh-neighbours` runs every call through a `wrangler` subprocess; the
+S3-less fallback used when only `CLOUDFLARE_API_TOKEN` is set goes through the
+Cloudflare REST client, which backs off on 429 but has no deadline and no 5xx
+retry; and the judgement calls retry but carry no deadline of their own. A
+stall on any of them still looks like a silent pass — the `Timing:` block is
+what makes it visible.
+
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later

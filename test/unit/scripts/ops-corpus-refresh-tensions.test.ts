@@ -152,7 +152,50 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
 const run = (h: ReturnType<typeof harness>, ...argv: string[]) =>
   corpusRefreshTensionsCommand.run(["--tenant", "global", ...argv], h.deps);
 
+/** A fake clock that advances a fixed step on every read. */
+function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
+  let value = startMs - stepMs;
+  return () => {
+    value += stepMs;
+    return value;
+  };
+}
+
 describe("ops corpus refresh-tensions", () => {
+  it("prints a Timing block for a plan pass with no provider phase", async () => {
+    const h = harness();
+    expect(
+      await corpusRefreshTensionsCommand.run(["--tenant", "global"], {
+        ...h.deps,
+        now: fakeClock(10),
+      }),
+    ).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toContain("Timing:");
+    expect(text).toMatch(/list read\s+1 call\s+0\.010s/);
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    expect(text).not.toMatch(/^ {2}provider\s+\d+ call/m);
+    expect(text).not.toContain("manifest write");
+  });
+
+  it("separates planning reads from the execute pass and times each judgement", async () => {
+    const h = harness();
+    expect(
+      await corpusRefreshTensionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        { ...h.deps, now: fakeClock(10) },
+      ),
+    ).toBe(0);
+    const text = h.out.join("\n");
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    // One judged pair: both sides re-read for a fresh ETag, both written.
+    expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
+    expect(text).toMatch(/provider\s+1 call\s+0\.010s/);
+    expect(text).toMatch(/manifest write\s+2 calls/);
+    expect(text).not.toContain("list write");
+    expect(text).toContain("rd_a|rd_b  usage input=100 output=20 reasoning=0 ms=10");
+  });
+
   it("lists candidate pairs with overlap evidence and cost in plan mode without provider or storage writes", async () => {
     const h = harness();
     expect(await run(h)).toBe(0);

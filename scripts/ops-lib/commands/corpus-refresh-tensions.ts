@@ -54,7 +54,7 @@ import {
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
-import { r2InventoryClientFromVars } from "../../lib/cf-clients";
+import { r2InventoryClientFromVars, refreshS3RequestDeps } from "../../lib/cf-clients";
 import {
   SUMMARIZER_PRICE_DATE,
   approximateTokens,
@@ -73,9 +73,20 @@ import {
   formatUsage,
   formatUsageTotals,
 } from "../judgement-usage";
+import { judgeRetryDeps } from "../judge-retry";
+import {
+  PHASE_MANIFEST_READ,
+  PHASE_PLANNING_READS,
+  PHASE_PROVIDER,
+  createRefreshTimer,
+  printTiming,
+  timedRefreshStorage,
+  type RefreshTimer,
+} from "../refresh-timing";
 import {
   parseProductionWorkerVars,
   storageFromClient,
+  type JudgeTransportOverrides,
   type RefreshConnectionsStorage,
   type StoredRawManifest,
 } from "./corpus-refresh-connections";
@@ -175,11 +186,31 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
   };
 }
 
+// The block prints in a finally: the passes worth timing most are the ones
+// that end in a thrown stale-report or storage error, having already spent
+// minutes of planning reads.
 async function runCorpusRefreshTensions(
   argv: string[],
   deps: CorpusRefreshTensionsDeps,
 ): Promise<number> {
   const args = parseRefreshTensionsArgs(argv);
+  const timer = createRefreshTimer(deps.now);
+  try {
+    return await refreshTensions(args, deps, timer);
+  } finally {
+    printTiming(timer, deps.io.stdout);
+  }
+}
+
+async function refreshTensions(
+  args: Args,
+  deps: CorpusRefreshTensionsDeps,
+  timer: RefreshTimer,
+): Promise<number> {
+  // Planning and execute read the same manifests through the same call, so the
+  // phase label is what separates the fixed planning cost from the per-pair
+  // re-reads every execute pass pays on top of it.
+  let manifestReadPhase = PHASE_PLANNING_READS;
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
       execute: true,
@@ -203,7 +234,11 @@ async function runCorpusRefreshTensions(
       ? null
       : parseRefreshConnectionsReport(JSON.parse(rawReport) as unknown, selector);
   const provider = await deps.loadProvider(args.execute);
-  const storage = await deps.createStorage(args.bucket, tenant.keyRoot);
+  const storage = timedRefreshStorage(
+    await deps.createStorage(args.bucket, tenant.keyRoot),
+    timer,
+    () => manifestReadPhase,
+  );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
 
@@ -370,6 +405,7 @@ async function runCorpusRefreshTensions(
     deps.io.stdout("PLAN - no provider call or storage write was made.");
     return planningFailed ? 1 : 0;
   }
+  manifestReadPhase = PHASE_MANIFEST_READ;
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -434,12 +470,15 @@ async function runCorpusRefreshTensions(
       }
       try {
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
-        const result = await provider.judge(input);
+        const { value: result, ms: providerMs } = await timer.measured(
+          PHASE_PROVIDER,
+          () => provider.judge(input),
+        );
         judged++;
         // Counted before the writes so the report covers every call billed,
         // including judgements whose manifest writes later fail.
         addUsage(usageTotals, result.usage);
-        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)}`);
+        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)} ms=${providerMs}`);
         const computedAt = new Date(deps.now()).toISOString();
         const sides = deriveTensionSides(result.judgement, { a: aId, b: bId }, computedAt);
         await writeSide(aId, bId, sides.a, computedAt, a);
@@ -580,7 +619,10 @@ async function defaultProviderVars(): Promise<Record<string, string | undefined>
 export function tensionProviderFromVars(
   vars: Record<string, string | undefined>,
   execute: boolean,
+  transport: JudgeTransportOverrides = {},
 ): TensionProviderPlan {
+  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
     const model = vars.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL;
@@ -607,7 +649,8 @@ export function tensionProviderFromVars(
       },
       judge: (input) =>
         judgeTension(input, {
-          fetch: globalThis.fetch,
+          fetch: fetchImpl,
+          retry,
           provider,
           openaiApiKey: vars.OPENAI_API_KEY ?? "",
           openaiModel: model,
@@ -639,7 +682,8 @@ export function tensionProviderFromVars(
     },
     judge: (input) =>
       judgeTension(input, {
-        fetch: globalThis.fetch,
+        fetch: fetchImpl,
+        retry,
         provider,
         openaiApiKey: vars.OPENAI_API_KEY ?? "",
         anthropicApiKey: vars.ANTHROPIC_API_KEY,
@@ -695,7 +739,17 @@ Options:
     io,
     readReport: readReportIfPresent,
     createStorage: async (bucket, keyRoot) =>
-      storageFromClient(r2InventoryClientFromVars(defaultStorageVars(), bucket), keyRoot),
+      storageFromClient(
+        // Same opt-in as refresh-connections: the policy belongs to these
+        // commands, not to every caller of the shared S3 client.
+        r2InventoryClientFromVars(
+          defaultStorageVars(),
+          bucket,
+          globalThis.fetch,
+          refreshS3RequestDeps(),
+        ),
+        keyRoot,
+      ),
     loadProvider: async (execute) => tensionProviderFromVars(await defaultProviderVars(), execute),
     now: () => Date.now(),
   }),
