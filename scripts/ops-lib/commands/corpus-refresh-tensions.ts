@@ -51,6 +51,7 @@ import {
   type RepairAction,
   type TensionCandidate,
 } from "../../corpus-lib/refresh-tensions";
+import { describeReportScope } from "../../corpus-lib/refresh-neighbours";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
@@ -453,6 +454,9 @@ async function refreshTensions(
       ? `Report: ${args.report} (${report.readings.length} flagged)`
       : `Report: none (--pair only)`,
   );
+  // Only when a report was read: a --pair-only pass has no tier-1 scope to
+  // report, and printing one would name a scope nothing here came from.
+  if (report) deps.io.stdout(describeReportScope(report.scope));
   deps.io.stdout(`Provider: ${provider.provider} ${provider.model} effort=${provider.effort}`);
   deps.io.stdout(
     `Mode: ${args.execute ? `EXECUTE (concurrency ${args.concurrency})` : "PLAN"}`,
@@ -901,7 +905,10 @@ a fifth of their keywords, or an existing connection, skips pairs both sides
 already remember judging, and plans one pairwise provider call per remaining
 pair. Plan mode prints each pair with its overlap evidence and estimated
 synchronous cost, plus every free one-sided repair, without a provider call or
-storage write.
+storage write. It prints the report's scope; a report with no header is
+Scope: unstated, not full — pre-header refresh-neighbours already accepted
+positional IDs and --limit, so coverage is not known. A --pair-only pass prints
+no scope line.
 
 Execute mode writes each side's directional tension (contradicts, supersedes,
 superseded_by, qualifies, qualified_by) and a judged-pair record to BOTH
@@ -919,7 +926,7 @@ Options:
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
                        before it stops dispatching judgements; free repairs still
-                       run. Default: 10m (bare = seconds).
+                       run. Default: 10m (bare = seconds); 30s to 30m.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

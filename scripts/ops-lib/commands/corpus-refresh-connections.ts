@@ -26,6 +26,7 @@ import {
   parseRefreshConnectionsReport,
   type RefreshConnectionsReportReading,
 } from "../../corpus-lib/refresh-connections";
+import { describeReportScope } from "../../corpus-lib/refresh-neighbours";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
@@ -406,6 +407,9 @@ async function refreshConnections(
   deps.io.stdout(`Bucket: ${args.bucket}`);
   deps.io.stdout(`Tenant: ${selector}`);
   deps.io.stdout(`Report: ${args.report} (${report.readings.length} flagged)`);
+  // What tier 1 measured, from the report's own header: a nightly log that does
+  // not say this cannot be read as covering the corpus.
+  deps.io.stdout(describeReportScope(report.scope));
   deps.io.stdout(
     `Provider: ${provider.provider} ${provider.model} effort=${provider.effort}`,
   );
@@ -870,7 +874,9 @@ export const corpusRefreshConnectionsCommand: CommandDefinition<CorpusRefreshCon
 Consumes the tier-one refresh-report.json, validates it against the selected
 tenant, and plans one relationship-only provider call for each eligible row.
 Plan mode prints every judgement and an estimated synchronous cost without a
-provider call or storage write.
+provider call or storage write. It prints the report's scope; a report with no
+header is Scope: unstated, not full — pre-header refresh-neighbours already
+accepted positional IDs and --limit, so coverage is not known.
 
 Execute mode updates only connections, novelty_verdict, and
 connections_computed_at, then synchronizes each list-row verdict. It requires a
@@ -886,7 +892,7 @@ Options:
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
                        before it stops dispatching judgements; free repairs still
-                       run. Default: 10m (bare = seconds).
+                       run. Default: 10m (bare = seconds); 30s to 30m.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

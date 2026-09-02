@@ -298,6 +298,32 @@ export function buildReportReading(
   return row;
 }
 
+/**
+ * The report's scope as one header line, for the commands that CONSUME the
+ * report. Tier 1 prints its own scope from the live plan (`describeScope` in
+ * refresh-scope.ts); tiers 2 and 3 only have what the report header says, and
+ * without this line an operator reading a nightly log cannot tell a run over a
+ * scoped subset from a run over the whole corpus — the two look identical once
+ * the flagged readings are listed.
+ *
+ * A report with no scope header is named "unstated", not "full". Pre-header
+ * `refresh-neighbours` already accepted positional IDs and `--limit`, so the
+ * pass that wrote it may have been a hand-picked or capped subset. Missing is
+ * not corpus-wide coverage.
+ */
+export function describeReportScope(scope: RefreshReportScope | undefined): string {
+  if (scope === undefined) {
+    return "Scope: unstated — the report carries no scope header";
+  }
+  const count = scope.readings_in_scope;
+  const head =
+    scope.kind === "full"
+      ? "Scope: full"
+      : `Scope: incremental${count === undefined ? "" : ` (${count} reading(s))`}`;
+  const narrowed = scope.narrowed_by === undefined ? "" : `; narrowed by ${scope.narrowed_by}`;
+  return `${head} — ${scope.reason}${narrowed}`;
+}
+
 export function buildRefreshReport(opts: {
   generatedAt: string;
   tenant: string;

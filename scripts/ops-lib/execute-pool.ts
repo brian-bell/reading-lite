@@ -58,6 +58,29 @@ export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
 export const DEFAULT_MAX_BACKOFF_MS = 600_000;
 
 /**
+ * Floor on `--max-backoff`. Its job is the unit confusion: the bare unit is
+ * seconds, so `--max-backoff 10` meant as ten minutes is a budget of ten
+ * seconds — below the 8s default backoff plus anything, and the pass stops on
+ * the first 429 it meets while the operator believes it will wait out ten
+ * minutes of them. Half a minute is well under any budget the runbook
+ * contemplates and well over every value that can only be a typo. It does not
+ * promise that a 30s budget survives a window (RATE_LIMIT_MAX_BACKOFF_MS is
+ * 60s, so one wild Retry-After can still exhaust it) — only that a budget this
+ * small was asked for on purpose.
+ */
+export const MIN_MAX_BACKOFF_MS = 30_000;
+
+/**
+ * Ceiling on `--max-backoff`. The budget's job is to bound the sole-writer
+ * window a rate-limited pass sits on; half an hour is already longer than a
+ * full tier takes, so a budget above it has stopped bounding anything. It is
+ * also what catches the other half of the unit confusion: `--max-backoff 600`
+ * is ten minutes, but `--max-backoff 600m` is ten hours of held sole-writer
+ * window, and only one of them is a figure anybody meant.
+ */
+export const MAX_MAX_BACKOFF_MS = 1_800_000;
+
+/**
  * Ceiling on `--concurrency`. The default of 4 was chosen for the shared
  * provider org; a mistyped `--concurrency 400` would fan four hundred paid
  * calls at that same org, which is the thing the default is protecting. Well
@@ -109,7 +132,26 @@ export function parseMaxBackoffFlag(raw: string | undefined): number {
       `--max-backoff ${JSON.stringify(raw)} must be a finite positive duration`,
     );
   }
+  if (ms < MIN_MAX_BACKOFF_MS) {
+    throw new UsageError(
+      `--max-backoff ${JSON.stringify(raw)} is below the ${formatDuration(MIN_MAX_BACKOFF_MS)} ` +
+      "this command allows — a budget that small stops the pass on its first rate limit " +
+      "(the bare unit is seconds, so 10m is ten minutes and 10 is ten seconds)",
+    );
+  }
+  if (ms > MAX_MAX_BACKOFF_MS) {
+    throw new UsageError(
+      `--max-backoff ${JSON.stringify(raw)} is above the ${formatDuration(MAX_MAX_BACKOFF_MS)} ` +
+      "this command allows — the budget exists to bound how long a rate-limited pass " +
+      "holds the sole-writer window",
+    );
+  }
   return ms;
+}
+
+/** `30s` / `30m` for a bound, so the message names the unit it is judging. */
+function formatDuration(ms: number): string {
+  return ms % 60_000 === 0 ? `${ms / 60_000}m` : `${ms / 1_000}s`;
 }
 
 export interface RateLimitGate {

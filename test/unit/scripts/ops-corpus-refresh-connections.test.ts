@@ -257,6 +257,55 @@ binding = "READING_JOBS"
     });
   });
 
+  // A nightly log that does not say what tier 1 measured cannot be read as
+  // covering the corpus: an incremental report and a full one list flagged
+  // readings identically.
+  describe("scope header", () => {
+    it("prints an incremental scope, its reason, and how it was narrowed", async () => {
+      const h = harness();
+      h.readReport.mockResolvedValue(
+        JSON.stringify({
+          ...report(["rd_a"]),
+          scope: {
+            kind: "incremental",
+            reason: "4 reading(s) changed since 2026-08-21T00:00:00.000Z",
+            since: "2026-08-21T00:00:00.000Z",
+            readings_in_scope: 9,
+            narrowed_by: "--limit 3",
+          },
+        }),
+      );
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(h.out.join("\n")).toContain(
+        "Scope: incremental (9 reading(s)) — 4 reading(s) changed since " +
+          "2026-08-21T00:00:00.000Z; narrowed by --limit 3",
+      );
+    });
+
+    it("prints a full scope with the reason the pass could not be narrowed", async () => {
+      const h = harness();
+      h.readReport.mockResolvedValue(
+        JSON.stringify({ ...report(["rd_a"]), scope: { kind: "full", reason: "--full" } }),
+      );
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(h.out.join("\n")).toContain("Scope: full — --full");
+    });
+
+    // Pre-header refresh-neighbours already accepted positional IDs and --limit,
+    // so a missing header is not a full pass. Print unstated, not full.
+    it("says the scope is unstated when the report carries no header", async () => {
+      const h = harness();
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      const printed = h.out.find((line) => line.startsWith("Scope:"));
+      expect(printed).toBe("Scope: unstated — the report carries no scope header");
+      expect(printed).not.toMatch(/full/i);
+    });
+
+    it("documents that a missing report scope is unstated, not full", () => {
+      expect(corpusRefreshConnectionsCommand.helpText).toContain("Scope: unstated, not full");
+    });
+  });
+
   it("prints every planned judgement and estimated cost without provider or storage writes", async () => {
     const h = harness();
     expect(

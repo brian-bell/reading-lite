@@ -47,14 +47,26 @@
 //     exists to avoid. What goes stale meanwhile is not just a deferred
 //     re-judgement but that stranger's stored `similarity` snapshot and list
 //     row, which the API and the SPA serve;
-//   - a purge, unless it shrinks the list: the check is a row count, so a day
-//     that purges as many readings as it ingests does not escalate, and the
-//     readings that silently lost a neighbour wait for the sweep. Replacing the
-//     count with a digest of ready ids closes this, and is rl-perf-7b;
-//   - a Vectorize-only write. `corpus backfill-vectors` restores vectors with
-//     R2 read-only, so neither the row timestamps nor the list ETag move while
-//     neighbourhoods do. Run a `--full` pass after one, until 7b makes that
-//     command invalidate the marker.
+// A purge and a Vectorize-only write used to be on that list too, and are not
+// any more:
+//
+//   - a purge is named, not counted. The marker records the list ids it saw,
+//     so an id that has left the list escalates whatever the row count does —
+//     a day that purges as many readings as it ingests no longer looks still.
+//     Ids rather than a hash of them because the question is "which readings
+//     are gone", and a digest answers only "something differs", which the row
+//     timestamps and the list ETag already say. EVERY id, not just the ready
+//     ones: status is not a statement about vector ownership (the same reason
+//     the reverse queries ignore it), so a row that was ready last week, is
+//     `failed` today and purged tomorrow would slip past a ready-only record
+//     while its vector left the index. A row that merely stopped being ready is
+//     not a removal — it is still in the list, its own timestamps put it in
+//     `changed`, and its vector is queried from there.
+//   - a Vectorize-only write invalidates the marker. `corpus backfill-vectors`
+//     restores vectors with R2 read-only, so neither the row timestamps nor the
+//     list ETag move while neighbourhoods do; it therefore stamps
+//     `invalidated_by` on the marker, and the next pass sweeps on its own
+//     rather than on operator discipline.
 //
 // What is NOT deferred: a reading the rules above DO bring into scope is a
 // measurement target like any other, so its `similarity` snapshot and its list
@@ -82,15 +94,44 @@ export const REVERSE_TOP_K = 100;
  */
 export const REVERSE_SCORE_BOUND = SIMILARITY_FLOOR - 0.1;
 
+/**
+ * The stored marker's format. Bumped from 1 when `list_row_count` became
+ * `list_ids`: a version-1 marker cannot answer the purge question at all, and
+ * `parseRefreshState` has to reject it. The bump is what lets the command say
+ * "this marker predates the purge check" rather than "this marker is damaged",
+ * which are the same null and very different operator instructions. Nothing
+ * migrates: the pass that meets a version-1 marker sweeps and writes a
+ * version-2 one, which also restores `last_full_run_at`.
+ */
+export const REFRESH_STATE_VERSION = 2;
+
 /** The per-tenant run marker, stored at `index/refresh-state.json`. */
 export interface RefreshState {
-  version: 1;
+  version: typeof REFRESH_STATE_VERSION;
   /** When the last pass that advanced the marker ran. */
   last_run_at: string;
   /** When the last FULL pass ran; absent until one has. */
   last_full_run_at?: string;
-  /** `index/list.json` row count at that moment — a purge shrinks it. */
-  list_row_count: number;
+  /**
+   * The ids of every row in `index/list.json` the last pass saw, sorted. One of
+   * these missing from a later list is a purge, which nothing else in the
+   * marker can name.
+   */
+  list_ids: string[];
+  /**
+   * Readings that were in scope and could not be measured — no vector, or a
+   * manifest that fails ManifestSchema. Carried so every later pass measures
+   * them again: nothing about their own row will change when the vector is
+   * restored or the manifest repaired, so without this they would drop out of
+   * every incremental scope until the next sweep.
+   */
+  unmeasurable_ids?: string[];
+  /**
+   * Set by a command that moved vectors without moving anything in R2 that a
+   * scope can read (`corpus backfill-vectors`). Its presence forces the next
+   * pass full; advancing the marker clears it.
+   */
+  invalidated_by?: string;
   /** `index/list.json` ETag, when the storage path exposes one. */
   list_etag?: string;
 }
@@ -130,19 +171,36 @@ export type RefreshScope = FullScope | IncrementalScope;
 export function parseRefreshState(raw: unknown): RefreshState | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const rec = raw as Record<string, unknown>;
-  if (rec.version !== 1) return null;
+  if (rec.version !== REFRESH_STATE_VERSION) return null;
   if (!isTimestamp(rec.last_run_at)) return null;
-  if (typeof rec.list_row_count !== "number" || !Number.isInteger(rec.list_row_count)) return null;
-  if (rec.list_row_count < 0) return null;
+  const listIds = parseIdList(rec.list_ids);
+  if (listIds === null) return null;
+  // The three fields below are read as "the whole marker is damaged" rather
+  // than dropped the way an unusable `last_full_run_at` is, because dropping
+  // any of them narrows a pass on data that is not there: a lost
+  // `invalidated_by` scopes a night that owed the corpus a sweep, and lost
+  // unmeasurable ids silently stop retrying the readings nobody else will.
+  if (rec.unmeasurable_ids !== undefined && parseIdList(rec.unmeasurable_ids) === null) return null;
+  if (
+    rec.invalidated_by !== undefined &&
+    (typeof rec.invalidated_by !== "string" || rec.invalidated_by === "")
+  ) {
+    return null;
+  }
   // Normalized, not echoed: this timestamp is copied into the report header,
   // which tier 2 parses with z.string().datetime(), so a marker spelled any
   // other way Date.parse accepts would make the whole report unreadable to the
   // next command in the chain.
   const state: RefreshState = {
-    version: 1,
+    version: REFRESH_STATE_VERSION,
     last_run_at: new Date(rec.last_run_at).toISOString(),
-    list_row_count: rec.list_row_count,
+    list_ids: listIds,
   };
+  const unmeasurable = rec.unmeasurable_ids === undefined ? [] : parseIdList(rec.unmeasurable_ids)!;
+  if (unmeasurable.length > 0) state.unmeasurable_ids = unmeasurable;
+  if (typeof rec.invalidated_by === "string" && rec.invalidated_by !== "") {
+    state.invalidated_by = rec.invalidated_by;
+  }
   if (isTimestamp(rec.last_full_run_at)) {
     state.last_full_run_at = new Date(rec.last_full_run_at).toISOString();
   }
@@ -160,16 +218,26 @@ export function buildRefreshState(opts: {
   previous: RefreshState | null;
   runAt: string;
   full: boolean;
-  listRowCount: number;
+  /** Every id in the list this pass read. */
+  listIds: readonly string[];
+  /** The in-scope ids this pass could not measure, if any. */
+  unmeasurableIds?: readonly string[];
   listEtag?: string;
 }): RefreshState {
   const lastFull = opts.full ? opts.runAt : opts.previous?.last_full_run_at;
   const state: RefreshState = {
-    version: 1,
+    version: REFRESH_STATE_VERSION,
     last_run_at: opts.runAt,
-    list_row_count: opts.listRowCount,
+    list_ids: [...new Set(opts.listIds)].sort(),
   };
   if (lastFull !== undefined) state.last_full_run_at = lastFull;
+  // Rebuilt from this pass, never merged with the previous marker's list: a
+  // carried id was measured again this pass, so it is in this set if and only
+  // if it is still unmeasurable.
+  const unmeasurable = [...new Set(opts.unmeasurableIds ?? [])].sort();
+  if (unmeasurable.length > 0) state.unmeasurable_ids = unmeasurable;
+  // `invalidated_by` is deliberately not carried: this pass measured its whole
+  // scope, so whatever forced it full has been answered.
   if (opts.listEtag !== undefined && opts.listEtag !== "") state.list_etag = opts.listEtag;
   return state;
 }
@@ -197,14 +265,24 @@ export function changedSince(
   listEtag?: string,
 ): FullScope | ChangedSince {
   if (marker === null) return { kind: "full", reason: "no usable run marker" };
+  // A command that changed vectors without changing anything R2 can date says
+  // so here. Checked first: it is true however still the list looks, and the
+  // ETag shortcut below would otherwise call that night unchanged.
+  if (marker.invalidated_by !== undefined) {
+    return { kind: "full", reason: `run marker invalidated by ${marker.invalidated_by}` };
+  }
   // A purge removes a row and leaves nothing behind to date: neither the gone
   // reading nor the readings that silently lost a neighbour can be named from
-  // the list alone, so a shrunk corpus is the one change only a full sweep
-  // covers. (A grown corpus is fully explained by created_at.)
-  if (list.length < marker.list_row_count) {
+  // the list alone, so a purge is the one change only a full sweep covers.
+  // Detected by name rather than by count, so it is still detected on a day
+  // that ingests at least as many readings as it purges. (A grown corpus is
+  // fully explained by created_at.)
+  const present = new Set(list.map((row) => row.id));
+  const removed = marker.list_ids.filter((id) => !present.has(id));
+  if (removed.length > 0) {
     return {
       kind: "full",
-      reason: `${marker.list_row_count - list.length} list row(s) removed since the last run`,
+      reason: `${removed.length} reading(s) removed since the last run, first ${removed[0]}`,
     };
   }
   const sinceMs = Date.parse(marker.last_run_at) - MARKER_CLOCK_SKEW_MS;
@@ -301,11 +379,31 @@ export function incrementalScope(
     };
   }
 
+  // Readings a previous pass could not measure, added to the scope but NOT to
+  // `changed`: they are measurement targets, not evidence that a neighbourhood
+  // moved. Putting a vectorless one in `changed` would escalate the very pass
+  // that exists to retry it.
+  // Ready rows only, because those are the ones planRefresh will actually
+  // measure: a carried id that has since gone non-ready would otherwise inflate
+  // the scope count tiers 2 and 3 print without ever being looked at. Dropping
+  // it is not permanent for the ordinary case — a reprocess that lands ready
+  // moves the row's timestamps, which is what `changed` reads — but a repair
+  // that touches neither the list row nor the vector index does wait for the
+  // weekly sweep.
+  const carried = (marker?.unmeasurable_ids ?? []).filter(
+    (id) => statusById.get(id) === "ready",
+  );
+  for (const id of carried) scope.add(id);
+
+  const changedReason = base.listUnchanged
+    ? "index/list.json unchanged since the last run"
+    : `${base.changed.length} reading(s) changed since ${base.since}`;
   return {
     kind: "incremental",
-    reason: base.listUnchanged
-      ? "index/list.json unchanged since the last run"
-      : `${base.changed.length} reading(s) changed since ${base.since}`,
+    reason:
+      carried.length === 0
+        ? changedReason
+        : `${changedReason}; ${carried.length} unmeasurable reading(s) carried forward`,
     since: base.since,
     ids: [...scope].sort(),
     changed: base.changed,
@@ -359,6 +457,17 @@ function rowChangedSince(row: RefreshRow, sinceMs: number): boolean {
   if (!Number.isFinite(created) && !Number.isFinite(updated)) return true;
   if (Number.isFinite(created) && created > sinceMs) return true;
   return Number.isFinite(updated) && updated > sinceMs;
+}
+
+/**
+ * A stored list of reading ids, deduplicated and sorted, or `null` when the
+ * value is not one. Sorted on the way in as well as out so a hand-edited marker
+ * cannot make the scope depend on the order someone typed.
+ */
+function parseIdList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  if (!value.every((id) => typeof id === "string" && id !== "")) return null;
+  return [...new Set(value as string[])].sort();
 }
 
 function isTimestamp(value: unknown): value is string {

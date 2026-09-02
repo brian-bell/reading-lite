@@ -299,7 +299,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--since-last-run` measures only what changed; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
+| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
@@ -454,8 +454,11 @@ moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, or a deleted one), fewer list rows than the marker recorded (a purge
-names nothing a timestamp can find), a failed reverse query, a changed *ready*
+first run, a deleted one, or one written before this check existed — the marker
+is version 2 and a version-1 marker is rejected with a message that says so), a
+marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
+that has since left the list (a purge names nothing a timestamp can find), a
+failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown — never a narrower pass. A short result is a complete
@@ -475,18 +478,34 @@ A reading the scope does bring in is measured like any other target, so its
 `similarity` snapshot and its list row are brought current in the same pass —
 nothing about being in scope defers a measurement to the sweep.
 
-Three things a nightly pass does not bring in, all of them waiting for the
-weekly sweep. A reprocess that moves a vector far enough to leave a stranger's
-floored neighbourhood: the reverse query runs against the vector's new position,
-and where that stranger had never judged it, its stored `similarity` snapshot
-and list row — which the API and the SPA serve — go stale until the sweep. A day
-that purges as many readings as it ingests: the escalation compares list row
-counts, so a net-zero day does not trigger it. And any Vectorize-only write —
-`corpus backfill-vectors` restores vectors with R2 read-only, so no row
-timestamp and no list ETag moves while neighbourhoods do; run a `--full` pass
-after one. The last two are what reading-lite-s1k rl-perf-7b closes, by
-recording a digest of ready ids instead of a count and by having
-`backfill-vectors` invalidate the marker.
+One thing a nightly pass does not bring in, and it waits for the weekly sweep: a
+reprocess that moves a vector far enough to leave a stranger's floored
+neighbourhood. The reverse query runs against the vector's new position, and
+where that stranger had never judged it, its stored `similarity` snapshot and
+list row — which the API and the SPA serve — go stale until the sweep.
+
+A purge and a Vectorize-only write used to be on that list and are not any more.
+The marker records the list ids it saw, not a row count, so a day that purges
+two readings and ingests three still escalates and names the first missing id.
+(Every id, not just the ready ones: a non-ready row can still own an indexed
+vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
+stamps `invalidated_by` on the marker before its first upsert — and again, with
+a different value, after its last — so the next pass sweeps on its own. That
+marker is the only R2 object it writes, and it needs an R2 write credential for
+it; a stamp it cannot write before upserting stops the run before it spends
+anything. A refresh pass that finds a stamp it did not start with leaves the
+marker alone rather than clearing a sweep it did not perform, which is what the
+second stamp is for: a pass that swept while vectors were still arriving must
+not report the corpus as covered.
+
+A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
+unmeasurable rather than unfinished. The pass records its id under
+`unmeasurable_ids` on the marker, measures it again on every later pass until it
+is repaired, and still exits 1 so it stays visible — the marker advances past it
+rather than pinning the whole scope on an ever-older timestamp. A failed query,
+an unparseable manifest, a failed manifest write or a failed `index/list.json`
+flush is different: that pass left work undone, so the marker stays where it was
+and the next pass sweeps.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -516,7 +535,12 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-wri
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,
 prints the provider/model/effort, each selected judgement, and estimated
-synchronous cost, then exits without a provider call or storage write.
+synchronous cost, then exits without a provider call or storage write. Both
+tier-2 and tier-3 passes echo the report's scope header (`Scope: incremental
+(12 reading(s)) — …`, `Scope: full — …`, or `Scope: unstated` when the report
+carries no header). Missing is not inferred as full: pre-header
+`refresh-neighbours` already accepted positional IDs and `--limit`, so a
+header-less report may be a hand-picked or capped subset.
 
 ```sh
 npm run ops -- corpus refresh-connections \
@@ -600,7 +624,18 @@ that succeeded.
 
 The total time a pass will spend waiting out limits is bounded by
 `--max-backoff`, which defaults to `10m` and takes a duration (`600s`,
-`600000ms`, `2h`; a bare number is seconds). What counts against it is the
+`600000ms`, `20m`; a bare number is seconds).
+
+**`--max-backoff` accepts `30s` to `30m`, inclusive; anything outside that range
+is a usage error (exit 2).** Below the floor the pass would stop on the first
+limit it met, since one honoured window already costs up to 60 s; above the
+ceiling the budget has stopped bounding the sole-writer window it exists to
+bound. Both ends catch the same unit confusion: `10` is ten seconds, `600m` is
+ten hours. A cron entry carrying a larger value from before this range existed
+now fails at parse time rather than running unbounded — `2h` was a documented
+example here and is no longer accepted.
+
+What counts against it is the
 window each limit opens, not each worker that reports one, so a whole round of
 workers walking into the same wall is a single charge — and a limit landing
 inside a window already open costs nothing at all. It is charged when the
@@ -619,7 +654,10 @@ The budget is cumulative for the whole pass and nothing resets it, so a long
 pass against a provider that limits intermittently can reach the ceiling while
 still making progress between windows. That is deliberate — the bound is on how
 much of the sole-writer window a pass may spend waiting, not on how badly it is
-being limited — but it is the case to raise `--max-backoff` for.
+being limited — but it is the case to raise `--max-backoff` for, up to its `30m`
+ceiling. A pass that still cannot finish inside that is one to split with
+`--limit` and resume when the provider is quieter, not one to park on the
+sole-writer window for hours.
 
 The ceiling bounds the paid work only, on the same rule as `--limit`: a list
 heal or an integrity repair makes no provider call and cannot be rate limited,

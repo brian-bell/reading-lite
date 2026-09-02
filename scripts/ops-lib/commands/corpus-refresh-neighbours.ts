@@ -38,6 +38,7 @@ import {
   type RefreshRow,
 } from "../../corpus-lib/refresh-neighbours";
 import {
+  REFRESH_STATE_VERSION,
   REVERSE_TOP_K,
   buildRefreshState,
   changedSince,
@@ -272,8 +273,23 @@ async function readMarker(
   }
   if (raw === null) return null;
   const state = parseRefreshState(raw);
-  if (state === null) stderr("  ! run marker is not a usable refresh state");
+  // An older marker and a damaged one are the same null and very different
+  // instructions to the operator: one needs looking at, the other is answered
+  // by this pass rewriting it.
+  if (state === null) stderr(markerRejectionReason(raw));
   return state;
+}
+
+function markerRejectionReason(raw: unknown): string {
+  const version =
+    raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as { version?: unknown }).version
+      : undefined;
+  return typeof version === "number" && version < REFRESH_STATE_VERSION
+    ? `  ! run marker is version ${version}, which predates the purge check ` +
+      `(version ${REFRESH_STATE_VERSION}) — this pass sweeps, and the next ` +
+      "complete --execute pass replaces it"
+    : "  ! run marker is not a usable refresh state";
 }
 
 /**
@@ -460,6 +476,11 @@ async function refreshNeighbours(
   let noVector = 0;
   let errored = 0;
   let invalid = 0;
+  // Readings the pass looked at and could not measure at all. Recorded on the
+  // marker so every later pass retries them: nothing about their own row moves
+  // when the vector is restored or the manifest repaired, so an incremental
+  // scope built from timestamps would never look at them again.
+  const unmeasurableIds: string[] = [];
 
   const flushIndex = async (): Promise<void> => {
     if (!opts.execute || scored.size === 0) return;
@@ -486,6 +507,7 @@ async function refreshNeighbours(
       }
       if (matches === null) {
         noVector++;
+        unmeasurableIds.push(t.id);
         io.stderr(`  ! no vector indexed for ${t.id}  ${t.url}`);
         continue;
       }
@@ -517,6 +539,7 @@ async function refreshNeighbours(
       const check = validateBackfillWrite(manifest, snap);
       if (!check.ok) {
         invalid++;
+        unmeasurableIds.push(t.id);
         io.stderr(`  ! manifest fails ManifestSchema for ${t.id}: ${check.error}`);
         continue;
       }
@@ -621,6 +644,33 @@ async function refreshNeighbours(
     );
   }
 
+  // What stops the marker is an unfinished pass, not an unmeasurable reading.
+  // A failed query, an unparseable manifest, a failed write or a failed flush
+  // all leave work this pass owed the corpus undone, so the next one must sweep
+  // to find it. A reading with no vector or an invalid manifest is different:
+  // the pass did everything it could for it, the answer will not change until
+  // someone repairs it, and pinning the marker on it would hold the whole scope
+  // at an ever-older timestamp. Those are carried on the marker instead, and
+  // the run still exits non-zero so they stay visible.
+  if (!flushFailed && errored === 0) {
+    await advanceMarker({
+      opts,
+      r2,
+      r2Deps,
+      io,
+      marker,
+      scope,
+      items,
+      unmeasurableIds,
+      truncated: plan.truncated,
+      // The flush rewrote index/list.json, so the ETag this pass read is already
+      // superseded. Recording it would be recording a token no future read can
+      // ever match; the next run falls back to the row timestamps instead.
+      ...(scored.size > 0 || listEtag === undefined ? {} : { listEtag }),
+      runAt: now,
+    });
+  }
+
   const failed = noVector + errored + invalid;
   if (flushFailed || errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
     if (flushFailed) {
@@ -635,22 +685,6 @@ async function refreshNeighbours(
     return 1;
   }
 
-  await advanceMarker({
-    opts,
-    r2,
-    r2Deps,
-    io,
-    marker,
-    scope,
-    items,
-    truncated: plan.truncated,
-    // The flush rewrote index/list.json, so the ETag this pass read is already
-    // superseded. Recording it would be recording a token no future read can
-    // ever match; the next run falls back to the row timestamps instead.
-    ...(scored.size > 0 || listEtag === undefined ? {} : { listEtag }),
-    runAt: now,
-  });
-
   if (!opts.execute) {
     io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
   }
@@ -661,12 +695,12 @@ async function refreshNeighbours(
  * Stores the run marker the next incremental pass scopes against.
  *
  * Only a complete --execute pass may advance it, because the marker asserts
- * something stronger than "we looked": every reading in scope was measured AND
- * whatever drifted was written. A plan pass writes no snapshot, --only names a
- * subset, and --limit leaves the marker alone only when it actually cut the
- * plan short — a limit used as a runaway-cost valve and never reached has
- * measured its whole scope. Failures already returned non-zero before this
- * point.
+ * something stronger than "we looked": every reading in scope was measured — or
+ * recorded as unmeasurable — AND whatever drifted was written. A plan pass
+ * writes no snapshot, --only names a subset, and --limit leaves the marker
+ * alone only when it actually cut the plan short — a limit used as a
+ * runaway-cost valve and never reached has measured its whole scope. Passes
+ * with an unfinished measurement never reach here.
  *
  * `last_full_run_at` moves only on a full sweep — it is what a weekly-sweep
  * policy is judged against.
@@ -679,6 +713,8 @@ async function advanceMarker(args: {
   marker: RefreshState | null;
   scope: RefreshScope;
   items: RefreshRow[];
+  /** In-scope ids this pass could not measure, carried for retry. */
+  unmeasurableIds: string[];
   /** True when --limit actually cut the plan short. */
   truncated: boolean;
   listEtag?: string;
@@ -690,16 +726,46 @@ async function advanceMarker(args: {
     io.stdout("Run marker unchanged: this pass measured a subset of its scope.");
     return;
   }
+  // The marker this pass read is minutes old — a full pass over the production
+  // corpus takes sixteen — and neither writer of this object holds a lock or a
+  // conditional put. A `corpus backfill-vectors` that stamped `invalidated_by`
+  // meanwhile is asking for a sweep this pass did not do, and overwriting the
+  // stamp would silently lose that request: the one failure the stamp exists to
+  // prevent. Re-read, and stand down rather than advance.
+  const invalidatedSince = await invalidationArrivedDuringPass(args);
+  if (invalidatedSince === "unknown") {
+    io.stderr(
+      "  ! could not re-read the run marker before advancing it — leaving it alone, " +
+      "so the next incremental run will sweep.",
+    );
+    return;
+  }
+  if (invalidatedSince !== null) {
+    io.stdout(
+      `Run marker unchanged: invalidated by ${invalidatedSince} while this pass ran, ` +
+      "so the next pass still owes the corpus a sweep.",
+    );
+    return;
+  }
   const state = buildRefreshState({
     previous: args.marker,
     runAt: args.runAt,
     full: args.scope.kind === "full",
-    listRowCount: args.items.length,
+    // Every id, not just the ready ones: status is not a statement about vector
+    // ownership, so a non-ready row leaving the list can still take an indexed
+    // vector — and a neighbourhood — with it.
+    listIds: args.items.map((row) => row.id),
+    ...(args.unmeasurableIds.length === 0 ? {} : { unmeasurableIds: args.unmeasurableIds }),
     ...(args.listEtag === undefined ? {} : { listEtag: args.listEtag }),
   });
   try {
     await args.r2.writeRefreshState(state, args.r2Deps);
     io.stdout(`Run marker updated (${state.last_run_at}).`);
+    if (state.unmeasurable_ids !== undefined) {
+      io.stdout(
+        `Carried on the run marker for retry: ${state.unmeasurable_ids.length} unmeasurable reading(s).`,
+      );
+    }
   } catch (e) {
     // Not a failed run: every snapshot this pass owed the corpus is written.
     // The cost of a lost marker is the next pass sweeping instead of scoping.
@@ -708,6 +774,35 @@ async function advanceMarker(args: {
       "the next incremental run will sweep.",
     );
   }
+}
+
+/**
+ * The invalidation stamped on the run marker while this pass ran, `null` when
+ * there is none, or `"unknown"` when the re-read failed. An invalidation that
+ * was already there when the pass started is not one: it is what made this pass
+ * a sweep, and this pass answered it.
+ */
+async function invalidationArrivedDuringPass(args: {
+  r2: CorpusRefreshNeighboursR2;
+  r2Deps: R2Deps;
+  marker: RefreshState | null;
+}): Promise<string | null | "unknown"> {
+  let live: RefreshState | null;
+  try {
+    const raw = await args.r2.readRefreshState(args.r2Deps);
+    live = raw === null ? null : parseRefreshState(raw);
+    // A marker that is there but does not parse — damaged, or a newer format —
+    // may be carrying a stamp this pass cannot read, and overwriting it would
+    // discard an owed sweep. Unless this pass ALREADY found it unusable, in
+    // which case it is the same unusable marker, and refusing to replace it
+    // would leave the corpus on an old-format marker forever.
+    if (raw !== null && live === null && args.marker !== null) return "unknown";
+  } catch {
+    return "unknown";
+  }
+  const now = live?.invalidated_by;
+  if (now === undefined) return null;
+  return now === args.marker?.invalidated_by ? null : now;
 }
 
 // Credentials the direct path may use, in the same precedence the tier-2/3
@@ -789,10 +884,12 @@ always has. --since-last-run measures only the readings whose neighbourhood
 could have moved since the run marker at index/refresh-state.json: those
 created or reprocessed since it, and the reverse neighbourhood of each changed
 vector (a topK-${REVERSE_TOP_K} query). It escalates to a
-full sweep whenever that reasoning runs out — no marker, rows removed since the
-marker, a failed reverse query, a changed ready reading with no vector to scope
+full sweep whenever that reasoning runs out — no marker, a marker invalidated by
+\`corpus backfill-vectors\`, a reading of any status the marker saw that has since
+left the list, a failed reverse query, a changed ready reading with no vector to scope
 from, or a reverse neighbourhood that came back full at topK with no match below
-the bound.
+the bound. Purges are caught by name, not by row count, so a day that ingests as
+many readings as it purges still escalates.
 An incremental report is a statement about its scope: a persistent flag on a
 reading nobody touched stays invisible until the next full sweep, so run --full
 weekly. The scope and its reason are printed and recorded in the report header,
@@ -804,6 +901,15 @@ with --only, and not when --limit actually cut the pass short (a limit carried
 as a cost valve and never reached has measured its whole scope, and does
 advance it). Naming ids overrides the scope: those readings are measured either
 way.
+
+A reading with no indexed vector, or a manifest that fails ManifestSchema, is
+unmeasurable rather than unfinished: the pass records its id on the marker,
+measures it again on every later pass while it stays ready, and still exits 1.
+(One that stops being ready leaves the marker; it returns through its own
+timestamps when it is ready again, or through the weekly sweep.)
+A failed query, an unparseable manifest, a failed write or a failed list flush
+does hold the marker back, because the next pass has to sweep to find what this
+one left undone.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).
