@@ -35,12 +35,12 @@ export function renderSecurityMail(kind: SecurityMailKind): { subject: string; h
     const text = [
       "A new API key was created for your reading-lite account.",
       "If you did this, no action is needed.",
-      "If you did not, revoke unused keys and request a new sign-in link immediately.",
+      "If you did not, revoke unused keys, revoke other browser sessions, and request a new sign-in link immediately.",
     ].join("\n");
     const html = [
       "<p>A new API key was created for your reading-lite account.</p>",
       "<p>If you did this, no action is needed.</p>",
-      "<p>If you did not, revoke unused keys and request a new sign-in link immediately.</p>",
+      "<p>If you did not, revoke unused keys, revoke other browser sessions, and request a new sign-in link immediately.</p>",
     ].join("\n");
     return { subject, html, text };
   }
