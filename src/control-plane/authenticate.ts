@@ -1,4 +1,5 @@
 import { parsePresentedToken } from "./bearer";
+import { TOKEN_LAST_USED_COALESCE_MS } from "./constants";
 import { deriveHmacKey, hmacHex, timingSafeEqualHex, type AuthRoot } from "./crypto";
 import type { ControlPlaneDb } from "./db";
 import { createApiTokenPrincipal, type AuthenticatedPrincipal } from "./principal";
@@ -23,6 +24,7 @@ interface TokenRow {
   secret_hmac: string;
   expires_at_ms: number;
   revoked_at_ms: number | null;
+  last_used_at_ms: number | null;
 }
 
 interface UserRow {
@@ -98,6 +100,8 @@ export async function authenticateBearer(
   if (!user) return { kind: "unauthenticated" };
   if (user.status !== "active") return { kind: "forbidden" };
 
+  await touchLastUsed(db, token, input.nowMs);
+
   const scopeRows = await db.all<{ scope: string }>(
     "SELECT scope FROM api_token_scopes WHERE token_id = ?",
     token.id,
@@ -153,7 +157,7 @@ async function findLegacyByRoot(
 ): Promise<TokenRow | null> {
   const digest = await hmacHex(await deriveHmacKey(root, "api_token"), secret);
   return db.first<TokenRow>(
-    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms
+    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms, last_used_at_ms
      FROM api_tokens WHERE secret_hmac = ? AND format = 'legacy'`,
     digest,
   );
@@ -167,7 +171,7 @@ async function lookupStandardToken(
   previousAuthRoot?: AuthRoot,
 ): Promise<TokenMatch | null> {
   const row = await db.first<TokenRow>(
-    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms
+    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms, last_used_at_ms
      FROM api_tokens WHERE id = ? AND format = 'standard'`,
     selector,
   );
@@ -181,6 +185,21 @@ async function lookupStandardToken(
   return timingSafeEqualHex(previousDigest, row.secret_hmac)
     ? { token: row, viaPrevious: true }
     : null;
+}
+
+async function touchLastUsed(db: ControlPlaneDb, row: TokenRow, nowMs: number): Promise<void> {
+  if (row.last_used_at_ms != null && nowMs - row.last_used_at_ms < TOKEN_LAST_USED_COALESCE_MS) {
+    return;
+  }
+  try {
+    await db.run(
+      `UPDATE api_tokens SET last_used_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL`,
+      nowMs,
+      row.id,
+    );
+  } catch {
+    // Auth still succeeds if the coalesce write fails.
+  }
 }
 
 async function persistRotatedHmac(

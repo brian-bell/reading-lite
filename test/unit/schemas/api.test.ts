@@ -10,6 +10,8 @@ import {
   ListIndexSchema,
   GetWhoamiResponseSchema,
   ListSessionsResponseSchema,
+  ListTokensResponseSchema,
+  PostAuthTokensBodySchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -373,5 +375,48 @@ describe("ListSessionsResponseSchema", () => {
       session_cap_warning: "at cap",
     };
     expect(ListSessionsResponseSchema.parse(body)).toEqual(body);
+  });
+});
+
+describe("PostAuthTokensBodySchema", () => {
+  it("accepts named scopes and optional expiry", () => {
+    expect(
+      PostAuthTokensBodySchema.parse({
+        name: "  ops  ",
+        scopes: ["readings:read", "readings:delete"],
+        expires_at_ms: 1,
+      }),
+    ).toEqual({
+      name: "ops",
+      scopes: ["readings:read", "readings:delete"],
+      expires_at_ms: 1,
+    });
+  });
+
+  it("rejects empty or unknown scopes", () => {
+    expect(() => PostAuthTokensBodySchema.parse({ name: "ops", scopes: [] })).toThrow();
+    expect(() => PostAuthTokensBodySchema.parse({ name: "ops", scopes: ["admin"] })).toThrow();
+  });
+});
+
+describe("ListTokensResponseSchema", () => {
+  it("accepts a listed token without a secret", () => {
+    const body = {
+      tokens: [
+        {
+          id: "tok_550e8400-e29b-41d4-a716-446655440000",
+          name: "ops",
+          format: "standard",
+          scopes: ["readings:read"],
+          created_at_ms: 1,
+          expires_at_ms: 2,
+          revoked_at_ms: null,
+          last_used_at_ms: null,
+          user_agent_label: "test",
+          usable: true,
+        },
+      ],
+    };
+    expect(ListTokensResponseSchema.parse(body)).toEqual(body);
   });
 });

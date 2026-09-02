@@ -7,6 +7,7 @@ import {
   requirePrincipal,
   requireRecentAuth,
   requireScope,
+  requireSession,
   type AppBindings,
 } from "./middleware";
 import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
@@ -39,6 +40,11 @@ import {
   handleRevokeAllSessions,
   handleRevokeSession,
 } from "./control-plane/session-handlers";
+import {
+  handleCreateApiToken,
+  handleListApiTokens,
+  handleRevokeApiToken,
+} from "./control-plane/token-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
@@ -90,6 +96,13 @@ export function createApp(opts: AppOptions = {}) {
   app.delete("/api/auth/sessions/:id", (c) => handleRevokeSession(c, authNowMs()));
   app.use("/api/auth/email-change", requirePrincipal(authNowMs), requireRecentAuth(authNowMs));
   app.post("/api/auth/email-change", (c) => handleEmailChangeRequest(c, authNowMs(), authRuntime));
+  app.use("/api/auth/tokens", requirePrincipal(authNowMs), requireSession());
+  app.use("/api/auth/tokens/*", requirePrincipal(authNowMs), requireSession());
+  app.post("/api/auth/tokens", requireRecentAuth(authNowMs), (c) =>
+    handleCreateApiToken(c, authNowMs(), authRuntime),
+  );
+  app.get("/api/auth/tokens", (c) => handleListApiTokens(c, authNowMs()));
+  app.delete("/api/auth/tokens/:id", (c) => handleRevokeApiToken(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 

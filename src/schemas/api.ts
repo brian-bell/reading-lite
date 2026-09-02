@@ -111,6 +111,47 @@ export const AuthSessionRevokeResponseSchema = z.object({
 });
 export type AuthSessionRevokeResponse = z.infer<typeof AuthSessionRevokeResponseSchema>;
 
+const ApiScopeNameSchema = z.enum(["readings:read", "readings:write", "readings:import", "readings:delete"]);
+
+export const PostAuthTokensBodySchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  scopes: z.array(ApiScopeNameSchema).min(1),
+  expires_at_ms: z.number().int().optional(),
+});
+export type PostAuthTokensBody = z.infer<typeof PostAuthTokensBodySchema>;
+
+export const PostAuthTokensResponseSchema = z.object({
+  token: z.string().min(1),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  scopes: z.array(ApiScopeNameSchema),
+  created_at_ms: z.number().int(),
+  expires_at_ms: z.number().int(),
+});
+export type PostAuthTokensResponse = z.infer<typeof PostAuthTokensResponseSchema>;
+
+export const ApiTokenListItemSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  format: z.enum(["legacy", "standard"]),
+  scopes: z.array(ApiScopeNameSchema),
+  created_at_ms: z.number().int(),
+  expires_at_ms: z.number().int(),
+  revoked_at_ms: z.number().int().nullable(),
+  last_used_at_ms: z.number().int().nullable(),
+  user_agent_label: z.string().nullable(),
+  usable: z.boolean(),
+});
+export type ApiTokenListItem = z.infer<typeof ApiTokenListItemSchema>;
+
+export const ListTokensResponseSchema = z.object({
+  tokens: z.array(ApiTokenListItemSchema),
+});
+export type ListTokensResponse = z.infer<typeof ListTokensResponseSchema>;
+
+export const AuthTokenRevokeResponseSchema = AuthSessionRevokeResponseSchema;
+export type AuthTokenRevokeResponse = z.infer<typeof AuthTokenRevokeResponseSchema>;
+
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy
 // could route a later write to a different worker version. A client that sends

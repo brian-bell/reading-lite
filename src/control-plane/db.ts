@@ -3,10 +3,14 @@ export interface SqlStatement {
   params: readonly unknown[];
 }
 
+export interface BatchResult {
+  changes: number;
+}
+
 export interface ControlPlaneDb {
   first<T>(sql: string, ...params: unknown[]): Promise<T | null>;
   all<T>(sql: string, ...params: unknown[]): Promise<T[]>;
-  batch(statements: readonly SqlStatement[]): Promise<void>;
+  batch(statements: readonly SqlStatement[]): Promise<BatchResult[]>;
   run(sql: string, ...params: unknown[]): Promise<{ changes: number }>;
 }
 
@@ -32,8 +36,11 @@ export function fromD1(d1: D1Database): ControlPlaneDb {
       return result.results;
     },
     async batch(statements) {
-      if (statements.length === 0) return;
-      await d1.batch(statements.map((statement) => d1.prepare(statement.sql).bind(...statement.params)));
+      if (statements.length === 0) return [];
+      const results = await d1.batch(
+        statements.map((statement) => d1.prepare(statement.sql).bind(...statement.params)),
+      );
+      return results.map((result) => ({ changes: result.meta.changes ?? 0 }));
     },
     async run(sql, ...params) {
       const result = await d1.prepare(sql).bind(...params).run();
