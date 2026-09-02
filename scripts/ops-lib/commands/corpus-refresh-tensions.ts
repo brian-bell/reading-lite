@@ -54,7 +54,7 @@ import {
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
-import { r2InventoryClientFromVars } from "../../lib/cf-clients";
+import { r2InventoryClientFromVars, refreshS3RequestDeps } from "../../lib/cf-clients";
 import {
   SUMMARIZER_PRICE_DATE,
   approximateTokens,
@@ -739,7 +739,17 @@ Options:
     io,
     readReport: readReportIfPresent,
     createStorage: async (bucket, keyRoot) =>
-      storageFromClient(r2InventoryClientFromVars(defaultStorageVars(), bucket), keyRoot),
+      storageFromClient(
+        // Same opt-in as refresh-connections: the policy belongs to these
+        // commands, not to every caller of the shared S3 client.
+        r2InventoryClientFromVars(
+          defaultStorageVars(),
+          bucket,
+          globalThis.fetch,
+          refreshS3RequestDeps(),
+        ),
+        keyRoot,
+      ),
     loadProvider: async (execute) => tensionProviderFromVars(await defaultProviderVars(), execute),
     now: () => Date.now(),
   }),

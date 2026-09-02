@@ -110,6 +110,13 @@ export interface VectorizeConfig {
 // for as long as the OS keeps the socket open (a refresh run has hung this
 // way), and without a retry one transient read ends the command with exit 1.
 //
+// Both are opt-in, and only the corpus refresh commands opt in
+// (refreshS3RequestDeps below). A client built without them behaves exactly as
+// it always has: one attempt, no deadline. The bulk ingest, recover, migrate,
+// purge and teardown commands move objects on their own schedules and were
+// never the subject of this measurement, so they keep the behaviour they were
+// written and run against.
+//
 // Every attempt gets a fresh deadline, and the request is re-signed each time
 // because a SigV4 signature carries the timestamp it was made at.
 //
@@ -126,12 +133,10 @@ export interface VectorizeConfig {
 // stops arriving mid-stream is the same stall as one that never starts. The
 // caller reads the body after the attempt loop has returned, so a stall that
 // late aborts out of res.text()/res.arrayBuffer() as an error rather than a
-// retry — bounded, which is the point, but not repeated. It applies to every
-// makeR2Client caller (the bulk ingest, recover, migrate, purge and teardown
-// commands as well as the refresh), which previously had no request deadline
-// at all; 30s is far above what any object this corpus stores needs.
+// retry — bounded, which is the point, but not repeated. 30s is far above what
+// any manifest or list index the refresh touches needs.
 export const S3_REQUEST_TIMEOUT_MS = 30_000;
-const S3_REQUEST_ATTEMPTS = 3;
+export const S3_REQUEST_ATTEMPTS = 3;
 const S3_RETRY_BASE_MS = 250;
 const S3_RETRY_CAP_MS = 2_000;
 // A throttle is not a blip: when R2 says how long to wait, waiting less is
@@ -144,12 +149,26 @@ export interface S3RequestDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Clock for reading a `Retry-After` date; injected for tests. */
   now?: () => number;
-  /** Per-attempt deadline. Default 30s. */
+  /** Per-attempt deadline. Omitted (the default) means no deadline. */
   timeoutMs?: number;
-  /** Attempts per request, including the first. Default 3. */
+  /** Attempts per request, including the first. Default 1, i.e. no retry. */
   maxAttempts?: number;
   /** Deadline signal factory; injected so tests need no real timers. */
   timeoutSignal?: (ms: number) => AbortSignal;
+}
+
+/**
+ * The policy the corpus refresh commands run their S3 storage on: a 30-second
+ * deadline per attempt and three attempts for anything safe to repeat. Pass it
+ * to `makeR2Client` or `r2InventoryClientFromVars`; everything that does not is
+ * left on the single-attempt, no-deadline behaviour it has always had.
+ */
+export function refreshS3RequestDeps(overrides: S3RequestDeps = {}): S3RequestDeps {
+  return {
+    timeoutMs: S3_REQUEST_TIMEOUT_MS,
+    maxAttempts: S3_REQUEST_ATTEMPTS,
+    ...overrides,
+  };
 }
 
 // 501 and 505 are the two 5xx a server returns because it will never serve the
@@ -173,8 +192,8 @@ export function makeR2Client(
   });
   const base = `https://${cfg.accountId}.r2.cloudflarestorage.com/${cfg.bucket}`;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const timeoutMs = deps.timeoutMs ?? S3_REQUEST_TIMEOUT_MS;
-  const maxAttempts = Math.max(1, deps.maxAttempts ?? S3_REQUEST_ATTEMPTS);
+  const timeoutMs = deps.timeoutMs;
+  const maxAttempts = Math.max(1, deps.maxAttempts ?? 1);
   const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
   const now = deps.now ?? (() => Date.now());
 
@@ -190,7 +209,10 @@ export function makeR2Client(
       let wait = Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt);
       // Signed outside the try: a signing failure is a bad credential or a bad
       // key, and repeating it only delays the message by three attempts.
-      const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
+      const signed = await aws.sign(
+        url,
+        timeoutMs === undefined ? init : { ...init, signal: timeoutSignal(timeoutMs) },
+      );
       try {
         const res = await fetchFn(signed);
         if (last || !isTransientStatus(res.status)) return res;
@@ -532,6 +554,7 @@ export function r2InventoryClientFromVars(
   vars: Record<string, string | undefined>,
   bucket: string,
   fetchFn: typeof fetch = fetch,
+  deps: S3RequestDeps = {},
 ): R2InventoryClient {
   const accountId = firstDefined(vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
   const accessKeyId = vars.CORPUS_R2_ACCESS_KEY;
@@ -541,10 +564,12 @@ export function r2InventoryClientFromVars(
     throw new Error("missing credential: CORPUS_R2_ACCOUNT_ID or CLOUDFLARE_ACCOUNT_ID (env or .corpus.vars)");
   }
   if (accessKeyId && secretAccessKey) {
-    return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn);
+    return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn, deps);
   }
   if (apiToken) {
-    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn);
+    // The REST client has its own 429 backoff and no deadline; a caller asking
+    // for the refresh policy does not get one here (docs/operations.md says so).
+    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn, deps);
   }
   throw new Error(
     "missing credential: CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN (env or .corpus.vars)",

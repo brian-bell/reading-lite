@@ -350,8 +350,8 @@ from a hung one.
 
 Two robustness limits sit behind those numbers. `refresh-connections` and
 `refresh-tensions` reach R2 over the S3 API when `CORPUS_R2_*` keys are set,
-and every request on that path now carries a 30-second deadline and is retried
-up to three times on a timeout, a network fault, a 5xx, or a 429 (honouring
+and every request on that path carries a 30-second deadline and is retried up
+to three times on a timeout, a network fault, a 5xx, or a 429 (honouring
 `Retry-After`), so one transient read no longer ends the run. Conditional
 writes are the exception: they get the deadline but are never repeated, because
 a retry can see its own landed write and report a lost race that did not
@@ -360,7 +360,12 @@ surfaces as a `RateLimitedError` naming the retry-after the provider asked for
 — that one is a signal to pause and rerun later, not to rerun immediately, and
 nothing in the command paces itself for you yet.
 
-Neither limit covers the other two storage paths. `refresh-neighbours` runs
+Those limits are these two commands' policy and nothing else's. The other ops
+commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
+`corpus migrate-founder`, `corpus purge-connections`, `staging teardown` — keep
+the single attempt and the absent deadline they were written and run against.
+
+Nor do the limits cover the other two storage paths. `refresh-neighbours` runs
 every call through a `wrangler` subprocess, and the S3-less fallback used when
 only `CLOUDFLARE_API_TOKEN` is set goes through the Cloudflare REST client,
 which backs off on 429 but has no deadline and no 5xx retry. A stall on either

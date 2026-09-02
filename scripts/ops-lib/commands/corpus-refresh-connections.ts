@@ -31,6 +31,7 @@ import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
 import {
   r2InventoryClientFromVars,
+  refreshS3RequestDeps,
   type R2InventoryClient,
 } from "../../lib/cf-clients";
 import {
@@ -693,7 +694,14 @@ async function createDefaultStorage(
   bucket: string,
   keyRoot: string,
 ): Promise<RefreshConnectionsStorage> {
-  const client = r2InventoryClientFromVars(defaultStorageVars(), bucket);
+  // The deadline and transient retry are the refresh commands' policy, not
+  // every ops command's: opt in here rather than in the shared client.
+  const client = r2InventoryClientFromVars(
+    defaultStorageVars(),
+    bucket,
+    globalThis.fetch,
+    refreshS3RequestDeps(),
+  );
   return storageFromClient(client, keyRoot);
 }
 

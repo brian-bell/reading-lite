@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   dryRunR2,
   makeR2Client,
+  refreshS3RequestDeps,
   makeR2RestClient,
   makeVectorizeClient,
   r2InventoryClientFromVars,
@@ -692,6 +693,9 @@ describe("makeR2RestClient — 429 backoff", () => {
 });
 
 describe("makeR2Client request timeout and transient retry", () => {
+  // The deadline and retry are the corpus refresh commands' policy, so every
+  // case below builds the client with refreshS3RequestDeps(); the last case in
+  // this block covers what every other caller still gets.
   const okResponse = () => new Response("body", { status: 200 });
   const abortError = () => new DOMException("The operation was aborted.", "TimeoutError");
 
@@ -707,16 +711,24 @@ describe("makeR2Client request timeout and transient retry", () => {
     });
     const sleep = vi.fn(async (_ms: number) => {});
     const signals: number[] = [];
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch, {
-      sleep,
-      timeoutSignal: (ms) => {
-        signals.push(ms);
-        return new AbortController().signal;
-      },
-      ...overrides,
-    });
+    const r2 = makeR2Client(
+      r2Config,
+      fetchFn as unknown as typeof fetch,
+      refreshS3RequestDeps({
+        sleep,
+        timeoutSignal: (ms) => {
+          signals.push(ms);
+          return new AbortController().signal;
+        },
+        ...overrides,
+      }),
+    );
     return { r2, fetchFn, sleep, signals };
   }
+
+  it("is a 30s deadline and three attempts wherever it is opted into", () => {
+    expect(refreshS3RequestDeps()).toMatchObject({ timeoutMs: 30_000, maxAttempts: 3 });
+  });
 
   it("aborts every request after 30 seconds", async () => {
     const h = harness([okResponse()]);
@@ -811,6 +823,20 @@ describe("makeR2Client request timeout and transient retry", () => {
     const h = harness([new Response("nope", { status: 501 })]);
     await expect(h.r2.get("k")).rejects.toThrow(/R2 GET k failed: 501/);
     expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves every other caller on one attempt and no deadline", async () => {
+    // corpus-ingest, corpus-recover, corpus-migrate-founder, purge-connections
+    // and staging-teardown build the client without the refresh policy; a
+    // deadline they were never written against must not appear under them.
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
+      async () => new Response("boom", { status: 503 }),
+    );
+    const bare = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
+    await expect(bare.get("k")).rejects.toThrow(/R2 GET k failed: 503/);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect((fetchFn.mock.calls[0]![0] as Request).signal.aborted).toBe(false);
+    expect((fetchFn.mock.calls[0]![0] as Request).signal.reason).toBeUndefined();
   });
 
   it("retries a transient LIST page without restarting the listing", async () => {
