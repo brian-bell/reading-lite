@@ -765,8 +765,8 @@ async function refreshNeighbours(
         `${plan.targets.length} ready reading(s) (no vector: ${noVector}, failed: ${errored}, ` +
         `schema-invalid: ${invalid}). A whole sweep that answers this way is an ` +
         "infrastructure fault — a wrong Vectorize index, a wrong tenant namespace, an expired " +
-        "credential, or an upstream failing every query — far more often than it is a corpus " +
-        "of broken readings, so " +
+        "credential, or Vectorize or R2 failing every call (the breakdown above says which " +
+        "side) — far more often than it is a corpus of broken readings, so " +
         (opts.execute
           ? "neither run marker advanced and the next pass measures the same scope"
           : "an --execute pass would not have advanced either run marker") +
