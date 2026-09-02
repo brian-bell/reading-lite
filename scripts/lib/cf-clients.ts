@@ -567,9 +567,12 @@ export function r2InventoryClientFromVars(
     return makeR2Client({ accountId, accessKeyId, secretAccessKey, bucket }, fetchFn, deps);
   }
   if (apiToken) {
-    // The REST client has its own 429 backoff and no deadline; a caller asking
-    // for the refresh policy does not get one here (docs/operations.md says so).
-    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn, deps);
+    // The REST client has its own 429 backoff and no deadline, so it takes only
+    // the two fields it can honour. A caller that asked for the refresh policy
+    // does not get a deadline on this credential path — the operations note
+    // records that, and the Timing: block is what makes a stall there visible.
+    const { sleep, now } = deps;
+    return makeR2RestClient({ accountId, apiToken, bucket }, fetchFn, { sleep, now });
   }
   throw new Error(
     "missing credential: CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN (env or .corpus.vars)",
