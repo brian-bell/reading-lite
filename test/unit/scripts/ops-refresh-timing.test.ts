@@ -35,6 +35,14 @@ describe("refresh timing block", () => {
     ]);
   });
 
+  it("floors a backward clock step at zero rather than reporting a negative time", async () => {
+    const timer = createRefreshTimer(fakeClock(-1_000, 10_000));
+    const { ms } = await timer.measured("provider", async () => 0);
+    expect(ms).toBe(0);
+    expect(timer.format()).toContain("0.000s");
+    expect(timer.format()).not.toContain("-");
+  });
+
   it("hands back the duration of a single call for per-call reporting", async () => {
     const timer = createRefreshTimer(fakeClock(250));
     const { value, ms } = await timer.measured("provider", async () => "judged");

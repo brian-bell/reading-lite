@@ -807,6 +807,12 @@ describe("makeR2Client request timeout and transient retry", () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("does not retry a status the server will never serve", async () => {
+    const h = harness([new Response("nope", { status: 501 })]);
+    await expect(h.r2.get("k")).rejects.toThrow(/R2 GET k failed: 501/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a transient LIST page without restarting the listing", async () => {
     const page = (truncated: boolean) =>
       new Response(

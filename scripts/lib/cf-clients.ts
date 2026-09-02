@@ -152,8 +152,12 @@ export interface S3RequestDeps {
   timeoutSignal?: (ms: number) => AbortSignal;
 }
 
+// 501 and 505 are the two 5xx a server returns because it will never serve the
+// request; repeating them only delays the error. Every other 5xx is treated as
+// transient, including ones R2 has not been seen to return.
 function isTransientStatus(status: number): boolean {
-  return status === 429 || status >= 500;
+  if (status === 429) return true;
+  return status >= 500 && status !== 501 && status !== 505;
 }
 
 export function makeR2Client(

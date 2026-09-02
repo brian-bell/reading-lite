@@ -69,16 +69,18 @@ export function createRefreshTimer(now: () => number): RefreshTimer {
   ): Promise<{ value: T; ms: number }> => {
     const startedAt = now();
     // Read the clock exactly once more, whether the call returned or threw, so
-    // the recorded duration is the one reported back for the same call.
+    // the recorded duration is the one reported back for the same call. A
+    // backward clock step floors at zero rather than reporting -0.500s.
+    const since = () => Math.max(0, now() - startedAt);
     let elapsed = 0;
     try {
       const value = await fn();
-      elapsed = now() - startedAt;
+      elapsed = since();
       return { value, ms: elapsed };
     } catch (error) {
       // A failed call still consumed wall time — and a timeout consumes the
       // most — so it is counted rather than dropped.
-      elapsed = now() - startedAt;
+      elapsed = since();
       throw error;
     } finally {
       record(phase, elapsed);
@@ -88,7 +90,7 @@ export function createRefreshTimer(now: () => number): RefreshTimer {
   return {
     measure: async (phase, fn) => (await measured(phase, fn)).value,
     measured,
-    format: () => formatTiming([...phases.entries()], now() - start),
+    format: () => formatTiming([...phases.entries()], Math.max(0, now() - start)),
     used: () => phases.size > 0,
   };
 }
