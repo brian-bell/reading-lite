@@ -321,17 +321,33 @@ Never run a production refresh with `--tenant global`. That selector still
 resolves to the legacy pre-cutover layout, which no longer receives readings;
 refreshing it spends judgements on a copy nobody reads.
 
-Production credentials do not live in the repo either. `refresh-neighbours`
-shells out to the wrangler CLI, so it needs working wrangler auth
-(`wrangler login` or `CLOUDFLARE_API_TOKEN`) and ignores the `CORPUS_R2_*`
-keys entirely. `refresh-connections` and `refresh-tensions` do read those
-keys, and that is where the trap is: `.corpus.vars` S3 keys are commonly
-scoped to the staging bucket and then 403 against the production bucket, and
-both commands prefer S3 keys over a Cloudflare API token whenever both are
-present, so stale staging keys silently win over an otherwise correct token.
-Source production keys from outside the repo; the credentials row of the
-cutover log in `docs/founder-cutover.md` records what an actual production run
-needed.
+Production credentials do not live in the repo either. All three refresh
+commands read them the same way, and that is where the trap is: `.corpus.vars`
+S3 keys are commonly scoped to the staging bucket and then 403 against the
+production bucket, and every one of them prefers S3 keys over a Cloudflare API
+token whenever both are present, so stale staging keys silently win over an
+otherwise correct token. Source production keys from outside the repo; the
+credentials row of the cutover log in `docs/founder-cutover.md` records what an
+actual production run needed.
+
+`refresh-neighbours` used to be the exception, running every call through a
+`wrangler` subprocess and ignoring `CORPUS_R2_*` entirely. It now picks its
+storage path automatically: direct when `CORPUS_R2_*` keys or a Cloudflare API
+token are present, wrangler otherwise, and it prints which one it took in the
+header (`Storage: direct (S3/REST) — CORPUS_R2_* keys`). Direct needs both
+halves — an R2 credential for the manifests and a Cloudflare API token for
+Vectorize, which has no S3 access-key path — so R2 keys alone stay on wrangler.
+`--via wrangler` forces the old path, `--via direct` forces the new one (and
+fails with the missing credential rather than falling back), and `--local`
+always uses wrangler because nothing else can reach the miniflare bucket.
+Direct is the reason to prefer it: it removes the ~0.8s of Node start-up the
+wrangler path paid on every Vectorize query and every manifest read. Measured on
+staging (29 ready readings, plan mode): 46.6s over wrangler against 10.0s
+direct, with manifest reads 25.7s → 3.4s and Vectorize queries 19.5s → 6.5s.
+Both paths write a byte-identical `refresh-report.json`. One caveat for
+`--execute`: the closing `index/list.json` rewrite still goes through wrangler
+on either path, so an execute run needs working wrangler auth even when the
+reads did not.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads` — the
@@ -365,13 +381,14 @@ commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
 `corpus migrate-founder`, `corpus purge-connections`, `staging teardown` — keep
 the single attempt and the absent deadline they were written and run against.
 
-Nor do the limits cover the other two storage paths, or the provider.
-`refresh-neighbours` runs every call through a `wrangler` subprocess; the
-S3-less fallback used when only `CLOUDFLARE_API_TOKEN` is set goes through the
-Cloudflare REST client, which backs off on 429 but has no deadline and no 5xx
-retry; and the judgement calls retry but carry no deadline of their own. A
-stall on any of them still looks like a silent pass — the `Timing:` block is
-what makes it visible.
+`refresh-neighbours` is the one exception, and only in part: it gets the same
+deadline and retry for its manifest reads and writes whenever it runs direct
+over S3 keys. Everything else is still uncovered. The Cloudflare REST client —
+the R2 fallback used when only `CLOUDFLARE_API_TOKEN` is set, and every
+Vectorize query on the direct path — backs off on 429 but has no deadline and
+no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
+retry but carry no deadline of their own. A stall on any of them still looks
+like a silent pass — the `Timing:` block is what makes it visible.
 
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,

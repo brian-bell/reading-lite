@@ -78,6 +78,22 @@ export interface StoredVector {
 // call probe legacy (bare-id) and migrated (tenant-prefixed) vectors at once.
 export interface VectorizeAdminClient extends VectorizeClient {
   getByIds(ids: string[]): Promise<StoredVector[]>;
+  /**
+   * Query by a vector the index already holds, addressed by id — the same
+   * single POST `wrangler vectorize query --vector-id` makes (verified against
+   * wrangler 4.101's queryIndexByVectorId). No embedding call, so no spend and
+   * no risk of a freshly-computed vector drifting from the indexed one.
+   *
+   * An id the index does not hold is NOT an error: the API answers 200 with an
+   * empty match list, and so does a namespaced query for a vector that lives in
+   * another namespace. A present vector always matches itself, so "no matches"
+   * is the missing-vector signal — the same one wrangler prints as "Could not
+   * find any relevant vectors" on a zero exit.
+   */
+  queryById(
+    id: string,
+    opts: { topK: number; returnMetadata?: boolean },
+  ): Promise<VectorizeMatch[]>;
 }
 
 export interface R2Config {
@@ -630,22 +646,10 @@ export function makeVectorizeClient(
       }
     },
     async query(vector, opts) {
-      const res = await send(`${indexBase}/query`, {
-        method: "POST",
-        headers: { authorization: authHeader, "content-type": "application/json" },
-        body: JSON.stringify({
-          vector,
-          topK: opts.topK,
-          returnMetadata: opts.returnMetadata ? "all" : "none",
-          ...(cfg.namespace === undefined ? {} : { namespace: cfg.namespace }),
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Vectorize query failed: ${res.status} ${text}`);
-      }
-      const json = (await res.json()) as { result?: { matches?: VectorizeMatch[] } };
-      return json.result?.matches ?? [];
+      return runQuery({ vector }, opts);
+    },
+    async queryById(id, opts) {
+      return runQuery({ vectorId: id }, opts);
     },
     async getByIds(ids) {
       if (ids.length === 0) return [];
@@ -674,6 +678,31 @@ export function makeVectorizeClient(
       }));
     },
   };
+
+  // `vector` and `vectorId` are the two spellings of the same POST; everything
+  // else about the request — topK, metadata mode, namespace filter — is shared,
+  // so neither caller can drift from the other.
+  async function runQuery(
+    subject: { vector: number[] } | { vectorId: string },
+    opts: { topK: number; returnMetadata?: boolean },
+  ): Promise<VectorizeMatch[]> {
+    const res = await send(`${indexBase}/query`, {
+      method: "POST",
+      headers: { authorization: authHeader, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...subject,
+        topK: opts.topK,
+        returnMetadata: opts.returnMetadata ? "all" : "none",
+        ...(cfg.namespace === undefined ? {} : { namespace: cfg.namespace }),
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Vectorize query failed: ${res.status} ${text}`);
+    }
+    const json = (await res.json()) as { result?: { matches?: VectorizeMatch[] } };
+    return json.result?.matches ?? [];
+  }
 }
 
 // A view of an R2Client confined to one tenant's key root (reading-lite-
