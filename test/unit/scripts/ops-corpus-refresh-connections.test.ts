@@ -3,6 +3,7 @@ import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import { RATE_LIMIT_CONSECUTIVE_LIMIT } from "../../../scripts/ops-lib/execute-pool";
 import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
+import { mergeListRows as applyRowPatches } from "../../../scripts/ops-lib/list-index-cas";
 import type {
   RelationshipJudgementInput,
   RelationshipJudgementResult,
@@ -107,12 +108,14 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
       manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
       return true;
     },
-    writeListIndex: async (next) => {
+    // The real merge, so a test that inspects a row after the flush sees what
+    // the CAS write would have produced from this run's patches.
+    mergeListRows: async (patches) => {
       if (failList) {
         failList = false;
         throw new Error("list unavailable");
       }
-      items = next as typeof items;
+      items = applyRowPatches(items, patches) as typeof items;
       listWrites.push(items);
     },
   };
@@ -677,6 +680,47 @@ describe("storageFromClient", () => {
     );
   });
 
+  it("merges verdicts into the live list index under If-Match, retrying a 412", async () => {
+    const listKey = "t/index/list.json";
+    // The corpus gains rd_new and rewrites rd_a's title while the run judges;
+    // the first conditional put loses to that writer.
+    const versions = [
+      { items: [listRow("rd_a"), listRow("rd_b")], etag: "v1" },
+      {
+        items: [{ ...listRow("rd_a"), title: "Retitled" }, listRow("rd_b"), listRow("rd_new")],
+        etag: "v2",
+      },
+    ];
+    const puts: Array<{ etag: string; body: string }> = [];
+    let read = 0;
+    const client = {
+      async getWithEtag(key: string) {
+        expect(key).toBe(listKey);
+        const version = versions[Math.min(read++, versions.length - 1)]!;
+        return { body: JSON.stringify({ version: 1, items: version.items }), etag: version.etag };
+      },
+      async putIfMatch(key: string, body: string, etag: string) {
+        expect(key).toBe(listKey);
+        puts.push({ etag, body });
+        return puts.length > 1;
+      },
+    } as unknown as R2InventoryClient;
+
+    await storageFromClient(client, "t/").mergeListRows([
+      { id: "rd_a", novelty_verdict: "familiar" },
+      { id: "rd_b", novelty_verdict: undefined },
+    ]);
+
+    expect(puts.map((put) => put.etag)).toEqual(["v1", "v2"]);
+    const written = JSON.parse(puts[1]!.body) as { items: Array<Record<string, unknown>> };
+    // The concurrent insertion and the concurrent title both survive; only the
+    // two judged fields are this run's to write.
+    expect(written.items.map((row) => row.id)).toEqual(["rd_a", "rd_b", "rd_new"]);
+    expect(written.items[0]!.title).toBe("Retitled");
+    expect(written.items[0]!.novelty_verdict).toBe("familiar");
+    expect(written.items[1]).not.toHaveProperty("novelty_verdict");
+  });
+
   it("passes the ETag from the read straight back to the CAS write", async () => {
     const { client, calls } = fakeInventoryClient(
       new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),
@@ -710,7 +754,7 @@ function trackingStorage(
       return manifests.get(keyPrefix) ?? null;
     },
     putManifestIfMatch: async () => true,
-    writeListIndex: async () => {},
+    mergeListRows: async () => {},
   };
   return { storage, peak: () => peak, completed };
 }
@@ -822,8 +866,8 @@ describe("ops corpus refresh-connections execute concurrency", () => {
         manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
         return true;
       },
-      writeListIndex: async (next) => {
-        listWrite = next as typeof items;
+      mergeListRows: async (patches) => {
+        listWrite = applyRowPatches(items, patches) as typeof items;
       },
     };
 

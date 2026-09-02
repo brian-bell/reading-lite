@@ -104,8 +104,8 @@ describe("timed storage wrappers", () => {
         putManifest: async (keyPrefix) => {
           calls.push(`putManifest:${keyPrefix}`);
         },
-        writeListIndex: async () => {
-          calls.push("writeListIndex");
+        mergeListRows: async () => {
+          calls.push("mergeListRows");
         },
       },
       timer,
@@ -116,14 +116,14 @@ describe("timed storage wrappers", () => {
     await r2.queryByVectorId("idx", "usr:rd_a", 6, "usr");
     expect(await r2.readManifest("readings/2026/rd_a", deps)).toEqual({ id: "rd_a" });
     await r2.putManifest("readings/2026/rd_a", {}, deps);
-    await r2.writeListIndex([], deps);
+    await r2.mergeListRows([{ id: "rd_a" }], deps);
 
     expect(calls).toEqual([
       "readListIndex",
       "query:idx:usr:rd_a:6:usr",
       "readManifest:readings/2026/rd_a",
       "putManifest:readings/2026/rd_a",
-      "writeListIndex",
+      "mergeListRows",
     ]);
     const block = timer.format();
     expect(block).toContain("list read");
@@ -141,7 +141,7 @@ describe("timed storage wrappers", () => {
         readListIndex: async () => [],
         readManifest: async () => ({ manifest: { id: "rd_a" }, etag: "e" }),
         putManifestIfMatch: async () => true,
-        writeListIndex: async () => {},
+        mergeListRows: async () => {},
       },
       timer,
       () => phase,

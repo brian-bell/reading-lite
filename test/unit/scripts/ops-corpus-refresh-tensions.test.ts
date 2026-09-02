@@ -122,8 +122,8 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
       manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
       return true;
     },
-    writeListIndex: async (next) => {
-      listWrites.push(next);
+    mergeListRows: async (patches) => {
+      listWrites.push(patches);
     },
   };
   const out: string[] = [];
@@ -626,7 +626,7 @@ describe("ops corpus refresh-tensions planning read concurrency", () => {
         return stored ? { manifest: structuredClone(stored.manifest), etag: stored.etag } : null;
       },
       putManifestIfMatch: async () => true,
-      writeListIndex: async () => {},
+      mergeListRows: async () => {},
     };
     const h = harness();
     h.createStorage.mockResolvedValue(storage);
@@ -703,7 +703,7 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
         manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
         return true;
       },
-      writeListIndex: async () => {},
+      mergeListRows: async () => {},
     };
 
     const held = new Set<string>();

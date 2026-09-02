@@ -19,6 +19,7 @@ import type { R2Deps } from "../corpus-lib/wrangler-r2";
 import { parseVectorQueryMatch } from "../corpus-lib/wrangler-r2";
 import type { RefreshNeighbour, RefreshRow } from "../corpus-lib/refresh-neighbours";
 import type { CorpusRefreshNeighboursR2 } from "./commands/corpus-refresh-neighbours";
+import { casMergeListIndex, type ListIndexCasDeps } from "./list-index-cas";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 
 // Relative-key spelling only, like wrangler-r2: R2Deps.keyRoot is applied at
@@ -102,12 +103,10 @@ export interface DirectNeighboursDeps {
   /** One Vectorize client per (index, namespace). */
   vectorize: (index: string, namespace: string | undefined) => NeighbourVectorizeClient;
   /**
-   * index/list.json still goes through wrangler. The rewrite is a plain
-   * wholesale put guarded by --sole-writer, and slice 6 of the refresh-perf
-   * plan replaces it with a CAS read-merge-write; moving it here first would
-   * change the write path twice for no measured gain. Only --execute reaches it.
+   * CAS knobs for the closing index/list.json flush. Tests drive contention
+   * without waiting; a real run takes the defaults.
    */
-  writeListIndex: (items: RefreshRow[], deps: R2Deps) => Promise<void>;
+  listCas?: ListIndexCasDeps;
 }
 
 export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNeighboursR2 {
@@ -190,6 +189,20 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
       );
     },
 
-    writeListIndex: (items, r2Deps) => deps.writeListIndex(items, r2Deps),
+    // The one write in tier 1 that is not scoped to a single reading, and the
+    // only place the corpus-wide document is rewritten: an If-Match
+    // read-merge-write, so the rows this pass measured get their fresh
+    // similarity and every other row keeps whatever the live index has.
+    // Whichever client `deps.r2` built has to carry ETags and honour If-Match.
+    // Both do: the tier-2/3 manifest CAS already depends on that over the same
+    // two clients, S3-keyed and CLOUDFLARE_API_TOKEN-only alike.
+    async mergeListRows(patches, r2Deps) {
+      await casMergeListIndex(
+        client(r2Deps),
+        rooted(layout.listIndexKey(), r2Deps),
+        patches,
+        deps.listCas ?? {},
+      );
+    },
   };
 }

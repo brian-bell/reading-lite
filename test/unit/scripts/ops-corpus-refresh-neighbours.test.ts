@@ -6,6 +6,7 @@ import {
 } from "../../../scripts/ops-lib/commands/corpus-refresh-neighbours";
 import { UsageError, type CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshNeighbour, RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
+import type { ListRowPatch } from "../../../scripts/ops-lib/list-index-cas";
 
 function io(): { io: CommandIo; lines: string[] } {
   const lines: string[] = [];
@@ -100,7 +101,7 @@ function makeDeps(opts: {
       putManifest: async (key, body) => {
         calls.puts.push({ key, body: body as Record<string, unknown> });
       },
-      writeListIndex: async () => {
+      mergeListRows: async () => {
         calls.indexWrites++;
       },
     },
@@ -407,9 +408,9 @@ describe("ops corpus refresh-neighbours", () => {
       items: [listStale, NEIGHBOUR],
       manifest: { ...VALID_MANIFEST, similarity: current },
     });
-    const written: RefreshRow[][] = [];
-    deps.r2.writeListIndex = async (items) => {
-      written.push(items);
+    const patched: ListRowPatch[][] = [];
+    deps.r2.mergeListRows = async (patches) => {
+      patched.push(patches);
       calls.indexWrites++;
     };
 
@@ -421,7 +422,7 @@ describe("ops corpus refresh-neighbours", () => {
     expect(code).toBe(0);
     expect(calls.puts).toHaveLength(0);
     expect(calls.indexWrites).toBe(1);
-    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual(current);
+    expect(patched[0]).toEqual([{ id: "rd_r", similarity: current }]);
     expect(lines.join("\n")).toContain("list-stale");
   });
 
@@ -435,9 +436,9 @@ describe("ops corpus refresh-neighbours", () => {
       items: [listStale, NEIGHBOUR],
       manifest: { ...VALID_MANIFEST, similarity: current },
     });
-    const written: RefreshRow[][] = [];
-    deps.r2.writeListIndex = async (items) => {
-      written.push(items);
+    const patched: ListRowPatch[][] = [];
+    deps.r2.mergeListRows = async (patches) => {
+      patched.push(patches);
       calls.indexWrites++;
     };
 
@@ -449,7 +450,7 @@ describe("ops corpus refresh-neighbours", () => {
     expect(code).toBe(0);
     expect(calls.puts).toHaveLength(0);
     expect(calls.indexWrites).toBe(1);
-    expect(written[0]!.find((row) => row.id === "rd_r")?.similarity).toEqual(current);
+    expect(patched[0]).toEqual([{ id: "rd_r", similarity: current }]);
   });
 
   it("plan mode treats a schema-invalid manifest as a failed measurement, not a report row", async () => {
@@ -552,7 +553,7 @@ describe("ops corpus refresh-neighbours", () => {
 
   it("writes refresh-report.json even when the list flush fails, then exits 1", async () => {
     const { deps, calls, lines } = makeDeps({});
-    deps.r2.writeListIndex = async () => {
+    deps.r2.mergeListRows = async () => {
       calls.indexWrites++;
       throw new Error("put index/list.json failed: 500");
     };
