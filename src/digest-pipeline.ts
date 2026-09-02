@@ -8,7 +8,7 @@
  * re-enqueues current-period `pending` rows (via `currentPeriodKey`) so a
  * producer miss through the due hour can still land on DIGEST_JOBS later
  * that day/week. Leftover re-enqueue only applies to *stale* pending rows
- * (`DIGEST_PENDING_STALE_MS` = 15 minutes, one `*/15` cron interval — longer
+ * (`DIGEST_PENDING_STALE_MS` = 15 minutes, one cron interval — longer
  * than the digest 429 retry cap of 5 minutes) so an in-flight or mid-retry
  * job is not double-queued. A `queue.send` failure after this tick *inserted* a pending
  * claim deletes that row so a later tick can claim again. An already-existing
@@ -65,7 +65,7 @@ export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-stagin
 
 /**
  * Age a pending ledger row must reach before fan-out may `queue.send` again.
- * One `*/15` cron interval, and longer than the digest 429 retry cap (5 min).
+ * One 15-minute cron interval, and longer than the digest 429 retry cap (5 min).
  */
 export const DIGEST_PENDING_STALE_MS = 15 * 60_000;
 
