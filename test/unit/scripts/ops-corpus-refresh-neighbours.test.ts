@@ -871,7 +871,7 @@ describe("ops corpus refresh-neighbours", () => {
       });
     });
 
-    // --only/--limit measure a subset on purpose; advancing the marker would
+    // --only names a subset, and --limit cuts one; advancing the marker would
     // claim the readings they skipped had been refreshed.
     it("leaves the marker alone when --only or --limit narrowed the pass", async () => {
       for (const flags of [["rd_r"], ["--limit", "1"]]) {
@@ -884,6 +884,19 @@ describe("ops corpus refresh-neighbours", () => {
         expect(calls.stateWrites).toEqual([]);
         expect(lines.join("\n")).toContain("Run marker unchanged");
       }
+    });
+
+    // A limit used as a runaway-cost valve and never reached has measured its
+    // whole scope; pinning the marker on the flag alone would make every later
+    // night sweep for no reason.
+    it("advances the marker when --limit never cut the plan short", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "500"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toHaveLength(1);
     });
 
     // A written marker is an optimisation, not corpus state: every snapshot the

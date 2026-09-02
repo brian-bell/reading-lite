@@ -70,6 +70,13 @@ export interface RefreshRow {
 export interface RefreshPlan {
   targets: RefreshRow[];
   skippedNotReady: number;
+  /**
+   * True when `limit` actually cut the plan short. A limit used as a
+   * runaway-cost valve and never reached has measured everything it was asked
+   * to, and callers that treat a capped pass as partial should not treat that
+   * one as partial too.
+   */
+  truncated: boolean;
 }
 
 export interface JudgedAt {
@@ -152,7 +159,7 @@ export function planRefresh(
     targets.push(it);
   }
   const limited = opts.limit === undefined ? targets : targets.slice(0, opts.limit);
-  return { targets: limited, skippedNotReady };
+  return { targets: limited, skippedNotReady, truncated: limited.length < targets.length };
 }
 
 export function resolveJudgedAt(reading: RefreshRow): JudgedAt {

@@ -288,6 +288,7 @@ async function resolveScope(args: {
   if (base.kind === "full") return base;
 
   const reverse = new Map<string, ReverseMatches>();
+  const statusById = new Map(items.map((row) => [row.id, row.status]));
   for (const id of base.changed) {
     // Every changed reading is queried, whatever its status says. Status is not
     // a statement about vector ownership — a reprocess-in-flight `pending` row
@@ -316,19 +317,23 @@ async function resolveScope(args: {
               id: match.id,
               score: match.score,
             }));
-      if (parsed === null) {
-        io.stderr(`  ! no reverse neighbourhood for ${id}`);
+      // Only worth a line when it changes the outcome. A pending or failed
+      // reading owning no vector is an ordinary night — saying so once per
+      // ingested reading would make stderr useless as an alerting signal.
+      if (parsed === null && statusById.get(id) === "ready") {
+        io.stderr(`  ! no reverse neighbourhood for ready reading ${id}`);
       }
       reverse.set(id, parsed);
     } catch (e) {
+      // Not a break, even though one failure already decides the sweep: the
+      // reason is meant to carry how many changed readings saturated, and
+      // abandoning the loop would report every remaining id as unanswered and
+      // no saturations at all — the exact thing the count exists to prevent.
+      // The cost is bounded by the changed set, and a credential broken enough
+      // to fail every query fails the list read first.
       io.stderr(
         `  ! reverse-neighbour query failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,
       );
-      // One unanswered query already means a full sweep, and the remaining ones
-      // cannot change that — unlike a saturation, which is counted to make its
-      // rate visible. A bad credential would otherwise spend a query, or a
-      // wrangler process, per changed reading before sweeping anyway.
-      break;
     }
   }
   return incrementalScope(items, marker, reverse, listEtag);
@@ -603,6 +608,7 @@ async function refreshNeighbours(
     marker,
     scope,
     items,
+    truncated: plan.truncated,
     // The flush rewrote index/list.json, so the ETag this pass read is already
     // superseded. Recording it would be recording a token no future read can
     // ever match; the next run falls back to the row timestamps instead.
@@ -621,10 +627,11 @@ async function refreshNeighbours(
  *
  * Only a complete --execute pass may advance it, because the marker asserts
  * something stronger than "we looked": every reading in scope was measured AND
- * whatever drifted was written. A plan pass writes no snapshot, and --only /
- * --limit deliberately measure a subset, so both leave the marker where it is
- * and the readings they skipped stay in the next run's scope. Failures already
- * returned non-zero before this point.
+ * whatever drifted was written. A plan pass writes no snapshot, --only names a
+ * subset, and --limit leaves the marker alone only when it actually cut the
+ * plan short — a limit used as a runaway-cost valve and never reached has
+ * measured its whole scope. Failures already returned non-zero before this
+ * point.
  *
  * `last_full_run_at` moves only on a full sweep — it is what a weekly-sweep
  * policy is judged against.
@@ -637,13 +644,15 @@ async function advanceMarker(args: {
   marker: RefreshState | null;
   scope: RefreshScope;
   items: RefreshRow[];
+  /** True when --limit actually cut the plan short. */
+  truncated: boolean;
   listEtag?: string;
   runAt: string;
 }): Promise<void> {
   const { opts, io } = args;
   if (!opts.execute) return;
-  if (opts.only.length > 0 || opts.limit !== undefined) {
-    io.stdout("Run marker unchanged: --only/--limit measured a subset of the scope.");
+  if (opts.only.length > 0 || args.truncated) {
+    io.stdout("Run marker unchanged: this pass measured a subset of its scope.");
     return;
   }
   const state = buildRefreshState({

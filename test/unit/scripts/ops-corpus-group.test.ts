@@ -329,6 +329,24 @@ describe("ops corpus backfill-similarity", () => {
     return { deps, lines, calls };
   }
 
+  // A failed query costs one reading rather than the pass — a backfill runs for
+  // hundreds — but the exit status still has to say the run was incomplete, in
+  // plan mode too. Before, the throw propagated and the dispatcher exited
+  // non-zero; a cron checking a plan pass must not lose that.
+  it("survives a failed query per reading and still reports the run incomplete", async () => {
+    const { deps, lines, calls } = makeDeps([{ id: "rd_r", score: 1 }]);
+    deps.r2.queryByVectorId = async () => {
+      calls.queries++;
+      throw new Error("no matches array");
+    };
+    const code = await corpusBackfillSimilarityCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(1);
+    expect(calls.queries).toBe(1);
+    const text = lines.join("\n");
+    expect(text).toContain("vectorize query failed for rd_r");
+    expect(text).toContain("run incomplete");
+  });
+
   it("plan mode queries but writes nothing", async () => {
     const { deps, calls } = makeDeps([{ id: "rd_r", score: 1 }, { id: "rd_o", score: 0.5 }]);
     const code = await corpusBackfillSimilarityCommand.run(["--tenant", "global"], deps);

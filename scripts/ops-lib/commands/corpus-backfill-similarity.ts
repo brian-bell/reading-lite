@@ -238,9 +238,15 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
   // rationale in the module header of corpus-lib/backfill-similarity.ts).
   // A --limit run is not a failure: those targets were never attempted.
   const unscored = noVector + errored + invalid;
-  if (opts.execute && unscored > 0) {
+  // A query or write that FAILED is a broken run in either mode. It used to
+  // propagate out of the command and exit non-zero even in plan mode; now that
+  // one failed reading no longer ends the pass, the exit status has to carry
+  // that signal instead, or a plan pass whose every query failed on a bad
+  // credential would look like a clean one to a cron.
+  if ((opts.execute && unscored > 0) || errored > 0 || invalid > 0) {
+    const n = opts.execute ? unscored : errored + invalid;
     io.stderr(
-      `\n${unscored} of ${targets.length} attempted reading(s) were not scored — run incomplete.`,
+      `\n${n} of ${targets.length} attempted reading(s) were not scored — run incomplete.`,
     );
     return 1;
   }
