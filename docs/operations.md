@@ -274,6 +274,37 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 | `npm run ops -- corpus migrate-founder` | copy the global layout into the founder tenant namespace and re-upsert vectors (plan doubles as the reconciliation check) |
 
+The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
+examples below all select the founder tenant. Since the production cutover, new
+readings are written under the founder's `usr_…` namespace, so export it once
+and reuse it:
+
+```sh
+# Fill in, then paste.
+export TENANT=usr_…   # production whoami.tenant_id
+```
+
+Take that id from an authenticated `GET /api/whoami` against production. The
+production founder id is also recorded in the cutover log in
+`docs/founder-cutover.md`, but that file lists a **staging** founder id as
+well — do not copy the wrong one.
+
+Never run a production refresh with `--tenant global`. That selector still
+resolves to the legacy pre-cutover layout, which no longer receives readings;
+refreshing it spends judgements on a copy nobody reads.
+
+Production credentials do not live in the repo either. `refresh-neighbours`
+shells out to the wrangler CLI, so it needs working wrangler auth
+(`wrangler login` or `CLOUDFLARE_API_TOKEN`) and ignores the `CORPUS_R2_*`
+keys entirely. `refresh-connections` and `refresh-tensions` do read those
+keys, and that is where the trap is: `.corpus.vars` S3 keys are commonly
+scoped to the staging bucket and then 403 against the production bucket, and
+both commands prefer S3 keys over a Cloudflare API token whenever both are
+present, so stale staging keys silently win over an otherwise correct token.
+Source production keys from outside the repo; the credentials row of the
+cutover log in `docs/founder-cutover.md` records what an actual production run
+needed.
+
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later
@@ -305,8 +336,8 @@ entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
 ```sh
-npm run ops -- corpus refresh-neighbours --tenant global
-npm run ops -- corpus refresh-neighbours --tenant global --execute --sole-writer
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT"
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
 ```
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
@@ -316,12 +347,12 @@ synchronous cost, then exits without a provider call or storage write.
 
 ```sh
 npm run ops -- corpus refresh-connections \
-  --tenant global --report ./refresh-report.json
+  --tenant "$TENANT" --report ./refresh-report.json
 
 # Start with a controlled production write after pausing and draining every
 # corpus writer for the selected tenant.
 npm run ops -- corpus refresh-connections \
-  --tenant global --report ./refresh-report.json \
+  --tenant "$TENANT" --report ./refresh-report.json \
   --execute --sole-writer --limit 1
 ```
 
@@ -358,12 +389,12 @@ Plan mode prints each pair with its overlap evidence and estimated cost plus
 every free repair, and writes nothing.
 
 ```sh
-npm run ops -- corpus refresh-tensions --tenant global --report ./refresh-report.json
+npm run ops -- corpus refresh-tensions --tenant "$TENANT" --report ./refresh-report.json
 
 # Hand-pick a pair known to conflict. With --pair the report is read only
 # when --report is passed explicitly.
 npm run ops -- corpus refresh-tensions \
-  --tenant global --pair rd_older,rd_retraction --execute --sole-writer
+  --tenant "$TENANT" --pair rd_older,rd_retraction --execute --sole-writer
 ```
 
 Execute mode makes one pairwise provider call per selected pair and writes
