@@ -4,6 +4,7 @@ import {
   SNAPSHOT_CHANGE_EPSILON,
   buildRefreshReport,
   buildReportReading,
+  describeReportScope,
   diffNeighbourhood,
   flooredNeighbours,
   planRefresh,
@@ -546,6 +547,36 @@ describe("flooredNeighbours", () => {
       { id: "rd_far", score: 0.1 },
     ]);
     expect(out.map((n) => n.id)).toEqual(["rd_b"]);
+  });
+});
+
+describe("describeReportScope", () => {
+  // Pre-header refresh-neighbours already accepted positional IDs and --limit,
+  // so a missing header is not a full pass. The line must stay unstated.
+  it("names a missing header unstated, not full", () => {
+    expect(describeReportScope(undefined)).toBe(
+      "Scope: unstated — the report carries no scope header",
+    );
+    expect(describeReportScope(undefined)).not.toMatch(/full/i);
+  });
+
+  it("prints a full header with its reason", () => {
+    expect(describeReportScope({ kind: "full", reason: "--full" })).toBe("Scope: full — --full");
+  });
+
+  it("prints an incremental header with count, reason, and narrowing", () => {
+    expect(
+      describeReportScope({
+        kind: "incremental",
+        reason: "4 reading(s) changed since 2026-08-21T00:00:00.000Z",
+        since: "2026-08-21T00:00:00.000Z",
+        readings_in_scope: 9,
+        narrowed_by: "--limit 3",
+      }),
+    ).toBe(
+      "Scope: incremental (9 reading(s)) — 4 reading(s) changed since " +
+        "2026-08-21T00:00:00.000Z; narrowed by --limit 3",
+    );
   });
 });
 

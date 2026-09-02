@@ -371,7 +371,13 @@ describe("ops corpus refresh-tensions", () => {
     it("says the scope is unstated when the report carries no header", async () => {
       const h = harness();
       expect(await run(h)).toBe(0);
-      expect(h.out.join("\n")).toContain("Scope: unstated — the report predates the scope header");
+      const printed = h.out.find((line) => line.startsWith("Scope:"));
+      expect(printed).toBe("Scope: unstated — the report carries no scope header");
+      expect(printed).not.toMatch(/full/i);
+    });
+
+    it("documents that a missing report scope is unstated, not full", () => {
+      expect(corpusRefreshTensionsCommand.helpText).toContain("Scope: unstated, not full");
     });
 
     // A --pair-only pass came from no report, so there is no tier-1 scope to

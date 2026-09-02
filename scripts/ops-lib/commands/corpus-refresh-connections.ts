@@ -874,7 +874,9 @@ export const corpusRefreshConnectionsCommand: CommandDefinition<CorpusRefreshCon
 Consumes the tier-one refresh-report.json, validates it against the selected
 tenant, and plans one relationship-only provider call for each eligible row.
 Plan mode prints every judgement and an estimated synchronous cost without a
-provider call or storage write.
+provider call or storage write. It prints the report's scope; a report with no
+header is Scope: unstated, not full — pre-header refresh-neighbours already
+accepted positional IDs and --limit, so coverage is not known.
 
 Execute mode updates only connections, novelty_verdict, and
 connections_computed_at, then synchronizes each list-row verdict. It requires a

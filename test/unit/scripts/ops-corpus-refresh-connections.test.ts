@@ -291,12 +291,18 @@ binding = "READING_JOBS"
       expect(h.out.join("\n")).toContain("Scope: full — --full");
     });
 
-    // Reports written before the scope header exists were full passes, but the
-    // file does not say so, and the header must not claim more than it reads.
+    // Pre-header refresh-neighbours already accepted positional IDs and --limit,
+    // so a missing header is not a full pass. Print unstated, not full.
     it("says the scope is unstated when the report carries no header", async () => {
       const h = harness();
       expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
-      expect(h.out.join("\n")).toContain("Scope: unstated — the report predates the scope header");
+      const printed = h.out.find((line) => line.startsWith("Scope:"));
+      expect(printed).toBe("Scope: unstated — the report carries no scope header");
+      expect(printed).not.toMatch(/full/i);
+    });
+
+    it("documents that a missing report scope is unstated, not full", () => {
+      expect(corpusRefreshConnectionsCommand.helpText).toContain("Scope: unstated, not full");
     });
   });
 

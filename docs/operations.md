@@ -537,9 +537,10 @@ flagged readings. Plan mode validates the report tenant and every live target,
 prints the provider/model/effort, each selected judgement, and estimated
 synchronous cost, then exits without a provider call or storage write. Both
 tier-2 and tier-3 passes echo the report's scope header (`Scope: incremental
-(12 reading(s)) — …`, or `Scope: unstated …` for a report written before the
-header existed), so a nightly log says on its own whether it covers a scoped
-subset or the whole corpus.
+(12 reading(s)) — …`, `Scope: full — …`, or `Scope: unstated` when the report
+carries no header). Missing is not inferred as full: pre-header
+`refresh-neighbours` already accepted positional IDs and `--limit`, so a
+header-less report may be a hand-picked or capped subset.
 
 ```sh
 npm run ops -- corpus refresh-connections \

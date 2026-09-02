@@ -306,13 +306,14 @@ export function buildReportReading(
  * scoped subset from a run over the whole corpus — the two look identical once
  * the flagged readings are listed.
  *
- * A report with no scope header at all predates the incremental scope, which
- * means the pass that wrote it was a full one; it is named "unstated" rather
- * than "full" because that is an inference, not something the file says.
+ * A report with no scope header is named "unstated", not "full". Pre-header
+ * `refresh-neighbours` already accepted positional IDs and `--limit`, so the
+ * pass that wrote it may have been a hand-picked or capped subset. Missing is
+ * not corpus-wide coverage.
  */
 export function describeReportScope(scope: RefreshReportScope | undefined): string {
   if (scope === undefined) {
-    return "Scope: unstated — the report predates the scope header (a full pass wrote it)";
+    return "Scope: unstated — the report carries no scope header";
   }
   const count = scope.readings_in_scope;
   const head =

@@ -905,7 +905,10 @@ a fifth of their keywords, or an existing connection, skips pairs both sides
 already remember judging, and plans one pairwise provider call per remaining
 pair. Plan mode prints each pair with its overlap evidence and estimated
 synchronous cost, plus every free one-sided repair, without a provider call or
-storage write.
+storage write. It prints the report's scope; a report with no header is
+Scope: unstated, not full — pre-header refresh-neighbours already accepted
+positional IDs and --limit, so coverage is not known. A --pair-only pass prints
+no scope line.
 
 Execute mode writes each side's directional tension (contradicts, supersedes,
 superseded_by, qualifies, qualified_by) and a judged-pair record to BOTH

@@ -44,8 +44,9 @@ const ReportReadingSchema = z
   .strict();
 
 // What the tier-1 pass measured. Optional: reports written before the
-// incremental scope existed carry no header, and an absent scope reads the same
-// way a full one does — the whole ready corpus was looked at.
+// incremental scope existed carry no header. Missing is not full — pre-header
+// `refresh-neighbours` already accepted positional IDs and `--limit`, so an
+// absent header is unstated coverage, not the whole ready corpus.
 const ReportScopeSchema = z
   .object({
     kind: z.enum(["full", "incremental"]),
