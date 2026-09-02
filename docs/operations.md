@@ -489,9 +489,10 @@ recording a digest of ready ids instead of a count and by having
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
 than paying for reverse queries it cannot use. The header then reads
-`Scope: full — --only names N reading(s)`, the same way `--limit` leaves the
-scope full, and the report records the narrowing under `scope.narrowed_by`.
-Neither flag advances the marker.
+`Scope: full — --only names N reading(s)`. `--limit` is different: it still
+resolves its scope and then measures the first N of it, so the header and the
+report keep saying `incremental`. Either way the report records the narrowing
+under `scope.narrowed_by`, and neither flag advances the marker.
 
 Only a complete `--execute` pass advances the marker (a plan pass writes no
 snapshots, and `--only`/`--limit` measure a subset on purpose, so neither

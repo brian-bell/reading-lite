@@ -113,7 +113,7 @@ function makeDeps(corpus: Reading[], state: RefreshState | null) {
   const byId = new Map(corpus.map((reading) => [reading.id, reading]));
   const lines: string[] = [];
   const io: CommandIo = { stdout: (t) => lines.push(t), stderr: (t) => lines.push(t) };
-  const queried: Array<{ id: string; topK: number }> = [];
+  const queried: Array<{ id: string; topK: number; metadata?: boolean }> = [];
   const reports: string[] = [];
   const deps: CorpusRefreshNeighboursDeps = {
     io,
@@ -126,8 +126,12 @@ function makeDeps(corpus: Reading[], state: RefreshState | null) {
         const reading = byId.get(id);
         return reading === undefined ? null : manifest(reading);
       },
-      queryByVectorId: async (_index, id, topK) => {
-        queried.push({ id, topK });
+      queryByVectorId: async (_index, id, topK, _namespace, opts) => {
+        queried.push({
+          id,
+          topK,
+          ...(opts?.metadata === undefined ? {} : { metadata: opts.metadata }),
+        });
         const self = byId.get(id);
         if (self === undefined) return null;
         return corpus
@@ -276,7 +280,10 @@ describe("incremental tier-1 scope, on generated corpora", () => {
     await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
     const reverse = queried.filter((q) => q.topK !== SIMILAR_TOP_K + 1);
     expect(reverse.length).toBeGreaterThan(0);
-    for (const query of reverse) expect(query.topK).toBe(REVERSE_TOP_K);
+    for (const query of reverse) {
+      expect(query.topK).toBe(REVERSE_TOP_K);
+      expect(query.metadata).toBe(false);
+    }
   });
 });
 

@@ -323,6 +323,11 @@ async function resolveScope(args: {
       io.stderr(
         `  ! reverse-neighbour query failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,
       );
+      // One unanswered query already means a full sweep, and the remaining ones
+      // cannot change that — unlike a saturation, which is counted to make its
+      // rate visible. A bad credential would otherwise spend a query, or a
+      // wrangler process, per changed reading before sweeping anyway.
+      break;
     }
   }
   return incrementalScope(items, marker, reverse, listEtag);

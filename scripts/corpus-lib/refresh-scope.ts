@@ -134,12 +134,18 @@ export function parseRefreshState(raw: unknown): RefreshState | null {
   if (!isTimestamp(rec.last_run_at)) return null;
   if (typeof rec.list_row_count !== "number" || !Number.isInteger(rec.list_row_count)) return null;
   if (rec.list_row_count < 0) return null;
+  // Normalized, not echoed: this timestamp is copied into the report header,
+  // which tier 2 parses with z.string().datetime(), so a marker spelled any
+  // other way Date.parse accepts would make the whole report unreadable to the
+  // next command in the chain.
   const state: RefreshState = {
     version: 1,
-    last_run_at: rec.last_run_at,
+    last_run_at: new Date(rec.last_run_at).toISOString(),
     list_row_count: rec.list_row_count,
   };
-  if (isTimestamp(rec.last_full_run_at)) state.last_full_run_at = rec.last_full_run_at;
+  if (isTimestamp(rec.last_full_run_at)) {
+    state.last_full_run_at = new Date(rec.last_full_run_at).toISOString();
+  }
   if (typeof rec.list_etag === "string" && rec.list_etag !== "") state.list_etag = rec.list_etag;
   return state;
 }
@@ -301,21 +307,24 @@ export function describeScope(scope: RefreshScope): string {
 
 /**
  * True when the reverse set this reading contributes is unknown rather than
- * complete: the lowest match the query returned is still at or above the bound,
- * so there is no evidence the results ran out before the bound did.
+ * complete — the query was cut off at topK and every match it did return is at
+ * or above the bound, so there may be more above it that never came back.
  *
- * Deliberately not a count comparison against REVERSE_TOP_K. A malformed match
- * entry is dropped on the way here (parseVectorQueryMatch), so a truncated
- * hundred can arrive as ninety-nine and read as complete — and this is the one
- * escalation that must never be missed. The cost of the stricter rule is a
- * corpus small and uniform enough that every reading is a near-neighbour of
- * every other, which sweeps every night and takes seconds to do it.
+ * A result shorter than topK is complete by construction: Vectorize returned
+ * everything it had, bound or no bound. That is what keeps an isolated reading
+ * — one match, itself, at 1.0 — from escalating every night.
+ *
+ * The comparison is against the minimum rather than the last element, because
+ * nothing in the query path sorts or asserts a descending order and this
+ * escalation is too important to rest on an ordering nobody guarantees.
  */
 function isSaturated(matches: readonly { score: number }[]): boolean {
-  if (matches.length === 0) return false;
-  // The minimum, not the last element: nothing in the query path sorts or
-  // asserts a descending order, and this escalation is too important to rest on
-  // an ordering nobody guarantees.
+  // Empty is unknown, not complete. A vector that exists always matches itself
+  // — the direct adapter turns an empty result into "no vector" for exactly
+  // that reason — so an empty list arriving here is an output shape we do not
+  // recognise, the same class of thing queryByVectorId now throws on.
+  if (matches.length === 0) return true;
+  if (matches.length < REVERSE_TOP_K) return false;
   return Math.min(...matches.map((match) => match.score)) >= REVERSE_SCORE_BOUND;
 }
 

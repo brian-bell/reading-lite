@@ -110,7 +110,9 @@ describe("incrementalScope", () => {
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 2 }),
-      reverse({ rd_new: [] }),
+      // An isolated reading: the only match is itself. A short result is a
+      // complete one, so this must not read as a truncated neighbourhood.
+      reverse({ rd_new: [{ id: "rd_new", score: 1 }] }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_new"], changed: ["rd_new"] });
   });
@@ -120,7 +122,7 @@ describe("incrementalScope", () => {
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 2 }),
-      reverse({ rd_redone: [] }),
+      reverse({ rd_redone: [{ id: "rd_redone", score: 1 }] }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_redone"] });
   });
@@ -226,6 +228,33 @@ describe("incrementalScope", () => {
     expect((scope as { reason: string }).reason).toContain("saturated");
   });
 
+  // A vector that exists always matches itself, so an empty result is an
+  // output shape we do not recognise rather than an empty neighbourhood.
+  it("escalates to full on an empty reverse result", () => {
+    const scope = incrementalScope(
+      [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
+      marker({ list_row_count: 1 }),
+      reverse({ rd_new: [] }),
+    );
+    expect(scope.kind).toBe("full");
+  });
+
+  // Every match above the bound, but the page was not full: Vectorize returned
+  // everything it had, so the set is complete and the scope stands.
+  it("does not escalate on a short result whose matches are all above the bound", () => {
+    const scope = incrementalScope(
+      [row("rd_new", { created_at: AFTER, updated_at: AFTER }), row("rd_near")],
+      marker({ list_row_count: 2 }),
+      reverse({
+        rd_new: [
+          { id: "rd_new", score: 1 },
+          { id: "rd_near", score: 0.9 },
+        ],
+      }),
+    );
+    expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_near", "rd_new"] });
+  });
+
   it("does not escalate when the topK-th match has fallen below the bound", () => {
     const matches = Array.from({ length: REVERSE_TOP_K }, (_, i) => ({
       id: `rd_${i}`,
@@ -255,10 +284,12 @@ describe("incrementalScope", () => {
   // deciding whether --since-last-run is worth running needs to tell one
   // unusual reading apart from a corpus that saturates every night.
   it("counts how many changed readings saturated, not just the first", () => {
-    const dense = [
-      { id: "rd_a", score: 0.9 },
-      { id: "rd_b", score: REVERSE_SCORE_BOUND },
-    ];
+    // A full page of matches, none of them below the bound: the query was cut
+    // off at topK and the real reverse set is unknown.
+    const dense = Array.from({ length: REVERSE_TOP_K }, (_, i) => ({
+      id: `rd_${i}`,
+      score: REVERSE_SCORE_BOUND + i / REVERSE_TOP_K,
+    }));
     const scope = incrementalScope(
       [
         row("rd_a", { updated_at: AFTER }),
@@ -296,7 +327,7 @@ describe("incrementalScope", () => {
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 2, list_etag: "old" }),
-      reverse({ rd_a: [] }),
+      reverse({ rd_a: [{ id: "rd_a", score: 1 }] }),
       "new",
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_a"] });
