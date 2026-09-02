@@ -695,9 +695,9 @@ async function refreshNeighbours(
   // A misconfiguration does not escape by hiding in incremental passes: a
   // changed ready reading whose vector cannot be found escalates the scope to
   // a sweep, which is this rule's input.
-  // An aborted pass is excluded for the same reason a narrowed one is: it never
-  // asked most of its targets, so "measured none of them" is not the corpus
-  // answering. It exits 1 through `errored` regardless.
+  // An aborted pass is excluded for the same reason a narrowed one is: the
+  // targets after the throw were never attempted, so "measured none of them" is
+  // not the corpus answering. It exits 1 through `errored` regardless.
   const configurationFailure =
     !handNarrowed &&
     !aborted &&

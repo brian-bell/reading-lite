@@ -524,14 +524,17 @@ from the marker — so it reaches the same verdict on the first pass as on the
 hundredth, with no marker to bootstrap from. An incremental scope is routinely
 one or two readings, often exactly the ones carried under `unmeasurable_ids` for
 retry; calling that a configuration failure would freeze the marker on a single
-broken reading, grow the scope every night, and page for it forever. A
-misconfiguration does not escape by hiding in the nightly pass: a changed ready
-reading whose vector cannot be found escalates the scope to a sweep, which is
-what reports it. A pass narrowed by `--only` or by a `--limit` that truncated it
-never reports one either — it measured the subset it was told to, so naming one
-broken reading with `--only` exits 3, not 1. Nor does a pass that threw partway
-through: it never asked most of its targets, so it reports the abort and exits 1
-on that.
+broken reading, grow the scope every night, and page for it forever. On any
+night that a ready reading changed, a misconfiguration surfaces anyway — that
+reading's vector cannot be found, which escalates the scope to a sweep, and the
+sweep reports it. On a night when nothing changed at all it does not: the scope
+is then just the carried retries, they all answer "no vector", and the pass
+exits 3. **The weekly `--full` sweep is the only guaranteed detector**, which is
+one more reason to keep it scheduled. A pass narrowed by `--only` or by a
+`--limit` that truncated it never reports a configuration failure either — it
+measured the subset it was told to, so naming one broken reading with `--only`
+exits 3, not 1. Nor does a pass that threw partway through: the targets after
+the throw were never attempted, so it reports the abort and exits 1 on that.
 
 There is no minimum corpus size, so a small tenant — a staging or dev corpus of
 one or two ready readings, both genuinely vectorless — sweeps, reports a
@@ -539,8 +542,13 @@ configuration failure, and stays there until someone repairs or re-embeds them:
 exit 1 on every run, marker frozen, so every pass sweeps. That is the intended
 reading of the evidence (a corpus in which nothing is measurable is not a corpus
 you can refresh), and on a corpus that small a permanent sweep costs nothing.
-The production corpus is in no danger of it: a sweep there measures hundreds of
-readings, so the condition cannot fire unless the index really is unreachable.
+The production corpus is in no danger of it by size: a sweep there measures
+hundreds of readings, so the condition cannot fire unless the index really is
+unreachable. It can fire by state, though — a Vectorize namespace cutover that
+has migrated R2 but not yet re-upserted the vectors leaves every ready reading
+vectorless, which is what this condition is built to notice. Expect exit 1 on
+every refresh for the length of such a window, and either pause the schedule or
+finish the re-upsert (`corpus backfill-vectors`) before resuming it.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
