@@ -1102,6 +1102,40 @@ describe("ops corpus refresh-neighbours", () => {
       expect(lines.join("\n")).toContain("could not re-read the run marker before advancing it");
     });
 
+    // The re-read guard must not refuse to replace the very marker this pass
+    // already found unusable, or the corpus would sit on an old-format marker
+    // for ever.
+    it("replaces a version-1 marker it swept against", async () => {
+      const { deps, calls } = makeDeps({
+        state: { version: 1, last_run_at: "2026-08-21T00:00:00.000Z", list_row_count: 2 },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites[0]).toMatchObject({ version: 2, list_ids: ["rd_n", "rd_r"] });
+    });
+
+    // A marker that WAS usable and is now unreadable may be carrying a stamp
+    // this pass cannot see, so it is not overwritten.
+    it("stands down when a usable marker became unparseable mid-pass", async () => {
+      let reads = 0;
+      const { deps, calls, lines } = makeDeps({ state: MARKER });
+      const base = deps.r2.readRefreshState;
+      deps.r2.readRefreshState = async (d) => {
+        reads++;
+        return reads === 1 ? base(d) : { version: 99 };
+      };
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.stateWrites).toEqual([]);
+      expect(lines.join("\n")).toContain("could not re-read the run marker before advancing it");
+    });
+
     // An older marker and a damaged one need different things from an operator.
     it("names a version-1 marker as predating the purge check", async () => {
       const { deps, lines } = makeDeps({

@@ -20,6 +20,10 @@
 // restored, no stamp, and no way for a re-run to notice (it would find the
 // vectors already indexed and restore nothing). Stamping first can only ever
 // cost a full sweep that was not strictly owed, which is the cheap direction.
+// What it does NOT cover is a crash during a concurrent refresh pass: a pass
+// that started after the opening stamp reads that same value, and if this run
+// dies before the closing one it will clear it. That residual is what the
+// refresh side's --sole-writer assertion is for.
 //
 // A run that restored something stamps a SECOND time when it is done, with a
 // different value. Neither this command nor the refresh pass holds a lock on

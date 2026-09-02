@@ -791,6 +791,12 @@ async function invalidationArrivedDuringPass(args: {
   try {
     const raw = await args.r2.readRefreshState(args.r2Deps);
     live = raw === null ? null : parseRefreshState(raw);
+    // A marker that is there but does not parse — damaged, or a newer format —
+    // may be carrying a stamp this pass cannot read, and overwriting it would
+    // discard an owed sweep. Unless this pass ALREADY found it unusable, in
+    // which case it is the same unusable marker, and refusing to replace it
+    // would leave the corpus on an old-format marker forever.
+    if (raw !== null && live === null && args.marker !== null) return "unknown";
   } catch {
     return "unknown";
   }
@@ -879,8 +885,8 @@ could have moved since the run marker at index/refresh-state.json: those
 created or reprocessed since it, and the reverse neighbourhood of each changed
 vector (a topK-${REVERSE_TOP_K} query). It escalates to a
 full sweep whenever that reasoning runs out — no marker, a marker invalidated by
-\`corpus backfill-vectors\`, a ready reading the marker saw that has since left
-the list, a failed reverse query, a changed ready reading with no vector to scope
+\`corpus backfill-vectors\`, a reading of any status the marker saw that has since
+left the list, a failed reverse query, a changed ready reading with no vector to scope
 from, or a reverse neighbourhood that came back full at topK with no match below
 the bound. Purges are caught by name, not by row count, so a day that ingests as
 many readings as it purges still escalates.
@@ -898,7 +904,9 @@ way.
 
 A reading with no indexed vector, or a manifest that fails ManifestSchema, is
 unmeasurable rather than unfinished: the pass records its id on the marker,
-measures it again on every later pass until it is repaired, and still exits 1.
+measures it again on every later pass while it stays ready, and still exits 1.
+(One that stops being ready leaves the marker; it returns through its own
+timestamps when it is ready again, or through the weekly sweep.)
 A failed query, an unparseable manifest, a failed write or a failed list flush
 does hold the marker back, because the next pass has to sweep to find what this
 one left undone.
