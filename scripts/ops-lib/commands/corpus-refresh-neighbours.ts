@@ -253,7 +253,7 @@ async function readMarker(
   }
   if (raw === null) return null;
   const state = parseRefreshState(raw);
-  if (state === null) stderr("  ! run marker is not a usable refresh state — sweeping instead");
+  if (state === null) stderr("  ! run marker is not a usable refresh state");
   return state;
 }
 
@@ -279,16 +279,14 @@ async function resolveScope(args: {
   const base = changedSince(items, marker, listEtag);
   if (base.kind === "full") return base;
 
-  const statusById = new Map(items.map((row) => [row.id, row.status]));
   const reverse = new Map<string, ReverseMatches>();
   for (const id of base.changed) {
-    // Only a ready reading owns a vector to query from. A changed row that is
-    // not ready contributes its citers and nothing else, which is recorded as
-    // an answered query rather than a missing one.
-    if (statusById.get(id) !== "ready") {
-      reverse.set(id, null);
-      continue;
-    }
+    // Every changed reading is queried, whatever its status says. Status is not
+    // a statement about vector ownership — a reprocess-in-flight `pending` row
+    // and a `failed` row over a previously-ready reading can both still have a
+    // live indexed vector, and that vector's neighbours are exactly who needs
+    // re-measuring. `queryByVectorId` answers null for a genuinely absent
+    // vector, which is the honest version of the same shortcut.
     try {
       const matches = await r2.queryByVectorId(
         vectorizeIndex,
@@ -359,9 +357,17 @@ async function refreshNeighbours(
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const tenantSelector = operatorTenantSelector(tenant);
 
-  const { items, etag: listEtag } = await r2.readListIndex(r2Deps);
+  // Before the list read, not after: the marker this pass may store has to be
+  // no newer than the data it describes. A reading activated between the two
+  // would otherwise carry an `updated_at` older than the marker and never enter
+  // the next incremental scope.
   const now = new Date(deps.now()).toISOString();
-  const marker = opts.full ? null : await readMarker(r2, r2Deps, io.stderr);
+  // Read on both paths. A full pass does not scope against it, but it does
+  // overwrite it, and a marker built from `previous: null` can only ever
+  // re-derive the fields this pass happens to compute — the next forward-only
+  // field added here would be dropped by every sweep.
+  const marker = await readMarker(r2, r2Deps, io.stderr);
+  const { items, etag: listEtag } = await r2.readListIndex(r2Deps);
   const scope = opts.full
     ? { kind: "full" as const, reason: "--full" }
     : await resolveScope({ r2, io, items, marker, tenant, vectorizeIndex, listEtag });
@@ -376,7 +382,18 @@ async function refreshNeighbours(
   io.stdout(`Vectorize: ${vectorizeIndex}`);
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
+  // Naming an id is an assertion of intent, and a scope that quietly drops it
+  // reads as "nothing to do" rather than "not this run". Say which, so the
+  // operator can decide to re-run with --full.
+  if (scope.kind === "incremental" && opts.only.length > 0) {
+    const inScope = new Set(scope.ids);
+    const excluded = opts.only.filter((id) => !inScope.has(id));
+    if (excluded.length > 0) {
+      io.stdout(`Out of scope, not measured: ${excluded.join(", ")} (re-run with --full)`);
+    }
+  }
   io.stdout(`Corpus: ${items.length} readings`);
+  // In-scope rows only, under --since-last-run; `Corpus` above is the whole list.
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}`);

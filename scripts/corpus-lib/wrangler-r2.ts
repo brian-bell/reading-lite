@@ -215,7 +215,13 @@ export async function queryByVectorId(
     throw new Error(`could not parse vectorize query output for ${id}`);
   }
   const matches = (parsed as { matches?: unknown }).matches;
-  if (!Array.isArray(matches)) return null;
+  // Same rule as the two cases above: only the known not-found phrase means
+  // "no vector". JSON with no matches array is an output shape we do not
+  // recognise, and reporting it as absence would let a malformed response
+  // shrink an incremental refresh scope instead of escalating it.
+  if (!Array.isArray(matches)) {
+    throw new Error(`unexpected vectorize query output for ${id}: no matches array`);
+  }
   return matches.map(parseVectorQueryMatch).filter((m): m is VectorQueryMatch => m !== null);
 }
 

@@ -710,11 +710,13 @@ describe("ops corpus refresh-neighbours", () => {
       return makeDeps({ state: MARKER });
     }
 
-    it("measures everything by default, without reading the run marker", async () => {
+    it("measures everything by default, whatever the marker says", async () => {
       const { deps, calls, lines } = quietCorpus();
       const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
       expect(code).toBe(0);
-      expect(calls.stateReads).toBe(0);
+      // Read, but not scoped against: a full pass overwrites the marker, so it
+      // needs the stored one to build the next from.
+      expect(calls.stateReads).toBe(1);
       expect(calls.queries).toHaveLength(2);
       expect(lines.join("\n")).toContain("Scope: full — --full");
     });
@@ -906,6 +908,70 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(flushed.calls.indexWrites).toBe(1);
       expect(flushed.calls.stateWrites[0]).not.toHaveProperty("list_etag");
+    });
+
+    // Status is not a statement about vector ownership: a reprocess-in-flight
+    // row can still have a live vector, and its neighbours are exactly who
+    // needs re-measuring.
+    it("queries the reverse neighbourhood of a changed reading whatever its status", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        items: [
+          { ...READY, status: "pending", updated_at: "2026-08-21T12:00:00.000Z" },
+          NEIGHBOUR,
+        ],
+        matchesFor: (_id, topK) =>
+          topK === REVERSE_TOP_K ? [{ id: "rd_n", score: REVERSE_SCORE_BOUND + 0.1 }] : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toHaveLength(1);
+      // The pending reading owns no snapshot to refresh, but the neighbour its
+      // vector still reaches is measured.
+      expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K).map((q) => q.id)).toEqual([
+        "rd_n",
+      ]);
+    });
+
+    // The marker must never be newer than the list it describes, or a reading
+    // activated between the two reads is invisible to every later pass.
+    it("stamps the marker no later than the list it read", async () => {
+      const { deps, calls } = quietCorpus();
+      let listReadAt = 0;
+      const clock = (() => {
+        let value = Date.parse("2026-08-22T12:00:00Z");
+        return () => (value += 1000);
+      })();
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        {
+          ...deps,
+          now: clock,
+          r2: {
+            ...deps.r2,
+            readListIndex: async (d) => {
+              listReadAt = clock();
+              return deps.r2.readListIndex(d);
+            },
+          },
+        },
+      );
+      expect(code).toBe(0);
+      const written = calls.stateWrites[0] as { last_run_at: string };
+      expect(Date.parse(written.last_run_at)).toBeLessThan(listReadAt);
+    });
+
+    it("names an --only id the scope excluded instead of silently measuring nothing", async () => {
+      const { deps, lines } = makeDeps({ state: MARKER });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "rd_r"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain("Out of scope, not measured: rd_r (re-run with --full)");
     });
 
     it("rejects --since-last-run together with --full", async () => {

@@ -35,8 +35,18 @@
 //   - a reprocess that moves a vector far enough to LEAVE a stranger's floored
 //     neighbourhood: the reverse query runs against the vector's new position,
 //     and the old one is gone. Where the stranger had already judged it, the
-//     citation union catches it; where it had not, the sweep does;
-//   - a purge, which is why a shrunk corpus escalates instead.
+//     citation union catches it; where it had not, only the sweep does — and
+//     what goes stale there is not just a deferred re-judgement but the
+//     stranger's stored `similarity` snapshot and list row, which the API and
+//     the SPA serve;
+//   - a purge, unless it shrinks the list: the check is a row count, so a day
+//     that purges as many readings as it ingests does not escalate, and the
+//     readings that silently lost a neighbour wait for the sweep. Recording a
+//     digest of ids instead of a cardinality would close this; it has not been
+//     done, so the weekly sweep is load-bearing.
+//   - a Vectorize-only write. `corpus backfill-vectors` restores vectors with
+//     R2 read-only, so neither the row timestamps nor the list ETag move while
+//     neighbourhoods do. Run a `--full` pass after one.
 //
 // `--full` stays the default until the staging proof lands.
 //

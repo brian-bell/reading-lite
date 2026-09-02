@@ -216,9 +216,6 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       expect(incremental.report.readings, `seed ${seed}`).toEqual(
         full.report.readings.filter((reading) => incremental.measured.has(reading.id)),
       );
-      // A pass that measured everything anyway would make A vacuous.
-      expect(incremental.measured.size, `seed ${seed}`).toBeLessThanOrEqual(after.length);
-
       // Property B. Nothing whose flags moved is outside the scope.
       const beforeFlags = flagsById((await run(before, ["--full"], null)).report);
       const afterFlags = flagsById(full.report);
