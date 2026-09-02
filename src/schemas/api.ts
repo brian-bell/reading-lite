@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isDigestHourLocal, isDigestWeekday, isIanaTimeZone } from "../modules/time-zone";
 import {
   ByUrlPointerSchema,
   ManifestErrorSchema,
@@ -186,9 +187,21 @@ export const UserSettingsResponseSchema = z.object({
 });
 export type UserSettingsResponse = z.infer<typeof UserSettingsResponseSchema>;
 
-/** POST /api/auth/settings: the only writable field on this endpoint. */
+const TimeZoneSchema = z.string().min(1).refine(isIanaTimeZone);
+const DigestHourLocalSchema = z.number().refine(isDigestHourLocal);
+const DigestWeekdaySchema = z.number().refine(isDigestWeekday);
+
+/**
+ * POST /api/auth/settings: `notify_immediate` plus optional digest schedule
+ * fields. Digest opt-out is `digest_cadence: "off"`; hour, weekday, and time
+ * zone are still stored when cadence is off.
+ */
 export const PostAuthSettingsBodySchema = z.object({
   notify_immediate: z.boolean(),
+  digest_cadence: DigestCadenceSchema.optional(),
+  time_zone: TimeZoneSchema.optional(),
+  digest_hour_local: DigestHourLocalSchema.optional(),
+  digest_weekday: DigestWeekdaySchema.optional(),
 });
 export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
 

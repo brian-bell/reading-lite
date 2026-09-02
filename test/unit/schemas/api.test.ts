@@ -456,9 +456,53 @@ describe("PostAuthSettingsBodySchema", () => {
     });
   });
 
+  it("accepts digest schedule fields alongside notify_immediate", () => {
+    expect(
+      PostAuthSettingsBodySchema.parse({
+        notify_immediate: true,
+        digest_cadence: "weekly",
+        time_zone: "America/New_York",
+        digest_hour_local: 8,
+        digest_weekday: 7,
+      }),
+    ).toEqual({
+      notify_immediate: true,
+      digest_cadence: "weekly",
+      time_zone: "America/New_York",
+      digest_hour_local: 8,
+      digest_weekday: 7,
+    });
+  });
+
+  it("accepts cadence off with hour, weekday, and time zone", () => {
+    expect(
+      PostAuthSettingsBodySchema.parse({
+        notify_immediate: true,
+        digest_cadence: "off",
+        time_zone: "Europe/London",
+        digest_hour_local: 0,
+        digest_weekday: 1,
+      }),
+    ).toMatchObject({
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 1,
+    });
+  });
+
   it("rejects a missing or non-boolean notify_immediate", () => {
     expect(() => PostAuthSettingsBodySchema.parse({})).toThrow();
     expect(() => PostAuthSettingsBodySchema.parse({ notify_immediate: 1 })).toThrow();
+    expect(() => PostAuthSettingsBodySchema.parse({ digest_cadence: "daily" })).toThrow();
+  });
+
+  it("rejects invalid cadence, time zone, hour, and weekday", () => {
+    const base = { notify_immediate: true };
+    expect(() => PostAuthSettingsBodySchema.parse({ ...base, digest_cadence: "monthly" })).toThrow();
+    expect(() => PostAuthSettingsBodySchema.parse({ ...base, time_zone: "Not/A_Zone" })).toThrow();
+    expect(() => PostAuthSettingsBodySchema.parse({ ...base, digest_hour_local: 24 })).toThrow();
+    expect(() => PostAuthSettingsBodySchema.parse({ ...base, digest_weekday: 0 })).toThrow();
   });
 });
 
