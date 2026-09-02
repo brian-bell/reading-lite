@@ -280,17 +280,28 @@ readings are written under the founder's `usr_…` namespace, so export it once
 and reuse it:
 
 ```sh
-export TENANT=usr_...   # the founder id is recorded in docs/founder-cutover.md
+export TENANT=usr_...
 ```
+
+Take that id from an authenticated `GET /api/whoami` against production. The
+production founder id is also recorded in the cutover log in
+`docs/founder-cutover.md`, but that file lists a **staging** founder id as
+well — do not copy the wrong one.
 
 Never run a production refresh with `--tenant global`. That selector still
 resolves to the legacy pre-cutover layout, which no longer receives readings;
 refreshing it spends judgements on a copy nobody reads.
 
-Production also needs S3 credentials scoped to the production bucket. The keys
-in `.corpus.vars` are staging-scoped and return 403 against production, so
-source production keys from outside the repo (see the credentials row of the
-cutover log in `docs/founder-cutover.md`).
+Credentials for production differ per command. `refresh-neighbours` reaches R2
+and Vectorize through the wrangler CLI, so it needs a wrangler login rather
+than raw keys. `refresh-connections` and `refresh-tensions` use the inventory
+client, which accepts either `CORPUS_R2_ACCESS_KEY` + `CORPUS_R2_SECRET_KEY`
+or an R2-capable `CORPUS_CF_API_TOKEN` — and **prefers the S3 keys whenever
+both are present**. A typical `.corpus.vars` holds staging-scoped S3 keys that
+403 against the production bucket, and they silently win over an otherwise
+correct production token. Source production S3 keys from outside the repo, or
+clear the staging keys from the environment first (see the credentials row of
+the cutover log in `docs/founder-cutover.md`).
 
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,
