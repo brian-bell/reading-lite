@@ -551,14 +551,17 @@ async function refreshTensions(
       try {
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
         // The one place a rate limit is observed for the whole pass: wait for
-        // any window another worker opened before adding to it.
-        await gate.wait();
+        // any window another worker opened before adding to it. The wait sits
+        // here, after the re-reads, because it is the paid call it is pacing;
+        // the ETags it waited on are still current, since --sole-writer is the
+        // only writer.
+        const round = await gate.wait();
         const { value: result, ms: providerMs } = await timer.measured(
           PHASE_PROVIDER,
           () => provider.judge(input),
         );
         // A call that came back is the evidence the limit is not sustained.
-        gate.succeeded();
+        gate.succeeded(round);
         outcome.judged = true;
         // Carried on the outcome whatever happens next, so the run total covers
         // every call billed, including judgements whose writes later fail.

@@ -157,10 +157,10 @@ export async function runKeyedPool<T, R>(
   };
 
   await Promise.all(Array.from({ length: workers }, () => worker()));
-  // Items that finished behind the failure are still handed over: their work
-  // is done and, for these commands, already written, so dropping them would
-  // leave the caller's accounting short of what actually happened. The prefix
-  // stops at the failed item, which has no result to emit.
+  // Whatever completed before the gap is still handed over rather than dropped
+  // on the way out. The prefix stops at the failed item, so results behind it
+  // are lost - which is why both commands catch inside `fn` and never let this
+  // path run at all.
   flush();
   if (failures.length > 0) throw failures[0];
 }

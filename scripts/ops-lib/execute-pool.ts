@@ -73,12 +73,21 @@ export function parseConcurrencyFlag(raw: string | undefined): number {
 }
 
 export interface RateLimitGate {
-  /** Resolves once no rate-limit window is in force. */
-  wait(): Promise<void>;
+  /**
+   * Resolves once no rate-limit window is in force, handing back the round the
+   * caller is starting its call in. Pass it back to `succeeded`.
+   */
+  wait(): Promise<number>;
   /** Holds every worker back for `retryAfterMs`, or the default when null. */
   close(retryAfterMs: number | null): void;
-  /** Records that a judgement came back, so the limit is not sustained. */
-  succeeded(): void;
+  /**
+   * Records that the judgement started in `round` came back. Only a call that
+   * started after the current window opened is evidence the limit has lifted:
+   * a call already in flight when the window opened proves nothing, and
+   * counting it would let a provider that limits most but not all requests
+   * reset the breaker forever.
+   */
+  succeeded(round: number): void;
 }
 
 export interface RateLimitGateDeps {
@@ -92,10 +101,12 @@ export interface RateLimitGateDeps {
 
 export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
   let openAt = 0;
+  let round = 0;
   let consecutive = 0;
   let gaveUp = false;
   return {
-    succeeded() {
+    succeeded(startedIn) {
+      if (startedIn !== round) return;
       // Clears the give-up too: a limit the provider has plainly lifted must
       // not leave the rest of a long pass permanently unwilling to back off
       // when a later, genuinely transient one arrives.
@@ -116,8 +127,11 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
           return;
         }
       }
+      // A non-positive Retry-After is no Retry-After: a header naming a reset
+      // already in the past would otherwise open a zero-length window, which
+      // paces nothing and makes every 429 in a burst look like its own round.
       const requested =
-        retryAfterMs === null || !Number.isFinite(retryAfterMs) || retryAfterMs < 0
+        retryAfterMs === null || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0
           ? RATE_LIMIT_DEFAULT_BACKOFF_MS
           : retryAfterMs;
       const until = now + Math.min(requested, RATE_LIMIT_MAX_BACKOFF_MS);
@@ -125,6 +139,7 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
       // second wait on top of the first.
       if (until <= openAt) return;
       openAt = until;
+      round++;
       deps.onPause(until - now);
     },
     async wait() {
@@ -136,7 +151,7 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
       for (;;) {
         const deadline = openAt;
         const remaining = deadline - deps.now();
-        if (remaining <= 0 || deadline <= served) return;
+        if (remaining <= 0 || deadline <= served) return round;
         await deps.sleep(remaining);
         served = deadline;
       }

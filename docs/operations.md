@@ -492,9 +492,11 @@ judgement succeeding in between, the limit is not transient, so the pass stops
 waiting altogether (`provider rate limited N times in a row; no longer
 pausing…`) and fails the rest fast — which is what a sequential run did — rather
 than sitting on the sole-writer window for the length of the plan. Any
-judgement that comes back resets that run, and restores the backing off, so a
-limit early in a long pass does not leave the rest of it unwilling to wait out
-a later one.
+judgement that both started and came back after the last pause resets that run
+and restores the backing off, so a limit early in a long pass does not leave the
+rest of it unwilling to wait out a later one. A call that was already in flight
+when a window opened does not count: it says nothing about whether the limit
+has lifted.
 
 Because the calls overlap, the `Timing:` block's `provider` row sums the call
 durations rather than the wall time they occupied; the `total` row is the one
