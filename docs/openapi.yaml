@@ -496,12 +496,14 @@ paths:
     post:
       tags: [identity]
       operationId: updateAuthSettings
-      summary: Update immediate-notification opt-in
+      summary: Update notification and digest settings
       description: |
         Session cookie plus `X-CSRF-Token`. Recent-auth is not required.
-        Bearer 403. Body `{ notify_immediate }` only; digest fields are
-        returned but not writable here. Returns the full settings row.
-        404 when the row is missing.
+        Bearer 403. Body `{ notify_immediate }` plus optional digest
+        schedule fields (`digest_cadence`, `time_zone`, `digest_hour_local`,
+        `digest_weekday`). Digest opt-out is `digest_cadence: off`; hour,
+        weekday, and time zone are still stored when cadence is off.
+        Returns the full settings row. 404 when the row is missing.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -1460,10 +1462,16 @@ components:
         time_zone:
           type: string
           minLength: 1
+          description: IANA time zone. Write path validates via Intl.supportedValuesOf('timeZone') and always accepts UTC.
         digest_hour_local:
           type: integer
+          minimum: 0
+          maximum: 23
         digest_weekday:
           type: integer
+          minimum: 1
+          maximum: 7
+          description: ISO weekday, Monday=1 through Sunday=7.
         created_at_ms:
           type: integer
         updated_at_ms:
@@ -1476,6 +1484,21 @@ components:
       properties:
         notify_immediate:
           type: boolean
+        digest_cadence:
+          $ref: "#/components/schemas/DigestCadence"
+        time_zone:
+          type: string
+          minLength: 1
+          description: IANA time zone; validated at write via Intl.supportedValuesOf('timeZone'). UTC is always accepted.
+        digest_hour_local:
+          type: integer
+          minimum: 0
+          maximum: 23
+        digest_weekday:
+          type: integer
+          minimum: 1
+          maximum: 7
+          description: ISO weekday, Monday=1 through Sunday=7.
 
     HttpUrl:
       type: string

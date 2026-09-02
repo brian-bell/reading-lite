@@ -5,7 +5,7 @@ import {
   itemRequestsImmediateEmail,
   resolveImmediateNotification,
 } from "../../../src/control-plane/reading-notification";
-import { getUserSettings, updateNotifyImmediate } from "../../../src/control-plane/user-settings";
+import { getUserSettings, updateUserSettings } from "../../../src/control-plane/user-settings";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -52,8 +52,8 @@ describe("itemRequestsImmediateEmail", () => {
   });
 });
 
-describe("getUserSettings / updateNotifyImmediate", () => {
-  it("returns the full row and updates only notify_immediate", async () => {
+describe("getUserSettings / updateUserSettings", () => {
+  it("returns the full row and updates only notify_immediate when digest keys are omitted", async () => {
     const { db } = await bootstrapped();
     const before = await getUserSettings(db, USER_ID);
     expect(before).toMatchObject({
@@ -69,7 +69,7 @@ describe("getUserSettings / updateNotifyImmediate", () => {
     });
 
     const later = NOW_MS + 1_000;
-    const after = await updateNotifyImmediate(db, {
+    const after = await updateUserSettings(db, {
       userId: USER_ID,
       notifyImmediate: false,
       nowMs: later,
@@ -85,12 +85,51 @@ describe("getUserSettings / updateNotifyImmediate", () => {
     });
   });
 
+  it("persists digest fields including when cadence is off", async () => {
+    const { db } = await bootstrapped();
+    const later = NOW_MS + 2_000;
+    const weekly = await updateUserSettings(db, {
+      userId: USER_ID,
+      notifyImmediate: true,
+      digestCadence: "weekly",
+      timeZone: "America/New_York",
+      digestHourLocal: 8,
+      digestWeekday: 5,
+      nowMs: later,
+    });
+    expect(weekly).toMatchObject({
+      notify_immediate: true,
+      digest_cadence: "weekly",
+      time_zone: "America/New_York",
+      digest_hour_local: 8,
+      digest_weekday: 5,
+      updated_at_ms: later,
+    });
+
+    const off = await updateUserSettings(db, {
+      userId: USER_ID,
+      notifyImmediate: false,
+      digestCadence: "off",
+      timeZone: "Europe/London",
+      digestHourLocal: 0,
+      digestWeekday: 7,
+      nowMs: later + 1_000,
+    });
+    expect(off).toMatchObject({
+      notify_immediate: false,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7,
+    });
+  });
+
   it("returns null when the settings row is missing", async () => {
     const { sqlite, db } = await bootstrapped();
     sqlite.prepare("DELETE FROM user_settings WHERE user_id = ?").run(USER_ID);
     expect(await getUserSettings(db, USER_ID)).toBeNull();
     expect(
-      await updateNotifyImmediate(db, { userId: USER_ID, notifyImmediate: true, nowMs: NOW_MS }),
+      await updateUserSettings(db, { userId: USER_ID, notifyImmediate: true, nowMs: NOW_MS }),
     ).toBeNull();
   });
 });

@@ -1,5 +1,11 @@
+/**
+ * D1 `user_settings` row. GET returns the full record. POST patches
+ * `notify_immediate` and any digest schedule fields present in the body.
+ * Digest opt-out is `digest_cadence = off`; hour, weekday, and time zone
+ * still persist when cadence is off. Immediate mail is a separate flag.
+ */
 import type { ControlPlaneDb } from "./db";
-import type { UserSettingsResponse } from "../schemas/api";
+import type { DigestCadence, UserSettingsResponse } from "../schemas/api";
 import { DigestCadenceSchema } from "../schemas/api";
 
 interface UserSettingsDbRow {
@@ -17,6 +23,16 @@ interface UserSettingsDbRow {
 const SETTINGS_COLUMNS = `user_id, schema_version, notify_immediate, digest_cadence,
        time_zone, digest_hour_local, digest_weekday, created_at_ms, updated_at_ms`;
 
+export type UserSettingsPatch = {
+  userId: string;
+  nowMs: number;
+  notifyImmediate: boolean;
+  digestCadence?: DigestCadence;
+  timeZone?: string;
+  digestHourLocal?: number;
+  digestWeekday?: number;
+};
+
 export async function getUserSettings(
   db: ControlPlaneDb,
   userId: string,
@@ -28,16 +44,32 @@ export async function getUserSettings(
   return row ? toResponse(row) : null;
 }
 
-export async function updateNotifyImmediate(
+export async function updateUserSettings(
   db: ControlPlaneDb,
-  input: { userId: string; notifyImmediate: boolean; nowMs: number },
+  input: UserSettingsPatch,
 ): Promise<UserSettingsResponse | null> {
-  await db.run(
-    `UPDATE user_settings SET notify_immediate = ?, updated_at_ms = ? WHERE user_id = ?`,
-    input.notifyImmediate ? 1 : 0,
-    input.nowMs,
-    input.userId,
-  );
+  const set: string[] = ["notify_immediate = ?", "updated_at_ms = ?"];
+  const params: unknown[] = [input.notifyImmediate ? 1 : 0, input.nowMs];
+
+  if (input.digestCadence !== undefined) {
+    set.push("digest_cadence = ?");
+    params.push(input.digestCadence);
+  }
+  if (input.timeZone !== undefined) {
+    set.push("time_zone = ?");
+    params.push(input.timeZone);
+  }
+  if (input.digestHourLocal !== undefined) {
+    set.push("digest_hour_local = ?");
+    params.push(input.digestHourLocal);
+  }
+  if (input.digestWeekday !== undefined) {
+    set.push("digest_weekday = ?");
+    params.push(input.digestWeekday);
+  }
+
+  params.push(input.userId);
+  await db.run(`UPDATE user_settings SET ${set.join(", ")} WHERE user_id = ?`, ...params);
   return getUserSettings(db, input.userId);
 }
 

@@ -367,13 +367,15 @@ describe("GET/POST /api/auth/settings", () => {
       cookie: session.cookie,
       csrf: session.csrf,
       now: new Date(NOW_MS + 5_000).toISOString(),
-      body: { notify_immediate: false, digest_cadence: "weekly" },
+      body: { notify_immediate: false },
     });
     expect(updated.res.status).toBe(200);
     const after = (await updated.res.json()) as typeof before;
     expect(after.notify_immediate).toBe(false);
     expect(after.digest_cadence).toBe("off");
     expect(after.time_zone).toBe("UTC");
+    expect(after.digest_hour_local).toBe(9);
+    expect(after.digest_weekday).toBe(1);
     expect(after.updated_at_ms).toBe(NOW_MS + 5_000);
 
     const workerEnv = env as unknown as Env;
@@ -415,6 +417,102 @@ describe("GET/POST /api/auth/settings", () => {
       body: { notify_immediate: true },
     });
     expect(posted.res.status).toBe(404);
+  });
+
+  it("persists digest fields sent with notify_immediate, including cadence off", async () => {
+    const session = await redeemSession("clm_settings_digest");
+
+    const weekly = await request("/api/auth/settings", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      now: new Date(NOW_MS + 20_000).toISOString(),
+      body: {
+        notify_immediate: false,
+        digest_cadence: "weekly",
+        time_zone: "America/New_York",
+        digest_hour_local: 8,
+        digest_weekday: 5,
+      },
+    });
+    expect(weekly.res.status).toBe(200);
+    expect(await weekly.res.json()).toMatchObject({
+      notify_immediate: false,
+      digest_cadence: "weekly",
+      time_zone: "America/New_York",
+      digest_hour_local: 8,
+      digest_weekday: 5,
+      updated_at_ms: NOW_MS + 20_000,
+    });
+
+    const off = await request("/api/auth/settings", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      now: new Date(NOW_MS + 25_000).toISOString(),
+      body: {
+        notify_immediate: true,
+        digest_cadence: "off",
+        time_zone: "Europe/London",
+        digest_hour_local: 0,
+        digest_weekday: 7,
+      },
+    });
+    expect(off.res.status).toBe(200);
+    expect(await off.res.json()).toMatchObject({
+      notify_immediate: true,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7,
+    });
+
+    const got = await request("/api/auth/settings", { cookie: session.cookie });
+    expect(got.res.status).toBe(200);
+    expect(await got.res.json()).toMatchObject({
+      notify_immediate: true,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7,
+    });
+  });
+
+  it("rejects invalid digest cadence, time zone, hour, and weekday with 400", async () => {
+    const session = await redeemSession("clm_settings_digest_invalid");
+    const base = { method: "POST" as const, cookie: session.cookie, csrf: session.csrf };
+
+    const monthly = await request("/api/auth/settings", {
+      ...base,
+      body: { notify_immediate: true, digest_cadence: "monthly" },
+    });
+    expect(monthly.res.status).toBe(400);
+
+    const tz = await request("/api/auth/settings", {
+      ...base,
+      body: { notify_immediate: true, time_zone: "Not/A_Zone" },
+    });
+    expect(tz.res.status).toBe(400);
+
+    const hour = await request("/api/auth/settings", {
+      ...base,
+      body: { notify_immediate: true, digest_hour_local: 24 },
+    });
+    expect(hour.res.status).toBe(400);
+
+    const weekday = await request("/api/auth/settings", {
+      ...base,
+      body: { notify_immediate: true, digest_weekday: 0 },
+    });
+    expect(weekday.res.status).toBe(400);
+
+    const stillDefault = await request("/api/auth/settings", { cookie: session.cookie });
+    expect(await stillDefault.res.json()).toMatchObject({
+      digest_cadence: "off",
+      time_zone: "UTC",
+      digest_hour_local: 9,
+      digest_weekday: 1,
+    });
   });
 });
 

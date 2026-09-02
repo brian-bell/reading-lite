@@ -158,7 +158,7 @@ out. Origin checks still apply to cookie writes.
 | `GET /api/auth/tokens` | Session-only. Lists metadata without secrets; `usable` is false for revoked or expired rows. |
 | `DELETE /api/auth/tokens/:id` | Session-only, cookie CSRF, no recent-auth. Soft-revokes; 404 if not owned. No security mail. |
 | `GET /api/auth/settings` | Session-only. Full `user_settings` row (`notify_immediate`, digest fields, timestamps). 404 if missing. |
-| `POST /api/auth/settings` | Session-only, cookie CSRF, no recent-auth. Body `{ notify_immediate }` only. Returns the full row. 404 if missing. |
+| `POST /api/auth/settings` | Session-only, cookie CSRF, no recent-auth. Body `{ notify_immediate }` plus optional digest fields (`digest_cadence`, `time_zone`, `digest_hour_local`, `digest_weekday`). Digest opt-out is `digest_cadence: off`. Returns the full row. 404 if missing. |
 | `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
 | `POST /api/readings` | Body `{ url, email? }`. Defaults `email` to true. Send-time `to` is the current verified account email. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
 | `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Send-time import is always silent. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
