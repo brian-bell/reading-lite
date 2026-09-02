@@ -201,7 +201,7 @@ export function changedSince(
       reason: `${marker.list_row_count - list.length} list row(s) removed since the last run`,
     };
   }
-  const sinceMs = Date.parse(marker.last_run_at);
+  const sinceMs = Date.parse(marker.last_run_at) - MARKER_CLOCK_SKEW_MS;
   // The ETag is the strongest statement available: an unchanged document means
   // no row was created, reprocessed, purged, or re-flushed, so nothing can have
   // moved. Only equality is informative — every --execute flush rewrites the
@@ -312,9 +312,21 @@ export function describeScope(scope: RefreshScope): string {
  * every other, which sweeps every night and takes seconds to do it.
  */
 function isSaturated(matches: readonly { score: number }[]): boolean {
-  const last = matches[matches.length - 1];
-  return last !== undefined && last.score >= REVERSE_SCORE_BOUND;
+  if (matches.length === 0) return false;
+  // The minimum, not the last element: nothing in the query path sorts or
+  // asserts a descending order, and this escalation is too important to rest on
+  // an ordering nobody guarantees.
+  return Math.min(...matches.map((match) => match.score)) >= REVERSE_SCORE_BOUND;
 }
+
+/**
+ * How far back the marker is read from its own timestamp. The marker is stamped
+ * by the operator's clock and compared against `created_at`/`updated_at` written
+ * by the Worker's; a few minutes of forward skew on the operator host would
+ * otherwise drop a reading from every future scope, invisibly and permanently.
+ * The margin only ever measures more, so it cannot make a pass wrong.
+ */
+export const MARKER_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 function rowChangedSince(row: RefreshRow, sinceMs: number): boolean {
   // No usable timestamp at all is treated as changed: one extra measurement is

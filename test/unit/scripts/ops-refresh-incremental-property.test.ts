@@ -10,7 +10,7 @@
 // scored by a fixed 1-D distance function, so the neighbourhoods are internally
 // consistent the way a real Vectorize index is: the same pair scores the same
 // in a forward query and in a reverse one. That consistency is what makes B a
-// real test of the 0.45 reverse bound rather than a test of the fixture.
+// real test of the reverse bound rather than a test of the fixture.
 //
 // The mutation is additions and reprocess-in-place. A vector that MOVES far
 // enough to leave a stranger's floored neighbourhood is the known gap the
@@ -25,12 +25,21 @@ import {
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
 import { REVERSE_TOP_K, type RefreshState } from "../../../scripts/corpus-lib/refresh-scope";
-import { SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
 
 const T0 = "2026-08-01T00:00:00.000Z";
 const MARKER_AT = "2026-08-20T00:00:00.000Z";
 const T1 = "2026-08-25T00:00:00.000Z";
 const NOW = "2026-08-26T00:00:00.000Z";
+
+/**
+ * Width of the generated 1-D "embedding space". Wide enough that a corpus has
+ * both near pairs (above the similarity floor) and strangers below the reverse
+ * bound — in a space narrow enough that every reading is everyone's neighbour,
+ * every reverse query saturates and every seed escalates to a full sweep, which
+ * would leave the properties below comparing a full pass with itself.
+ */
+const SPACE = 3;
 
 interface Reading {
   id: string;
@@ -55,8 +64,8 @@ function prng(seed: number): () => number {
 }
 
 // Cosine-like: identical positions score 1, and the score falls linearly with
-// distance, crossing the 0.5 floor and the 0.45 reverse bound within the range
-// the generator uses.
+// distance, crossing both the similarity floor and the reverse bound within the
+// range the generator uses.
 function score(a: Reading, b: Reading): number {
   return Math.max(0, 1 - Math.abs(a.position - b.position));
 }
@@ -168,7 +177,7 @@ function generateCorpus(rand: () => number, size: number, createdAt: string): Re
   for (let i = 0; i < size; i++) {
     readings.push({
       id: `rd_${createdAt.slice(8, 10)}_${i}`,
-      position: rand(),
+      position: rand() * SPACE,
       createdAt,
       updatedAt: createdAt,
       connections: [],
@@ -177,7 +186,7 @@ function generateCorpus(rand: () => number, size: number, createdAt: string): Re
   }
   for (const reading of readings) {
     const neighbours = readings
-      .filter((other) => other.id !== reading.id && score(reading, other) >= 0.5)
+      .filter((other) => other.id !== reading.id && score(reading, other) >= SIMILARITY_FLOOR)
       .sort((a, b) => score(reading, b) - score(reading, a))
       .slice(0, SIMILAR_TOP_K);
     // Cite most floored neighbours, leave some as considered-but-rejected: both
@@ -197,6 +206,10 @@ function flagsById(report: RunResult["report"]): Map<string, string> {
 
 describe("incremental tier-1 scope, on generated corpora", () => {
   it("reports exactly what a full pass reports for the readings it measured", async () => {
+    // Both properties are vacuous on a seed that escalated to a full sweep —
+    // "measured" is then every id and each assertion compares a full pass with
+    // itself — so the seeds that actually narrowed are counted and required.
+    let narrowed = 0;
     for (let seed = 1; seed <= 40; seed++) {
       const rand = prng(seed);
       const before = generateCorpus(rand, 4 + Math.floor(rand() * 8), T0);
@@ -216,6 +229,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       expect(incremental.report.readings, `seed ${seed}`).toEqual(
         full.report.readings.filter((reading) => incremental.measured.has(reading.id)),
       );
+      if (incremental.measured.size < full.measured.size) narrowed++;
       // Property B. Nothing whose flags moved is outside the scope.
       const beforeFlags = flagsById((await run(before, ["--full"], null)).report);
       const afterFlags = flagsById(full.report);
@@ -227,6 +241,9 @@ describe("incremental tier-1 scope, on generated corpora", () => {
         ).toBe(true);
       }
     }
+    // A handful of narrowing seeds is what keeps the two properties above from
+    // being forty comparisons of a full pass with itself.
+    expect(narrowed).toBeGreaterThanOrEqual(5);
   });
 
   it("measures fewer readings than a full pass on at least some corpora", async () => {

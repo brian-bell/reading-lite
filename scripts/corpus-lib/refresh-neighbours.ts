@@ -136,8 +136,10 @@ export function planRefresh(
   for (const it of items) {
     // Naming ids overrides the incremental scope (refresh-scope.ts) rather than
     // intersecting with it: an operator who asks for a reading by id is
-    // asserting intent, and a scope is an economy, not a permission. Without
-    // --only, the scope decides.
+    // asserting intent, and a scope is an economy, not a permission. The
+    // command says the same thing earlier and cheaper — it resolves no scope at
+    // all when ids are named — so both arguments together reach here only from
+    // a direct call; the rule is stated once, here, either way.
     if (only) {
       if (!only.has(it.id)) continue;
     } else if (opts.scope !== undefined && !opts.scope.has(it.id)) {

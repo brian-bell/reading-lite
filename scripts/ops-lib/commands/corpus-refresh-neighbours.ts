@@ -303,14 +303,21 @@ async function resolveScope(args: {
         tenant.namespace,
         { metadata: false },
       );
+      if (matches === null) {
+        // The scope narrows on an unanswered question here: this reading owns no
+        // vector to query, so nothing brings its former neighbours in. Visible
+        // rather than silent, because the row-count check does not cover a
+        // vector that vanished while its list row survived.
+        io.stderr(`  ! no vector to scope from for ${id} — its neighbours are not in scope`);
+        reverse.set(id, null);
+        continue;
+      }
       reverse.set(
         id,
-        matches === null
-          ? null
-          : normalizeVectorMatchIds(matches, tenant.namespace).map((match) => ({
-              id: match.id,
-              score: match.score,
-            })),
+        normalizeVectorMatchIds(matches, tenant.namespace).map((match) => ({
+          id: match.id,
+          score: match.score,
+        })),
       );
     } catch (e) {
       io.stderr(
