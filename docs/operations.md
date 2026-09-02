@@ -501,11 +501,60 @@ not report the corpus as covered.
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
 `unmeasurable_ids` on the marker, measures it again on every later pass until it
-is repaired, and still exits 1 so it stays visible — the marker advances past it
+is repaired, and exits 3 so it stays visible — the marker advances past it
 rather than pinning the whole scope on an ever-older timestamp. A failed query,
 an unparseable manifest, a failed manifest write or a failed `index/list.json`
 flush is different: that pass left work undone, so the marker stays where it was
-and the next pass sweeps.
+and the exit is 1. Note what a frozen marker does and does not buy: the next
+incremental pass re-covers everything changed since that older timestamp, which
+is more than it would otherwise have looked at, but a reading that failed
+without its list row moving is not named anywhere (unlike `unmeasurable_ids`),
+so the weekly `--full` sweep is what actually finds it again.
+
+**A whole sweep of unmeasurable readings is a different thing again.** A sweep
+that measured *none* of its ready readings is not a corpus with a lot of broken
+readings; it is a pass that could not read the corpus. A wrong `--vectorize`
+index, a wrong `--tenant` namespace, an expired Vectorize credential and an
+upstream failing every query all present this way. Advancing the marker there
+would declare the whole corpus refreshed on the strength of zero measurements
+and never look at it again, so the pass instead leaves both `last_run_at` and
+`last_full_run_at` where they were, prints `Configuration failure: this pass
+swept the corpus and measured 0 of N ready reading(s)` with the `no vector` /
+`failed` / `schema-invalid` breakdown, and exits 1.
+
+**Only a sweep reports one**, because only a sweep's scope is large enough to
+say so, and because a sweep's scope comes from `index/list.json` rather than
+from the marker — so it reaches the same verdict on the first pass as on the
+hundredth, with no marker to bootstrap from. An incremental scope is routinely
+one or two readings, often exactly the ones carried under `unmeasurable_ids` for
+retry; calling that a configuration failure would freeze the marker on a single
+broken reading, grow the scope every night, and page for it forever. On any
+night that a ready reading changed, a misconfiguration surfaces anyway — that
+reading's vector cannot be found, which escalates the scope to a sweep, and the
+sweep reports it. On a night when nothing changed at all it does not: the scope
+is then whatever an earlier pass carried under `unmeasurable_ids` — those all
+answer "no vector" and the pass exits 3 — or, if no pass ever got far enough to
+record any, nothing at all, and it exits 0. **The weekly `--full` sweep is the
+only guaranteed detector**, which is one more reason to keep it scheduled. A pass narrowed by `--only` or by a
+`--limit` that truncated it never reports a configuration failure either — it
+measured the subset it was told to, so naming one broken reading with `--only`
+exits 3, not 1. Nor does a pass that threw partway through: the targets after
+the throw were never attempted, so it reports the abort and exits 1 on that.
+
+There is no minimum corpus size, so a small tenant — a staging or dev corpus of
+one or two ready readings, both genuinely vectorless — sweeps, reports a
+configuration failure, and stays there until someone repairs or re-embeds them:
+exit 1 on every sweep, marker frozen. That is the intended
+reading of the evidence (a corpus in which nothing is measurable is not a corpus
+you can refresh), and on a corpus that small a permanent sweep costs nothing.
+The production corpus is in no danger of it by size: a sweep there measures
+hundreds of readings, so the condition cannot fire unless the index really is
+unreachable. It can fire by state, though — a Vectorize namespace cutover that
+has migrated R2 but not yet re-upserted the vectors leaves every ready reading
+vectorless, which is what this condition is built to notice. Every sweep will
+exit 1 for the length of such a window — while the nightly `--since-last-run`
+may well go quiet, since a cutover moves no list rows — so pause the schedule or
+finish the re-upsert (`corpus backfill-vectors`) before relying on either.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -531,6 +580,58 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 # Weekly.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
 ```
+
+### Refresh exit codes
+
+`ops corpus refresh-neighbours` distinguishes work the *operator* owns from work
+a *reading* owns, so a nightly schedule can alert on one and file the other:
+
+| Code | Meaning | Who acts |
+|---|---|---|
+| 0 | Nothing outstanding. | nobody |
+| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator — re-run, or fix the index/credentials first |
+| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself — `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator — fix the invocation |
+| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+
+The line between 1 and 3 is whether re-running the same command could help. It
+can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
+eligible to advance the marker, the ids are carried under `unmeasurable_ids` and
+every later pass retries them. The exit line says whether the marker actually
+moved, because the passes that never advance it — a plan pass, `--only`, a
+truncating `--limit`, an invalidation arriving mid-pass — can all exit 3 too.
+
+The codes apply in plan mode as well as under `--execute`; a dry run reports
+what it found. Two existing behaviours change, in opposite directions, so a
+scheduled run wants the `case` below rather than a bare `if`: a pass that finds
+a reading with no indexed vector used to exit 0 in plan mode and now exits 3
+(or 1 if the sweep measured nothing at all), while a pass whose only complaint
+is an unmeasurable reading — no vector, or a manifest failing `ManifestSchema`
+— used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
+that second case, which is the point: it is a ticket, not a page.
+
+There is no cron wrapper script in this repository — the nightly and weekly
+invocations above are meant to be scheduled directly — so a scheduler wanting
+this distinction has to make it itself:
+
+```sh
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --since-last-run --execute --sole-writer
+case $? in
+  0) ;;            # clean
+  3) file_ticket ;; # specific readings need repair; the pass itself was fine
+  *) page ;;        # 1 (re-run or fix infrastructure) or 2 (bad invocation)
+esac
+```
+
+`refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
+non-zero cause they have — a planning read that failed, a judgement that failed,
+a lost manifest CAS, a `--max-backoff` ceiling, and for `refresh-connections`
+the `index/list.json` flush it alone performs — is a re-run-or-fix case, which
+is code 1 under the same rule. Code 3 stays reserved
+in those two commands rather than mapped onto their nearest analogue (a live
+manifest that is invalid at plan time), because that condition currently shares
+one `planningFailed` flag with transient read errors, and splitting it is a
+separate change.
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,

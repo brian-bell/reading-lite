@@ -1,7 +1,13 @@
 // Root dispatcher for the unified operator CLI. Resolves `<group> <command>`
 // against the registry, renders root/group/command help from the same command
 // definitions that execute, and enforces the shared exit contract:
-// 0 success, 2 usage error, 1 operational failure.
+// 0 success, 2 usage error, 1 operational failure. A command returns 2 itself
+// for a refusal of the same shape (an unusable flag combination, a guard it
+// will not run past), and this dispatcher returns it for the ones it can see
+// without running the command. Codes above those are the command's own and
+// pass through untouched: `corpus refresh-neighbours` returns 3 for "the pass
+// completed, but specific readings need a human" (docs/operations.md, "Refresh
+// exit codes").
 
 import { UsageError, type AnyCommand, type CommandGroup, type CommandIo } from "./contract";
 import { defaultRegistry, type Registry } from "./registry";

@@ -241,6 +241,27 @@ function selectStorage(
 const REVERSE_QUERY_FAILURE_BUDGET = 3;
 
 /**
+ * The exit-code contract this command answers on, documented in
+ * docs/operations.md. It splits the one thing an operator has to decide from
+ * the exit status alone: whether the next action is theirs (re-run the pass, or
+ * fix the index and credentials behind it) or a reading's.
+ *
+ * 0 — nothing outstanding.
+ * 1 — real work left undone: a whole-sweep configuration failure, or a failed
+ *     query, manifest write or list flush. The operator re-runs or repairs
+ *     infrastructure, and the marker did not move past whatever was missed.
+ * 3 — the pass itself completed, but specific readings need a human: no indexed
+ *     vector, or a manifest that fails ManifestSchema. Re-running changes
+ *     nothing until they are repaired. Where the pass was eligible to advance
+ *     the marker it did, carrying their ids for retry.
+ *
+ * 2 stays the CLI's usage code (scripts/ops-lib/cli.ts) and is not used here.
+ */
+const EXIT_OK = 0;
+const EXIT_INCOMPLETE = 1;
+const EXIT_NEEDS_ATTENTION = 3;
+
+/**
  * How the operator narrowed this pass below its scope, for the report header.
  * A `--limit` that was never reached narrowed nothing, and saying otherwise
  * would have the report call a pass partial while the marker records it as
@@ -490,6 +511,10 @@ async function refreshNeighbours(
   };
 
   let flushFailed = false;
+  // The measurement loop threw, so the targets after the throw were never
+  // attempted. Only relevant to the diagnosis: a pass that stopped early did
+  // not sweep, whatever its scope said it would do.
+  let aborted = false;
   try {
     for (const t of plan.targets) {
       let matches: RefreshNeighbour[] | null;
@@ -588,6 +613,7 @@ async function refreshNeighbours(
     }
   } catch (e) {
     errored++;
+    aborted = true;
     io.stderr(`  ! refresh pass aborted: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     // Catch a failed flush so already-flagged rows still reach refresh-report.json.
@@ -644,6 +670,41 @@ async function refreshNeighbours(
     );
   }
 
+  // Readings the pass finished with and cannot measure until someone repairs
+  // them, as against `errored`, which is work this pass still owes the corpus.
+  const unmeasurable = noVector + invalid;
+  // A pass the operator narrowed by hand covers neither the corpus nor its
+  // scope — the same condition under which `advanceMarker` stands down — so
+  // "nothing was measured" there says nothing about the configuration. Naming
+  // one broken reading with --only is not a misconfigured index.
+  const handNarrowed = opts.only.length > 0 || plan.truncated;
+  // A sweep whose every ready reading came back unmeasurable is not a corpus
+  // full of broken readings; it is a pass that could not read the corpus at
+  // all. A wrong --vectorize index, a wrong tenant namespace, an expired token
+  // and an upstream failing every query all look exactly like this, and
+  // advancing the marker on one would silently declare the whole corpus
+  // refreshed on the strength of zero measurements.
+  //
+  // Only a sweep, because only a sweep's scope is large enough to say so. An
+  // incremental scope is routinely one or two readings — often exactly the
+  // unmeasurable ones the last pass carried forward for retry — and calling
+  // that a configuration failure would freeze the marker on a single broken
+  // reading, grow the scope every night, and page for it forever. It also
+  // needs no bootstrap: a sweep's scope comes from the list, not the marker,
+  // so it reaches the same verdict whether or not a marker was ever written.
+  // A misconfiguration does not escape by hiding in incremental passes: a
+  // changed ready reading whose vector cannot be found escalates the scope to
+  // a sweep, which is this rule's input.
+  // An aborted pass is excluded for the same reason a narrowed one is: the
+  // targets after the throw were never attempted, so "measured none of them" is
+  // not the corpus answering. It exits 1 through `errored` regardless.
+  const configurationFailure =
+    !handNarrowed &&
+    !aborted &&
+    scope.kind === "full" &&
+    plan.targets.length > 0 &&
+    measured === 0;
+
   // What stops the marker is an unfinished pass, not an unmeasurable reading.
   // A failed query, an unparseable manifest, a failed write or a failed flush
   // all leave work this pass owed the corpus undone, so the next one must sweep
@@ -651,9 +712,12 @@ async function refreshNeighbours(
   // the pass did everything it could for it, the answer will not change until
   // someone repairs it, and pinning the marker on it would hold the whole scope
   // at an ever-older timestamp. Those are carried on the marker instead, and
-  // the run still exits non-zero so they stay visible.
-  if (!flushFailed && errored === 0) {
-    await advanceMarker({
+  // the run exits 3 so they stay visible. Unless there were only those: a whole
+  // scope nothing could be measured in is a failure of the pass, not of its
+  // readings, and it stops the marker like any other unfinished one.
+  let markerAdvanced = false;
+  if (!flushFailed && errored === 0 && !configurationFailure) {
+    markerAdvanced = await advanceMarker({
       opts,
       r2,
       r2Deps,
@@ -671,24 +735,58 @@ async function refreshNeighbours(
     });
   }
 
-  const failed = noVector + errored + invalid;
-  if (flushFailed || errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
-    if (flushFailed) {
-      io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
-    }
-    if (errored > 0 || invalid > 0 || (opts.execute && failed > 0)) {
-      const n = opts.execute ? failed : errored + invalid;
-      io.stderr(
-        `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
-      );
-    }
-    return 1;
+  // An unfinished pass owes the corpus another one; an unmeasurable reading
+  // owes a repair. Only the first is the operator's to re-run — and a pass that
+  // measured nothing at all owes one too, whatever its readings answered.
+  const incomplete = flushFailed || errored > 0 || configurationFailure;
+  if (flushFailed) {
+    io.stderr("\nindex/list.json rewrite failed — run incomplete (report written).");
+  }
+  if (errored + unmeasurable > 0) {
+    io.stderr(
+      `\n${errored + unmeasurable} of ${plan.targets.length} attempted reading(s) were not ` +
+        `${opts.execute ? "refreshed" : "measured"} — ` +
+        (incomplete
+          ? "run incomplete."
+          : "the pass finished; these readings need repair before they can be measured."),
+    );
   }
 
+  // Printed on every plan path, not only the clean one: it is the line that
+  // tells an operator nothing was written, and a plan pass that found broken
+  // readings needs it more than a quiet one does.
   if (!opts.execute) {
     io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
   }
-  return 0;
+
+  if (configurationFailure) {
+    io.stderr(
+      `\nConfiguration failure: this pass swept the corpus and measured 0 of ` +
+        `${plan.targets.length} ready reading(s) (no vector: ${noVector}, failed: ${errored}, ` +
+        `schema-invalid: ${invalid}). A whole sweep that answers this way is an ` +
+        "infrastructure fault — a wrong Vectorize index, a wrong tenant namespace, an expired " +
+        "credential, or Vectorize or R2 failing every call (the breakdown above says which " +
+        "side) — far more often than it is a corpus of broken readings, so " +
+        (opts.execute
+          ? "neither run marker advanced and the next pass measures the same scope"
+          : "an --execute pass would not have advanced either run marker") +
+        ". Exit 1.",
+    );
+    return EXIT_INCOMPLETE;
+  }
+  if (incomplete) return EXIT_INCOMPLETE;
+  if (unmeasurable > 0) {
+    // Only claim the marker moved when it did: a plan pass, --only, a
+    // truncating --limit, an invalidation arriving mid-pass and a failed marker
+    // write all reach here having left it alone.
+    io.stderr(
+      `Exit 3: the pass completed${markerAdvanced ? " and its marker advanced" : ""}; ` +
+        `${unmeasurable} reading(s) need human attention before they can be measured.`,
+    );
+    return EXIT_NEEDS_ATTENTION;
+  }
+
+  return EXIT_OK;
 }
 
 /**
@@ -704,6 +802,9 @@ async function refreshNeighbours(
  *
  * `last_full_run_at` moves only on a full sweep — it is what a weekly-sweep
  * policy is judged against.
+ *
+ * Returns whether the marker actually moved, so the caller's exit line can say
+ * so without repeating the several reasons this function stands down.
  */
 async function advanceMarker(args: {
   opts: Opts;
@@ -719,12 +820,12 @@ async function advanceMarker(args: {
   truncated: boolean;
   listEtag?: string;
   runAt: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const { opts, io } = args;
-  if (!opts.execute) return;
+  if (!opts.execute) return false;
   if (opts.only.length > 0 || args.truncated) {
     io.stdout("Run marker unchanged: this pass measured a subset of its scope.");
-    return;
+    return false;
   }
   // The marker this pass read is minutes old — a full pass over the production
   // corpus takes sixteen — and neither writer of this object holds a lock or a
@@ -738,14 +839,14 @@ async function advanceMarker(args: {
       "  ! could not re-read the run marker before advancing it — leaving it alone, " +
       "so the next incremental run will sweep.",
     );
-    return;
+    return false;
   }
   if (invalidatedSince !== null) {
     io.stdout(
       `Run marker unchanged: invalidated by ${invalidatedSince} while this pass ran, ` +
       "so the next pass still owes the corpus a sweep.",
     );
-    return;
+    return false;
   }
   const state = buildRefreshState({
     previous: args.marker,
@@ -766,6 +867,7 @@ async function advanceMarker(args: {
         `Carried on the run marker for retry: ${state.unmeasurable_ids.length} unmeasurable reading(s).`,
       );
     }
+    return true;
   } catch (e) {
     // Not a failed run: every snapshot this pass owed the corpus is written.
     // The cost of a lost marker is the next pass sweeping instead of scoping.
@@ -773,6 +875,7 @@ async function advanceMarker(args: {
       `  ! run marker write failed: ${e instanceof Error ? e.message : String(e)} — ` +
       "the next incremental run will sweep.",
     );
+    return false;
   }
 }
 
@@ -904,12 +1007,30 @@ way.
 
 A reading with no indexed vector, or a manifest that fails ManifestSchema, is
 unmeasurable rather than unfinished: the pass records its id on the marker,
-measures it again on every later pass while it stays ready, and still exits 1.
+measures it again on every later pass while it stays ready, and exits 3.
 (One that stops being ready leaves the marker; it returns through its own
 timestamps when it is ready again, or through the weekly sweep.)
 A failed query, an unparseable manifest, a failed write or a failed list flush
 does hold the marker back, because the next pass has to sweep to find what this
 one left undone.
+
+Exit codes:
+  0  Nothing outstanding.
+  1  Real work left undone and the marker did not move past it: a failed query,
+     write or list flush — or a configuration failure, meaning a sweep that
+     measured none of its ready readings (a wrong --vectorize index, a wrong
+     --tenant namespace, or an expired credential looks exactly like this).
+     Re-run, or fix the infrastructure, then re-run.
+  2  Usage error (the CLI's, not this command's).
+  3  The pass itself completed, but some readings need a human: no indexed
+     vector, or a manifest that fails ManifestSchema. Re-running changes nothing
+     until they are repaired. Where the pass was eligible to advance the marker
+     it did, carrying their ids for retry; the exit line says which.
+The codes apply in plan mode too. Only a sweep can report a configuration
+failure: an incremental scope is routinely one or two readings — often the
+unmeasurable ones carried for retry — which is too small to tell a broken index
+from a broken reading. A pass narrowed by --only or by a --limit that truncated
+it never reports one either: it measured the subset it was told to.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).
