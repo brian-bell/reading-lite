@@ -447,9 +447,11 @@ id, and replaces only `connections`, `novelty_verdict`, and
 `connections_computed_at`. Manifest writes use ETag CAS against the ETag the
 planning read returned — execute re-reads nothing — so a manifest that changed
 between the plan and the write loses that conditional write and is reported as
-a CAS loss. Under `--sole-writer` nothing should change in that window. The
-list index is written after successful manifest updates so its verdict matches
-the manifest.
+a CAS loss. The judgement is made before that write, so a CAS loss is a
+judgement already paid for and thrown away — a run of them is a run of wasted
+spend, not just wasted writes. Under `--sole-writer` nothing should change in
+that window. The list index is written after successful manifest updates so its
+verdict matches the manifest.
 
 The manifest timestamp is the resume marker. If a manifest write succeeds but
 the list write fails, rerun with the same report: the command heals the list row
