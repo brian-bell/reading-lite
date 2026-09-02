@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { RateLimitedError } from "../../../src/modules/http-retry";
 import type {
   TensionJudgementInput,
   TensionJudgementResult,
@@ -127,6 +128,7 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
   };
   const out: string[] = [];
   const err: string[] = [];
+  const sleeps: number[] = [];
   const judge = vi.fn<(input: TensionJudgementInput) => Promise<TensionJudgementResult>>(
     async () => supersedes,
   );
@@ -144,9 +146,12 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
       judge,
     }),
     now: () => Date.parse(JUDGED_AT),
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
   };
   const stored = (id: string) => manifests.get(`readings/2026/${id}`)!.manifest;
-  return { deps, out, err, judge, readReport, createStorage, writes, listWrites, manifests, stored };
+  return { deps, out, err, sleeps, judge, readReport, createStorage, writes, listWrites, manifests, stored };
 }
 
 const run = (h: ReturnType<typeof harness>, ...argv: string[]) =>
@@ -591,5 +596,165 @@ describe("ops corpus refresh-tensions planning read concurrency", () => {
     const { completed } = await planPass(() => 0);
     expect(completed).toHaveLength(COUNT);
     expect(new Set(completed).size).toBe(COUNT);
+  });
+});
+
+describe("ops corpus refresh-tensions execute concurrency", () => {
+  const ids = Array.from({ length: 10 }, (_, i) => `rd_${String(i).padStart(2, "0")}`);
+  // A chain whose neighbours share a side (00-01, 01-02, 02-03) alongside
+  // pairs that share nothing, so the fixture needs both exclusion and overlap.
+  const pairs: Array<[string, string]> = [
+    ["rd_00", "rd_01"],
+    ["rd_01", "rd_02"],
+    ["rd_02", "rd_03"],
+    ["rd_04", "rd_05"],
+    ["rd_06", "rd_07"],
+    ["rd_08", "rd_09"],
+  ];
+  const plannedKeys = [...pairs]
+    .map(([a, b]) => `${a}|${b}`)
+    .sort((x, y) => x.localeCompare(y));
+
+  function scaled(opts: { casFailOn?: string } = {}) {
+    const items = ids.map(listRow);
+    const manifests = new Map(
+      ids.map((id) => [
+        `readings/2026/${id}`,
+        { manifest: manifest(id) as Record<string, unknown>, etag: `e-${id}` },
+      ]),
+    );
+    const writes: Array<{ keyPrefix: string; etag: string }> = [];
+    const storage: RefreshTensionsStorage = {
+      readListIndex: async () => items,
+      readManifest: async (keyPrefix) => {
+        const stored = manifests.get(keyPrefix);
+        return stored
+          ? { manifest: structuredClone(stored.manifest), etag: stored.etag }
+          : null;
+      },
+      putManifestIfMatch: async (keyPrefix, next, etag) => {
+        writes.push({ keyPrefix, etag });
+        if (opts.casFailOn !== undefined && keyPrefix.endsWith(opts.casFailOn)) return false;
+        manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
+        return true;
+      },
+      writeListIndex: async () => {},
+    };
+
+    const held = new Set<string>();
+    const clashes: string[] = [];
+    const judgeOrder: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const h = harness();
+    h.readReport.mockResolvedValue(null);
+    h.createStorage.mockResolvedValue(storage);
+    h.judge.mockImplementation(async (input) => {
+      // A reading held by two judgements at once is the CAS loss the flag must
+      // not manufacture; record it rather than relying on the write to notice.
+      for (const id of [input.a.id, input.b.id]) {
+        if (held.has(id)) clashes.push(id);
+        held.add(id);
+      }
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, input.a.id.endsWith("0") ? 4 : 1));
+      inFlight--;
+      for (const id of [input.a.id, input.b.id]) held.delete(id);
+      judgeOrder.push(`${input.a.id}|${input.b.id}`);
+      return supersedes;
+    });
+    return { h, manifests, writes, clashes, judgeOrder, peak: () => peak };
+  }
+
+  const execute = (h: ReturnType<typeof harness>, ...extra: string[]) =>
+    corpusRefreshTensionsCommand.run(
+      [
+        "--tenant",
+        "global",
+        "--execute",
+        "--sole-writer",
+        ...pairs.flatMap(([a, b]) => ["--pair", `${a},${b}`]),
+        ...extra,
+      ],
+      h.deps,
+    );
+
+  it("overlaps disjoint pairs but never two that share a reading", async () => {
+    const s = scaled();
+
+    expect(await execute(s.h)).toBe(0);
+
+    expect(s.clashes).toEqual([]);
+    expect(s.peak()).toBeGreaterThan(1);
+    expect(s.peak()).toBeLessThanOrEqual(4);
+    expect(s.h.out.join("\n")).toContain("Mode: EXECUTE (concurrency 4)");
+  });
+
+  it("prints every pair in plan order however the calls complete", async () => {
+    const s = scaled();
+
+    expect(await execute(s.h)).toBe(0);
+
+    expect(s.judgeOrder).not.toEqual(plannedKeys);
+    const printed = s.h.out
+      .filter((line) => line.includes("usage input="))
+      .map((line) => line.trim().split(/\s+/)[0]);
+    expect(printed).toEqual(plannedKeys);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${pairs.length}; manifests written: ${pairs.length * 2}; repaired: 0; ` +
+        "skipped since plan: 0; failures: 0",
+    );
+  });
+
+  it("honours a lower cap", async () => {
+    const s = scaled();
+    expect(await execute(s.h, "--concurrency", "2")).toBe(0);
+    expect(s.peak()).toBe(2);
+    expect(s.clashes).toEqual([]);
+  });
+
+  it("writes neither side of a pair whose first write loses the CAS", async () => {
+    // rd_00 is the `a` side of the first pair, so its loss lands before any
+    // write for that pair.
+    const s = scaled({ casFailOn: "rd_00" });
+
+    expect(await execute(s.h)).toBe(1);
+
+    expect(s.writes.filter((write) => write.keyPrefix.endsWith("rd_00"))).toHaveLength(1);
+    expect(s.manifests.get("readings/2026/rd_00")!.etag).toBe("e-rd_00");
+    expect(s.manifests.get("readings/2026/rd_00")!.manifest.tensions).toBeUndefined();
+    // The partner is untouched too: the pair wrote nothing at all.
+    expect(s.writes.filter((write) => write.keyPrefix.endsWith("rd_01"))).toHaveLength(1);
+    expect(s.manifests.get("readings/2026/rd_01")!.manifest.tensions).toEqual([
+      expect.objectContaining({ id: "rd_02" }),
+    ]);
+    expect(s.h.err.join("\n")).toContain("rd_00|rd_01: manifest CAS lost; no overwrite performed");
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${pairs.length}; manifests written: ${pairs.length * 2 - 2}; repaired: 0; ` +
+        "skipped since plan: 0; failures: 1",
+    );
+  });
+
+  it("backs the whole pass off once on a 429", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    let first = true;
+    s.h.judge.mockImplementation(async (input) => {
+      if (first) {
+        first = false;
+        throw new RateLimitedError(429, 1_500, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await execute(s.h)).toBe(1);
+
+    expect(
+      s.h.err.filter((line) => line.includes("pausing new judgements")),
+    ).toEqual(["  ! provider rate limited; pausing new judgements for 1.500s"]);
+    expect(s.h.sleeps.length).toBeGreaterThan(1);
+    expect(new Set(s.h.sleeps)).toEqual(new Set([1_500]));
+    expect(s.h.out.join("\n")).toContain(`Judged: ${pairs.length - 1};`);
   });
 });

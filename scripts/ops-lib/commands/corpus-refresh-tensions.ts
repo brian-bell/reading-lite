@@ -69,6 +69,12 @@ import {
 import { requireOperatorTenant } from "../tenant-flag";
 import { createPrefetchingReader } from "../planning-reads";
 import {
+  createRateLimitGate,
+  parseConcurrencyFlag,
+  realSleep,
+} from "../execute-pool";
+import { runKeyedPool } from "../../lib/concurrency";
+import {
   addUsage,
   emptyUsageTotals,
   formatUsage,
@@ -80,10 +86,12 @@ import {
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
   createRefreshTimer,
+  formatSeconds,
   printTiming,
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
+import { RateLimitedError } from "../../../src/modules/http-retry";
 import {
   parseProductionWorkerVars,
   storageFromClient,
@@ -103,6 +111,7 @@ interface Args {
   execute: boolean;
   soleWriter: boolean;
   limit?: number;
+  concurrency: number;
   pairs: Array<[string, string]>;
 }
 
@@ -126,6 +135,8 @@ export interface CorpusRefreshTensionsDeps extends BaseDeps {
   createStorage: (bucket: string, keyRoot: string) => Promise<RefreshTensionsStorage>;
   loadProvider: (execute: boolean) => Promise<TensionProviderPlan>;
   now: () => number;
+  /** Injected so the rate-limit backoff is instant under a fake clock. */
+  sleep: (ms: number) => Promise<void>;
 }
 
 type Action =
@@ -136,6 +147,48 @@ type Action =
       estimate: ReturnType<TensionProviderPlan["estimate"]>;
     }
   | { kind: "repair"; repair: RepairAction };
+
+/** What one execute action produced, held until its turn in plan order. */
+interface ExecuteOutcome {
+  stdout: string[];
+  stderr: string[];
+  /** Manifests this action actually wrote; a CAS loss contributes none. */
+  written: number;
+  judged?: boolean;
+  repaired?: boolean;
+  skippedSincePlan?: boolean;
+  failed?: boolean;
+  /** Present whenever the provider was called and billed. */
+  usage?: TensionJudgementResult["usage"];
+}
+
+/** How an action names itself when something outside its own handling fails. */
+function describeAction(action: Action): string {
+  return action.kind === "judge" ? action.candidate.key : describeRepair(action.repair);
+}
+
+/**
+ * The reading ids an execute action reads and writes, held for its duration.
+ *
+ * The pool dispatches the first pending action whose keys are all free, so two
+ * actions that share a reading run one at a time but NOT necessarily in plan
+ * order: a repair on C can be applied before an earlier judge of (B, C) that is
+ * waiting on B. Nothing here depends on that order, for three reasons worth
+ * naming because they live elsewhere: the planner drops a repair whose pair key
+ * is already being judged (`judgedKeys` above), so the two never write the same
+ * partner slot; `buildTensionJudgementInput` reads titles and summaries, not
+ * the `tensions` array, so a repair landing first cannot change what a
+ * judgement is asked about; and a repair's staleness guard compares the live
+ * `updated_at` against a plan-time timestamp that no write in this command
+ * moves (`mergeTensionSide` and `purgeTensionPartner` preserve it verbatim). A
+ * repair kind or a judgement input that broke any of those would need the pool
+ * to enforce plan order.
+ */
+function actionKeys(action: Action): string[] {
+  if (action.kind === "judge") return [action.candidate.a, action.candidate.b];
+  const repair = action.repair;
+  return [repair.kind === "drop" ? repair.on : repair.to];
+}
 
 function parseRefreshTensionsArgs(argv: string[]): Args {
   let values;
@@ -152,6 +205,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
         execute: { type: "boolean", default: false },
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
+        concurrency: { type: "string" },
         pair: { type: "string", multiple: true },
       },
       allowPositionals: false,
@@ -183,6 +237,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
     ...(limit === undefined ? {} : { limit }),
+    concurrency: parseConcurrencyFlag(values.concurrency),
     pairs,
   };
 }
@@ -388,7 +443,9 @@ async function refreshTensions(
       : `Report: none (--pair only)`,
   );
   deps.io.stdout(`Provider: ${provider.provider} ${provider.model} effort=${provider.effort}`);
-  deps.io.stdout(`Mode: ${args.execute ? "EXECUTE" : "PLAN"}`);
+  deps.io.stdout(
+    `Mode: ${args.execute ? `EXECUTE (concurrency ${args.concurrency})` : "PLAN"}`,
+  );
   deps.io.stdout(
     `Selected actions: ${selected.length}; below overlap threshold: ${filteredOut}; ` +
       `already judged: ${skippedJudged}; repair pending: ${skippedRepairPending}\n`,
@@ -431,10 +488,19 @@ async function refreshTensions(
   let failures = 0;
   let skippedSincePlan = 0;
   const usageTotals = emptyUsageTotals();
-  const fail = (label: string, error: unknown) => {
-    failures++;
-    deps.io.stderr(`  ! ${label}: ${error instanceof Error ? error.message : String(error)}`);
-  };
+  const gate = createRateLimitGate({
+    now: deps.now,
+    sleep: deps.sleep,
+    onPause: (ms) =>
+      deps.io.stderr(
+        `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
+      ),
+    onGiveUp: (consecutive) =>
+      deps.io.stderr(
+        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
+          `the rest of this pass will fail fast`,
+      ),
+  });
   const readLive = async (id: string): Promise<StoredRawManifest> => {
     const row = byId.get(id);
     if (!row) throw new Error("no list row");
@@ -444,26 +510,37 @@ async function refreshTensions(
     }
     return current;
   };
-  const writeSide = async (
-    id: string,
-    partnerId: string,
-    entry: Parameters<typeof mergeTensionSide>[2],
-    judgedAt: string | undefined,
-    current: StoredRawManifest,
-  ): Promise<boolean> => {
-    const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
-    if (!merged.ok) throw new Error(merged.error);
-    const wrote = await storage.putManifestIfMatch(
-      byId.get(id)!.key_prefix,
-      merged.manifest,
-      current.etag,
-    );
-    if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
-    written++;
-    return true;
-  };
+  // One action, start to finish, with nothing recorded outside it: the caller
+  // folds the counters and prints the lines in plan order once every earlier
+  // action has been folded, so overlapping the calls cannot reorder the run's
+  // output or its accounting.
+  const runAction = async (action: Action): Promise<ExecuteOutcome> => {
+    const outcome: ExecuteOutcome = { stdout: [], stderr: [], written: 0 };
+    const fail = (label: string, error: unknown): ExecuteOutcome => {
+      outcome.failed = true;
+      outcome.stderr.push(
+        `  ! ${label}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return outcome;
+    };
+    const writeSide = async (
+      id: string,
+      partnerId: string,
+      entry: Parameters<typeof mergeTensionSide>[2],
+      judgedAt: string | undefined,
+      current: StoredRawManifest,
+    ): Promise<void> => {
+      const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
+      if (!merged.ok) throw new Error(merged.error);
+      const wrote = await storage.putManifestIfMatch(
+        byId.get(id)!.key_prefix,
+        merged.manifest,
+        current.etag,
+      );
+      if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
+      outcome.written++;
+    };
 
-  for (const action of selected) {
     if (action.kind === "judge") {
       const { a: aId, b: bId, source, key } = action.candidate;
       let a: StoredRawManifest;
@@ -472,44 +549,51 @@ async function refreshTensions(
         a = await readLive(aId);
         b = await readLive(bId);
       } catch (error) {
-        fail(key, error);
-        continue;
+        return fail(key, error);
       }
       if (source === "report" && isPairJudged(a.manifest, b.manifest)) {
-        skippedSincePlan++;
-        deps.io.stderr(`  ! skip ${key}: judged since the plan was made`);
-        continue;
+        outcome.skippedSincePlan = true;
+        outcome.stderr.push(`  ! skip ${key}: judged since the plan was made`);
+        return outcome;
       }
       try {
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
+        // The one place a rate limit is observed for the whole pass: wait for
+        // any window another worker opened before adding to it. The wait sits
+        // here, after the re-reads, because it is the paid call it is pacing;
+        // the ETags it waited on are still current, since --sole-writer is the
+        // only writer.
+        await gate.wait();
         const { value: result, ms: providerMs } = await timer.measured(
           PHASE_PROVIDER,
           () => provider.judge(input),
         );
-        judged++;
-        // Counted before the writes so the report covers every call billed,
-        // including judgements whose manifest writes later fail.
-        addUsage(usageTotals, result.usage);
-        deps.io.stdout(`  ${key}  ${formatUsage(result.usage)} ms=${providerMs}`);
+        // A call that came back is the evidence the limit is not sustained.
+        gate.succeeded();
+        outcome.judged = true;
+        // Carried on the outcome whatever happens next, so the run total covers
+        // every call billed, including judgements whose writes later fail.
+        outcome.usage = result.usage;
+        outcome.stdout.push(`  ${key}  ${formatUsage(result.usage)} ms=${providerMs}`);
         const computedAt = new Date(deps.now()).toISOString();
         const sides = deriveTensionSides(result.judgement, { a: aId, b: bId }, computedAt);
         await writeSide(aId, bId, sides.a, computedAt, a);
         try {
           await writeSide(bId, aId, sides.b, computedAt, b);
         } catch (error) {
-          fail(
+          return fail(
             `${key}: ${bId} not written after ${aId} was (one-sided; rerun repairs it)`,
             error,
           );
-          continue;
         }
-        deps.io.stdout(
+        outcome.stdout.push(
           `  ${key}  ${result.judgement.verdict}${result.judgement.side ? ` side=${result.judgement.side}` : ""}`,
         );
+        return outcome;
       } catch (error) {
-        fail(key, error);
+        if (error instanceof RateLimitedError) gate.close(error.retryAfterMs);
+        return fail(key, error);
       }
-      continue;
     }
 
     const repair = action.repair;
@@ -539,16 +623,54 @@ async function refreshTensions(
           target.etag,
         );
         if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
-        written++;
+        outcome.written++;
       } else {
         const target = await readLive(repair.on);
         await writeSide(repair.on, repair.partner, null, repair.judged_at, target);
       }
-      repaired++;
+      outcome.repaired = true;
+      return outcome;
     } catch (error) {
-      fail(describeRepair(repair), error);
+      return fail(describeRepair(repair), error);
     }
-  }
+  };
+
+  await runKeyedPool(
+    selected,
+    args.concurrency,
+    // The reading ids an action reads and writes. A reading sits in several
+    // pairs, so without this two workers would hold the same manifest at the
+    // same ETag, both pay for a judgement, and the second would lose the CAS:
+    // failures and spend that a sequential pass never produces.
+    actionKeys,
+    // `runAction` reports its own failures, but an unforeseen throw would abort
+    // the pass with the results behind it unaccounted for, so the last word on
+    // that belongs here rather than to the pool.
+    async (action) => {
+      try {
+        return await runAction(action);
+      } catch (error) {
+        return {
+          stdout: [],
+          stderr: [
+            `  ! ${describeAction(action)}: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+          written: 0,
+          failed: true,
+        };
+      }
+    },
+    (outcome) => {
+      for (const line of outcome.stdout) deps.io.stdout(line);
+      for (const line of outcome.stderr) deps.io.stderr(line);
+      if (outcome.usage) addUsage(usageTotals, outcome.usage);
+      if (outcome.judged) judged++;
+      if (outcome.repaired) repaired++;
+      if (outcome.skippedSincePlan) skippedSincePlan++;
+      if (outcome.failed) failures++;
+      written += outcome.written;
+    },
+  );
 
   deps.io.stdout(
     `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; ` +
@@ -742,6 +864,7 @@ Options:
                        which reads a report only when --report is passed explicitly.
   --pair <a>,<b>       Hand-pick a pair (repeatable); bypasses the overlap filter and judged skip.
   --limit <n>          Cap paid judgement actions; free repairs always run.
+  --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.
@@ -764,6 +887,7 @@ Options:
       ),
     loadProvider: async (execute) => tensionProviderFromVars(await defaultProviderVars(), execute),
     now: () => Date.now(),
+    sleep: realSleep,
   }),
   run: runCorpusRefreshTensions,
 };

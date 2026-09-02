@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { RateLimitedError } from "../../../src/modules/http-retry";
+import { RATE_LIMIT_CONSECUTIVE_LIMIT } from "../../../scripts/ops-lib/execute-pool";
 import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
+import type {
+  RelationshipJudgementInput,
+  RelationshipJudgementResult,
+} from "../../../src/modules/relationship-judgement";
 import {
   corpusRefreshConnectionsCommand,
   parseProductionWorkerVars,
@@ -112,7 +118,10 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
   };
   const out: string[] = [];
   const err: string[] = [];
-  const judge = vi.fn(async () => ({
+  const sleeps: number[] = [];
+  const judge = vi.fn<
+    (input: RelationshipJudgementInput) => Promise<RelationshipJudgementResult>
+  >(async () => ({
     judgement: {
       novelty_verdict: "familiar" as const,
       connections: [{ id: "rd_b", reason: "related" }],
@@ -141,11 +150,15 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
       judge,
     }),
     now: () => Date.parse(JUDGED_AT),
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
   };
   return {
     deps,
     out,
     err,
+    sleeps,
     judge,
     readReport,
     createStorage,
@@ -203,7 +216,10 @@ describe("ops corpus refresh-connections", () => {
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        // Pinned to one at a time: this test is about which phase each call is
+        // attributed to, and overlapping the actions would interleave the fake
+        // clock's steps across them.
+        ["--tenant", "global", "--execute", "--sole-writer", "--concurrency", "1"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).toBe(0);
@@ -462,6 +478,27 @@ binding = "READING_JOBS"
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
   });
+
+  it("heals a list row whose judged manifest carries no verdict at all", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    // Judged for this report, but the manifest has no verdict while the row
+    // still claims one: the drift a heal exists to clear.
+    const stored = h.manifests.get("readings/2026/rd_a")!.manifest;
+    stored.connections_computed_at = JUDGED_AT;
+    delete stored.novelty_verdict;
+
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.out.join("\n")).toContain("Judged: 0; list rows healed: 1; failures: 0");
+    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBeUndefined();
+  });
 });
 
 /**
@@ -653,5 +690,276 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
 
     expect(tracked.completed).toHaveLength(COUNT * 2);
     expect(new Set(tracked.completed).size).toBe(COUNT * 2);
+  });
+});
+
+describe("ops corpus refresh-connections execute concurrency", () => {
+  const COUNT = 12;
+  const ids = Array.from({ length: COUNT }, (_, i) => `rd_${String(i).padStart(2, "0")}`);
+  const neighbourOf = (id: string) => `nb_${id.slice(3)}`;
+
+  /** A report of COUNT flagged readings, each with one distinct neighbour. */
+  function scaledReport() {
+    return {
+      ...report(),
+      readings: ids.map((id) => ({
+        id,
+        key_prefix: `readings/2026/${id}`,
+        url: `https://example.com/${id}`,
+        reasons: ["new_neighbour"],
+        novelty_verdict: "novel",
+        connections: [],
+        current_neighbours: [
+          {
+            id: neighbourOf(id),
+            score: 0.9,
+            title: neighbourOf(id),
+            tldr: `Summary ${neighbourOf(id)}`,
+            created_at: "2026-01-02T00:00:00.000Z",
+          },
+        ],
+      })),
+    };
+  }
+
+  function scaled(opts: { casLossFor?: string } = {}) {
+    const items = [...ids, ...ids.map(neighbourOf)].map(listRow);
+    const manifests = new Map<string, { manifest: Record<string, unknown>; etag: string }>(
+      items.map((row) => [row.key_prefix, { manifest: manifest(row.id), etag: `e-${row.id}` }]),
+    );
+    const writes: Array<{ keyPrefix: string; etag: string }> = [];
+    let listWrite: typeof items | undefined;
+    const storage: RefreshConnectionsStorage = {
+      readListIndex: async () => items,
+      readManifest: async (keyPrefix) => manifests.get(keyPrefix) ?? null,
+      putManifestIfMatch: async (keyPrefix, next, etag) => {
+        writes.push({ keyPrefix, etag });
+        if (opts.casLossFor !== undefined && keyPrefix.endsWith(opts.casLossFor)) return false;
+        manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
+        return true;
+      },
+      writeListIndex: async (next) => {
+        listWrite = next as typeof items;
+      },
+    };
+
+    let inFlight = 0;
+    let peak = 0;
+    const judgeOrder: string[] = [];
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(scaledReport()));
+    h.createStorage.mockResolvedValue(storage);
+    // The provider is the whole point of the flag: give it latency, and resolve
+    // later readings first so an in-order result cannot be luck.
+    h.judge.mockImplementation(async (input) => {
+      const id = input.reading.id;
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, id.endsWith("0") ? 4 : 1));
+      inFlight--;
+      judgeOrder.push(id);
+      return {
+        judgement: { novelty_verdict: "familiar" as const, connections: [] },
+        usage: {
+          provider: "openai" as const,
+          model: "gpt-5.6-terra",
+          input_tokens: 100,
+          output_tokens: 20,
+          reasoning_tokens: 0,
+          cached_input_tokens: 0,
+          cache_write_tokens: 0,
+        },
+      };
+    });
+    return {
+      h,
+      manifests,
+      writes,
+      judgeOrder,
+      peak: () => peak,
+      listWrite: () => listWrite,
+    };
+  }
+
+  const execute = (h: ReturnType<typeof harness>, ...extra: string[]) =>
+    corpusRefreshConnectionsCommand.run(
+      ["--tenant", "global", "--execute", "--sole-writer", ...extra],
+      h.deps,
+    );
+
+  /** Runs with a clock that a backoff actually moves, as a real one would. */
+  const executeOnAClock = (h: ReturnType<typeof harness>, ...extra: string[]) => {
+    let clock = Date.parse(JUDGED_AT);
+    return corpusRefreshConnectionsCommand.run(
+      ["--tenant", "global", "--execute", "--sole-writer", ...extra],
+      {
+        ...h.deps,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          h.sleeps.push(ms);
+          clock += ms;
+        },
+      },
+    );
+  };
+
+  it("judges four at a time by default and prints results in plan order", async () => {
+    const s = scaled();
+
+    expect(await execute(s.h)).toBe(0);
+
+    expect(s.peak()).toBe(4);
+    expect(s.h.out.join("\n")).toContain("Mode: EXECUTE (concurrency 4)");
+    // Proof the fixture completes out of order, so the assertion below is
+    // about collection order rather than a coincidentally serial run.
+    expect(s.judgeOrder).not.toEqual([...s.judgeOrder].sort());
+    const printed = s.h.out
+      .filter((line) => line.includes("usage input="))
+      .map((line) => line.trim().split(/\s+/)[0]);
+    expect(printed).toEqual(ids);
+    expect(s.h.out.join("\n")).toContain(`Judged: ${COUNT}; list rows healed: 0; failures: 0`);
+  });
+
+  it("honours a lower cap", async () => {
+    const s = scaled();
+    expect(await execute(s.h, "--concurrency", "2")).toBe(0);
+    expect(s.peak()).toBe(2);
+  });
+
+  it("rejects a --concurrency that is not a positive integer", async () => {
+    const s = scaled();
+    await expect(execute(s.h, "--concurrency", "0")).rejects.toThrow(
+      /--concurrency "0" is not a positive integer/,
+    );
+    expect(s.h.judge).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing for a reading that loses its CAS, and counts the loss once", async () => {
+    const lost = ids[5]!;
+    const s = scaled({ casLossFor: lost });
+
+    expect(await execute(s.h)).toBe(1);
+
+    // Exactly one write attempt for the loser, and its manifest is untouched:
+    // no partial write, and no second worker retrying it.
+    const attempts = s.writes.filter((write) => write.keyPrefix.endsWith(lost));
+    expect(attempts).toHaveLength(1);
+    expect(s.manifests.get(`readings/2026/${lost}`)!.manifest.connections).toEqual([]);
+    expect(s.manifests.get(`readings/2026/${lost}`)!.etag).toBe(`e-${lost}`);
+    expect(
+      s.h.err.filter((line) => line.includes("manifest CAS lost")),
+    ).toEqual([`  ! ${lost}: manifest CAS lost; no overwrite performed`]);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${COUNT - 1}; list rows healed: 0; failures: 1`,
+    );
+    // The lost reading contributes no list-row verdict either.
+    expect(
+      s.listWrite()!.find((row) => row.id === lost)!.novelty_verdict,
+    ).toBe("novel");
+    expect(
+      s.listWrite()!.find((row) => row.id === ids[4])!.novelty_verdict,
+    ).toBe("familiar");
+    // Its call was still billed, which is what the usage total is for.
+    expect(s.h.out.join("\n")).toContain(`Usage: ${COUNT} judgements;`);
+  });
+
+  it("backs the whole pass off once on a 429 rather than each worker independently", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    let first = true;
+    s.h.judge.mockImplementation(async (input) => {
+      if (first) {
+        first = false;
+        throw new RateLimitedError(429, 2_500, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await execute(s.h)).toBe(1);
+
+    // One window for the run, not one per worker.
+    const pauses = s.h.err.filter((line) => line.includes("pausing new judgements"));
+    expect(pauses).toEqual(["  ! provider rate limited; pausing new judgements for 2.500s"]);
+    // Every worker that dispatched after the limit waited on that same window.
+    expect(s.h.sleeps.length).toBeGreaterThan(1);
+    expect(new Set(s.h.sleeps)).toEqual(new Set([2_500]));
+    // The run neither aborts nor loses the rest of the plan; the rate-limited
+    // action is a failure exactly as it is without the flag.
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${COUNT - 1}; list rows healed: 0; failures: 1`,
+    );
+  });
+
+  it("stops pausing when every judgement comes back rate limited", async () => {
+    const s = scaled();
+    s.h.judge.mockImplementation(async () => {
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    // One at a time, so every 429 is its own round and the run is long enough
+    // to reach the give-up limit.
+    expect(await executeOnAClock(s.h, "--concurrency", "1")).toBe(1);
+
+    // Bounded: a handful of windows, then the rest of the pass fails fast
+    // rather than holding the sole-writer window for the whole plan.
+    expect(
+      s.h.err.filter((line) => line.includes("pausing new judgements")),
+    ).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    expect(
+      s.h.err.filter((line) => line.includes("no longer pausing")),
+    ).toEqual([
+      `  ! provider rate limited ${RATE_LIMIT_CONSECUTIVE_LIMIT + 1} times in a row; ` +
+        "no longer pausing, the rest of this pass will fail fast",
+    ]);
+    expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(
+      RATE_LIMIT_CONSECUTIVE_LIMIT * 60_000,
+    );
+    // Every action is still attempted and accounted for, exactly as it would
+    // be without the flag.
+    expect(s.h.judge).toHaveBeenCalledTimes(COUNT);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: 0; list rows healed: 0; failures: ${COUNT}`,
+    );
+  });
+
+  it("keeps pausing while judgements are still getting through between limits", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    let calls = 0;
+    // Every other call is rate limited, so no run of windows ever reaches the
+    // give-up limit however many 429s the pass sees.
+    s.h.judge.mockImplementation(async (input) => {
+      if (calls++ % 2 === 0) {
+        throw new RateLimitedError(429, 1_000, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1")).toBe(1);
+
+    expect(s.h.err.filter((line) => line.includes("no longer pausing"))).toEqual([]);
+    expect(
+      s.h.err.filter((line) => line.includes("pausing new judgements")).length,
+    ).toBeGreaterThan(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${COUNT / 2}; list rows healed: 0; failures: ${COUNT / 2}`,
+    );
+  });
+
+  it("defaults the backoff when the provider sends no Retry-After", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    let first = true;
+    s.h.judge.mockImplementation(async (input) => {
+      if (first) {
+        first = false;
+        throw new RateLimitedError(429, null, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await execute(s.h)).toBe(1);
+
+    expect(s.h.err.join("\n")).toContain("pausing new judgements for 8.000s");
   });
 });

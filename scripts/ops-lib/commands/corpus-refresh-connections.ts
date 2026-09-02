@@ -49,15 +49,22 @@ import { requireOperatorTenant } from "../tenant-flag";
 import { createPrefetchingReader } from "../planning-reads";
 import { judgeRetryDeps } from "../judge-retry";
 import {
+  createRateLimitGate,
+  parseConcurrencyFlag,
+  realSleep,
+} from "../execute-pool";
+import { runKeyedPool } from "../../lib/concurrency";
+import {
   PHASE_MANIFEST_READ,
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
   createRefreshTimer,
+  formatSeconds,
   printTiming,
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
-import type { RetryDeps } from "../../../src/modules/http-retry";
+import { RateLimitedError, type RetryDeps } from "../../../src/modules/http-retry";
 import {
   addUsage,
   emptyUsageTotals,
@@ -75,6 +82,7 @@ interface Args {
   execute: boolean;
   soleWriter: boolean;
   limit?: number;
+  concurrency: number;
 }
 
 export interface StoredRawManifest {
@@ -113,6 +121,8 @@ export interface CorpusRefreshConnectionsDeps extends BaseDeps {
   ) => Promise<RefreshConnectionsStorage>;
   loadProvider: (execute: boolean) => Promise<RelationshipProviderPlan>;
   now: () => number;
+  /** Injected so the rate-limit backoff is instant under a fake clock. */
+  sleep: (ms: number) => Promise<void>;
 }
 
 interface Action {
@@ -123,6 +133,21 @@ interface Action {
   input?: RelationshipJudgementInput;
   allowedIds?: Set<string>;
   estimate?: ReturnType<RelationshipProviderPlan["estimate"]>;
+}
+
+/** What one execute action produced, held until its turn in plan order. */
+interface ExecuteOutcome {
+  stdout: string[];
+  stderr: string[];
+  kind: "judged" | "healed" | "failed";
+  /**
+   * The verdict to flush onto the list row. Read for every outcome that is
+   * not a failure, `undefined` included: a manifest whose `novelty_verdict`
+   * is absent is exactly the drift a heal exists to clear off the row.
+   */
+  verdict: ListIndexItem["novelty_verdict"];
+  /** Present whenever the provider was called and billed. */
+  usage?: RelationshipJudgementResult["usage"];
 }
 
 function parseRefreshConnectionsArgs(argv: string[]): Args {
@@ -140,6 +165,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
         execute: { type: "boolean", default: false },
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
+        concurrency: { type: "string" },
       },
       allowPositionals: false,
     }));
@@ -160,6 +186,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
     ...(limit === undefined ? {} : { limit }),
+    concurrency: parseConcurrencyFlag(values.concurrency),
   };
 }
 
@@ -372,7 +399,9 @@ async function refreshConnections(
   deps.io.stdout(
     `Provider: ${provider.provider} ${provider.model} effort=${provider.effort}`,
   );
-  deps.io.stdout(`Mode: ${args.execute ? "EXECUTE" : "PLAN"}`);
+  deps.io.stdout(
+    `Mode: ${args.execute ? `EXECUTE (concurrency ${args.concurrency})` : "PLAN"}`,
+  );
   deps.io.stdout(`Selected actions: ${selected.length}; skipped: ${skipped}\n`);
 
   let estimatedTotal = 0;
@@ -422,88 +451,141 @@ async function refreshConnections(
   let healed = 0;
   let flushFailed = false;
   const usageTotals = emptyUsageTotals();
-  try {
-    for (const action of selected) {
-      if (action.kind === "heal") {
-        verdictUpdates.set(
-          action.report.id,
-          action.stored.manifest.novelty_verdict as ListIndexItem["novelty_verdict"],
-        );
-        healed++;
-        continue;
-      }
-      let current: StoredRawManifest | null;
-      try {
-        current = await storage.readManifest(action.row.key_prefix);
-      } catch (error) {
-        failures++;
-        deps.io.stderr(
-          `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-      if (!current || !validTargetManifest(current.manifest, action.report)) {
-        failures++;
-        deps.io.stderr(`  ! ${action.report.id}: manifest changed before judgement`);
-        continue;
-      }
-      if (isJudgedForReport(current.manifest, report.generated_at)) {
-        verdictUpdates.set(
-          action.report.id,
-          current.manifest.novelty_verdict as ListIndexItem["novelty_verdict"],
-        );
-        healed++;
-        continue;
-      }
-      try {
-        const input = buildRelationshipJudgementInput(
-          current.manifest,
-          action.report,
-          liveReportNeighbours(action.report, liveReadyIds),
-        );
-        const { value: result, ms: providerMs } = await timer.measured(
-          PHASE_PROVIDER,
-          () => provider.judge(input),
-        );
-        // Counted before the write so the report covers every call billed,
-        // including judgements whose manifest write later fails.
-        addUsage(usageTotals, result.usage);
-        deps.io.stdout(
-          `  ${action.report.id}  ${formatUsage(result.usage)} ms=${providerMs}`,
-        );
-        const merged = mergeRelationshipJudgement(
-          current.manifest,
-          result.judgement,
-          action.allowedIds!,
-          new Date(deps.now()).toISOString(),
-        );
-        if (!merged.ok) {
-          failures++;
-          deps.io.stderr(`  ! ${action.report.id}: ${merged.error}`);
-          continue;
-        }
-        const wrote = await storage.putManifestIfMatch(
-          action.row.key_prefix,
-          merged.manifest,
-          current.etag,
-        );
-        if (!wrote) {
-          failures++;
-          deps.io.stderr(`  ! ${action.report.id}: manifest CAS lost; no overwrite performed`);
-          continue;
-        }
-        verdictUpdates.set(
-          action.report.id,
-          merged.manifest.novelty_verdict as ListIndexItem["novelty_verdict"],
-        );
-        judged++;
-      } catch (error) {
-        failures++;
-        deps.io.stderr(
-          `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+  const gate = createRateLimitGate({
+    now: deps.now,
+    sleep: deps.sleep,
+    onPause: (ms) =>
+      deps.io.stderr(
+        `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
+      ),
+    onGiveUp: (consecutive) =>
+      deps.io.stderr(
+        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
+          `the rest of this pass will fail fast`,
+      ),
+  });
+
+  // One action, start to finish, with nothing written outside it: the caller
+  // folds the counters and prints the lines in plan order once every earlier
+  // action has been folded, so overlapping the calls cannot reorder the run's
+  // output or its accounting.
+  const runAction = async (action: Action): Promise<ExecuteOutcome> => {
+    const outcome: ExecuteOutcome = {
+      stdout: [],
+      stderr: [],
+      kind: "failed",
+      verdict: undefined,
+    };
+    const failWith = (message: string): ExecuteOutcome => {
+      outcome.stderr.push(`  ! ${action.report.id}: ${message}`);
+      return outcome;
+    };
+    if (action.kind === "heal") {
+      outcome.kind = "healed";
+      outcome.verdict = action.stored.manifest
+        .novelty_verdict as ListIndexItem["novelty_verdict"];
+      return outcome;
     }
+    let current: StoredRawManifest | null;
+    try {
+      current = await storage.readManifest(action.row.key_prefix);
+    } catch (error) {
+      return failWith(error instanceof Error ? error.message : String(error));
+    }
+    if (!current || !validTargetManifest(current.manifest, action.report)) {
+      return failWith("manifest changed before judgement");
+    }
+    if (isJudgedForReport(current.manifest, report.generated_at)) {
+      outcome.kind = "healed";
+      outcome.verdict = current.manifest
+        .novelty_verdict as ListIndexItem["novelty_verdict"];
+      return outcome;
+    }
+    try {
+      const input = buildRelationshipJudgementInput(
+        current.manifest,
+        action.report,
+        liveReportNeighbours(action.report, liveReadyIds),
+      );
+      // The one place a rate limit is observed for the whole pass: wait for any
+      // window another worker opened before adding to it. The wait sits here,
+      // after the re-read, because it is the paid call it is pacing; the ETag
+      // it waited on is still current, since --sole-writer is the only writer.
+      await gate.wait();
+      const { value: result, ms: providerMs } = await timer.measured(
+        PHASE_PROVIDER,
+        () => provider.judge(input),
+      );
+      // A call that came back is the evidence the limit is not sustained.
+      gate.succeeded();
+      // Carried on the outcome whatever happens next, so the run total covers
+      // every call billed, including judgements whose write later fails.
+      outcome.usage = result.usage;
+      outcome.stdout.push(
+        `  ${action.report.id}  ${formatUsage(result.usage)} ms=${providerMs}`,
+      );
+      const merged = mergeRelationshipJudgement(
+        current.manifest,
+        result.judgement,
+        action.allowedIds!,
+        new Date(deps.now()).toISOString(),
+      );
+      if (!merged.ok) return failWith(merged.error);
+      const wrote = await storage.putManifestIfMatch(
+        action.row.key_prefix,
+        merged.manifest,
+        current.etag,
+      );
+      if (!wrote) return failWith("manifest CAS lost; no overwrite performed");
+      outcome.kind = "judged";
+      outcome.verdict = merged.manifest
+        .novelty_verdict as ListIndexItem["novelty_verdict"];
+      return outcome;
+    } catch (error) {
+      if (error instanceof RateLimitedError) gate.close(error.retryAfterMs);
+      return failWith(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  try {
+    await runKeyedPool(
+      selected,
+      args.concurrency,
+      // One reading per action, and a report names a reading once, so tier 2
+      // never actually contends; the key still states what the action owns.
+      (action) => [action.report.id],
+      // `runAction` reports its own failures, but an unforeseen throw would
+      // abort the pass with the results behind it unaccounted for, so the last
+      // word on that belongs here rather than to the pool.
+      async (action) => {
+        try {
+          return await runAction(action);
+        } catch (error) {
+          return {
+            stdout: [],
+            stderr: [
+              `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
+            ],
+            kind: "failed" as const,
+            verdict: undefined,
+          };
+        }
+      },
+      (outcome, index) => {
+        for (const line of outcome.stdout) deps.io.stdout(line);
+        for (const line of outcome.stderr) deps.io.stderr(line);
+        if (outcome.usage) addUsage(usageTotals, outcome.usage);
+        // Keyed on the outcome, not on the value: a heal whose manifest has
+        // no verdict must still clear the stale one off the list row, or it
+        // is re-planned every run and never fixed.
+        if (outcome.kind !== "failed") {
+          verdictUpdates.set(selected[index]!.report.id, outcome.verdict);
+        }
+        if (outcome.kind === "judged") judged++;
+        else if (outcome.kind === "healed") healed++;
+        else failures++;
+      },
+    );
   } finally {
     if (verdictUpdates.size > 0) {
       const updated = items.map((item) =>
@@ -786,6 +868,7 @@ prints the provider token usage of each judgement and a run total.
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json.
   --limit <n>          Cap selected judgement or list-heal actions.
+  --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.
@@ -798,6 +881,7 @@ Options:
     loadProvider: async (execute) =>
       providerFromVars(await defaultProviderVars(), execute),
     now: () => Date.now(),
+    sleep: realSleep,
   }),
   run: runCorpusRefreshConnections,
 };

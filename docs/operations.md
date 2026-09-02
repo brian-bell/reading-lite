@@ -373,8 +373,7 @@ writes are the exception: they get the deadline but are never repeated, because
 a retry can see its own landed write and report a lost race that did not
 happen. Both commands' judgement calls retry 5xx the same way, and a 429
 surfaces as a `RateLimitedError` naming the retry-after the provider asked for
-— that one is a signal to pause and rerun later, not to rerun immediately, and
-nothing in the command paces itself for you yet.
+— that one is what the execute pass's global backoff reacts to (below).
 
 Those limits are these two commands' policy and nothing else's. The other ops
 commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
@@ -463,6 +462,58 @@ out, Anthropic does not, so the column is shown only for OpenAI. The input
 column excludes Anthropic cache reads and writes, which are billed on top of
 it.
 
+Execute mode runs several judgements at once. `--concurrency <n>` sets how
+many, defaulting to 4 — the ingest queue runs at 3 against the same provider
+account, so this is deliberately close to it — and refusing anything above 16,
+so a mistyped flag cannot fan a hundred paid calls at that account. Results are
+collected and printed in plan order however the calls complete, and every counter (`Judged`, `list
+rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
+output and its exit code do not depend on which call returned first. The one
+line that is not in plan order is the rate-limit pause below, which prints when
+it happens because that is the point of it. The cost of that ordering is that a
+finished action's line waits for the ones planned before it, so a single slow
+call holds back the lines behind it; the `Timing:` block at the end is still
+what separates a slow pass from a hung one. Pass `--concurrency 1` for a
+strictly sequential pass — the rate-limit backoff below still applies.
+
+Two things the pass does not do concurrently. It never has two judgements
+holding the same reading at once — in `refresh-tensions`, where a reading sits
+in several pairs, an action waits until every reading it writes is free, so
+concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
+away. And when a judgement comes back rate limited (a 429 that outlived the
+judge's own retry), the whole pass backs off together: the rate-limited action
+is counted as a failure exactly as it would be sequentially, and no worker
+*starts* another judgement until the provider's `Retry-After` has passed
+(defaulting to 8 s, capped at 60 s so a wild header cannot park a sole-writer
+window). Calls already in flight when the window opens still finish, and are
+still billed. The pause prints as `provider rate limited; pausing new
+judgements for …`. The run does not abort, and it does not silently re-bill the
+action that hit the limit.
+
+A wall the pass cannot get past is bounded. After five backoff windows in a row
+with no judgement succeeding in between, the limit is not transient, so the pass
+stops waiting altogether (`provider rate limited N times in a row; no longer
+pausing…`) and fails the rest fast — which is what a sequential run did — rather
+than sitting on the sole-writer window for the length of the plan. Any
+judgement that comes back resets that run and restores the backing off: while
+anything is getting through, the pass is making progress between windows and
+the pauses are doing their job.
+
+What that does **not** bound is a partial limit — some calls 429, some succeed —
+because every success resets the run. Such a pass keeps pausing for as long as
+the provider keeps limiting, and can hold the sole-writer window considerably
+longer than the same plan would have taken sequentially, which never paused at
+all. It is still making progress, and each pause is at most 60 s; but if the
+`provider rate limited; pausing` line keeps appearing, the window is being spent
+waiting, and the run is better stopped and retried when the provider is quieter.
+Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
+from the manifests as it always does.
+
+Because the calls overlap, the `Timing:` block's `provider` and `manifest read`
+rows sum the call durations rather than the wall time they occupied — the same
+way `planning reads` already did — so under `--concurrency` they can exceed the
+run's own total. The `total` row is the one to compare between runs.
+
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
 window must cover provider calls, manifest CAS writes, and the final wholesale
@@ -499,6 +550,8 @@ and is remembered so the pair is not re-judged nightly. Only `tensions` and
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
+`--concurrency` works as it does for `refresh-connections` above, including the
+rule that two actions touching the same reading never run at once.
 Execute mode prints the provider token usage of each judgement and a run total
 on the same terms as `refresh-connections` above.
 
