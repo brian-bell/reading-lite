@@ -320,9 +320,11 @@ export async function writeJsonObject(key: string, body: unknown, deps: R2Deps):
   }
 }
 
-// The nightly-refresh run marker. Read strictly: an unreadable marker must not
-// look like an absent one, because absent is exactly what widens the next pass
-// to a full sweep — a transient read error would silently cost 20 minutes.
+// The nightly-refresh run marker. Read strictly so the two outcomes stay
+// distinguishable at this layer: null is a confirmed-absent marker, and a
+// failed read throws. Both end in a full sweep — the command catches the throw
+// and says so on stderr — but only because the command decided that, and it can
+// only report the difference if this function keeps it.
 export async function readRefreshState(deps: R2Deps): Promise<unknown | null> {
   const raw = await readObjectStrict(layout.refreshStateKey(), deps);
   return raw === null ? null : JSON.parse(raw);

@@ -13,17 +13,23 @@
 //
 //   changed   rows created or reprocessed since the marker (`created_at` /
 //             `updated_at`), whatever their status
-//   citers    rows that cite a changed id — connections, tensions, or the
-//             neighbourhood the last judgement considered
 //   reverse   the reverse neighbourhood of each changed reading's own vector:
 //             a topK-100 query, keeping ids at or above REVERSE_SCORE_BOUND
 //
-// The bound is deliberately far below SIMILARITY_FLOOR (0.5): a reading whose
-// nearest neighbour scores 0.45 cannot cross the floor because one vector
-// changed, so it cannot gain or lose a floored neighbour. Where that reasoning
-// runs out — a hundred results all at or above the bound, meaning the query was
-// truncated and the real reverse set is unknown — the answer is not a narrower
-// scope but a full sweep.
+// The bound sits a margin below SIMILARITY_FLOOR: a reading that far from the
+// changed vector cannot cross the floor because that one vector changed, so it
+// cannot gain or lose a floored neighbour. Where that reasoning runs out — a
+// hundred results all at or above the bound, meaning the query was truncated
+// and the real reverse set is unknown — the answer is not a narrower scope but
+// a full sweep.
+//
+// The reverse query is the ONLY source of strangers, and that is enough for
+// every change except a moved vector. A reading that cites a changed one had
+// it above the floor when it was judged, so as long as that vector stays where
+// it is — a re-summarize, a status flip to failed, a reprocess of the same
+// content — the citer still scores above the bound and the reverse query finds
+// it. Only a vector that MOVES leaves a citer behind, and nothing queryable
+// remembers where it was.
 //
 // The scope is a nightly economy, not a correctness claim, and it is the weekly
 // `--full` sweep that makes the trade safe. Three things a nightly pass can
@@ -34,11 +40,13 @@
 //     scope or the next full sweep;
 //   - a reprocess that moves a vector far enough to LEAVE a stranger's floored
 //     neighbourhood: the reverse query runs against the vector's new position,
-//     and the old one is gone. Where the stranger had already judged it, the
-//     citation union catches it; where it had not, only the sweep does — and
-//     what goes stale there is not just a deferred re-judgement but the
-//     stranger's stored `similarity` snapshot and list row, which the API and
-//     the SPA serve;
+//     and the old one is gone. Nothing the planner can read remembers the old
+//     neighbourhood — index/list.json rows carry no connections, tensions or
+//     judged-candidate ids (manifestToIndexItem), so citations are only
+//     reachable by reading every manifest, which is the O(N) cost the scope
+//     exists to avoid. What goes stale meanwhile is not just a deferred
+//     re-judgement but that stranger's stored `similarity` snapshot and list
+//     row, which the API and the SPA serve;
 //   - a purge, unless it shrinks the list: the check is a row count, so a day
 //     that purges as many readings as it ingests does not escalate, and the
 //     readings that silently lost a neighbour wait for the sweep. Replacing the
@@ -58,17 +66,21 @@
 // command and handed in as data, so every rule here is unit-testable without a
 // Vectorize index.
 
+import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
 import type { RefreshRow } from "./refresh-neighbours";
 
 /** topK for a reverse-neighbour query. */
 export const REVERSE_TOP_K = 100;
 
 /**
- * The score at or above which a reverse match is taken into scope. Below the
- * similarity floor by a wide margin, because the question is not "is this a
- * neighbour" but "could this reading's floored neighbourhood have moved".
+ * The score at or above which a reverse match is taken into scope. Derived from
+ * the floor rather than written next to it: the question is not "is this a
+ * neighbour" but "could this reading's floored neighbourhood have moved", and
+ * the margin is the room a single vector's arrival or departure has to push a
+ * score across the floor. Lowering SIMILARITY_FLOOR must lower this with it,
+ * which a literal would not.
  */
-export const REVERSE_SCORE_BOUND = 0.45;
+export const REVERSE_SCORE_BOUND = SIMILARITY_FLOOR - 0.1;
 
 /** The per-tenant run marker, stored at `index/refresh-state.json`. */
 export interface RefreshState {
@@ -224,7 +236,6 @@ export function incrementalScope(
   if (base.kind === "full") return base;
 
   const known = new Set(list.map((row) => row.id));
-  const changed = new Set(base.changed);
   const scope = new Set<string>(base.changed);
 
   for (const id of base.changed) {
@@ -238,21 +249,13 @@ export function incrementalScope(
         kind: "full",
         reason:
           `reverse neighbourhood of ${id} is saturated ` +
-          `(${REVERSE_TOP_K} matches at or above ${REVERSE_SCORE_BOUND})`,
+          `(${matches.length} match(es), none below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
       };
     }
     for (const match of matches) {
       if (match.score < REVERSE_SCORE_BOUND) continue;
       if (known.has(match.id)) scope.add(match.id);
     }
-  }
-
-  // A reading that cites a changed id has a stale citation, a below-floor
-  // citation, or a candidate that moved — all of them tier-1 flags that the
-  // reverse query cannot see, because the citation may score below the bound.
-  for (const row of list) {
-    if (scope.has(row.id)) continue;
-    if (citesAny(row, changed)) scope.add(row.id);
   }
 
   return {
@@ -273,12 +276,20 @@ export function describeScope(scope: RefreshScope): string {
     : `Scope: incremental (${scope.ids.length} reading(s)) — ${scope.reason}`;
 }
 
-// Truncated at topK with the last match still at or above the bound: there may
-// be more matches above it that the query never returned, so the reverse set
-// this reading contributes is unknown rather than empty.
+/**
+ * True when the reverse set this reading contributes is unknown rather than
+ * complete: the lowest match the query returned is still at or above the bound,
+ * so there is no evidence the results ran out before the bound did.
+ *
+ * Deliberately not a count comparison against REVERSE_TOP_K. A malformed match
+ * entry is dropped on the way here (parseVectorQueryMatch), so a truncated
+ * hundred can arrive as ninety-nine and read as complete — and this is the one
+ * escalation that must never be missed. The cost of the stricter rule is a
+ * corpus small and uniform enough that every reading is a near-neighbour of
+ * every other, which sweeps every night and takes seconds to do it.
+ */
 function isSaturated(matches: readonly { score: number }[]): boolean {
-  if (matches.length < REVERSE_TOP_K) return false;
-  const last = matches[REVERSE_TOP_K - 1];
+  const last = matches[matches.length - 1];
   return last !== undefined && last.score >= REVERSE_SCORE_BOUND;
 }
 
@@ -290,20 +301,6 @@ function rowChangedSince(row: RefreshRow, sinceMs: number): boolean {
   if (!Number.isFinite(created) && !Number.isFinite(updated)) return true;
   if (Number.isFinite(created) && created > sinceMs) return true;
   return Number.isFinite(updated) && updated > sinceMs;
-}
-
-function citesAny(row: RefreshRow, ids: ReadonlySet<string>): boolean {
-  if (ids.size === 0) return false;
-  for (const connection of row.connections ?? []) {
-    if (typeof connection?.id === "string" && ids.has(connection.id)) return true;
-  }
-  for (const tension of row.tensions ?? []) {
-    if (typeof tension?.id === "string" && ids.has(tension.id)) return true;
-  }
-  for (const id of row.connections_neighbourhood_ids ?? []) {
-    if (ids.has(id)) return true;
-  }
-  return false;
 }
 
 function isTimestamp(value: unknown): value is string {

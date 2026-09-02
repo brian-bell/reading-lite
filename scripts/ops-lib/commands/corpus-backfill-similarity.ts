@@ -147,12 +147,24 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
   try {
     for (const t of targets) {
       // Over-fetch by one: the reading's own vector always comes back first.
-      const matches = await r2.queryByVectorId(
-        vectorizeIndex,
-        tenantVectorId(tenant.namespace, t.id),
-        SIMILAR_TOP_K + 1,
-        tenant.namespace,
-      );
+      // A failed query is one reading, not the pass: this loop can run for
+      // hundreds of readings, and an unrecognised response or a transient
+      // Vectorize error should not discard the ones behind it.
+      let matches: Awaited<ReturnType<typeof r2.queryByVectorId>>;
+      try {
+        matches = await r2.queryByVectorId(
+          vectorizeIndex,
+          tenantVectorId(tenant.namespace, t.id),
+          SIMILAR_TOP_K + 1,
+          tenant.namespace,
+        );
+      } catch (e) {
+        errored++;
+        io.stderr(
+          `  ! vectorize query failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
       if (matches === null) {
         noVector++;
         io.stderr(`  ! no vector indexed for ${t.id}  ${t.url}`);
@@ -212,7 +224,7 @@ async function runCorpusBackfill(argv: string[], deps: CorpusBackfillDeps): Prom
     );
   }
   if (errored > 0) {
-    io.stdout(`Manifest read/write failures: ${errored} — these readings were not scored.`);
+    io.stdout(`Query or manifest read/write failures: ${errored} — these readings were not scored.`);
   }
   if (invalid > 0) {
     io.stdout(

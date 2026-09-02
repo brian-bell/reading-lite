@@ -744,6 +744,9 @@ describe("ops corpus refresh-neighbours", () => {
             ? [
                 { id: "rd_r", score: 1 },
                 { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.01 },
+                // Below the bound: the evidence that the results ran out
+                // before the bound did, so the reverse set is complete.
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
               ]
             : undefined,
       });
@@ -817,6 +820,22 @@ describe("ops corpus refresh-neighbours", () => {
         reason: "0 reading(s) changed since 2026-08-21T00:00:00.000Z",
         since: "2026-08-21T00:00:00.000Z",
         readings_in_scope: 0,
+      });
+    });
+
+    // A `full` report claims to cover the ready corpus; a hand-picked or capped
+    // pass does not, and the report is the only place a later reader can learn
+    // that it was narrowed.
+    it("records --only and --limit in the report scope", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--limit", "1", "rd_r"],
+        deps,
+      );
+      expect(JSON.parse(calls.reports[0]!.body).scope).toEqual({
+        kind: "full",
+        reason: "--full",
+        narrowed_by: "--only (1 id(s)), --limit 1",
       });
     });
 
@@ -921,7 +940,12 @@ describe("ops corpus refresh-neighbours", () => {
           NEIGHBOUR,
         ],
         matchesFor: (_id, topK) =>
-          topK === REVERSE_TOP_K ? [{ id: "rd_n", score: REVERSE_SCORE_BOUND + 0.1 }] : undefined,
+          topK === REVERSE_TOP_K
+            ? [
+                { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.1 },
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+              ]
+            : undefined,
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run"],
@@ -966,17 +990,22 @@ describe("ops corpus refresh-neighbours", () => {
 
     // A scope is an economy, not a permission: an operator naming an id is
     // asserting intent, and gets that reading measured whatever the scope says.
-    it("measures an --only id the scope excluded, and says it overrode the scope", async () => {
-      const { deps, calls, lines } = makeDeps({ state: MARKER });
+    // Resolving a scope at all would be a reverse query per changed reading
+    // spent on an answer that cannot change the outcome.
+    it("measures an --only id the scope would have excluded, and resolves no scope", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        items: [READY, { ...NEIGHBOUR, updated_at: "2026-08-21T12:00:00.000Z" }],
+      });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run", "rd_r"],
         deps,
       );
       expect(code).toBe(0);
-      expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K).map((q) => q.id)).toEqual([
-        "rd_r",
+      expect(calls.queries).toEqual([
+        { id: "rd_r", topK: SIMILAR_TOP_K + 1, namespace: undefined },
       ]);
-      expect(lines.join("\n")).toContain("Measured despite the scope (--only): rd_r");
+      expect(lines.join("\n")).toContain("Scope: full — --only names 1 reading(s)");
     });
 
     // A reading the planner brings into scope is not merely flagged for tier 2:
@@ -996,6 +1025,7 @@ describe("ops corpus refresh-neighbours", () => {
             ? [
                 { id: "rd_r", score: 1 },
                 { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.2 },
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
               ]
             : undefined,
       });

@@ -135,32 +135,44 @@ describe("incrementalScope", () => {
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_undated"] });
   });
 
-  it("takes a changed row of any status into scope, so its citers are found", () => {
+  // A reading that becomes non-ready keeps its vector where it is, so the
+  // citers that need a stale_connection flag still score above the bound and
+  // the reverse query is what finds them.
+  it("takes a changed row of any status into scope, and its reverse neighbours with it", () => {
     const list = [
       row("rd_gone", { status: "failed", updated_at: AFTER }),
-      row("rd_citer", { connections: [{ id: "rd_gone", reason: "why" }] }),
+      row("rd_citer"),
     ];
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 2 }),
-      reverse({ rd_gone: null }),
+      // A trailing below-bound match is what says the results ran out before
+      // the bound did; without one the reverse set is treated as truncated.
+      reverse({
+        rd_gone: [
+          { id: "rd_citer", score: 0.8 },
+          { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+        ],
+      }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_citer", "rd_gone"] });
   });
 
-  it("takes citers through connections, tensions and the judged neighbourhood", () => {
+  // The documented gap, pinned so it cannot be lost by accident: citations are
+  // not on the list row, so a citer the reverse query does not reach — its
+  // cited reading's vector moved away — is not in scope. The weekly --full
+  // sweep is what covers it.
+  it("does not reach a citer the reverse query has lost", () => {
     const list = [
-      row("rd_new", { created_at: AFTER, updated_at: AFTER }),
-      row("rd_conn", { connections: [{ id: "rd_new", reason: "why" }] }),
-      row("rd_tension", { tensions: [{ id: "rd_new" }] }),
-      row("rd_judged", { connections_neighbourhood_ids: ["rd_new"] }),
-      row("rd_unrelated"),
+      row("rd_moved", { updated_at: AFTER }),
+      row("rd_citer", { connections: [{ id: "rd_moved", reason: "why" }] }),
     ];
-    const scope = incrementalScope(list, marker({ list_row_count: 5 }), reverse({ rd_new: [] }));
-    expect(scope).toMatchObject({
-      kind: "incremental",
-      ids: ["rd_conn", "rd_judged", "rd_new", "rd_tension"],
-    });
+    const scope = incrementalScope(
+      list,
+      marker({ list_row_count: 2 }),
+      reverse({ rd_moved: [{ id: "rd_citer", score: REVERSE_SCORE_BOUND - 0.01 }] }),
+    );
+    expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_moved"] });
   });
 
   it("takes reverse matches at or above the bound and drops the rest", () => {
@@ -190,7 +202,12 @@ describe("incrementalScope", () => {
     const scope = incrementalScope(
       list,
       marker({ list_row_count: 1 }),
-      reverse({ rd_new: [{ id: "rd_purged", score: 0.9 }] }),
+      reverse({
+        rd_new: [
+          { id: "rd_purged", score: 0.9 },
+          { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+        ],
+      }),
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_new"] });
   });

@@ -443,10 +443,14 @@ is O(N) whatever changed — the immediate rerun in run A measured 553 readings
 in 16 minutes and wrote none of them. `--since-last-run` measures only the
 readings whose neighbourhood could have moved since the run marker stored at
 `index/refresh-state.json` (per tenant): those created or reprocessed since it,
-the readings that cite them, and the reverse neighbourhood of each changed
-vector (one topK-100 metadata-less query per changed reading, keeping matches
-at or above 0.45 — well under the 0.5 floor, so a reading that near cannot
-gain or lose a floored neighbour). The scope and its reason are printed
+and the reverse neighbourhood of each changed vector (one topK-100
+metadata-less query per changed reading, keeping matches
+at or above the similarity floor less 0.1, so a reading that far away cannot
+gain or lose a floored neighbour because that one vector changed). The reverse
+query is the only source of strangers: `index/list.json` rows carry no
+citations, so a reading that cites a changed one is found because it still
+scores above the bound, which holds for every change except a vector that
+moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the

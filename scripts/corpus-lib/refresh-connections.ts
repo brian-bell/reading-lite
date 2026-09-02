@@ -52,6 +52,7 @@ const ReportScopeSchema = z
     reason: z.string().min(1),
     since: z.string().datetime().optional(),
     readings_in_scope: z.number().int().nonnegative().optional(),
+    narrowed_by: z.string().min(1).optional(),
   })
   .strict();
 

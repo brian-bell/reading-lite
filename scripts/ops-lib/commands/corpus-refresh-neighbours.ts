@@ -233,6 +233,14 @@ function selectStorage(
   return { choice: requested, storage: direct() };
 }
 
+/** How the operator narrowed this pass below its scope, for the report header. */
+function narrowedBy(opts: Opts): string | undefined {
+  const parts: string[] = [];
+  if (opts.only.length > 0) parts.push(`--only (${opts.only.length} id(s))`);
+  if (opts.limit !== undefined) parts.push(`--limit ${opts.limit}`);
+  return parts.length === 0 ? undefined : parts.join(", ");
+}
+
 /**
  * The stored run marker, or `null` for "measure everything". A marker that
  * cannot be read is reported and treated as absent: the pass then sweeps, which
@@ -368,9 +376,14 @@ async function refreshNeighbours(
   // field added here would be dropped by every sweep.
   const marker = await readMarker(r2, r2Deps, io.stderr);
   const { items, etag: listEtag } = await r2.readListIndex(r2Deps);
-  const scope = opts.full
-    ? { kind: "full" as const, reason: "--full" }
-    : await resolveScope({ r2, io, items, marker, tenant, vectorizeIndex, listEtag });
+  // Named ids override the scope (planRefresh), so resolving one would spend a
+  // reverse query per changed reading on an answer that cannot change which
+  // readings are measured. `full` here means the same thing it means under
+  // --limit: not narrowed by the marker.
+  const scope: RefreshScope =
+    opts.full || opts.only.length > 0
+      ? { kind: "full", reason: opts.full ? "--full" : `--only names ${opts.only.length} reading(s)` }
+      : await resolveScope({ r2, io, items, marker, tenant, vectorizeIndex, listEtag });
   const plan = planRefresh(items, {
     only: opts.only,
     limit: opts.limit,
@@ -382,16 +395,6 @@ async function refreshNeighbours(
   io.stdout(`Vectorize: ${vectorizeIndex}`);
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
-  // Naming an id overrides the scope (planRefresh). Say when that happened, so
-  // the numbers below are attributable to the override rather than read as the
-  // scope having chosen those readings.
-  if (scope.kind === "incremental" && opts.only.length > 0) {
-    const inScope = new Set(scope.ids);
-    const forced = opts.only.filter((id) => !inScope.has(id));
-    if (forced.length > 0) {
-      io.stdout(`Measured despite the scope (--only): ${forced.join(", ")}`);
-    }
-  }
   io.stdout(`Corpus: ${items.length} readings`);
   // In-scope rows only, under --since-last-run; `Corpus` above is the whole list.
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
@@ -536,6 +539,9 @@ async function refreshNeighbours(
       ...(scope.kind === "incremental"
         ? { since: scope.since, readings_in_scope: scope.ids.length }
         : {}),
+      // A pass narrowed by hand covers neither the corpus nor its scope, and
+      // the report is the only place a later reader can learn that.
+      ...(narrowedBy(opts) === undefined ? {} : { narrowed_by: narrowedBy(opts) }),
     },
     readings: flagged,
   });
@@ -724,8 +730,8 @@ every Vectorize query and every manifest read, and needs no wrangler at all.
 Scope. --full (the default) measures every ready reading, as this command
 always has. --since-last-run measures only the readings whose neighbourhood
 could have moved since the run marker at index/refresh-state.json: those
-created or reprocessed since it, the readings that cite them, and the reverse
-neighbourhood of each changed vector (a topK-${REVERSE_TOP_K} query). It escalates to a
+created or reprocessed since it, and the reverse neighbourhood of each changed
+vector (a topK-${REVERSE_TOP_K} query). It escalates to a
 full sweep whenever that reasoning runs out — no marker, rows removed since the
 marker, a failed reverse query, or a reverse neighbourhood saturated at topK.
 An incremental report is a statement about its scope: a persistent flag on a

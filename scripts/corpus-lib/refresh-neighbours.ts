@@ -109,6 +109,12 @@ export interface RefreshReportScope {
   reason: string;
   since?: string;
   readings_in_scope?: number;
+  /**
+   * How the operator narrowed the pass below its scope (`--only`, `--limit`).
+   * Without it a `full` report claims to cover the ready corpus, which a
+   * hand-picked or capped pass does not.
+   */
+  narrowed_by?: string;
 }
 
 export interface RefreshReport {
