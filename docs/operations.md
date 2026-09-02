@@ -263,7 +263,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
