@@ -86,6 +86,18 @@ input {
   gap: 8px;
 }
 
+.login-form {
+  flex-wrap: wrap;
+}
+
+.login-form .turnstile-widget {
+  flex: 1 0 100%;
+}
+
+.turnstile-widget {
+  min-height: 65px;
+}
+
 .token-form label {
   color: #526071;
   font-size: 0.85rem;
@@ -127,7 +139,8 @@ input {
 }
 
 .pager button:disabled,
-.account-security button:disabled {
+.account-security button:disabled,
+.token-form button:disabled {
   background: #bcc6d0;
   cursor: not-allowed;
 }

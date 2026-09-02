@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getWhoami, submitReading } from "./api";
+import { getLoginOptions, getWhoami, requestLoginLink, submitReading } from "./api";
 import type { WhoamiResponse } from "./types";
 
 const staleToken = "cd".repeat(32);
@@ -141,5 +141,66 @@ describe("getWhoami CSRF races", () => {
 
     await submitReading("https://example.com/new");
     expect(csrfHeaderFromSubmit(fetchMock)).toBe(freshToken);
+  });
+});
+
+describe("login-options and magic-link challenge", () => {
+  it("loads login-options same-origin with credentials and a nullable site key", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: "1x00000000000000000000AA" });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await getLoginOptions()).toEqual({ turnstile_site_key: "1x00000000000000000000AA" });
+    const req = fetchMock.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("GET");
+    expect(new URL(req.url).pathname).toBe("/api/auth/login-options");
+    expect(req.credentials).toBe("include");
+  });
+
+  it("treats a null login-options site key as no widget", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ turnstile_site_key: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await getLoginOptions()).toEqual({ turnstile_site_key: null });
+  });
+
+  it("rejects a 200 login-options body that omits or mangles turnstile_site_key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({}))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ turnstile_site_key: 1 }))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ turnstile_site_key: "" }))
+    );
+    await expect(getLoginOptions()).rejects.toThrow("failed to load sign-in options");
+  });
+
+  it("omits turnstile_token unless a token is provided", async () => {
+    const fetchMock = vi.fn(async (_request: Request) => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestLoginLink("invited@example.com");
+    expect(await (fetchMock.mock.calls[0][0] as Request).clone().json()).toEqual({
+      email: "invited@example.com"
+    });
+
+    await requestLoginLink("invited@example.com", "widget-ok");
+    expect(await (fetchMock.mock.calls[1][0] as Request).clone().json()).toEqual({
+      email: "invited@example.com",
+      turnstile_token: "widget-ok"
+    });
   });
 });

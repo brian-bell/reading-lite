@@ -18,6 +18,7 @@ import {
   ApiError,
   createToken,
   fetchContentBlob,
+  getLoginOptions,
   getReadingDiagnostics,
   getReading,
   getWhoami,
@@ -35,6 +36,7 @@ import {
   submitReading,
   type ContentKind
 } from "./api";
+import { TurnstileWidget } from "./TurnstileWidget";
 import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-link-credential";
 import {
   consumeLoginReturnPath,
@@ -729,10 +731,24 @@ function LoginPage({
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [widgetEpoch, setWidgetEpoch] = useState(0);
+  const [widgetLoadError, setWidgetLoadError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
   const emailLocked = Boolean(stepUp && identity);
   const emailValue = emailLocked && identity ? identity.email : email;
+  const optionsQuery = useQuery({
+    queryKey: ["login-options"],
+    queryFn: getLoginOptions
+  });
+  const siteKey = optionsQuery.data?.turnstile_site_key ?? null;
+  const widgetRequired = siteKey != null;
+  const optionsBlocked = optionsQuery.isPending || optionsQuery.isError;
+  const submitBlocked =
+    optionsBlocked || submitting || widgetLoadError != null || (widgetRequired && !turnstileToken);
 
   useLayoutEffect(() => {
     if (identity && !stepUp) return;
@@ -742,6 +758,10 @@ function LoginPage({
   useLayoutEffect(() => {
     if (emailLocked && identity) setEmail(identity.email);
   }, [emailLocked, identity]);
+
+  useEffect(() => {
+    if (!widgetRequired) setTurnstileToken(null);
+  }, [widgetRequired]);
 
   if (identity && !stepUp) {
     const dest = safeAppReturnPath(next) ?? "/";
@@ -761,15 +781,30 @@ function LoginPage({
         <h1>Sign in</h1>
       </div>
       <form
-        className="token-form"
+        className="token-form login-form"
         onSubmit={async (event) => {
           event.preventDefault();
+          if (submittingRef.current) return;
+          if (optionsBlocked || widgetLoadError != null) return;
+          if (widgetRequired && !turnstileToken) {
+            setError("Complete the check before requesting a link.");
+            return;
+          }
+          submittingRef.current = true;
+          setSubmitting(true);
           setError(null);
+          const token = turnstileToken;
           try {
-            await requestLoginLink(emailValue);
+            await requestLoginLink(emailValue, token ?? undefined);
             setSubmitted(true);
           } catch (e) {
+            setSubmitted(false);
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
+          } finally {
+            submittingRef.current = false;
+            setSubmitting(false);
+            setTurnstileToken(null);
+            if (widgetRequired) setWidgetEpoch((epoch) => epoch + 1);
           }
         }}
       >
@@ -786,8 +821,37 @@ function LoginPage({
             required
             readOnly={emailLocked}
           />
-        <button type="submit">Email me a link</button>
+        {widgetRequired && siteKey ? (
+          <TurnstileWidget
+            key={widgetEpoch}
+            siteKey={siteKey}
+            onToken={(token) => {
+              setTurnstileToken(token);
+              if (token) setWidgetLoadError(null);
+            }}
+            onError={(error) => setWidgetLoadError(error.message)}
+          />
+        ) : null}
+        <button type="submit" disabled={submitBlocked}>
+          Email me a link
+        </button>
       </form>
+      {optionsQuery.isError ? (
+        <IdentityError
+          error={identityError(optionsQuery.error)}
+          onRetry={() => void optionsQuery.refetch()}
+        />
+      ) : null}
+      {widgetLoadError ? (
+        <IdentityError
+          error={new Error(widgetLoadError)}
+          onRetry={() => {
+            setWidgetLoadError(null);
+            setTurnstileToken(null);
+            setWidgetEpoch((epoch) => epoch + 1);
+          }}
+        />
+      ) : null}
       {submitted ? (
         <p role="status">If that address can sign in, we sent a short-lived link.</p>
       ) : null}
