@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { onlineManager } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -608,7 +608,9 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
     expect(challengeCall(fetchMock)).toBeUndefined();
 
-    turnstile.complete("widget-ok");
+    act(() => {
+      turnstile.complete("widget-ok");
+    });
     await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Email me a link" }));
 
