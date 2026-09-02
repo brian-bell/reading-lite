@@ -195,9 +195,11 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
 /**
  * One judgement, with one retry after a 429's window clears.
  *
- * The caller has already waited out any open window and re-read the manifests
- * it is about to write, so the ETags this retry writes against are still the
- * ones it validated: `--sole-writer` means nothing else moved them.
+ * The caller has already waited out any open window, and what it writes with is
+ * a conditional write against an ETag it holds — so a window's worth of extra
+ * delay before the write cannot make it overwrite someone else's manifest. It
+ * would lose the CAS and be reported, which under `--sole-writer` is the same
+ * nothing that a re-read would have found.
  *
  * A 429 on the retry is reported to the gate — the rest of the pass still wants
  * to know the wall is there — and then thrown, so the action is counted as a
