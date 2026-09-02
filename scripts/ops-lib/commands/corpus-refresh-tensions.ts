@@ -178,7 +178,7 @@ function describeAction(action: Action): string {
  * is already being judged (`judgedKeys` above), so the two never write the same
  * partner slot; `buildTensionJudgementInput` reads titles and summaries, not
  * the `tensions` array, so a repair landing first cannot change what a
- * judgement is asked about; and a repair's staleness guard compares the live
+ * judgement is asked about; and a repair's staleness guard compares an
  * `updated_at` against a plan-time timestamp that no write in this command
  * moves (`mergeTensionSide` and `purgeTensionPartner` preserve it verbatim). A
  * repair kind or a judgement input that broke any of those would need the pool
@@ -264,8 +264,8 @@ async function refreshTensions(
   timer: RefreshTimer,
 ): Promise<number> {
   // Planning and execute read the same manifests through the same call, so the
-  // phase label is what separates the fixed planning cost from the per-pair
-  // re-reads every execute pass pays on top of it.
+  // phase label is what separates the fixed planning cost from the re-reads
+  // execute makes of the sides it has already written.
   let manifestReadPhase = PHASE_PLANNING_READS;
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
@@ -299,7 +299,10 @@ async function refreshTensions(
   const byId = new Map(items.map((item) => [item.id, item]));
 
   // Every reading a report pair or --pair could name. Manifests are read once
-  // for planning; execute re-reads each side for a fresh ETag before writing.
+  // for planning, ETag included, and execute writes against that ETag. A side
+  // an earlier action in the same pass wrote is the one exception: every write
+  // path drops its side from the cache first, because that ETag is spent, and
+  // `readLive` then reads that side again.
   const reportIds = new Set<string>();
   for (const reading of report?.readings ?? []) {
     reportIds.add(reading.id);
@@ -311,6 +314,7 @@ async function refreshTensions(
     wanted.add(b);
   }
   const manifestsById = new Map<string, RawManifest>();
+  const liveById = new Map<string, StoredRawManifest>();
   const liveReadyIds = new Set<string>();
   let planningFailed = false;
   const pairIds = new Set(args.pairs.flat());
@@ -358,6 +362,7 @@ async function refreshTensions(
       );
     }
     manifestsById.set(id, stored.manifest);
+    liveById.set(id, stored);
     liveReadyIds.add(id);
   }
 
@@ -501,7 +506,13 @@ async function refreshTensions(
           `the rest of this pass will fail fast`,
       ),
   });
+  // The manifest to write against: the one planning read and validated, until
+  // a write in this pass invalidates its ETag. Nothing outside the pass can
+  // invalidate it silently — a manifest that changed since planning loses the
+  // conditional write below, which is what reports it.
   const readLive = async (id: string): Promise<StoredRawManifest> => {
+    const planned = liveById.get(id);
+    if (planned) return planned;
     const row = byId.get(id);
     if (!row) throw new Error("no list row");
     const current = await storage.readManifest(row.key_prefix);
@@ -532,6 +543,9 @@ async function refreshTensions(
     ): Promise<void> => {
       const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
       if (!merged.ok) throw new Error(merged.error);
+      // The ETag is spent either way: a win supersedes it, a loss proves it
+      // was already stale. Whoever reads this side next reads it fresh.
+      liveById.delete(id);
       const wrote = await storage.putManifestIfMatch(
         byId.get(id)!.key_prefix,
         merged.manifest,
@@ -551,6 +565,10 @@ async function refreshTensions(
       } catch (error) {
         return fail(key, error);
       }
+      // Only a side read fresh — one an earlier action in this pass wrote —
+      // can say anything the plan did not already know here, so under a real
+      // sole writer this stays at zero. It is the report that a manifest was
+      // judged out from under the plan, which is worth keeping cheap.
       if (source === "report" && isPairJudged(a.manifest, b.manifest)) {
         outcome.skippedSincePlan = true;
         outcome.stderr.push(`  ! skip ${key}: judged since the plan was made`);
@@ -560,9 +578,7 @@ async function refreshTensions(
         const input = buildTensionJudgementInput(a.manifest, b.manifest);
         // The one place a rate limit is observed for the whole pass: wait for
         // any window another worker opened before adding to it. The wait sits
-        // here, after the re-reads, because it is the paid call it is pacing;
-        // the ETags it waited on are still current, since --sole-writer is the
-        // only writer.
+        // here rather than earlier because it is the paid call it is pacing.
         await gate.wait();
         const { value: result, ms: providerMs } = await timer.measured(
           PHASE_PROVIDER,
@@ -596,6 +612,14 @@ async function refreshTensions(
       }
     }
 
+    // The two staleness guards below compare an `updated_at` against the same
+    // plan-time timestamp `findOneSided` planned from, and nothing this
+    // command writes moves `updated_at`, so on the cached path they cannot
+    // fire. What is left for them is the narrow case where a side re-read
+    // after an in-pass write comes back bearing a newer `updated_at` than the
+    // repair was planned against, which only a writer outside this pass can
+    // produce. Everything else that writer could do is caught by the
+    // conditional write instead.
     const repair = action.repair;
     try {
       if (repair.kind === "mirror") {
@@ -617,6 +641,7 @@ async function refreshTensions(
         const target = await readLive(repair.on);
         const merged = purgeTensionPartner(target.manifest, repair.partner);
         if (!merged.ok) throw new Error(merged.error);
+        liveById.delete(repair.on);
         const wrote = await storage.putManifestIfMatch(
           byId.get(repair.on)!.key_prefix,
           merged.manifest,
@@ -641,7 +666,9 @@ async function refreshTensions(
     // The reading ids an action reads and writes. A reading sits in several
     // pairs, so without this two workers would hold the same manifest at the
     // same ETag, both pay for a judgement, and the second would lose the CAS:
-    // failures and spend that a sequential pass never produces.
+    // failures and spend that a sequential pass never produces. Naming every
+    // id an action reads is also what keeps the plan-time ETag cache honest:
+    // a write evicts its side, and no one else may be holding it at the time.
     actionKeys,
     // `runAction` reports its own failures, but an unforeseen throw would abort
     // the pass with the results behind it unaccounted for, so the last word on

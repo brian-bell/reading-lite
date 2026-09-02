@@ -55,7 +55,6 @@ import {
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
 import {
-  PHASE_MANIFEST_READ,
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
   createRefreshTimer,
@@ -211,10 +210,6 @@ async function refreshConnections(
   deps: CorpusRefreshConnectionsDeps,
   timer: RefreshTimer,
 ): Promise<number> {
-  // Planning and execute read the same manifests through the same call, so the
-  // phase label is what separates the fixed planning cost from the per-action
-  // re-read every execute pass pays on top of it.
-  let manifestReadPhase = PHASE_PLANNING_READS;
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
       execute: true,
@@ -232,10 +227,14 @@ async function refreshConnections(
     selector,
   );
   const provider = await deps.loadProvider(args.execute);
+  // One phase covers every manifest read: they all happen while planning, and
+  // execute writes against the ETags those reads returned. A read added back
+  // to the execute path would need its own phase again — the selector is a
+  // function so that it can be given one — or it would hide inside this total.
   const storage = timedRefreshStorage(
     await deps.createStorage(args.bucket, tenant.keyRoot),
     timer,
-    () => manifestReadPhase,
+    () => PHASE_PLANNING_READS,
   );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -437,7 +436,6 @@ async function refreshConnections(
     deps.io.stdout("PLAN - no provider call or storage write was made.");
     return planningFailed ? 1 : 0;
   }
-  manifestReadPhase = PHASE_MANIFEST_READ;
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -486,31 +484,19 @@ async function refreshConnections(
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     }
-    let current: StoredRawManifest | null;
+    // No re-read: planning read this manifest and kept its ETag, and a report
+    // names a reading once, so nothing earlier in this pass can have written
+    // it. The conditional write below is what detects a manifest that changed
+    // since planning, and it detects the changes a re-read never could — the
+    // ones that land while the judgement is in flight.
+    const current = action.stored;
     try {
-      current = await storage.readManifest(action.row.key_prefix);
-    } catch (error) {
-      return failWith(error instanceof Error ? error.message : String(error));
-    }
-    if (!current || !validTargetManifest(current.manifest, action.report)) {
-      return failWith("manifest changed before judgement");
-    }
-    if (isJudgedForReport(current.manifest, report.generated_at)) {
-      outcome.kind = "healed";
-      outcome.verdict = current.manifest
-        .novelty_verdict as ListIndexItem["novelty_verdict"];
-      return outcome;
-    }
-    try {
-      const input = buildRelationshipJudgementInput(
-        current.manifest,
-        action.report,
-        liveReportNeighbours(action.report, liveReadyIds),
-      );
+      // Built at plan time from this same manifest, and the estimate printed
+      // in plan order was made from it.
+      const input = action.input!;
       // The one place a rate limit is observed for the whole pass: wait for any
-      // window another worker opened before adding to it. The wait sits here,
-      // after the re-read, because it is the paid call it is pacing; the ETag
-      // it waited on is still current, since --sole-writer is the only writer.
+      // window another worker opened before adding to it. The wait sits here
+      // rather than earlier because it is the paid call it is pacing.
       await gate.wait();
       const { value: result, ms: providerMs } = await timer.measured(
         PHASE_PROVIDER,
