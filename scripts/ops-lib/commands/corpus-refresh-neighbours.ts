@@ -511,6 +511,10 @@ async function refreshNeighbours(
   };
 
   let flushFailed = false;
+  // The measurement loop threw, so the targets after the throw were never
+  // attempted. Only relevant to the diagnosis: a pass that stopped early did
+  // not sweep, whatever its scope said it would do.
+  let aborted = false;
   try {
     for (const t of plan.targets) {
       let matches: RefreshNeighbour[] | null;
@@ -609,6 +613,7 @@ async function refreshNeighbours(
     }
   } catch (e) {
     errored++;
+    aborted = true;
     io.stderr(`  ! refresh pass aborted: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     // Catch a failed flush so already-flagged rows still reach refresh-report.json.
@@ -690,8 +695,15 @@ async function refreshNeighbours(
   // A misconfiguration does not escape by hiding in incremental passes: a
   // changed ready reading whose vector cannot be found escalates the scope to
   // a sweep, which is this rule's input.
+  // An aborted pass is excluded for the same reason a narrowed one is: it never
+  // asked most of its targets, so "measured none of them" is not the corpus
+  // answering. It exits 1 through `errored` regardless.
   const configurationFailure =
-    !handNarrowed && scope.kind === "full" && plan.targets.length > 0 && measured === 0;
+    !handNarrowed &&
+    !aborted &&
+    scope.kind === "full" &&
+    plan.targets.length > 0 &&
+    measured === 0;
 
   // What stops the marker is an unfinished pass, not an unmeasurable reading.
   // A failed query, an unparseable manifest, a failed write or a failed flush
@@ -740,6 +752,13 @@ async function refreshNeighbours(
     );
   }
 
+  // Printed on every plan path, not only the clean one: it is the line that
+  // tells an operator nothing was written, and a plan pass that found broken
+  // readings needs it more than a quiet one does.
+  if (!opts.execute) {
+    io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
+  }
+
   if (configurationFailure) {
     io.stderr(
       `\nConfiguration failure: this pass swept the corpus and measured 0 of ` +
@@ -747,16 +766,19 @@ async function refreshNeighbours(
         `schema-invalid: ${invalid}). A whole sweep that answers this way is an ` +
         "infrastructure fault — a wrong Vectorize index, a wrong tenant namespace, an expired " +
         "credential, or an upstream failing every query — far more often than it is a corpus " +
-        "of broken readings, so neither run marker advanced and the next pass measures the " +
-        "same scope. Exit 1.",
+        "of broken readings, so " +
+        (opts.execute
+          ? "neither run marker advanced and the next pass measures the same scope"
+          : "an --execute pass would not have advanced either run marker") +
+        ". Exit 1.",
     );
     return EXIT_INCOMPLETE;
   }
   if (incomplete) return EXIT_INCOMPLETE;
   if (unmeasurable > 0) {
-    // Only claim the marker moved when it did: --only, a truncating --limit, an
-    // invalidation arriving mid-pass and a failed marker write all reach here
-    // having left it alone, and each is a different thing to tell an operator.
+    // Only claim the marker moved when it did: a plan pass, --only, a
+    // truncating --limit, an invalidation arriving mid-pass and a failed marker
+    // write all reach here having left it alone.
     io.stderr(
       `Exit 3: the pass completed${markerAdvanced ? " and its marker advanced" : ""}; ` +
         `${unmeasurable} reading(s) need human attention before they can be measured.`,
@@ -764,9 +786,6 @@ async function refreshNeighbours(
     return EXIT_NEEDS_ATTENTION;
   }
 
-  if (!opts.execute) {
-    io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
-  }
   return EXIT_OK;
 }
 

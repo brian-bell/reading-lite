@@ -411,7 +411,38 @@ describe("ops corpus refresh-neighbours", () => {
     const { deps, lines } = makeDeps({ items: [READY], matches: null });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
     expect(code).toBe(1);
-    expect(lines.join("\n")).toMatch(/swept the corpus and measured 0 of 1 ready reading\(s\)/);
+    const text = lines.join("\n");
+    expect(text).toMatch(/swept the corpus and measured 0 of 1 ready reading\(s\)/);
+    // A plan pass withholds no marker — it never advances one — and the operator
+    // still has to be told nothing was written.
+    expect(text).toContain("an --execute pass would not have advanced either run marker");
+    expect(text).toContain("PLAN — corpus unchanged.");
+  });
+
+  // The footer is the only line saying nothing was written; a plan pass that
+  // found broken readings needs it more than a quiet one does.
+  it("keeps the PLAN footer on a plan pass that exits 3", async () => {
+    const { deps, lines } = makeDeps({
+      matchesFor: (id) => (id === "rd_r" ? null : undefined),
+    });
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(3);
+    expect(lines.join("\n")).toContain("PLAN — corpus unchanged.");
+  });
+
+  // An aborted loop never asked the targets after the throw, so "measured none
+  // of them" is not the corpus answering. It still exits 1 through the error.
+  it("does not diagnose a configuration failure when the pass aborted", async () => {
+    const { deps, lines } = makeDeps({ items: [READY, NEIGHBOUR] });
+    // Not null and not a match list: the scoring below it throws, which the
+    // per-target catches do not cover, so the whole loop unwinds with the
+    // remaining targets never attempted.
+    deps.r2.queryByVectorId = async () => ({}) as never;
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(1);
+    const text = lines.join("\n");
+    expect(text).toContain("refresh pass aborted");
+    expect(text).not.toContain("Configuration failure");
   });
 
   // One unmeasurable reading among measured ones is the reading's problem, not
