@@ -1,0 +1,124 @@
+import { describe, expect, it } from "vitest";
+import { UsageError } from "../../../scripts/ops-lib/contract";
+import {
+  DEFAULT_EXECUTE_CONCURRENCY,
+  RATE_LIMIT_DEFAULT_BACKOFF_MS,
+  RATE_LIMIT_MAX_BACKOFF_MS,
+  createRateLimitGate,
+  parseConcurrencyFlag,
+} from "../../../scripts/ops-lib/execute-pool";
+
+function gateHarness(startMs = 1_000) {
+  let now = startMs;
+  const sleeps: number[] = [];
+  const pauses: number[] = [];
+  const gate = createRateLimitGate({
+    now: () => now,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      now += ms;
+    },
+    onPause: (ms) => pauses.push(ms),
+  });
+  return { gate, sleeps, pauses, advance: (ms: number) => (now += ms) };
+}
+
+describe("parseConcurrencyFlag", () => {
+  it("defaults to the captain's four in flight", () => {
+    expect(parseConcurrencyFlag(undefined)).toBe(DEFAULT_EXECUTE_CONCURRENCY);
+    expect(DEFAULT_EXECUTE_CONCURRENCY).toBe(4);
+  });
+
+  it("accepts a positive integer", () => {
+    expect(parseConcurrencyFlag("1")).toBe(1);
+    expect(parseConcurrencyFlag("12")).toBe(12);
+  });
+
+  it("rejects anything else as a usage error", () => {
+    for (const raw of ["0", "-1", "2.5", "many", ""]) {
+      expect(() => parseConcurrencyFlag(raw)).toThrow(UsageError);
+    }
+  });
+});
+
+describe("createRateLimitGate", () => {
+  it("lets every worker through until a limit is reported", async () => {
+    const h = gateHarness();
+    await h.gate.wait();
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it("holds a worker for the provider's Retry-After", async () => {
+    const h = gateHarness();
+    h.gate.close(2_500);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([2_500]);
+    expect(h.pauses).toEqual([2_500]);
+  });
+
+  it("backs off by the default when the provider sends no Retry-After", async () => {
+    const h = gateHarness();
+    h.gate.close(null);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([RATE_LIMIT_DEFAULT_BACKOFF_MS]);
+  });
+
+  it("caps an implausible Retry-After rather than parking the sole-writer window", async () => {
+    const h = gateHarness();
+    h.gate.close(3_600_000);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([RATE_LIMIT_MAX_BACKOFF_MS]);
+  });
+
+  it("holds every worker for one window, not one window each", async () => {
+    const h = gateHarness();
+    h.gate.close(1_000);
+    // Three workers walk into the same limit at the same moment.
+    await Promise.all([h.gate.wait(), h.gate.wait(), h.gate.wait()]);
+    // Each waits for the same deadline, so the window costs the run 1s in
+    // total rather than 1s per worker. (The fake clock advances inside sleep,
+    // so the later two find the deadline already passed and sleep for none.)
+    expect(h.sleeps).toEqual([1_000]);
+    expect(h.pauses).toEqual([1_000]);
+  });
+
+  it("extends an open window instead of stacking a second wait behind it", async () => {
+    const h = gateHarness();
+    h.gate.close(5_000);
+    h.gate.close(1_000);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([5_000]);
+    expect(h.pauses).toEqual([5_000]);
+    // The shorter second limit lands inside the first, so it costs no extra
+    // pause at all.
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([5_000]);
+  });
+
+  it("honours a window opened while a worker was already waiting on an earlier one", async () => {
+    const h = gateHarness();
+    h.gate.close(1_000);
+    const waiting = h.gate.wait();
+    h.gate.close(4_000);
+    await waiting;
+    expect(h.sleeps.length).toBe(2);
+    expect(h.sleeps[0]).toBe(1_000);
+  });
+
+  it("reopens once the window has passed", async () => {
+    const h = gateHarness();
+    h.gate.close(1_000);
+    await h.gate.wait();
+    h.advance(10_000);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([1_000]);
+  });
+
+  it("treats a nonsense Retry-After as no Retry-After", async () => {
+    const h = gateHarness();
+    h.gate.close(Number.NaN);
+    await h.gate.wait();
+    expect(h.sleeps).toEqual([RATE_LIMIT_DEFAULT_BACKOFF_MS]);
+  });
+});

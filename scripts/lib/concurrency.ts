@@ -44,3 +44,102 @@ export async function mapWithConcurrency<T, R>(
   if (failures.length > 0) throw failures[0];
   return results;
 }
+
+// Bounded-concurrency mapping where some items must not run at the same time.
+//
+// The tier-3 execute pass judges pairs of readings and writes both sides of
+// each pair, and a reading sits in several pairs. Two workers holding the same
+// manifest at the same ETag would both pay for a judgement and the second
+// would lose the CAS, so `--concurrency` on a healthy corpus would manufacture
+// failures that a sequential pass never sees. `keysOf` names the resources an
+// item takes exclusively — the reading ids it writes — and an item is
+// dispatched only once every key it names is free. Items that share no key
+// still overlap freely, so the cap is the only limit on tier 2, whose actions
+// each name one reading.
+//
+// A worker never holds a key while waiting for another, so there is no
+// deadlock: it picks the first pending item it can run outright, and otherwise
+// waits for some in-flight item to release its keys.
+//
+// Results are handed to `onResult` in input order, not completion order, and
+// as early as that order allows: a completed item is emitted once every item
+// before it has been emitted. Callers keep the ordering their output and their
+// tests rely on without waiting for the whole pass to finish, which matters
+// when the pass is minutes of provider calls.
+//
+// As with `mapWithConcurrency`, a rejection aborts the pass. Callers wanting
+// per-item failure isolation catch inside `fn` and return a result object.
+export async function runKeyedPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  keysOf: (item: T, index: number) => readonly string[],
+  fn: (item: T, index: number) => Promise<R>,
+  onResult: (result: R, index: number) => void,
+): Promise<void> {
+  const count = items.length;
+  if (count === 0) return;
+  const requested = Number.isFinite(limit) ? Math.floor(limit) : 1;
+  const workers = Math.max(1, Math.min(requested, count));
+
+  const results = new Array<R>(count);
+  const settled = new Array<boolean>(count).fill(false);
+  const held = new Array<readonly string[]>(count);
+  const pending = Array.from({ length: count }, (_, index) => index);
+  const busy = new Set<string>();
+  const waiters: Array<() => void> = [];
+  let inFlight = 0;
+  let emitted = 0;
+  const failures: unknown[] = [];
+
+  const wake = (): void => {
+    while (waiters.length > 0) waiters.shift()!();
+  };
+  // Emit the longest prefix that is complete, so output order is input order
+  // however the calls interleave.
+  const flush = (): void => {
+    while (emitted < count && settled[emitted]) {
+      onResult(results[emitted]!, emitted);
+      emitted++;
+    }
+  };
+  const claim = (): number | undefined => {
+    for (let slot = 0; slot < pending.length; slot++) {
+      const index = pending[slot]!;
+      const keys = keysOf(items[index]!, index);
+      if (keys.some((key) => busy.has(key))) continue;
+      pending.splice(slot, 1);
+      for (const key of keys) busy.add(key);
+      held[index] = keys;
+      return index;
+    }
+    return undefined;
+  };
+
+  const worker = async (): Promise<void> => {
+    while (failures.length === 0) {
+      const index = claim();
+      if (index === undefined) {
+        // Nothing runnable. Either the pass is done for this worker, or every
+        // remaining item is blocked on a key some in-flight item still holds.
+        if (pending.length === 0 || inFlight === 0) return;
+        await new Promise<void>((resolve) => waiters.push(resolve));
+        continue;
+      }
+      inFlight++;
+      try {
+        results[index] = await fn(items[index]!, index);
+        settled[index] = true;
+        flush();
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        inFlight--;
+        for (const key of held[index]!) busy.delete(key);
+        wake();
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  if (failures.length > 0) throw failures[0];
+}
