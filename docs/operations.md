@@ -500,9 +500,10 @@ anything is getting through, the pass is making progress between windows and
 the pauses are doing their job, and a limit early in a long pass should not
 leave the rest of it unwilling to wait out a later one.
 
-Because the calls overlap, the `Timing:` block's `provider` row sums the call
-durations rather than the wall time they occupied; the `total` row is the one
-to compare between runs.
+Because the calls overlap, the `Timing:` block's `provider` and `manifest read`
+rows sum the call durations rather than the wall time they occupied — the same
+way `planning reads` already did — so under `--concurrency` they can exceed the
+run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer

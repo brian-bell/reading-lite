@@ -139,13 +139,13 @@ describe("createRateLimitGate", () => {
   it("stops pausing once the limit is plainly sustained", async () => {
     const h = gateHarness();
     for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-      h.gate.close(1_000);
+      h.gate.close(60_000);
       await h.gate.wait();
     }
     expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
     expect(h.giveUps).toEqual([]);
 
-    h.gate.close(1_000);
+    h.gate.close(60_000);
 
     // One round past the limit the pass stops paying for waits and fails the
     // rest fast, rather than holding the sole-writer window indefinitely.
@@ -154,7 +154,7 @@ describe("createRateLimitGate", () => {
     await h.gate.wait();
     expect(h.sleeps).toHaveLength(before);
     // And it stays given up, without repeating the notice.
-    h.gate.close(1_000);
+    h.gate.close(60_000);
     await h.gate.wait();
     expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
     expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
@@ -163,7 +163,7 @@ describe("createRateLimitGate", () => {
   it("a judgement that comes back lets the pass back off again later", async () => {
     const h = gateHarness();
     for (let attempt = 0; attempt <= RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-      h.gate.close(1_000);
+      h.gate.close(60_000);
       await h.gate.wait();
     }
     expect(h.giveUps).toHaveLength(1);
@@ -172,7 +172,7 @@ describe("createRateLimitGate", () => {
     // later, genuinely transient limit must be waited out, not ignored.
     h.gate.succeeded();
     const before = h.pauses.length;
-    h.gate.close(1_000);
+    h.gate.close(60_000);
     await h.gate.wait();
     expect(h.pauses).toHaveLength(before + 1);
   });
@@ -181,7 +181,7 @@ describe("createRateLimitGate", () => {
     const h = gateHarness();
     for (let run = 0; run < 4; run++) {
       for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-        h.gate.close(1_000);
+        h.gate.close(60_000);
         await h.gate.wait();
       }
       h.gate.succeeded();
@@ -213,5 +213,42 @@ describe("createRateLimitGate window counting", () => {
     now += 1_000;
     gate.close(1_000);
     expect(pauses).toEqual([1_000, 1_000]);
+  });
+});
+
+describe("createRateLimitGate round floor", () => {
+  it("counts one round for a burst that a short Retry-After lets outlive its window", async () => {
+    let now = 1_000;
+    const pauses: number[] = [];
+    const giveUps: number[] = [];
+    const gate = createRateLimitGate({
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      onPause: (ms) => pauses.push(ms),
+      onGiveUp: (consecutive) => giveUps.push(consecutive),
+    });
+
+    // Four workers of one round report a one-second limit a second apart, so
+    // every 429 after the first finds the previous window already expired.
+    for (let worker = 0; worker < 4; worker++) {
+      gate.close(1_000);
+      now += 1_000;
+    }
+
+    // Four windows, because each really had to be waited out — but one round,
+    // so the breaker is nowhere near firing.
+    expect(pauses).toHaveLength(4);
+    expect(giveUps).toEqual([]);
+
+    // Only once a default backoff has actually elapsed does the next limit
+    // count as a new round.
+    now += RATE_LIMIT_DEFAULT_BACKOFF_MS;
+    for (let round = 0; round < RATE_LIMIT_CONSECUTIVE_LIMIT; round++) {
+      gate.close(60_000);
+      now += 60_000;
+    }
+    expect(giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
   });
 });

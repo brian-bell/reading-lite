@@ -173,12 +173,16 @@ function describeAction(action: Action): string {
  * The pool dispatches the first pending action whose keys are all free, so two
  * actions that share a reading run one at a time but NOT necessarily in plan
  * order: a repair on C can be applied before an earlier judge of (B, C) that is
- * waiting on B. Nothing here depends on that order. The two write disjoint
- * partner entries of C, each onto a manifest it re-read itself, and a repair's
- * staleness guard compares the live `updated_at` against a plan-time timestamp
- * that no write in this command moves (`mergeTensionSide` and
- * `purgeTensionPartner` preserve it verbatim). An action kind that did depend
- * on plan order would need the pool to enforce it.
+ * waiting on B. Nothing here depends on that order, for three reasons worth
+ * naming because they live elsewhere: the planner drops a repair whose pair key
+ * is already being judged (`judgedKeys` above), so the two never write the same
+ * partner slot; `buildTensionJudgementInput` reads titles and summaries, not
+ * the `tensions` array, so a repair landing first cannot change what a
+ * judgement is asked about; and a repair's staleness guard compares the live
+ * `updated_at` against a plan-time timestamp that no write in this command
+ * moves (`mergeTensionSide` and `purgeTensionPartner` preserve it verbatim). A
+ * repair kind or a judgement input that broke any of those would need the pool
+ * to enforce plan order.
  */
 function actionKeys(action: Action): string[] {
   if (action.kind === "judge") return [action.candidate.a, action.candidate.b];

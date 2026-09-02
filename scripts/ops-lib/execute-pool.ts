@@ -92,10 +92,12 @@ export interface RateLimitGateDeps {
 
 export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
   let openAt = 0;
+  let countedAt = Number.NEGATIVE_INFINITY;
   let consecutive = 0;
   let gaveUp = false;
   return {
     succeeded() {
+      countedAt = Number.NEGATIVE_INFINITY;
       // Any judgement getting through means the pass is still making progress
       // between windows, which is what the pauses are for; the breaker is only
       // defending against a wall nothing gets past. Clearing the give-up as
@@ -109,7 +111,11 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
       const now = deps.now();
       // A limit reported while the previous window is still open is the rest
       // of that same round of workers, not a new one: one window, one count.
-      if (now >= openAt) {
+      // The elapsed floor is the same idea for a short Retry-After: workers
+      // report independently and seconds apart, so a one-second window would
+      // otherwise let each 429 of one round open and count its own.
+      if (now >= openAt && now - countedAt >= RATE_LIMIT_DEFAULT_BACKOFF_MS) {
+        countedAt = now;
         consecutive++;
         if (consecutive > RATE_LIMIT_CONSECUTIVE_LIMIT) {
           gaveUp = true;
