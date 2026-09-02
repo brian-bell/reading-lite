@@ -126,7 +126,8 @@ input {
   padding: 8px 12px;
 }
 
-.pager button:disabled {
+.pager button:disabled,
+.account-security button:disabled {
   background: #bcc6d0;
   cursor: not-allowed;
 }
@@ -189,6 +190,42 @@ input {
 .account-security h2 {
   font-size: 1.1rem;
   margin: 24px 0 8px;
+}
+
+.token-create-form {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin-top: 12px;
+  max-width: 28rem;
+}
+
+.token-create-form input[type="text"],
+.token-create-form input[type="datetime-local"] {
+  border: 1px solid #c9d2dd;
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.token-scope-list {
+  border: 0;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+
+.token-reveal {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin-top: 12px;
+}
+
+.token-secret {
+  overflow-wrap: anywhere;
+  user-select: all;
 }
 
 h1 {

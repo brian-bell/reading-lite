@@ -16,12 +16,14 @@ import {
 
 import {
   ApiError,
+  createToken,
   fetchContentBlob,
   getReadingDiagnostics,
   getReading,
   getWhoami,
   listReadings,
   listSessions,
+  listTokens,
   logoutSession,
   redeemLoginLink,
   reprocessReading,
@@ -29,6 +31,7 @@ import {
   requestLoginLink,
   revokeAllSessions,
   revokeSession,
+  revokeToken,
   submitReading,
   type ContentKind
 } from "./api";
@@ -36,18 +39,23 @@ import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-li
 import {
   consumeLoginReturnPath,
   rememberLoginReturnPath,
-  safeReadingReturnPath
+  safeAppReturnPath,
+  STEP_UP_LOGIN_HREF
 } from "./login-return-path";
-import type {
-  Connection,
-  ListReading,
-  ManifestStatus,
-  ProcessingAttempt,
-  ProcessingAttemptSummary,
-  SessionListItem,
-  Tension,
-  TensionKind,
-  WhoamiResponse
+import {
+  API_SCOPES,
+  type ApiScopeName,
+  type ApiTokenListItem,
+  type Connection,
+  type ListReading,
+  type ListTokensResponse,
+  type ManifestStatus,
+  type ProcessingAttempt,
+  type ProcessingAttemptSummary,
+  type SessionListItem,
+  type Tension,
+  type TensionKind,
+  type WhoamiResponse
 } from "./types";
 import "./styles.css";
 
@@ -64,6 +72,8 @@ function dropIdentityCaches(queryClient: QueryClient): void {
   queryClient.removeQueries({ queryKey: ["reading"] });
   queryClient.removeQueries({ queryKey: ["reading-diagnostics"] });
   queryClient.removeQueries({ queryKey: ["sessions"] });
+  queryClient.removeQueries({ queryKey: ["tokens"] });
+  queryClient.removeQueries({ queryKey: ["token-revoked-ids"] });
 }
 
 export function App({ initialPath }: AppProps) {
@@ -265,6 +275,59 @@ function formatSessionTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+const TOKEN_CAP = 10;
+const TOKEN_MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const TOKEN_CAP_WARNING =
+  "This account is at the 10-token limit. Revoke a token before creating another.";
+const RECENT_AUTH_REQUIRED =
+  "Recent sign-in required. Request a fresh sign-in link, then try again.";
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function toDatetimeLocalValue(ms: number): string {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function tokenStatusLabel(token: ApiTokenListItem): string {
+  if (token.revoked_at_ms != null) return "revoked";
+  if (!token.usable) return "expired";
+  return "usable";
+}
+
+const TOKEN_REVOKED_IDS_KEY = ["token-revoked-ids"] as const;
+
+function revokedTokenIds(queryClient: QueryClient): Set<string> {
+  return queryClient.getQueryData<Set<string>>(TOKEN_REVOKED_IDS_KEY) ?? new Set();
+}
+
+function rememberRevokedTokenId(queryClient: QueryClient, tokenId: string): void {
+  const next = new Set(revokedTokenIds(queryClient));
+  next.add(tokenId);
+  queryClient.setQueryData(TOKEN_REVOKED_IDS_KEY, next);
+}
+
+function applyRevokedTokenOverlay(tokens: ApiTokenListItem[], overlay: Set<string>): ApiTokenListItem[] {
+  if (overlay.size === 0) return tokens;
+  return tokens.map((row) =>
+    overlay.has(row.id) && row.usable
+      ? { ...row, usable: false, revoked_at_ms: row.revoked_at_ms ?? Date.now() }
+      : row
+  );
+}
+
+function pruneRevokedTokenIds(queryClient: QueryClient, tokens: ApiTokenListItem[]): void {
+  const current = revokedTokenIds(queryClient);
+  if (current.size === 0) return;
+  const next = new Set(current);
+  for (const row of tokens) {
+    if (next.has(row.id) && !row.usable) next.delete(row.id);
+  }
+  if (next.size !== current.size) queryClient.setQueryData(TOKEN_REVOKED_IDS_KEY, next);
+}
+
 function AccountSecurityPage({
   identity,
   onSignedOut
@@ -277,15 +340,48 @@ function AccountSecurityPage({
     queryKey: ["sessions", identity.user_id],
     queryFn: listSessions
   });
+  const tokensQuery = useQuery({
+    queryKey: ["tokens", identity.user_id],
+    queryFn: async () => {
+      const listed = await listTokens();
+      pruneRevokedTokenIds(queryClient, listed.tokens);
+      return listed;
+    }
+  });
+  const revokedOverlayQuery = useQuery({
+    queryKey: TOKEN_REVOKED_IDS_KEY,
+    queryFn: async () => revokedTokenIds(queryClient),
+    initialData: () => new Set<string>(),
+    staleTime: Infinity,
+    gcTime: Infinity
+  });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [emailDraft, setEmailDraft] = useState("");
   const [emailSubmitted, setEmailSubmitted] = useState(false);
   const [needFreshSignIn, setNeedFreshSignIn] = useState(false);
+  const [tokenName, setTokenName] = useState("");
+  const [tokenScopes, setTokenScopes] = useState<Set<ApiScopeName>>(() => new Set(API_SCOPES));
+  const [tokenExpiry, setTokenExpiry] = useState("");
+  const [revealedToken, setRevealedToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const listed = sessionsQuery.data;
+  const overlay = revokedOverlayQuery.data ?? new Set<string>();
+  const listedTokens = tokensQuery.data
+    ? { tokens: applyRevokedTokenOverlay(tokensQuery.data.tokens, overlay) }
+    : tokensQuery.data;
+  const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
+  const tokenCapReached = usableTokenCount >= TOKEN_CAP;
+  const createDisabled = busyId != null || listedTokens == null || tokenCapReached;
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
     onSignedOut();
+  }
+
+  function markFreshSignInRequired() {
+    setNeedFreshSignIn(true);
+    setError(RECENT_AUTH_REQUIRED);
   }
 
   async function onRevoke(session: SessionListItem) {
@@ -332,8 +428,7 @@ function AccountSecurityPage({
       setEmailSubmitted(true);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-        setNeedFreshSignIn(true);
-        setError("Recent sign-in required. Request a fresh sign-in link, then try again.");
+        markFreshSignInRequired();
       } else {
         setError(err instanceof Error ? err.message : "failed to request email change");
       }
@@ -342,7 +437,109 @@ function AccountSecurityPage({
     }
   }
 
-  const listed = sessionsQuery.data;
+  function toggleTokenScope(scope: ApiScopeName) {
+    setTokenScopes((current) => {
+      const next = new Set(current);
+      if (next.has(scope)) next.delete(scope);
+      else next.add(scope);
+      return next;
+    });
+  }
+
+  async function onCreateToken(event: { preventDefault: () => void }) {
+    event.preventDefault();
+    if (busyId || listedTokens == null || tokenCapReached) return;
+    const scopes = API_SCOPES.filter((scope) => tokenScopes.has(scope));
+    if (scopes.length === 0) {
+      setError("Select at least one scope.");
+      return;
+    }
+    let expiresAtMs: number | undefined;
+    if (tokenExpiry !== "") {
+      const parsed = Date.parse(tokenExpiry);
+      const nowMs = Date.now();
+      if (!Number.isFinite(parsed)) {
+        setError("Enter a valid expiry.");
+        return;
+      }
+      if (parsed <= nowMs) {
+        setError("Expiry must be in the future.");
+        return;
+      }
+      if (parsed > nowMs + TOKEN_MAX_TTL_MS) {
+        setError("Expiry cannot be more than 90 days from now.");
+        return;
+      }
+      expiresAtMs = parsed;
+    }
+    setError(null);
+    setNeedFreshSignIn(false);
+    setBusyId("token-create");
+    try {
+      const created = await createToken({
+        name: tokenName,
+        scopes,
+        ...(expiresAtMs !== undefined ? { expires_at_ms: expiresAtMs } : {})
+      });
+      setRevealedToken(created.token);
+      setCopied(false);
+      setTokenName("");
+      setTokenScopes(new Set(API_SCOPES));
+      setTokenExpiry("");
+      await tokensQuery.refetch();
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        markFreshSignInRequired();
+      } else {
+        setError(err instanceof Error ? err.message : "failed to create token");
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRevokeToken(token: ApiTokenListItem) {
+    if (busyId) return;
+    setError(null);
+    setBusyId(token.id);
+    try {
+      await revokeToken(token.id);
+      rememberRevokedTokenId(queryClient, token.id);
+      const markUnusable = (current: ListTokensResponse | undefined) => {
+        if (!current) return current;
+        return {
+          tokens: current.tokens.map((row) =>
+            row.id === token.id
+              ? { ...row, usable: false, revoked_at_ms: row.revoked_at_ms ?? Date.now() }
+              : row
+          )
+        };
+      };
+      queryClient.setQueryData(["tokens", identity.user_id], markUnusable);
+      await tokensQuery.refetch();
+      queryClient.setQueryData(["tokens", identity.user_id], markUnusable);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to revoke token");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onCopySecret() {
+    if (!revealedToken) return;
+    try {
+      await navigator.clipboard.writeText(revealedToken);
+      setCopied(true);
+    } catch {
+      setError("failed to copy token");
+    }
+  }
+
+  function onDismissSecret() {
+    setRevealedToken(null);
+    setCopied(false);
+  }
+
   return (
     <section className="page account-security">
       <div className="page-heading">
@@ -359,7 +556,7 @@ function AccountSecurityPage({
       {error ? <p className="error-message">{error}</p> : null}
       {needFreshSignIn ? (
         <p role="alert">
-          <Link to="/login">Request a fresh sign-in link</Link> to confirm a sensitive change.
+          <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a sensitive change.
         </p>
       ) : null}
       {sessionsQuery.isPending ? <StatusMessage>Loading</StatusMessage> : null}
@@ -402,6 +599,103 @@ function AccountSecurityPage({
           ))}
         </ul>
       ) : null}
+      <section className="api-tokens" aria-labelledby="api-tokens-heading">
+        <h2 id="api-tokens-heading">API tokens</h2>
+        {usableTokenCount >= TOKEN_CAP ? (
+          <p className="session-cap-warning" role="status">
+            {TOKEN_CAP_WARNING}
+          </p>
+        ) : null}
+        {tokensQuery.isPending ? <StatusMessage>Loading tokens</StatusMessage> : null}
+        {tokensQuery.isError ? (
+          <IdentityError
+            error={tokensQuery.error instanceof Error ? tokensQuery.error : new Error("failed to list tokens")}
+            onRetry={() => void tokensQuery.refetch()}
+          />
+        ) : null}
+        {listedTokens ? (
+          <ul className="session-list">
+            {listedTokens.tokens.map((token) => (
+              <li
+                key={token.id}
+                className={
+                  token.revoked_at_ms != null ? "session-revoked" : token.usable ? undefined : "session-expired"
+                }
+              >
+                <div>
+                  <p>
+                    {token.name} ({token.format}) · {tokenStatusLabel(token)}
+                  </p>
+                  <p className="session-meta">{token.scopes.join(", ")}</p>
+                  <p className="session-meta">
+                    Created {formatSessionTime(token.created_at_ms)} · expires{" "}
+                    {formatSessionTime(token.expires_at_ms)} ·{" "}
+                    {token.last_used_at_ms != null
+                      ? `last used ${formatSessionTime(token.last_used_at_ms)}`
+                      : "never used"}
+                  </p>
+                </div>
+                {token.usable ? (
+                  <button type="button" onClick={() => void onRevokeToken(token)} disabled={busyId != null}>
+                    Revoke
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <form className="token-create-form" onSubmit={(event) => void onCreateToken(event)}>
+          <label htmlFor="token-name">Name</label>
+          <input
+            id="token-name"
+            type="text"
+            maxLength={80}
+            value={tokenName}
+            onChange={(event) => setTokenName(event.target.value)}
+            required
+            disabled={createDisabled}
+          />
+          <fieldset className="token-scope-list" disabled={createDisabled}>
+            <legend>Scopes</legend>
+            {API_SCOPES.map((scope) => (
+              <label key={scope} htmlFor={`token-scope-${scope}`}>
+                <input
+                  id={`token-scope-${scope}`}
+                  type="checkbox"
+                  checked={tokenScopes.has(scope)}
+                  onChange={() => toggleTokenScope(scope)}
+                />{" "}
+                {scope}
+              </label>
+            ))}
+          </fieldset>
+          <label htmlFor="token-expiry">Expires (optional)</label>
+          <input
+            id="token-expiry"
+            type="datetime-local"
+            min={toDatetimeLocalValue(Date.now())}
+            max={toDatetimeLocalValue(Date.now() + TOKEN_MAX_TTL_MS)}
+            value={tokenExpiry}
+            onChange={(event) => setTokenExpiry(event.target.value)}
+            disabled={createDisabled}
+          />
+          <button type="submit" disabled={createDisabled}>
+            Create token
+          </button>
+        </form>
+        {revealedToken ? (
+          <div className="token-reveal">
+            <p role="status">Copy this token now. It will not be shown again.</p>
+            <code className="token-secret">{revealedToken}</code>
+            <button type="button" onClick={() => void onCopySecret()}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button type="button" onClick={onDismissSecret}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+      </section>
       <form className="token-form" onSubmit={(event) => void onChangeEmail(event)}>
         <h2>Change email</h2>
         <label htmlFor="change-email">New email</label>
@@ -436,18 +730,27 @@ function LoginPage({
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const next = searchParams.get("next");
+  const stepUp = searchParams.get("step_up") === "1";
+  const emailLocked = Boolean(stepUp && identity);
+  const emailValue = emailLocked && identity ? identity.email : email;
 
   useLayoutEffect(() => {
-    if (identity) return;
+    if (identity && !stepUp) return;
     rememberLoginReturnPath(next);
-  }, [identity, next]);
+  }, [identity, next, stepUp]);
 
-  if (identity) {
-    const dest = safeReadingReturnPath(next) ?? "/";
+  useLayoutEffect(() => {
+    if (emailLocked && identity) setEmail(identity.email);
+  }, [emailLocked, identity]);
+
+  if (identity && !stepUp) {
+    const dest = safeAppReturnPath(next) ?? "/";
     return <Navigate to={dest} replace />;
   }
-  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
-  if (identityQuery.isError) {
+  if (!identity && (identityQuery.isPending || identityQuery.isFetching)) {
+    return <StatusMessage>Loading</StatusMessage>;
+  }
+  if (!identity && identityQuery.isError) {
     return (
       <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
     );
@@ -463,7 +766,7 @@ function LoginPage({
           event.preventDefault();
           setError(null);
           try {
-            await requestLoginLink(email);
+            await requestLoginLink(emailValue);
             setSubmitted(true);
           } catch (e) {
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
@@ -471,14 +774,18 @@ function LoginPage({
         }}
       >
         <label htmlFor="login-email">Email</label>
-        <input
-          id="login-email"
-          type="email"
-          autoComplete="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          required
-        />
+          <input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            value={emailValue}
+            onChange={(event) => {
+              if (emailLocked) return;
+              setEmail(event.target.value);
+            }}
+            required
+            readOnly={emailLocked}
+          />
         <button type="submit">Email me a link</button>
       </form>
       {submitted ? (
@@ -546,7 +853,7 @@ function VerifyPage() {
                 }
                 await redeemLoginLink(credential, redemptionId.current);
                 clearMagicLinkCredential();
-                queryClient.removeQueries({ queryKey: ["sessions"] });
+                dropIdentityCaches(queryClient);
                 await queryClient.cancelQueries({ queryKey: ["whoami"] });
                 await queryClient.resetQueries({ queryKey: ["whoami"] });
                 const whoami = await queryClient.fetchQuery({ queryKey: ["whoami"] });
