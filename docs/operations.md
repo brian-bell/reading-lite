@@ -337,15 +337,22 @@ All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads` — the
 manifests read while planning — `manifest read` for the re-reads an execute
 pass makes, `vectorize query`, `provider`, `manifest write`, `list write`),
-each with its call count and total wall time, then the run total. Failed calls
-are counted too, since a stalled read is exactly the wall time worth seeing.
-Execute mode also prints `ms=` per judgement beside its token usage. Record the
-block: it is the baseline a later run or a performance change is compared
-against, and it is what tells a slow pass apart from a hung one.
+each with its call count and total wall time, then the run total. The block is
+printed even when the pass ends in an error, and failed calls are counted, since
+a stalled read is exactly the wall time worth seeing. Execute mode also prints
+`ms=` per judgement beside its token usage. Two things the counts do not say:
+they count storage calls, not HTTP requests (a `refresh-connections` or
+`refresh-tensions` manifest read is currently a LIST plus a GET), and a time
+includes any retry and its backoff, so one unusually slow call may be a call
+that quietly retried. Record the block: it is the baseline a later run or a
+performance change is compared against, and it is what tells a slow pass apart
+from a hung one.
 
 The two robustness limits behind those numbers: every S3 request carries a
 30-second deadline and is retried up to three times on a timeout, a network
-fault, a 5xx, or a 429, so one transient read no longer ends the run; and each
+fault, a 5xx, or a 429, so one transient read no longer ends the run — except
+for conditional writes, which are never repeated because a retry can see its
+own landed write and report a lost race that did not happen; and each
 judgement call retries 5xx the same way, while a 429 surfaces as a
 `RateLimitedError` naming the retry-after the provider asked for — that one
 means slow the run down, not re-run it immediately.

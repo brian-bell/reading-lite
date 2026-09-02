@@ -180,6 +180,20 @@ describe("ops corpus refresh-connections", () => {
     expect(text).not.toContain("manifest write");
   });
 
+  it("still prints the Timing block when the pass throws on a stale report", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    h.manifests.get("readings/2026/rd_a")!.manifest.updated_at = JUDGED_AT;
+    await expect(
+      corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--execute", "--sole-writer"],
+        { ...h.deps, now: fakeClock(10) },
+      ),
+    ).rejects.toThrow(/target rd_a changed/);
+    // The reads it already paid for are the reason this pass is worth timing.
+    expect(h.out.join("\n")).toMatch(/planning reads\s+\d+ calls/);
+  });
+
   it("separates planning reads from the execute pass and times each judgement", async () => {
     const h = harness();
     expect(

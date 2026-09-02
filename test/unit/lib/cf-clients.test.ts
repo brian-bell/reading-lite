@@ -770,6 +770,26 @@ describe("makeR2Client request timeout and transient retry", () => {
     expect(conflict.fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry a conditional PUT, whose repeat could see its own write", async () => {
+    // A lost response on a landed putIfAbsent would come back 412 and read as
+    // "someone else owns this URL", stranding an orphan ownership pointer.
+    const absent = harness([new Response("boom", { status: 500 })]);
+    await expect(absent.r2.putIfAbsent("index/by-url/a", "{}")).rejects.toThrow(/R2 PUT/);
+    expect(absent.fetchFn).toHaveBeenCalledTimes(1);
+
+    const cas = harness([new Response("boom", { status: 503 })]);
+    await expect(cas.r2.putIfMatch("k", "next", "abc")).rejects.toThrow(/R2 PUT/);
+    expect(cas.fetchFn).toHaveBeenCalledTimes(1);
+    // The deadline still applies to the single attempt.
+    expect(cas.signals).toEqual([30_000]);
+  });
+
+  it("retries an unconditional PUT, which repeats to the same bytes", async () => {
+    const h = harness([new Response("boom", { status: 503 }), okResponse()]);
+    await expect(h.r2.put("index/list.json", "{}")).resolves.toBeUndefined();
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
   it("retries a transient LIST page without restarting the listing", async () => {
     const page = (truncated: boolean) =>
       new Response(

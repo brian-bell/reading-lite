@@ -80,6 +80,7 @@ import {
   PHASE_PROVIDER,
   createRefreshTimer,
   timedRefreshStorage,
+  type RefreshTimer,
 } from "../refresh-timing";
 import {
   parseProductionWorkerVars,
@@ -184,17 +185,31 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
   };
 }
 
+// The block prints in a finally: the passes worth timing most are the ones
+// that end in a thrown stale-report or storage error, having already spent
+// minutes of planning reads.
 async function runCorpusRefreshTensions(
   argv: string[],
   deps: CorpusRefreshTensionsDeps,
 ): Promise<number> {
+  const args = parseRefreshTensionsArgs(argv);
   const timer = createRefreshTimer(deps.now);
-  const printTiming = () => deps.io.stdout(`\n${timer.format()}`);
+  try {
+    return await refreshTensions(args, deps, timer);
+  } finally {
+    deps.io.stdout(`\n${timer.format()}`);
+  }
+}
+
+async function refreshTensions(
+  args: Args,
+  deps: CorpusRefreshTensionsDeps,
+  timer: RefreshTimer,
+): Promise<number> {
   // Planning and execute read the same manifests through the same call, so the
   // phase label is what separates the fixed planning cost from the per-pair
   // re-reads every execute pass pays on top of it.
   let manifestReadPhase = PHASE_PLANNING_READS;
-  const args = parseRefreshTensionsArgs(argv);
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
       execute: true,
@@ -387,7 +402,6 @@ async function runCorpusRefreshTensions(
 
   if (!args.execute) {
     deps.io.stdout("PLAN - no provider call or storage write was made.");
-    printTiming();
     return planningFailed ? 1 : 0;
   }
   manifestReadPhase = PHASE_MANIFEST_READ;
@@ -528,7 +542,6 @@ async function runCorpusRefreshTensions(
       `skipped since plan: ${skippedSincePlan}; failures: ${failures}`,
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  printTiming();
   return planningFailed || failures > 0 ? 1 : 0;
 }
 

@@ -35,7 +35,7 @@ import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { createRefreshTimer, timedNeighboursR2 } from "../refresh-timing";
+import { createRefreshTimer, timedNeighboursR2, type RefreshTimer } from "../refresh-timing";
 
 export interface CorpusRefreshNeighboursR2 {
   readListIndex: (deps: R2Deps) => Promise<RefreshRow[]>;
@@ -125,15 +125,29 @@ function isManifestObject(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw);
 }
 
+// The block prints in a finally: the passes worth timing most are the ones
+// that end in a thrown stale-report or storage error, having already spent
+// minutes of reads.
 async function runCorpusRefreshNeighbours(
   argv: string[],
   deps: CorpusRefreshNeighboursDeps,
 ): Promise<number> {
-  const timer = createRefreshTimer(deps.now);
   const opts = parseRefreshArgs(argv);
+  const timer = createRefreshTimer(deps.now);
+  try {
+    return await refreshNeighbours(opts, deps, timer);
+  } finally {
+    deps.io.stdout(`\n${timer.format()}`);
+  }
+}
+
+async function refreshNeighbours(
+  opts: Opts,
+  deps: CorpusRefreshNeighboursDeps,
+  timer: RefreshTimer,
+): Promise<number> {
   const { io } = deps;
   const r2 = timedNeighboursR2(deps.r2, timer);
-  const printTiming = () => io.stdout(`\n${timer.format()}`);
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
   const tenant = requireOperatorTenant(opts.tenant);
   // --execute ends in a wholesale plain put of index/list.json, not a CAS write,
@@ -329,14 +343,12 @@ async function runCorpusRefreshNeighbours(
         `\n${n} of ${plan.targets.length} attempted reading(s) were not ${opts.execute ? "refreshed" : "measured"} — run incomplete.`,
       );
     }
-    printTiming();
     return 1;
   }
 
   if (!opts.execute) {
     io.stdout("\nPLAN — corpus unchanged. Re-run with --execute to refresh drifted snapshots.");
   }
-  printTiming();
   return 0;
 }
 

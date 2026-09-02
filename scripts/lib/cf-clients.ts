@@ -113,12 +113,21 @@ export interface VectorizeConfig {
 // Every attempt gets a fresh deadline, and the request is re-signed each time
 // because a SigV4 signature carries the timestamp it was made at.
 //
-// Retries cover writes as well as reads. A conditional PUT whose response was
-// lost may already have landed, so the retry can come back 412 and be reported
-// as a lost CAS — but that is also what an un-retried timeout reports, and
-// only the retry can turn a genuinely failed attempt into a success, so it is
-// never the worse of the two. No manifest is written twice either way: the
-// ETag the second attempt carries matches only the version the first replaced.
+// Conditional PUTs are the exception: they are NOT retried. A putIfAbsent or
+// putIfMatch whose response was lost may already have landed, and the retry
+// then sees its own write and returns false — "already owned" for the by-url
+// ownership claim, "CAS lost" for a manifest. Callers read that as someone
+// else holding the slot, which for the claim means an orphan pointer owning a
+// URL no reading was activated for. A thrown transient error is the honest
+// outcome there, and it is what these callers already handled. Everything
+// else — reads, listings, plain puts, deletes — repeats safely.
+//
+// The deadline covers the whole request including the response body, not just
+// its headers, because a body that stops arriving mid-stream is the same stall
+// as one that never starts. It applies to every makeR2Client caller (the bulk
+// ingest, recover, migrate, purge and teardown commands as well as the
+// refresh), which previously had no request deadline at all; 30s is far above
+// what any object this corpus stores needs.
 export const S3_REQUEST_TIMEOUT_MS = 30_000;
 const S3_REQUEST_ATTEMPTS = 3;
 const S3_RETRY_BASE_MS = 250;
@@ -157,9 +166,13 @@ export function makeR2Client(
 
   // aws.sign() returns a signed Request, which we then hand to the injected
   // fetch — keeps signing intact while making the network call stubbable.
-  const send = async (url: string, init: RequestInit): Promise<Response> => {
+  const send = async (
+    url: string,
+    init: RequestInit,
+    retryable = true,
+  ): Promise<Response> => {
     for (let attempt = 0; ; attempt++) {
-      const last = attempt >= maxAttempts - 1;
+      const last = !retryable || attempt >= maxAttempts - 1;
       try {
         const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
         const res = await fetchFn(signed);
@@ -171,8 +184,8 @@ export function makeR2Client(
       await sleep(Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt));
     }
   };
-  const signedFetch = (key: string, init: RequestInit): Promise<Response> =>
-    send(`${base}/${encodePath(key)}`, init);
+  const signedFetch = (key: string, init: RequestInit, retryable = true): Promise<Response> =>
+    send(`${base}/${encodePath(key)}`, init, retryable);
   const signedBucketFetch = (params: URLSearchParams, init: RequestInit): Promise<Response> =>
     send(`${base}?${params.toString()}`, init);
 
@@ -189,7 +202,7 @@ export function makeR2Client(
     async putIfAbsent(key, body, opts) {
       const headers: Record<string, string> = { "if-none-match": "*" };
       if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers });
+      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
       if (res.ok) return true;
       if (res.status === 412 || res.status === 409) return false;
       const text = await res.text().catch(() => "");
@@ -198,7 +211,7 @@ export function makeR2Client(
     async putIfMatch(key, body, etag, opts) {
       const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
       if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers });
+      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
       if (res.ok) return true;
       if (res.status === 412 || res.status === 409) return false;
       const text = await res.text().catch(() => "");

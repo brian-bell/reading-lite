@@ -52,6 +52,7 @@ import {
   PHASE_PROVIDER,
   createRefreshTimer,
   timedRefreshStorage,
+  type RefreshTimer,
 } from "../refresh-timing";
 import type { RetryDeps } from "../../../src/modules/http-retry";
 import {
@@ -159,17 +160,31 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
   };
 }
 
+// The block prints in a finally: the passes worth timing most are the ones
+// that end in a thrown stale-report or storage error, having already spent
+// minutes of planning reads.
 async function runCorpusRefreshConnections(
   argv: string[],
   deps: CorpusRefreshConnectionsDeps,
 ): Promise<number> {
+  const args = parseRefreshConnectionsArgs(argv);
   const timer = createRefreshTimer(deps.now);
-  const printTiming = () => deps.io.stdout(`\n${timer.format()}`);
+  try {
+    return await refreshConnections(args, deps, timer);
+  } finally {
+    deps.io.stdout(`\n${timer.format()}`);
+  }
+}
+
+async function refreshConnections(
+  args: Args,
+  deps: CorpusRefreshConnectionsDeps,
+  timer: RefreshTimer,
+): Promise<number> {
   // Planning and execute read the same manifests through the same call, so the
   // phase label is what separates the fixed planning cost from the per-action
   // re-read every execute pass pays on top of it.
   let manifestReadPhase = PHASE_PLANNING_READS;
-  const args = parseRefreshConnectionsArgs(argv);
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
       execute: true,
@@ -376,7 +391,6 @@ async function runCorpusRefreshConnections(
 
   if (!args.execute) {
     deps.io.stdout("PLAN - no provider call or storage write was made.");
-    printTiming();
     return planningFailed ? 1 : 0;
   }
   manifestReadPhase = PHASE_MANIFEST_READ;
@@ -497,7 +511,6 @@ async function runCorpusRefreshConnections(
     `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  printTiming();
   return planningFailed || failures > 0 || flushFailed ? 1 : 0;
 }
 
