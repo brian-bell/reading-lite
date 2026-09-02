@@ -456,7 +456,12 @@ moves. The scope and its reason are printed
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
 first run, or a deleted one), fewer list rows than the marker recorded (a purge
 names nothing a timestamp can find), a failed reverse query, or a reverse
-neighbourhood still saturated at topK — never a narrower pass.
+neighbourhood whose lowest returned match is still above the bound, meaning the
+query was truncated and the real set is unknown — never a narrower pass. An
+escalation reports how many of the changed readings caused it and names the
+first, because a corpus that saturates most nights is buying nothing from
+`--since-last-run` and that rate is the number to measure before switching a
+cron over to it.
 
 An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched — the backfill's 394

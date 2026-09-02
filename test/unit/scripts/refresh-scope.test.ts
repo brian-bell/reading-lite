@@ -247,7 +247,32 @@ describe("incrementalScope", () => {
     );
     expect(scope).toEqual({
       kind: "full",
-      reason: "no reverse-neighbour result for rd_new",
+      reason: "no reverse-neighbour result for rd_new (of 1 changed)",
+    });
+  });
+
+  // The reason has to carry the rate, not just the trigger: an operator
+  // deciding whether --since-last-run is worth running needs to tell one
+  // unusual reading apart from a corpus that saturates every night.
+  it("counts how many changed readings saturated, not just the first", () => {
+    const dense = [
+      { id: "rd_a", score: 0.9 },
+      { id: "rd_b", score: REVERSE_SCORE_BOUND },
+    ];
+    const scope = incrementalScope(
+      [
+        row("rd_a", { updated_at: AFTER }),
+        row("rd_b", { updated_at: AFTER }),
+        row("rd_c"),
+      ],
+      marker({ list_row_count: 3 }),
+      reverse({ rd_a: dense, rd_b: dense }),
+    );
+    expect(scope).toEqual({
+      kind: "full",
+      reason:
+        "reverse neighbourhood saturated for 2 of 2 changed reading(s), " +
+        `first rd_a (no match below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
     });
   });
 

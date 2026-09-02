@@ -736,7 +736,9 @@ full sweep whenever that reasoning runs out — no marker, rows removed since th
 marker, a failed reverse query, or a reverse neighbourhood saturated at topK.
 An incremental report is a statement about its scope: a persistent flag on a
 reading nobody touched stays invisible until the next full sweep, so run --full
-weekly. The scope and its reason are printed and recorded in the report header.
+weekly. The scope and its reason are printed and recorded in the report header,
+and an escalation names how many changed readings caused it — a corpus that
+saturates every night is buying nothing from --since-last-run.
 
 Only a complete --execute pass advances the marker, and --only/--limit never do.
 Naming ids overrides the scope: those readings are measured either way.

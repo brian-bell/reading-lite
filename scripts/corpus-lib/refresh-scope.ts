@@ -237,25 +237,48 @@ export function incrementalScope(
 
   const known = new Set(list.map((row) => row.id));
   const scope = new Set<string>(base.changed);
+  // Every changed reading is examined even once one has already forced a full
+  // sweep. The queries are already made and the decision is already taken; what
+  // the extra pass buys is the count in the reason, which is the only way an
+  // operator can tell "one unusual reading escalated tonight" from "this corpus
+  // saturates every night and --since-last-run is buying nothing".
+  const missing: string[] = [];
+  const saturated: string[] = [];
 
   for (const id of base.changed) {
     if (!reverseNeighbours.has(id)) {
-      return { kind: "full", reason: `no reverse-neighbour result for ${id}` };
+      missing.push(id);
+      continue;
     }
     const matches = reverseNeighbours.get(id) ?? null;
     if (matches === null) continue;
     if (isSaturated(matches)) {
-      return {
-        kind: "full",
-        reason:
-          `reverse neighbourhood of ${id} is saturated ` +
-          `(${matches.length} match(es), none below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
-      };
+      saturated.push(id);
+      continue;
     }
     for (const match of matches) {
       if (match.score < REVERSE_SCORE_BOUND) continue;
       if (known.has(match.id)) scope.add(match.id);
     }
+  }
+
+  if (missing.length > 0) {
+    return {
+      kind: "full",
+      reason:
+        `no reverse-neighbour result for ${missing[0]}` +
+        `${missing.length > 1 ? ` and ${missing.length - 1} more` : ""}` +
+        ` (of ${base.changed.length} changed)`,
+    };
+  }
+  if (saturated.length > 0) {
+    return {
+      kind: "full",
+      reason:
+        `reverse neighbourhood saturated for ${saturated.length} of ` +
+        `${base.changed.length} changed reading(s), first ${saturated[0]} ` +
+        `(no match below ${REVERSE_SCORE_BOUND.toFixed(2)})`,
+    };
   }
 
   return {
