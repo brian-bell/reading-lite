@@ -50,7 +50,9 @@ import { createPrefetchingReader } from "../planning-reads";
 import { judgeRetryDeps } from "../judge-retry";
 import {
   createRateLimitGate,
+  judgeWithRateLimitRetry,
   parseConcurrencyFlag,
+  parseMaxBackoffFlag,
   realSleep,
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
@@ -83,6 +85,7 @@ interface Args {
   soleWriter: boolean;
   limit?: number;
   concurrency: number;
+  maxBackoffMs: number;
 }
 
 export interface StoredRawManifest {
@@ -139,10 +142,10 @@ interface Action {
 interface ExecuteOutcome {
   stdout: string[];
   stderr: string[];
-  kind: "judged" | "healed" | "failed";
+  kind: "judged" | "healed" | "failed" | "skipped";
   /**
-   * The verdict to flush onto the list row. Read for every outcome that is
-   * not a failure, `undefined` included: a manifest whose `novelty_verdict`
+   * The verdict to flush onto the list row. Read for every outcome that
+   * judged or healed, `undefined` included: a manifest whose `novelty_verdict`
    * is absent is exactly the drift a heal exists to clear off the row.
    */
   verdict: ListIndexItem["novelty_verdict"];
@@ -166,6 +169,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
         concurrency: { type: "string" },
+        "max-backoff": { type: "string" },
       },
       allowPositionals: false,
     }));
@@ -187,6 +191,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
     soleWriter: values["sole-writer"] === true,
     ...(limit === undefined ? {} : { limit }),
     concurrency: parseConcurrencyFlag(values.concurrency),
+    maxBackoffMs: parseMaxBackoffFlag(values["max-backoff"]),
   };
 }
 
@@ -450,18 +455,20 @@ async function refreshConnections(
   let judged = 0;
   let healed = 0;
   let flushFailed = false;
+  let ceilingSkipped = 0;
   const usageTotals = emptyUsageTotals();
   const gate = createRateLimitGate({
     now: deps.now,
     sleep: deps.sleep,
+    maxBackoffMs: args.maxBackoffMs,
     onPause: (ms) =>
       deps.io.stderr(
         `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
       ),
-    onGiveUp: (consecutive) =>
+    onCeiling: (totalMs) =>
       deps.io.stderr(
-        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
-          `the rest of this pass will fail fast`,
+        `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
+          `after ${formatSeconds(totalMs)}; not dispatching the rest of this pass`,
       ),
   });
 
@@ -480,6 +487,14 @@ async function refreshConnections(
       outcome.stderr.push(`  ! ${action.report.id}: ${message}`);
       return outcome;
     };
+    const ceilingSkip = (): ExecuteOutcome => {
+      outcome.kind = "skipped";
+      outcome.stderr.push(
+        `  ! skip ${action.report.id}: backoff ceiling reached before this action ran`,
+      );
+      return outcome;
+    };
+    if (gate.stopped()) return ceilingSkip();
     if (action.kind === "heal") {
       outcome.kind = "healed";
       outcome.verdict = action.stored.manifest
@@ -512,12 +527,13 @@ async function refreshConnections(
       // after the re-read, because it is the paid call it is pacing; the ETag
       // it waited on is still current, since --sole-writer is the only writer.
       await gate.wait();
-      const { value: result, ms: providerMs } = await timer.measured(
-        PHASE_PROVIDER,
-        () => provider.judge(input),
+      // Woken by the ceiling rather than by the window expiring: this action
+      // never called the provider, so it is skipped, not failed.
+      if (gate.stopped()) return ceilingSkip();
+      const { value: result, ms: providerMs } = await judgeWithRateLimitRetry(
+        gate,
+        () => timer.measured(PHASE_PROVIDER, () => provider.judge(input)),
       );
-      // A call that came back is the evidence the limit is not sustained.
-      gate.succeeded();
       // Carried on the outcome whatever happens next, so the run total covers
       // every call billed, including judgements whose write later fails.
       outcome.usage = result.usage;
@@ -583,6 +599,7 @@ async function refreshConnections(
         }
         if (outcome.kind === "judged") judged++;
         else if (outcome.kind === "healed") healed++;
+        else if (outcome.kind === "skipped") ceilingSkipped++;
         else failures++;
       },
     );
@@ -605,10 +622,11 @@ async function refreshConnections(
   }
 
   deps.io.stdout(
-    `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
+    `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}` +
+      (ceilingSkipped > 0 ? `; skipped at the backoff ceiling: ${ceilingSkipped}` : ""),
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  return planningFailed || failures > 0 || flushFailed ? 1 : 0;
+  return planningFailed || failures > 0 || flushFailed || ceilingSkipped > 0 ? 1 : 0;
 }
 
 function validTargetManifest(
@@ -869,6 +887,8 @@ Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json.
   --limit <n>          Cap selected judgement or list-heal actions.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
+  --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
+                       before it stops dispatching. Default: 10m (bare = seconds).
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

@@ -736,7 +736,30 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
     );
   });
 
-  it("backs the whole pass off once on a 429", async () => {
+  /** Runs with a clock that a backoff actually moves, as a real one would. */
+  const executeOnAClock = (h: ReturnType<typeof harness>, ...extra: string[]) => {
+    let clock = Date.parse(JUDGED_AT);
+    return corpusRefreshTensionsCommand.run(
+      [
+        "--tenant",
+        "global",
+        "--execute",
+        "--sole-writer",
+        ...pairs.flatMap(([a, b]) => ["--pair", `${a},${b}`]),
+        ...extra,
+      ],
+      {
+        ...h.deps,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          h.sleeps.push(ms);
+          clock += ms;
+        },
+      },
+    );
+  };
+
+  it("backs the whole pass off once on a 429, and retries the pair that hit it", async () => {
     const s = scaled();
     const inner = s.h.judge.getMockImplementation()!;
     let first = true;
@@ -748,13 +771,66 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
       return inner(input);
     });
 
-    expect(await execute(s.h)).toBe(1);
+    expect(await execute(s.h)).toBe(0);
 
     expect(
       s.h.err.filter((line) => line.includes("pausing new judgements")),
     ).toEqual(["  ! provider rate limited; pausing new judgements for 1.500s"]);
     expect(s.h.sleeps.length).toBeGreaterThan(1);
     expect(new Set(s.h.sleeps)).toEqual(new Set([1_500]));
-    expect(s.h.out.join("\n")).toContain(`Judged: ${pairs.length - 1};`);
+    // The retry lands after the window, so a transient limit costs a pause
+    // rather than a pair — and it writes both sides, as any judgement does.
+    expect(s.h.judge).toHaveBeenCalledTimes(pairs.length + 1);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${pairs.length}; manifests written: ${pairs.length * 2}; repaired: 0; ` +
+        "skipped since plan: 0; failures: 0",
+    );
+  });
+
+  it("fails a pair whose retry is rate limited too, without a third attempt", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    s.h.judge.mockImplementation(async (input) => {
+      if (input.a.id === "rd_04") {
+        throw new RateLimitedError(429, 1_000, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await executeOnAClock(s.h)).toBe(1);
+
+    expect(
+      s.h.judge.mock.calls.filter(([input]) => input.a.id === "rd_04"),
+    ).toHaveLength(2);
+    expect(s.h.err.join("\n")).toContain("rd_04|rd_05: rate limited by");
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${pairs.length - 1}; manifests written: ${(pairs.length - 1) * 2}; ` +
+        "repaired: 0; skipped since plan: 0; failures: 1",
+    );
+  });
+
+  it("stops dispatching once the pass has spent its whole backoff budget", async () => {
+    const s = scaled();
+    s.h.judge.mockImplementation(async () => {
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "2m")).toBe(1);
+
+    expect(s.h.err.filter((line) => line.includes("backoff reached"))).toEqual([
+      "  ! rate-limit backoff reached the 120.000s ceiling after 120.000s; " +
+        "not dispatching the rest of this pass",
+    ]);
+    expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(120_000);
+    expect(s.h.judge).toHaveBeenCalledTimes(3);
+    expect(s.h.err).toContain(
+      `  ! skip ${plannedKeys[plannedKeys.length - 1]}: ` +
+        "backoff ceiling reached before this action ran",
+    );
+    expect(s.h.out.join("\n")).toContain(
+      "Judged: 0; manifests written: 0; repaired: 0; skipped since plan: 0; " +
+        `failures: 2; skipped at the backoff ceiling: ${pairs.length - 2}`,
+    );
+    expect(s.writes).toEqual([]);
   });
 });
