@@ -287,7 +287,8 @@ function markerRejectionReason(raw: unknown): string {
       : undefined;
   return typeof version === "number" && version < REFRESH_STATE_VERSION
     ? `  ! run marker is version ${version}, which predates the purge check ` +
-      `(version ${REFRESH_STATE_VERSION}) — sweeping once and rewriting it`
+      `(version ${REFRESH_STATE_VERSION}) — this pass sweeps, and the next ` +
+      "complete --execute pass replaces it"
     : "  ! run marker is not a usable refresh state";
 }
 

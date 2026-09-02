@@ -30,7 +30,11 @@
 // answer for another's.
 
 import { runVectorBackfill, type VectorBackfillResult, type VectorBackfillRow } from "../../corpus-lib/backfill-vectors";
-import { parseRefreshState } from "../../corpus-lib/refresh-scope";
+import {
+  REFRESH_STATE_VERSION,
+  parseRefreshState,
+  type RefreshState,
+} from "../../corpus-lib/refresh-scope";
 import { OPENAI_EMBEDDING_MODEL } from "../../../src/modules/embeddings";
 import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
@@ -233,10 +237,14 @@ async function runCorpusBackfillVectors(
  * the marker is still standing and still says a narrower pass is safe, which is
  * the one state this command must not leave behind.
  *
- * An absent or unusable marker needs no stamp: `changedSince` already reads
- * both as "sweep". An already-stamped one IS overwritten, unlike the absent
- * case: another run's stamp is another run's, and a refresh pass answering that
- * one would clear it and go on to miss this run's vectors.
+ * An existing stamp IS overwritten: another run's stamp is another run's, and a
+ * refresh pass answering that one would clear it and go on to miss this run's
+ * vectors.
+ *
+ * Read-modify-write over an unconditional put, like every other writer of this
+ * object — the R2 adapters offer no If-Match here. The window is one read and
+ * one write, and `--sole-writer` on the refresh side is what an operator
+ * asserts to keep the two commands from overlapping at all.
  */
 async function invalidateRefreshMarker(
   deps: CorpusBackfillVectorsDeps,
@@ -254,22 +262,34 @@ async function invalidateRefreshMarker(
     // Blocking a repair command on a damaged marker, under a message about
     // credentials, would be the wrong failure for the wrong reason.
     if (error instanceof SyntaxError) {
-      io.stdout("Run marker: unparseable — the next refresh pass already sweeps.");
-      return true;
+      io.stdout("Run marker: unparseable — replacing it with a minimal invalidated one.");
+      raw = null;
+    } else {
+      io.stderr(
+        `  ! could not read the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      io.stderr("    Fix the R2 credential and re-run.");
+      return false;
     }
-    io.stderr(
-      `  ! could not read the tier-1 run marker: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    io.stderr("    Fix the R2 credential and re-run.");
-    return false;
   }
   const state = raw === null ? null : parseRefreshState(raw);
-  if (state === null) {
-    io.stdout("Run marker: absent or unusable — the next refresh pass already sweeps.");
-    return true;
-  }
+  // An absent or unusable marker makes the NEXT pass sweep on its own, but a
+  // pass already running read that same absent marker, and nothing would stop
+  // it from advancing afterwards and recording as covered a sweep these vectors
+  // missed. So a stamp is written either way, on a minimal marker.
+  //
+  // Its `last_run_at` is the epoch and its `list_ids` empty on purpose: the
+  // stamp already forces a sweep (changedSince checks it first), and those two
+  // fields are what a scope would narrow on if the stamp ever went missing.
+  // Epoch dates every row as changed and an empty id list claims no reading was
+  // ever seen, so the worst a stripped stamp could do here is measure too much.
+  const base: RefreshState = state ?? {
+    version: REFRESH_STATE_VERSION,
+    last_run_at: new Date(0).toISOString(),
+    list_ids: [],
+  };
   try {
-    await r2.writeRefreshState({ ...state, invalidated_by: stamp }, r2Deps);
+    await r2.writeRefreshState({ ...base, invalidated_by: stamp }, r2Deps);
     io.stdout(`Run marker invalidated (${stamp}): the next refresh pass will sweep.`);
     return true;
   } catch (error) {

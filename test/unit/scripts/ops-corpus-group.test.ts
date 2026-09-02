@@ -579,7 +579,9 @@ describe("ops corpus backfill-vectors", () => {
     const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
     expect(code).toBe(0);
     expect(calls.upserts).toBe(1);
-    expect(calls.markerWrites).toEqual([]);
+    expect(calls.markerWrites[0]).toMatchObject({
+      invalidated_by: `corpus backfill-vectors started ${RUN_AT}`,
+    });
     expect(lines.join("\n")).toContain("Run marker: unparseable");
   });
 
@@ -589,16 +591,25 @@ describe("ops corpus backfill-vectors", () => {
     expect(calls.markerWrites).toEqual([]);
   });
 
-  it("writes no marker when there is nothing usable to invalidate", async () => {
+  // An absent or unusable marker makes the NEXT pass sweep by itself, but a
+  // pass already running read that same absent marker and would otherwise
+  // advance afterwards, recording as covered a sweep these vectors missed.
+  it("stamps a minimal marker when there is none to stamp", async () => {
     for (const stored of [null, { version: 9 }]) {
-      const { deps, calls, lines } = makeDeps(stored);
+      const { deps, calls } = makeDeps(stored);
       const code = await corpusBackfillVectorsCommand.run(
         ["--tenant", "global", "--execute"],
         deps,
       );
       expect(code).toBe(0);
-      expect(calls.markerWrites).toEqual([]);
-      expect(lines.join("\n")).toContain("the next refresh pass already sweeps");
+      // Epoch and an empty id list: the stamp is what forces the sweep, and
+      // those are the two fields a scope would narrow on without it.
+      expect(calls.markerWrites[0]).toEqual({
+        version: 2,
+        last_run_at: "1970-01-01T00:00:00.000Z",
+        list_ids: [],
+        invalidated_by: `corpus backfill-vectors started ${RUN_AT}`,
+      });
     }
   });
 
