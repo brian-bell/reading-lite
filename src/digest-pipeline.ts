@@ -5,8 +5,12 @@
  * Resend or build digest HTML (196 B2). Send-time re-read checks cadence, TZ,
  * recipient, and that `period_key` still matches the current local day/week.
  * Hour and weekday matching is enqueue-only so a delayed/retried job in the
- * same period still stub-sends. Each due tenant is claimed+enqueued in its
- * own try/catch so one failure cannot abort the rest of the cron tick.
+ * same period still stub-sends. Fan-out also re-enqueues current-period
+ * `pending` rows (via `currentPeriodKey`) so a producer miss through the due
+ * hour can still land on DIGEST_JOBS later that day/week. A `queue.send`
+ * failure after a successful claim deletes the pending row so a later tick
+ * can claim again. Each tenant is claimed+enqueued in its own try/catch so
+ * one failure cannot abort the rest of the cron tick.
  *
  * Digest DLQ handling lives next to this module so it can mark the ledger
  * failed without touching reading manifests.
@@ -20,8 +24,11 @@ import {
 } from "./control-plane/digest-envelope";
 import {
   claimPendingDigestDelivery,
+  deletePendingDigestDelivery,
+  digestDeliveryKeyId,
   finalizeDigestDelivery,
   getDigestDelivery,
+  listPendingDigestDeliveries,
   type DigestDeliveryKey,
   type DigestSkipReason,
 } from "./control-plane/digest-ledger";
@@ -90,6 +97,37 @@ export function selectDueDigestUsers(
   return due;
 }
 
+/** Due-hour users plus leftover pending rows still in the current local period. */
+export function selectFanOutDigestUsers(
+  rows: readonly EnabledDigestRow[],
+  pendingIds: ReadonlySet<string>,
+  now: Date,
+): Array<EnabledDigestRow & { period_key: string }> {
+  const selected: Array<EnabledDigestRow & { period_key: string }> = [];
+  const seen = new Set<string>();
+  const push = (row: EnabledDigestRow, period_key: string, cadence: "daily" | "weekly") => {
+    const id = digestDeliveryKeyId({ userId: row.user_id, cadence, periodKey: period_key });
+    if (seen.has(id)) return;
+    seen.add(id);
+    selected.push({ ...row, digest_cadence: cadence, period_key });
+  };
+
+  for (const row of selectDueDigestUsers(rows, now)) {
+    push(row, row.period_key, row.digest_cadence);
+  }
+  for (const row of rows) {
+    const current = currentPeriodKey(row, now);
+    if (!current.ok) continue;
+    const id = digestDeliveryKeyId({
+      userId: row.user_id,
+      cadence: current.cadence,
+      periodKey: current.period_key,
+    });
+    if (pendingIds.has(id)) push(row, current.period_key, current.cadence);
+  }
+  return selected;
+}
+
 export async function fanOutDueDigests(
   env: DigestEnv,
   deps: { nowMs: number },
@@ -101,29 +139,47 @@ export async function fanOutDueDigests(
   }
   const db = fromD1(env.CONTROL_PLANE);
   const now = new Date(deps.nowMs);
-  const due = selectDueDigestUsers(await listEnabledDigestUsers(db), now);
+  const pendingIds = new Set(
+    (await listPendingDigestDeliveries(db)).map((key) => digestDeliveryKeyId(key)),
+  );
+  const due = selectFanOutDigestUsers(await listEnabledDigestUsers(db), pendingIds, now);
   let enqueued = 0;
   for (const row of due) {
+    const key: DigestDeliveryKey = {
+      userId: row.user_id,
+      cadence: row.digest_cadence,
+      periodKey: row.period_key,
+    };
     try {
       const tenantId = parseTenantId(row.user_id);
       const userId = parseUserId(row.user_id);
       if (!tenantId || !userId) continue;
-      const key: DigestDeliveryKey = {
-        userId: row.user_id,
-        cadence: row.digest_cadence,
-        periodKey: row.period_key,
-      };
       const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
       if (claim === "terminal") continue;
-      await queue.send(
-        digestEnvelopeV1({
-          tenantId,
-          userId,
-          period_key: row.period_key,
-          cadence: row.digest_cadence,
-        }),
-      );
-      enqueued += 1;
+      try {
+        await queue.send(
+          digestEnvelopeV1({
+            tenantId,
+            userId,
+            period_key: row.period_key,
+            cadence: row.digest_cadence,
+          }),
+        );
+        enqueued += 1;
+      } catch (error) {
+        try {
+          await deletePendingDigestDelivery(db, key);
+        } catch (releaseError) {
+          console.error(
+            JSON.stringify({
+              event: "digest_pending_release_failed",
+              user_id: row.user_id,
+              message: releaseError instanceof Error ? releaseError.message : String(releaseError),
+            }),
+          );
+        }
+        throw error;
+      }
     } catch (error) {
       console.error(
         JSON.stringify({

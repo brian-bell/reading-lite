@@ -3,6 +3,7 @@ import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import {
   claimPendingDigestDelivery,
+  deletePendingDigestDelivery,
   finalizeDigestDelivery,
   getDigestDelivery,
 } from "../../../src/control-plane/digest-ledger";
@@ -52,5 +53,17 @@ describe("digest_deliveries ledger CAS", () => {
       status: "skipped",
       skip_reason: "cadence_off",
     });
+  });
+
+  it("deletes only a pending row so the period can be claimed again", async () => {
+    const { db } = await bootstrapped();
+    await claimPendingDigestDelivery(db, KEY, NOW_MS);
+    expect(await deletePendingDigestDelivery(db, KEY)).toBe(true);
+    expect(await getDigestDelivery(db, KEY)).toBeNull();
+    expect(await claimPendingDigestDelivery(db, KEY, NOW_MS + 1)).toBe("inserted");
+
+    await finalizeDigestDelivery(db, KEY, { status: "sent" }, NOW_MS + 2);
+    expect(await deletePendingDigestDelivery(db, KEY)).toBe(false);
+    expect(await getDigestDelivery(db, KEY)).toMatchObject({ status: "sent" });
   });
 });

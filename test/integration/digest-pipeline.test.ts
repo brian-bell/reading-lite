@@ -35,6 +35,15 @@ function installDigestQueue(): DigestEnvelopeV1[] {
   return queued;
 }
 
+function installRejectingDigestQueue(error: unknown = new Error("queue send failed")): void {
+  queued = [];
+  (env as unknown as { DIGEST_JOBS: Queue<DigestEnvelopeV1> }).DIGEST_JOBS = {
+    send: vi.fn(async () => {
+      throw error;
+    }),
+  } as unknown as Queue<DigestEnvelopeV1>;
+}
+
 async function setDigest(
   userId: string,
   values: {
@@ -265,6 +274,65 @@ describe("digest fan-out + stub send", () => {
 
     expect(result.enqueued).toBe(1);
     expect(queued.map((msg) => msg.tenantId)).toEqual([FOUNDER_TENANT_ID]);
+  });
+
+  it("deletes the pending ledger row when queue.send fails so a later tick can claim", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    installRejectingDigestQueue();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+      enqueued: 0,
+    });
+    consoleErr.mockRestore();
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toBeNull();
+
+    installDigestQueue();
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+      enqueued: 1,
+    });
+    expect(queued).toHaveLength(1);
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "pending" });
+  });
+
+  it("re-enqueues a current-period pending row after the due hour", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
+      enqueued: 0,
+    });
+
+    await env.CONTROL_PLANE.prepare(
+      `INSERT INTO digest_deliveries
+         (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+       VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
+    )
+      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
+      .run();
+
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
+      enqueued: 1,
+    });
+    expect(queued).toEqual([
+      {
+        version: 1,
+        tenantId: FOUNDER_TENANT_ID,
+        userId: FOUNDER_TENANT_ID,
+        period_key: "2026-09-02",
+        cadence: "daily",
+      },
+    ]);
   });
 
   it("wires scheduled() to due+enqueue with frozen scheduledTime", async () => {

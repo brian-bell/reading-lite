@@ -83,8 +83,10 @@ export function periodKeyFor(cadence: DigestEnabledCadence, local: LocalCivilTim
 }
 
 /**
- * Send-time period: cadence + local civil date/week in the stored TZ.
- * Does not consult hour or weekday — those gate enqueue only.
+ * Current local period: cadence + civil date/week in the stored TZ.
+ * Does not consult hour or weekday — those gate first-due enqueue only.
+ * Send-time re-read and leftover-pending fan-out use this so a job claimed
+ * for today/this week can still move after the due hour.
  */
 export function currentPeriodKey(
   settings: DigestScheduleSettings,

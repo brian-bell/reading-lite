@@ -73,6 +73,38 @@ export async function claimPendingDigestDelivery(
   return "terminal";
 }
 
+/** Drop a still-pending row so a later tick can claim the period again. */
+export async function deletePendingDigestDelivery(
+  db: ControlPlaneDb,
+  key: DigestDeliveryKey,
+): Promise<boolean> {
+  const deleted = await db.run(
+    `DELETE FROM digest_deliveries
+      WHERE user_id = ? AND cadence = ? AND period_key = ? AND status = 'pending'`,
+    key.userId,
+    key.cadence,
+    key.periodKey,
+  );
+  return deleted.changes === 1;
+}
+
+export async function listPendingDigestDeliveries(
+  db: ControlPlaneDb,
+): Promise<DigestDeliveryKey[]> {
+  const rows = await db.all<{ user_id: string; cadence: "daily" | "weekly"; period_key: string }>(
+    `SELECT user_id, cadence, period_key FROM digest_deliveries WHERE status = 'pending'`,
+  );
+  return rows.map((row) => ({
+    userId: row.user_id,
+    cadence: row.cadence,
+    periodKey: row.period_key,
+  }));
+}
+
+export function digestDeliveryKeyId(key: DigestDeliveryKey): string {
+  return `${key.userId}:${key.cadence}:${key.periodKey}`;
+}
+
 export async function finalizeDigestDelivery(
   db: ControlPlaneDb,
   key: DigestDeliveryKey,
