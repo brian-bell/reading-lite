@@ -2,7 +2,11 @@
  * Digest pipeline (issue 196 B1): cron due-selection + DIGEST_JOBS fan-out
  * and a stub send consumer. One job per tenant. The consumer re-reads
  * settings immediately before "send" and honors opt-out; it does not call
- * Resend or build digest HTML (196 B2).
+ * Resend or build digest HTML (196 B2). Send-time re-read checks cadence, TZ,
+ * recipient, and that `period_key` still matches the current local day/week.
+ * Hour and weekday matching is enqueue-only so a delayed/retried job in the
+ * same period still stub-sends. Each due tenant is claimed+enqueued in its
+ * own try/catch so one failure cannot abort the rest of the cron tick.
  *
  * Digest DLQ handling lives next to this module so it can mark the ledger
  * failed without touching reading manifests.
@@ -23,7 +27,7 @@ import {
 } from "./control-plane/digest-ledger";
 import { parseTenantId, parseUserId } from "./control-plane/ids";
 import { resolveDigestRecipient } from "./control-plane/reading-notification";
-import { digestDueAt, type DigestScheduleSettings } from "./modules/digest-schedule";
+import { currentPeriodKey, digestDueAt, type DigestScheduleSettings } from "./modules/digest-schedule";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
@@ -57,7 +61,8 @@ export async function listEnabledDigestUsers(db: ControlPlaneDb): Promise<Enable
        JOIN users u ON u.id = s.user_id
       WHERE s.digest_cadence IN ('daily', 'weekly')
         AND u.status = 'active'
-        AND u.email_verified_at_ms IS NOT NULL`,
+        AND u.email_verified_at_ms IS NOT NULL
+      ORDER BY s.user_id`
   );
 }
 
@@ -89,7 +94,8 @@ export async function fanOutDueDigests(
   env: DigestEnv,
   deps: { nowMs: number },
 ): Promise<{ enqueued: number }> {
-  if (!env.DIGEST_JOBS) {
+  const queue = env.DIGEST_JOBS;
+  if (!queue) {
     console.warn(JSON.stringify({ event: "digest_fanout_skipped", reason: "queue_unbound" }));
     return { enqueued: 0 };
   }
@@ -98,29 +104,30 @@ export async function fanOutDueDigests(
   const due = selectDueDigestUsers(await listEnabledDigestUsers(db), now);
   let enqueued = 0;
   for (const row of due) {
-    const tenantId = parseTenantId(row.user_id);
-    const userId = parseUserId(row.user_id);
-    if (!tenantId || !userId) continue;
-    const key: DigestDeliveryKey = {
-      userId: row.user_id,
-      cadence: row.digest_cadence,
-      periodKey: row.period_key,
-    };
-    const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
-    if (claim === "terminal") continue;
-    const envelope = digestEnvelopeV1({
-      tenantId,
-      userId,
-      period_key: row.period_key,
-      cadence: row.digest_cadence,
-    });
     try {
-      await env.DIGEST_JOBS.send(envelope);
+      const tenantId = parseTenantId(row.user_id);
+      const userId = parseUserId(row.user_id);
+      if (!tenantId || !userId) continue;
+      const key: DigestDeliveryKey = {
+        userId: row.user_id,
+        cadence: row.digest_cadence,
+        periodKey: row.period_key,
+      };
+      const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
+      if (claim === "terminal") continue;
+      await queue.send(
+        digestEnvelopeV1({
+          tenantId,
+          userId,
+          period_key: row.period_key,
+          cadence: row.digest_cadence,
+        }),
+      );
       enqueued += 1;
     } catch (error) {
       console.error(
         JSON.stringify({
-          event: "digest_enqueue_failed",
+          event: "digest_fanout_user_failed",
           user_id: row.user_id,
           message: error instanceof Error ? error.message : String(error),
         }),
@@ -232,13 +239,11 @@ async function sendTimeSkipReason(
   if (!settings) return "missing_settings";
   if (settings.digest_cadence === "off") return "cadence_off";
 
-  const verdict = digestDueAt(settings, new Date(nowMs));
-  if (!verdict.due) {
-    if (verdict.reason === "invalid_time_zone") return "invalid_time_zone";
-    if (verdict.reason === "cadence_off") return "cadence_off";
-    return "schedule_mismatch";
-  }
-  if (verdict.cadence !== envelope.cadence || verdict.period_key !== envelope.period_key) {
+  // Hour/weekday gate enqueue only. Send re-reads cadence, TZ, and whether
+  // the envelope's period_key is still this local day/week.
+  const current = currentPeriodKey(settings, new Date(nowMs));
+  if (!current.ok) return current.reason;
+  if (current.cadence !== envelope.cadence || current.period_key !== envelope.period_key) {
     return "schedule_mismatch";
   }
 

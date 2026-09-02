@@ -82,20 +82,42 @@ export function periodKeyFor(cadence: DigestEnabledCadence, local: LocalCivilTim
   return isoWeekPeriodKey(local.year, local.month, local.day);
 }
 
-export function digestDueAt(settings: DigestScheduleSettings, now: Date): DigestDue {
+/**
+ * Send-time period: cadence + local civil date/week in the stored TZ.
+ * Does not consult hour or weekday — those gate enqueue only.
+ */
+export function currentPeriodKey(
+  settings: DigestScheduleSettings,
+  now: Date,
+):
+  | { ok: true; cadence: DigestEnabledCadence; period_key: string; local: LocalCivilTime }
+  | { ok: false; reason: "cadence_off" | "invalid_time_zone" } {
   if (settings.digest_cadence !== "daily" && settings.digest_cadence !== "weekly") {
-    return { due: false, reason: "cadence_off" };
+    return { ok: false, reason: "cadence_off" };
   }
   const local = localCivilTime(now, settings.time_zone);
-  if (!local) return { due: false, reason: "invalid_time_zone" };
-  if (local.hour !== settings.digest_hour_local) return { due: false, reason: "hour_mismatch" };
-  if (settings.digest_cadence === "weekly" && local.isoWeekday !== settings.digest_weekday) {
+  if (!local) return { ok: false, reason: "invalid_time_zone" };
+  return {
+    ok: true,
+    cadence: settings.digest_cadence,
+    period_key: periodKeyFor(settings.digest_cadence, local),
+    local,
+  };
+}
+
+export function digestDueAt(settings: DigestScheduleSettings, now: Date): DigestDue {
+  const current = currentPeriodKey(settings, now);
+  if (!current.ok) return { due: false, reason: current.reason };
+  if (current.local.hour !== settings.digest_hour_local) {
+    return { due: false, reason: "hour_mismatch" };
+  }
+  if (current.cadence === "weekly" && current.local.isoWeekday !== settings.digest_weekday) {
     return { due: false, reason: "weekday_mismatch" };
   }
   return {
     due: true,
-    cadence: settings.digest_cadence,
-    period_key: periodKeyFor(settings.digest_cadence, local),
-    local,
+    cadence: current.cadence,
+    period_key: current.period_key,
+    local: current.local,
   };
 }

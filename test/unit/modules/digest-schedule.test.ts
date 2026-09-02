@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  currentPeriodKey,
   digestDueAt,
   isoWeekPeriodKey,
   localCivilTime,
@@ -103,6 +104,30 @@ describe("digestDueAt with frozen now", () => {
     expect(digestDueAt(daily(9, "Not/A_Zone"), new Date("2026-09-02T09:00:00.000Z"))).toEqual({
       due: false,
       reason: "invalid_time_zone",
+    });
+  });
+});
+
+describe("currentPeriodKey (send-time, no hour/weekday gate)", () => {
+  it("keeps the local daily period after the due hour has passed", () => {
+    const settings = daily(9);
+    const afterHour = new Date("2026-09-02T10:30:00.000Z");
+    expect(digestDueAt(settings, afterHour)).toEqual({ due: false, reason: "hour_mismatch" });
+    expect(currentPeriodKey(settings, afterHour)).toMatchObject({
+      ok: true,
+      cadence: "daily",
+      period_key: "2026-09-02",
+    });
+  });
+
+  it("keeps the ISO week after the due weekday has passed", () => {
+    const settings = weekly(9, 3);
+    const thursday = new Date("2026-09-03T09:00:00.000Z");
+    expect(digestDueAt(settings, thursday)).toEqual({ due: false, reason: "weekday_mismatch" });
+    expect(currentPeriodKey(settings, thursday)).toMatchObject({
+      ok: true,
+      cadence: "weekly",
+      period_key: "2026-W36",
     });
   });
 });

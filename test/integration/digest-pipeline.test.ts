@@ -203,6 +203,70 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "skipped", skip_reason: "allowlist" });
   });
 
+  it("stub-sends after the local hour has passed when period_key still matches", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
+    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
+    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: laterMs });
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "sent", skip_reason: null });
+  });
+
+  it("skips when the local period_key has rolled even if cadence is still on", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
+    await processDigestJob(queued[0]!, env as unknown as Env, {
+      nowMs: Date.parse("2026-09-03T09:00:00.000Z"),
+    });
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "skipped", skip_reason: "schedule_mismatch" });
+  });
+
+  it("continues fan-out when claim throws for one tenant", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await setDigest(OTHER_TENANT_ID, { cadence: "daily" });
+
+    const inner = env.CONTROL_PLANE;
+    const throwingPlane = {
+      prepare(sql: string) {
+        const stmt = inner.prepare(sql);
+        if (!/INSERT INTO digest_deliveries/i.test(sql)) return stmt;
+        return {
+          bind(...params: unknown[]) {
+            const bound = stmt.bind(...params);
+            return {
+              run: async () => {
+                if (params[0] === OTHER_TENANT_ID) throw new Error("claim boom");
+                return bound.run();
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await fanOutDueDigests(
+      { ...(env as unknown as Env), CONTROL_PLANE: throwingPlane },
+      { nowMs: NOW_MS },
+    );
+    consoleErr.mockRestore();
+
+    expect(result.enqueued).toBe(1);
+    expect(queued.map((msg) => msg.tenantId)).toEqual([FOUNDER_TENANT_ID]);
+  });
+
   it("wires scheduled() to due+enqueue with frozen scheduledTime", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "weekly", weekday: 3 });
     await worker.scheduled(
