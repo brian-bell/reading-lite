@@ -357,8 +357,8 @@ each with its call count and total wall time, then the run total. The block is
 printed even when the pass ends in an error, and failed calls are counted, since
 a stalled read is exactly the wall time worth seeing. Execute mode also prints
 `ms=` per judgement beside its token usage. Two things the counts do not say:
-they count storage calls, not HTTP requests (a `refresh-connections` or
-`refresh-tensions` manifest read is currently a LIST plus a GET), and a time
+they count storage calls, not HTTP requests (a `refresh-neighbours` manifest
+read is a wrangler process around one), and a time
 includes any retry and its backoff, so one unusually slow call may be a call
 that quietly retried. Record the block: it is the baseline a later run or a
 performance change is compared against, and it is what tells a slow pass apart
@@ -513,10 +513,10 @@ waiting, and the run is better stopped and retried when the provider is quieter.
 Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
 from the manifests as it always does.
 
-Because the calls overlap, the `Timing:` block's `provider` and `manifest read`
-rows sum the call durations rather than the wall time they occupied — the same
-way `planning reads` already did — so under `--concurrency` they can exceed the
-run's own total. The `total` row is the one to compare between runs.
+Because the calls overlap, the `Timing:` block's `provider` row (and, for
+`refresh-tensions`, `manifest read`) sums the call durations rather than the
+wall time they occupied — the same way `planning reads` already did — so under
+`--concurrency` it can exceed the run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer

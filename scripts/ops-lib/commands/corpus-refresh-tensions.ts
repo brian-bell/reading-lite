@@ -300,8 +300,9 @@ async function refreshTensions(
 
   // Every reading a report pair or --pair could name. Manifests are read once
   // for planning, ETag included, and execute writes against that ETag. A side
-  // an earlier action in the same pass wrote is the one exception: its ETag is
-  // gone, so `readLive` drops it from the cache and reads it again.
+  // an earlier action in the same pass wrote is the one exception: every write
+  // path drops its side from the cache first, because that ETag is spent, and
+  // `readLive` then reads that side again.
   const reportIds = new Set<string>();
   for (const reading of report?.readings ?? []) {
     reportIds.add(reading.id);
