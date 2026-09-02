@@ -733,6 +733,7 @@ function LoginPage({
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [widgetEpoch, setWidgetEpoch] = useState(0);
+  const [widgetLoadError, setWidgetLoadError] = useState<string | null>(null);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
   const emailLocked = Boolean(stepUp && identity);
@@ -744,7 +745,7 @@ function LoginPage({
   const siteKey = optionsQuery.data?.turnstile_site_key ?? null;
   const widgetRequired = siteKey != null;
   const optionsBlocked = optionsQuery.isPending || optionsQuery.isError;
-  const submitBlocked = optionsBlocked || (widgetRequired && !turnstileToken);
+  const submitBlocked = optionsBlocked || widgetLoadError != null || (widgetRequired && !turnstileToken);
 
   useLayoutEffect(() => {
     if (identity && !stepUp) return;
@@ -781,7 +782,7 @@ function LoginPage({
         onSubmit={async (event) => {
           event.preventDefault();
           setError(null);
-          if (optionsBlocked) return;
+          if (optionsBlocked || widgetLoadError != null) return;
           if (widgetRequired && !turnstileToken) {
             setError("Complete the check before requesting a link.");
             return;
@@ -813,7 +814,12 @@ function LoginPage({
             readOnly={emailLocked}
           />
         {widgetRequired && siteKey ? (
-          <TurnstileWidget key={widgetEpoch} siteKey={siteKey} onToken={setTurnstileToken} />
+          <TurnstileWidget
+            key={widgetEpoch}
+            siteKey={siteKey}
+            onToken={setTurnstileToken}
+            onError={(error) => setWidgetLoadError(error.message)}
+          />
         ) : null}
         <button type="submit" disabled={submitBlocked}>
           Email me a link
@@ -823,6 +829,16 @@ function LoginPage({
         <IdentityError
           error={identityError(optionsQuery.error)}
           onRetry={() => void optionsQuery.refetch()}
+        />
+      ) : null}
+      {widgetLoadError ? (
+        <IdentityError
+          error={new Error(widgetLoadError)}
+          onRetry={() => {
+            setWidgetLoadError(null);
+            setTurnstileToken(null);
+            setWidgetEpoch((epoch) => epoch + 1);
+          }}
         />
       ) : null}
       {submitted ? (

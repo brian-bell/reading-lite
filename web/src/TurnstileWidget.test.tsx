@@ -2,7 +2,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TurnstileWidget } from "./TurnstileWidget";
-import { resetTurnstileLoaderForTests, type TurnstileRenderOptions } from "./turnstile";
+import { resetTurnstileLoaderForTests, TURNSTILE_SCRIPT_SRC, type TurnstileRenderOptions } from "./turnstile";
 
 afterEach(() => {
   cleanup();
@@ -31,5 +31,21 @@ describe("TurnstileWidget", () => {
 
     view.unmount();
     expect(window.turnstile.remove).toHaveBeenCalledWith("widget-1");
+  });
+
+  it("reports a load error when the Turnstile script fails", async () => {
+    const onToken = vi.fn();
+    const onError = vi.fn();
+    render(<TurnstileWidget siteKey="1x00000000000000000000AA" onToken={onToken} onError={onError} />);
+    const script = await waitFor(() => {
+      const el = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      expect(el).toBeInstanceOf(HTMLScriptElement);
+      return el as HTMLScriptElement;
+    });
+    script.dispatchEvent(new Event("error"));
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "Turnstile failed to load" }));
+    });
+    expect(onToken).toHaveBeenCalledWith(null);
   });
 });

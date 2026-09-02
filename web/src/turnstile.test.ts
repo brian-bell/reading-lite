@@ -38,4 +38,20 @@ describe("loadTurnstileApi", () => {
     resetTurnstileLoaderForTests();
     void pending.catch(() => undefined);
   });
+
+  it("removes a failed script so a later load injects a fresh tag", async () => {
+    const first = loadTurnstileApi();
+    const failed = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    expect(failed).toBeInstanceOf(HTMLScriptElement);
+    failed!.dispatchEvent(new Event("error"));
+    await expect(first).rejects.toThrow("Turnstile failed to load");
+    expect(document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`)).toBeNull();
+
+    const second = loadTurnstileApi();
+    const retry = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+    expect(retry).toBeInstanceOf(HTMLScriptElement);
+    expect(retry).not.toBe(failed);
+    resetTurnstileLoaderForTests();
+    void second.catch(() => undefined);
+  });
 });

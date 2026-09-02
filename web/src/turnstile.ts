@@ -4,6 +4,9 @@
  * Explicit render (`?render=explicit`) is the SPA path: LoginPage mounts the
  * widget only after GET /api/auth/login-options returns a non-null site key.
  * The site key is never read from Vite env.
+ *
+ * A failed script is removed so a later remount injects a fresh tag. Reusing a
+ * tag whose load/error already fired would hang (listeners never run again).
  */
 
 export const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
@@ -33,8 +36,10 @@ declare global {
 
 let loadPromise: Promise<TurnstileApi> | null = null;
 
-function existingScript(): HTMLScriptElement | null {
-  return document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+function removeTurnstileScripts(): void {
+  for (const script of Array.from(document.querySelectorAll(`script[src="${TURNSTILE_SCRIPT_SRC}"]`))) {
+    script.remove();
+  }
 }
 
 export function loadTurnstileApi(): Promise<TurnstileApi> {
@@ -43,31 +48,34 @@ export function loadTurnstileApi(): Promise<TurnstileApi> {
   }
   if (loadPromise) return loadPromise;
 
+  // Drop leftover tags from a failed or incomplete load. Their load/error
+  // already fired, so attaching new listeners would hang.
+  removeTurnstileScripts();
+
   loadPromise = new Promise<TurnstileApi>((resolve, reject) => {
-    const finish = () => {
-      if (window.turnstile) {
-        resolve(window.turnstile);
-        return;
-      }
-      loadPromise = null;
-      reject(new Error("Turnstile failed to load"));
-    };
-    const fail = () => {
-      loadPromise = null;
-      reject(new Error("Turnstile failed to load"));
-    };
-
-    const already = existingScript();
-    if (already) {
-      already.addEventListener("load", finish);
-      already.addEventListener("error", fail);
-      return;
-    }
-
+    let settled = false;
     const script = document.createElement("script");
     script.src = TURNSTILE_SCRIPT_SRC;
     script.async = true;
     script.defer = true;
+
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      script.remove();
+      loadPromise = null;
+      reject(new Error("Turnstile failed to load"));
+    };
+    const finish = () => {
+      if (settled) return;
+      if (window.turnstile) {
+        settled = true;
+        resolve(window.turnstile);
+        return;
+      }
+      fail();
+    };
+
     script.addEventListener("load", finish);
     script.addEventListener("error", fail);
     document.head.appendChild(script);
@@ -78,9 +86,7 @@ export function loadTurnstileApi(): Promise<TurnstileApi> {
 
 export function resetTurnstileLoaderForTests(): void {
   loadPromise = null;
-  for (const script of Array.from(document.querySelectorAll(`script[src="${TURNSTILE_SCRIPT_SRC}"]`))) {
-    script.remove();
-  }
+  removeTurnstileScripts();
 }
 
 export function parseTurnstileSiteKey(value: unknown): string | null {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { loginNextStorageKey, STEP_UP_LOGIN_HREF } from "./login-return-path";
 import { clearMagicLinkCredential } from "./magic-link-credential";
-import { resetTurnstileLoaderForTests, type TurnstileRenderOptions } from "./turnstile";
+import { resetTurnstileLoaderForTests, TURNSTILE_SCRIPT_SRC, type TurnstileRenderOptions } from "./turnstile";
 import type {
   ApiTokenListItem,
   ListReading,
@@ -749,6 +749,64 @@ describe("App", () => {
     expect(screen.queryByText(/if that address can sign in/i)).not.toBeInTheDocument();
     await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+  });
+
+  it("surfaces a Turnstile load error, blocks submit, and recovers on retry", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    const failedScript = await waitFor(() => {
+      const el = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      expect(el).toBeInstanceOf(HTMLScriptElement);
+      return el as HTMLScriptElement;
+    });
+    act(() => {
+      failedScript.dispatchEvent(new Event("error"));
+    });
+    expect(await screen.findByText("Turnstile failed to load")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+    expect(screen.queryByText(/if that address can sign in/i)).not.toBeInTheDocument();
+    fireEvent.submit(screen.getByRole("button", { name: "Email me a link" }).closest("form")!);
+    expect(challengeCall(fetchMock)).toBeUndefined();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.queryByText("Turnstile failed to load")).not.toBeInTheDocument();
+    const retryScript = await waitFor(() => {
+      const el = document.querySelector(`script[src="${TURNSTILE_SCRIPT_SRC}"]`);
+      expect(el).toBeInstanceOf(HTMLScriptElement);
+      return el as HTMLScriptElement;
+    });
+    const turnstile = installTurnstileMock();
+    act(() => {
+      retryScript.dispatchEvent(new Event("load"));
+    });
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalled());
+    act(() => {
+      turnstile.complete("widget-ok");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
+    });
+    expect(await challenge.clone().json()).toEqual({
+      email: "invited@example.com",
+      turnstile_token: "widget-ok"
+    });
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
   });
 
   it("sends a Turnstile token on step-up login when a site key is present", async () => {
