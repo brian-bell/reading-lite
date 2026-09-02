@@ -113,13 +113,29 @@ export async function casMergeListIndex(
 ): Promise<void> {
   if (patches.length === 0) return;
   const cas = resolveDeps(deps);
-  let lastPutError: unknown;
+  // Only the failure of the attempt that ran last, so a transient error early
+  // in a contended flush is not reported as the cause of the exhaustion.
+  let lastError: unknown;
 
   for (let attempt = 0; attempt < cas.maxAttempts; attempt++) {
-    // A read throw escapes: the client already retries plain GETs, so one that
-    // reaches here has exhausted the transport's own attempts. The conditional
-    // PUT below is the one call the transport refuses to repeat.
-    const object = await client.getWithEtag(key);
+    lastError = undefined;
+    // Neither call can be assumed retried underneath: the S3 client refuses to
+    // repeat a conditional PUT (a lost response could make a claim look
+    // already-taken), and tier 1 builds its client without the transport retry
+    // the tier-2/3 commands opt into. Both halves of the cycle are therefore
+    // retried here — safely, because the whole cycle re-reads: the next attempt
+    // either sees our own landed write and re-derives the same rows, or merges
+    // the patches again onto whatever is live. This flush runs after every
+    // manifest write of the pass, so failing it on one transient response is
+    // the expensive outcome.
+    let object: { body: string; etag: string } | null;
+    try {
+      object = await client.getWithEtag(key);
+    } catch (error) {
+      lastError = error;
+      await pause(cas, attempt);
+      continue;
+    }
     // Unlike the Worker's store, an operator flush never creates this object:
     // the run read it minutes ago, so absent means someone deleted the corpus
     // index under us and recreating it from a stale snapshot would be worse
@@ -132,12 +148,6 @@ export async function casMergeListIndex(
     if (object.etag === "") throw new Error(`${key} was read without an ETag`);
 
     const merged = mergeListRows(parseItems(object.body, key), patches);
-    // A conditional PUT is not retried by the transport (a lost response could
-    // make a claim look already-taken), so a transient failure arrives here as
-    // a throw. Re-reading is the safe answer for this write: the next attempt
-    // either sees our own landed write and re-derives the same rows, or merges
-    // the patches again onto whatever is live. Only the last failure is
-    // reported, so a permanent error is not buried under "contention".
     let written = false;
     try {
       written = await client.putIfMatch(
@@ -147,18 +157,17 @@ export async function casMergeListIndex(
         { contentType: "application/json" },
       );
     } catch (error) {
-      lastPutError = error;
+      lastError = error;
     }
     if (written) return;
 
-    if (attempt < cas.maxAttempts - 1) {
-      await cas.sleep(backoffMs(cas, attempt));
-    }
+    await pause(cas, attempt);
   }
 
-  const cause = lastPutError === undefined
+  // A permanent failure is named rather than buried under "contention".
+  const cause = lastError === undefined
     ? " under contention"
-    : `; last failure: ${lastPutError instanceof Error ? lastPutError.message : String(lastPutError)}`;
+    : `; last failure: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
   throw new Error(`${key} write failed: exhausted ${cas.maxAttempts} CAS attempts${cause}`);
 }
 
@@ -177,6 +186,8 @@ function parseItems(body: string, key: string): Array<{ id: string }> {
 }
 
 // Exponential backoff with full jitter, mirroring the Worker's list-index CAS.
-function backoffMs(cas: ResolvedCasDeps, attempt: number): number {
-  return Math.floor(cas.random() * cas.baseDelayMs * 2 ** attempt);
+// No wait after the final attempt, whose failure is already the answer.
+async function pause(cas: ResolvedCasDeps, attempt: number): Promise<void> {
+  if (attempt >= cas.maxAttempts - 1) return;
+  await cas.sleep(Math.floor(cas.random() * cas.baseDelayMs * 2 ** attempt));
 }

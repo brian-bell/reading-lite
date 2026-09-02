@@ -194,6 +194,45 @@ describe("casMergeListIndex", () => {
     expect(puts).toBe(3);
   });
 
+  it("retries a transient read, since the flush follows every manifest write", async () => {
+    let reads = 0;
+    const client: ListIndexCasClient = {
+      getWithEtag: async () => {
+        reads++;
+        if (reads === 1) throw new Error("R2 GET failed: 503");
+        return { body: JSON.stringify({ version: 1, items: [row("rd_a")] }), etag: "e0" };
+      },
+      putIfMatch: async () => true,
+    };
+
+    await casMergeListIndex(client, KEY, [{ id: "rd_a", similarity: SNAPSHOT }], noWait().deps);
+    expect(reads).toBe(2);
+  });
+
+  it("blames contention when the last attempt lost cleanly", async () => {
+    // An early transient error must not be reported as the cause when every
+    // later attempt simply lost the race.
+    let puts = 0;
+    const client: ListIndexCasClient = {
+      getWithEtag: async () => ({
+        body: JSON.stringify({ version: 1, items: [row("rd_a")] }),
+        etag: "e0",
+      }),
+      putIfMatch: async () => {
+        puts++;
+        if (puts === 1) throw new Error("R2 PUT failed: 503");
+        return false;
+      },
+    };
+
+    await expect(
+      casMergeListIndex(client, KEY, [{ id: "rd_a", similarity: SNAPSHOT }], {
+        ...noWait().deps,
+        maxAttempts: 3,
+      }),
+    ).rejects.toThrow(/exhausted 3 CAS attempts under contention$/);
+  });
+
   it("reports the transport failure rather than blaming contention", async () => {
     const client: ListIndexCasClient = {
       getWithEtag: async () => ({
