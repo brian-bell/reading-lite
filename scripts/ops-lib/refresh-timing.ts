@@ -15,6 +15,11 @@
 //
 // A phase appears in the block only when it was used, in the order it was
 // first used, which is the order the pass performs them.
+//
+// A phase total is the sum of its call durations, not the wall time it
+// occupied. Where a pass overlaps its calls — planning reads run eight at a
+// time — the sum is larger than the wall time, and the `total` line is the one
+// to compare between runs.
 
 import type { CorpusRefreshNeighboursR2 } from "./commands/corpus-refresh-neighbours";
 import type { RefreshConnectionsStorage } from "./commands/corpus-refresh-connections";

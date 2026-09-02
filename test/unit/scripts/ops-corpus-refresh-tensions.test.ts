@@ -173,7 +173,9 @@ describe("ops corpus refresh-tensions", () => {
     const text = h.out.join("\n");
     expect(text).toContain("Timing:");
     expect(text).toMatch(/list read\s+1 call\s+0\.010s/);
-    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    // Three reads, overlapped: the phase total sums the call durations, which
+    // under concurrency exceeds the wall time they actually took.
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.090s/);
     expect(text).not.toMatch(/^ {2}provider\s+\d+ call/m);
     expect(text).not.toContain("manifest write");
   });
@@ -187,7 +189,7 @@ describe("ops corpus refresh-tensions", () => {
       ),
     ).toBe(0);
     const text = h.out.join("\n");
-    expect(text).toMatch(/planning reads\s+3 calls\s+0\.030s/);
+    expect(text).toMatch(/planning reads\s+3 calls\s+0\.090s/);
     // One judged pair: both sides re-read for a fresh ETag, both written.
     expect(text).toMatch(/manifest read\s+2 calls\s+0\.020s/);
     expect(text).toMatch(/provider\s+1 call\s+0\.010s/);
@@ -520,5 +522,74 @@ describe("ops corpus refresh-tensions", () => {
     expect(
       tensionProviderFromVars({ SUMMARIZER_PROVIDER: "anthropic", ANTHROPIC_MODEL: "claude-sonnet-5" }, false),
     ).toMatchObject({ provider: "anthropic", model: "claude-sonnet-5" });
+  });
+});
+
+describe("ops corpus refresh-tensions planning read concurrency", () => {
+  const COUNT = 12;
+  const ids = Array.from({ length: COUNT }, (_, i) => `rd_${String(i).padStart(2, "0")}`);
+
+  /**
+   * Runs a plan pass over `COUNT` readings, each flagged with the next one as
+   * its neighbour, and reports both the peak overlap and the plan output.
+   */
+  async function planPass(delayFor: (keyPrefix: string) => number) {
+    const items = ids.map(listRow);
+    const manifests = new Map(
+      items.map((row) => [
+        row.key_prefix,
+        { manifest: manifest(row.id, { keywords: ["shared-one", "shared-two", "shared-three"] }), etag: `e-${row.id}` },
+      ]),
+    );
+    let inFlight = 0;
+    let peak = 0;
+    const completed: string[] = [];
+    const storage: RefreshTensionsStorage = {
+      readListIndex: async () => items,
+      readManifest: async (keyPrefix) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, delayFor(keyPrefix)));
+        inFlight--;
+        completed.push(keyPrefix);
+        const stored = manifests.get(keyPrefix);
+        return stored ? { manifest: structuredClone(stored.manifest), etag: stored.etag } : null;
+      },
+      putManifestIfMatch: async () => true,
+      writeListIndex: async () => {},
+    };
+    const h = harness();
+    h.createStorage.mockResolvedValue(storage);
+    h.readReport.mockResolvedValue(
+      JSON.stringify(
+        report(ids.map((id, index) => ({ id, neighbours: [ids[(index + 1) % COUNT]!] }))),
+      ),
+    );
+    const code = await corpusRefreshTensionsCommand.run(["--tenant", "global"], h.deps);
+    // The Timing block is wall-clock and is expected to differ between a
+    // sequential and a concurrent pass; everything else must not.
+    const plan = h.out.slice(0, h.out.findIndex((line) => line.includes("Timing:")));
+    return { code, plan, peak, completed, err: h.err };
+  }
+
+  it("overlaps planning reads up to the cap without changing the plan", async () => {
+    const inOrder = await planPass(() => 0);
+    // Two of the reads finish late, so this pass completes in a different
+    // order from the one above while planning exactly the same corpus.
+    const outOfOrder = await planPass((keyPrefix) => (keyPrefix.endsWith("0") ? 3 : 0));
+
+    expect(outOfOrder.peak).toBe(8);
+    expect(inOrder.peak).toBe(8);
+    expect(outOfOrder.completed).not.toEqual(inOrder.completed);
+    expect(outOfOrder.code).toBe(inOrder.code);
+    expect(outOfOrder.err).toEqual(inOrder.err);
+    expect(outOfOrder.plan).toEqual(inOrder.plan);
+    expect(outOfOrder.plan.join("\n")).toMatch(/Selected actions: \d+/);
+  });
+
+  it("reads each manifest once", async () => {
+    const { completed } = await planPass(() => 0);
+    expect(completed).toHaveLength(COUNT);
+    expect(new Set(completed).size).toBe(COUNT);
   });
 });

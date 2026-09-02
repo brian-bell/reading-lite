@@ -46,6 +46,7 @@ import {
   type CommandIo,
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { createPrefetchingReader } from "../planning-reads";
 import { judgeRetryDeps } from "../judge-retry";
 import {
   PHASE_MANIFEST_READ,
@@ -211,24 +212,13 @@ async function refreshConnections(
   );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
-  const storedByPrefix = new Map<string, StoredRawManifest | null>();
-  const storedErrorsByPrefix = new Map<string, Error>();
-  const readStored = async (row: ListIndexItem): Promise<StoredRawManifest | null> => {
-    const priorError = storedErrorsByPrefix.get(row.key_prefix);
-    if (priorError) throw priorError;
-    if (storedByPrefix.has(row.key_prefix)) {
-      return storedByPrefix.get(row.key_prefix) ?? null;
-    }
-    try {
-      const stored = await storage.readManifest(row.key_prefix);
-      storedByPrefix.set(row.key_prefix, stored);
-      return stored;
-    } catch (cause) {
-      const error = cause instanceof Error ? cause : new Error(String(cause));
-      storedErrorsByPrefix.set(row.key_prefix, error);
-      throw error;
-    }
-  };
+  const manifests = createPrefetchingReader<StoredRawManifest | null>((keyPrefix) =>
+    storage.readManifest(keyPrefix),
+  );
+  const readStored = (row: ListIndexItem): Promise<StoredRawManifest | null> =>
+    manifests.read(row.key_prefix);
+  const prefetchStored = (rows: readonly ListIndexItem[]): Promise<void> =>
+    manifests.prefetch(rows.map((row) => row.key_prefix));
   const liveReadyIds = new Set<string>();
   const invalidCandidateIds = new Set<string>();
   let planningFailed = false;
@@ -237,6 +227,10 @@ async function refreshConnections(
       reading.current_neighbours.map((neighbour) => neighbour.id),
     ),
   );
+  const candidateRows = [...candidateIds]
+    .map((id) => byId.get(id))
+    .filter((row): row is ListIndexItem => row !== undefined && row.status === "ready");
+  await prefetchStored(candidateRows);
   for (const id of candidateIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") continue;
@@ -267,10 +261,34 @@ async function refreshConnections(
   const actions: Action[] = [];
   let skipped = 0;
 
-  for (const reportReading of report.readings) {
-    const invalidCandidates = reportReading.current_neighbours.filter((neighbour) =>
+  const invalidCandidatesOf = (reportReading: RefreshConnectionsReportReading) =>
+    reportReading.current_neighbours.filter((neighbour) =>
       invalidCandidateIds.has(neighbour.id),
     );
+  // The live row a report reading names, or undefined when the corpus has
+  // moved under the report. Shared with the prefetch below so the two agree on
+  // exactly which manifests this pass is going to read.
+  const targetRow = (reportReading: RefreshConnectionsReportReading) => {
+    const row = byId.get(reportReading.id);
+    if (
+      !row ||
+      row.status !== "ready" ||
+      row.key_prefix !== reportReading.key_prefix ||
+      row.url !== reportReading.url
+    ) {
+      return undefined;
+    }
+    return row;
+  };
+  await prefetchStored(
+    report.readings
+      .filter((reportReading) => invalidCandidatesOf(reportReading).length === 0)
+      .map(targetRow)
+      .filter((row): row is ListIndexItem => row !== undefined),
+  );
+
+  for (const reportReading of report.readings) {
+    const invalidCandidates = invalidCandidatesOf(reportReading);
     if (invalidCandidates.length > 0) {
       skipped++;
       planningFailed = true;
@@ -279,13 +297,8 @@ async function refreshConnections(
       );
       continue;
     }
-    const row = byId.get(reportReading.id);
-    if (
-      !row ||
-      row.status !== "ready" ||
-      row.key_prefix !== reportReading.key_prefix ||
-      row.url !== reportReading.url
-    ) {
+    const row = targetRow(reportReading);
+    if (!row) {
       skipped++;
       deps.io.stderr(`  ! skip ${reportReading.id}: live ready list row does not match report`);
       continue;
@@ -716,15 +729,19 @@ export function storageFromClient(
       if (body === null) throw new Error(`${LIST_INDEX_KEY} not found`);
       return ListIndexSchema.parse(JSON.parse(body)).items;
     },
+    // One GET. The ETag CAS needs comes back on the read response, so the
+    // LIST that used to fetch it alongside the body is gone: half the requests,
+    // and no window in which the two halves disagree.
     async readManifest(keyPrefix) {
       const key = rooted(layout.manifestKey(keyPrefix));
-      const [objects, body] = await Promise.all([
-        client.listObjects(key),
-        client.get(key),
-      ]);
-      const object = objects.find((candidate) => candidate.key === key);
-      if (!object || body === null) return null;
-      const raw: unknown = JSON.parse(body);
+      const object = await client.getWithEtag(key);
+      if (object === null) return null;
+      // Every write back to this manifest is an If-Match on this token, and an
+      // empty one loses the CAS after the judgement has already been paid for.
+      // R2 always sends an ETag, so this is a broken response, not a corpus
+      // state: say so before the plan is built on it.
+      if (object.etag === "") throw new Error(`manifest ${keyPrefix} was read without an ETag`);
+      const raw: unknown = JSON.parse(object.body);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         throw new Error(`manifest ${keyPrefix} is not an object`);
       }
