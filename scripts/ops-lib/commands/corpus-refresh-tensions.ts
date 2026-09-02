@@ -70,7 +70,9 @@ import { requireOperatorTenant } from "../tenant-flag";
 import { createPrefetchingReader } from "../planning-reads";
 import {
   createRateLimitGate,
+  judgeWithRateLimitRetry,
   parseConcurrencyFlag,
+  parseMaxBackoffFlag,
   realSleep,
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
@@ -112,6 +114,7 @@ interface Args {
   soleWriter: boolean;
   limit?: number;
   concurrency: number;
+  maxBackoffMs: number;
   pairs: Array<[string, string]>;
 }
 
@@ -157,6 +160,8 @@ interface ExecuteOutcome {
   judged?: boolean;
   repaired?: boolean;
   skippedSincePlan?: boolean;
+  /** Undispatched because the pass had spent its whole backoff budget. */
+  ceilingSkipped?: boolean;
   failed?: boolean;
   /** Present whenever the provider was called and billed. */
   usage?: TensionJudgementResult["usage"];
@@ -206,6 +211,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
         concurrency: { type: "string" },
+        "max-backoff": { type: "string" },
         pair: { type: "string", multiple: true },
       },
       allowPositionals: false,
@@ -238,6 +244,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
     soleWriter: values["sole-writer"] === true,
     ...(limit === undefined ? {} : { limit }),
     concurrency: parseConcurrencyFlag(values.concurrency),
+    maxBackoffMs: parseMaxBackoffFlag(values["max-backoff"]),
     pairs,
   };
 }
@@ -492,18 +499,20 @@ async function refreshTensions(
   let repaired = 0;
   let failures = 0;
   let skippedSincePlan = 0;
+  let ceilingSkipped = 0;
   const usageTotals = emptyUsageTotals();
   const gate = createRateLimitGate({
     now: deps.now,
     sleep: deps.sleep,
+    maxBackoffMs: args.maxBackoffMs,
     onPause: (ms) =>
       deps.io.stderr(
         `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
       ),
-    onGiveUp: (consecutive) =>
+    onCeiling: (totalMs) =>
       deps.io.stderr(
-        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
-          `the rest of this pass will fail fast`,
+        `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
+          `after ${formatSeconds(totalMs)}; not dispatching the rest of this pass`,
       ),
   });
   // The manifest to write against: the one planning read and validated, until
@@ -554,7 +563,15 @@ async function refreshTensions(
       if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
       outcome.written++;
     };
+    const ceilingSkip = (): ExecuteOutcome => {
+      outcome.ceilingSkipped = true;
+      outcome.stderr.push(
+        `  ! skip ${describeAction(action)}: backoff ceiling reached before this action ran`,
+      );
+      return outcome;
+    };
 
+    if (gate.stopped()) return ceilingSkip();
     if (action.kind === "judge") {
       const { a: aId, b: bId, source, key } = action.candidate;
       let a: StoredRawManifest;
@@ -580,12 +597,13 @@ async function refreshTensions(
         // any window another worker opened before adding to it. The wait sits
         // here rather than earlier because it is the paid call it is pacing.
         await gate.wait();
-        const { value: result, ms: providerMs } = await timer.measured(
-          PHASE_PROVIDER,
-          () => provider.judge(input),
+        // Woken by the ceiling rather than by the window expiring: this action
+        // never called the provider, so it is skipped, not failed.
+        if (gate.stopped()) return ceilingSkip();
+        const { value: result, ms: providerMs } = await judgeWithRateLimitRetry(
+          gate,
+          () => timer.measured(PHASE_PROVIDER, () => provider.judge(input)),
         );
-        // A call that came back is the evidence the limit is not sustained.
-        gate.succeeded();
         outcome.judged = true;
         // Carried on the outcome whatever happens next, so the run total covers
         // every call billed, including judgements whose writes later fail.
@@ -694,6 +712,7 @@ async function refreshTensions(
       if (outcome.judged) judged++;
       if (outcome.repaired) repaired++;
       if (outcome.skippedSincePlan) skippedSincePlan++;
+      if (outcome.ceilingSkipped) ceilingSkipped++;
       if (outcome.failed) failures++;
       written += outcome.written;
     },
@@ -701,10 +720,11 @@ async function refreshTensions(
 
   deps.io.stdout(
     `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; ` +
-      `skipped since plan: ${skippedSincePlan}; failures: ${failures}`,
+      `skipped since plan: ${skippedSincePlan}; failures: ${failures}` +
+      (ceilingSkipped > 0 ? `; skipped at the backoff ceiling: ${ceilingSkipped}` : ""),
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  return planningFailed || failures > 0 ? 1 : 0;
+  return planningFailed || failures > 0 || ceilingSkipped > 0 ? 1 : 0;
 }
 
 function describeRepair(repair: RepairAction): string {
@@ -892,6 +912,8 @@ Options:
   --pair <a>,<b>       Hand-pick a pair (repeatable); bypasses the overlap filter and judged skip.
   --limit <n>          Cap paid judgement actions; free repairs always run.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
+  --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
+                       before it stops dispatching. Default: 10m (bare = seconds).
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

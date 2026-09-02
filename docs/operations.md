@@ -477,8 +477,9 @@ Execute mode runs several judgements at once. `--concurrency <n>` sets how
 many, defaulting to 4 — the ingest queue runs at 3 against the same provider
 account, so this is deliberately close to it — and refusing anything above 16,
 so a mistyped flag cannot fan a hundred paid calls at that account. Results are
-collected and printed in plan order however the calls complete, and every counter (`Judged`, `list
-rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
+collected and printed in plan order however the calls complete, and every
+counter (`Judged`, `list rows healed`, `failures`, `Usage:`) is folded in that
+same order, so a run's
 output and its exit code do not depend on which call returned first. The one
 line that is not in plan order is the rate-limit pause below, which prints when
 it happens because that is the point of it. The cost of that ordering is that a
@@ -498,27 +499,31 @@ is counted as a failure exactly as it would be sequentially, and no worker
 (defaulting to 8 s, capped at 60 s so a wild header cannot park a sole-writer
 window). Calls already in flight when the window opens still finish, and are
 still billed. The pause prints as `provider rate limited; pausing new
-judgements for …`. The run does not abort, and it does not silently re-bill the
-action that hit the limit.
+judgements for …`.
 
-A wall the pass cannot get past is bounded. After five backoff windows in a row
-with no judgement succeeding in between, the limit is not transient, so the pass
-stops waiting altogether (`provider rate limited N times in a row; no longer
-pausing…`) and fails the rest fast — which is what a sequential run did — rather
-than sitting on the sole-writer window for the length of the plan. Any
-judgement that comes back resets that run and restores the backing off: while
-anything is getting through, the pass is making progress between windows and
-the pauses are doing their job.
+The action that hit the limit gets one more attempt, once that window clears. A
+429 is usually a queue that has moved on by the time the window is over, so the
+retry is what keeps a transient limit costing the pass a pause rather than a
+reading. A second 429 on the same action is not a blip: it is counted as a
+failure, exactly as a sequential run would have counted it, and never retried a
+third time. The run does not abort, and it does not silently re-bill an action
+that succeeded.
 
-What that does **not** bound is a partial limit — some calls 429, some succeed —
-because every success resets the run. Such a pass keeps pausing for as long as
-the provider keeps limiting, and can hold the sole-writer window considerably
-longer than the same plan would have taken sequentially, which never paused at
-all. It is still making progress, and each pause is at most 60 s; but if the
-`provider rate limited; pausing` line keeps appearing, the window is being spent
-waiting, and the run is better stopped and retried when the provider is quieter.
-Ctrl-C is safe: every manifest write is a completed CAS, and a rerun resumes
-from the manifests as it always does.
+The total time a pass will spend waiting out limits is bounded by
+`--max-backoff`, which defaults to `10m` and takes a duration (`600s`,
+`600000ms`, `2h`; a bare number is seconds). Only the wait a limit actually adds
+counts against it, so a whole round of workers reporting the same wall is one
+charge, not one each. When the next window would overrun the budget, the pass
+stops: it prints `rate-limit backoff reached the … ceiling`, dispatches nothing
+further, lets the judgements already in flight finish and write their results,
+reports every action it did not reach as `skip …: backoff ceiling reached
+before this action ran`, and exits non-zero. That is what keeps a hard-limited
+provider from sitting on a scarce sole-writer window for the length of the plan.
+The skipped actions were never touched, so a rerun when the provider is quieter
+picks them up unchanged.
+
+Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
+rerun resumes from the manifests as it always does.
 
 Because the calls overlap, every `Timing:` row a concurrent action produces —
 `provider`, `manifest write`, and for `refresh-tensions` `manifest read` — sums
@@ -564,8 +569,9 @@ and is remembered so the pair is not re-judged nightly. Only `tensions` and
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
-`--concurrency` works as it does for `refresh-connections` above, including the
-rule that two actions touching the same reading never run at once.
+`--concurrency` and `--max-backoff` work as they do for `refresh-connections`
+above, including the rule that two actions touching the same reading never run
+at once.
 Execute mode prints the provider token usage of each judgement and a run total
 on the same terms as `refresh-connections` above.
 
