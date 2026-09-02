@@ -45,6 +45,12 @@ import {
   type CommandIo,
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import {
+  addUsage,
+  emptyUsageTotals,
+  formatUsage,
+  formatUsageTotals,
+} from "../judgement-usage";
 
 const ASSUMED_OUTPUT_TOKENS = 256;
 const layout = r2KeyLayout();
@@ -365,6 +371,7 @@ async function runCorpusRefreshConnections(
   let judged = 0;
   let healed = 0;
   let flushFailed = false;
+  const usageTotals = emptyUsageTotals();
   try {
     for (const action of selected) {
       if (action.kind === "heal") {
@@ -405,6 +412,10 @@ async function runCorpusRefreshConnections(
           liveReportNeighbours(action.report, liveReadyIds),
         );
         const result = await provider.judge(input);
+        // Counted before the write so the report covers every call billed,
+        // including judgements whose manifest write later fails.
+        addUsage(usageTotals, result.usage);
+        deps.io.stdout(`  ${action.report.id}  ${formatUsage(result.usage)}`);
         const merged = mergeRelationshipJudgement(
           current.manifest,
           result.judgement,
@@ -459,6 +470,7 @@ async function runCorpusRefreshConnections(
   deps.io.stdout(
     `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}`,
   );
+  deps.io.stdout(formatUsageTotals(usageTotals));
   return planningFailed || failures > 0 || flushFailed ? 1 : 0;
 }
 
@@ -692,7 +704,8 @@ provider call or storage write.
 Execute mode updates only connections, novelty_verdict, and
 connections_computed_at, then synchronizes each list-row verdict. It requires a
 sole-writer window and uses manifest ETag CAS writes. Completed manifests are
-resume markers, so a rerun heals a stale list row without another paid call.
+resume markers, so a rerun heals a stale list row without another paid call. It
+prints the provider token usage of each judgement and a run total.
 
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json.

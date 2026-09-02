@@ -163,8 +163,34 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("Selected actions: 1; below overlap threshold: 1; already judged: 0; repair pending: 0");
     expect(text).toContain("Estimated synchronous cost: $0.004000");
     expect(text).toContain("no provider call or storage write");
+    expect(text).not.toContain("usage input=");
+    expect(text).not.toContain("Usage:");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
+  });
+
+  it("prints the provider usage per judgement and a run total", async () => {
+    const h = harness();
+    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
+    expect(h.judge).toHaveBeenCalledOnce();
+    const text = h.out.join("\n");
+    expect(text).toContain("rd_a|rd_b  usage input=100 output=20 reasoning=0");
+    expect(text).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
+  });
+
+  it("counts the usage of a judgement that then fails to write", async () => {
+    const h = harness({ casFailOn: "rd_a" });
+    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
+    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
+  });
+
+  it("prints a zero run total when no judgement was made", async () => {
+    const h = harness();
+    h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
+    h.stored("rd_b").tensions_judged = [{ id: "rd_a", judged_at: AT }];
+    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
+    expect(h.judge).not.toHaveBeenCalled();
+    expect(h.out.join("\n")).toContain("Usage: 0 judgements; input=0 output=0");
   });
 
   it("refuses execute without sole-writer before reading the report or storage", async () => {
