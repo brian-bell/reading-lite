@@ -293,9 +293,9 @@ Never run a production refresh with `--tenant global`. That selector still
 resolves to the legacy pre-cutover layout, which no longer receives readings;
 refreshing it spends judgements on a copy nobody reads.
 
-Production credentials do not live in the repo either. The S3 keys in a
-typical `.corpus.vars` are scoped to the staging bucket and 403 against the
-production bucket, and `refresh-connections` / `refresh-tensions` prefer S3
+Production credentials do not live in the repo either. `.corpus.vars` S3 keys
+are commonly scoped to the staging bucket and then 403 against the production
+bucket, and `refresh-connections` / `refresh-tensions` prefer S3
 keys over a Cloudflare API token whenever both are present, so stale staging
 keys silently win over an otherwise correct token. Source production keys from
 outside the repo; the credentials row of the cutover log in
