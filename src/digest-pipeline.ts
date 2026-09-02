@@ -8,9 +8,11 @@
  * same period still stub-sends. Fan-out also re-enqueues current-period
  * `pending` rows (via `currentPeriodKey`) so a producer miss through the due
  * hour can still land on DIGEST_JOBS later that day/week. A `queue.send`
- * failure after a successful claim deletes the pending row so a later tick
- * can claim again. Each tenant is claimed+enqueued in its own try/catch so
- * one failure cannot abort the rest of the cron tick.
+ * failure after this tick *inserted* a pending claim deletes that row so a
+ * later tick can claim again. An already-existing `pending` row is left in
+ * place: it belongs to an earlier enqueue still in flight. Each tenant is
+ * claimed+enqueued in its own try/catch so one failure cannot abort the rest
+ * of the cron tick.
  *
  * Digest DLQ handling lives next to this module so it can mark the ledger
  * failed without touching reading manifests.
@@ -167,16 +169,18 @@ export async function fanOutDueDigests(
         );
         enqueued += 1;
       } catch (error) {
-        try {
-          await deletePendingDigestDelivery(db, key);
-        } catch (releaseError) {
-          console.error(
-            JSON.stringify({
-              event: "digest_pending_release_failed",
-              user_id: row.user_id,
-              message: releaseError instanceof Error ? releaseError.message : String(releaseError),
-            }),
-          );
+        if (claim === "inserted") {
+          try {
+            await deletePendingDigestDelivery(db, key);
+          } catch (releaseError) {
+            console.error(
+              JSON.stringify({
+                event: "digest_pending_release_failed",
+                user_id: row.user_id,
+                message: releaseError instanceof Error ? releaseError.message : String(releaseError),
+              }),
+            );
+          }
         }
         throw error;
       }

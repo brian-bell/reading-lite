@@ -276,7 +276,7 @@ describe("digest fan-out + stub send", () => {
     expect(queued.map((msg) => msg.tenantId)).toEqual([FOUNDER_TENANT_ID]);
   });
 
-  it("deletes the pending ledger row when queue.send fails so a later tick can claim", async () => {
+  it("deletes a pending ledger row this tick inserted when queue.send fails so a later tick can claim", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     installRejectingDigestQueue();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -297,6 +297,35 @@ describe("digest fan-out + stub send", () => {
       enqueued: 1,
     });
     expect(queued).toHaveLength(1);
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "pending" });
+  });
+
+  it("keeps an existing pending claim when a duplicate queue.send fails", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+      enqueued: 1,
+    });
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "pending" });
+
+    installRejectingDigestQueue();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+      enqueued: 0,
+    });
+    consoleErr.mockRestore();
+
     expect(
       await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
         userId: FOUNDER_TENANT_ID,
