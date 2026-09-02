@@ -114,8 +114,8 @@ Vars in `wrangler.toml` are non-secret and set per environment:
 | `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` (`high` in staging and production) | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` (`high` in staging and production) | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5 accepts `low`, `medium`, `high`, `xhigh`, or `max`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with thinking disabled, fail closed. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
-| `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty disables email. |
-| `EMAIL_TO` | `""` | Recipient for notification emails. |
+| `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty skips send. |
+| `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email (`users.email_display`). |
 | `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
 | `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
 | `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
@@ -157,9 +157,11 @@ out. Origin checks still apply to cookie writes.
 | `POST /api/auth/tokens` | Session-only, cookie CSRF, recent-auth. Body `{ name, scopes, expires_at_ms? }`. 201 `{ token, id, name, scopes, created_at_ms, expires_at_ms }` with `tok_….hex` once. Default 90d; 409 at 10 active (including founder legacy). Security mail on create. |
 | `GET /api/auth/tokens` | Session-only. Lists metadata without secrets; `usable` is false for revoked or expired rows. |
 | `DELETE /api/auth/tokens/:id` | Session-only, cookie CSRF, no recent-auth. Soft-revokes; 404 if not owned. No security mail. |
+| `GET /api/auth/settings` | Session-only. Full `user_settings` row (`notify_immediate`, digest fields, timestamps). 404 if missing. |
+| `POST /api/auth/settings` | Session-only, cookie CSRF, no recent-auth. Body `{ notify_immediate }` only. Returns the full row. 404 if missing. |
 | `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
-| `POST /api/readings` | Body `{ url, email? }`. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
-| `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
+| `POST /api/readings` | Body `{ url, email? }`. Defaults `email` to true. Send-time `to` is the current verified account email. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. |
+| `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Send-time import is always silent. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
 | `GET /api/readings` | Newest-first list. Query: `q` (substring across title/tldr/url/keywords, case-insensitive), `tag` (exact, case-insensitive, tags only), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
 | `GET /api/readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
 | `GET /api/readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |

@@ -468,6 +468,66 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
+  /api/auth/settings:
+    get:
+      tags: [identity]
+      operationId: getAuthSettings
+      summary: Return the caller's full settings row
+      description: |
+        Session cookie only (bearer 403). CSRF is not required (GET). Returns
+        the full `user_settings` row (`notify_immediate`, digest cadence and
+        schedule, timestamps). 404 when the row is missing. Recent-auth is
+        not required.
+      responses:
+        "200":
+          description: Settings row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+    post:
+      tags: [identity]
+      operationId: updateAuthSettings
+      summary: Update immediate-notification opt-in
+      description: |
+        Session cookie plus `X-CSRF-Token`. Recent-auth is not required.
+        Bearer 403. Body `{ notify_immediate }` only; digest fields are
+        returned but not writable here. Returns the full settings row.
+        404 when the row is missing.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostAuthSettingsBody"
+      responses:
+        "200":
+          description: Settings row after update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserSettingsResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
   /api/readings:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -1368,6 +1428,54 @@ components:
         ok:
           type: boolean
           const: true
+
+    DigestCadence:
+      type: string
+      enum: [off, daily, weekly]
+
+    UserSettingsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - schema_version
+        - notify_immediate
+        - digest_cadence
+        - time_zone
+        - digest_hour_local
+        - digest_weekday
+        - created_at_ms
+        - updated_at_ms
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+        schema_version:
+          type: integer
+        notify_immediate:
+          type: boolean
+          description: Immediate mail on a successful reading. Default true for new users.
+        digest_cadence:
+          $ref: "#/components/schemas/DigestCadence"
+        time_zone:
+          type: string
+          minLength: 1
+        digest_hour_local:
+          type: integer
+        digest_weekday:
+          type: integer
+        created_at_ms:
+          type: integer
+        updated_at_ms:
+          type: integer
+
+    PostAuthSettingsBody:
+      type: object
+      additionalProperties: false
+      required: [notify_immediate]
+      properties:
+        notify_immediate:
+          type: boolean
 
     HttpUrl:
       type: string

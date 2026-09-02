@@ -85,6 +85,7 @@ OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
+# Unused. Immediate notifications go to the verified account email.
 EMAIL_TO = ""
 WEB_BASE_URL = "http://127.0.0.1:5173"
 # Public Turnstile widget site key. GET /api/auth/login-options returns it only
@@ -140,6 +141,7 @@ OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 EMAIL_FROM = "reading-lite@bbell.dev"
+# Unused. Immediate notifications go to the verified account email.
 EMAIL_TO = ""
 # Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
 AUTH_MAIL_ALLOWLIST = ""
@@ -221,9 +223,10 @@ SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
-# Set EMAIL_FROM (verified Resend domain), EMAIL_TO, and WEB_BASE_URL via
-# `wrangler deploy --var EMAIL_FROM:... --var EMAIL_TO:... --var WEB_BASE_URL:...`
+# Set EMAIL_FROM (verified Resend domain) and WEB_BASE_URL via
+# `wrangler deploy --var EMAIL_FROM:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.
+# EMAIL_TO is unused; send-time recipient is users.email_display.
 EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = "bellbm@gmail.com"
 WEB_BASE_URL = "https://reading-lite.bbell.dev/"

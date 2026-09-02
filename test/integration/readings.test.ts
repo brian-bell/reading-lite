@@ -4646,7 +4646,7 @@ describe("POST /api/readings — email notifications", () => {
       text: string;
     };
     expect(body.from).toBe("reading-lite@test.example");
-    expect(body.to).toBe("reader@test.example");
+    expect(body.to).toBe("founder@test.example");
     expect(body.subject).toBe("Test Article");
     expect(body.html).toContain(`https://reading.test.example/readings/${id}`);
     expect(body.text).toContain("https://example.com/email-me");

@@ -81,7 +81,7 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 | `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
-| `RESEND_API_KEY` | required on staging/production — magic-link auth mail (never `EMAIL_TO`) and per-reading notifications |
+| `RESEND_API_KEY` | required on staging/production — magic-link auth mail and per-reading notifications (recipient is `users.email_display`, never `EMAIL_TO`) |
 | `TURNSTILE_SECRET_KEY` | required to send open-mode magic-link mail on staging/production — Cloudflare siteverify secret (**never** in `[vars]`). Local skip/fail-open when unset; staging/production fail-closed (missing secret, siteverify errors, or `success ≠ true` → no-send `{ok:true}`) |
 
 Public widget key `TURNSTILE_SITE_KEY` is a `[vars]` value, not a secret.
@@ -112,9 +112,14 @@ root that differs from the Worker secret produces HMACs the Worker cannot
 verify. After import, `READER_API_TOKEN` is not a runtime Worker fallback;
 keep it in the dotenv for operator CLIs that still POST that bearer.
 
-`POST /api/readings` requests notification by default (`email: true`). Without
-`RESEND_API_KEY` and the `EMAIL_*` / `WEB_BASE_URL` vars, submissions still
-reach `ready` but log a failed `send_email` event; the reading is unaffected.
+`POST /api/readings` requests notification by default (`email: true`). Send-time
+`to` is the current verified `users.email_display` — `EMAIL_TO` is never a
+fallback. Import is always silent even if the body or `--email` is true.
+`notify_immediate=0`, `email: false`, a missing settings row, an inactive or
+unverified user, an empty `EMAIL_FROM`, or a staging `AUTH_MAIL_ALLOWLIST` miss
+all skip send (no `send_email` event). Resend failures still log a failed
+`send_email` event with recipients redacted; the reading stays `ready` and the
+job is not requeued.
 
 The offline corpus tools authenticate directly against Cloudflare rather than
 through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,

@@ -22,6 +22,12 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
+import { fromD1 } from "./control-plane/db";
+import { redactEmailsInText } from "./control-plane/email";
+import {
+  itemRequestsImmediateEmail,
+  resolveImmediateNotification,
+} from "./control-plane/reading-notification";
 import {
   failedManifest,
   readyManifest,
@@ -225,7 +231,7 @@ export async function processReading(
       },
     );
 
-    if (published && shouldSendEmail(args)) {
+    if (published && itemRequestsImmediateEmail(args)) {
       await sendReadingEmailAndLog(
         reader,
         args,
@@ -234,6 +240,7 @@ export async function processReading(
         attempt,
         finalManifest,
         retry,
+        tenant,
       );
     }
   } catch (e) {
@@ -248,13 +255,6 @@ export async function processReading(
   }
 }
 
-function shouldSendEmail(args: ProcessReadingArgs): boolean {
-  // In-flight queue messages from before this field existed lack `email`. Per
-  // contract: undefined → true on submit, false otherwise.
-  if (args.email !== undefined) return args.email;
-  return args.trigger === "submit";
-}
-
 async function sendReadingEmailAndLog(
   reader: ReadingStore,
   args: ProcessReadingArgs,
@@ -263,17 +263,31 @@ async function sendReadingEmailAndLog(
   attempt: ProcessingAttempt,
   manifest: Manifest,
   retry: RetryDeps,
+  tenant: TenantContext,
 ): Promise<void> {
   const startedAt = services.now();
+  let recipient: string | undefined;
   try {
+    // Recipient lookup belongs in this try: a thrown D1/settings read after
+    // commitTerminalManifest must not reach processReading's outer catch and
+    // overwrite the published ready manifest.
+    const decision = await resolveImmediateNotification(
+      fromD1(env.CONTROL_PLANE),
+      env,
+      String(tenant.tenantId),
+    );
+    if (decision.kind === "skip") return;
+    recipient = decision.to;
+
+    // Tenant-scoped list index: connection titles/links stay in this tenant.
     const listIndex = await reader.readListIndex();
     await sendReadingEmail(
       { manifest, webBaseUrl: env.WEB_BASE_URL, listIndex },
       {
         fetch: services.fetch,
         apiKey: env.RESEND_API_KEY,
-        from: env.EMAIL_FROM,
-        to: env.EMAIL_TO,
+        from: decision.from,
+        to: decision.to,
         retry,
       },
     );
@@ -287,19 +301,39 @@ async function sendReadingEmailAndLog(
     });
   } catch (e) {
     // Email failure must NOT poison the manifest — the reading stays `ready`.
-    // Recovery is a manual reprocess with email=true (see PRD non-goals).
-    console.error(e);
+    // Do not requeue the whole job. Recovery is a manual reprocess with email=true.
     const failedAt = services.now();
     const durationMs = durationMsBetween(startedAt, failedAt);
+    const error = redactSendEmailError(errorFromUnknown(e, "send_email", failedAt), [
+      ...(recipient === undefined ? [] : [recipient]),
+      env.EMAIL_FROM,
+    ]);
+    console.error(
+      JSON.stringify({
+        event: "send_email_failed",
+        error: error.code,
+        message: error.message,
+      }),
+    );
     attempt.events.push({
       stage: "send_email",
       status: "failed",
       at: failedAt,
       ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
-      error: errorFromUnknown(e, "send_email", failedAt),
+      error,
     });
   }
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
+}
+
+function redactSendEmailError(error: ManifestError, known: readonly string[]): ManifestError {
+  return {
+    ...error,
+    message: redactEmailsInText(
+      error.message,
+      known.filter((value) => value.trim().length > 0),
+    ),
+  };
 }
 
 // Thrown only on the dead-letter path: the message exhausted its main-queue

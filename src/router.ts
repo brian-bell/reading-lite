@@ -46,6 +46,7 @@ import {
   handleListApiTokens,
   handleRevokeApiToken,
 } from "./control-plane/token-handlers";
+import { handleGetSettings, handlePostSettings } from "./control-plane/settings-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
@@ -105,6 +106,9 @@ export function createApp(opts: AppOptions = {}) {
   );
   app.get("/api/auth/tokens", (c) => handleListApiTokens(c, authNowMs()));
   app.delete("/api/auth/tokens/:id", (c) => handleRevokeApiToken(c, authNowMs()));
+  app.use("/api/auth/settings", requirePrincipal(authNowMs), requireSession());
+  app.get("/api/auth/settings", (c) => handleGetSettings(c));
+  app.post("/api/auth/settings", (c) => handlePostSettings(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 
