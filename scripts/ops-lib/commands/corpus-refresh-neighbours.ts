@@ -301,7 +301,9 @@ async function resolveScope(args: {
   const reverse = new Map<string, ReverseMatches>();
   const statusById = new Map(items.map((row) => [row.id, row.status]));
   let consecutiveFailures = 0;
+  let attempted = 0;
   for (const id of base.changed) {
+    attempted++;
     // Every changed reading is queried, whatever its status says. Status is not
     // a statement about vector ownership — a reprocess-in-flight `pending` row
     // and a `failed` row over a previously-ready reading can both still have a
@@ -352,10 +354,16 @@ async function resolveScope(args: {
       );
       consecutiveFailures++;
       if (consecutiveFailures >= REVERSE_QUERY_FAILURE_BUDGET) {
-        io.stderr(
-          `  ! ${consecutiveFailures} reverse-neighbour queries failed in a row — sweeping instead`,
-        );
-        break;
+        // Answered here rather than by the planner: it counts an id with no
+        // entry as an unanswered query, and the ids after this point were never
+        // asked. Reporting them as failures would inflate the very rate the
+        // reason exists to make trustworthy.
+        return {
+          kind: "full",
+          reason:
+            `${consecutiveFailures} reverse-neighbour queries failed in a row ` +
+            `after ${attempted} of ${base.changed.length} changed reading(s)`,
+        };
       }
       continue;
     }
@@ -782,7 +790,9 @@ could have moved since the run marker at index/refresh-state.json: those
 created or reprocessed since it, and the reverse neighbourhood of each changed
 vector (a topK-${REVERSE_TOP_K} query). It escalates to a
 full sweep whenever that reasoning runs out — no marker, rows removed since the
-marker, a failed reverse query, or a reverse neighbourhood saturated at topK.
+marker, a failed reverse query, a changed ready reading with no vector to scope
+from, or a reverse neighbourhood that came back full at topK with no match below
+the bound.
 An incremental report is a statement about its scope: a persistent flag on a
 reading nobody touched stays invisible until the next full sweep, so run --full
 weekly. The scope and its reason are printed and recorded in the report header,

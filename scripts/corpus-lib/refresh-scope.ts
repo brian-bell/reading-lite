@@ -32,8 +32,8 @@
 // remembers where it was.
 //
 // The scope is a nightly economy, not a correctness claim, and it is the weekly
-// `--full` sweep that makes the trade safe. Three things a nightly pass can
-// miss, all of them deliberate:
+// `--full` sweep that makes the trade safe. What a nightly pass can miss, all
+// of it deliberate:
 //
 //   - a flag that persists on a reading nobody touched (the backfill's
 //     `connection_below_floor` rows) stays invisible until that reading enters

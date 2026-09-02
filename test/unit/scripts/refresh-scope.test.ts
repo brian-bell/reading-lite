@@ -281,6 +281,22 @@ describe("incrementalScope", () => {
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_near", "rd_new"] });
   });
 
+  // The rule is the minimum score, not the last element: nothing in the query
+  // path guarantees a descending order, so a below-bound match anywhere in the
+  // page means the results ran out before the bound did.
+  it("reads a below-bound match in the middle of a full page as complete", () => {
+    const matches = Array.from({ length: REVERSE_TOP_K }, (_, i) => ({
+      id: `rd_${i}`,
+      score: i === 40 ? REVERSE_SCORE_BOUND - 0.01 : 0.9,
+    }));
+    const scope = incrementalScope(
+      [row("rd_new", { created_at: AFTER, updated_at: AFTER })],
+      marker({ list_row_count: 1 }),
+      reverse({ rd_new: matches }),
+    );
+    expect(scope.kind).toBe("incremental");
+  });
+
   it("does not escalate when the topK-th match has fallen below the bound", () => {
     const matches = Array.from({ length: REVERSE_TOP_K }, (_, i) => ({
       id: `rd_${i}`,

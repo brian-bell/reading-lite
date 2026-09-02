@@ -39,6 +39,12 @@ export interface BackendChoice {
    * Absent on the wrangler path, which resolves its own account.
    */
   accountId?: string;
+  /**
+   * The account the Vectorize half will address, when `CORPUS_VECTORIZE_*`
+   * points somewhere else. Present only when the two differ, because that is
+   * the case the header would otherwise misreport.
+   */
+  vectorizeAccountId?: string;
 }
 
 /** The narrow slice of the Vectorize client tier 1 needs. */
@@ -90,7 +96,20 @@ export function chooseNeighboursBackend(inputs: BackendInputs): BackendChoice {
     return { backend: "wrangler", reason: "--local" };
   }
   const accountId = first(inputs.vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
-  const account = accountId === undefined ? {} : { accountId };
+  // The same precedence the Vectorize client is built with. Usually the same
+  // account; when it is not, the header has to say so, or it names the account
+  // holding the manifests while the queries go somewhere else entirely.
+  const vectorizeAccountId = first(inputs.vars, [
+    "CORPUS_VECTORIZE_ACCOUNT_ID",
+    "CORPUS_R2_ACCOUNT_ID",
+    "CLOUDFLARE_ACCOUNT_ID",
+  ]);
+  const account = {
+    ...(accountId === undefined ? {} : { accountId }),
+    ...(vectorizeAccountId === undefined || vectorizeAccountId === accountId
+      ? {}
+      : { vectorizeAccountId }),
+  };
   if (inputs.via === "direct") return { backend: "direct", reason: "--via direct", ...account };
   const credential = directCredential(inputs.vars);
   if (credential) return { backend: "direct", reason: credential, ...account };
@@ -105,7 +124,11 @@ export function describeBackend(choice: BackendChoice): string[] {
   const label = choice.backend === "direct" ? "direct (S3/REST)" : "wrangler";
   const lines = [`Storage: ${label} — ${choice.reason}`];
   if (choice.backend === "direct" && choice.accountId !== undefined) {
-    lines.push(`Account: ${choice.accountId}`);
+    lines.push(
+      choice.vectorizeAccountId === undefined
+        ? `Account: ${choice.accountId}`
+        : `Account: ${choice.accountId} (R2), ${choice.vectorizeAccountId} (Vectorize)`,
+    );
   }
   return lines;
 }

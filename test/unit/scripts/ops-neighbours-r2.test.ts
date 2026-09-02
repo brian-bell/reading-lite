@@ -165,6 +165,21 @@ describe("chooseNeighboursBackend", () => {
     ).toEqual(["Storage: direct (S3/REST) — CORPUS_R2_* keys", "Account: acct"]);
   });
 
+  // The Vectorize client is built with its own account precedence. When the two
+  // halves point at different accounts, one id in the header would name where
+  // the manifests live while the queries went somewhere else.
+  it("names both accounts when R2 and Vectorize point at different ones", () => {
+    const choice = chooseNeighboursBackend({
+      local: false,
+      vars: {
+        CORPUS_R2_ACCOUNT_ID: "r2-acct",
+        CORPUS_CF_API_TOKEN: "tok",
+        CORPUS_VECTORIZE_ACCOUNT_ID: "vec-acct",
+      },
+    });
+    expect(describeBackend(choice)).toContain("Account: r2-acct (R2), vec-acct (Vectorize)");
+  });
+
   // The wrangler path resolves its own account from `wrangler login`, so this
   // command has nothing to report about it.
   it("says nothing about the account on the wrangler path", () => {

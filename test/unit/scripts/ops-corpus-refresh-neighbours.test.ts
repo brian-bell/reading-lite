@@ -785,9 +785,12 @@ describe("ops corpus refresh-neighbours", () => {
         deps,
       );
       expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toHaveLength(3);
-      const text = lines.join("\n");
-      expect(text).toContain("3 reverse-neighbour queries failed in a row");
-      expect(text).toContain("Scope: full");
+      // The reason counts what was attempted, not the whole changed set: the
+      // seven ids after the stop were never asked, and reporting them as
+      // failures would inflate the rate the reason exists to make trustworthy.
+      expect(lines.join("\n")).toContain(
+        "Scope: full — 3 reverse-neighbour queries failed in a row after 3 of 10 changed reading(s)",
+      );
     });
 
     it("sweeps when the reverse query for a changed reading fails", async () => {

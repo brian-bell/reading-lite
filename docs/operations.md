@@ -455,9 +455,11 @@ moves. The scope and its reason are printed
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
 first run, or a deleted one), fewer list rows than the marker recorded (a purge
-names nothing a timestamp can find), a failed reverse query, or a reverse
-neighbourhood whose lowest returned match is still above the bound, meaning the
-query was truncated and the real set is unknown — never a narrower pass. An
+names nothing a timestamp can find), a failed reverse query, a changed *ready*
+reading with no vector to scope from, or a reverse neighbourhood that came back
+full at topK with no match below the bound, meaning the query was truncated and
+the real set is unknown — never a narrower pass. A short result is a complete
+one, so an isolated reading, whose only match is itself, does not escalate. An
 escalation reports how many of the changed readings caused it and names the
 first, because a corpus that saturates most nights is buying nothing from
 `--since-last-run` and that rate is the number to measure before switching a
@@ -491,8 +493,10 @@ the scope would have selected it, and the pass resolves no scope at all rather
 than paying for reverse queries it cannot use. The header then reads
 `Scope: full — --only names N reading(s)`. `--limit` is different: it still
 resolves its scope and then measures the first N of it, so the header and the
-report keep saying `incremental`. Either way the report records the narrowing
-under `scope.narrowed_by`. `--only` never advances the marker; `--limit` pins it
+report keep saying `incremental`. The report records the narrowing under
+`scope.narrowed_by` — always for `--only`, and for `--limit` only when it
+actually cut the pass short, so the report and the marker agree about whether
+the pass was partial. `--only` never advances the marker; `--limit` pins it
 only when it actually cut the pass short, so a limit carried in a cron as a
 cost valve and never reached still advances it.
 
