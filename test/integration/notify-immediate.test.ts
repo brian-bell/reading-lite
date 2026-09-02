@@ -524,6 +524,53 @@ describe("processReading immediate notification recipient", () => {
     expect(diag.attempts[0]?.events.some((event) => event.stage === "send_email")).toBe(false);
   });
 
+  it("keeps the manifest ready when recipient lookup throws", async () => {
+    const workerEnv = env as unknown as Env;
+    const origPrepare = workerEnv.CONTROL_PLANE.prepare.bind(workerEnv.CONTROL_PLANE);
+    workerEnv.CONTROL_PLANE.prepare = ((sql: string, ...rest: unknown[]) => {
+      if (typeof sql === "string" && sql.includes("LEFT JOIN user_settings")) {
+        throw new Error("d1 lookup failed");
+      }
+      return origPrepare(sql, ...rest);
+    }) as typeof origPrepare;
+
+    const fetchFn = makeStubFetch();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await processReady(submitArgs("rd_MAIL09", "https://example.com/lookup-throw"), fetchFn);
+    } finally {
+      workerEnv.CONTROL_PLANE.prepare = origPrepare;
+    }
+
+    expect(resendCalls(fetchFn)).toHaveLength(0);
+    const app = createApp({ services: makeServices(fetchFn) });
+    const get = await app.request(
+      "/api/readings/rd_MAIL09",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(((await get.json()) as { status: string }).status).toBe("ready");
+
+    const diagnostics = await app.request(
+      "/api/readings/rd_MAIL09/diagnostics",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const diag = (await diagnostics.json()) as {
+      manifest: { status: string };
+      attempts: Array<{
+        status: string;
+        events: Array<{ stage: string; status: string; error?: { message: string } }>;
+      }>;
+    };
+    expect(diag.manifest.status).toBe("ready");
+    expect(diag.attempts[0]!.status).toBe("succeeded");
+    const sendEmail = diag.attempts[0]!.events.find((event) => event.stage === "send_email");
+    expect(sendEmail?.status).toBe("failed");
+    expect(sendEmail?.error?.message).toContain("d1 lookup failed");
+    consoleErr.mockRestore();
+  });
+
   it("redacts recipients in send_email diagnostics and logs when Resend fails", async () => {
     const fetchFn = makeStubFetch({
       resendStatus: 500,

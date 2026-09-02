@@ -265,15 +265,18 @@ async function sendReadingEmailAndLog(
   retry: RetryDeps,
   tenant: TenantContext,
 ): Promise<void> {
-  const decision = await resolveImmediateNotification(
-    fromD1(env.CONTROL_PLANE),
-    env,
-    String(tenant.tenantId),
-  );
-  if (decision.kind === "skip") return;
-
   const startedAt = services.now();
   try {
+    // Recipient lookup belongs in this try: a thrown D1/settings read after
+    // commitTerminalManifest must not reach processReading's outer catch and
+    // overwrite the published ready manifest.
+    const decision = await resolveImmediateNotification(
+      fromD1(env.CONTROL_PLANE),
+      env,
+      String(tenant.tenantId),
+    );
+    if (decision.kind === "skip") return;
+
     // Tenant-scoped list index: connection titles/links stay in this tenant.
     const listIndex = await reader.readListIndex();
     await sendReadingEmail(
