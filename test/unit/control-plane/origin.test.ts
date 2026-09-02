@@ -34,6 +34,17 @@ describe("cookieAuthAllowed", () => {
     ).toBe(true);
   });
 
+  it("rejects a present cross-site Origin even when Sec-Fetch-Site claims same-origin", () => {
+    expect(
+      cookieAuthAllowed({
+        method: "GET",
+        origin: "https://evil.example",
+        secFetchSite: "same-origin",
+        ...same,
+      }),
+    ).toBe(false);
+  });
+
   it("still requires Origin on cookie writes", () => {
     expect(
       cookieAuthAllowed({

@@ -40,6 +40,7 @@ async function request(
     method?: string;
     body?: unknown;
     origin?: string;
+    secFetchSite?: string;
     fetch?: typeof fetch;
   } = {},
   workerEnv: Env = env as unknown as Env,
@@ -58,6 +59,7 @@ async function request(
   const headers = new Headers();
   const origin = init.origin ?? "http://t";
   if (init.origin !== "") headers.set("origin", origin);
+  if (init.secFetchSite) headers.set("sec-fetch-site", init.secFetchSite);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -131,9 +133,39 @@ describe("GET /api/auth/login-options", () => {
     }
   });
 
+  it("allows a Chrome same-origin GET with no Origin when Sec-Fetch-Site is same-origin", async () => {
+    const workerEnv = env as unknown as Env;
+    const origKey = workerEnv.TURNSTILE_SITE_KEY;
+    try {
+      await setSignupMode(workerEnv, "open");
+      workerEnv.TURNSTILE_SITE_KEY = TURNSTILE_TEST_SITE_KEY_PASS;
+      const allowed = await request(
+        "/api/auth/login-options",
+        { origin: "", secFetchSite: "same-origin" },
+        workerEnv,
+      );
+      expect(allowed.res.status).toBe(200);
+      expect(await allowed.res.json()).toEqual({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY_PASS });
+    } finally {
+      if (origKey === undefined) delete workerEnv.TURNSTILE_SITE_KEY;
+      else workerEnv.TURNSTILE_SITE_KEY = origKey;
+      await setSignupMode(workerEnv, "open");
+    }
+  });
+
   it("rejects a cross-origin login-options GET", async () => {
     const denied = await request("/api/auth/login-options", { origin: "https://evil.example" });
     expect(denied.res.status).toBe(403);
+    expect(await denied.res.json()).toEqual({ error: "forbidden origin" });
+
+    const spoofed = await request("/api/auth/login-options", {
+      origin: "https://evil.example",
+      secFetchSite: "same-origin",
+    });
+    expect(spoofed.res.status).toBe(403);
+
+    const missing = await request("/api/auth/login-options", { origin: "" });
+    expect(missing.res.status).toBe(403);
   });
 });
 

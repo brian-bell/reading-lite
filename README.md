@@ -147,7 +147,7 @@ out. Origin checks still apply to cookie writes.
 |---|---|
 | `GET /health` | 200 `ok`. No auth. |
 | `GET /api/whoami` | Authenticated principal identity (`tenant_id`, `user_id`, `principal`, `tenant_data_plane`, `email`). Session principals also receive `csrf_token`. No scope beyond auth. |
-| `GET /api/auth/login-options` | Unauthenticated, same-origin, `no-store`. `{ turnstile_site_key }` is the site key when `signup_mode` is `open` and `TURNSTILE_SITE_KEY` is configured, otherwise `null`. Does not disclose whether any email exists. |
+| `GET /api/auth/login-options` | Unauthenticated, same-origin, `no-store`. Chrome omits `Origin` on same-origin GET; allowed when `Sec-Fetch-Site: same-origin` (same as `GET /api/whoami`). Cross-site Origin is 403. `{ turnstile_site_key }` is the site key when `signup_mode` is `open` and `TURNSTILE_SITE_KEY` is configured, otherwise `null`. Does not disclose whether any email exists. |
 | `POST /api/auth/challenge` | Same-origin. Body `{ email, turnstile_token? }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. Open mode that would send mail requires a successful Turnstile verify (local fail-open if the secret is unset; staging/production fail-closed). Invalid/missing token still `{ ok: true }` and skips send. invite_only/closed ignore extra tokens. |
 | `POST /api/auth/redeem` | Same-origin. Body `{ credential, redemption_id }`. Sets `__Host-session` (`Max-Age=7776000`). A live same-user session cookie refreshes `authenticated_at_ms` instead of minting another row. |
 | `POST /api/auth/logout` | Same-origin. Cookie CSRF (`X-CSRF-Token`). Revokes the D1 session and clears the cookie. |

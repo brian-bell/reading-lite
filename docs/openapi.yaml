@@ -84,11 +84,13 @@ paths:
       summary: Public Turnstile site key for the login widget
       security: []
       description: |
-        Unauthenticated, same-origin, `Cache-Control: no-store`. Returns
-        `{ turnstile_site_key }` as the configured public widget key when
-        `signup_mode` is `open` and `TURNSTILE_SITE_KEY` is set; otherwise
-        `null`. Does not disclose whether any email exists, is invited, or
-        is suspended.
+        Unauthenticated, same-origin, `Cache-Control: no-store`. Chrome omits
+        `Origin` on same-origin GET; this endpoint allows a missing Origin when
+        `Sec-Fetch-Site: same-origin` (same gate as `GET /api/whoami`). A
+        cross-site Origin is 403. Returns `{ turnstile_site_key }` as the
+        configured public widget key when `signup_mode` is `open` and
+        `TURNSTILE_SITE_KEY` is set; otherwise `null`. Does not disclose
+        whether any email exists, is invited, or is suspended.
       responses:
         "200":
           description: Login widget options

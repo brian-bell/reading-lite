@@ -28,7 +28,7 @@ import {
 } from "./magic-link-mail";
 import { sendMagicLinkViaResend } from "./resend-magic-link";
 import { sendAuthMailViaResend } from "./resend-mail";
-import { isLoopbackHost, isSameOriginRequest } from "./origin";
+import { cookieAuthAllowed, isLoopbackHost, isSameOriginRequest } from "./origin";
 import { parseRedemptionId, redeemLoginChallenge } from "./redeem";
 import { verifyCsrfToken } from "./csrf";
 import { authenticateSession, revokeSession } from "./sessions";
@@ -70,9 +70,22 @@ export function requireSameOrigin(c: Context<AppBindings>): boolean {
  * Unauthenticated same-origin config for the login widget.
  * Returns the Turnstile site key only when signup is open and the key is set.
  * Does not disclose whether any email exists.
+ *
+ * Chrome omits Origin on same-origin GET. Mirror whoami: allow missing Origin
+ * when Sec-Fetch-Site is same-origin. Cross-site stays 403.
  */
 export async function handleLoginOptions(c: Context<AppBindings>): Promise<Response> {
-  if (!requireSameOrigin(c)) return jsonAuth({ error: "forbidden origin" }, 403);
+  if (
+    !cookieAuthAllowed({
+      method: c.req.method,
+      origin: c.req.header("origin"),
+      secFetchSite: c.req.header("sec-fetch-site"),
+      url: c.req.url,
+      webBaseUrl: c.env.WEB_BASE_URL,
+    })
+  ) {
+    return jsonAuth({ error: "forbidden origin" }, 403);
+  }
   if (!c.env.CONTROL_PLANE) return jsonAuth({ error: "auth misconfigured" }, 500);
   const mode = await loadSignupMode(fromD1(c.env.CONTROL_PLANE));
   const configured = turnstileSiteKey(c.env);
