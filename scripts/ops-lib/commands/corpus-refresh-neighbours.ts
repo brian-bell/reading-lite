@@ -17,6 +17,7 @@
 // inventing new_neighbour or hiding stale_connection).
 
 import path from "node:path";
+import { loadDotVars } from "../../lib/dotvars";
 import {
   buildRefreshReport,
   buildReportReading,
@@ -41,6 +42,12 @@ import {
   timedNeighboursR2,
   type RefreshTimer,
 } from "../refresh-timing";
+import {
+  chooseNeighboursBackend,
+  describeBackend,
+  type BackendChoice,
+  type NeighboursBackend,
+} from "../neighbours-r2";
 
 export interface CorpusRefreshNeighboursR2 {
   readListIndex: (deps: R2Deps) => Promise<RefreshRow[]>;
@@ -56,7 +63,16 @@ export interface CorpusRefreshNeighboursR2 {
 }
 
 export interface CorpusRefreshNeighboursDeps extends BaseDeps {
+  /** The wrangler-backed storage path. Always present; the fallback. */
   r2: CorpusRefreshNeighboursR2;
+  /**
+   * The direct (S3/REST) path, built lazily so a wrangler run resolves no
+   * credentials and constructs no client. Absent means this environment has no
+   * direct path at all, which is how the command's own tests inject one fake.
+   */
+  directR2?: () => CorpusRefreshNeighboursR2;
+  /** Credentials consulted to auto-select a backend. Default: none. */
+  storageVars?: () => Record<string, string | undefined>;
   now: () => number;
   mkdir: (dir: string) => Promise<void>;
   writeFile: (filePath: string, body: string) => Promise<void>;
@@ -64,6 +80,7 @@ export interface CorpusRefreshNeighboursDeps extends BaseDeps {
 
 interface Opts {
   tenant?: string;
+  via?: NeighboursBackend;
   only: string[];
   bucket: string;
   vectorizeIndex?: string;
@@ -91,12 +108,23 @@ function parseRefreshArgs(argv: string[]): Opts {
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
     else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
+    else if (a === "--via") opts.via = parseVia(requireValue(argv[++i], a));
     else if (a === "--out") opts.out = requireValue(argv[++i], a);
     else if (a === "--limit") opts.limit = parsePositiveInt(requireValue(argv[++i], a));
     else if (a.startsWith("--")) throw new UsageError(`unknown flag: ${a}`);
     else opts.only.push(a);
   }
+  // The local miniflare bucket exists only inside wrangler, so no direct client
+  // can reach it. Fail as usage rather than silently ignoring one of the flags.
+  if (opts.via === "direct" && !opts.remote) {
+    throw new UsageError("--via direct cannot be combined with --local");
+  }
   return opts;
+}
+
+function parseVia(raw: string): NeighboursBackend {
+  if (raw === "wrangler" || raw === "direct") return raw;
+  throw new UsageError(`--via "${raw}" is not one of: direct, wrangler`);
 }
 
 function requireValue(v: string | undefined, flag: string): string {
@@ -130,6 +158,32 @@ function isManifestObject(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw);
 }
 
+/**
+ * Resolves the requested backend against what this environment actually has.
+ * The header must never name a path the pass did not take, so an environment
+ * with no direct client (the command's own tests) reports the fallback it used
+ * rather than the one it would have picked.
+ */
+function selectStorage(
+  opts: Opts,
+  deps: CorpusRefreshNeighboursDeps,
+): { choice: BackendChoice; storage: CorpusRefreshNeighboursR2 } {
+  const requested = chooseNeighboursBackend({
+    ...(opts.via === undefined ? {} : { via: opts.via }),
+    local: !opts.remote,
+    vars: deps.storageVars?.() ?? {},
+  });
+  const direct = deps.directR2;
+  if (requested.backend !== "direct") return { choice: requested, storage: deps.r2 };
+  if (direct === undefined) {
+    return {
+      choice: { backend: "wrangler", reason: `${requested.reason}, but no direct client available` },
+      storage: deps.r2,
+    };
+  }
+  return { choice: requested, storage: direct() };
+}
+
 // The block prints in a finally: the passes worth timing most are the ones
 // that end in a thrown stale-report or storage error, having already spent
 // minutes of reads.
@@ -152,7 +206,11 @@ async function refreshNeighbours(
   timer: RefreshTimer,
 ): Promise<number> {
   const { io } = deps;
-  const r2 = timedNeighboursR2(deps.r2, timer);
+  // Which storage path this pass runs over. Selected before any read so the
+  // header names the path the numbers below it belong to, and so a credential
+  // failure surfaces up front rather than after minutes of reads.
+  const { choice, storage } = selectStorage(opts, deps);
+  const r2 = timedNeighboursR2(storage, timer);
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
   const tenant = requireOperatorTenant(opts.tenant);
   // --execute ends in a wholesale plain put of index/list.json, not a CAS write,
@@ -175,6 +233,7 @@ async function refreshNeighbours(
 
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
   io.stdout(`Vectorize: ${vectorizeIndex}`);
+  io.stdout(describeBackend(choice));
   io.stdout(`Corpus: ${items.length} readings`);
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
@@ -357,6 +416,51 @@ async function refreshNeighbours(
   return 0;
 }
 
+// Credentials the direct path may use, in the same precedence the tier-2/3
+// refresh commands read them with, so one `.corpus.vars` drives all three.
+function defaultStorageVars(): Record<string, string | undefined> {
+  return {
+    ...loadDotVars(".dev.vars"),
+    ...loadDotVars(".prd.vars"),
+    ...loadDotVars(".corpus.vars"),
+    ...process.env,
+  };
+}
+
+async function buildDirectR2(): Promise<CorpusRefreshNeighboursR2> {
+  const { makeVectorizeClient, r2InventoryClientFromVars } = await import("../../lib/cf-clients");
+  const { directNeighboursR2 } = await import("../neighbours-r2");
+  const vars = defaultStorageVars();
+  const required = (names: string[]): string => {
+    for (const name of names) {
+      const value = vars[name];
+      if (value) return value;
+    }
+    throw new Error(`missing credential: ${names.join(" or ")} (env or .corpus.vars)`);
+  };
+  return directNeighboursR2({
+    r2: (bucket) => r2InventoryClientFromVars(vars, bucket, globalThis.fetch),
+    vectorize: (index, namespace) =>
+      makeVectorizeClient(
+        {
+          accountId: required([
+            "CORPUS_VECTORIZE_ACCOUNT_ID",
+            "CORPUS_R2_ACCOUNT_ID",
+            "CLOUDFLARE_ACCOUNT_ID",
+          ]),
+          apiToken: required(["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]),
+          index,
+          ...(namespace === undefined ? {} : { namespace }),
+        },
+        globalThis.fetch,
+      ),
+    // index/list.json keeps its wrangler plain put for this slice; only
+    // --execute reaches it.
+    writeListIndex: async (items, d) =>
+      (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
+  });
+}
+
 export const corpusRefreshNeighboursCommand: CommandDefinition<CorpusRefreshNeighboursDeps> = {
   group: "corpus",
   name: "refresh-neighbours",
@@ -384,12 +488,24 @@ Run --execute when nothing is being submitted: the list.json rewrite is a plain
 put, not a CAS write, so a concurrent queue write could be lost. --execute is
 refused without --sole-writer for that reason.
 
+The direct path removes the ~0.8s child-process spawn the wrangler path pays on
+every Vectorize query and every manifest read. Its closing index/list.json
+rewrite still goes through wrangler, so an --execute run over the direct path
+also needs 'wrangler login' (or CLOUDFLARE_API_TOKEN in the environment); a plan
+pass needs no wrangler at all.
+
 Options:
   --limit <n>         Cap how many readings are measured this pass.
   --out <path>        Report path. Default: ./refresh-report.json
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
+  --via <path>        Storage path: 'direct' (Vectorize REST + R2 over S3 or
+                      the Cloudflare REST API) or 'wrangler' (a child process
+                      per call). Default: direct when CORPUS_R2_* keys or
+                      CLOUDFLARE_API_TOKEN are present, wrangler otherwise.
+                      --local always uses wrangler; --via direct --local is a
+                      usage error. The chosen path is printed in the header.
   --local             Use the local miniflare bucket.
   --execute           Write drifted snapshots and flush the list index.
                       Requires --sole-writer.
@@ -409,6 +525,24 @@ Options:
       writeListIndex: async (items, d) =>
         (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
     },
+    // Built on demand: a wrangler pass and `--help` must resolve no credentials
+    // and load no client module.
+    directR2: () => {
+      let built: CorpusRefreshNeighboursR2 | undefined;
+      const lazy = async (): Promise<CorpusRefreshNeighboursR2> => {
+        if (built === undefined) built = await buildDirectR2();
+        return built;
+      };
+      return {
+        readListIndex: async (d) => (await lazy()).readListIndex(d),
+        readManifest: async (kp, d) => (await lazy()).readManifest(kp, d),
+        queryByVectorId: async (index, id, topK, ns) =>
+          (await lazy()).queryByVectorId(index, id, topK, ns),
+        putManifest: async (kp, body, d) => (await lazy()).putManifest(kp, body, d),
+        writeListIndex: async (items, d) => (await lazy()).writeListIndex(items, d),
+      };
+    },
+    storageVars: defaultStorageVars,
     now: () => Date.now(),
     mkdir: async (dir) => {
       const { promises: fs } = await import("node:fs");

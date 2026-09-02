@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   corpusRefreshNeighboursCommand,
   type CorpusRefreshNeighboursDeps,
+  type CorpusRefreshNeighboursR2,
 } from "../../../scripts/ops-lib/commands/corpus-refresh-neighbours";
 import { UsageError, type CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshNeighbour, RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
@@ -565,5 +566,101 @@ describe("ops corpus refresh-neighbours", () => {
     expect(calls.reports).toHaveLength(1);
     expect(JSON.parse(calls.reports[0]!.body).readings[0].id).toBe("rd_r");
     expect(lines.join("\n")).toMatch(/index\/list\.json rewrite failed/);
+  });
+  describe("storage backend selection", () => {
+    const CREDS = {
+      CORPUS_R2_ACCOUNT_ID: "acct",
+      CORPUS_R2_ACCESS_KEY: "AKIA",
+      CORPUS_R2_SECRET_KEY: "secret",
+      CORPUS_CF_API_TOKEN: "tok",
+    };
+
+    /** Marks whichever adapter a pass actually reads through. */
+    function tracked(
+      deps: CorpusRefreshNeighboursDeps,
+      used: string[],
+      label: string,
+    ): CorpusRefreshNeighboursR2 {
+      return {
+        ...deps.r2,
+        readListIndex: async (d) => {
+          used.push(label);
+          return deps.r2.readListIndex(d);
+        },
+      };
+    }
+
+    it("uses wrangler and says so when no credentials are present", async () => {
+      const { deps, lines } = makeDeps({});
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        "Storage: wrangler — no CORPUS_R2_*/CLOUDFLARE_API_TOKEN credentials",
+      );
+    });
+
+    it("auto-selects the direct path when credentials are present", async () => {
+      const { deps, lines } = makeDeps({});
+      const used: string[] = [];
+      const direct = tracked(deps, used, "direct");
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {
+        ...deps,
+        r2: tracked(deps, used, "wrangler"),
+        directR2: () => direct,
+        storageVars: () => CREDS,
+      });
+      expect(code).toBe(0);
+      expect(used).toEqual(["direct"]);
+      expect(lines.join("\n")).toContain("Storage: direct (S3/REST) — CORPUS_R2_* keys");
+    });
+
+    it("--via wrangler forces the fallback even with credentials present", async () => {
+      const { deps, lines } = makeDeps({});
+      const used: string[] = [];
+      const direct = tracked(deps, used, "direct");
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--via", "wrangler"],
+        { ...deps, r2: tracked(deps, used, "wrangler"), directR2: () => direct, storageVars: () => CREDS },
+      );
+      expect(code).toBe(0);
+      expect(used).toEqual(["wrangler"]);
+      expect(lines.join("\n")).toContain("Storage: wrangler — --via wrangler");
+    });
+
+    // The header must never name a path the pass did not take.
+    it("reports the fallback it actually used when no direct client exists", async () => {
+      const { deps, lines } = makeDeps({});
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {
+        ...deps,
+        storageVars: () => CREDS,
+      });
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        "Storage: wrangler — CORPUS_R2_* keys, but no direct client available",
+      );
+    });
+
+    it("rejects an unknown --via value as usage", async () => {
+      const { deps } = makeDeps({});
+      await expect(
+        corpusRefreshNeighboursCommand.run(["--tenant", "global", "--via", "s3"], deps),
+      ).rejects.toThrow(/--via "s3" is not one of/);
+    });
+
+    // Nothing but wrangler can reach the miniflare bucket, so the combination
+    // is a contradiction rather than a silent preference.
+    it("rejects --via direct with --local", async () => {
+      const { deps } = makeDeps({});
+      await expect(
+        corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--via", "direct", "--local"],
+          deps,
+        ),
+      ).rejects.toThrow(/--via direct cannot be combined with --local/);
+    });
+
+    it("documents --via in help", async () => {
+      expect(corpusRefreshNeighboursCommand.helpText).toContain("--via <path>");
+    });
   });
 });

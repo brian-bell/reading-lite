@@ -216,7 +216,10 @@ export async function queryByVectorId(
   return matches.map(parseVectorQueryMatch).filter((m): m is VectorQueryMatch => m !== null);
 }
 
-function parseVectorQueryMatch(raw: unknown): VectorQueryMatch | null {
+// Exported so the direct (S3/REST) tier-1 adapter maps matches through exactly
+// this function: the two adapters must produce identical neighbour objects, or
+// the same corpus yields two different refresh-report.json files.
+export function parseVectorQueryMatch(raw: unknown): VectorQueryMatch | null {
   if (typeof raw !== "object" || raw === null) return null;
   const rec = raw as { id?: unknown; score?: unknown; metadata?: unknown };
   if (typeof rec.id !== "string" || typeof rec.score !== "number") return null;
