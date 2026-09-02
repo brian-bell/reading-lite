@@ -66,7 +66,7 @@ import {
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
-import { RateLimitedError, type RetryDeps } from "../../../src/modules/http-retry";
+import { type RetryDeps } from "../../../src/modules/http-retry";
 import {
   addUsage,
   emptyUsageTotals,
@@ -550,7 +550,6 @@ async function refreshConnections(
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     } catch (error) {
-      if (error instanceof RateLimitedError) gate.close(error.retryAfterMs);
       return failWith(error instanceof Error ? error.message : String(error));
     }
   };
@@ -585,8 +584,10 @@ async function refreshConnections(
         if (outcome.usage) addUsage(usageTotals, outcome.usage);
         // Keyed on the outcome, not on the value: a heal whose manifest has
         // no verdict must still clear the stale one off the list row, or it
-        // is re-planned every run and never fixed.
-        if (outcome.kind !== "failed") {
+        // is re-planned every run and never fixed. Which is exactly why the
+        // two outcomes that read a verdict have to be named: a skip never read
+        // the manifest at all, and would otherwise clear a row that is right.
+        if (outcome.kind === "judged" || outcome.kind === "healed") {
           verdictUpdates.set(selected[index]!.report.id, outcome.verdict);
         }
         if (outcome.kind === "judged") judged++;

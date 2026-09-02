@@ -897,5 +897,8 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
         `failures: 2; skipped at the backoff ceiling: ${pairs.length - 2}`,
     );
     expect(s.writes).toEqual([]);
+    // Every pause the pass reported it actually waited out: the second 429 of
+    // a retried action reports the wall through one path, not two.
+    expect(s.h.err.filter((line) => line.includes("pausing new judgements"))).toHaveLength(2);
   });
 });

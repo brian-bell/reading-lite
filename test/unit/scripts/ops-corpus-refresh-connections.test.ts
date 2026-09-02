@@ -1072,6 +1072,29 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     );
     // Nothing was written, and the pass says so with a non-zero exit.
     expect(s.writes).toEqual([]);
+    expect(s.listWrite()).toBeUndefined();
+  });
+
+  it("leaves the list row of an action it skipped at the ceiling alone", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    // The first reading is judged, everything after it walks into the wall, so
+    // the pass writes one row and then reaches the ceiling with most of the
+    // plan undispatched.
+    s.h.judge.mockImplementation(async (input) => {
+      if (input.reading.id === ids[0]) return inner(input);
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "120s")).toBe(1);
+
+    const rows = s.listWrite()!;
+    expect(rows.find((row) => row.id === ids[0])!.novelty_verdict).toBe("familiar");
+    // A skipped action never read its manifest, so it has no verdict to flush;
+    // writing its `undefined` would clear a row the manifest still stands
+    // behind and re-plan the reading forever.
+    expect(rows.find((row) => row.id === ids[COUNT - 1])!.novelty_verdict).toBe("novel");
+    expect(rows.every((row) => row.novelty_verdict !== undefined)).toBe(true);
   });
 
   it("keeps a --max-backoff that is not a duration out of the pass", async () => {
