@@ -19,7 +19,10 @@ export async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   if (items.length === 0) return results;
-  const workers = Math.max(1, Math.min(Math.floor(limit), items.length));
+  // A non-finite limit would otherwise produce zero workers and silently
+  // return an array of holes without ever calling `fn`.
+  const requested = Number.isFinite(limit) ? Math.floor(limit) : 1;
+  const workers = Math.max(1, Math.min(requested, items.length));
   let next = 0;
   const failures: unknown[] = [];
 

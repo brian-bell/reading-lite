@@ -510,8 +510,10 @@ export function makeR2RestClient(
       const res = await authedFetch(objectUrl(key), { method: "GET" });
       if (res.status === 404) return null;
       if (!res.ok) {
+        // null here means "no such manifest" to the planner, so a failed read
+        // must throw even when the envelope claims success.
         await throwIfUnsuccessfulJson(res, "GET", key);
-        return null;
+        throw new Error(`R2 GET ${key} failed: ${res.status}`);
       }
       return { body: await res.text(), etag: normalizeEtag(res.headers.get("etag") ?? undefined) };
     },

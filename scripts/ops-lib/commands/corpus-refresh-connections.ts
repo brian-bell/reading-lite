@@ -29,7 +29,6 @@ import {
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
-import { mapWithConcurrency } from "../../lib/concurrency";
 import {
   r2InventoryClientFromVars,
   refreshS3RequestDeps,
@@ -47,6 +46,7 @@ import {
   type CommandIo,
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { createPrefetchingReader } from "../planning-reads";
 import { judgeRetryDeps } from "../judge-retry";
 import {
   PHASE_MANIFEST_READ,
@@ -166,14 +166,6 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
 // The block prints in a finally: the passes worth timing most are the ones
 // that end in a thrown stale-report or storage error, having already spent
 // minutes of planning reads.
-// Planning reads are independent GETs against R2, so the pass costs
-// requests x latency only because it issued them one at a time. Eight is what
-// the staging probe measured as the point where added parallelism stops paying
-// (8 concurrent GETs took 178 ms against 73 ms for one) and is well inside R2's
-// per-bucket limits. Results are collected by input position, so the plan
-// output and its snapshots do not depend on which read finishes first.
-export const PLANNING_READ_CONCURRENCY = 8;
-
 async function runCorpusRefreshConnections(
   argv: string[],
   deps: CorpusRefreshConnectionsDeps,
@@ -220,49 +212,13 @@ async function refreshConnections(
   );
   const items = await storage.readListIndex();
   const byId = new Map(items.map((item) => [item.id, item]));
-  const storedByPrefix = new Map<string, StoredRawManifest | null>();
-  const storedErrorsByPrefix = new Map<string, Error>();
-  const readStored = async (row: ListIndexItem): Promise<StoredRawManifest | null> => {
-    const priorError = storedErrorsByPrefix.get(row.key_prefix);
-    if (priorError) throw priorError;
-    if (storedByPrefix.has(row.key_prefix)) {
-      return storedByPrefix.get(row.key_prefix) ?? null;
-    }
-    try {
-      const stored = await storage.readManifest(row.key_prefix);
-      storedByPrefix.set(row.key_prefix, stored);
-      return stored;
-    } catch (cause) {
-      const error = cause instanceof Error ? cause : new Error(String(cause));
-      storedErrorsByPrefix.set(row.key_prefix, error);
-      throw error;
-    }
-  };
-  // Fills the same cache `readStored` reads, with the reads overlapped. Each
-  // outcome, success or failure, is recorded rather than thrown, so the loops
-  // below still report every problem in their own order and against their own
-  // message. A row this misses is simply read on demand, one at a time.
-  const prefetchStored = async (rows: readonly ListIndexItem[]): Promise<void> => {
-    const pending: string[] = [];
-    const queued = new Set<string>();
-    for (const row of rows) {
-      const keyPrefix = row.key_prefix;
-      if (queued.has(keyPrefix) || storedByPrefix.has(keyPrefix)) continue;
-      if (storedErrorsByPrefix.has(keyPrefix)) continue;
-      queued.add(keyPrefix);
-      pending.push(keyPrefix);
-    }
-    await mapWithConcurrency(pending, PLANNING_READ_CONCURRENCY, async (keyPrefix) => {
-      try {
-        storedByPrefix.set(keyPrefix, await storage.readManifest(keyPrefix));
-      } catch (cause) {
-        storedErrorsByPrefix.set(
-          keyPrefix,
-          cause instanceof Error ? cause : new Error(String(cause)),
-        );
-      }
-    });
-  };
+  const manifests = createPrefetchingReader<StoredRawManifest | null>((keyPrefix) =>
+    storage.readManifest(keyPrefix),
+  );
+  const readStored = (row: ListIndexItem): Promise<StoredRawManifest | null> =>
+    manifests.read(row.key_prefix);
+  const prefetchStored = (rows: readonly ListIndexItem[]): Promise<void> =>
+    manifests.prefetch(rows.map((row) => row.key_prefix));
   const liveReadyIds = new Set<string>();
   const invalidCandidateIds = new Set<string>();
   let planningFailed = false;
@@ -780,6 +736,11 @@ export function storageFromClient(
       const key = rooted(layout.manifestKey(keyPrefix));
       const object = await client.getWithEtag(key);
       if (object === null) return null;
+      // Every write back to this manifest is an If-Match on this token, and an
+      // empty one loses the CAS after the judgement has already been paid for.
+      // R2 always sends an ETag, so this is a broken response, not a corpus
+      // state: say so before the plan is built on it.
+      if (object.etag === "") throw new Error(`manifest ${keyPrefix} was read without an ETag`);
       const raw: unknown = JSON.parse(object.body);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
         throw new Error(`manifest ${keyPrefix} is not an object`);

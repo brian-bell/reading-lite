@@ -544,6 +544,18 @@ describe("storageFromClient", () => {
     );
   });
 
+  it("refuses a manifest read that carried no ETag", async () => {
+    const { client } = fakeInventoryClient(
+      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "" }]]),
+    );
+    const storage = storageFromClient(client, "t/");
+
+    // An empty token would fail the later If-Match, after the judgement is paid.
+    await expect(storage.readManifest("readings/2026/rd_a")).rejects.toThrow(
+      /manifest readings\/2026\/rd_a was read without an ETag/,
+    );
+  });
+
   it("passes the ETag from the read straight back to the CAS write", async () => {
     const { client, calls } = fakeInventoryClient(
       new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),

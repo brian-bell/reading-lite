@@ -77,6 +77,17 @@ describe("mapWithConcurrency", () => {
     expect(started.slice(0, 2)).toEqual([0, 1]);
   });
 
+  it("still runs every item when the limit is not a usable number", async () => {
+    const seen: number[] = [];
+    await expect(
+      mapWithConcurrency([1, 2, 3], Number.NaN, async (item) => {
+        seen.push(item);
+        return item;
+      }),
+    ).resolves.toEqual([1, 2, 3]);
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
   it("returns an empty array for no items", async () => {
     await expect(mapWithConcurrency([], 8, async () => 1)).resolves.toEqual([]);
   });

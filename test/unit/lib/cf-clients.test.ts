@@ -398,6 +398,15 @@ describe("makeR2RestClient getWithEtag", () => {
     const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
     await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 403 nope/);
   });
+
+  it("throws rather than reporting a missing object when a failure claims success", async () => {
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      new Response(JSON.stringify({ success: true }), { status: 500 }),
+    );
+    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
+    // A null here would read as "no such manifest" and quietly drop a reading.
+    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 500/);
+  });
 });
 
 describe("r2InventoryClientFromVars", () => {
