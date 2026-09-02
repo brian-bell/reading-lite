@@ -579,8 +579,9 @@ esac
 
 `refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
 non-zero cause they have — a planning read that failed, a judgement that failed,
-a lost manifest CAS, a failed list flush, a `--max-backoff` ceiling — is a
-re-run-or-fix case, which is code 1 under the same rule. Code 3 stays reserved
+a lost manifest CAS, a `--max-backoff` ceiling, and for `refresh-connections`
+the `index/list.json` flush it alone performs — is a re-run-or-fix case, which
+is code 1 under the same rule. Code 3 stays reserved
 in those two commands rather than mapped onto their nearest analogue (a live
 manifest that is invalid at plan time), because that condition currently shares
 one `planningFailed` flag with transient read errors, and splitting it is a
