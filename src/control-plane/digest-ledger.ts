@@ -16,7 +16,8 @@ export type DigestSkipReason =
   | "missing_user"
   | "missing_settings"
   | "allowlist"
-  | "empty_from";
+  | "empty_from"
+  | "empty_window";
 
 export interface DigestDeliveryKey {
   userId: string;
@@ -30,13 +31,14 @@ export interface DigestDeliveryRow {
   period_key: string;
   status: DigestDeliveryStatus;
   skip_reason: string | null;
+  resend_id: string | null;
   created_at_ms: number;
   updated_at_ms: number;
 }
 
 export type DigestClaimResult = "inserted" | "pending" | "terminal";
 
-const COLUMNS = `user_id, cadence, period_key, status, skip_reason, created_at_ms, updated_at_ms`;
+const COLUMNS = `user_id, cadence, period_key, status, skip_reason, resend_id, created_at_ms, updated_at_ms`;
 
 export async function getDigestDelivery(
   db: ControlPlaneDb,
@@ -108,7 +110,10 @@ export function digestDeliveryKeyId(key: DigestDeliveryKey): string {
 export async function finalizeDigestDelivery(
   db: ControlPlaneDb,
   key: DigestDeliveryKey,
-  next: { status: "sent" } | { status: "skipped"; reason: DigestSkipReason } | { status: "failed" },
+  next:
+    | { status: "sent"; resendId?: string }
+    | { status: "skipped"; reason: DigestSkipReason }
+    | { status: "failed" },
   nowMs: number,
 ): Promise<DigestDeliveryStatus> {
   const existing = await getDigestDelivery(db, key);
@@ -118,13 +123,15 @@ export async function finalizeDigestDelivery(
   }
 
   const skipReason = next.status === "skipped" ? next.reason : null;
+  const resendId = next.status === "sent" ? (next.resendId ?? null) : null;
   if (existing?.status === "pending") {
     await db.run(
       `UPDATE digest_deliveries
-          SET status = ?, skip_reason = ?, updated_at_ms = ?
+          SET status = ?, skip_reason = ?, resend_id = ?, updated_at_ms = ?
         WHERE user_id = ? AND cadence = ? AND period_key = ? AND status = 'pending'`,
       next.status,
       skipReason,
+      resendId,
       nowMs,
       key.userId,
       key.cadence,
@@ -133,14 +140,15 @@ export async function finalizeDigestDelivery(
   } else {
     await db.run(
       `INSERT INTO digest_deliveries
-         (user_id, cadence, period_key, status, skip_reason, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (user_id, cadence, period_key, status, skip_reason, resend_id, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id, cadence, period_key) DO NOTHING`,
       key.userId,
       key.cadence,
       key.periodKey,
       next.status,
       skipReason,
+      resendId,
       nowMs,
       nowMs,
     );

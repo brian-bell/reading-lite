@@ -2,7 +2,7 @@ import { z } from "zod";
 import { marked } from "marked";
 import type { Manifest, Connection } from "../schemas/manifest";
 import type { ListIndex } from "../schemas/api";
-import { fetchWithRetry, type RetryDeps } from "./http-retry";
+import { fetchWithRetry, parseRateLimitDelayMs, RateLimitedError, type RetryDeps } from "./http-retry";
 
 export const RESEND_EMAILS_URL = "https://api.resend.com/emails";
 
@@ -40,39 +40,56 @@ export interface SendReadingEmailResult {
 
 const ResponseSchema = z.object({ id: z.string().min(1) });
 
-export async function sendReadingEmail(
-  input: SendReadingEmailInput,
+export const UNKNOWN_READING_LABEL = "(unknown reading)";
+
+export function joinUrl(base: string, path: string): string {
+  const trimmedBase = base.replace(/\/+$/, "");
+  const trimmedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${trimmedBase}${trimmedPath}`;
+}
+
+export function escapeText(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export function escapeAttr(s: string): string {
+  return escapeText(s).replace(/"/g, "&quot;");
+}
+
+export function buildTitleById(listIndex: ListIndex | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!listIndex) return out;
+  for (const item of listIndex.items) {
+    if (item.title) out.set(item.id, item.title);
+  }
+  return out;
+}
+
+export async function postResendEmail(
+  payload: { from: string; to: string; subject: string; html: string; text: string },
   deps: EmailDeps,
 ): Promise<SendReadingEmailResult> {
-  const { manifest, webBaseUrl, listIndex } = input;
-  if (!manifest.title || !manifest.tldr) {
-    throw new Error("sendReadingEmail: manifest must have title + tldr (status=ready)");
-  }
-
-  const detailUrl = joinUrl(webBaseUrl, `/readings/${manifest.id}`);
-  const subject = manifest.title;
-  const titleById = buildTitleById(listIndex);
-  const html = renderHtml(manifest, detailUrl, webBaseUrl, titleById);
-  const text = renderText(manifest, detailUrl, webBaseUrl, titleById);
-
   const init: RequestInit = {
     method: "POST",
     headers: {
       authorization: `Bearer ${deps.apiKey}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      from: deps.from,
-      to: deps.to,
-      subject,
-      html,
-      text,
-    }),
+    body: JSON.stringify(payload),
   };
 
   const response = deps.retry
     ? await fetchWithRetry(deps.fetch, RESEND_EMAILS_URL, init, deps.retry)
     : await deps.fetch(RESEND_EMAILS_URL, init);
+
+  if (response.status === 429) {
+    const retryAfter = parseRateLimitDelayMs(response.headers, () => Date.now());
+    response.body?.cancel().catch(() => {});
+    throw new RateLimitedError(429, retryAfter, RESEND_EMAILS_URL);
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
@@ -89,19 +106,31 @@ export async function sendReadingEmail(
   return { id: parsed.data.id };
 }
 
-function joinUrl(base: string, path: string): string {
-  const trimmedBase = base.replace(/\/+$/, "");
-  const trimmedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${trimmedBase}${trimmedPath}`;
-}
-
-function buildTitleById(listIndex: ListIndex | null): Map<string, string> {
-  const out = new Map<string, string>();
-  if (!listIndex) return out;
-  for (const item of listIndex.items) {
-    if (item.title) out.set(item.id, item.title);
+export async function sendReadingEmail(
+  input: SendReadingEmailInput,
+  deps: EmailDeps,
+): Promise<SendReadingEmailResult> {
+  const { manifest, webBaseUrl, listIndex } = input;
+  if (!manifest.title || !manifest.tldr) {
+    throw new Error("sendReadingEmail: manifest must have title + tldr (status=ready)");
   }
-  return out;
+
+  const detailUrl = joinUrl(webBaseUrl, `/readings/${manifest.id}`);
+  const subject = manifest.title;
+  const titleById = buildTitleById(listIndex);
+  const html = renderHtml(manifest, detailUrl, webBaseUrl, titleById);
+  const text = renderText(manifest, detailUrl, webBaseUrl, titleById);
+
+  return postResendEmail(
+    {
+      from: deps.from,
+      to: deps.to,
+      subject,
+      html,
+      text,
+    },
+    deps,
+  );
 }
 
 const SECTION_KEYS = [
@@ -162,7 +191,7 @@ function renderConnectionHtml(
     const href = joinUrl(webBaseUrl, `/readings/${c.id}`);
     return `<a href="${escapeAttr(href)}">${escapeText(title)}</a> — ${escapeText(c.reason)}`;
   }
-  return `(unknown reading) — ${escapeText(c.reason)}`;
+  return `${escapeText(UNKNOWN_READING_LABEL)} — ${escapeText(c.reason)}`;
 }
 
 function renderText(
@@ -194,7 +223,7 @@ function renderText(
         const href = joinUrl(webBaseUrl, `/readings/${c.id}`);
         lines.push(`- ${title} (${href}) — ${c.reason}`);
       } else {
-        lines.push(`- (unknown reading) — ${c.reason}`);
+        lines.push(`- ${UNKNOWN_READING_LABEL} — ${c.reason}`);
       }
     }
   }
@@ -207,17 +236,6 @@ function renderText(
   }
 
   return lines.join("\n");
-}
-
-function escapeText(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function escapeAttr(s: string): string {
-  return escapeText(s).replace(/"/g, "&quot;");
 }
 
 function resendErrorMessage(text: string, status: number): string {

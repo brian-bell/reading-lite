@@ -33,12 +33,15 @@ describe("digest_deliveries ledger CAS", () => {
     const { db } = await bootstrapped();
     expect(await claimPendingDigestDelivery(db, KEY, NOW_MS)).toBe("inserted");
     expect(await claimPendingDigestDelivery(db, KEY, NOW_MS + 1)).toBe("pending");
-    expect(await finalizeDigestDelivery(db, KEY, { status: "sent" }, NOW_MS + 2)).toBe("sent");
+    expect(await finalizeDigestDelivery(db, KEY, { status: "sent", resendId: "re_1" }, NOW_MS + 2)).toBe(
+      "sent",
+    );
     expect(await claimPendingDigestDelivery(db, KEY, NOW_MS + 3)).toBe("terminal");
     expect(await getDigestDelivery(db, KEY)).toMatchObject({
       status: "sent",
       period_key: "2026-09-02",
       cadence: "daily",
+      resend_id: "re_1",
     });
   });
 

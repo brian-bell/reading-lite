@@ -174,7 +174,7 @@ export default {
     if (isDigestQueue(batch.queue)) {
       const nowMs = Date.now();
       for (const msg of batch.messages) {
-        await consumeDigestMessage(msg, env, { nowMs });
+        await consumeDigestMessage(msg, env, { nowMs, fetch: services.fetch });
       }
       return;
     }

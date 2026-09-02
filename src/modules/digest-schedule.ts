@@ -123,3 +123,65 @@ export function digestDueAt(settings: DigestScheduleSettings, now: Date): Digest
     local: current.local,
   };
 }
+
+export interface DigestWindow {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Local reading window ending at `now`. Daily is the 24 local hours ending on
+ * this local hour; weekly is the last 7 local days. First enable therefore
+ * cannot dump the corpus. Start is exclusive so a reading at the previous
+ * send instant does not appear twice.
+ */
+export function digestWindow(
+  cadence: DigestEnabledCadence,
+  timeZone: string,
+  now: Date,
+): DigestWindow | null {
+  const local = localCivilTime(now, timeZone);
+  if (!local) return null;
+  const days = cadence === "weekly" ? 7 : 1;
+  const startDate = addUtcCalendarDays(local.year, local.month, local.day, -days);
+  const startMs =
+    zonedLocalHourToUtcMs(timeZone, startDate.year, startDate.month, startDate.day, local.hour) ??
+    now.getTime() - days * 86_400_000;
+  return { startMs, endMs: now.getTime() };
+}
+
+export function zonedLocalHourToUtcMs(
+  timeZone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+): number | null {
+  if (!isIanaTimeZone(timeZone)) return null;
+  const targetKey = civilHourKey(year, month, day, hour);
+  let utc = Date.UTC(year, month - 1, day, hour, 0, 0, 0);
+  for (let i = 0; i < 8; i++) {
+    const local = localCivilTime(new Date(utc), timeZone);
+    if (!local) return null;
+    if (civilHourKey(local.year, local.month, local.day, local.hour) === targetKey) return utc;
+    utc +=
+      Date.UTC(year, month - 1, day, hour) -
+      Date.UTC(local.year, local.month - 1, local.day, local.hour);
+  }
+  return null;
+}
+
+function addUtcCalendarDays(
+  year: number,
+  month: number,
+  day: number,
+  delta: number,
+): { year: number; month: number; day: number } {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + delta);
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
+function civilHourKey(year: number, month: number, day: number, hour: number): string {
+  return `${year}-${month}-${day}-${hour}`;
+}

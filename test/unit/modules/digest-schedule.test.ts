@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentPeriodKey,
   digestDueAt,
+  digestWindow,
   isoWeekPeriodKey,
   localCivilTime,
   periodKeyFor,
@@ -129,5 +130,36 @@ describe("currentPeriodKey (send-time, no hour/weekday gate)", () => {
       cadence: "weekly",
       period_key: "2026-W36",
     });
+  });
+});
+
+describe("digestWindow", () => {
+  it("uses the last 24 local hours ending at this send for daily", () => {
+    const now = new Date("2026-09-02T09:00:00.000Z");
+    expect(digestWindow("daily", "UTC", now)).toEqual({
+      startMs: Date.parse("2026-09-01T09:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("uses the last 7 local days ending at this send for weekly", () => {
+    const now = new Date("2026-09-02T09:00:00.000Z");
+    expect(digestWindow("weekly", "UTC", now)).toEqual({
+      startMs: Date.parse("2026-08-26T09:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("computes local hours in a non-UTC zone", () => {
+    // 09:00 America/Los_Angeles on 2026-09-02 is 16:00Z.
+    const now = new Date("2026-09-02T16:00:00.000Z");
+    expect(digestWindow("daily", "America/Los_Angeles", now)).toEqual({
+      startMs: Date.parse("2026-09-01T16:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("returns null for an invalid time zone", () => {
+    expect(digestWindow("daily", "Not/A_Zone", new Date("2026-09-02T09:00:00.000Z"))).toBeNull();
   });
 });

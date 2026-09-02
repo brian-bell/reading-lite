@@ -279,7 +279,7 @@ src/
   intake/                       # Reading intake: submit/importMarkdown/reprocess verbs;
                                 #   activation.ts = eager write-and-enqueue + rollback funnel
   process-reading.ts            # processReading pipeline (runs in the queue consumer)
-  digest-pipeline.ts            # digest cron fan-out + DIGEST_JOBS stub send (196 B1)
+  digest-pipeline.ts            # digest cron fan-out + DIGEST_JOBS Resend send (196 B2)
   reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
   attempt-ownership.ts          # shared ownership verdict + attempt arg shapes
   control-plane/                # D1 auth: HMAC crypto, principal, founder bootstrap
@@ -295,6 +295,8 @@ src/
     anthropic/                  # emit_reading / reject_source + prompt caching
     http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
     email.ts                    # Resend per-reading notification
+    digest-email.ts             # multi-reading digest HTML/text + Resend send
+    digest-schedule.ts          # local due math, period_key, digest window
     stores/
       reading-store.ts          # R2: manifest, raw, extracted, by-url + by-id
       list-index.ts             # index/list.json: CAS, search, ownership, rebuild
