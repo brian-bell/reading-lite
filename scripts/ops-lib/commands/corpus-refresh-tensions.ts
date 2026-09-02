@@ -178,7 +178,7 @@ function describeAction(action: Action): string {
  * is already being judged (`judgedKeys` above), so the two never write the same
  * partner slot; `buildTensionJudgementInput` reads titles and summaries, not
  * the `tensions` array, so a repair landing first cannot change what a
- * judgement is asked about; and a repair's staleness guard compares the live
+ * judgement is asked about; and a repair's staleness guard compares an
  * `updated_at` against a plan-time timestamp that no write in this command
  * moves (`mergeTensionSide` and `purgeTensionPartner` preserve it verbatim). A
  * repair kind or a judgement input that broke any of those would need the pool
@@ -564,6 +564,10 @@ async function refreshTensions(
       } catch (error) {
         return fail(key, error);
       }
+      // Only a side read fresh — one an earlier action in this pass wrote —
+      // can say anything the plan did not already know here, so under a real
+      // sole writer this stays at zero. It is the report that a manifest was
+      // judged out from under the plan, which is worth keeping cheap.
       if (source === "report" && isPairJudged(a.manifest, b.manifest)) {
         outcome.skippedSincePlan = true;
         outcome.stderr.push(`  ! skip ${key}: judged since the plan was made`);
@@ -607,6 +611,10 @@ async function refreshTensions(
       }
     }
 
+    // The two staleness guards below compare against the `updated_at` the
+    // plan read, which is what `findOneSided` planned from, so they bite only
+    // on a side re-read after an in-pass write. A partner rewritten outside
+    // the pass is caught by the conditional write instead.
     const repair = action.repair;
     try {
       if (repair.kind === "mirror") {
@@ -653,7 +661,9 @@ async function refreshTensions(
     // The reading ids an action reads and writes. A reading sits in several
     // pairs, so without this two workers would hold the same manifest at the
     // same ETag, both pay for a judgement, and the second would lose the CAS:
-    // failures and spend that a sequential pass never produces.
+    // failures and spend that a sequential pass never produces. Naming every
+    // id an action reads is also what keeps the plan-time ETag cache honest:
+    // a write evicts its side, and no one else may be holding it at the time.
     actionKeys,
     // `runAction` reports its own failures, but an unforeseen throw would abort
     // the pass with the results behind it unaccounted for, so the last word on
