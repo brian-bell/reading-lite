@@ -93,7 +93,6 @@ import {
   timedRefreshStorage,
   type RefreshTimer,
 } from "../refresh-timing";
-import { RateLimitedError } from "../../../src/modules/http-retry";
 import {
   parseProductionWorkerVars,
   storageFromClient,
@@ -609,7 +608,6 @@ async function refreshTensions(
         );
         return outcome;
       } catch (error) {
-        if (error instanceof RateLimitedError) gate.close(error.retryAfterMs);
         return fail(key, error);
       }
     }
