@@ -495,8 +495,9 @@ concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
 away. And when a judgement comes back rate limited (a 429 that outlived the
 judge's own retry), the whole pass backs off together: no worker *starts*
 another judgement until the provider's `Retry-After` has passed (defaulting to
-8 s, capped at 60 s so a wild header cannot park a sole-writer window). Calls already in flight when the window opens still finish, and are
-still billed. The pause prints as `provider rate limited; pausing new
+8 s, capped at 60 s so a wild header cannot park a sole-writer window). Calls
+already in flight when the window opens still finish, and are still billed. The
+pause prints as `provider rate limited; pausing new
 judgements for …`. Workers wake together at the end of a window, so a limit that
 is still in force costs one more round of 429s before the next pause.
 
@@ -513,13 +514,17 @@ The total time a pass will spend waiting out limits is bounded by
 `600000ms`, `2h`; a bare number is seconds). Only the wait a limit actually adds
 counts against it, so a whole round of workers reporting the same wall is one
 charge, not one each. When the next window would overrun the budget, the pass
-stops: it prints `rate-limit backoff reached the … ceiling`, dispatches nothing
-further, lets the judgements already in flight finish and write their results,
-reports every action it did not reach as `skip …: backoff ceiling reached
+stops dispatching judgements: it prints `rate-limit backoff reached the …
+ceiling`, lets the judgements already in flight finish and write their results,
+reports every judgement it did not reach as `skip …: backoff ceiling reached
 before this action ran`, and exits non-zero. That is what keeps a hard-limited
 provider from sitting on a scarce sole-writer window for the length of the plan.
-The skipped actions were never touched, so a rerun when the provider is quieter
-picks them up unchanged.
+The skipped judgements were never touched, so a rerun when the provider is
+quieter picks them up unchanged.
+
+The ceiling bounds the paid work only, on the same rule as `--limit`: a list
+heal or an integrity repair makes no provider call and cannot be rate limited,
+so the pass still runs the free work behind the ceiling before it exits.
 
 Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
 rerun resumes from the manifests as it always does.

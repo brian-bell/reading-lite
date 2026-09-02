@@ -511,7 +511,7 @@ async function refreshTensions(
     onCeiling: (totalMs) =>
       deps.io.stderr(
         `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
-          `after ${formatSeconds(totalMs)}; not dispatching the rest of this pass`,
+          `after ${formatSeconds(totalMs)}; not dispatching any more judgements`,
       ),
   });
   // The manifest to write against: the one planning read and validated, until
@@ -570,8 +570,11 @@ async function refreshTensions(
       return outcome;
     };
 
-    if (gate.stopped()) return ceilingSkip();
     if (action.kind === "judge") {
+      // The ceiling stops the paid work only. A repair makes no provider call
+      // and cannot be rate limited, so it runs past the ceiling for the same
+      // reason `--limit` caps judgements and never the free repairs.
+      if (gate.stopped()) return ceilingSkip();
       const { a: aId, b: bId, source, key } = action.candidate;
       let a: StoredRawManifest;
       let b: StoredRawManifest;
@@ -911,7 +914,8 @@ Options:
   --limit <n>          Cap paid judgement actions; free repairs always run.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
-                       before it stops dispatching. Default: 10m (bare = seconds).
+                       before it stops dispatching judgements; free repairs still
+                       run. Default: 10m (bare = seconds).
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.

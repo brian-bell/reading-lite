@@ -884,7 +884,7 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
 
     expect(s.h.err.filter((line) => line.includes("backoff reached"))).toEqual([
       "  ! rate-limit backoff reached the 120.000s ceiling after 120.000s; " +
-        "not dispatching the rest of this pass",
+        "not dispatching any more judgements",
     ]);
     expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(120_000);
     expect(s.h.judge).toHaveBeenCalledTimes(3);
@@ -900,5 +900,29 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
     // Every pause the pass reported it actually waited out: the second 429 of
     // a retried action reports the wall through one path, not two.
     expect(s.h.err.filter((line) => line.includes("pausing new judgements"))).toHaveLength(2);
+  });
+
+  it("still runs free repairs after the ceiling, since they make no provider call", async () => {
+    const s = scaled();
+    // A dangling tension on the last reading: a repair, planned after every
+    // judgement, that costs the provider nothing.
+    const stored = s.manifests.get("readings/2026/rd_09")!.manifest;
+    stored.tensions = [
+      { id: "rd_gone", kind: "supersedes", reason: "gone", computed_at: EARLIER },
+    ];
+    stored.tensions_judged = [{ id: "rd_gone", judged_at: EARLIER }];
+    s.h.judge.mockImplementation(async () => {
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "2m")).toBe(1);
+
+    // The ceiling stopped the paid judgements; the repair behind it still ran
+    // and wrote, the same way --limit caps judgements and never repairs.
+    expect(s.h.out.join("\n")).toContain(
+      "Judged: 0; manifests written: 1; repaired: 1; skipped since plan: 0; " +
+        `failures: 2; skipped at the backoff ceiling: ${pairs.length - 2}`,
+    );
+    expect(s.manifests.get("readings/2026/rd_09")!.manifest.tensions).toEqual([]);
   });
 });

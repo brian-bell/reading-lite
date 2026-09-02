@@ -27,8 +27,11 @@
 // round of workers would walk into the limit and re-open a window, and a long
 // pass would sit on the scarce sole-writer window for hours. Once the cumulative
 // pause this pass has committed to reaches `--max-backoff`, the gate reports
-// itself `stopped()`: the commands dispatch no further actions, let the ones in
-// flight finish and write, report the rest as skipped, and exit non-zero.
+// itself `stopped()`: the commands dispatch no further judgements, let the ones
+// in flight finish and write, report the rest as skipped, and exit non-zero.
+// What it bounds is the paid work only, on the same rule `--limit` follows — a
+// list heal or an integrity repair makes no provider call and cannot be rate
+// limited, so it still runs behind the ceiling.
 
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { UsageError } from "./contract";
@@ -49,7 +52,7 @@ export const RATE_LIMIT_DEFAULT_BACKOFF_MS = 8_000;
  */
 export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
 
-/** Cumulative backoff one pass will pay before it stops dispatching. */
+/** Cumulative backoff one pass will pay before it stops dispatching judgements. */
 export const DEFAULT_MAX_BACKOFF_MS = 600_000;
 
 /**
@@ -107,7 +110,7 @@ export interface RateLimitGate {
   close(retryAfterMs: number | null): void;
   /**
    * True once the pass has committed its whole backoff budget. Callers stop
-   * dispatching and report the rest of their plan as skipped.
+   * dispatching paid judgements and report the rest of them as skipped.
    */
   stopped(): boolean;
 }
@@ -115,7 +118,7 @@ export interface RateLimitGate {
 export interface RateLimitGateDeps {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
-  /** Cumulative pause this pass will commit to before it stops dispatching. */
+  /** Cumulative pause this pass will commit to before it stops judging. */
   maxBackoffMs: number;
   /** Called once per window opened or extended, with the wait it imposes. */
   onPause: (ms: number) => void;

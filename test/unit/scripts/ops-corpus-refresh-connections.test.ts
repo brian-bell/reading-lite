@@ -1058,7 +1058,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     ).toHaveLength(2);
     expect(s.h.err.filter((line) => line.includes("backoff reached"))).toEqual([
       "  ! rate-limit backoff reached the 120.000s ceiling after 120.000s; " +
-        "not dispatching the rest of this pass",
+        "not dispatching any more judgements",
     ]);
     // The budget is a bound on wall time, not a target it overshoots.
     expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(120_000);
@@ -1095,6 +1095,33 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     // behind and re-plan the reading forever.
     expect(rows.find((row) => row.id === ids[COUNT - 1])!.novelty_verdict).toBe("novel");
     expect(rows.every((row) => row.novelty_verdict !== undefined)).toBe(true);
+  });
+
+  it("still heals list rows after the ceiling, since a heal is not a paid call", async () => {
+    const s = scaled();
+    // The last planned action is a list heal: judged for this report already,
+    // with a manifest verdict the row disagrees with.
+    const healed = ids[COUNT - 1]!;
+    const stored = s.manifests.get(`readings/2026/${healed}`)!.manifest;
+    stored.connections_computed_at = JUDGED_AT;
+    stored.novelty_verdict = "familiar";
+    s.h.judge.mockImplementation(async () => {
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "120s")).toBe(1);
+
+    // The ceiling stopped the paid judgements, but the free heal behind it ran
+    // and wrote its row, the same way --limit caps judgements and never repairs.
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: 0; list rows healed: 1; failures: 2; skipped at the backoff ceiling: ${COUNT - 3}`,
+    );
+    expect(
+      s.listWrite()!.find((row) => row.id === healed)!.novelty_verdict,
+    ).toBe("familiar");
+    expect(s.h.err).not.toContain(
+      `  ! skip ${healed}: backoff ceiling reached before this action ran`,
+    );
   });
 
   it("keeps a --max-backoff that is not a duration out of the pass", async () => {

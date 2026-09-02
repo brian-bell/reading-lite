@@ -472,7 +472,7 @@ async function refreshConnections(
     onCeiling: (totalMs) =>
       deps.io.stderr(
         `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
-          `after ${formatSeconds(totalMs)}; not dispatching the rest of this pass`,
+          `after ${formatSeconds(totalMs)}; not dispatching any more judgements`,
       ),
   });
 
@@ -498,13 +498,16 @@ async function refreshConnections(
       );
       return outcome;
     };
-    if (gate.stopped()) return ceilingSkip();
     if (action.kind === "heal") {
       outcome.kind = "healed";
       outcome.verdict = action.stored.manifest
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     }
+    // The ceiling stops the paid work only. A list heal makes no provider call
+    // and cannot be rate limited, so it runs past the ceiling for the same
+    // reason `--limit` caps judgements and never the free repairs.
+    if (gate.stopped()) return ceilingSkip();
     // No re-read: planning read this manifest and kept its ETag, and a report
     // names a reading once, so nothing earlier in this pass can have written
     // it. The conditional write below is what detects a manifest that changed
@@ -881,7 +884,8 @@ Options:
   --limit <n>          Cap selected judgement or list-heal actions.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
-                       before it stops dispatching. Default: 10m (bare = seconds).
+                       before it stops dispatching judgements; free repairs still
+                       run. Default: 10m (bare = seconds).
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
   --execute            Make paid provider calls and write results.
