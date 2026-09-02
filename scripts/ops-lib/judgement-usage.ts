@@ -1,8 +1,17 @@
 // Formats the provider usage returned by a judgement call so execute runs show
-// what was actually billed instead of only the pre-run estimate. OpenAI reports
-// reasoning tokens separately (they are billed as output); Anthropic folds them
-// into output_tokens and reports no separate figure, so the reasoning column is
-// omitted for Anthropic rather than shown as a misleading zero.
+// the tokens the provider actually reported instead of only the pre-run
+// estimate, whose output assumption ignores reasoning entirely.
+//
+// OpenAI reports reasoning tokens separately (they are billed as output);
+// Anthropic folds them into output_tokens and reports no separate figure, so
+// the reasoning column is omitted for Anthropic rather than shown as a
+// misleading zero.
+//
+// The counts here are the plain input and output figures. Cache tokens are
+// deliberately left out: for OpenAI cached_input_tokens is already a subset of
+// input_tokens, but for Anthropic cache reads and writes are billed on top of
+// input_tokens at their own rates, so an Anthropic run's input column is the
+// uncached input only and understates the billed input.
 
 import type { SummarizationUsage } from "../../src/schemas/manifest";
 

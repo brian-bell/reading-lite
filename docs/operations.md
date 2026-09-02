@@ -338,7 +338,13 @@ without another paid judgement. `--limit` caps judgement and healing actions.
 Provider errors and lost CAS races leave the reading ready and never blind-write
 over newer state. The price estimate uses a four-UTF-8-bytes-per-token
 approximation, a 256-output-token assumption, and the dated price table printed
-by the command; it is a planning estimate, not a bill.
+by the command; it is a planning estimate, not a bill. Execute mode prints the
+tokens the provider reported for each judgement and a run total (`Usage: …`),
+counted as soon as the call returns so a judgement that is billed but then
+fails to write still appears. Reasoning tokens are shown for OpenAI, which
+reports them separately and bills them as output; Anthropic folds them into
+its output count and the column is omitted. The input column excludes Anthropic
+cache reads and writes, which are billed on top of it.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
@@ -376,6 +382,8 @@ and is remembered so the pair is not re-judged nightly. Only `tensions` and
 stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
+Execute mode prints the provider token usage of each judgement and a run total
+on the same terms as `refresh-connections` above.
 
 The two writes are not atomic. If the second CAS write loses, the command
 reports the pair as one-sided; the next run mirrors the inverse entry to the
