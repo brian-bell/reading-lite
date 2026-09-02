@@ -964,14 +964,48 @@ describe("ops corpus refresh-neighbours", () => {
       expect(Date.parse(written.last_run_at)).toBeLessThan(listReadAt);
     });
 
-    it("names an --only id the scope excluded instead of silently measuring nothing", async () => {
-      const { deps, lines } = makeDeps({ state: MARKER });
+    // A scope is an economy, not a permission: an operator naming an id is
+    // asserting intent, and gets that reading measured whatever the scope says.
+    it("measures an --only id the scope excluded, and says it overrode the scope", async () => {
+      const { deps, calls, lines } = makeDeps({ state: MARKER });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run", "rd_r"],
         deps,
       );
       expect(code).toBe(0);
-      expect(lines.join("\n")).toContain("Out of scope, not measured: rd_r (re-run with --full)");
+      expect(calls.queries.filter((q) => q.topK !== REVERSE_TOP_K).map((q) => q.id)).toEqual([
+        "rd_r",
+      ]);
+      expect(lines.join("\n")).toContain("Measured despite the scope (--only): rd_r");
+    });
+
+    // A reading the planner brings into scope is not merely flagged for tier 2:
+    // it is measured like any other target, so its stored similarity snapshot
+    // and its list row are brought current in the same pass.
+    it("rewrites the snapshot and list row of a reading pulled in by a reverse query", async () => {
+      const { deps, calls } = makeDeps({
+        state: MARKER,
+        // Only rd_r changed. rd_n is the stranger its vector reaches, and its
+        // list row carries a stale snapshot.
+        items: [
+          { ...READY, updated_at: "2026-08-21T12:00:00.000Z" },
+          { ...NEIGHBOUR, similarity: { count: 4, max: 0.9, computed_at: AT } },
+        ],
+        matchesFor: (_id, topK) =>
+          topK === REVERSE_TOP_K
+            ? [
+                { id: "rd_r", score: 1 },
+                { id: "rd_n", score: REVERSE_SCORE_BOUND + 0.2 },
+              ]
+            : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.puts.map((p) => p.key).sort()).toEqual(["readings/rd_n", "readings/rd_r"]);
+      expect(calls.indexWrites).toBe(1);
     });
 
     it("rejects --since-last-run together with --full", async () => {

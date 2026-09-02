@@ -382,14 +382,14 @@ async function refreshNeighbours(
   io.stdout(`Vectorize: ${vectorizeIndex}`);
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
-  // Naming an id is an assertion of intent, and a scope that quietly drops it
-  // reads as "nothing to do" rather than "not this run". Say which, so the
-  // operator can decide to re-run with --full.
+  // Naming an id overrides the scope (planRefresh). Say when that happened, so
+  // the numbers below are attributable to the override rather than read as the
+  // scope having chosen those readings.
   if (scope.kind === "incremental" && opts.only.length > 0) {
     const inScope = new Set(scope.ids);
-    const excluded = opts.only.filter((id) => !inScope.has(id));
-    if (excluded.length > 0) {
-      io.stdout(`Out of scope, not measured: ${excluded.join(", ")} (re-run with --full)`);
+    const forced = opts.only.filter((id) => !inScope.has(id));
+    if (forced.length > 0) {
+      io.stdout(`Measured despite the scope (--only): ${forced.join(", ")}`);
     }
   }
   io.stdout(`Corpus: ${items.length} readings`);
@@ -733,6 +733,7 @@ reading nobody touched stays invisible until the next full sweep, so run --full
 weekly. The scope and its reason are printed and recorded in the report header.
 
 Only a complete --execute pass advances the marker, and --only/--limit never do.
+Naming ids overrides the scope: those readings are measured either way.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).

@@ -128,10 +128,15 @@ export function planRefresh(
   let skippedNotReady = 0;
   const targets: RefreshRow[] = [];
   for (const it of items) {
-    // The incremental scope (refresh-scope.ts) and --only compose: an operator
-    // naming ids gets exactly those, intersected with what the scope allows.
-    if (opts.scope !== undefined && !opts.scope.has(it.id)) continue;
-    if (only && !only.has(it.id)) continue;
+    // Naming ids overrides the incremental scope (refresh-scope.ts) rather than
+    // intersecting with it: an operator who asks for a reading by id is
+    // asserting intent, and a scope is an economy, not a permission. Without
+    // --only, the scope decides.
+    if (only) {
+      if (!only.has(it.id)) continue;
+    } else if (opts.scope !== undefined && !opts.scope.has(it.id)) {
+      continue;
+    }
     if (it.status !== "ready") {
       skippedNotReady++;
       continue;

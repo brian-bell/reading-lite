@@ -41,12 +41,16 @@
 //     the SPA serve;
 //   - a purge, unless it shrinks the list: the check is a row count, so a day
 //     that purges as many readings as it ingests does not escalate, and the
-//     readings that silently lost a neighbour wait for the sweep. Recording a
-//     digest of ids instead of a cardinality would close this; it has not been
-//     done, so the weekly sweep is load-bearing.
+//     readings that silently lost a neighbour wait for the sweep. Replacing the
+//     count with a digest of ready ids closes this, and is rl-perf-7b;
 //   - a Vectorize-only write. `corpus backfill-vectors` restores vectors with
 //     R2 read-only, so neither the row timestamps nor the list ETag move while
-//     neighbourhoods do. Run a `--full` pass after one.
+//     neighbourhoods do. Run a `--full` pass after one, until 7b makes that
+//     command invalidate the marker.
+//
+// What is NOT deferred: a reading the rules above DO bring into scope is a
+// measurement target like any other, so its `similarity` snapshot and its list
+// row are brought current in the same pass, not just flagged for tier 2.
 //
 // `--full` stays the default until the staging proof lands.
 //

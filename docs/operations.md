@@ -460,16 +460,26 @@ persistent flag on a reading nobody touched — the backfill's 394
 scope. **Run `--full` weekly**; `--full` remains the default until a staging
 proof of the incremental path is recorded here.
 
-Three more things a nightly incremental pass does not see, all of them waiting
-for the weekly sweep. A reprocess that moves a vector far enough to leave a
-stranger's floored neighbourhood: the reverse query runs against the vector's
-new position, and where that stranger had never judged it, its stored
-`similarity` snapshot and list row — which the API and the SPA serve — go stale
-until the sweep. A day that purges as many readings as it ingests: the
-escalation compares list row counts, so a net-zero day does not trigger it. And
-any Vectorize-only write — `corpus backfill-vectors` restores vectors with R2
-read-only, so no row timestamp and no list ETag moves while neighbourhoods do;
-run a `--full` pass after one.
+A reading the scope does bring in is measured like any other target, so its
+`similarity` snapshot and its list row are brought current in the same pass —
+nothing about being in scope defers a measurement to the sweep.
+
+Three things a nightly pass does not bring in, all of them waiting for the
+weekly sweep. A reprocess that moves a vector far enough to leave a stranger's
+floored neighbourhood: the reverse query runs against the vector's new position,
+and where that stranger had never judged it, its stored `similarity` snapshot
+and list row — which the API and the SPA serve — go stale until the sweep. A day
+that purges as many readings as it ingests: the escalation compares list row
+counts, so a net-zero day does not trigger it. And any Vectorize-only write —
+`corpus backfill-vectors` restores vectors with R2 read-only, so no row
+timestamp and no list ETag moves while neighbourhoods do; run a `--full` pass
+after one. The last two are what reading-lite-s1k rl-perf-7b closes, by
+recording a digest of ready ids instead of a count and by having
+`backfill-vectors` invalidate the marker.
+
+`--only <id>` overrides the scope: a named reading is measured whether or not
+the scope selected it, and the header says so. It still does not advance the
+marker.
 
 Only a complete `--execute` pass advances the marker (a plan pass writes no
 snapshots, and `--only`/`--limit` measure a subset on purpose, so neither
