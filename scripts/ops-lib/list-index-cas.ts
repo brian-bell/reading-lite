@@ -116,6 +116,9 @@ export async function casMergeListIndex(
   let lastPutError: unknown;
 
   for (let attempt = 0; attempt < cas.maxAttempts; attempt++) {
+    // A read throw escapes: the client already retries plain GETs, so one that
+    // reaches here has exhausted the transport's own attempts. The conditional
+    // PUT below is the one call the transport refuses to repeat.
     const object = await client.getWithEtag(key);
     // Unlike the Worker's store, an operator flush never creates this object:
     // the run read it minutes ago, so absent means someone deleted the corpus
