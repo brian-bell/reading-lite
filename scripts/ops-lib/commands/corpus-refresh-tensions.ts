@@ -170,11 +170,15 @@ function describeAction(action: Action): string {
 /**
  * The reading ids an execute action reads and writes, held for its duration.
  *
- * Holding a key blocks a later action, so the pool may dispatch a repair ahead
- * of a judge that is waiting on one. That is safe because a repair's staleness
- * guard compares the live `updated_at` against a plan-time timestamp, and no
- * write this command makes moves `updated_at` (`mergeTensionSide` preserves it
- * verbatim): no action in the pass can make another action's guard trip.
+ * The pool dispatches the first pending action whose keys are all free, so two
+ * actions that share a reading run one at a time but NOT necessarily in plan
+ * order: a repair on C can be applied before an earlier judge of (B, C) that is
+ * waiting on B. Nothing here depends on that order. The two write disjoint
+ * partner entries of C, each onto a manifest it re-read itself, and a repair's
+ * staleness guard compares the live `updated_at` against a plan-time timestamp
+ * that no write in this command moves (`mergeTensionSide` and
+ * `purgeTensionPartner` preserve it verbatim). An action kind that did depend
+ * on plan order would need the pool to enforce it.
  */
 function actionKeys(action: Action): string[] {
   if (action.kind === "judge") return [action.candidate.a, action.candidate.b];
@@ -555,13 +559,13 @@ async function refreshTensions(
         // here, after the re-reads, because it is the paid call it is pacing;
         // the ETags it waited on are still current, since --sole-writer is the
         // only writer.
-        const round = await gate.wait();
+        await gate.wait();
         const { value: result, ms: providerMs } = await timer.measured(
           PHASE_PROVIDER,
           () => provider.judge(input),
         );
         // A call that came back is the evidence the limit is not sustained.
-        gate.succeeded(round);
+        gate.succeeded();
         outcome.judged = true;
         // Carried on the outcome whatever happens next, so the run total covers
         // every call billed, including judgements whose writes later fail.

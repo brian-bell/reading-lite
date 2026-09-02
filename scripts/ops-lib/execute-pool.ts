@@ -73,21 +73,12 @@ export function parseConcurrencyFlag(raw: string | undefined): number {
 }
 
 export interface RateLimitGate {
-  /**
-   * Resolves once no rate-limit window is in force, handing back the round the
-   * caller is starting its call in. Pass it back to `succeeded`.
-   */
-  wait(): Promise<number>;
+  /** Resolves once no rate-limit window is in force. */
+  wait(): Promise<void>;
   /** Holds every worker back for `retryAfterMs`, or the default when null. */
   close(retryAfterMs: number | null): void;
-  /**
-   * Records that the judgement started in `round` came back. Only a call that
-   * started after the current window opened is evidence the limit has lifted:
-   * a call already in flight when the window opened proves nothing, and
-   * counting it would let a provider that limits most but not all requests
-   * reset the breaker forever.
-   */
-  succeeded(round: number): void;
+  /** Records that a judgement came back, so the limit is not a wall. */
+  succeeded(): void;
 }
 
 export interface RateLimitGateDeps {
@@ -101,15 +92,15 @@ export interface RateLimitGateDeps {
 
 export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
   let openAt = 0;
-  let round = 0;
   let consecutive = 0;
   let gaveUp = false;
   return {
-    succeeded(startedIn) {
-      if (startedIn !== round) return;
-      // Clears the give-up too: a limit the provider has plainly lifted must
-      // not leave the rest of a long pass permanently unwilling to back off
-      // when a later, genuinely transient one arrives.
+    succeeded() {
+      // Any judgement getting through means the pass is still making progress
+      // between windows, which is what the pauses are for; the breaker is only
+      // defending against a wall nothing gets past. Clearing the give-up as
+      // well keeps a limit early in a long pass from leaving the rest of it
+      // unwilling to wait out a later, genuinely transient one.
       consecutive = 0;
       gaveUp = false;
     },
@@ -139,7 +130,6 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
       // second wait on top of the first.
       if (until <= openAt) return;
       openAt = until;
-      round++;
       deps.onPause(until - now);
     },
     async wait() {
@@ -151,7 +141,7 @@ export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
       for (;;) {
         const deadline = openAt;
         const remaining = deadline - deps.now();
-        if (remaining <= 0 || deadline <= served) return round;
+        if (remaining <= 0 || deadline <= served) return;
         await deps.sleep(remaining);
         served = deadline;
       }

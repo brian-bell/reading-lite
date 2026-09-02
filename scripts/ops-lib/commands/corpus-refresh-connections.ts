@@ -511,13 +511,13 @@ async function refreshConnections(
       // window another worker opened before adding to it. The wait sits here,
       // after the re-read, because it is the paid call it is pacing; the ETag
       // it waited on is still current, since --sole-writer is the only writer.
-      const round = await gate.wait();
+      await gate.wait();
       const { value: result, ms: providerMs } = await timer.measured(
         PHASE_PROVIDER,
         () => provider.judge(input),
       );
       // A call that came back is the evidence the limit is not sustained.
-      gate.succeeded(round);
+      gate.succeeded();
       // Carried on the outcome whatever happens next, so the run total covers
       // every call billed, including judgements whose write later fails.
       outcome.usage = result.usage;

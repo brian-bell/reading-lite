@@ -465,13 +465,16 @@ it.
 Execute mode runs several judgements at once. `--concurrency <n>` sets how
 many, defaulting to 4 — the ingest queue runs at 3 against the same provider
 account, so this is deliberately close to it — and refusing anything above 16,
-so a mistyped flag cannot fan a hundred paid calls at that account. Results are collected and printed
-in plan order however the calls complete, and every counter (`Judged`, `list
+so a mistyped flag cannot fan a hundred paid calls at that account. Results are
+collected and printed in plan order however the calls complete, and every counter (`Judged`, `list
 rows healed`, `failures`, `Usage:`) is folded in that same order, so a run's
 output and its exit code do not depend on which call returned first. The one
 line that is not in plan order is the rate-limit pause below, which prints when
-it happens because that is the point of it. Pass `--concurrency 1` to get the
-old strictly sequential pass back.
+it happens because that is the point of it. The cost of that ordering is that a
+finished action's line waits for the ones planned before it, so a single slow
+call holds back the lines behind it; the `Timing:` block at the end is still
+what separates a slow pass from a hung one. Pass `--concurrency 1` for a
+strictly sequential pass — the rate-limit backoff below still applies.
 
 Two things the pass does not do concurrently. It never has two judgements
 holding the same reading at once — in `refresh-tensions`, where a reading sits
@@ -492,11 +495,10 @@ judgement succeeding in between, the limit is not transient, so the pass stops
 waiting altogether (`provider rate limited N times in a row; no longer
 pausing…`) and fails the rest fast — which is what a sequential run did — rather
 than sitting on the sole-writer window for the length of the plan. Any
-judgement that both started and came back after the last pause resets that run
-and restores the backing off, so a limit early in a long pass does not leave the
-rest of it unwilling to wait out a later one. A call that was already in flight
-when a window opened does not count: it says nothing about whether the limit
-has lifted.
+judgement that comes back resets that run and restores the backing off: while
+anything is getting through, the pass is making progress between windows and
+the pauses are doing their job, and a limit early in a long pass should not
+leave the rest of it unwilling to wait out a later one.
 
 Because the calls overlap, the `Timing:` block's `provider` row sums the call
 durations rather than the wall time they occupied; the `total` row is the one

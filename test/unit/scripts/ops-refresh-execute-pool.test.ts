@@ -168,10 +168,9 @@ describe("createRateLimitGate", () => {
     }
     expect(h.giveUps).toHaveLength(1);
 
-    // The provider lifts the limit and the pass gets a judgement through in
-    // the round it started in: a later, genuinely transient limit must be
-    // waited out, not ignored.
-    h.gate.succeeded(await h.gate.wait());
+    // The provider lifts the limit and the pass gets a judgement through: a
+    // later, genuinely transient limit must be waited out, not ignored.
+    h.gate.succeeded();
     const before = h.pauses.length;
     h.gate.close(1_000);
     await h.gate.wait();
@@ -185,7 +184,7 @@ describe("createRateLimitGate", () => {
         h.gate.close(1_000);
         await h.gate.wait();
       }
-      h.gate.succeeded(await h.gate.wait());
+      h.gate.succeeded();
     }
     // Twenty rate limits, none of them consecutive past the run: still pausing.
     expect(h.giveUps).toEqual([]);
@@ -214,34 +213,5 @@ describe("createRateLimitGate window counting", () => {
     now += 1_000;
     gate.close(1_000);
     expect(pauses).toEqual([1_000, 1_000]);
-  });
-});
-
-describe("createRateLimitGate rounds", () => {
-  it("ignores a success from a call that was already in flight when the window opened", async () => {
-    let now = 1_000;
-    const pauses: number[] = [];
-    const giveUps: number[] = [];
-    const gate = createRateLimitGate({
-      now: () => now,
-      sleep: async (ms) => {
-        now += ms;
-      },
-      onPause: (ms) => pauses.push(ms),
-      onGiveUp: (consecutive) => giveUps.push(consecutive),
-    });
-
-    // A provider that limits most but not all requests: every round, one call
-    // that started BEFORE the window comes back. That is not evidence the
-    // limit has lifted, so it must not reset the breaker forever.
-    for (let attempt = 0; attempt <= RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
-      const inFlightSince = await gate.wait();
-      gate.close(1_000);
-      gate.succeeded(inFlightSince);
-      await gate.wait();
-    }
-
-    expect(giveUps).toHaveLength(1);
-    expect(pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
   });
 });
