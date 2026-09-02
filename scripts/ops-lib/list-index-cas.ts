@@ -21,14 +21,20 @@
 // present key with an `undefined` value deletes the field, which is how tier 2
 // clears a stale verdict off a healed row.
 
+import type { ListIndexItem } from "../../src/schemas/api";
+
 /** The only list-row fields a refresh pass may write. */
 export const MERGEABLE_ROW_FIELDS = ["similarity", "novelty_verdict"] as const;
 
 export interface ListRowPatch {
   id: string;
-  /** Present key = write this field; `undefined` = remove it from the row. */
-  similarity?: unknown;
-  novelty_verdict?: unknown;
+  /**
+   * Present key = write this field; `undefined` = remove it from the row.
+   * Typed off the row schema, so a patch cannot introduce a value that would
+   * later fail the Worker's `ListIndexSchema.parse` of the whole document.
+   */
+  similarity?: ListIndexItem["similarity"];
+  novelty_verdict?: ListIndexItem["novelty_verdict"];
 }
 
 export interface ListIndexCasClient {
