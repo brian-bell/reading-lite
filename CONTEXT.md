@@ -11,8 +11,8 @@ submit, a markdown import, or a lookup. It lives in
 
 - **Tenant R2 root** — hosted stores prepend `u/{tenantId}/` to every reading
   and index key when `TENANT_DATA_PLANE=1`. Stored `key_prefix` stays relative
-  (`readings/YYYY/…`). Production/staging leave the gate off until the founder
-  corpus is copied (s1k.6).
+  (`readings/YYYY/…`). Production pins the gate on since the founder cutover
+  (2026-08-31); local and staging stay unset.
 - **By-url pointer** — `{tenantRoot}index/by-url/{sha256(url)}` → `{ id, key_prefix }`.
   The eager ownership claim is **per tenant**: `POST /readings` writes it
   (conditional create) before queueing work, so concurrent submits of one URL

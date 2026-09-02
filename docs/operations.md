@@ -8,12 +8,30 @@ Operator workflows run through the unified plan-first CLI: `npm run ops --
 plan by default and acts only with `--execute`.
 
 Every `corpus` command additionally requires `--tenant <selector>` before it
-plans anything: `global` addresses the pre-tenant layout production data lives
-under today, and a `usr_…` tenant id addresses that tenant's `u/{tenantId}/`
-key namespace plus its Vectorize namespace (the same roots the worker derives
-from a validated `TenantContext`). There is no default — a missing or
-malformed selector is a usage error (exit 2) before any R2 or Vectorize
-traffic, so an operator can never act on the global corpus by omission.
+plans anything. There is no default — a missing or malformed selector is a
+usage error (exit 2) before any R2 or Vectorize traffic, so an operator can
+never act on the wrong corpus by omission.
+
+A `usr_…` tenant id addresses that tenant's `u/{tenantId}/` key namespace plus
+its Vectorize namespace (the same roots the worker derives from a validated
+`TenantContext`). `global` is the pre-tenant layout selector: local and staging
+(where `TENANT_DATA_PLANE` is still unset), migrate-founder source and
+rollback, and leftover production global objects pending signed-off deletion.
+
+Production has been cut over (`TENANT_DATA_PLANE=1` pinned 2026-08-31). Live
+production corpus commands use the founder tenant from a production bearer,
+not `global`:
+
+```sh
+# Resolve $TENANT once. Copy this into production corpus commands; do not
+# copy --tenant global onto the live founder corpus.
+TOKEN=$(grep ^READER_API_TOKEN= .prd.vars | cut -d= -f2-)
+curl -sS -A curl/8 -H "Authorization: Bearer $TOKEN" \
+  https://reading-lite.bbell.dev/api/whoami
+# Record tenant_id as TENANT (usr_…). Expect tenant_data_plane true.
+```
+
+Then `--tenant "$TENANT"`.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
 where the acting tenant is the **bearer token's** principal, not `--tenant`.
@@ -47,8 +65,10 @@ accidental bare `wrangler deploy` clobbering production.
 `TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Production
 pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
 `docs/founder-cutover.md`); local and staging stay unset. Workers-pool tests
-turn it on so two tenants can share a URL without colliding. Operator corpus scripts address whichever root
-their required `--tenant` selector names — `global` until the migration.
+turn it on so two tenants can share a URL without colliding. Operator corpus
+scripts address whichever root their required `--tenant` selector names:
+`$TENANT` from whoami for production (gate on), `global` while the gate is off
+(local and staging) and for leftover production global objects.
 
 ### Secrets
 
@@ -229,7 +249,8 @@ VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.worker
   ./scripts/manual/idempotency-smoke.sh a "https://example.com/reading-lite-staging-$RANDOM"
 ```
 
-Clean up the throwaways afterwards, including `ready` ones:
+Clean up the throwaways afterwards, including `ready` ones. Staging still has
+`TENANT_DATA_PLANE` unset, so the live layout is `--tenant global`:
 
 ```sh
 npm run ops -- corpus audit --tenant global --bucket reading-lite-staging --execute
@@ -454,8 +475,8 @@ readings become searchable without a paid reprocess. Dry-run by default;
 `--execute` requires `--sole-writer` because the rewrite is a plain put.
 
 ```sh
-npm run ops -- corpus rebuild-list --tenant global --bucket reading-lite
-npm run ops -- corpus rebuild-list --tenant global --bucket reading-lite --execute --sole-writer
+npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite
+npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite --execute --sole-writer
 ```
 
 Deploy the new Worker **before** the production rewrite. An old Worker that
@@ -470,12 +491,15 @@ write a tombstone, so a reading-detail link may return 404 until an operator
 runs this sweep. Cleanup is not automatic.
 
 ```sh
-# Exact plan; reads and validates the complete global manifest set, writes nothing.
-npm run ops -- corpus purge-connections --tenant global --id rd_deleted
+# Production founder namespace. Resolve $TENANT from whoami first.
+npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted
 
-# Apply to one tenant namespace after establishing the sole-writer window.
+# Apply after establishing the sole-writer window.
 npm run ops -- corpus purge-connections \
-  --tenant usr_… --id rd_deleted --execute --sole-writer
+  --tenant "$TENANT" --id rd_deleted --execute --sole-writer
+
+# Pre-tenant leftover copy, or a gate-off env (local / staging).
+npm run ops -- corpus purge-connections --tenant global --id rd_deleted
 ```
 
 The target id must be absent from the selected namespace before the scan and
@@ -514,8 +538,8 @@ submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
 same work through the offline provider Batch API path described below.
 
 ```sh
-npm run ops -- corpus audit --tenant global --execute      # writes index.json + INDEX.md
-npm run ops -- corpus recover --tenant global --index ./index.json --execute
+npm run ops -- corpus audit --tenant "$TENANT" --execute      # writes index.json + INDEX.md
+npm run ops -- corpus recover --tenant "$TENANT" --index ./index.json --execute
 ```
 
 ### Founder corpus migration (s1k.6)
@@ -535,16 +559,17 @@ never deletes anything.
 
 ```sh
 # Exact dry-run: every copy (size+etag), every vector upsert, every problem.
-npm run ops -- corpus migrate-founder --tenant usr_… 
+# --tenant is the DESTINATION founder id (from whoami); source is always global.
+npm run ops -- corpus migrate-founder --tenant "$TENANT"
 
 # Copy + migrate vectors, resumably (state file records per-object sha256):
-npm run ops -- corpus migrate-founder --tenant usr_… --execute --sole-writer
+npm run ops -- corpus migrate-founder --tenant "$TENANT" --execute --sole-writer
 
 # Reconcile: plan again — "fully migrated" means every source object exists
 # at its tenant key with equal size/etag, every ready row has its namespaced
 # vector carrying the legacy embedding and metadata, and every row agrees
 # with the manifest and by-id pointer it names.
-npm run ops -- corpus migrate-founder --tenant usr_…
+npm run ops -- corpus migrate-founder --tenant "$TENANT"
 ```
 
 Certification is a content check, not a presence check: the plan parses each
@@ -553,7 +578,8 @@ the row (`row_manifest_mismatch`, `row_by_id_pointer_invalid`). A stale
 `index/list.json` row is the case that matters — the vector plan follows the
 row's `status`, so a row saying `failed` over a `ready` manifest would migrate
 with no vector planned. Repair those with `corpus rebuild-list --tenant
-global`, then re-plan.
+global` (the migrate-founder source is the pre-tenant layout, not
+`$TENANT`), then re-plan.
 
 That costs two reads per row the first time. After that the state file caches
 each parse against the object's etag, so passes over an unmoved corpus read
@@ -664,7 +690,7 @@ pass `--email` to request notifications.
 
 `import-markdown` summarizes every file **realtime** through the Worker queue.
 For large backfills, `ops corpus ingest` runs the same directory through the
-configured provider's **Batch API**, and `ops corpus recover --tenant global --batch` does the same
+configured provider's **Batch API**, and `ops corpus recover --tenant "$TENANT" --batch` does the same
 for readings already in the corpus. Both talk to R2 and Vectorize directly with
 `CORPUS_R2_*` credentials rather than through the HTTP API, and both need
 `CORPUS_CF_API_TOKEN` plus `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is
@@ -674,10 +700,10 @@ is no cross-provider fallback.
 
 ```sh
 # dry run (default): print the plan; with creds it also shows ownership skips
-npm run ops -- corpus ingest --tenant global --dir ~/Documents/articles
+npm run ops -- corpus ingest --tenant "$TENANT" --dir ~/Documents/articles
 
 # for real — confirm the realtime writer is paused/drained first
-npm run ops -- corpus ingest --tenant global --dir ~/Documents/articles \
+npm run ops -- corpus ingest --tenant "$TENANT" --dir ~/Documents/articles \
   --execute --sole-writer --bucket reading-lite
 ```
 
@@ -690,8 +716,8 @@ write the realtime per-attempt objects under the key prefix. A resumed
 pre-upgrade sidecar without attempt identity retains the legacy omission of
 `last_attempt`.
 
-**`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant global --execute` and
-`ops corpus recover --tenant global --batch --execute` refuse to submit without it. Both batch paths
+**`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant "$TENANT" --execute` and
+`ops corpus recover --tenant "$TENANT" --batch --execute` refuse to submit without it. Both batch paths
 eagerly claim by-url slots (recover via a failed→pending flip that keeps its
 claim on failure, so the URL stays re-submittable), but that claim is
 defense-in-depth rather than a replacement for pausing the realtime writer. An

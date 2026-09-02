@@ -67,10 +67,10 @@ What it does, end to end (`scripts/corpus-lib/batch/`):
 
 ```bash
 # Dry-run the batch plan (no writes, no spend).
-npm run ops -- corpus recover --tenant global --index .../index.json --batch
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch
 
 # Execute the batch (submit → poll → write). Embeddings stay realtime.
-npm run ops -- corpus recover --tenant global --index .../index.json --batch --execute
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch --execute
 ```
 
 - **Resume:** the in-flight batch is recorded in `<index>.batch.json`. If a poll
@@ -96,20 +96,20 @@ npm run ops -- corpus recover --tenant global --index .../index.json --batch --e
 
 ```bash
 # 1. Plan only (no writes) — review before doing anything.
-npm run ops -- corpus recover --tenant global --index ~/Desktop/reading-lite-extracted/index.json
+npm run ops -- corpus recover --tenant "$TENANT" --index ~/Desktop/reading-lite-extracted/index.json
 
 # 2. Execute everything in the plan, then watch the queue drain.
-npm run ops -- corpus recover --tenant global --index .../index.json --execute --monitor
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --execute --monitor
 
 # Restrict to one action, or cap the batch.
-npm run ops -- corpus recover --tenant global --index .../index.json --only reprocess --execute
-npm run ops -- corpus recover --tenant global --index .../index.json --only local-extract --limit 5 --execute
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --only reprocess --execute
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --only local-extract --limit 5 --execute
 
-# Point at a local worker.
+# Point at a local worker (TENANT_DATA_PLANE unset: --tenant global).
 npm run ops -- corpus recover --tenant global --index .../index.json --url http://127.0.0.1:8787 --execute
 ```
 
-`--tenant` is required on every corpus command: `global` addresses the pre-tenant layout production data lives under today; a `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--index` (default `./index.json`), `--execute`, `--only reprocess|local-extract`, `--limit <n>`, `--url`, `--token`, `--bucket` (for `--monitor`), `--monitor`, `--batch` (bulk Message Batch path), `--help`.
 
 Outcomes are written back into the `index.json` rows (`result` field). Prints a JSON summary; exits non-zero if any action errored.

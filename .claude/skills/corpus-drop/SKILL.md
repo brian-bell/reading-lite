@@ -61,21 +61,21 @@ put, not a CAS write, so a concurrent queue write could be lost.
 
 ```bash
 # Dry run (default): see exactly what would be deleted.
-npm run ops -- corpus drop --tenant global https://example.com/dead-link
-npm run ops -- corpus drop --tenant global rd_ABC123
+npm run ops -- corpus drop --tenant "$TENANT" https://example.com/dead-link
+npm run ops -- corpus drop --tenant "$TENANT" rd_ABC123
 
 # Multiple selectors, mixing URLs and ids.
-npm run ops -- corpus drop --tenant global rd_ABC https://a.com/x https://b.com/y
+npm run ops -- corpus drop --tenant "$TENANT" rd_ABC https://a.com/x https://b.com/y
 
 # Apply.
-npm run ops -- corpus drop --tenant global https://example.com/dead-link --execute
+npm run ops -- corpus drop --tenant "$TENANT" https://example.com/dead-link --execute
 
-# Alternate bucket / local miniflare cache.
+# Alternate bucket / local miniflare cache (gate-off: --tenant global).
 npm run ops -- corpus drop --tenant global rd_ABC --bucket some-other-bucket --execute
 npm run ops -- corpus drop --tenant global rd_ABC --local --execute
 ```
 
-`--tenant` is required on every corpus command: `global` addresses the pre-tenant layout production data lives under today; a `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`),
 `--local` (local miniflare bucket instead of `--remote`), `--execute`, `--help`.
 

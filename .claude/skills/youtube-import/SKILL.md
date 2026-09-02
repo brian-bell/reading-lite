@@ -50,10 +50,12 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 3. **Upgrading a thin worker reading.** If the URL already has a worker-made
    floor-only reading, the import returns `existing` and does **not** replace it
    (ready/pending owners are returned as-is). To replace it with the richer
-   import, drop the old one first, then re-import:
+   import, drop the old one first, then re-import.
+
+   `--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 
    ```sh
-   npm run ops -- corpus drop "<canonicalWatchUrl>" --execute
+   npm run ops -- corpus drop --tenant "$TENANT" "<canonicalWatchUrl>" --execute
    npm run ops -- import youtube "<youtubeUrl>" --execute
    ```
 
