@@ -27,4 +27,26 @@ describe("redactEmailsInText", () => {
     expect(redactEmailsInText("Invalid `to`: Founder@Example.COM")).toBe("Invalid `to`: f***@example.com");
     expect(redactEmailsInText("no address here")).toBe("no address here");
   });
+
+  it("redacts every shape canonicalizeEmail accepts so they never appear in error strings", () => {
+    const shapes = [
+      "first/last@example.com",
+      '"Foo Bar"@example.com',
+      "user@exämple.com",
+      "user@localhost",
+    ];
+    for (const address of shapes) {
+      expect(() => canonicalizeEmail(address)).not.toThrow();
+      const redacted = redactEmailsInText(`Invalid to: ${address}`);
+      expect(redacted).not.toContain(address);
+      expect(redacted).not.toContain(address.toLowerCase());
+    }
+  });
+
+  it("redacts a known recipient even when the free-text matcher would miss it", () => {
+    const known = "a @ b";
+    expect(() => canonicalizeEmail(known)).not.toThrow();
+    const redacted = redactEmailsInText(`Resend: ${known}`, [known]);
+    expect(redacted).not.toContain(known);
+  });
 });

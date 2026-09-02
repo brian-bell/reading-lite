@@ -266,6 +266,7 @@ async function sendReadingEmailAndLog(
   tenant: TenantContext,
 ): Promise<void> {
   const startedAt = services.now();
+  let recipient: string | undefined;
   try {
     // Recipient lookup belongs in this try: a thrown D1/settings read after
     // commitTerminalManifest must not reach processReading's outer catch and
@@ -276,6 +277,7 @@ async function sendReadingEmailAndLog(
       String(tenant.tenantId),
     );
     if (decision.kind === "skip") return;
+    recipient = decision.to;
 
     // Tenant-scoped list index: connection titles/links stay in this tenant.
     const listIndex = await reader.readListIndex();
@@ -302,7 +304,7 @@ async function sendReadingEmailAndLog(
     // Do not requeue the whole job. Recovery is a manual reprocess with email=true.
     const failedAt = services.now();
     const durationMs = durationMsBetween(startedAt, failedAt);
-    const error = redactSendEmailError(errorFromUnknown(e, "send_email", failedAt));
+    const error = redactSendEmailError(errorFromUnknown(e, "send_email", failedAt), recipient);
     console.error(
       JSON.stringify({
         event: "send_email_failed",
@@ -321,8 +323,11 @@ async function sendReadingEmailAndLog(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 }
 
-function redactSendEmailError(error: ManifestError): ManifestError {
-  return { ...error, message: redactEmailsInText(error.message) };
+function redactSendEmailError(error: ManifestError, knownRecipient?: string): ManifestError {
+  return {
+    ...error,
+    message: redactEmailsInText(error.message, knownRecipient === undefined ? [] : [knownRecipient]),
+  };
 }
 
 // Thrown only on the dead-letter path: the message exhausted its main-queue

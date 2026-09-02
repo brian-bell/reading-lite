@@ -14,15 +14,52 @@ export function redactEmail(raw: string): string {
   return `${local.slice(0, 1)}***@${domain}`;
 }
 
-const EMAIL_IN_TEXT = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+/**
+ * Every mailbox canonicalizeEmail accepts: quoted-local `"..."@domain`, then
+ * any non-space local@domain (slash, IDN, no-dot TLD). Quoted alternative is
+ * first so `"Foo Bar"@x` is not split on the space.
+ */
+const EMAIL_IN_TEXT = /"[^"]+"@[^\s@]+|[^\s@]+@[^\s@]+/g;
 
 /** Redact mailbox addresses in diagnostics and logs. Unknown shapes become `[redacted]`. */
-export function redactEmailsInText(raw: string): string {
-  return raw.replace(EMAIL_IN_TEXT, (match) => {
-    try {
-      return redactEmail(match);
-    } catch {
-      return "[redacted]";
-    }
-  });
+export function redactEmailsInText(raw: string, knownRecipients: readonly string[] = []): string {
+  let out = raw;
+  for (const known of knownRecipients) {
+    out = redactKnownRecipient(out, known);
+  }
+  return out.replace(EMAIL_IN_TEXT, (match) => redactMatchedMailbox(match));
+}
+
+function redactKnownRecipient(raw: string, known: string): string {
+  const variants = knownRecipientVariants(known);
+  if (variants.length === 0) return raw;
+  const escaped = variants.map(escapeRegExp).join("|");
+  return raw.replace(new RegExp(escaped, "gi"), (match) => redactMatchedMailbox(match));
+}
+
+function knownRecipientVariants(known: string): string[] {
+  const variants = new Set<string>();
+  const trimmed = known.trim();
+  if (trimmed) {
+    variants.add(trimmed);
+    variants.add(trimmed.toLowerCase());
+  }
+  try {
+    variants.add(canonicalizeEmail(known));
+  } catch {
+    /* ignore */
+  }
+  return [...variants].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+function redactMatchedMailbox(match: string): string {
+  try {
+    return redactEmail(match);
+  } catch {
+    return "[redacted]";
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
