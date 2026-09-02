@@ -516,11 +516,18 @@ marker there would declare the whole scope refreshed on the strength of zero
 measurements and never look at it again, so the pass instead leaves both
 `last_run_at` and `last_full_run_at` where they were, prints
 `Configuration failure: 0 of N reading(s) in scope could be measured` with the
-`no vector` / `failed` / `schema-invalid` breakdown, and exits 1. An empty scope
-is untouched by this: a quiet night measures nothing and exits 0. So is a pass
-narrowed by `--only` or by a `--limit` that truncated it — it measured the
-subset it was told to, which says nothing about the configuration, so naming one
-broken reading with `--only` exits 3, not 1.
+`no vector` / `failed` / `schema-invalid` breakdown, and exits 1.
+
+Three cases are deliberately outside it. An empty scope: a quiet night measures
+nothing and exits 0. A pass narrowed by `--only` or by a `--limit` that
+truncated it: it measured the subset it was told to, which says nothing about
+the configuration, so naming one broken reading with `--only` exits 3, not 1.
+And a scope made up entirely of readings already carried under
+`unmeasurable_ids`: those are back in scope precisely so they can fail again,
+and on a quiet corpus they are the whole scope, so counting them would turn one
+vectorless reading into a nightly page and freeze the marker forever. A
+configuration failure needs at least one target nobody had yet found
+unmeasurable.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -557,11 +564,20 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 | 0 | Nothing outstanding. | nobody |
 | 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator — re-run, or fix the index/credentials first |
 | 2 | Usage error (unknown flag, missing `--tenant`, bad `--max-backoff`). Enforced by the CLI, not the command. | operator — fix the invocation |
-| 3 | The pass completed and its marker advanced, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It
-can after a 1 and cannot after a 3, which is why a 3 is not a page: the ids are
-on the marker under `unmeasurable_ids` and every later pass retries them.
+can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
+eligible to advance the marker, the ids are carried under `unmeasurable_ids` and
+every later pass retries them. The exit line says whether the marker actually
+moved, because the passes that never advance it — a plan pass, `--only`, a
+truncating `--limit`, an invalidation arriving mid-pass — can all exit 3 too.
+
+The codes apply in plan mode as well as under `--execute`; a dry run reports
+what it found. That is a change for one case: a plan pass that finds a reading
+with no indexed vector used to exit 0 and now exits 3 (or 1 if that was the
+whole scope), so a scheduled dry run treating any non-zero as failure needs the
+`case` below rather than a bare `if`.
 
 There is no cron wrapper script in this repository — the nightly and weekly
 invocations above are meant to be scheduled directly — so a scheduler wanting

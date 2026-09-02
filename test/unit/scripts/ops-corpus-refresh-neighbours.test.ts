@@ -1064,6 +1064,65 @@ describe("ops corpus refresh-neighbours", () => {
       expect(text).toContain("neither run marker advanced");
     });
 
+    // The carried-retry case the marker exists for. On a quiet corpus the whole
+    // incremental scope IS the reading the last pass could not measure, so
+    // counting it as "nothing measured" would call one broken reading a wrong
+    // index every night, freeze the marker, and grow the scope forever.
+    it("does not call a scope of only carried unmeasurable readings a configuration failure", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, unmeasurable_ids: ["rd_r"] },
+        // rd_r still owns no vector, so the retry fails again.
+        matches: null,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: incremental (1 reading(s))");
+      expect(text).not.toContain("Configuration failure");
+      expect(code).toBe(3);
+      // The marker moved and carried the id on, so the scope does not grow.
+      expect(calls.stateWrites[0]).toMatchObject({
+        last_run_at: "2026-08-22T12:00:00.000Z",
+        unmeasurable_ids: ["rd_r"],
+      });
+    });
+
+    // A carried id is exempt; a reading nobody had found unmeasurable is not.
+    it("still calls it a configuration failure when a first-time target joins the carried one", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, unmeasurable_ids: ["rd_r"] },
+        items: [READY, { ...NEIGHBOUR, updated_at: "2026-08-21T12:00:00.000Z" }],
+        matches: null,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(1);
+      expect(calls.stateWrites).toEqual([]);
+      expect(lines.join("\n")).toContain("Configuration failure");
+    });
+
+    // --only leaves the marker alone, so the exit line must not say it moved.
+    it("does not claim the marker advanced on an exit-3 pass that left it alone", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        manifest: { ...VALID_MANIFEST, status: "not-a-status" },
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(3);
+      expect(calls.stateWrites).toEqual([]);
+      const text = lines.join("\n");
+      expect(text).toContain("Run marker unchanged");
+      expect(text).toContain("Exit 3: the pass completed;");
+      expect(text).not.toContain("marker advanced");
+    });
+
     // An empty scope is a quiet night, not a failure: nothing to measure is
     // exactly what an incremental pass hopes to find.
     it("exits 0 on an empty scope rather than calling it a configuration failure", async () => {
@@ -1438,7 +1497,7 @@ describe("ops corpus refresh-neighbours", () => {
 
       it("documents the exit codes in help", () => {
         expect(corpusRefreshNeighboursCommand.helpText).toContain("Exit codes:");
-        expect(corpusRefreshNeighboursCommand.helpText).toMatch(/3 {2}The pass completed/);
+        expect(corpusRefreshNeighboursCommand.helpText).toMatch(/3 {2}The pass itself completed/);
       });
     });
 
