@@ -1829,6 +1829,7 @@ describe("App", () => {
 
     const { unmount } = render(<App initialPath="/account/security" />);
     const panel = await screen.findByRole("region", { name: "API tokens" });
+    await waitFor(() => expect(within(panel).getByLabelText("Name")).toBeEnabled());
     await user.type(within(panel).getByLabelText("Name"), "laptop");
     await user.click(within(panel).getByRole("button", { name: "Create token" }));
     expect(await screen.findByText(mintedSecret)).toBeInTheDocument();
@@ -1954,6 +1955,7 @@ describe("App", () => {
 
     render(<App initialPath="/account/security" />);
     const panel = await screen.findByRole("region", { name: "API tokens" });
+    await waitFor(() => expect(within(panel).getByLabelText("Name")).toBeEnabled());
     await user.type(within(panel).getByLabelText("Name"), "ops");
     await user.click(within(panel).getByRole("button", { name: "Create token" }));
     expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
@@ -1984,6 +1986,7 @@ describe("App", () => {
     const expiry = within(panel).getByLabelText("Expires (optional)");
     expect(expiry).toHaveAttribute("min");
     expect(expiry).toHaveAttribute("max");
+    await waitFor(() => expect(within(panel).getByLabelText("Name")).toBeEnabled());
     await user.type(within(panel).getByLabelText("Name"), "ops");
 
     fireEvent.change(expiry, { target: { value: "2000-01-01T00:00" } });
@@ -1994,6 +1997,71 @@ describe("App", () => {
     fireEvent.submit(expiry.closest("form")!);
     expect(await screen.findByText("Expiry cannot be more than 90 days from now.")).toBeInTheDocument();
 
+    expect(
+      fetchMock.mock.calls.some((c) => {
+        const req = c[0] as Request;
+        return req.method === "POST" && new URL(req.url).pathname === "/api/auth/tokens";
+      })
+    ).toBe(false);
+  });
+
+  it("keeps create disabled until the token list loads", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        await held;
+        return jsonResponse({ tokens: [] });
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "POST") {
+        return jsonResponse({ error: "too many active tokens" }, 409);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    const panel = await screen.findByRole("region", { name: "API tokens" });
+    expect(await screen.findByText("Loading tokens")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: "Create token" })).toBeDisabled();
+    expect(within(panel).getByLabelText("Name")).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.some((c) => {
+        const req = c[0] as Request;
+        return req.method === "POST" && new URL(req.url).pathname === "/api/auth/tokens";
+      })
+    ).toBe(false);
+
+    release();
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "Create token" })).toBeEnabled());
+    expect(screen.queryByText("Loading tokens")).not.toBeInTheDocument();
+  });
+
+  it("keeps create disabled when the token list fails to load", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ error: "failed to list tokens" }, 500);
+      }
+      if (url.pathname === "/api/auth/tokens" && request.method === "POST") {
+        return jsonResponse({ error: "too many active tokens" }, 409);
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText("failed to list tokens")).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "API tokens" });
+    expect(within(panel).getByRole("button", { name: "Create token" })).toBeDisabled();
+    fireEvent.submit(within(panel).getByRole("button", { name: "Create token" }).closest("form")!);
     expect(
       fetchMock.mock.calls.some((c) => {
         const req = c[0] as Request;

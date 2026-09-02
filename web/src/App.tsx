@@ -350,9 +350,10 @@ function AccountSecurityPage({
   });
   const revokedOverlayQuery = useQuery({
     queryKey: TOKEN_REVOKED_IDS_KEY,
-    queryFn: async () => new Set<string>(),
+    queryFn: async () => revokedTokenIds(queryClient),
     initialData: () => new Set<string>(),
-    staleTime: Infinity
+    staleTime: Infinity,
+    gcTime: Infinity
   });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -371,7 +372,7 @@ function AccountSecurityPage({
     : tokensQuery.data;
   const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
   const tokenCapReached = usableTokenCount >= TOKEN_CAP;
-  const createDisabled = busyId != null || tokenCapReached;
+  const createDisabled = busyId != null || listedTokens == null || tokenCapReached;
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
@@ -447,7 +448,7 @@ function AccountSecurityPage({
 
   async function onCreateToken(event: { preventDefault: () => void }) {
     event.preventDefault();
-    if (busyId || tokenCapReached) return;
+    if (busyId || listedTokens == null || tokenCapReached) return;
     const scopes = API_SCOPES.filter((scope) => tokenScopes.has(scope));
     if (scopes.length === 0) {
       setError("Select at least one scope.");
