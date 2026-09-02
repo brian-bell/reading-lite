@@ -742,7 +742,7 @@ function LoginPage({
   });
   const siteKey = optionsQuery.data?.turnstile_site_key ?? null;
   const widgetRequired = siteKey != null;
-  const optionsBlocked = optionsQuery.isPending;
+  const optionsBlocked = optionsQuery.isPending || optionsQuery.isError;
   const submitBlocked = optionsBlocked || (widgetRequired && !turnstileToken);
 
   useLayoutEffect(() => {
@@ -811,6 +811,12 @@ function LoginPage({
           Email me a link
         </button>
       </form>
+      {optionsQuery.isError ? (
+        <IdentityError
+          error={identityError(optionsQuery.error)}
+          onRetry={() => void optionsQuery.refetch()}
+        />
+      ) : null}
       {submitted ? (
         <p role="status">If that address can sign in, we sent a short-lived link.</p>
       ) : null}

@@ -588,6 +588,44 @@ describe("App", () => {
     expect(challengeCall(fetchMock)).toBeUndefined();
   });
 
+  it("blocks sign-in and allows retry when login-options fails", async () => {
+    let optionsOk = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        if (!optionsOk) return jsonResponse({ error: "failed to load sign-in options" }, 500);
+        return jsonResponse({ turnstile_site_key: null });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    expect(await screen.findByText("failed to load sign-in options")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+    expect(screen.queryByRole("group", { name: "Human check" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/if that address can sign in/i)).not.toBeInTheDocument();
+    fireEvent.submit(screen.getByRole("button", { name: "Email me a link" }).closest("form")!);
+    expect(challengeCall(fetchMock)).toBeUndefined();
+
+    optionsOk = true;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    expect(screen.queryByText("failed to load sign-in options")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    const challenge = await waitFor(() => {
+      const req = challengeCall(fetchMock);
+      expect(req).toBeDefined();
+      return req!;
+    });
+    expect(await challenge.clone().json()).toEqual({ email: "invited@example.com" });
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
+  });
+
   it("requires a Turnstile token before challenge when a site key is present", async () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
