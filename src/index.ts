@@ -1,5 +1,6 @@
 import type { TenantContext } from "./control-plane/ids";
 import { fromD1 } from "./control-plane/db";
+import type { DigestEnvelopeV1 } from "./control-plane/digest-envelope";
 import {
   admitEnvelopeOrReject,
   consumeProcessReadingMessage,
@@ -7,6 +8,13 @@ import {
   parseProcessReadingEnvelope,
   type ProcessReadingEnvelopeV1,
 } from "./control-plane/envelope";
+import {
+  consumeDigestMessage,
+  fanOutDueDigests,
+  handleDigestDeadLetter,
+  isDigestDlq,
+  isDigestQueue,
+} from "./digest-pipeline";
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
@@ -19,6 +27,8 @@ export interface Env {
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingEnvelopeV1>;
+  // Staging/production only. Local wrangler has no digest queue or cron.
+  DIGEST_JOBS?: Queue<DigestEnvelopeV1>;
   // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
@@ -149,8 +159,25 @@ export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     return app.fetch(request, env, ctx);
   },
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    await fanOutDueDigests(env, { nowMs: controller.scheduledTime });
+  },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const services = defaultServices();
+    if (isDigestDlq(batch.queue)) {
+      const nowMs = Date.now();
+      for (const msg of batch.messages) {
+        await handleDigestDeadLetter(msg, env, { nowMs });
+      }
+      return;
+    }
+    if (isDigestQueue(batch.queue)) {
+      const nowMs = Date.now();
+      for (const msg of batch.messages) {
+        await consumeDigestMessage(msg, env, { nowMs });
+      }
+      return;
+    }
     if (batch.queue === DEAD_LETTER_QUEUE) {
       const db = fromD1(env.CONTROL_PLANE);
       const nowMs = Date.now();

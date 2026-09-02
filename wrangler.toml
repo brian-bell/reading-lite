@@ -26,6 +26,8 @@
 #   `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine`
 #   `npx wrangler queues create reading-lite-staging`
 #   `npx wrangler queues create reading-lite-staging-dlq`  (dead-letter queue; not auto-created)
+#   `npx wrangler queues create reading-lite-staging-digest`
+#   `npx wrangler queues create reading-lite-staging-digest-dlq`
 #   `wrangler secret put READER_API_TOKEN --env staging`
 #   `wrangler secret put OPENAI_API_KEY --env staging`
 #   `wrangler secret put X_API_BEARER_TOKEN --env staging`  (for X status URLs)
@@ -37,6 +39,8 @@
 #   `npx wrangler vectorize create reading-lite --dimensions=1536 --metric=cosine`
 #   `npx wrangler queues create reading-lite`
 #   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
+#   `npx wrangler queues create reading-lite-digest`
+#   `npx wrangler queues create reading-lite-digest-dlq`
 #   `wrangler secret put READER_API_TOKEN --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
 #   `wrangler secret put X_API_BEARER_TOKEN --env production`  (for X status URLs)
@@ -173,6 +177,28 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
+[[env.staging.queues.producers]]
+binding = "DIGEST_JOBS"
+queue = "reading-lite-staging-digest"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-digest"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 3
+max_retries = 3
+dead_letter_queue = "reading-lite-staging-digest-dlq"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-digest-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
+[env.staging.triggers]
+crons = ["*/15 * * * *"]
+
 [[env.staging.r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-staging"
@@ -284,6 +310,30 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
+
+# Digest jobs are a separate queue (never READING_JOBS). The digest DLQ marks
+# the D1 ledger failed and must not call markDeadLettered / touch manifests.
+[[env.production.queues.producers]]
+binding = "DIGEST_JOBS"
+queue = "reading-lite-digest"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-digest"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 3
+max_retries = 3
+dead_letter_queue = "reading-lite-digest-dlq"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-digest-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
+[env.production.triggers]
+crons = ["*/15 * * * *"]
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

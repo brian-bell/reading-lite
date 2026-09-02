@@ -279,6 +279,7 @@ src/
   intake/                       # Reading intake: submit/importMarkdown/reprocess verbs;
                                 #   activation.ts = eager write-and-enqueue + rollback funnel
   process-reading.ts            # processReading pipeline (runs in the queue consumer)
+  digest-pipeline.ts            # digest cron fan-out + DIGEST_JOBS stub send (196 B1)
   reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
   attempt-ownership.ts          # shared ownership verdict + attempt arg shapes
   control-plane/                # D1 auth: HMAC crypto, principal, founder bootstrap

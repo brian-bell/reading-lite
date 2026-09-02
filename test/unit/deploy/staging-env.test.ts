@@ -41,6 +41,14 @@ describe("staging environment scripts", () => {
         args: ["queues", "create", "reading-lite-staging-dlq"],
       },
       {
+        label: "Create staging digest queue",
+        args: ["queues", "create", "reading-lite-staging-digest"],
+      },
+      {
+        label: "Create staging digest dead-letter queue",
+        args: ["queues", "create", "reading-lite-staging-digest-dlq"],
+      },
+      {
         label: "Create staging D1 control plane",
         args: ["d1", "create", "reading-lite-control-staging"],
       },
@@ -58,6 +66,14 @@ describe("staging environment scripts", () => {
         args: ["queues", "consumer", "remove", "reading-lite-staging-dlq", "reading-lite-staging"],
       },
       {
+        label: "Remove staging digest queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging-digest", "reading-lite-staging"],
+      },
+      {
+        label: "Remove staging digest dead-letter queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging-digest-dlq", "reading-lite-staging"],
+      },
+      {
         label: "Delete staging Worker",
         args: ["delete", "reading-lite-staging", "--env", "staging", "--force"],
       },
@@ -68,6 +84,14 @@ describe("staging environment scripts", () => {
       {
         label: "Delete staging dead-letter queue",
         args: ["queues", "delete", "reading-lite-staging-dlq"],
+      },
+      {
+        label: "Delete staging digest queue",
+        args: ["queues", "delete", "reading-lite-staging-digest"],
+      },
+      {
+        label: "Delete staging digest dead-letter queue",
+        args: ["queues", "delete", "reading-lite-staging-digest-dlq"],
       },
       {
         label: "Delete staging Vectorize index",
