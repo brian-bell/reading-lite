@@ -411,7 +411,7 @@ describe("ops corpus refresh-neighbours", () => {
     const { deps, lines } = makeDeps({ items: [READY], matches: null });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
     expect(code).toBe(1);
-    expect(lines.join("\n")).toMatch(/Configuration failure: 0 of 1 reading\(s\) in scope/);
+    expect(lines.join("\n")).toMatch(/swept the corpus and measured 0 of 1 ready reading\(s\)/);
   });
 
   // One unmeasurable reading among measured ones is the reading's problem, not
@@ -1045,7 +1045,7 @@ describe("ops corpus refresh-neighbours", () => {
     // says "a reading needs a human". Here: nothing in a non-empty scope could
     // be measured, which is what a wrong index or namespace looks like — the
     // marker freezes and the exit says "the operator has infrastructure to fix".
-    it("freezes both markers and exits 1 when nothing in a non-empty scope was measured", async () => {
+    it("freezes both markers and exits 1 when a sweep measured none of the corpus", async () => {
       const { deps, calls, lines } = makeDeps({
         state: MARKER,
         // Every target answers "no vector", as a query against the wrong
@@ -1059,16 +1059,17 @@ describe("ops corpus refresh-neighbours", () => {
       expect(code).toBe(1);
       expect(calls.stateWrites).toEqual([]);
       const text = lines.join("\n");
-      expect(text).toContain("Configuration failure: 0 of 2 reading(s) in scope could be measured");
+      expect(text).toContain("swept the corpus and measured 0 of 2 ready reading(s)");
       expect(text).toContain("no vector: 2");
       expect(text).toContain("neither run marker advanced");
     });
 
     // The carried-retry case the marker exists for. On a quiet corpus the whole
-    // incremental scope IS the reading the last pass could not measure, so
-    // counting it as "nothing measured" would call one broken reading a wrong
-    // index every night, freeze the marker, and grow the scope forever.
-    it("does not call a scope of only carried unmeasurable readings a configuration failure", async () => {
+    // incremental scope IS the reading the last pass could not measure. Calling
+    // that a configuration failure would freeze the marker on one broken
+    // reading, grow the scope every night, and page for it forever — and the
+    // marker would never record the id, so the pass could never learn better.
+    it("does not call a one-reading incremental scope a configuration failure", async () => {
       const { deps, calls, lines } = makeDeps({
         state: { ...MARKER, unmeasurable_ids: ["rd_r"] },
         // rd_r still owns no vector, so the retry fails again.
@@ -1089,20 +1090,43 @@ describe("ops corpus refresh-neighbours", () => {
       });
     });
 
-    // A carried id is exempt; a reading nobody had found unmeasurable is not.
-    it("still calls it a configuration failure when a first-time target joins the carried one", async () => {
+    // The same broken corpus a nightly pass cannot judge, seen by the weekly
+    // sweep that can: no carried set, no marker needed, same verdict every time
+    // until someone fixes it.
+    it("reports the configuration failure from the sweep, with no marker to bootstrap from", async () => {
+      for (const state of [undefined, MARKER, { ...MARKER, unmeasurable_ids: ["rd_r"] }]) {
+        const { deps, calls, lines } = makeDeps({
+          ...(state === undefined ? {} : { state }),
+          matches: null,
+        });
+        const code = await corpusRefreshNeighboursCommand.run(
+          ["--tenant", "global", "--execute", "--sole-writer"],
+          deps,
+        );
+        expect(code).toBe(1);
+        expect(calls.stateWrites).toEqual([]);
+        expect(lines.join("\n")).toContain("Configuration failure");
+      }
+    });
+
+    // A misconfiguration cannot hide in incremental passes: a changed ready
+    // reading whose vector cannot be found escalates the scope to a sweep, and
+    // the sweep is what reports it.
+    it("escalates to a sweep and reports the failure when a changed reading has no vector", async () => {
       const { deps, calls, lines } = makeDeps({
-        state: { ...MARKER, unmeasurable_ids: ["rd_r"] },
-        items: [READY, { ...NEIGHBOUR, updated_at: "2026-08-21T12:00:00.000Z" }],
+        state: MARKER,
+        items: [{ ...READY, updated_at: "2026-08-21T12:00:00.000Z" }, NEIGHBOUR],
         matches: null,
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", "global", "--since-last-run", "--execute", "--sole-writer"],
         deps,
       );
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: full");
+      expect(text).toContain("Configuration failure");
       expect(code).toBe(1);
       expect(calls.stateWrites).toEqual([]);
-      expect(lines.join("\n")).toContain("Configuration failure");
     });
 
     // --only leaves the marker alone, so the exit line must not say it moved.

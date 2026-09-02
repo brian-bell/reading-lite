@@ -507,27 +507,29 @@ an unparseable manifest, a failed manifest write or a failed `index/list.json`
 flush is different: that pass left work undone, so the marker stays where it was,
 the next pass sweeps, and the exit is 1.
 
-**A whole scope of unmeasurable readings is a different thing again.** A
-non-empty scope of which *nothing at all* was measured is not a corpus with a lot
-of broken readings; it is a pass that could not read the corpus. A wrong
-`--vectorize` index, a wrong `--tenant` namespace, and an expired Vectorize
-credential all present as every target reporting "no vector". Advancing the
-marker there would declare the whole scope refreshed on the strength of zero
-measurements and never look at it again, so the pass instead leaves both
-`last_run_at` and `last_full_run_at` where they were, prints
-`Configuration failure: 0 of N reading(s) in scope could be measured` with the
-`no vector` / `failed` / `schema-invalid` breakdown, and exits 1.
+**A whole sweep of unmeasurable readings is a different thing again.** A sweep
+that measured *none* of its ready readings is not a corpus with a lot of broken
+readings; it is a pass that could not read the corpus. A wrong `--vectorize`
+index, a wrong `--tenant` namespace, an expired Vectorize credential and an
+upstream failing every query all present this way. Advancing the marker there
+would declare the whole corpus refreshed on the strength of zero measurements
+and never look at it again, so the pass instead leaves both `last_run_at` and
+`last_full_run_at` where they were, prints `Configuration failure: this pass
+swept the corpus and measured 0 of N ready reading(s)` with the `no vector` /
+`failed` / `schema-invalid` breakdown, and exits 1.
 
-Three cases are deliberately outside it. An empty scope: a quiet night measures
-nothing and exits 0. A pass narrowed by `--only` or by a `--limit` that
-truncated it: it measured the subset it was told to, which says nothing about
-the configuration, so naming one broken reading with `--only` exits 3, not 1.
-And a scope made up entirely of readings already carried under
-`unmeasurable_ids`: those are back in scope precisely so they can fail again,
-and on a quiet corpus they are the whole scope, so counting them would turn one
-vectorless reading into a nightly page and freeze the marker forever. A
-configuration failure needs at least one target nobody had yet found
-unmeasurable.
+**Only a sweep reports one**, because only a sweep's scope is large enough to
+say so, and because a sweep's scope comes from `index/list.json` rather than
+from the marker — so it reaches the same verdict on the first pass as on the
+hundredth, with no marker to bootstrap from. An incremental scope is routinely
+one or two readings, often exactly the ones carried under `unmeasurable_ids` for
+retry; calling that a configuration failure would freeze the marker on a single
+broken reading, grow the scope every night, and page for it forever. A
+misconfiguration does not escape by hiding in the nightly pass: a changed ready
+reading whose vector cannot be found escalates the scope to a sweep, which is
+what reports it. A pass narrowed by `--only` or by a `--limit` that truncated it
+never reports one either — it measured the subset it was told to, so naming one
+broken reading with `--only` exits 3, not 1.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -563,7 +565,7 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 |---|---|---|
 | 0 | Nothing outstanding. | nobody |
 | 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator — re-run, or fix the index/credentials first |
-| 2 | Usage error (unknown flag, missing `--tenant`, bad `--max-backoff`). Enforced by the CLI, not the command. | operator — fix the invocation |
+| 2 | Usage error (unknown flag, missing `--tenant`, `--since-last-run` with `--full`, `--via direct` with `--local`). Enforced by the CLI, not the command. | operator — fix the invocation |
 | 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It

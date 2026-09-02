@@ -244,16 +244,16 @@ const REVERSE_QUERY_FAILURE_BUDGET = 3;
  * The exit-code contract this command answers on, documented in
  * docs/operations.md. It splits the one thing an operator has to decide from
  * the exit status alone: whether the next action is theirs (re-run the pass, or
- * fix the index/credentials/contention behind it) or a reading's.
+ * fix the index and credentials behind it) or a reading's.
  *
  * 0 — nothing outstanding.
- * 1 — real work left undone: a whole-pass configuration failure, a failed
- *     query/write/flush, or contention the pass could not get through. The
- *     operator re-runs or repairs infrastructure, and the marker did not move
- *     past whatever was missed.
- * 3 — the pass itself completed, and its marker advanced, but specific readings
- *     need a human: no indexed vector, or a manifest that fails ManifestSchema.
- *     Re-running changes nothing until they are repaired.
+ * 1 — real work left undone: a whole-sweep configuration failure, or a failed
+ *     query, manifest write or list flush. The operator re-runs or repairs
+ *     infrastructure, and the marker did not move past whatever was missed.
+ * 3 — the pass itself completed, but specific readings need a human: no indexed
+ *     vector, or a manifest that fails ManifestSchema. Re-running changes
+ *     nothing until they are repaired. Where the pass was eligible to advance
+ *     the marker it did, carrying their ids for retry.
  *
  * 2 stays the CLI's usage code (scripts/ops-lib/cli.ts) and is not used here.
  */
@@ -673,21 +673,25 @@ async function refreshNeighbours(
   // "nothing was measured" there says nothing about the configuration. Naming
   // one broken reading with --only is not a misconfigured index.
   const handNarrowed = opts.only.length > 0 || plan.truncated;
-  // Readings this pass measured for the first time — the marker already knew
-  // the rest were unmeasurable and put them back in scope precisely so they
-  // could fail again. On a quiet corpus an incremental scope IS that carried
-  // set, so counting it would make one vectorless reading look like a wrong
-  // index every night, freeze the marker, and grow the scope forever: the
-  // failure the carry rule exists to prevent.
-  const carriedUnmeasurable = new Set(marker?.unmeasurable_ids ?? []);
-  const firstTimeTargets = plan.targets.filter((t) => !carriedUnmeasurable.has(t.id)).length;
-  // Zero measurements out of a scope that held readings nobody had yet found
-  // unmeasurable is not a corpus with a lot of broken readings; it is a pass
-  // that could not read the corpus at all. A wrong --vectorize index, a wrong
-  // tenant namespace, or an expired token all look exactly like this, and
-  // advancing the marker on one would silently declare the whole scope
-  // refreshed and never look at it again.
-  const configurationFailure = !handNarrowed && firstTimeTargets > 0 && measured === 0;
+  // A sweep whose every ready reading came back unmeasurable is not a corpus
+  // full of broken readings; it is a pass that could not read the corpus at
+  // all. A wrong --vectorize index, a wrong tenant namespace, an expired token
+  // and an upstream failing every query all look exactly like this, and
+  // advancing the marker on one would silently declare the whole corpus
+  // refreshed on the strength of zero measurements.
+  //
+  // Only a sweep, because only a sweep's scope is large enough to say so. An
+  // incremental scope is routinely one or two readings — often exactly the
+  // unmeasurable ones the last pass carried forward for retry — and calling
+  // that a configuration failure would freeze the marker on a single broken
+  // reading, grow the scope every night, and page for it forever. It also
+  // needs no bootstrap: a sweep's scope comes from the list, not the marker,
+  // so it reaches the same verdict whether or not a marker was ever written.
+  // A misconfiguration does not escape by hiding in incremental passes: a
+  // changed ready reading whose vector cannot be found escalates the scope to
+  // a sweep, which is this rule's input.
+  const configurationFailure =
+    !handNarrowed && scope.kind === "full" && plan.targets.length > 0 && measured === 0;
 
   // What stops the marker is an unfinished pass, not an unmeasurable reading.
   // A failed query, an unparseable manifest, a failed write or a failed flush
@@ -738,12 +742,13 @@ async function refreshNeighbours(
 
   if (configurationFailure) {
     io.stderr(
-      `\nConfiguration failure: 0 of ${plan.targets.length} reading(s) in scope could be ` +
-        `measured (no vector: ${noVector}, failed: ${errored}, schema-invalid: ${invalid}). ` +
-        "A whole scope that answers this way is an infrastructure fault — a wrong Vectorize " +
-        "index, a wrong tenant namespace, an expired credential, or an upstream that is " +
-        "failing every query — far more often than it is a corpus of broken readings, so " +
-        "neither run marker advanced and the next pass measures the same scope. Exit 1.",
+      `\nConfiguration failure: this pass swept the corpus and measured 0 of ` +
+        `${plan.targets.length} ready reading(s) (no vector: ${noVector}, failed: ${errored}, ` +
+        `schema-invalid: ${invalid}). A whole sweep that answers this way is an ` +
+        "infrastructure fault — a wrong Vectorize index, a wrong tenant namespace, an expired " +
+        "credential, or an upstream failing every query — far more often than it is a corpus " +
+        "of broken readings, so neither run marker advanced and the next pass measures the " +
+        "same scope. Exit 1.",
     );
     return EXIT_INCOMPLETE;
   }
@@ -993,19 +998,20 @@ one left undone.
 Exit codes:
   0  Nothing outstanding.
   1  Real work left undone and the marker did not move past it: a failed query,
-     write or list flush — or a configuration failure, meaning a non-empty scope
-     of which nothing at all could be measured (a wrong --vectorize index, a
-     wrong --tenant namespace, or an expired credential looks exactly like
-     this). Re-run, or fix the infrastructure, then re-run.
+     write or list flush — or a configuration failure, meaning a sweep that
+     measured none of its ready readings (a wrong --vectorize index, a wrong
+     --tenant namespace, or an expired credential looks exactly like this).
+     Re-run, or fix the infrastructure, then re-run.
   2  Usage error (the CLI's, not this command's).
   3  The pass itself completed, but some readings need a human: no indexed
      vector, or a manifest that fails ManifestSchema. Re-running changes nothing
      until they are repaired. Where the pass was eligible to advance the marker
      it did, carrying their ids for retry; the exit line says which.
-The codes apply in plan mode too. A pass narrowed by --only or a --limit that
-truncated it never claims a configuration failure — it measured a subset it was
-told to measure — and neither does a scope made up only of readings already
-carried on the marker as unmeasurable, which is what a quiet night's retry is.
+The codes apply in plan mode too. Only a sweep can report a configuration
+failure: an incremental scope is routinely one or two readings — often the
+unmeasurable ones carried for retry — which is too small to tell a broken index
+from a broken reading. A pass narrowed by --only or by a --limit that truncated
+it never reports one either: it measured the subset it was told to.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).
