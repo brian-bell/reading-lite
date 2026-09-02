@@ -492,14 +492,17 @@ Two things the pass does not do concurrently. It never has two judgements
 holding the same reading at once — in `refresh-tensions`, where a reading sits
 in several pairs, an action waits until every reading it writes is free, so
 concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
-away. And when a judgement comes back rate limited (a 429 that outlived the
-judge's own retry), the whole pass backs off together: no worker *starts*
-another judgement until the provider's `Retry-After` has passed (defaulting to
-8 s, capped at 60 s so a wild header cannot park a sole-writer window). Calls
-already in flight when the window opens still finish, and are still billed. The
-pause prints as `provider rate limited; pausing new
-judgements for …`. Workers wake together at the end of a window, so a limit that
-is still in force costs one more round of 429s before the next pause.
+away. And when a judgement comes back rate limited, the whole pass backs off
+together. The judge's own retry never covers a 429 — it retries 5xx and network
+faults, and turns the first 429 into a typed error immediately rather than
+sleeping inside the provider call — so this backoff is the only thing pacing a
+rate limit: no worker *starts* another judgement until the provider's
+`Retry-After` has passed (defaulting to 8 s, capped at 60 s so a wild header
+cannot park a sole-writer window). Calls already in flight when the window opens
+still finish, and are still billed. The pause prints as `provider rate limited;
+pausing new judgements for …`. Workers wake together at the end of a window, so
+a limit that is still in force costs one more round of 429s before the next
+pause.
 
 The action that hit the limit gets one more attempt, once that window clears. A
 429 is usually a queue that has moved on by the time the window is over, so the

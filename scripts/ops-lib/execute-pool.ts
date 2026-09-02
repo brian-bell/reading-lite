@@ -9,12 +9,14 @@
 // results in plan order (see `runKeyedPool`) and the counters are folded in
 // that same order rather than as each call lands.
 //
-// The other thing that must survive it is the provider's rate limit. A 429
-// that outlives the judge's own retry surfaces as a typed RateLimitedError,
-// and under concurrency the wrong reaction is for each worker to independently
-// walk into the same wall. `createRateLimitGate` is the one place that knows a
-// limit is in force: a worker that sees a 429 closes it, and every worker
-// checks it before its next provider call, so the whole pass backs off
+// The other thing that must survive it is the provider's rate limit. The
+// judge's own retry deliberately does not cover a 429 — it retries 5xx and
+// network faults, and turns the first 429 into a typed RateLimitedError rather
+// than sleeping inside the call — so pacing a rate limit is this pool's job and
+// nobody else's. Under concurrency the wrong reaction is for each worker to
+// independently walk into the same wall. `createRateLimitGate` is the one place
+// that knows a limit is in force: a worker that sees a 429 closes it, and every
+// worker checks it before its next provider call, so the whole pass backs off
 // together and then resumes.
 //
 // The action that hit the limit gets exactly one more attempt, after the window
