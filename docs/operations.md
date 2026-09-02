@@ -344,10 +344,9 @@ Direct is the reason to prefer it: it removes the ~0.8s of Node start-up the
 wrangler path paid on every Vectorize query and every manifest read. Measured on
 staging (29 ready readings, plan mode): 46.6s over wrangler against 10.0s
 direct, with manifest reads 25.7s → 3.4s and Vectorize queries 19.5s → 6.5s.
-Both paths write a byte-identical `refresh-report.json`. One caveat for
-`--execute`: the closing `index/list.json` rewrite still goes through wrangler
-on either path, so an execute run needs working wrangler auth even when the
-reads did not.
+Both paths write a byte-identical `refresh-report.json`, and each flushes
+`index/list.json` through its own client, so a direct run needs no wrangler auth
+at all.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads` — the
@@ -415,9 +414,10 @@ R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then flushes `index/list.json` by merging only the `similarity`
 field of the rows it measured onto the live index, so a row added or rewritten
-while the pass ran is no longer reverted. On the wrangler path that merge is
-still an unconditional put — the read→put window is unguarded — so `--execute`
-is refused without `--sole-writer`: do not run it while
+while the pass ran is no longer reverted. On the direct path that merge is an
+`If-Match` compare-and-set retried with jittered backoff; on the wrangler
+fallback, which has no conditional put, the read→put window is unguarded. So
+`--execute` is refused without `--sole-writer`: do not run it while
 submissions are in flight. Leaves status, vectors, title, tldr, tags, keywords,
 entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.

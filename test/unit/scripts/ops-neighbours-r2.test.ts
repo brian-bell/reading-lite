@@ -40,7 +40,7 @@ function vectorizeResponse(matches: unknown[]): Response {
 }
 
 /** The adapter under test, over an S3 R2 client and a REST Vectorize client. */
-function adapter(fetchFn: FetchStub, opts: { writeListIndex?: () => Promise<void> } = {}) {
+function adapter(fetchFn: FetchStub) {
   return directNeighboursR2({
     r2: (bucket) => makeR2Client({ ...S3_CONFIG, bucket }, fetchFn as unknown as typeof fetch),
     vectorize: (index, namespace) =>
@@ -48,8 +48,28 @@ function adapter(fetchFn: FetchStub, opts: { writeListIndex?: () => Promise<void
         { accountId: "acct123", apiToken: "cf-token", index, ...(namespace === undefined ? {} : { namespace }) },
         fetchFn as unknown as typeof fetch,
       ),
-    writeListIndex: opts.writeListIndex ?? (async () => {}),
+    // No real backoff: contention is driven by the responses, not by waiting.
+    listCas: { sleep: async () => {}, random: () => 0 },
   });
+}
+
+function listIndexResponse(items: unknown[], etag: string): Response {
+  return new Response(JSON.stringify({ version: 1, items }), {
+    status: 200,
+    headers: { "content-type": "application/json", etag: `"${etag}"` },
+  });
+}
+
+function listRow(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    key_prefix: `readings/${id}`,
+    url: `https://example.com/${id}`,
+    status: "ready",
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    ...extra,
+  };
 }
 
 describe("chooseNeighboursBackend", () => {
@@ -319,13 +339,56 @@ describe("directNeighboursR2 — writes", () => {
     ).rejects.toThrow(/R2 PUT/);
   });
 
-  // Slice scope: index/list.json keeps its wrangler plain put until the CAS
-  // read-merge-write lands, so the adapter must delegate rather than write it.
-  it("delegates the list-index rewrite to the injected wrangler writer", async () => {
+  it("merges measured rows into index/list.json under If-Match", async () => {
+    const snapshot = { count: 2, max: 0.8, mean: 0.7, computed_at: "2026-09-02T00:00:00.000Z" };
+    const fetchFn = stub(
+      () => listIndexResponse([listRow("rd_a"), listRow("rd_b")], "v1"),
+      () => new Response("", { status: 200 }),
+    );
+
+    await adapter(fetchFn).mergeListRows([{ id: "rd_a", similarity: snapshot }], TENANT);
+
+    const [read, write] = fetchFn.mock.calls.map(([input]) => input as Request);
+    expect(read!.method).toBe("GET");
+    expect(read!.url).toContain("u/usr_1/index/list.json");
+    expect(write!.method).toBe("PUT");
+    expect(write!.headers.get("if-match")).toBe('"v1"');
+    const body = JSON.parse(await write!.text()) as { items: Array<Record<string, unknown>> };
+    // Only the measured row changes; the other row is written back as read.
+    expect(body.items[0]!.similarity).toEqual(snapshot);
+    expect(body.items[1]).toEqual(listRow("rd_b"));
+  });
+
+  it("re-reads and re-merges after a 412, keeping a row inserted meanwhile", async () => {
+    const snapshot = { count: 1, max: 0.9, mean: 0.9, computed_at: "2026-09-02T00:00:00.000Z" };
+    const responses = [
+      () => listIndexResponse([listRow("rd_a")], "v1"),
+      () => new Response("", { status: 412 }),
+      () => listIndexResponse([listRow("rd_a"), listRow("rd_new")], "v2"),
+      () => new Response("", { status: 200 }),
+    ];
+    let i = 0;
+    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
+      responses[i++]!(),
+    );
+
+    await adapter(fetchFn as FetchStub).mergeListRows(
+      [{ id: "rd_a", similarity: snapshot }],
+      GLOBAL,
+    );
+
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    const second = fetchFn.mock.calls[3]![0] as Request;
+    expect(second.headers.get("if-match")).toBe('"v2"');
+    const body = JSON.parse(await second.text()) as { items: Array<Record<string, unknown>> };
+    // The reading added between the two attempts survives the flush.
+    expect(body.items.map((row) => row.id)).toEqual(["rd_a", "rd_new"]);
+    expect(body.items[0]!.similarity).toEqual(snapshot);
+  });
+
+  it("makes no request when the pass measured nothing", async () => {
     const fetchFn = stub(() => new Response("", { status: 200 }));
-    const writeListIndex = vi.fn(async () => {});
-    await adapter(fetchFn, { writeListIndex }).writeListIndex([], GLOBAL);
-    expect(writeListIndex).toHaveBeenCalledOnce();
+    await adapter(fetchFn).mergeListRows([], GLOBAL);
     expect(fetchFn).not.toHaveBeenCalled();
   });
 });
@@ -344,7 +407,6 @@ describe("directNeighboursR2 — over the Cloudflare REST R2 client", () => {
           { accountId: "acct123", apiToken: "cf-token", index },
           fetchFn as unknown as typeof fetch,
         ),
-      writeListIndex: async () => {},
     });
     await expect(r2.readManifest("readings/rd_a", TENANT)).resolves.toEqual({ id: "rd_a" });
     const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
@@ -362,7 +424,7 @@ describe("directNeighboursR2 — client reuse", () => {
       makeR2Client({ ...S3_CONFIG, bucket }, fetchFn as unknown as typeof fetch),
     );
     const vectorize = vi.fn(() => ({ queryById: async () => [] }));
-    const direct = directNeighboursR2({ r2, vectorize, writeListIndex: async () => {} });
+    const direct = directNeighboursR2({ r2, vectorize });
 
     await direct.readManifest("readings/rd_a", GLOBAL);
     await direct.readManifest("readings/rd_b", GLOBAL);

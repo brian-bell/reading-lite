@@ -6,7 +6,7 @@
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
 // inventory, and writes refresh-report.json; --execute (which requires
 // --sole-writer, because the closing index/list.json flush is an unguarded
-// read-merge-write on the wrangler path)
+// read-merge-write on the wrangler fallback, conditional only on the direct path)
 // also rewrites drifted `manifest.similarity` snapshots with the same
 // one-field discipline as `corpus backfill-similarity`. After a successful putManifest, the list row is
 // the resumability marker for index/list.json: a retry that finds a current
@@ -221,9 +221,10 @@ async function refreshNeighbours(
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
   const tenant = requireOperatorTenant(opts.tenant);
   // --execute ends in a read-merge-write of index/list.json. The merge no
-  // longer reverts rows this pass never measured, but wrangler has no
-  // conditional put, so a concurrent write landing inside the read→put window
-  // is still lost. Same flag the tier-2/3 refresh commands require.
+  // longer reverts rows this pass never measured, and the direct path guards
+  // it with If-Match; the wrangler fallback has no conditional put, so a
+  // concurrent write landing inside its read→put window is still lost. Same
+  // flag the tier-2/3 refresh commands require.
   const soleWriter = soleWriterGuard({
     execute: opts.execute,
     acknowledged: opts.soleWriter,
@@ -459,10 +460,6 @@ async function buildDirectR2(): Promise<CorpusRefreshNeighboursR2> {
         },
         globalThis.fetch,
       ),
-    // index/list.json keeps its wrangler plain put for this slice; only
-    // --execute reaches it.
-    writeListIndex: async (items, d) =>
-      (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
   });
 }
 
@@ -491,15 +488,13 @@ Plan by default. The report is written in both modes.
 
 The closing list.json flush merges only the similarity field of the rows this
 pass measured onto the live index, so rows written elsewhere while it ran are
-kept. It is still not a conditional write on the wrangler path, so run
---execute when nothing is being submitted: --execute is refused without
---sole-writer for that reason.
+kept. The direct path makes that merge an If-Match compare-and-set, retried
+with backoff; the wrangler path has no conditional put, so its read-to-put
+window is unguarded. Run --execute when nothing is being submitted: it is
+refused without --sole-writer for that reason.
 
 The direct path removes the ~0.8s child-process spawn the wrangler path pays on
-every Vectorize query and every manifest read. Its closing index/list.json
-rewrite still goes through wrangler, so an --execute run over the direct path
-also needs 'wrangler login' (or CLOUDFLARE_API_TOKEN in the environment); a plan
-pass needs no wrangler at all.
+every Vectorize query and every manifest read, and needs no wrangler at all.
 
 Options:
   --limit <n>         Cap how many readings are measured this pass.
@@ -554,7 +549,7 @@ Options:
         queryByVectorId: async (index, id, topK, ns) =>
           (await lazy()).queryByVectorId(index, id, topK, ns),
         putManifest: async (kp, body, d) => (await lazy()).putManifest(kp, body, d),
-        writeListIndex: async (items, d) => (await lazy()).writeListIndex(items, d),
+        mergeListRows: async (patches, d) => (await lazy()).mergeListRows(patches, d),
       };
     },
     storageVars: defaultStorageVars,
