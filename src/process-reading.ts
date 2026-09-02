@@ -304,7 +304,10 @@ async function sendReadingEmailAndLog(
     // Do not requeue the whole job. Recovery is a manual reprocess with email=true.
     const failedAt = services.now();
     const durationMs = durationMsBetween(startedAt, failedAt);
-    const error = redactSendEmailError(errorFromUnknown(e, "send_email", failedAt), recipient);
+    const error = redactSendEmailError(errorFromUnknown(e, "send_email", failedAt), [
+      ...(recipient === undefined ? [] : [recipient]),
+      env.EMAIL_FROM,
+    ]);
     console.error(
       JSON.stringify({
         event: "send_email_failed",
@@ -323,10 +326,13 @@ async function sendReadingEmailAndLog(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 }
 
-function redactSendEmailError(error: ManifestError, knownRecipient?: string): ManifestError {
+function redactSendEmailError(error: ManifestError, known: readonly string[]): ManifestError {
   return {
     ...error,
-    message: redactEmailsInText(error.message, knownRecipient === undefined ? [] : [knownRecipient]),
+    message: redactEmailsInText(
+      error.message,
+      known.filter((value) => value.trim().length > 0),
+    ),
   };
 }
 

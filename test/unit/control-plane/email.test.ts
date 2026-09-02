@@ -34,6 +34,7 @@ describe("redactEmailsInText", () => {
       '"Foo Bar"@example.com',
       "user@exämple.com",
       "user@localhost",
+      "a @ b",
     ];
     for (const address of shapes) {
       expect(() => canonicalizeEmail(address)).not.toThrow();
@@ -43,10 +44,17 @@ describe("redactEmailsInText", () => {
     }
   });
 
-  it("redacts a known recipient even when the free-text matcher would miss it", () => {
-    const known = "a @ b";
-    expect(() => canonicalizeEmail(known)).not.toThrow();
-    const redacted = redactEmailsInText(`Resend: ${known}`, [known]);
-    expect(redacted).not.toContain(known);
+  it("redacts unquoted interior whitespace in free text without a known-recipient list", () => {
+    const address = "a @ b";
+    expect(() => canonicalizeEmail(address)).not.toThrow();
+    const redacted = redactEmailsInText(`Resend: ${address}`);
+    expect(redacted).not.toContain(address);
+  });
+
+  it("redacts EMAIL_FROM when it is passed as a known address", () => {
+    const from = "Noreply @ Reading.test";
+    const redacted = redactEmailsInText(`Invalid from: ${from}`, [from]);
+    expect(redacted).not.toContain(from);
+    expect(redacted).not.toContain(from.toLowerCase());
   });
 });

@@ -598,10 +598,12 @@ describe("processReading immediate notification recipient", () => {
     expect(sendEmail?.error?.message).toContain("f***@test.example");
     expect(JSON.stringify(diag)).not.toContain("founder@test.example");
     expect(JSON.stringify(diag)).not.toContain("reader@test.example");
+    expect(JSON.stringify(diag)).not.toContain("reading-lite@test.example");
 
     const logged = consoleErr.mock.calls.map((call) => call.map((arg) => String(arg)).join(" ")).join("\n");
     expect(logged).toContain("f***@test.example");
     expect(logged).not.toContain("founder@test.example");
+    expect(logged).not.toContain("reading-lite@test.example");
     consoleErr.mockRestore();
   });
 
@@ -612,7 +614,7 @@ describe("processReading immediate notification recipient", () => {
       .bind(unusual, FOUNDER_TENANT_ID)
       .run();
 
-    const leaked = [unusual, '"Foo Bar"@example.com', "user@exämple.com", "user@localhost"];
+    const leaked = [unusual, '"Foo Bar"@example.com', "user@exämple.com", "user@localhost", "a @ b"];
     const fetchFn = makeStubFetch({
       resendStatus: 500,
       resendBody: { message: `Invalid to: ${leaked.join(" and ")}` },
@@ -647,6 +649,45 @@ describe("processReading immediate notification recipient", () => {
       expect(sendMessage).not.toContain(address);
       expect(logged).not.toContain(address);
     }
+    consoleErr.mockRestore();
+  });
+
+  it("scrubs EMAIL_FROM from send_email diagnostics and logs", async () => {
+    const workerEnv = env as unknown as Env;
+    const from = "noreply @ reading.test";
+    workerEnv.EMAIL_FROM = from;
+    const fetchFn = makeStubFetch({
+      resendStatus: 500,
+      resendBody: { message: `Invalid from: ${from}` },
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await processReady(submitArgs("rd_MAIL11", "https://example.com/resend-from"), fetchFn);
+
+    const app = createApp({ services: makeServices(fetchFn) });
+    const diagnostics = await app.request(
+      "/api/readings/rd_MAIL11/diagnostics",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const diag = (await diagnostics.json()) as {
+      attempts: Array<{
+        events: Array<{ stage: string; error?: { message: string } }>;
+      }>;
+    };
+    const sendMessage = diag.attempts[0]!.events.find((event) => event.stage === "send_email")?.error?.message ?? "";
+    const logged = consoleErr.mock.calls.map((call) => {
+      const first = call[0];
+      if (typeof first === "string") {
+        try {
+          return String((JSON.parse(first) as { message?: string }).message ?? first);
+        } catch {
+          return first;
+        }
+      }
+      return String(first);
+    }).join("\n");
+    expect(sendMessage).not.toContain(from);
+    expect(logged).not.toContain(from);
     consoleErr.mockRestore();
   });
 

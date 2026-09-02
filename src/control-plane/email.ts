@@ -15,11 +15,11 @@ export function redactEmail(raw: string): string {
 }
 
 /**
- * Every mailbox canonicalizeEmail accepts: quoted-local `"..."@domain`, then
- * any non-space local@domain (slash, IDN, no-dot TLD). Quoted alternative is
- * first so `"Foo Bar"@x` is not split on the space.
+ * Every mailbox canonicalizeEmail accepts in free text. Quoted-local is first
+ * so `"Foo Bar"@x` is not split on the space. Unquoted local/domain may have
+ * interior whitespace (`a @ b`); `@` still cannot start or end the match.
  */
-const EMAIL_IN_TEXT = /"[^"]+"@[^\s@]+|[^\s@]+@[^\s@]+/g;
+const EMAIL_IN_TEXT = /"[^"]+"\s*@\s*[^\s@]+|[^\s@]+\s*@\s*[^\s@]+/g;
 
 /** Redact mailbox addresses in diagnostics and logs. Unknown shapes become `[redacted]`. */
 export function redactEmailsInText(raw: string, knownRecipients: readonly string[] = []): string {
