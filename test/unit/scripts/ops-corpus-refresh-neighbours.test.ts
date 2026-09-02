@@ -179,7 +179,7 @@ describe("ops corpus refresh-neighbours", () => {
   it("--execute refreshes only drifted snapshots and preserves protected fields", async () => {
     const { deps, calls } = makeDeps({});
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(0);
@@ -211,7 +211,7 @@ describe("ops corpus refresh-neighbours", () => {
     };
     const { deps, calls } = makeDeps({ items: [scored, NEIGHBOUR] });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(0);
@@ -233,7 +233,7 @@ describe("ops corpus refresh-neighbours", () => {
       ],
     });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(0);
@@ -250,7 +250,7 @@ describe("ops corpus refresh-neighbours", () => {
       ],
     });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", tenantId, "rd_r", "--execute"],
+      ["--tenant", tenantId, "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(0);
@@ -266,6 +266,48 @@ describe("ops corpus refresh-neighbours", () => {
     expect(report.readings[0].current_neighbours[0].id).toBe("rd_n");
   });
 
+  it("refuses --execute without --sole-writer before touching R2", async () => {
+    const { deps, calls, lines } = makeDeps({});
+    await expect(
+      corpusRefreshNeighboursCommand.run(["--tenant", "global", "--execute"], deps),
+    ).rejects.toThrow(UsageError);
+    expect(calls.queries).toHaveLength(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    expect(calls.reports).toHaveLength(0);
+    expect(lines.join("\n")).toContain(
+      "REFUSED: ops corpus refresh-neighbours --execute requires --sole-writer.",
+    );
+  });
+
+  it("--sole-writer without --execute stays a plan and prints no banner", async () => {
+    const { deps, calls, lines } = makeDeps({});
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    const text = lines.join("\n");
+    expect(text).toContain("Mode: PLAN");
+    expect(text).not.toContain("SOLE-WRITER MODE");
+  });
+
+  it("--execute --sole-writer announces the sole-writer banner", async () => {
+    const { deps, lines } = makeDeps({});
+    const code = await corpusRefreshNeighboursCommand.run(
+      ["--tenant", "global", "--execute", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("SOLE-WRITER MODE: ops corpus refresh-neighbours");
+  });
+
+  it("documents --sole-writer in help", async () => {
+    expect(corpusRefreshNeighboursCommand.helpText).toContain("--sole-writer");
+  });
+
   it("fails closed without --tenant", async () => {
     const { deps, calls } = makeDeps({});
     await expect(corpusRefreshNeighboursCommand.run(["--execute"], deps)).rejects.toThrow(/--tenant is required/);
@@ -275,7 +317,7 @@ describe("ops corpus refresh-neighbours", () => {
 
   it("a missing vector makes an execute run incomplete (exit 1)", async () => {
     const { deps, calls } = makeDeps({ items: [READY], matches: null });
-    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--execute", "--sole-writer"], deps);
     expect(code).toBe(1);
     expect(calls.puts).toHaveLength(0);
     expect(calls.reports).toHaveLength(1);
@@ -307,7 +349,7 @@ describe("ops corpus refresh-neighbours", () => {
   it("skips a non-ready reading even when named", async () => {
     const failed: RefreshRow = { ...READY, id: "rd_f", status: "failed", key_prefix: "readings/rd_f" };
     const { deps, calls } = makeDeps({ items: [failed] });
-    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "rd_f", "--execute"], deps);
+    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "rd_f", "--execute", "--sole-writer"], deps);
     expect(code).toBe(0);
     expect(calls.queries).toHaveLength(0);
     expect(calls.puts).toHaveLength(0);
@@ -329,7 +371,7 @@ describe("ops corpus refresh-neighbours", () => {
     };
 
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
 
@@ -357,7 +399,7 @@ describe("ops corpus refresh-neighbours", () => {
     };
 
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
 
@@ -396,7 +438,7 @@ describe("ops corpus refresh-neighbours", () => {
       },
     });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(1);
@@ -427,7 +469,7 @@ describe("ops corpus refresh-neighbours", () => {
       manifest: null,
     });
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(1);
@@ -472,7 +514,7 @@ describe("ops corpus refresh-neighbours", () => {
       throw new Error("put index/list.json failed: 500");
     };
     const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", "global", "rd_r", "--execute"],
+      ["--tenant", "global", "rd_r", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(1);

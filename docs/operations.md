@@ -263,7 +263,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize only; R2 stays read-only) |
@@ -298,15 +298,15 @@ fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
 R2. `--execute` rewrites only
 drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
 ≥ 0.02) and then does a wholesale plain put of `index/list.json` — not CAS,
-the same class of write `rebuild-list` guards with `--sole-writer`. Do not
-run `--execute` while submissions are in flight: a concurrent queue write
-can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
+the same class of write `rebuild-list` guards with `--sole-writer`. For that
+reason `--execute` is refused without `--sole-writer`: do not run it while
+submissions are in flight, because a concurrent queue write can be clobbered. Leaves status, vectors, title, tldr, tags, keywords,
 entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant global
-npm run ops -- corpus refresh-neighbours --tenant global --execute
+npm run ops -- corpus refresh-neighbours --tenant global --execute --sole-writer
 ```
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
