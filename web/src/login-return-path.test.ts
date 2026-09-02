@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  ACCOUNT_SECURITY_PATH,
   consumeLoginReturnPath,
   loginNextStorageKey,
   rememberLoginReturnPath,
@@ -16,6 +17,7 @@ describe("safeReadingReturnPath", () => {
     expect(safeReadingReturnPath("https://evil.example/phish")).toBeUndefined();
     expect(safeReadingReturnPath("//evil.example")).toBeUndefined();
     expect(safeReadingReturnPath("/login")).toBeUndefined();
+    expect(safeReadingReturnPath("/account/security")).toBeUndefined();
     expect(safeReadingReturnPath("/readings/rd_ONE@evil.example")).toBeUndefined();
     expect(safeReadingReturnPath("/readings/rd_ONE?next=https://evil.example")).toBeUndefined();
     expect(safeReadingReturnPath("/readings/%2f%2fevil.example")).toBeUndefined();
@@ -44,5 +46,15 @@ describe("login return path storage", () => {
     rememberLoginReturnPath("/readings/rd_STORED");
     expect(consumeLoginReturnPath("/readings/rd_QUERY")).toBe("/readings/rd_QUERY");
     expect(localStorage.getItem(loginNextStorageKey)).toBeNull();
+  });
+
+  it("remembers the Security page for recent-auth step-up and rejects lookalikes", () => {
+    rememberLoginReturnPath("/account/security");
+    expect(localStorage.getItem(loginNextStorageKey)).toBe(ACCOUNT_SECURITY_PATH);
+    expect(consumeLoginReturnPath(null)).toBe(ACCOUNT_SECURITY_PATH);
+    rememberLoginReturnPath("/account/security/extra");
+    rememberLoginReturnPath("/account/security?next=https://evil.example");
+    expect(localStorage.getItem(loginNextStorageKey)).toBeNull();
+    expect(consumeLoginReturnPath("/account/security")).toBe(ACCOUNT_SECURITY_PATH);
   });
 });

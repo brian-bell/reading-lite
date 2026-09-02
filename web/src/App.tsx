@@ -39,7 +39,8 @@ import { captureMagicLinkCredential, clearMagicLinkCredential } from "./magic-li
 import {
   consumeLoginReturnPath,
   rememberLoginReturnPath,
-  safeReadingReturnPath
+  safeAppReturnPath,
+  STEP_UP_LOGIN_HREF
 } from "./login-return-path";
 import {
   API_SCOPES,
@@ -47,6 +48,7 @@ import {
   type ApiTokenListItem,
   type Connection,
   type ListReading,
+  type ListTokensResponse,
   type ManifestStatus,
   type ProcessingAttempt,
   type ProcessingAttemptSummary,
@@ -456,7 +458,19 @@ function AccountSecurityPage({
     setBusyId(token.id);
     try {
       await revokeToken(token.id);
+      const markUnusable = (current: ListTokensResponse | undefined) => {
+        if (!current) return current;
+        return {
+          tokens: current.tokens.map((row) =>
+            row.id === token.id
+              ? { ...row, usable: false, revoked_at_ms: row.revoked_at_ms ?? Date.now() }
+              : row
+          )
+        };
+      };
+      queryClient.setQueryData(["tokens", identity.user_id], markUnusable);
       await tokensQuery.refetch();
+      queryClient.setQueryData(["tokens", identity.user_id], markUnusable);
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to revoke token");
     } finally {
@@ -495,7 +509,7 @@ function AccountSecurityPage({
       {error ? <p className="error-message">{error}</p> : null}
       {needFreshSignIn ? (
         <p role="alert">
-          <Link to="/login">Request a fresh sign-in link</Link> to confirm a sensitive change.
+          <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a sensitive change.
         </p>
       ) : null}
       {sessionsQuery.isPending ? <StatusMessage>Loading</StatusMessage> : null}
@@ -669,18 +683,21 @@ function LoginPage({
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const next = searchParams.get("next");
+  const stepUp = searchParams.get("step_up") === "1";
 
   useLayoutEffect(() => {
-    if (identity) return;
+    if (identity && !stepUp) return;
     rememberLoginReturnPath(next);
-  }, [identity, next]);
+  }, [identity, next, stepUp]);
 
-  if (identity) {
-    const dest = safeReadingReturnPath(next) ?? "/";
+  if (identity && !stepUp) {
+    const dest = safeAppReturnPath(next) ?? "/";
     return <Navigate to={dest} replace />;
   }
-  if (identityQuery.isPending || identityQuery.isFetching) return <StatusMessage>Loading</StatusMessage>;
-  if (identityQuery.isError) {
+  if (!identity && (identityQuery.isPending || identityQuery.isFetching)) {
+    return <StatusMessage>Loading</StatusMessage>;
+  }
+  if (!identity && identityQuery.isError) {
     return (
       <IdentityError error={identityError(identityQuery.error)} onRetry={() => void identityQuery.refetch()} />
     );

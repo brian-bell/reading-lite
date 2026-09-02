@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import { loginNextStorageKey } from "./login-return-path";
+import { loginNextStorageKey, STEP_UP_LOGIN_HREF } from "./login-return-path";
 import { clearMagicLinkCredential } from "./magic-link-credential";
 import type {
   ApiTokenListItem,
@@ -455,6 +455,40 @@ describe("App", () => {
     expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
   });
 
+  it("redirects a signed-in visitor away from /login unless step-up is requested", async () => {
+    render(<App initialPath="/login" />);
+    expect(await screen.findByRole("heading", { name: "Reading Library" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+  });
+
+  it("shows the magic-link form for recent-auth step-up while a session is still valid", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens") return jsonResponse({ tokens: [] });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath={STEP_UP_LOGIN_HREF} />);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByText("reader@example.com")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(window.localStorage.getItem(loginNextStorageKey)).toBe("/account/security");
+    });
+    await user.type(screen.getByLabelText("Email"), "reader@example.com");
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
+    const challenge = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
+    });
+    expect(challenge).toBeDefined();
+  });
+
   it("strips the magic-link fragment and only redeems after an explicit click", async () => {
     let signedIn = false;
     const fetchMock = vi.fn(async (request: Request) => {
@@ -659,6 +693,33 @@ describe("App", () => {
     );
     await user.click(await screen.findByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("heading", { name: "Operator Notes" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
+  });
+
+  it("returns to Security after Continue when next is the security path", async () => {
+    let signedIn = false;
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (!signedIn) return jsonResponse({ error: "unauthorized" }, 401);
+        return jsonResponse(sessionWhoami);
+      }
+      if (url.pathname === "/api/auth/redeem") {
+        signedIn = true;
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens") return jsonResponse({ tokens: [] });
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <App initialPath="/auth/verify?next=/account/security#ml_550e8400-e29b-41d4-a716-446655440000.deadbeef" />
+    );
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Security" })).toBeInTheDocument();
     expect(window.localStorage.getItem(loginNextStorageKey)).toBeNull();
   });
 
@@ -1631,7 +1692,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Send confirmation" }));
     expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
       "href",
-      "/login"
+      STEP_UP_LOGIN_HREF
     );
     expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
   });
@@ -1787,6 +1848,40 @@ describe("App", () => {
     expect(within(panel).queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
   });
 
+  it("enables create after revoke even if list refetch still reports the cap", async () => {
+    const tokens = Array.from({ length: 10 }, (_, i) =>
+      apiToken({
+        id: `tok_55555555-5555-4555-8555-55555555555${i}`,
+        name: `cap-${i}`
+      })
+    );
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens });
+      }
+      if (url.pathname.startsWith("/api/auth/tokens/") && request.method === "DELETE") {
+        return jsonResponse({ ok: true });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText(/10-token limit/)).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "API tokens" });
+    expect(within(panel).getByRole("button", { name: "Create token" })).toBeDisabled();
+    await user.click(within(panel).getAllByRole("button", { name: "Revoke" })[0]);
+    await waitFor(() => {
+      expect(within(panel).getByRole("button", { name: "Create token" })).toBeEnabled();
+    });
+    expect(screen.getByText(/cap-0 \(standard\) · revoked/)).toBeInTheDocument();
+    expect(screen.queryByText(/10-token limit/)).not.toBeInTheDocument();
+  });
+
   it("asks for a fresh sign-in link when creating a token requires recent auth", async () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
@@ -1809,7 +1904,7 @@ describe("App", () => {
     await user.click(within(panel).getByRole("button", { name: "Create token" }));
     expect(await screen.findByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
       "href",
-      "/login"
+      STEP_UP_LOGIN_HREF
     );
     expect(screen.getByText(/recent sign-in required/i)).toBeInTheDocument();
   });
