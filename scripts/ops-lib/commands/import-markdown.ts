@@ -375,8 +375,8 @@ Options:
                         env, then .dev.vars READER_API_TOKEN. Never printed.
   --index <path>        Path to local index file.
                         Default: ./.import-markdown-index.json.
-  --email               Ask reading-lite to send emails for imported readings.
-                        Default: false.
+  --email               Accepted for compatibility; send-time import is always
+                        silent even when this flag is set. Default: false.
   --execute             Submit, record, and move files.
   --help                Show this message.
 

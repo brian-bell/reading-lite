@@ -19,6 +19,7 @@ X_API_BEARER_TOKEN=
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional local overrides; checked-in wrangler.toml already uses these values.
+# EMAIL_TO is unused. Immediate notifications go to the verified account email.
 SUMMARIZER_PROVIDER=openai
 OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra
 OPENAI_SUMMARIZATION_REASONING_EFFORT=low

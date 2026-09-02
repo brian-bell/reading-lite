@@ -40,6 +40,8 @@ export interface Env {
   X_API_BEARER_TOKEN?: string;
   RESEND_API_KEY: string;
   EMAIL_FROM: string;
+  // Unused at send time. Immediate notifications go to users.email_display.
+  // Kept so existing wrangler [vars] still bind.
   EMAIL_TO: string;
   WEB_BASE_URL: string;
   CORS_ALLOWED_ORIGINS: string;

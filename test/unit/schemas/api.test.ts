@@ -12,6 +12,8 @@ import {
   ListSessionsResponseSchema,
   ListTokensResponseSchema,
   PostAuthTokensBodySchema,
+  PostAuthSettingsBodySchema,
+  UserSettingsResponseSchema,
   AuthChallengeBodySchema,
   AuthEmailChangeBodySchema,
   AuthLoginOptionsResponseSchema,
@@ -421,6 +423,42 @@ describe("ListTokensResponseSchema", () => {
       ],
     };
     expect(ListTokensResponseSchema.parse(body)).toEqual(body);
+  });
+});
+
+describe("UserSettingsResponseSchema", () => {
+  const row = {
+    user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
+    schema_version: 1,
+    notify_immediate: true,
+    digest_cadence: "off",
+    time_zone: "UTC",
+    digest_hour_local: 9,
+    digest_weekday: 1,
+    created_at_ms: 1,
+    updated_at_ms: 2,
+  };
+
+  it("accepts a full settings row", () => {
+    expect(UserSettingsResponseSchema.parse(row)).toEqual(row);
+  });
+
+  it("rejects a 0/1 notify_immediate and unknown cadence", () => {
+    expect(() => UserSettingsResponseSchema.parse({ ...row, notify_immediate: 1 })).toThrow();
+    expect(() => UserSettingsResponseSchema.parse({ ...row, digest_cadence: "monthly" })).toThrow();
+  });
+});
+
+describe("PostAuthSettingsBodySchema", () => {
+  it("accepts notify_immediate only", () => {
+    expect(PostAuthSettingsBodySchema.parse({ notify_immediate: false })).toEqual({
+      notify_immediate: false,
+    });
+  });
+
+  it("rejects a missing or non-boolean notify_immediate", () => {
+    expect(() => PostAuthSettingsBodySchema.parse({})).toThrow();
+    expect(() => PostAuthSettingsBodySchema.parse({ notify_immediate: 1 })).toThrow();
   });
 });
 

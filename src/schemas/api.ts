@@ -169,6 +169,29 @@ export type ListTokensResponse = z.infer<typeof ListTokensResponseSchema>;
 export const AuthTokenRevokeResponseSchema = AuthSessionRevokeResponseSchema;
 export type AuthTokenRevokeResponse = z.infer<typeof AuthTokenRevokeResponseSchema>;
 
+export const DigestCadenceSchema = z.enum(["off", "daily", "weekly"]);
+export type DigestCadence = z.infer<typeof DigestCadenceSchema>;
+
+/** GET /api/auth/settings and POST 200: the caller's full `user_settings` row. */
+export const UserSettingsResponseSchema = z.object({
+  user_id: z.string().min(1),
+  schema_version: z.number().int(),
+  notify_immediate: z.boolean(),
+  digest_cadence: DigestCadenceSchema,
+  time_zone: z.string().min(1),
+  digest_hour_local: z.number().int(),
+  digest_weekday: z.number().int(),
+  created_at_ms: z.number().int(),
+  updated_at_ms: z.number().int(),
+});
+export type UserSettingsResponse = z.infer<typeof UserSettingsResponseSchema>;
+
+/** POST /api/auth/settings: the only writable field on this endpoint. */
+export const PostAuthSettingsBodySchema = z.object({
+  notify_immediate: z.boolean(),
+});
+export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
+
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy
 // could route a later write to a different worker version. A client that sends
