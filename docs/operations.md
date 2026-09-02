@@ -514,8 +514,9 @@ The total time a pass will spend waiting out limits is bounded by
 `600000ms`, `2h`; a bare number is seconds). Only the wait a limit actually adds
 counts against it, so a whole round of workers reporting the same wall is one
 charge, not one each. When the next window would overrun the budget, the pass
-stops dispatching judgements: it prints `rate-limit backoff reached the …
-ceiling`, lets the judgements already in flight finish and write their results,
+stops dispatching judgements: it prints `the next backoff would pass this
+pass's … rate-limit ceiling`, lets the judgements already in flight finish and
+write their results,
 reports every judgement it did not reach as `skip …: backoff ceiling reached
 before this action ran`, and exits non-zero. That is what keeps a hard-limited
 provider from sitting on a scarce sole-writer window for the length of the plan.

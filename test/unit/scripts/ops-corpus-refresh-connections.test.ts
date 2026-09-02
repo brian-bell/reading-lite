@@ -1056,9 +1056,9 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     expect(
       s.h.err.filter((line) => line.includes("pausing new judgements")),
     ).toHaveLength(2);
-    expect(s.h.err.filter((line) => line.includes("backoff reached"))).toEqual([
-      "  ! rate-limit backoff reached the 120.000s ceiling after 120.000s; " +
-        "not dispatching any more judgements",
+    expect(s.h.err.filter((line) => line.includes("rate-limit ceiling"))).toEqual([
+      "  ! the next backoff would pass this pass's 120.000s rate-limit ceiling " +
+        "(120.000s of it already spent); not dispatching any more judgements",
     ]);
     // The budget is a bound on wall time, not a target it overshoots.
     expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(120_000);
@@ -1147,7 +1147,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 
     expect(await executeOnAClock(s.h, "--concurrency", "1")).toBe(0);
 
-    expect(s.h.err.filter((line) => line.includes("backoff reached"))).toEqual([]);
+    expect(s.h.err.filter((line) => line.includes("rate-limit ceiling"))).toEqual([]);
     expect(
       s.h.err.filter((line) => line.includes("pausing new judgements")),
     ).toHaveLength(COUNT);

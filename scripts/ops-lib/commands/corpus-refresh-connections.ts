@@ -471,8 +471,9 @@ async function refreshConnections(
       ),
     onCeiling: (totalMs) =>
       deps.io.stderr(
-        `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
-          `after ${formatSeconds(totalMs)}; not dispatching any more judgements`,
+        `  ! the next backoff would pass this pass's ${formatSeconds(args.maxBackoffMs)} ` +
+          `rate-limit ceiling (${formatSeconds(totalMs)} of it already spent); ` +
+          `not dispatching any more judgements`,
       ),
   });
 
@@ -504,9 +505,12 @@ async function refreshConnections(
         .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     }
-    // The ceiling stops the paid work only. A list heal makes no provider call
-    // and cannot be rate limited, so it runs past the ceiling for the same
-    // reason `--limit` caps judgements and never the free repairs.
+    // The ceiling stops the paid work only: every heal the plan knows about is
+    // above this line and runs, for the same reason `--limit` caps judgements
+    // and never the free repairs. It sits ahead of the re-read rather than
+    // after it so a stopped pass stops paying for R2 too — the only heal that
+    // costs is the one a judge turns into below, which under `--sole-writer`
+    // means a reading nothing could have judged since the plan was made.
     if (gate.stopped()) return ceilingSkip();
     // No re-read: planning read this manifest and kept its ETag, and a report
     // names a reading once, so nothing earlier in this pass can have written

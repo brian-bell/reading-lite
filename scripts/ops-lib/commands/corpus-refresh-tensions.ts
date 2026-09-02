@@ -510,8 +510,9 @@ async function refreshTensions(
       ),
     onCeiling: (totalMs) =>
       deps.io.stderr(
-        `  ! rate-limit backoff reached the ${formatSeconds(args.maxBackoffMs)} ceiling ` +
-          `after ${formatSeconds(totalMs)}; not dispatching any more judgements`,
+        `  ! the next backoff would pass this pass's ${formatSeconds(args.maxBackoffMs)} ` +
+          `rate-limit ceiling (${formatSeconds(totalMs)} of it already spent); ` +
+          `not dispatching any more judgements`,
       ),
   });
   // The manifest to write against: the one planning read and validated, until
@@ -571,9 +572,12 @@ async function refreshTensions(
     };
 
     if (action.kind === "judge") {
-      // The ceiling stops the paid work only. A repair makes no provider call
-      // and cannot be rate limited, so it runs past the ceiling for the same
-      // reason `--limit` caps judgements and never the free repairs.
+      // The ceiling stops the paid work only: the repairs are a separate action
+      // kind and run, for the same reason `--limit` caps judgements and never
+      // them. It sits ahead of the live re-reads rather than after them so a
+      // stopped pass stops paying for R2 too — the free outcome that costs is
+      // the judged-since-plan skip below, which under `--sole-writer` means a
+      // pair nothing could have judged since the plan was made.
       if (gate.stopped()) return ceilingSkip();
       const { a: aId, b: bId, source, key } = action.candidate;
       let a: StoredRawManifest;
