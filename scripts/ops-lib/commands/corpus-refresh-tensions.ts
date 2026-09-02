@@ -611,10 +611,14 @@ async function refreshTensions(
       }
     }
 
-    // The two staleness guards below compare against the `updated_at` the
-    // plan read, which is what `findOneSided` planned from, so they bite only
-    // on a side re-read after an in-pass write. A partner rewritten outside
-    // the pass is caught by the conditional write instead.
+    // The two staleness guards below compare an `updated_at` against the same
+    // plan-time timestamp `findOneSided` planned from, and nothing this
+    // command writes moves `updated_at`, so on the cached path they cannot
+    // fire. What is left for them is the narrow case where a side re-read
+    // after an in-pass write comes back bearing a newer `updated_at` than the
+    // repair was planned against, which only a writer outside this pass can
+    // produce. Everything else that writer could do is caught by the
+    // conditional write instead.
     const repair = action.repair;
     try {
       if (repair.kind === "mirror") {

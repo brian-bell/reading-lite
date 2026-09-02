@@ -228,7 +228,9 @@ async function refreshConnections(
   );
   const provider = await deps.loadProvider(args.execute);
   // One phase covers every manifest read: they all happen while planning, and
-  // execute writes against the ETags those reads returned.
+  // execute writes against the ETags those reads returned. A read added back
+  // to the execute path would need its own phase again — the selector is a
+  // function so that it can be given one — or it would hide inside this total.
   const storage = timedRefreshStorage(
     await deps.createStorage(args.bucket, tenant.keyRoot),
     timer,
