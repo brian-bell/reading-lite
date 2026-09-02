@@ -348,14 +348,24 @@ that quietly retried. Record the block: it is the baseline a later run or a
 performance change is compared against, and it is what tells a slow pass apart
 from a hung one.
 
-The two robustness limits behind those numbers: every S3 request carries a
-30-second deadline and is retried up to three times on a timeout, a network
-fault, a 5xx, or a 429, so one transient read no longer ends the run — except
-for conditional writes, which are never repeated because a retry can see its
-own landed write and report a lost race that did not happen; and each
-judgement call retries 5xx the same way, while a 429 surfaces as a
-`RateLimitedError` naming the retry-after the provider asked for — that one
-means slow the run down, not re-run it immediately.
+Two robustness limits sit behind those numbers. `refresh-connections` and
+`refresh-tensions` reach R2 over the S3 API when `CORPUS_R2_*` keys are set,
+and every request on that path now carries a 30-second deadline and is retried
+up to three times on a timeout, a network fault, a 5xx, or a 429 (honouring
+`Retry-After`), so one transient read no longer ends the run. Conditional
+writes are the exception: they get the deadline but are never repeated, because
+a retry can see its own landed write and report a lost race that did not
+happen. Both commands' judgement calls retry 5xx the same way, and a 429
+surfaces as a `RateLimitedError` naming the retry-after the provider asked for
+— that one is a signal to pause and rerun later, not to rerun immediately, and
+nothing in the command paces itself for you yet.
+
+Neither limit covers the other two storage paths. `refresh-neighbours` runs
+every call through a `wrangler` subprocess, and the S3-less fallback used when
+only `CLOUDFLARE_API_TOKEN` is set goes through the Cloudflare REST client,
+which backs off on 429 but has no deadline and no 5xx retry. A stall on either
+path still looks like a silent pass — the `Timing:` block is what makes it
+visible.
 
 `ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
 stored vector id (no embedding calls, no LLM), prints the staleness inventory,

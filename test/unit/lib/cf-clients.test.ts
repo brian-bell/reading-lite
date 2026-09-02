@@ -735,10 +735,27 @@ describe("makeR2Client request timeout and transient retry", () => {
     expect(h.signals).toEqual([30_000, 30_000]);
   });
 
-  it("retries a throttled request", async () => {
-    const h = harness([new Response("throttled", { status: 429 }), okResponse()]);
+  it("retries a throttled request and waits as long as R2 asked", async () => {
+    const h = harness([
+      new Response("throttled", { status: 429, headers: { "retry-after": "5" } }),
+      okResponse(),
+    ]);
     await expect(h.r2.get("k")).resolves.toBe("body");
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    expect(h.sleep.mock.calls.map(([ms]) => ms)).toEqual([5_000]);
+  });
+
+  it("clamps an absurd throttle hint and falls back to backoff without one", async () => {
+    const huge = harness([
+      new Response("throttled", { status: 429, headers: { "retry-after": "86400" } }),
+      okResponse(),
+    ]);
+    await expect(huge.r2.get("k")).resolves.toBe("body");
+    expect(huge.sleep.mock.calls.map(([ms]) => ms)).toEqual([30_000]);
+
+    const unhinted = harness([new Response("throttled", { status: 429 }), okResponse()]);
+    await expect(unhinted.r2.get("k")).resolves.toBe("body");
+    expect(unhinted.sleep.mock.calls.map(([ms]) => ms)).toEqual([250]);
   });
 
   it("gives up after three attempts and surfaces the last failure", async () => {

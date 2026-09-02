@@ -132,9 +132,16 @@ export const S3_REQUEST_TIMEOUT_MS = 30_000;
 const S3_REQUEST_ATTEMPTS = 3;
 const S3_RETRY_BASE_MS = 250;
 const S3_RETRY_CAP_MS = 2_000;
+// A throttle is not a blip: when R2 says how long to wait, waiting less is
+// three wasted attempts inside a second. Honour the hint, clamped the way the
+// REST client below clamps it so a long or malformed one cannot stall a
+// command for hours.
+const S3_RATE_LIMIT_CAP_MS = 30_000;
 
 export interface S3RequestDeps {
   sleep?: (ms: number) => Promise<void>;
+  /** Clock for reading a `Retry-After` date; injected for tests. */
+  now?: () => number;
   /** Per-attempt deadline. Default 30s. */
   timeoutMs?: number;
   /** Attempts per request, including the first. Default 3. */
@@ -163,6 +170,7 @@ export function makeR2Client(
   const timeoutMs = deps.timeoutMs ?? S3_REQUEST_TIMEOUT_MS;
   const maxAttempts = Math.max(1, deps.maxAttempts ?? S3_REQUEST_ATTEMPTS);
   const timeoutSignal = deps.timeoutSignal ?? ((ms: number) => AbortSignal.timeout(ms));
+  const now = deps.now ?? (() => Date.now());
 
   // aws.sign() returns a signed Request, which we then hand to the injected
   // fetch — keeps signing intact while making the network call stubbable.
@@ -173,15 +181,20 @@ export function makeR2Client(
   ): Promise<Response> => {
     for (let attempt = 0; ; attempt++) {
       const last = !retryable || attempt >= maxAttempts - 1;
+      let wait = Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt);
       try {
         const signed = await aws.sign(url, { ...init, signal: timeoutSignal(timeoutMs) });
         const res = await fetchFn(signed);
         if (last || !isTransientStatus(res.status)) return res;
+        if (res.status === 429) {
+          const hinted = parseRateLimitDelayMs(res.headers, now) ?? 0;
+          wait = Math.min(S3_RATE_LIMIT_CAP_MS, Math.max(hinted, wait));
+        }
         await res.text().catch(() => "");
       } catch (error) {
         if (last) throw error;
       }
-      await sleep(Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt));
+      await sleep(wait);
     }
   };
   const signedFetch = (key: string, init: RequestInit, retryable = true): Promise<Response> =>
