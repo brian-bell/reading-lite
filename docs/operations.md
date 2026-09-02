@@ -479,11 +479,19 @@ concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
 away. And when a judgement comes back rate limited (a 429 that outlived the
 judge's own retry), the whole pass backs off together: the rate-limited action
 is counted as a failure exactly as it would be sequentially, and no worker
-dispatches another judgement until the provider's `Retry-After` has passed
+*starts* another judgement until the provider's `Retry-After` has passed
 (defaulting to 8 s, capped at 60 s so a wild header cannot park a sole-writer
-window). The pause prints as `provider rate limited; pausing new judgements
-for …`. The run does not abort, and it does not silently re-bill the action
-that hit the limit.
+window). Calls already in flight when the window opens still finish, and are
+still billed. The pause prints as `provider rate limited; pausing new
+judgements for …`. The run does not abort, and it does not silently re-bill the
+action that hit the limit.
+
+The pause is bounded too. After five backoff windows in a row with no
+judgement succeeding in between, the limit is not transient, so the pass stops
+waiting altogether (`provider rate limited N times in a row; no longer
+pausing…`) and fails the rest fast — which is what a sequential run did — rather
+than sitting on the sole-writer window for the length of the plan. Any
+judgement that comes back resets that run.
 
 Because the calls overlap, the `Timing:` block's `provider` row sums the call
 durations rather than the wall time they occupied; the `total` row is the one

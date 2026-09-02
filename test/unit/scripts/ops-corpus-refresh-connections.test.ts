@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
 import { RateLimitedError } from "../../../src/modules/http-retry";
+import { RATE_LIMIT_CONSECUTIVE_LIMIT } from "../../../scripts/ops-lib/execute-pool";
 import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
 import type {
   RelationshipJudgementInput,
@@ -786,6 +787,22 @@ describe("ops corpus refresh-connections execute concurrency", () => {
       h.deps,
     );
 
+  /** Runs with a clock that a backoff actually moves, as a real one would. */
+  const executeOnAClock = (h: ReturnType<typeof harness>, ...extra: string[]) => {
+    let clock = Date.parse(JUDGED_AT);
+    return corpusRefreshConnectionsCommand.run(
+      ["--tenant", "global", "--execute", "--sole-writer", ...extra],
+      {
+        ...h.deps,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          h.sleeps.push(ms);
+          clock += ms;
+        },
+      },
+    );
+  };
+
   it("judges four at a time by default and prints results in plan order", async () => {
     const s = scaled();
 
@@ -870,6 +887,62 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     // action is a failure exactly as it is without the flag.
     expect(s.h.out.join("\n")).toContain(
       `Judged: ${COUNT - 1}; list rows healed: 0; failures: 1`,
+    );
+  });
+
+  it("stops pausing when every judgement comes back rate limited", async () => {
+    const s = scaled();
+    s.h.judge.mockImplementation(async () => {
+      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
+    });
+
+    // One at a time, so every 429 is its own round and the run is long enough
+    // to reach the give-up limit.
+    expect(await executeOnAClock(s.h, "--concurrency", "1")).toBe(1);
+
+    // Bounded: a handful of windows, then the rest of the pass fails fast
+    // rather than holding the sole-writer window for the whole plan.
+    expect(
+      s.h.err.filter((line) => line.includes("pausing new judgements")),
+    ).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    expect(
+      s.h.err.filter((line) => line.includes("no longer pausing")),
+    ).toEqual([
+      `  ! provider rate limited ${RATE_LIMIT_CONSECUTIVE_LIMIT + 1} times in a row; ` +
+        "no longer pausing, the rest of this pass will fail fast",
+    ]);
+    expect(s.h.sleeps.reduce((total, ms) => total + ms, 0)).toBe(
+      RATE_LIMIT_CONSECUTIVE_LIMIT * 60_000,
+    );
+    // Every action is still attempted and accounted for, exactly as it would
+    // be without the flag.
+    expect(s.h.judge).toHaveBeenCalledTimes(COUNT);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: 0; list rows healed: 0; failures: ${COUNT}`,
+    );
+  });
+
+  it("keeps pausing while judgements are still getting through between limits", async () => {
+    const s = scaled();
+    const inner = s.h.judge.getMockImplementation()!;
+    let calls = 0;
+    // Every other call is rate limited, so no run of windows ever reaches the
+    // give-up limit however many 429s the pass sees.
+    s.h.judge.mockImplementation(async (input) => {
+      if (calls++ % 2 === 0) {
+        throw new RateLimitedError(429, 1_000, "https://api.openai.com/v1/responses");
+      }
+      return inner(input);
+    });
+
+    expect(await executeOnAClock(s.h, "--concurrency", "1")).toBe(1);
+
+    expect(s.h.err.filter((line) => line.includes("no longer pausing"))).toEqual([]);
+    expect(
+      s.h.err.filter((line) => line.includes("pausing new judgements")).length,
+    ).toBeGreaterThan(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    expect(s.h.out.join("\n")).toContain(
+      `Judged: ${COUNT / 2}; list rows healed: 0; failures: ${COUNT / 2}`,
     );
   });
 

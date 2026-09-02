@@ -36,6 +36,20 @@ export const RATE_LIMIT_DEFAULT_BACKOFF_MS = 8_000;
  */
 export const RATE_LIMIT_MAX_BACKOFF_MS = 60_000;
 
+/**
+ * Consecutive backoff windows — with no judgement succeeding in between —
+ * after which the gate stops pausing at all.
+ *
+ * Per-window capping alone does not bound the total stall: against a provider
+ * that is hard-limited, every round of workers would walk into the limit and
+ * re-open a window, and a long pass would sit on the sole-writer window for
+ * hours where the old sequential pass burned through the failures in seconds
+ * and exited 1. Past this many rounds the limit is not transient, so the pass
+ * stops paying for waits and fails the rest fast, exactly as it would have
+ * without the flag.
+ */
+export const RATE_LIMIT_CONSECUTIVE_LIMIT = 5;
+
 export function parseConcurrencyFlag(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_EXECUTE_CONCURRENCY;
   const value = Number(raw);
@@ -50,6 +64,8 @@ export interface RateLimitGate {
   wait(): Promise<void>;
   /** Holds every worker back for `retryAfterMs`, or the default when null. */
   close(retryAfterMs: number | null): void;
+  /** Records that a judgement came back, so the limit is not sustained. */
+  succeeded(): void;
 }
 
 export interface RateLimitGateDeps {
@@ -57,22 +73,42 @@ export interface RateLimitGateDeps {
   sleep: (ms: number) => Promise<void>;
   /** Called once per window opened or extended, with the wait it imposes. */
   onPause: (ms: number) => void;
+  /** Called once, when the pass gives up on waiting out the limit. */
+  onGiveUp: (consecutive: number) => void;
 }
 
 export function createRateLimitGate(deps: RateLimitGateDeps): RateLimitGate {
   let openAt = 0;
+  let consecutive = 0;
+  let gaveUp = false;
   return {
+    succeeded() {
+      consecutive = 0;
+    },
     close(retryAfterMs) {
+      if (gaveUp) return;
+      const now = deps.now();
+      // A limit reported while the previous window is still open is the rest
+      // of that same round of workers, not a new one: one window, one count.
+      if (now >= openAt) {
+        consecutive++;
+        if (consecutive > RATE_LIMIT_CONSECUTIVE_LIMIT) {
+          gaveUp = true;
+          openAt = 0;
+          deps.onGiveUp(consecutive);
+          return;
+        }
+      }
       const requested =
         retryAfterMs === null || !Number.isFinite(retryAfterMs) || retryAfterMs < 0
           ? RATE_LIMIT_DEFAULT_BACKOFF_MS
           : retryAfterMs;
-      const until = deps.now() + Math.min(requested, RATE_LIMIT_MAX_BACKOFF_MS);
+      const until = now + Math.min(requested, RATE_LIMIT_MAX_BACKOFF_MS);
       // A second 429 inside an open window extends it rather than stacking a
       // second wait on top of the first.
       if (until <= openAt) return;
       openAt = until;
-      deps.onPause(Math.max(0, until - deps.now()));
+      deps.onPause(until - now);
     },
     async wait() {
       // Serve each deadline once, so a window another worker extended while

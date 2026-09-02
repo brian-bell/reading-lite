@@ -458,6 +458,11 @@ async function refreshConnections(
       deps.io.stderr(
         `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
       ),
+    onGiveUp: (consecutive) =>
+      deps.io.stderr(
+        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
+          `the rest of this pass will fail fast`,
+      ),
   });
 
   // One action, start to finish, with nothing written outside it: the caller
@@ -509,6 +514,8 @@ async function refreshConnections(
         PHASE_PROVIDER,
         () => provider.judge(input),
       );
+      // A call that came back is the evidence the limit is not sustained.
+      gate.succeeded();
       // Carried on the outcome whatever happens next, so the run total covers
       // every call billed, including judgements whose write later fails.
       outcome.usage = result.usage;

@@ -83,7 +83,10 @@ export async function runKeyedPool<T, R>(
 
   const results = new Array<R>(count);
   const settled = new Array<boolean>(count).fill(false);
-  const held = new Array<readonly string[]>(count);
+  // Asked once per item rather than once per dispatch attempt: `claim` scans
+  // the pending list on every turn, so calling `keysOf` there would make the
+  // scheduling quadratic in a pass whose whole point is going faster.
+  const keys = items.map((item, index) => keysOf(item, index));
   const pending = Array.from({ length: count }, (_, index) => index);
   const busy = new Set<string>();
   const waiters: Array<() => void> = [];
@@ -95,21 +98,21 @@ export async function runKeyedPool<T, R>(
     while (waiters.length > 0) waiters.shift()!();
   };
   // Emit the longest prefix that is complete, so output order is input order
-  // however the calls interleave.
+  // however the calls interleave. The cursor advances before the callback runs:
+  // a callback that throws must not leave its own index to be emitted a second
+  // time by whichever worker flushes next.
   const flush = (): void => {
     while (emitted < count && settled[emitted]) {
-      onResult(results[emitted]!, emitted);
-      emitted++;
+      const index = emitted++;
+      onResult(results[index]!, index);
     }
   };
   const claim = (): number | undefined => {
     for (let slot = 0; slot < pending.length; slot++) {
       const index = pending[slot]!;
-      const keys = keysOf(items[index]!, index);
-      if (keys.some((key) => busy.has(key))) continue;
+      if (keys[index]!.some((key) => busy.has(key))) continue;
       pending.splice(slot, 1);
-      for (const key of keys) busy.add(key);
-      held[index] = keys;
+      for (const key of keys[index]!) busy.add(key);
       return index;
     }
     return undefined;
@@ -119,9 +122,14 @@ export async function runKeyedPool<T, R>(
     while (failures.length === 0) {
       const index = claim();
       if (index === undefined) {
-        // Nothing runnable. Either the pass is done for this worker, or every
-        // remaining item is blocked on a key some in-flight item still holds.
-        if (pending.length === 0 || inFlight === 0) return;
+        if (pending.length === 0) return;
+        // Items remain but none can run, so they are waiting on a key some
+        // in-flight item holds. With nothing in flight no key can be held, so
+        // this is unreachable; say so loudly rather than returning and leaving
+        // those items silently unrun.
+        if (inFlight === 0) {
+          throw new Error("runKeyedPool deadlocked: pending items with no holder");
+        }
         await new Promise<void>((resolve) => waiters.push(resolve));
         continue;
       }
@@ -134,7 +142,7 @@ export async function runKeyedPool<T, R>(
         failures.push(error);
       } finally {
         inFlight--;
-        for (const key of held[index]!) busy.delete(key);
+        for (const key of keys[index]!) busy.delete(key);
         wake();
       }
     }

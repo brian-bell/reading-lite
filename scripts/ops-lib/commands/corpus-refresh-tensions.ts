@@ -474,6 +474,11 @@ async function refreshTensions(
       deps.io.stderr(
         `  ! provider rate limited; pausing new judgements for ${formatSeconds(ms)}`,
       ),
+    onGiveUp: (consecutive) =>
+      deps.io.stderr(
+        `  ! provider rate limited ${consecutive} times in a row; no longer pausing, ` +
+          `the rest of this pass will fail fast`,
+      ),
   });
   const readLive = async (id: string): Promise<StoredRawManifest> => {
     const row = byId.get(id);
@@ -539,6 +544,8 @@ async function refreshTensions(
           PHASE_PROVIDER,
           () => provider.judge(input),
         );
+        // A call that came back is the evidence the limit is not sustained.
+        gate.succeeded();
         outcome.judged = true;
         // Carried on the outcome whatever happens next, so the run total covers
         // every call billed, including judgements whose writes later fail.

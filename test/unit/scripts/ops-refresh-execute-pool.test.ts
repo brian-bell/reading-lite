@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import {
   DEFAULT_EXECUTE_CONCURRENCY,
+  RATE_LIMIT_CONSECUTIVE_LIMIT,
   RATE_LIMIT_DEFAULT_BACKOFF_MS,
   RATE_LIMIT_MAX_BACKOFF_MS,
   createRateLimitGate,
@@ -12,6 +13,7 @@ function gateHarness(startMs = 1_000) {
   let now = startMs;
   const sleeps: number[] = [];
   const pauses: number[] = [];
+  const giveUps: number[] = [];
   const gate = createRateLimitGate({
     now: () => now,
     sleep: async (ms) => {
@@ -19,8 +21,9 @@ function gateHarness(startMs = 1_000) {
       now += ms;
     },
     onPause: (ms) => pauses.push(ms),
+    onGiveUp: (consecutive) => giveUps.push(consecutive),
   });
-  return { gate, sleeps, pauses, advance: (ms: number) => (now += ms) };
+  return { gate, sleeps, pauses, giveUps, advance: (ms: number) => (now += ms) };
 }
 
 describe("parseConcurrencyFlag", () => {
@@ -120,5 +123,67 @@ describe("createRateLimitGate", () => {
     h.gate.close(Number.NaN);
     await h.gate.wait();
     expect(h.sleeps).toEqual([RATE_LIMIT_DEFAULT_BACKOFF_MS]);
+  });
+
+  it("stops pausing once the limit is plainly sustained", async () => {
+    const h = gateHarness();
+    for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
+      h.gate.close(1_000);
+      await h.gate.wait();
+    }
+    expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+    expect(h.giveUps).toEqual([]);
+
+    h.gate.close(1_000);
+
+    // One round past the limit the pass stops paying for waits and fails the
+    // rest fast, rather than holding the sole-writer window indefinitely.
+    expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
+    const before = h.sleeps.length;
+    await h.gate.wait();
+    expect(h.sleeps).toHaveLength(before);
+    // And it stays given up, without repeating the notice.
+    h.gate.close(1_000);
+    await h.gate.wait();
+    expect(h.giveUps).toEqual([RATE_LIMIT_CONSECUTIVE_LIMIT + 1]);
+    expect(h.pauses).toHaveLength(RATE_LIMIT_CONSECUTIVE_LIMIT);
+  });
+
+  it("a judgement that comes back resets the run toward the limit", async () => {
+    const h = gateHarness();
+    for (let round = 0; round < 4; round++) {
+      for (let attempt = 0; attempt < RATE_LIMIT_CONSECUTIVE_LIMIT; attempt++) {
+        h.gate.close(1_000);
+        await h.gate.wait();
+      }
+      h.gate.succeeded();
+    }
+    // Twenty rate limits, none of them consecutive past the run: still pausing.
+    expect(h.giveUps).toEqual([]);
+    expect(h.pauses).toHaveLength(4 * RATE_LIMIT_CONSECUTIVE_LIMIT);
+  });
+});
+
+describe("createRateLimitGate window counting", () => {
+  it("counts one window however many workers report the same limit", async () => {
+    let now = 1_000;
+    const pauses: number[] = [];
+    const giveUps: number[] = [];
+    const gate = createRateLimitGate({
+      now: () => now,
+      sleep: async () => {},
+      onPause: (ms) => pauses.push(ms),
+      onGiveUp: (consecutive) => giveUps.push(consecutive),
+    });
+    // Far more concurrent 429s than the give-up limit, all inside one window.
+    for (let worker = 0; worker < RATE_LIMIT_CONSECUTIVE_LIMIT * 4; worker++) {
+      gate.close(1_000);
+    }
+    expect(pauses).toEqual([1_000]);
+    expect(giveUps).toEqual([]);
+    // Only once the window has elapsed does the next limit start a new round.
+    now += 1_000;
+    gate.close(1_000);
+    expect(pauses).toEqual([1_000, 1_000]);
   });
 });
