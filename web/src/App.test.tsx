@@ -664,6 +664,93 @@ describe("App", () => {
     expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
   });
 
+  it("resets the Turnstile widget after a successful challenge so a resend cannot reuse the token", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") return jsonResponse({ ok: true });
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnstile = installTurnstileMock();
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalledTimes(1));
+    act(() => {
+      turnstile.complete("widget-ok");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    expect(await screen.findByText(/if that address can sign in/i)).toBeInTheDocument();
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalledTimes(2));
+    expect(window.turnstile?.remove).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    expect(
+      fetchMock.mock.calls.filter((c) => new URL((c[0] as Request).url).pathname === "/api/auth/challenge")
+    ).toHaveLength(1);
+
+    act(() => {
+      turnstile.complete("widget-ok-2");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter((c) => new URL((c[0] as Request).url).pathname === "/api/auth/challenge")
+      ).toHaveLength(2);
+    });
+    const bodies = await Promise.all(
+      fetchMock.mock.calls
+        .filter((c) => {
+          const req = c[0] as Request;
+          return req.method === "POST" && new URL(req.url).pathname === "/api/auth/challenge";
+        })
+        .map((c) => (c[0] as Request).clone().json())
+    );
+    expect(bodies).toEqual([
+      { email: "invited@example.com", turnstile_token: "widget-ok" },
+      { email: "invited@example.com", turnstile_token: "widget-ok-2" }
+    ]);
+    expect(screen.getByText(/if that address can sign in/i)).toBeInTheDocument();
+  });
+
+  it("resets the Turnstile widget after a failed challenge", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse({ error: "unauthorized" }, 401);
+      if (url.pathname === "/api/auth/login-options") {
+        return jsonResponse({ turnstile_site_key: TURNSTILE_TEST_SITE_KEY });
+      }
+      if (url.pathname === "/api/auth/challenge") {
+        return jsonResponse({ error: "failed to request sign-in link" }, 500);
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnstile = installTurnstileMock();
+    const user = userEvent.setup();
+
+    render(<App initialPath="/login" />);
+    await user.type(await screen.findByLabelText("Email"), "invited@example.com");
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalledTimes(1));
+    act(() => {
+      turnstile.complete("widget-bad");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Email me a link" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Email me a link" }));
+    expect(await screen.findByText("failed to request sign-in link")).toBeInTheDocument();
+    expect(screen.queryByText(/if that address can sign in/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(turnstile.renderWidget).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeDisabled();
+  });
+
   it("sends a Turnstile token on step-up login when a site key is present", async () => {
     const fetchMock = vi.fn(async (request: Request) => {
       const url = new URL(request.url);

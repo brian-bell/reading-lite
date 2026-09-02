@@ -732,6 +732,7 @@ function LoginPage({
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [widgetEpoch, setWidgetEpoch] = useState(0);
   const next = searchParams.get("next");
   const stepUp = searchParams.get("step_up") === "1";
   const emailLocked = Boolean(stepUp && identity);
@@ -785,11 +786,16 @@ function LoginPage({
             setError("Complete the check before requesting a link.");
             return;
           }
+          const token = turnstileToken;
           try {
-            await requestLoginLink(emailValue, turnstileToken ?? undefined);
+            await requestLoginLink(emailValue, token ?? undefined);
             setSubmitted(true);
           } catch (e) {
+            setSubmitted(false);
             setError(e instanceof Error ? e.message : "failed to request sign-in link");
+          } finally {
+            setTurnstileToken(null);
+            if (widgetRequired) setWidgetEpoch((epoch) => epoch + 1);
           }
         }}
       >
@@ -806,7 +812,9 @@ function LoginPage({
             required
             readOnly={emailLocked}
           />
-        {widgetRequired && siteKey ? <TurnstileWidget siteKey={siteKey} onToken={setTurnstileToken} /> : null}
+        {widgetRequired && siteKey ? (
+          <TurnstileWidget key={widgetEpoch} siteKey={siteKey} onToken={setTurnstileToken} />
+        ) : null}
         <button type="submit" disabled={submitBlocked}>
           Email me a link
         </button>
