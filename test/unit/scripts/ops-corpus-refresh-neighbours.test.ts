@@ -765,6 +765,31 @@ describe("ops corpus refresh-neighbours", () => {
       expect(lines.join("\n")).toContain("Scope: incremental (2 reading(s))");
     });
 
+    // The list read uses the R2 credential and the query uses the Vectorize
+    // one, so a bad token passes the read and fails every query. Spending one
+    // per changed reading before sweeping would cost more than the sweep.
+    it("stops scoping after a run of failed reverse queries", async () => {
+      const changed = Array.from({ length: 10 }, (_, i) => ({
+        ...READY,
+        id: `rd_${i}`,
+        key_prefix: `readings/rd_${i}`,
+        updated_at: "2026-08-21T12:00:00.000Z",
+      }));
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, list_row_count: changed.length },
+        items: changed,
+        queryThrow: () => new Error("401"),
+      });
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toHaveLength(3);
+      const text = lines.join("\n");
+      expect(text).toContain("3 reverse-neighbour queries failed in a row");
+      expect(text).toContain("Scope: full");
+    });
+
     it("sweeps when the reverse query for a changed reading fails", async () => {
       const { deps, calls, lines } = makeDeps({
         state: MARKER,
@@ -826,17 +851,22 @@ describe("ops corpus refresh-neighbours", () => {
     // A `full` report claims to cover the ready corpus; a hand-picked or capped
     // pass does not, and the report is the only place a later reader can learn
     // that it was narrowed.
-    it("records --only and --limit in the report scope", async () => {
-      const { deps, calls } = makeDeps({ state: MARKER });
-      await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--limit", "1", "rd_r"],
-        deps,
-      );
+    it("records --only and a --limit that truncated in the report scope", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER, items: [READY, NEIGHBOUR] });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "1"], deps);
       expect(JSON.parse(calls.reports[0]!.body).scope).toEqual({
         kind: "full",
         reason: "--full",
-        narrowed_by: "--only (1 id(s)), --limit 1",
+        narrowed_by: "--limit 1",
       });
+    });
+
+    // The report and the marker have to agree: a limit that never truncated
+    // narrowed nothing, and the pass is complete by both accounts.
+    it("does not call a pass narrowed by a --limit it never reached", async () => {
+      const { deps, calls } = makeDeps({ state: MARKER });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "500"], deps);
+      expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
     });
 
     it("advances the marker only on a complete execute pass", async () => {

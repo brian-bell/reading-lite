@@ -233,11 +233,22 @@ function selectStorage(
   return { choice: requested, storage: direct() };
 }
 
-/** How the operator narrowed this pass below its scope, for the report header. */
-function narrowedBy(opts: Opts): string | undefined {
+/**
+ * Consecutive failed reverse queries after which the pass stops scoping and
+ * sweeps. Small: a run of failures is a credential or an index name, not luck.
+ */
+const REVERSE_QUERY_FAILURE_BUDGET = 3;
+
+/**
+ * How the operator narrowed this pass below its scope, for the report header.
+ * A `--limit` that was never reached narrowed nothing, and saying otherwise
+ * would have the report call a pass partial while the marker records it as
+ * complete.
+ */
+function narrowedBy(opts: Opts, truncated: boolean): string | undefined {
   const parts: string[] = [];
   if (opts.only.length > 0) parts.push(`--only (${opts.only.length} id(s))`);
-  if (opts.limit !== undefined) parts.push(`--limit ${opts.limit}`);
+  if (truncated && opts.limit !== undefined) parts.push(`--limit ${opts.limit}`);
   return parts.length === 0 ? undefined : parts.join(", ");
 }
 
@@ -289,6 +300,7 @@ async function resolveScope(args: {
 
   const reverse = new Map<string, ReverseMatches>();
   const statusById = new Map(items.map((row) => [row.id, row.status]));
+  let consecutiveFailures = 0;
   for (const id of base.changed) {
     // Every changed reading is queried, whatever its status says. Status is not
     // a statement about vector ownership — a reprocess-in-flight `pending` row
@@ -325,16 +337,29 @@ async function resolveScope(args: {
       }
       reverse.set(id, parsed);
     } catch (e) {
-      // Not a break, even though one failure already decides the sweep: the
-      // reason is meant to carry how many changed readings saturated, and
-      // abandoning the loop would report every remaining id as unanswered and
-      // no saturations at all — the exact thing the count exists to prevent.
-      // The cost is bounded by the changed set, and a credential broken enough
-      // to fail every query fails the list read first.
+      // One failure does not end the loop, because the reason is meant to carry
+      // how many changed readings saturated, and abandoning it would report
+      // every remaining id as unanswered and no saturations at all.
+      //
+      // A run of them does. The list read and the query use different halves of
+      // the credential — R2 for one, the Vectorize token and index name for the
+      // other — so an expired token or a mistyped index passes the read and
+      // then fails every query. Without a stop that costs one failing query per
+      // changed reading before the sweep, which then pays another per ready
+      // reading: more than the full pass this flag exists to avoid.
       io.stderr(
         `  ! reverse-neighbour query failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,
       );
+      consecutiveFailures++;
+      if (consecutiveFailures >= REVERSE_QUERY_FAILURE_BUDGET) {
+        io.stderr(
+          `  ! ${consecutiveFailures} reverse-neighbour queries failed in a row — sweeping instead`,
+        );
+        break;
+      }
+      continue;
     }
+    consecutiveFailures = 0;
   }
   return incrementalScope(items, marker, reverse, listEtag);
 }
@@ -559,7 +584,9 @@ async function refreshNeighbours(
         : {}),
       // A pass narrowed by hand covers neither the corpus nor its scope, and
       // the report is the only place a later reader can learn that.
-      ...(narrowedBy(opts) === undefined ? {} : { narrowed_by: narrowedBy(opts) }),
+      ...(narrowedBy(opts, plan.truncated) === undefined
+        ? {}
+        : { narrowed_by: narrowedBy(opts, plan.truncated) }),
     },
     readings: flagged,
   });
@@ -762,8 +789,11 @@ weekly. The scope and its reason are printed and recorded in the report header,
 and an escalation names how many changed readings caused it — a corpus that
 saturates every night is buying nothing from --since-last-run.
 
-Only a complete --execute pass advances the marker, and --only/--limit never do.
-Naming ids overrides the scope: those readings are measured either way.
+Only a complete --execute pass advances the marker: never a plan pass, never
+with --only, and not when --limit actually cut the pass short (a limit carried
+as a cost valve and never reached has measured its whole scope, and does
+advance it). Naming ids overrides the scope: those readings are measured either
+way.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).

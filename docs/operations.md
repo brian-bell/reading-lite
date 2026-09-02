@@ -492,12 +492,14 @@ than paying for reverse queries it cannot use. The header then reads
 `Scope: full — --only names N reading(s)`. `--limit` is different: it still
 resolves its scope and then measures the first N of it, so the header and the
 report keep saying `incremental`. Either way the report records the narrowing
-under `scope.narrowed_by`, and neither flag advances the marker.
+under `scope.narrowed_by`. `--only` never advances the marker; `--limit` pins it
+only when it actually cut the pass short, so a limit carried in a cron as a
+cost valve and never reached still advances it.
 
-Only a complete `--execute` pass advances the marker (a plan pass writes no
-snapshots, and `--only`/`--limit` measure a subset on purpose, so neither
-does), and `last_full_run_at` moves only on a full sweep. A failed marker write
-does not fail the run: the cost is the next pass sweeping.
+Only a complete `--execute` pass advances the marker — a plan pass writes no
+snapshots, `--only` names a subset, and a `--limit` that truncated the plan
+measured one — and `last_full_run_at` moves only on a full sweep. A failed
+marker write does not fail the run: the cost is the next pass sweeping.
 
 ```sh
 # Nightly.
