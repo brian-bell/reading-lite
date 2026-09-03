@@ -1013,7 +1013,8 @@ sub-floor scores included. So between sweeps those numbers are approximate on
 readings nothing brought into scope — deterministic, and cleared by the next
 --full. The scope and its reason are printed and recorded in the report header,
 and an escalation names how many changed readings caused it — a corpus that
-saturates every night is buying nothing from --since-last-run.
+saturates every night is buying nothing from the narrowed scope, and is better
+run as --full outright than paying the reverse queries first.
 
 Only a complete --execute pass advances the marker: never a plan pass, never
 with --only, and not when --limit actually cut the pass short (a limit carried

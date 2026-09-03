@@ -437,8 +437,12 @@ entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
 ```sh
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT"
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
+# The corpus-wide staleness inventory this section describes needs --full: a
+# bare invocation is scoped to what moved since the run marker (see Scope), so
+# on a quiet night it measures nothing and exits 0.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --full
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --full --execute --sole-writer
 ```
 
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
@@ -469,9 +473,10 @@ full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown — never a narrower pass. A short result is a complete
 one, so an isolated reading, whose only match is itself, does not escalate. An
 escalation reports how many of the changed readings caused it and names the
-first, because a corpus that saturates most nights is buying nothing from
-`--since-last-run` and that rate is the number to measure before switching a
-cron over to it.
+first, because a corpus that saturates most nights is buying nothing from the
+narrowed scope — that rate is the number to watch, and a corpus that escalates
+every night should be run as `--full` outright rather than paying the reverse
+queries first.
 
 An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched — the backfill's 394

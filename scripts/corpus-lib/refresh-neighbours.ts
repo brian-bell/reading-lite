@@ -1,6 +1,8 @@
 // Pure planning + staleness diff for `corpus-refresh-neighbours`.
 //
-// Tier 1 of the nightly corpus refresh: re-measure every ready reading against
+// Tier 1 of the nightly corpus refresh: re-measure the ready readings the
+// command's scope selects — by default those that moved since the run marker,
+// and every one of them under `--full` (see refresh-scope.ts) — against
 // Vectorize (no embedding calls, no LLM) and flag those whose stored
 // connections/verdict no longer match the current floored neighbourhood. The
 // command writes drifted `manifest.similarity` snapshots with the same
