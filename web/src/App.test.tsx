@@ -2564,6 +2564,7 @@ describe("App", () => {
     expect(screen.queryByLabelText("Time zone")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Local hour")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
     expect(screen.getByText(/independent of immediate/i)).toBeInTheDocument();
   });
 
@@ -2581,6 +2582,7 @@ describe("App", () => {
     expect(screen.getByLabelText("Time zone")).toHaveValue("America/New_York");
     expect(screen.getByLabelText("Local hour")).toHaveValue("8");
     expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
   });
 
   it("shows ISO weekday Monday=1 when cadence is weekly", async () => {
@@ -2600,7 +2602,7 @@ describe("App", () => {
     expect(screen.getByRole("option", { name: "Sunday" })).toHaveValue("7");
   });
 
-  it("POSTs digest fields with CSRF when cadence changes to daily, including stored hour/weekday/TZ", async () => {
+  it("keeps cadence off and reveals schedule as a draft until Save posts atomically", async () => {
     const holder = {
       row: defaultSettings({
         time_zone: "America/New_York",
@@ -2613,10 +2615,19 @@ describe("App", () => {
 
     render(<App initialPath="/account/security" />);
     await user.selectOptions(await screen.findByLabelText("Cadence"), "daily");
-    await waitFor(() => expect(screen.getByLabelText("Cadence")).toHaveValue("daily"));
-    expect(screen.getByLabelText("Time zone")).toBeInTheDocument();
-    expect(screen.getByLabelText("Local hour")).toBeInTheDocument();
+    expect(screen.getByLabelText("Cadence")).toHaveValue("daily");
+    expect(screen.getByLabelText("Time zone")).toHaveValue("America/New_York");
+    expect(screen.getByLabelText("Local hour")).toHaveValue("9");
     expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.getByText(/stays off until you save/i)).toBeInTheDocument();
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    expect(holder.row.digest_cadence).toBe("off");
+
+    await user.selectOptions(screen.getByLabelText("Local hour"), "17");
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+
+    await user.click(screen.getByRole("button", { name: "Save digest" }));
+    await waitFor(() => expect(holder.row.digest_cadence).toBe("daily"));
     const post = settingsPostRequest(fetchMock);
     expect(post).toBeDefined();
     expect(post!.headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
@@ -2625,9 +2636,27 @@ describe("App", () => {
       notify_immediate: true,
       digest_cadence: "daily",
       time_zone: "America/New_York",
-      digest_hour_local: 9,
+      digest_hour_local: 17,
       digest_weekday: 5
     });
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Cadence")).toHaveValue("daily");
+  });
+
+  it("cancels an Off→Daily draft without POSTing", async () => {
+    const holder = { row: defaultSettings({ time_zone: "UTC", digest_hour_local: 9 }) };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.selectOptions(await screen.findByLabelText("Cadence"), "daily");
+    expect(screen.getByLabelText("Time zone")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByLabelText("Cadence")).toHaveValue("off");
+    expect(screen.queryByLabelText("Time zone")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    expect(holder.row.digest_cadence).toBe("off");
   });
 
   it("POSTs cadence off with hour, weekday, and time zone still in the body", async () => {
@@ -2716,10 +2745,15 @@ describe("App", () => {
 
     render(<App initialPath="/account/security" />);
     await user.selectOptions(await screen.findByLabelText("Cadence"), "weekly");
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Save digest" }));
     expect(await screen.findByText("forbidden")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Request a fresh sign-in link" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Cadence")).toHaveValue("off");
-    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Cadence")).toHaveValue("weekly");
+    expect(screen.getByLabelText("Weekday")).toBeInTheDocument();
+    expect(await settingsPostRequest(fetchMock)!.clone().json()).toMatchObject({
+      digest_cadence: "weekly"
+    });
   });
 
   it("hides digest controls when GET settings is 404", async () => {

@@ -342,6 +342,13 @@ const DIGEST_CADENCE_OPTIONS: { value: DigestCadence; label: string }[] = [
   { value: "weekly", label: "Weekly" }
 ];
 
+type DigestScheduleDraft = {
+  cadence: Exclude<DigestCadence, "off">;
+  time_zone: string;
+  digest_hour_local: number;
+  digest_weekday: number;
+};
+
 const DIGEST_WEEKDAY_OPTIONS: { value: number; label: string }[] = [
   { value: 1, label: "Monday" },
   { value: 2, label: "Tuesday" },
@@ -397,8 +404,13 @@ function AccountSecurityPage({
   const [tokenExpiry, setTokenExpiry] = useState("");
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [digestDraft, setDigestDraft] = useState<DigestScheduleDraft | null>(null);
   const listed = sessionsQuery.data;
   const settings = settingsQuery.data;
+
+  useEffect(() => {
+    setDigestDraft(null);
+  }, [identity.user_id]);
   const overlay = revokedOverlayQuery.data ?? new Set<string>();
   const listedTokens = tokensQuery.data
     ? { tokens: applyRevokedTokenOverlay(tokensQuery.data.tokens, overlay) }
@@ -406,6 +418,21 @@ function AccountSecurityPage({
   const usableTokenCount = listedTokens?.tokens.filter((token) => token.usable).length ?? 0;
   const tokenCapReached = usableTokenCount >= TOKEN_CAP;
   const createDisabled = busyId != null || listedTokens == null || tokenCapReached;
+  const digestView = digestDraft
+    ? {
+        cadence: digestDraft.cadence,
+        time_zone: digestDraft.time_zone,
+        digest_hour_local: digestDraft.digest_hour_local,
+        digest_weekday: digestDraft.digest_weekday
+      }
+    : settings
+      ? {
+          cadence: settings.digest_cadence,
+          time_zone: settings.time_zone,
+          digest_hour_local: settings.digest_hour_local,
+          digest_weekday: settings.digest_weekday
+        }
+      : null;
 
   async function dropIdentity() {
     dropIdentityCaches(queryClient);
@@ -470,15 +497,17 @@ function AccountSecurityPage({
     }
   }
 
-  async function onUpdateSettings(body: PostAuthSettingsBody) {
-    if (busyId) return;
+  async function onUpdateSettings(body: PostAuthSettingsBody): Promise<boolean> {
+    if (busyId) return false;
     setError(null);
     setBusyId("settings");
     try {
       const updated = await updateAuthSettings(body);
       queryClient.setQueryData(["settings", identity.user_id], updated);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to update settings");
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -488,7 +517,7 @@ function AccountSecurityPage({
     await onUpdateSettings({ notify_immediate: event.currentTarget.checked });
   }
 
-  async function onDigestField(
+  async function persistDigest(
     patch: Pick<
       PostAuthSettingsBody,
       "digest_cadence" | "time_zone" | "digest_hour_local" | "digest_weekday"
@@ -502,6 +531,64 @@ function AccountSecurityPage({
       digest_hour_local: patch.digest_hour_local ?? settings.digest_hour_local,
       digest_weekday: patch.digest_weekday ?? settings.digest_weekday
     });
+  }
+
+  function onDigestCadenceChange(next: DigestCadence) {
+    if (!settings) return;
+    if (settings.digest_cadence === "off") {
+      if (next === "off") {
+        setDigestDraft(null);
+        return;
+      }
+      setDigestDraft({
+        cadence: next,
+        time_zone: digestDraft?.time_zone ?? settings.time_zone,
+        digest_hour_local: digestDraft?.digest_hour_local ?? settings.digest_hour_local,
+        digest_weekday: digestDraft?.digest_weekday ?? settings.digest_weekday
+      });
+      return;
+    }
+    void persistDigest({ digest_cadence: next });
+  }
+
+  function onDigestTimeZoneChange(timeZone: string) {
+    if (digestDraft) {
+      setDigestDraft({ ...digestDraft, time_zone: timeZone });
+      return;
+    }
+    void persistDigest({ time_zone: timeZone });
+  }
+
+  function onDigestHourChange(hour: number) {
+    if (digestDraft) {
+      setDigestDraft({ ...digestDraft, digest_hour_local: hour });
+      return;
+    }
+    void persistDigest({ digest_hour_local: hour });
+  }
+
+  function onDigestWeekdayChange(weekday: number) {
+    if (digestDraft) {
+      setDigestDraft({ ...digestDraft, digest_weekday: weekday });
+      return;
+    }
+    void persistDigest({ digest_weekday: weekday });
+  }
+
+  async function onSaveDigestDraft() {
+    if (!settings || !digestDraft) return;
+    const saved = await onUpdateSettings({
+      notify_immediate: settings.notify_immediate,
+      digest_cadence: digestDraft.cadence,
+      time_zone: digestDraft.time_zone,
+      digest_hour_local: digestDraft.digest_hour_local,
+      digest_weekday: digestDraft.digest_weekday
+    });
+    if (saved) setDigestDraft(null);
+  }
+
+  function onCancelDigestDraft() {
+    setDigestDraft(null);
   }
 
   function toggleTokenScope(scope: ApiScopeName) {
@@ -665,9 +752,9 @@ function AccountSecurityPage({
                 Cadence
                 <select
                   id="digest-cadence"
-                  value={settings.digest_cadence}
+                  value={digestView!.cadence}
                   onChange={(event) =>
-                    void onDigestField({ digest_cadence: event.currentTarget.value as DigestCadence })
+                    onDigestCadenceChange(event.currentTarget.value as DigestCadence)
                   }
                   disabled={busyId != null}
                 >
@@ -678,17 +765,17 @@ function AccountSecurityPage({
                   ))}
                 </select>
               </label>
-              {settings.digest_cadence !== "off" ? (
+              {digestView!.cadence !== "off" ? (
                 <>
                   <label htmlFor="digest-time-zone">
                     Time zone
                     <select
                       id="digest-time-zone"
-                      value={settings.time_zone}
-                      onChange={(event) => void onDigestField({ time_zone: event.currentTarget.value })}
+                      value={digestView!.time_zone}
+                      onChange={(event) => onDigestTimeZoneChange(event.currentTarget.value)}
                       disabled={busyId != null}
                     >
-                      {listIanaTimeZones(settings.time_zone).map((zone) => (
+                      {listIanaTimeZones(digestView!.time_zone).map((zone) => (
                         <option key={zone} value={zone}>
                           {zone}
                         </option>
@@ -699,10 +786,8 @@ function AccountSecurityPage({
                     Local hour
                     <select
                       id="digest-hour-local"
-                      value={settings.digest_hour_local}
-                      onChange={(event) =>
-                        void onDigestField({ digest_hour_local: Number(event.currentTarget.value) })
-                      }
+                      value={digestView!.digest_hour_local}
+                      onChange={(event) => onDigestHourChange(Number(event.currentTarget.value))}
                       disabled={busyId != null}
                     >
                       {Array.from({ length: 24 }, (_, hour) => (
@@ -712,15 +797,13 @@ function AccountSecurityPage({
                       ))}
                     </select>
                   </label>
-                  {settings.digest_cadence === "weekly" ? (
+                  {digestView!.cadence === "weekly" ? (
                     <label htmlFor="digest-weekday">
                       Weekday
                       <select
                         id="digest-weekday"
-                        value={settings.digest_weekday}
-                        onChange={(event) =>
-                          void onDigestField({ digest_weekday: Number(event.currentTarget.value) })
-                        }
+                        value={digestView!.digest_weekday}
+                        onChange={(event) => onDigestWeekdayChange(Number(event.currentTarget.value))}
                         disabled={busyId != null}
                       >
                         {DIGEST_WEEKDAY_OPTIONS.map((option) => (
@@ -733,11 +816,27 @@ function AccountSecurityPage({
                   ) : null}
                 </>
               ) : null}
+              {digestDraft ? (
+                <div className="digest-schedule-actions">
+                  <button type="button" onClick={() => void onSaveDigestDraft()} disabled={busyId != null}>
+                    Save digest
+                  </button>
+                  <button type="button" onClick={onCancelDigestDraft} disabled={busyId != null}>
+                    Cancel
+                  </button>
+                </div>
+              ) : null}
             </div>
-            <p className="session-meta">
-              Daily or weekly digest of new ready readings. Off skips digest mail. Independent of immediate
-              email. Hour, weekday, and time zone stay saved when off.
-            </p>
+            {digestDraft ? (
+              <p className="session-meta" role="status">
+                Digest stays off until you save. Confirm time zone, hour, and weekday in this save.
+              </p>
+            ) : (
+              <p className="session-meta">
+                Daily or weekly digest of new ready readings. Off skips digest mail. Independent of immediate
+                email. Hour, weekday, and time zone stay saved when off.
+              </p>
+            )}
           </>
         ) : null}
       </section>
