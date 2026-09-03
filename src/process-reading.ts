@@ -22,6 +22,7 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
+import { tenantIsActive } from "./control-plane/account-delete";
 import { fromD1 } from "./control-plane/db";
 import { redactEmailsInText } from "./control-plane/email";
 import {
@@ -77,6 +78,17 @@ export async function processReading(
     // any write or upstream spend. Conflict/takeover cases below still log
     // their attempt for diagnostics.
     if (await readingWasPurged(reader, args)) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
+    // Account-deletion suppress (195a): a tenant already marked deleting must
+    // not spend or write. A confirmed missing user is the same skip. A D1
+    // lookup failure here is not inactive — it throws RateLimitedError so the
+    // queue retries while extract/embed can still do useful work. After a
+    // terminal CAS, lookup throws fail-open instead (see
+    // tenantStillAllowsVisibility): retry cannot republish once
+    // active_attempt is cleared.
+    if (!(await tenantAllowsSpend(env, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -232,6 +244,7 @@ export async function processReading(
       {
         claimMissingPointer: true,
         defensive: false,
+        tenantAllowsVisibility: () => tenantConfirmedAllowsVisibility(env, tenantId),
         vector: {
           embedding: tldrEmbed.embedding,
           meta: {
@@ -272,7 +285,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e);
+    await markFailed(reader, args, services, attempt, e, env, tenantId);
   }
 }
 
@@ -411,6 +424,16 @@ export async function markDeadLettered(
     return;
   }
 
+  // Account-deletion suppress (195a): do not write a failed list row after
+  // the tenant is already deleting. handleDeadLetter always acks and never
+  // retries, so a lookup throw must fail-open and proceed to markFailed —
+  // treating it as inactive would strand pending+running. Only skip on a
+  // confirmed inactive/missing user.
+  if (!(await tenantConfirmedAllowsVisibility(env, tenantId))) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
+
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
   // that window and a *newer* attempt took over the reading (or already brought
@@ -434,7 +457,7 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError());
+  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId);
   // RateLimitedError keeps the slot held through retries; exhausting them is
   // the definitive pre-summarization failure that must release it. release is
   // a no-op if summarization already committed the reservation.
@@ -447,6 +470,8 @@ async function markFailed(
   services: Services,
   attempt: ProcessingAttempt,
   e: unknown,
+  env: Env,
+  tenantId: string,
 ): Promise<void> {
   console.error(e);
   const failedAt = services.now();
@@ -455,6 +480,8 @@ async function markFailed(
   attempt.finished_at = failedAt;
   attempt.error = error;
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
+
+  const tenantAllowsVisibility = () => tenantConfirmedAllowsVisibility(env, tenantId);
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -466,6 +493,7 @@ async function markFailed(
       claimMissingPointer: false,
       allowLastAttempt: true,
       defensive: true,
+      tenantAllowsVisibility,
     });
     return;
   }
@@ -486,6 +514,7 @@ async function markFailed(
     claimMissingPointer: false,
     allowLastAttempt: true,
     defensive: true,
+    tenantAllowsVisibility,
   });
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
@@ -594,6 +623,13 @@ export interface CommitTerminalOpts {
   // The success path passes a runStage-bound closure so each sub-write still logs
   // a stage event; failure paths omit it and write plainly.
   instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
+  // Rechecked immediately before visibility publish / restore, and again
+  // immediately after those writes (issue 195a, the #179 republish race at
+  // tenant scope). A confirmed false after publish/restore compensates with
+  // remove. A lookup throw is not confirmed inactive: fail-open (publish/keep)
+  // because readyManifest already cleared active_attempt and a retry cannot
+  // republish. Omit to keep the historical default (allow publish).
+  tenantAllowsVisibility?: () => Promise<boolean>;
 }
 
 // The single home of the terminal-write ordering invariant: CAS-write the
@@ -644,41 +680,116 @@ export async function commitTerminalManifest(
     // Manifest not written despite owning the attempt: a lost CAS (etag changed
     // mid-flight) on either path, or — on the defensive path only — a swallowed
     // write throw. Restore the current list visibility so we don't leave a
-    // half-published row behind.
-    await reconcileVisibility(opts.defensive, () =>
-      visibility.restoreIfOwner(args),
-    );
+    // half-published row behind — unless the tenant-deletion fence forbids
+    // resurrection (issue 195a / #179).
+    if (await tenantStillAllowsVisibility(opts)) {
+      await reconcileVisibility(opts.defensive, () =>
+        visibility.restoreIfOwner(args),
+      );
+      // Deletion can land between the pre-restore check and the list write.
+      // Compensate in this same consumer; do not wait on DELETE /api/account.
+      if (!(await tenantStillAllowsVisibility(opts))) {
+        await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+      }
+    }
     return { committed: false, published: false };
   }
 
+  // The terminal object is committed. Visibility throws must not reach
+  // processReading's outer catch: markFailed(allowLastAttempt) would overwrite
+  // ready with failed. Same class of bug sendReadingEmailAndLog already avoids.
   if (state.canPublishVisibility) {
-    await reconcileVisibility(opts.defensive, () =>
-      visibility.publish(manifest, args, opts.vector, { instrument: run }),
-    );
-    return { committed: true, published: true };
+    // Recheck immediately before publish: an in-flight consumer can pause
+    // between terminal CAS and this write. Account deletion marks
+    // users.status=deleting as the durable fence (195a). Per-reading purge
+    // still uses missingManifestStillLive (#179 remainder).
+    if (await tenantStillAllowsVisibility(opts)) {
+      const published = await reconcileVisibility(true, () =>
+        visibility.publish(manifest, args, opts.vector, { instrument: run }),
+      );
+      // Check-then-publish is still a race; recheck after the writes and
+      // compensate in this same consumer if the tenant is now deleting.
+      if (!(await tenantStillAllowsVisibility(opts))) {
+        await reconcileVisibility(true, () => visibility.remove(args));
+        return { committed: true, published: false };
+      }
+      return { committed: true, published };
+    }
+    await reconcileVisibility(true, () => visibility.remove(args));
+    return { committed: true, published: false };
   }
 
   if (state.canRemoveVisibility) {
-    await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+    await reconcileVisibility(true, () => visibility.remove(args));
   }
   return { committed: true, published: false };
 }
 
-// Visibility reconciliation honors `defensive`: on the failure path a transient
-// R2 hiccup has nowhere to bubble (the queue consumer acks either way), so log
-// and move on; on the success path throws propagate to the outer catch.
+// Visibility reconciliation honors `defensive`: log-and-continue so a transient
+// R2 hiccup cannot clobber a committed terminal object (or, on the failure
+// path, bubble out of a consumer that will ack either way). Before the
+// terminal CAS, the success path still lets throws propagate to the outer catch.
 async function reconcileVisibility(
   defensive: boolean,
   fn: () => Promise<void>,
-): Promise<void> {
+): Promise<boolean> {
   if (!defensive) {
     await fn();
-    return;
+    return true;
   }
   try {
     await fn();
+    return true;
   } catch (e) {
     console.error(e);
+    return false;
+  }
+}
+
+async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<boolean> {
+  if (!opts.tenantAllowsVisibility) return true;
+  try {
+    return await opts.tenantAllowsVisibility();
+  } catch (error) {
+    // After a terminal CAS, RateLimitedError retry cannot publish: the ready
+    // (or failed) manifest already cleared active_attempt, so
+    // readingCanWriteAttemptArtifacts is false on redelivery. A lookup throw
+    // is not confirmed inactive — fail-open (allow publish / keep).
+    console.error(error);
+    return true;
+  }
+}
+
+// Fail-open when the worker has no D1 binding (unit tests that stub Env).
+const TENANT_STATUS_LOOKUP_URL = "d1://control-plane/users.status";
+
+async function lookupTenantActive(env: Env, tenantId: string): Promise<boolean> {
+  if (!env.CONTROL_PLANE) return true;
+  return tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
+}
+
+// Pre-spend only. Confirmed deleting/missing → false (skip). Lookup failure →
+// RateLimitedError so dispatchQueueMessage retries while extract/embed can
+// still do useful work.
+async function tenantAllowsSpend(env: Env, tenantId: string): Promise<boolean> {
+  try {
+    return await lookupTenantActive(env, tenantId);
+  } catch (error) {
+    console.error(error);
+    if (error instanceof RateLimitedError) throw error;
+    throw new RateLimitedError(503, null, TENANT_STATUS_LOOKUP_URL);
+  }
+}
+
+// Post-CAS and DLQ mark path. Confirmed deleting/missing → false. Lookup
+// throw → true (fail-open): the DLQ never retries, and a post-CAS retry
+// cannot republish.
+async function tenantConfirmedAllowsVisibility(env: Env, tenantId: string): Promise<boolean> {
+  try {
+    return await lookupTenantActive(env, tenantId);
+  } catch (error) {
+    console.error(error);
+    return true;
   }
 }
 

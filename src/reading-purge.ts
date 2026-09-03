@@ -23,8 +23,9 @@ import type { Manifest } from "./schemas/manifest";
 //    TTL staleness is a read-time verdict, not proof the queue consumer
 //    stopped, so a still-running >TTL attempt that pauses between its terminal
 //    manifest CAS and its visibility publish can republish a row/vector after
-//    every sweep. Closing that needs a durable deletion fence checked at
-//    publish time — tracked as follow-up work, not simulated with more sweeps.
+//    every sweep. Account deletion (DELETE /api/account, issue 195a) closes
+//    that race at tenant scope by rechecking users.status immediately before
+//    publish. A per-reading tombstone for this purge path is still #179.
 //
 // 2. The by-url pointer records *ownership*, not readiness, and an
 //    orphan-duplicate's URL hashes to the same slot as its surviving copy. The

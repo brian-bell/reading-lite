@@ -35,6 +35,19 @@ describe("renderSecurityMail", () => {
       /secret|token|cookie|credential|authorization|hmac/i,
     );
   });
+
+  it("describes account deletion without secrets", () => {
+    const rendered = renderSecurityMail("account_deletion_started");
+    expect(rendered.subject).toMatch(/deletion started/i);
+    expect(rendered.text).toMatch(/deletion of your reading-lite account/i);
+    expect(rendered.text).toMatch(/access is revoked immediately/i);
+    expect(rendered.text).toMatch(/open a GitHub issue on https:\/\/github.com\/brian-bell\/reading-lite/i);
+    expect(rendered.html).toMatch(/open a GitHub issue on https:\/\/github.com\/brian-bell\/reading-lite/i);
+    expect(`${rendered.subject}\n${rendered.text}\n${rendered.html}`).not.toMatch(/sign-in link/i);
+    expect(`${rendered.subject}\n${rendered.text}\n${rendered.html}`).not.toMatch(
+      /secret|token|cookie|credential|authorization|hmac/i,
+    );
+  });
 });
 
 describe("buildAuthResendPayload", () => {

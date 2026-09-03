@@ -162,6 +162,31 @@ describe("digest fan-out + send-time skips", () => {
     expect(row).toMatchObject({ status: "skipped", skip_reason: "cadence_off" });
   });
 
+  it("does not enqueue a deleting tenant and skips an already-queued digest", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    const inflight = queued[0]!;
+    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
+      .bind(FOUNDER_TENANT_ID)
+      .run();
+    try {
+      expect(
+        await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS }),
+      ).toEqual({ enqueued: 0 });
+      await processDigestJob(inflight, env as unknown as Env, { nowMs: NOW_MS });
+      const row = await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      });
+      expect(row).toMatchObject({ status: "skipped", skip_reason: "inactive_user" });
+    } finally {
+      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
+        .bind(FOUNDER_TENANT_ID)
+        .run();
+    }
+  });
+
   it("skips an invalid stored TZ at send without calling mail", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });

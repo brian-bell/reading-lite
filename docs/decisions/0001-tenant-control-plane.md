@@ -797,7 +797,12 @@ production reconciliation, observation, and explicit sign-off.
 
 Deletion is an idempotent workflow, not one D1 transaction:
 
-1. mark `deleting`, revoke credentials, and block tenant/global guards;
+1. mark `deleting`, revoke credentials, and block tenant/global guards
+   (`DELETE /api/account`, issue 195a). Production `TENANT_DATA_PLANE=1`: the
+   founder is a normal tenant — deleting that account suppresses the founder
+   prefix the same way as any other. Do not special-case. This step does not
+   invent GlobalUsageGuard teardown (s1k.9.2). `DELETE /api/readings/:id` is
+   a different verb (one-reading purge);
 2. stop unpaid queued work and release reservations that are safe to release;
 3. delete tenant R2 prefixes and tenant vectors;
 4. remove tenant records from the global guard;

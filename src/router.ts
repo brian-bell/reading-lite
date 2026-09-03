@@ -48,6 +48,7 @@ import {
   handleRevokeApiToken,
 } from "./control-plane/token-handlers";
 import { handleGetSettings, handlePostSettings } from "./control-plane/settings-handlers";
+import { handleDeleteAccount } from "./control-plane/account-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
@@ -114,6 +115,17 @@ export function createApp(opts: AppOptions = {}) {
   app.post("/api/auth/settings", (c) => handlePostSettings(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
+
+  // Account deletion suppress (195a). Session cookie + CSRF (via requirePrincipal)
+  // + requireSession + requireRecentAuth + body `{ confirm: "delete" }`.
+  // Bearer 403. Not DELETE /api/readings/:id. Founder is a normal tenant.
+  app.use(
+    "/api/account",
+    requirePrincipal(authNowMs),
+    requireSession(),
+    requireRecentAuth(authNowMs),
+  );
+  app.delete("/api/account", (c) => handleDeleteAccount(c, authNowMs(), authRuntime));
 
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));
@@ -307,6 +319,8 @@ export function createApp(opts: AppOptions = {}) {
     const id = c.req.param("id");
     const principal = c.get("principal");
     const reader = storeForPrincipal(c.env, principal);
+    // One-reading purge inside a live tenant. Account deletion is
+    // DELETE /api/account (195a) — do not fold that workflow in here.
     // Null without a Vectorize binding (local dev): the purge is R2-only there,
     // matching the rest of the router's degrade-in-dev stance.
     const similarity = c.env.READINGS_INDEX

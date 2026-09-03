@@ -391,4 +391,178 @@ describe("commitTerminalManifest", () => {
     expect(out.committed).toBe(false);
     expect(append).toHaveBeenCalledTimes(1); // no-pointer → restore re-syncs
   });
+
+  it("14: tenant deletion fence skips publish and restore after terminal CAS", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    const { similarity, vectors } = fakeVectorize();
+
+    const published = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+    expect(published).toEqual({ committed: true, published: false });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+    const restored = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+    expect(restored).toEqual({ committed: false, published: false });
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("15: status flips to deleting between pre-publish check and publish → compensate remove", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    let checks = 0;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("16: status flips to deleting between restore check and restore write → compensate remove", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+  });
+
+  it("17: D1 throw after terminal CAS fail-opens and still publishes", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        throw new Error("D1 hiccup");
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: true });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("18: D1 throw on the post-publish recheck keeps visibility (compensate only on confirmed false)", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    let checks = 0;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        if (checks === 1) return true;
+        throw new Error("D1 hiccup");
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: true });
+    expect(checks).toBe(2);
+    expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("19: after ready CAS, tenant-fence remove throw leaves ready (does not propagate)", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    vi.spyOn(reader, "removeListIndexItemIf").mockRejectedValue(new Error("R2 hide failure"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: false });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("20: after ready CAS, post-publish compensate remove throw leaves ready", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity } = fakeVectorize();
+    let checks = 0;
+    vi.spyOn(reader, "removeListIndexItemIf").mockRejectedValue(new Error("R2 hide failure"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+  });
 });

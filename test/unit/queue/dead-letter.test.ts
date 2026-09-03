@@ -68,17 +68,21 @@ describe("handleDeadLetter", () => {
     consoleErr.mockRestore();
   });
 
-  it("acks without marking when tenant admission fails", async () => {
-    const msg = fakeMessage({
-      version: 1,
-      tenant: { tenantId: "usr_11111111-1111-4111-8111-111111111111" },
-      actor: { kind: "api_token", credentialId: TOKEN },
-      job: JOB,
-    });
-    const mark = vi.fn(async () => {});
-    await handleDeadLetter(msg, deadLetterDeps(mark));
-    expect(mark).not.toHaveBeenCalled();
-    expect(msg.ack).toHaveBeenCalledOnce();
+  it("acks without marking when the tenant is deleting", async () => {
+    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
+      .bind(TENANT)
+      .run();
+    try {
+      const msg = fakeMessage();
+      const mark = vi.fn(async () => {});
+      await handleDeadLetter(msg, deadLetterDeps(mark));
+      expect(mark).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalledOnce();
+    } finally {
+      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
+        .bind(TENANT)
+        .run();
+    }
   });
 
   it("acks even when marking fails, so the message cannot loop in the DLQ", async () => {

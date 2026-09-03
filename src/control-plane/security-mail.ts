@@ -3,7 +3,11 @@ import { logAuthEvent } from "./auth-log";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import { sendAuthMailViaResend } from "./resend-mail";
 
-export type SecurityMailKind = "sessions_revoked_all" | "email_changed" | "api_token_created";
+export type SecurityMailKind =
+  | "sessions_revoked_all"
+  | "email_changed"
+  | "api_token_created"
+  | "account_deletion_started";
 
 export interface SecurityMail {
   to: string;
@@ -41,6 +45,20 @@ export function renderSecurityMail(kind: SecurityMailKind): { subject: string; h
       "<p>A new API key was created for your reading-lite account.</p>",
       "<p>If you did this, no action is needed.</p>",
       "<p>If you did not, revoke unused keys, revoke other browser sessions, and request a new sign-in link immediately.</p>",
+    ].join("\n");
+    return { subject, html, text };
+  }
+  if (kind === "account_deletion_started") {
+    const subject = "reading-lite: account deletion started";
+    const text = [
+      "Deletion of your reading-lite account has started.",
+      "If you did this, no action is needed. Access is revoked immediately.",
+      "If you did not, open a GitHub issue on https://github.com/brian-bell/reading-lite.",
+    ].join("\n");
+    const html = [
+      "<p>Deletion of your reading-lite account has started.</p>",
+      "<p>If you did this, no action is needed. Access is revoked immediately.</p>",
+      "<p>If you did not, open a GitHub issue on https://github.com/brian-bell/reading-lite.</p>",
     ].join("\n");
     return { subject, html, text };
   }

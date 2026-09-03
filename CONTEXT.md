@@ -109,6 +109,24 @@ submit, a markdown import, or a lookup. It lives in
   that read the TTL from env and apply the verdict onto the manifest / index-item
   shape.
 
+## Account deletion
+
+- **Suppress** (`DELETE /api/account`, issue 195a) — recently authenticated
+  session, CSRF, explicit `{ confirm: "delete" }`. Marks `users.status=deleting`
+  first, then revokes sessions and API tokens. Queue admit, DLQ, digest, and
+  notification skip a non-active tenant. A confirmed inactive or missing user
+  skips spend and visibility. A D1 status-lookup failure **before extract/embed**
+  throws `RateLimitedError` so the queue retries. After a terminal CAS, and on
+  the DLQ mark path, lookup failure fail-opens (publish/keep, or write failed);
+  compensate/remove only on confirmed inactive. Visibility publish/remove
+  throws after that CAS log-and-continue so a deleting-tenant hide failure
+  cannot `markFailed` over the ready object. `commitTerminalManifest`
+  rechecks status immediately before visibility publish and again immediately
+  after (compensate with `visibility.remove` if the tenant flipped deleting in
+  between). Wipe, residue, and email reuse are 195b. This is not
+  **reading purge** (`DELETE /api/readings/:id`). Production
+  `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
+
 ## Digest delivery
 
 - **Digest cadence** — `off` | `daily` | `weekly` on `user_settings`. Independent

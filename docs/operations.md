@@ -49,6 +49,13 @@ curl -sS -A curl/8 -H "Authorization: Bearer $TOKEN" \
 
 Then `--tenant "$TENANT"`.
 
+**Account deletion.** `DELETE /api/account` (195a) marks the caller `deleting`
+and revokes credentials. Production `TENANT_DATA_PLANE=1`: the founder is a
+normal tenant. Deleting that account suppresses the founder corpus the same
+way as any other — there is no silent founder exception. Wipe, residue scan,
+and email reuse are 195b. `DELETE /api/readings/:id` remains one-reading
+purge inside a live tenant.
+
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
 where the acting tenant is the **bearer token's** principal, not `--tenant`.
 Before submitting, a realtime `--execute` therefore asks the worker who the

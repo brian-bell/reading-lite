@@ -17,6 +17,7 @@ import {
   AuthChallengeBodySchema,
   AuthEmailChangeBodySchema,
   AuthLoginOptionsResponseSchema,
+  DeleteAccountBodySchema,
 } from "../../../src/schemas/api";
 
 describe("PostReadingsBodySchema", () => {
@@ -532,6 +533,15 @@ describe("AuthChallengeBodySchema", () => {
     expect("turnstile_token" in AuthEmailChangeBodySchema.parse({ email: "a@example.com", turnstile_token: "x" })).toBe(
       false,
     );
+  });
+});
+
+describe("DeleteAccountBodySchema", () => {
+  it("requires the literal confirm string", () => {
+    expect(DeleteAccountBodySchema.parse({ confirm: "delete" })).toEqual({ confirm: "delete" });
+    expect(() => DeleteAccountBodySchema.parse({})).toThrow();
+    expect(() => DeleteAccountBodySchema.parse({ confirm: true })).toThrow();
+    expect(() => DeleteAccountBodySchema.parse({ confirm: "DELETE" })).toThrow();
   });
 });
 
