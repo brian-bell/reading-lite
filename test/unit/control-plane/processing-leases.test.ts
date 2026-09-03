@@ -461,7 +461,7 @@ describe("tenant-first lease saga", () => {
     expect(hold).toMatchObject({ tenantFence: "t", globalFence: "g" });
   });
 
-  it("compensates a fresh tenant acquire when global reports already_running", async () => {
+  it("adopts a same-attempt global already_running instead of compensating tenant", async () => {
     const released: string[] = [];
     const result = await acquireProcessingLeases(
       {} as Env,
@@ -474,7 +474,67 @@ describe("tenant-first lease saga", () => {
         released,
       ),
     );
-    expect(result).toEqual({ ok: true, alreadyRunning: true });
+    expect(result).toEqual({
+      ok: true,
+      alreadyRunning: false,
+      hold: { tenantId: TENANT, attemptId: "at_1", tenantFence: "tf", globalFence: "gf" },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("recovers a lost global-acquire response on retry by adopting the orphaned fence", async () => {
+    const released: string[] = [];
+    let tenantAcquires = 0;
+    let globalAcquires = 0;
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      acquireLease: async () => {
+        tenantAcquires += 1;
+        return { ok: true, fence: `tf_${tenantAcquires}`, alreadyRunning: false, expiresAtMs: NOW + 1 };
+      },
+      releaseLease: async () => {
+        released.push("tenant");
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => {
+        globalAcquires += 1;
+        if (globalAcquires === 1) throw new Error("response lost");
+        return { ok: true, fence: "gf_orphan", alreadyRunning: true, expiresAtMs: NOW + 1 };
+      },
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => {
+        released.push("global");
+      },
+    };
+    const first = await acquireProcessingLeases({} as Env, TENANT, "at_1", NOW, { tenant, global });
+    expect(first).toEqual({ ok: false, reason: "unavailable" });
+    expect(released).toEqual(["tenant"]);
+    released.length = 0;
+    const retry = await acquireProcessingLeases({} as Env, TENANT, "at_1", NOW, { tenant, global });
+    expect(retry).toEqual({
+      ok: true,
+      alreadyRunning: false,
+      hold: { tenantId: TENANT, attemptId: "at_1", tenantFence: "tf_2", globalFence: "gf_orphan" },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("compensates tenant when a foreign live global contends", async () => {
+    const released: string[] = [];
+    const result = await acquireProcessingLeases(
+      {} as Env,
+      TENANT,
+      "at_1",
+      NOW,
+      depsFrom(
+        [{ ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 }],
+        [{ ok: false, reason: "contention" }],
+        released,
+      ),
+    );
+    expect(result).toEqual({ ok: false, reason: "contention" });
     expect(released).toEqual(["tenant"]);
   });
 

@@ -4,14 +4,18 @@ import { globalUsageFor, type GlobalUsage } from "./global-usage-guard";
 import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "./tenant-usage-guard";
 
 // Tenant-first concurrency saga (ADR 0001). Acquire the tenant lease, then the
-// global lease for the same attempt. Global deny, uncertain global, and global
-// alreadyRunning after a fresh tenant acquire all compensate the tenant.
-// presentLease renew and pause are tenant-first and all-or-nothing: a global
-// failure rolls the tenant mutation back (release after renew, restore inFlight
-// after pause). Heartbeat renews each side best-effort, never compensates, and
-// preserves inFlight so a late TTL refresh cannot unpause a 429-parked row.
-// Uncertain responses are held/denied — never fail open. Duplicate deliveries
-// of the same (tenantId, attemptId) reuse the existing fence.
+// global lease for the same attempt. Global deny and uncertain global after a
+// fresh tenant acquire compensate the tenant. Fresh tenant + global
+// alreadyRunning for THIS same attempt is saga recovery: the global persist
+// landed but the response was lost, so adopt that fence rather than
+// compensating tenant and deferring (B1 will not sweep the orphaned inFlight
+// global). A foreign live attempt still contends and defers. presentLease renew
+// and pause are tenant-first and all-or-nothing: a global failure rolls the
+// tenant mutation back (release after renew, restore inFlight after pause).
+// Heartbeat renews each side best-effort, never compensates, and preserves
+// inFlight so a late TTL refresh cannot unpause a 429-parked row. Uncertain
+// responses are held/denied — never fail open. Duplicate deliveries of the
+// same (tenantId, attemptId) reuse the existing fence.
 
 export class DeferPaidWorkError extends Error {
   readonly delaySeconds: number;
@@ -66,12 +70,19 @@ export async function acquireProcessingLeases(
     return { ok: false, reason: globalResult.reason };
   }
   if (globalResult.alreadyRunning) {
-    // Fresh tenant acquire (alreadyRunning is false — we returned earlier
-    // otherwise) plus a live global lease for this attempt: drop the new
-    // tenant permit so an uncertain global persist cannot leak it. processReading
-    // then checks whether the reading is already terminal before acking or deferring.
-    await compensateTenant(deps.tenant, attemptId, tenantResult.fence, nowMs);
-    return { ok: true, alreadyRunning: true };
+    // Same-attempt inFlight global (lost acquire response): keep the fresh
+    // tenant permit and adopt the existing global fence. A different live
+    // attempt occupies a different lease id and surfaces as contention above.
+    return {
+      ok: true,
+      alreadyRunning: false,
+      hold: {
+        tenantId,
+        attemptId,
+        tenantFence: tenantResult.fence,
+        globalFence: globalResult.fence,
+      },
+    };
   }
   return {
     ok: true,

@@ -21,6 +21,9 @@ import {
   type SimilarContext,
   validateProcessingCredentials,
 } from "./modules/summarizer";
+import {
+  summarizeCheckpoint,
+} from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
 import { tenantIsActive } from "./control-plane/account-delete";
 import { fromD1 } from "./control-plane/db";
@@ -44,7 +47,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
-import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
+import { commitReadingSlot, refreshReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
 import {
   acquireProcessingLeases,
   DeferPaidWorkError,
@@ -55,7 +58,7 @@ import {
   throwIfDeferred,
   type ProcessingLeaseHold,
 } from "./control-plane/processing-leases";
-import { PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
+import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
@@ -146,47 +149,63 @@ export async function processReading(
       return;
     }
 
-    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, Date.now()));
+    const clock = () => nowMs(services);
+    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, clock()));
     if (acquired === "already_running") {
       await ackOrDeferIfProcessingIncomplete(reader, args);
       return;
     }
     leases = acquired;
-    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired);
-    await presentLeaseBeforePaidDispatch(env, acquired);
+    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
+
+    let checkpoint = (await reader.readProcessingCheckpoint(args.keyPrefix, opId)) ?? {};
 
     // Embed the extracted text to get top-K similar.
-    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", () =>
-      embed(truncateForEmbed(promptText), {
+    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", async () => {
+      if (checkpoint.embed_source) return checkpoint.embed_source;
+      const result = await embed(truncateForEmbed(promptText), {
         fetch: services.fetch,
         apiKey: env.OPENAI_API_KEY,
         retry,
-      }),
-    );
-    const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
-      // Over-fetch by one: on a reprocess this reading's own vector is already
-      // indexed and would otherwise consume a slot (see excludeSelf).
-      similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
-    );
-    // Exclude self once. The snapshot then measures the UNFLOORED
-    // neighbourhood, while only the prompt context is floored.
-    //
-    // That split is deliberate. The snapshot is a measurement: for a novel
-    // reading whose nearest neighbour sits at 0.30, "nearest was 0.30" is the
-    // useful fact, and flooring first would throw it away and record count 0.
-    // The prompt is a judgement input: handing the model five distant titles
-    // under a heading that presupposes relatedness is what made everything look
-    // familiar, so those get dropped.
-    const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
-    const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
-    const similarContext: SimilarContext[] = related.map((s) => ({
-      id: s.id,
-      url: s.url,
-      ...(s.title === undefined ? {} : { title: s.title }),
-      ...(s.tldr === undefined ? {} : { tldr: s.tldr }),
-      score: s.score,
-    }));
-    const similaritySnapshot = summarizeSimilarity(neighbours, services.now());
+      });
+      checkpoint = { ...checkpoint, embed_source: result };
+      await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+      return result;
+    });
+
+    const cachedSummary = checkpoint.summarize;
+    let similarContext: SimilarContext[];
+    let similaritySnapshot: ReturnType<typeof summarizeSimilarity>;
+    if (cachedSummary) {
+      similarContext = cachedSummary.similar_context;
+      similaritySnapshot = cachedSummary.similarity_snapshot;
+    } else {
+      const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
+        // Over-fetch by one: on a reprocess this reading's own vector is already
+        // indexed and would otherwise consume a slot (see excludeSelf).
+        similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
+      );
+      // Exclude self once. The snapshot then measures the UNFLOORED
+      // neighbourhood, while only the prompt context is floored.
+      //
+      // That split is deliberate. The snapshot is a measurement: for a novel
+      // reading whose nearest neighbour sits at 0.30, "nearest was 0.30" is the
+      // useful fact, and flooring first would throw it away and record count 0.
+      // The prompt is a judgement input: handing the model five distant titles
+      // under a heading that presupposes relatedness is what made everything look
+      // familiar, so those get dropped.
+      const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
+      const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
+      similarContext = related.map((s) => ({
+        id: s.id,
+        url: s.url,
+        ...(s.title === undefined ? {} : { title: s.title }),
+        ...(s.tldr === undefined ? {} : { tldr: s.tldr }),
+        score: s.score,
+      }));
+      similaritySnapshot = summarizeSimilarity(neighbours, services.now());
+    }
 
     const llm = await runStage(
       attempt,
@@ -195,13 +214,18 @@ export async function processReading(
       services,
       "summarize",
       async () => {
-        await presentLeaseBeforePaidDispatch(env, acquired);
+        if (cachedSummary) {
+          // Slot was committed on the delivery that wrote this artifact.
+          readingSlotConsumed = true;
+          return { reading: cachedSummary.reading, usage: cachedSummary.usage };
+        }
+        await presentLeaseBeforePaidDispatch(env, acquired, clock);
         // Reading quota stays held through extract/embed; commit immediately
         // before summarization dispatch so a later failure still consumes the
         // slot. An undispatched failure releases instead (catch below).
         readingSlotConsumed = true;
         await commitReadingSlot(env, tenantId, opId);
-        return summarizeReading(
+        const result = await summarizeReading(
           {
             url: args.url,
             extractedText: promptText,
@@ -222,11 +246,17 @@ export async function processReading(
             retry,
           },
         );
+        checkpoint = {
+          ...checkpoint,
+          summarize: summarizeCheckpoint(result, similarContext, similaritySnapshot),
+        };
+        await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+        return result;
       },
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
-    await presentLeaseBeforePaidDispatch(env, acquired);
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
     const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: services.fetch,
@@ -305,24 +335,32 @@ export async function processReading(
     }
     await stopHeartbeat?.();
     stopHeartbeat = null;
-    if (leases) await releaseProcessingLeases(env, leases, Date.now());
+    if (leases) await releaseProcessingLeases(env, leases, clock());
     leases = null;
   } catch (e) {
     await stopHeartbeat?.();
     stopHeartbeat = null;
-    if (e instanceof DeferPaidWorkError) {
-      if (leases) await releaseProcessingLeases(env, leases, Date.now());
-      throw e;
-    }
-    if (e instanceof StaleProcessingLeaseError) {
-      // Release before ack-or-defer: a tenant-side stale_fence returns without
-      // touching global, and heartbeat may have just renewed it. Under B1 that
-      // leftover in-flight global row is never swept. Fence-mismatched release
-      // is already a no-op, so a live winner's different fence is unharmed.
-      if (leases) await releaseProcessingLeases(env, leases, Date.now());
+    const clockNow = nowMs(services);
+    if (e instanceof DeferPaidWorkError || e instanceof StaleProcessingLeaseError) {
+      if (leases) await releaseProcessingLeases(env, leases, clockNow);
       leases = null;
-      await ackOrDeferIfProcessingIncomplete(reader, args);
-      return;
+      if (e instanceof StaleProcessingLeaseError) {
+        try {
+          const manifest = await reader.readManifest(args.keyPrefix);
+          if (manifest?.status === "ready" || manifest?.status === "failed") return;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (deferLoopExceeded(args, clockNow)) {
+        if (!readingSlotConsumed) {
+          await releaseReadingSlot(env, tenantId, opId);
+        }
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+        return;
+      }
+      await refreshReadingSlot(env, tenantId, opId, clockNow);
+      throw e instanceof DeferPaidWorkError ? e : new DeferPaidWorkError();
     }
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this
@@ -334,10 +372,10 @@ export async function processReading(
       // Processing leases stay held (paused, not released) so a 429 retry
       // resumes the same fence instead of taking a second permit. If pause
       // cannot park both guards, release so the retry is not pinned already_running.
-      if (leases) await pauseOrReleaseProcessingLeases(env, leases, Date.now());
+      if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
       throw e;
     }
-    if (leases) await releaseProcessingLeases(env, leases, Date.now());
+    if (leases) await releaseProcessingLeases(env, leases, clockNow);
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
@@ -368,14 +406,40 @@ class StaleProcessingLeaseError extends Error {
   }
 }
 
-async function presentLeaseBeforePaidDispatch(env: Env, hold: ProcessingLeaseHold): Promise<void> {
-  const renewed = await renewProcessingLeases(env, hold, Date.now());
+export class ProcessingDeferExpiredError extends Error {
+  constructor() {
+    super("processing defer loop exceeded PROCESSING_DEFER_MAX_AGE_MS");
+    this.name = "ProcessingDeferExpiredError";
+  }
+}
+
+function nowMs(services: Services): number {
+  const parsed = Date.parse(services.now());
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function deferLoopExceeded(args: ProcessReadingArgs, now: number): boolean {
+  const origin = Date.parse(args.attemptStartedAt ?? args.createdAt);
+  if (!Number.isFinite(origin)) return false;
+  return now - origin > PROCESSING_DEFER_MAX_AGE_MS;
+}
+
+async function presentLeaseBeforePaidDispatch(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): Promise<void> {
+  const renewed = await renewProcessingLeases(env, hold, nowMs());
   if (renewed.ok) return;
   if (renewed.reason === "stale_fence") throw new StaleProcessingLeaseError();
   throw new DeferPaidWorkError();
 }
 
-function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () => Promise<void> {
+function startProcessingLeaseHeartbeat(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): () => Promise<void> {
   let generation = 0;
   let inflight: Promise<void> = Promise.resolve();
   const timer = setInterval(() => {
@@ -388,7 +452,7 @@ function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () 
         // Prior heartbeat is best-effort.
       }
       if (epoch !== generation) return;
-      await heartbeatProcessingLeases(env, hold, Date.now());
+      await heartbeatProcessingLeases(env, hold, nowMs());
     })();
   }, PROCESSING_LEASE_HEARTBEAT_MS);
   return async () => {
@@ -1157,6 +1221,7 @@ export function retryableError(e: unknown): boolean {
   }
   if (e.name === "FetchTimeoutError") return true;
   if (e.name === "QueueRetriesExhaustedError") return true;
+  if (e.name === "ProcessingDeferExpiredError") return true;
   return false;
 }
 
