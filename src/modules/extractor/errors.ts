@@ -20,9 +20,27 @@ export class BadStatusError extends Error {
 }
 
 export class BlockedHostError extends Error {
-  constructor(public readonly url: string, public readonly reason: string) {
-    super(`blocked host (${reason}): ${url}`);
+  readonly url: string;
+  constructor(url: string, public readonly reason: string) {
+    const safe = redactUrlUserinfo(url);
+    super(`blocked host (${reason}): ${safe}`);
     this.name = "BlockedHostError";
+    this.url = safe;
+  }
+}
+
+// Credentials in a fetch_source error become durable manifest text. Strip
+// WHATWG username/password when the URL parses; otherwise replace the
+// userinfo@ span so an unparseable Location/start URL cannot leak a password.
+function redactUrlUserinfo(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.username === "" && parsed.password === "") return raw;
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.href;
+  } catch {
+    return raw.replace(/\/\/[^/@\s]+@/g, "//[redacted]@");
   }
 }
 

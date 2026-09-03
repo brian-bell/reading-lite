@@ -91,7 +91,14 @@ export function safeFetch(base: typeof fetch, deps: SafeFetchDeps): typeof fetch
       if (!location) return response;
       response.body?.cancel().catch(() => {});
       if (redirects >= maxHops) throw new TooManyRedirectsError(url, maxHops);
-      const next = new URL(location, url);
+      let next: URL;
+      try {
+        next = new URL(location, url);
+      } catch {
+        // TypeError here is an attacker-controlled Location, not a transport
+        // failure. fetchWithRetry would otherwise retry the first hop.
+        throw new BlockedHostError(url, "invalid redirect location");
+      }
       // Native fetch drops credentials when a redirect leaves the origin;
       // issuing hops ourselves opts out of that, so re-apply it by hand. The
       // strip is permanent for the rest of the chain — a hop back to the

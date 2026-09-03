@@ -452,6 +452,68 @@ describe("extractFromUrl", () => {
       expect(sleep).not.toHaveBeenCalled();
     });
 
+    it("does not retry an invalid redirect Location when retry is wired", async () => {
+      const calls: string[] = [];
+      const sleep = vi.fn(async () => {});
+      const fetchFn = fakeFetch(
+        {
+          "https://example.com/start": {
+            status: 302,
+            headers: { location: "http://[" },
+            body: "",
+          },
+        },
+        (url) => calls.push(url),
+      );
+      const err = await extractFromUrl(
+        "https://example.com/start",
+        extractorDeps(fetchFn, {
+          retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+        }),
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BlockedHostError);
+      expect(err).not.toBeInstanceOf(TypeError);
+      expect(calls).toEqual(["https://example.com/start"]);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it("omits passwords from BlockedHostError on a userinfo URL", async () => {
+      const fetchFn = failingFetch();
+      const err = await extractFromUrl(
+        "https://alice:s3cret@example.com/",
+        extractorDeps(fetchFn),
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BlockedHostError);
+      expect(String(err)).not.toContain("s3cret");
+      expect((err as BlockedHostError).url).toBe("https://example.com/");
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    it("omits passwords from BlockedHostError when a redirect Location carries userinfo", async () => {
+      const calls: string[] = [];
+      const sleep = vi.fn(async () => {});
+      const fetchFn = fakeFetch(
+        {
+          "https://example.com/start": {
+            status: 302,
+            headers: { location: "https://alice:s3cret@example.com/admin" },
+            body: "",
+          },
+        },
+        (url) => calls.push(url),
+      );
+      const err = await extractFromUrl(
+        "https://example.com/start",
+        extractorDeps(fetchFn, {
+          retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+        }),
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BlockedHostError);
+      expect(String(err)).not.toContain("s3cret");
+      expect(calls).toEqual(["https://example.com/start"]);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
     it("does not retry when DNS resolves to no addresses", async () => {
       const fetchFn = vi.fn(async () => {
         throw new Error("must not connect");
