@@ -440,9 +440,13 @@ writes nothing.
 # The corpus-wide staleness inventory this section describes needs --full: a
 # bare invocation is scoped to what moved since the run marker (see Scope), so
 # on a quiet night it measures nothing and exits 0.
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --full
+#
+# --out keeps an ad-hoc sweep off the nightly schedule's report path; see
+# "different --out paths" below for why the two must not share one.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --full \
+  --out ./refresh-report-full.json
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
-  --full --execute --sole-writer
+  --full --execute --sole-writer --out ./refresh-report-full.json
 ```
 
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
@@ -528,9 +532,9 @@ not report the corpus as covered.
 **Staging proof, 2026-09-02** — the measurement the default flip rests on
 (`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
 global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
-protocol proper — full → ingest 8 URLs → incremental → full → full; 6–8 were
-added to price a quiet night and to exercise the escalation path deliberately.
-All eight, in order:
+protocol proper — full → incremental (quiet) → ingest 8 URLs → incremental →
+full → full; 6–8 were added to price a second quiet night and to exercise the
+escalation path deliberately. All eight, in order:
 
 | # | invocation | scope taken | measured | wall | flagged |
 |---|---|---|---|---|---|
@@ -696,9 +700,10 @@ statement about its scope: sharing one path would let a nightly pass — or an
 ad-hoc interactive one — overwrite the sweep's corpus-wide report with a
 scope-limited and often empty one, exit 0, and leave tier 2/3 judging a handful
 of readings while believing they had the sweep. The tier-2/3 commands echo the
-report's scope header but neither refuses nor warns. Consume the sweep's report
-promptly: `refresh-tensions` rejects one whose readings were rewritten after it
-was generated.
+report's scope header but neither refuses nor warns about its scope. Consume the
+sweep's report promptly, though: both `refresh-connections` and
+`refresh-tensions` reject a report whose readings were rewritten after it was
+generated.
 
 ### Refresh exit codes
 
