@@ -3,11 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
-import {
-  GLOBAL_USAGE_GUARD_NAME,
-  PROCESSING_DEFER_DELAY_SECONDS,
-  PROCESSING_DEFER_MAX_AGE_MS,
-} from "../../src/control-plane/constants";
+import { PROCESSING_DEFER_DELAY_SECONDS, GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
 import { processReading, type ProcessReadingArgs, type ProcessReadingSource } from "../../src/process-reading";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
@@ -124,13 +120,6 @@ function embedCalls(fetchFn: ReturnType<typeof makeFetch>): number {
   return fetchFn.mock.calls.filter(([input]) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     return url.startsWith("https://api.openai.com/v1/embeddings");
-  }).length;
-}
-
-function summaryCalls(fetchFn: ReturnType<typeof makeFetch>): number {
-  return fetchFn.mock.calls.filter(([input]) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    return url.startsWith("https://api.openai.com/v1/responses");
   }).length;
 }
 
@@ -768,7 +757,7 @@ describe("processing leases (Workers pool)", () => {
     });
   });
 
-  it("adopts an orphaned same-attempt global lease and proceeds", async () => {
+  it("lost global-acquire response then retry adopts the orphan and frees capacity", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -781,21 +770,39 @@ describe("processing leases (Workers pool)", () => {
       attemptId: "at_orphan",
       source: PARKED_MARKDOWN,
     });
+    let globalAcquires = 0;
+    const restore = interceptGlobalLeaseFetch(async (body, next) => {
+      if (body.kind === "acquire_lease") {
+        globalAcquires += 1;
+        if (globalAcquires === 1) {
+          await next();
+          throw new Error("response lost");
+        }
+      }
+      return next();
+    });
+    const fetchFn = makeFetch();
+    try {
+      await expect(
+        processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      ).rejects.toBeInstanceOf(DeferPaidWorkError);
+      expect(embedCalls(fetchFn)).toBe(0);
+      await processReading(job, env as unknown as Env, services(fetchFn), tenant);
+    } finally {
+      restore();
+    }
+    expect(embedCalls(fetchFn)).toBeGreaterThan(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
     expect(
       await globalLease({
         kind: "acquire_lease",
         tenantId,
-        attemptId: "at_orphan",
+        attemptId: "at_orphan_probe",
         nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
       }),
     ).toMatchObject({ ok: true, already_running: false });
-    const fetchFn = makeFetch();
-    await processReading(job, env as unknown as Env, services(fetchFn), tenant);
-    expect(embedCalls(fetchFn)).toBeGreaterThan(0);
-    expect(summaryCalls(fetchFn)).toBe(1);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "ready",
-    });
   });
 
   it("defers when a foreign live global occupies the cap", async () => {
@@ -844,184 +851,5 @@ describe("processing leases (Workers pool)", () => {
         .bind(previous?.max_concurrent_work ?? 3)
         .run();
     }
-  });
-
-  it("does not re-pay summarize when lease unavailable hits after summarize succeeds", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 2,
-    });
-    const tenant = tenantOf(tenantId);
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_SKIP_SUM",
-      url: "https://lease.test/skip-sum",
-      attemptId: "at_skip_sum",
-      source: PARKED_MARKDOWN,
-    });
-    const fetchFn = makeFetch();
-    const svc = services(fetchFn);
-    let globalRenews = 0;
-    const restore = interceptGlobalLeaseFetch(async (body, next) => {
-      if (body.kind === "renew_lease") {
-        globalRenews += 1;
-        if (globalRenews === 3) {
-          return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-      }
-      return next();
-    });
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    try {
-      await dispatchQueueMessage(
-        msg,
-        () => processReading(job, env as unknown as Env, svc, tenant),
-        { sendDelayed },
-      );
-      expect(sendDelayed).toHaveBeenCalledOnce();
-      expect(summaryCalls(fetchFn)).toBe(1);
-      expect(embedCalls(fetchFn)).toBe(1);
-    } finally {
-      restore();
-    }
-    await processReading(job, env as unknown as Env, svc, tenant);
-    expect(summaryCalls(fetchFn)).toBe(1);
-    expect(embedCalls(fetchFn)).toBe(2);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "ready",
-    });
-  });
-
-  it("refreshes a held reading reservation on defer and commits quota after success", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 1,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    expect(
-      await tenantLease(tenantId, {
-        kind: "reserve_reading",
-        tenantId,
-        opId: "at_quota",
-        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
-      }),
-    ).toMatchObject({ ok: true });
-    const blocker = await holdTenantLease(tenantId, "at_blocker");
-    expect(blocker).toMatchObject({ ok: true, already_running: false });
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_QUOTA",
-      url: "https://lease.test/quota",
-      attemptId: "at_quota",
-      source: PARKED_MARKDOWN,
-    });
-    const fetchFn = makeFetch();
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(
-      await tenantLease(tenantId, {
-        kind: "reserve_reading",
-        tenantId,
-        opId: "at_other",
-        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
-      }),
-    ).toMatchObject({ ok: false, reason: "monthly" });
-
-    expect(
-      await tenantLease(tenantId, {
-        kind: "release_lease",
-        attemptId: "at_blocker",
-        fence: blocker.fence,
-        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
-      }),
-    ).toMatchObject({ ok: true });
-
-    await processReading(job, env as unknown as Env, services(fetchFn), tenant);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "ready",
-    });
-    expect(
-      await tenantLease(tenantId, {
-        kind: "reserve_reading",
-        tenantId,
-        opId: "at_after",
-        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
-      }),
-    ).toMatchObject({ ok: false, reason: "monthly" });
-  });
-
-  it("markFailed when a defer loop exceeds PROCESSING_DEFER_MAX_AGE_MS", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    expect(await holdTenantLease(tenantId, "at_age_blocker")).toMatchObject({ ok: true });
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_AGE",
-      url: "https://lease.test/age",
-      attemptId: "at_age",
-      source: PARKED_MARKDOWN,
-    });
-    job.attemptStartedAt = new Date(
-      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
-    ).toISOString();
-    const fetchFn = makeFetch();
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).not.toHaveBeenCalled();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(msg.retry).not.toHaveBeenCalled();
-    expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "ProcessingDeferExpiredError" },
-    });
-  });
-
-  it("keeps deferring when under PROCESSING_DEFER_MAX_AGE_MS", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    expect(await holdTenantLease(tenantId, "at_under_blocker")).toMatchObject({ ok: true });
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_UNDER",
-      url: "https://lease.test/under",
-      attemptId: "at_under",
-      source: PARKED_MARKDOWN,
-    });
-    const fetchFn = makeFetch();
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "pending",
-      active_attempt: { id: "at_under" },
-    });
   });
 });

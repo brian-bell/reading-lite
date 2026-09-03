@@ -65,7 +65,6 @@ export interface R2KeyLayout {
   rawKey(keyPrefix: string, ext: string): string;
   attemptsPrefix(keyPrefix: string): string;
   attemptKey(keyPrefix: string, attemptId: string): string;
-  processingCheckpointKey(keyPrefix: string, attemptId: string): string;
   byUrlKey(urlHash: string): string;
   byIdKey(id: string): string;
   // Inverse of the root application: maps an absolute bucket key back to the
@@ -87,8 +86,6 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
     attemptsPrefix: (keyPrefix) => abs(`${keyPrefix}/${ATTEMPTS_PREFIX}`),
     attemptKey: (keyPrefix, attemptId) =>
       abs(`${keyPrefix}/${ATTEMPTS_PREFIX}${attemptId}.json`),
-    processingCheckpointKey: (keyPrefix, attemptId) =>
-      abs(`${keyPrefix}/processing/${attemptId}.json`),
     byUrlKey: (urlHash) => abs(`${BY_URL_PREFIX}${urlHash}`),
     byIdKey: (id) => abs(`${BY_ID_PREFIX}${id}`),
     relativeKey: (objectKey) =>

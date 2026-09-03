@@ -36,7 +36,6 @@ describe("r2KeyLayout with the global (pre-tenant) root", () => {
     expect(layout.rawKey(kp, "html")).toBe(`${kp}/raw.html`);
     expect(layout.attemptsPrefix(kp)).toBe(`${kp}/attempts/`);
     expect(layout.attemptKey(kp, "at_123")).toBe(`${kp}/attempts/at_123.json`);
-    expect(layout.processingCheckpointKey(kp, "at_123")).toBe(`${kp}/processing/at_123.json`);
     expect(layout.byUrlKey("deadbeef")).toBe("index/by-url/deadbeef");
     expect(layout.byIdKey("rd_abc")).toBe("index/by-id/rd_abc");
   });
@@ -62,7 +61,6 @@ describe("r2KeyLayout with a tenant root", () => {
     expect(layout.rawKey(kp, "pdf")).toBe(`${root}${kp}/raw.pdf`);
     expect(layout.attemptsPrefix(kp)).toBe(`${root}${kp}/attempts/`);
     expect(layout.attemptKey(kp, "at_123")).toBe(`${root}${kp}/attempts/at_123.json`);
-    expect(layout.processingCheckpointKey(kp, "at_123")).toBe(`${root}${kp}/processing/at_123.json`);
     expect(layout.byUrlKey("deadbeef")).toBe(`${root}index/by-url/deadbeef`);
     expect(layout.byIdKey("rd_abc")).toBe(`${root}index/by-id/rd_abc`);
   });

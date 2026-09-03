@@ -48,12 +48,6 @@ type ReserveReadingBody = {
   opId: string;
   nowMs: number;
 };
-type RefreshReadingBody = {
-  kind: "refresh_reading";
-  tenantId: string;
-  opId: string;
-  nowMs: number;
-};
 type ReleaseReadingBody = { kind: "release_reading"; opId: string };
 type CommitReadingBody = { kind: "commit_reading"; opId: string };
 type AcquireLeaseBody = { kind: "acquire_lease"; tenantId: string; attemptId: string; nowMs: number };
@@ -67,7 +61,6 @@ type FenceLeaseBody = {
 type GuardBody =
   | AdmitRequestBody
   | ReserveReadingBody
-  | RefreshReadingBody
   | ReleaseReadingBody
   | CommitReadingBody
   | AcquireLeaseBody
@@ -93,7 +86,6 @@ export type UsageDecision =
 export interface TenantUsage {
   admitRequest(nowMs: number): Promise<UsageDecision>;
   reserveReading(opId: string, nowMs: number): Promise<UsageDecision>;
-  refreshReading(opId: string, nowMs: number): Promise<void>;
   releaseReading(opId: string): Promise<void>;
   commitReading(opId: string): Promise<void>;
   acquireLease(attemptId: string, nowMs: number): Promise<ProcessingLeaseDecision>;
@@ -182,7 +174,7 @@ function parseGuardBody(value: unknown): GuardBody | null {
     if (!tenantId || !Number.isFinite(nowMs) || nowMs < 0) return null;
     return { kind, tenantId, nowMs };
   }
-  if (kind === "reserve_reading" || kind === "refresh_reading") {
+  if (kind === "reserve_reading") {
     const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
     const opId = typeof body.opId === "string" ? body.opId : "";
     const nowMs = Number(body.nowMs);
@@ -256,7 +248,6 @@ export class TenantUsageGuard implements DurableObject {
     return this.state.blockConcurrencyWhile(async () => {
       if (body.kind === "admit_request") return this.admitRequest(body);
       if (body.kind === "reserve_reading") return this.reserveReading(body);
-      if (body.kind === "refresh_reading") return this.refreshReading(body);
       if (body.kind === "release_reading") return this.releaseReading(body);
       if (body.kind === "commit_reading") return this.commitReading(body);
       if (body.kind === "acquire_lease") return this.acquireLease(body);
@@ -315,16 +306,6 @@ export class TenantUsageGuard implements DurableObject {
       monthKey,
       expiresAt,
     } satisfies Reservation);
-    await scheduleCleanupAlarm(this.state.storage, expiresAt);
-    return json({ ok: true });
-  }
-
-  private async refreshReading(body: RefreshReadingBody): Promise<Response> {
-    const opKey = `op:${body.opId}`;
-    const existing = (await this.state.storage.get(opKey)) as Reservation | undefined;
-    if (!existing || existing.status !== "held") return json({ ok: true });
-    const expiresAt = body.nowMs + READING_RESERVATION_TTL_MS;
-    await this.state.storage.put(opKey, { ...existing, expiresAt } satisfies Reservation);
     await scheduleCleanupAlarm(this.state.storage, expiresAt);
     return json({ ok: true });
   }
@@ -469,7 +450,6 @@ export function failClosedUsage(): TenantUsage {
   return {
     admitRequest: async () => denyUnavailable(),
     reserveReading: async () => denyUnavailable(),
-    refreshReading: async () => undefined,
     releaseReading: async () => undefined,
     commitReading: async () => undefined,
     acquireLease: async () => denyLeaseUnavailable(),
@@ -565,9 +545,6 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
   return {
     admitRequest: (nowMs) => call({ kind: "admit_request", tenantId, nowMs }),
     reserveReading: (opId, nowMs) => call({ kind: "reserve_reading", tenantId, opId, nowMs }),
-    refreshReading: async (opId, nowMs) => {
-      await call({ kind: "refresh_reading", tenantId, opId, nowMs });
-    },
     releaseReading: async (opId) => {
       await call({ kind: "release_reading", opId });
     },
@@ -596,14 +573,6 @@ export async function releaseReadingSlot(env: Env, tenantId: string, opId: strin
     await tenantUsageFor(env, tenantId).releaseReading(opId);
   } catch {
     // Conservative: an uncertain release leaves the held slot counted.
-  }
-}
-
-export async function refreshReadingSlot(env: Env, tenantId: string, opId: string, nowMs: number): Promise<void> {
-  try {
-    await tenantUsageFor(env, tenantId).refreshReading(opId, nowMs);
-  } catch {
-    // Conservative: an uncertain refresh leaves the existing TTL in place.
   }
 }
 

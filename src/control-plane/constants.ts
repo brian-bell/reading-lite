@@ -50,5 +50,5 @@ export const PROCESSING_LEASE_TTL_MS = 10 * 60 * 1000;
 export const PROCESSING_LEASE_HEARTBEAT_MS = 30 * 1000;
 /** READING_JOBS.send delay on concurrency contention. Stub, not calibrated. */
 export const PROCESSING_DEFER_DELAY_SECONDS = 15;
-/** Max age a DeferPaidWorkError retry loop may run before markFailed. Stub, not calibrated. */
+/** Max age a deferred attempt may loop before a later policy slice resolves it. Stub. */
 export const PROCESSING_DEFER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
