@@ -26,7 +26,12 @@
  * `index/list.json` is gone. Leftover recovery unions stored ids with an R2
  * re-list. Each objects-phase list page unions IDs from listed keys into
  * `reading_ids` before delete so a write that landed after the vectors
- * collect still reaches the post-empty sweep. Brand-new intake stays
+ * collect still reaches the post-empty sweep. The job heartbeats
+ * `progress.updated_at_ms` from current time during collectReadingIds and
+ * each R2/vector page (not once at consume-start) so a long collect cannot
+ * expire the 15-minute lease at the every-15-minute cron boundary and let a
+ * sibling last-write-wins progress.json after R2 is gone. Retry lease is
+ * computed from failure time, not the frozen job-start clock. Brand-new intake stays
  * 195a-fenced — this is not a publisher drain.
  * If `READINGS_INDEX` is unbound while reading ids remain, the job throws
  * (`index_unbound`) instead of skipping to R2 — wiping the prefix would strand
@@ -73,11 +78,14 @@ import { parseReadingId } from "./services";
 
 export const ACCOUNT_WIPE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Lost-message recovery window: one 15-minute cron interval, and longer than
- * the default exponential retry cap (5 min). Retry-After can delay the same
- * message up to 12h (`ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS`); consume
- * advances `progress.updated_at_ms` by `delaySeconds` so cron does not
- * enqueue a sibling while that retry is still owed.
+ * Lost-message recovery window: one 15-minute cron interval, equal
+ * to the in-flight lease and longer than the default exponential retry cap
+ * (5 min). Jobs heartbeat `progress.updated_at_ms` from current time during
+ * collect and each R2/vector page so a long collect cannot expire at that
+ * boundary. Retry-After can delay the same message up to 12h
+ * (`ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS`); consume advances
+ * `progress.updated_at_ms` from failure time by `delaySeconds` so cron does
+ * not enqueue a sibling while that retry is still owed.
  */
 export const ACCOUNT_WIPE_IN_FLIGHT_MS = 15 * 60_000;
 /** Cloudflare Queues cap on `msg.retry({ delaySeconds })`. */
@@ -120,9 +128,20 @@ export interface AccountWipeEnv {
 }
 
 export interface AccountWipeJobDeps {
+  /** Consume-start clock; used for the grace gate only. */
   nowMs: number;
+  /**
+   * Live clock for lease heartbeats and retry-lease. Defaults to Date.now
+   * so production heartbeats even when the queue handler passes a frozen
+   * consume-start `nowMs`.
+   */
+  now?: () => number;
   maxObjectPages?: number;
   maxVectorBatches?: number;
+}
+
+function wipeJobNow(deps: AccountWipeJobDeps): number {
+  return deps.now ? deps.now() : Date.now();
 }
 
 export type AccountWipeSkipReason =
@@ -296,7 +315,8 @@ export async function processAccountWipeJob(
     return { kind: "skipped", reason: "grace_period" };
   }
 
-  let progress = stored ?? emptyProgress(deps.nowMs, force);
+  const now = () => wipeJobNow(deps);
+  let progress = stored ?? emptyProgress(now(), force);
   progress.force = force;
   if (progress.phase === "done") {
     if (!leftover) {
@@ -307,18 +327,21 @@ export async function processAccountWipeJob(
     // leave missed/late vectors behind.
     progress = reopenLeftoverProgress(progress);
   }
+  const heartbeat = async () => {
+    progress.updated_at_ms = now();
+    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+  };
   // Persist before any listing so a concurrent cron tick sees an in-flight lease
   // instead of launching a sibling job against the same prefix. Record force so
-  // cron resume can honor a force wipe that DLQ'd during grace.
-  progress.updated_at_ms = deps.nowMs;
-  await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+  // cron resume can honor a force wipe that DLQ'd during grace. Heartbeats
+  // refresh this timestamp from current time during collect and pages.
+  await heartbeat();
 
   if (progress.phase === "vectors") {
-    const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout);
+    const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
     progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
-    progress.updated_at_ms = deps.nowMs;
-    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
-    const vec = await submitStoredVectorDeletes(progress, env, tenantId, deps.nowMs, maxVectorBatches);
+    await heartbeat();
+    const vec = await submitStoredVectorDeletes(progress, env, tenantId, now, maxVectorBatches);
     if (vec === "continue") {
       return {
         kind: "continue",
@@ -327,16 +350,14 @@ export async function processAccountWipeJob(
       };
     }
     progress.phase = "objects";
-    progress.updated_at_ms = deps.nowMs;
-    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+    await heartbeat();
   }
 
   if (progress.phase === "objects") {
     if (!progress.reading_ids?.length) {
-      const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout);
+      const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
       progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
-      progress.updated_at_ms = deps.nowMs;
-      await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+      await heartbeat();
     }
     let pages = 0;
     let cursor = progress.r2_cursor;
@@ -352,8 +373,7 @@ export async function processAccountWipeJob(
         if (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) {
           cursor = undefined;
           progress.r2_cursor = undefined;
-          progress.updated_at_ms = deps.nowMs;
-          await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+          await heartbeat();
           if (pages >= maxObjectPages) {
             return {
               kind: "continue",
@@ -367,8 +387,7 @@ export async function processAccountWipeJob(
         progress.phase = "sweep";
         progress.vector_offset = 0;
         progress.r2_cursor = undefined;
-        progress.updated_at_ms = deps.nowMs;
-        await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+        await heartbeat();
         break objects;
       }
       // Bookkeeping: a write that landed after the vectors collect can appear
@@ -382,8 +401,7 @@ export async function processAccountWipeJob(
       pages += 1;
       cursor = list.truncated ? list.cursor : undefined;
       progress.r2_cursor = cursor;
-      progress.updated_at_ms = deps.nowMs;
-      await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+      await heartbeat();
       await env.READINGS_BUCKET.delete(list.objects.map((obj) => obj.key));
       if (!cursor) {
         const again = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
@@ -391,8 +409,7 @@ export async function processAccountWipeJob(
           progress.phase = "sweep";
           progress.vector_offset = 0;
           progress.r2_cursor = undefined;
-          progress.updated_at_ms = deps.nowMs;
-          await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+          await heartbeat();
           break objects;
         }
         cursor = undefined;
@@ -410,7 +427,7 @@ export async function processAccountWipeJob(
   }
 
   if (progress.phase === "sweep") {
-    const sweep = await submitStoredVectorDeletes(progress, env, tenantId, deps.nowMs, maxVectorBatches);
+    const sweep = await submitStoredVectorDeletes(progress, env, tenantId, now, maxVectorBatches);
     if (sweep === "continue") {
       return {
         kind: "continue",
@@ -422,7 +439,7 @@ export async function processAccountWipeJob(
       ...progress,
       phase: "done",
       r2_cursor: undefined,
-      updated_at_ms: deps.nowMs,
+      updated_at_ms: now(),
     };
     await writeProgress(env.READINGS_BUCKET, tenantId, progress);
     return {
@@ -474,7 +491,7 @@ export async function consumeAccountWipeMessage(
     const retryAfterMs = error instanceof RateLimitedError ? error.retryAfterMs : null;
     const delaySeconds = wipeRetryDelaySeconds(retryAfterMs, msg.attempts ?? 1);
     try {
-      await extendWipeLeaseForRetry(env, parsed.envelope.tenantId, deps.nowMs, delaySeconds);
+      await extendWipeLeaseForRetry(env, parsed.envelope.tenantId, wipeJobNow(deps), delaySeconds);
     } catch (leaseError) {
       console.error(
         JSON.stringify({
@@ -568,33 +585,35 @@ async function submitStoredVectorDeletes(
   progress: AccountWipeProgress,
   env: AccountWipeEnv,
   tenantId: TenantId,
-  nowMs: number,
+  now: () => number,
   maxVectorBatches: number,
 ): Promise<"continue" | "done"> {
   const ids = progress.reading_ids ?? [];
-  const remaining = ids.slice(progress.vector_offset);
-  if (remaining.length === 0) return "done";
+  if (progress.vector_offset >= ids.length) return "done";
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-  const batchLimit = Math.min(remaining.length, maxVectorBatches * VECTORIZE_DELETE_MAX_IDS);
-  const toDelete = remaining.slice(0, batchLimit);
-  const mutations = await store.deleteMany(toDelete);
-  for (const mutationId of mutations) {
-    progress.mutation_ids.push(mutationId);
-    console.info(
-      JSON.stringify({
-        event: "account_wipe_vector_delete_submitted",
-        tenant_id: tenantId,
-        mutation_id: mutationId,
-        note: "Vectorize deletes are async; embeddings may take a short time to disappear",
-      }),
-    );
+  let batches = 0;
+  while (progress.vector_offset < ids.length && batches < maxVectorBatches) {
+    const chunk = ids.slice(progress.vector_offset, progress.vector_offset + VECTORIZE_DELETE_MAX_IDS);
+    const mutations = await store.deleteMany(chunk);
+    for (const mutationId of mutations) {
+      progress.mutation_ids.push(mutationId);
+      console.info(
+        JSON.stringify({
+          event: "account_wipe_vector_delete_submitted",
+          tenant_id: tenantId,
+          mutation_id: mutationId,
+          note: "Vectorize deletes are async; embeddings may take a short time to disappear",
+        }),
+      );
+    }
+    progress.vector_offset += chunk.length;
+    progress.updated_at_ms = now();
+    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+    batches += 1;
   }
-  progress.vector_offset += toDelete.length;
-  progress.updated_at_ms = nowMs;
-  await writeProgress(env.READINGS_BUCKET, tenantId, progress);
   return progress.vector_offset < ids.length ? "continue" : "done";
 }
 
@@ -604,6 +623,7 @@ async function extendWipeLeaseForRetry(
   nowMs: number,
   delaySeconds: number,
 ): Promise<void> {
+  // `nowMs` is failure time (when retry is requested), not consume-start.
   const parsed = parseTenantId(tenantId);
   if (!parsed) return;
   const progress = await readProgress(env.READINGS_BUCKET, parsed);
@@ -651,7 +671,14 @@ async function writeProgress(
   });
 }
 
-async function collectReadingIds(bucket: R2Bucket, layout: ReturnType<typeof r2KeyLayout>): Promise<string[]> {
+async function collectReadingIds(
+  bucket: R2Bucket,
+  layout: ReturnType<typeof r2KeyLayout>,
+  heartbeat?: () => Promise<void>,
+): Promise<string[]> {
+  // Still scans both prefixes to completion in this job (large-tenant paging
+  // residual). Heartbeats after list.json and each inner list page so a long
+  // collect cannot expire the lease at the */15 cron boundary.
   const ids = new Set<string>();
   const listObj = await bucket.get(layout.listIndexKey());
   if (listObj) {
@@ -667,8 +694,9 @@ async function collectReadingIds(bucket: R2Bucket, layout: ReturnType<typeof r2K
       // Corrupt list index is not a wipe failure; R2 listing still finds ids.
     }
   }
-  await scanPrefixForIds(bucket, layout.byIdKey(""), layout, ids);
-  await scanPrefixForIds(bucket, layout.readingsPrefix(), layout, ids);
+  await heartbeat?.();
+  await scanPrefixForIds(bucket, layout.byIdKey(""), layout, ids, heartbeat);
+  await scanPrefixForIds(bucket, layout.readingsPrefix(), layout, ids, heartbeat);
   return [...ids].sort();
 }
 
@@ -677,6 +705,7 @@ async function scanPrefixForIds(
   prefix: string,
   layout: ReturnType<typeof r2KeyLayout>,
   ids: Set<string>,
+  heartbeat?: () => Promise<void>,
 ): Promise<void> {
   let cursor: string | undefined;
   do {
@@ -690,5 +719,6 @@ async function scanPrefixForIds(
       if (id) ids.add(id);
     }
     cursor = list.truncated ? list.cursor : undefined;
+    await heartbeat?.();
   } while (cursor);
 }

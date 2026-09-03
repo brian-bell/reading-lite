@@ -8,6 +8,7 @@ import {
   fanOutDueAccountWipes,
   handleAccountWipeDeadLetter,
   processAccountWipeJob,
+  type AccountWipeJobDeps,
 } from "../../src/account-wipe";
 import { accountWipeEnvelopeV1, type AccountWipeEnvelopeV1 } from "../../src/control-plane/wipe-envelope";
 import { parseTenantId } from "../../src/control-plane/ids";
@@ -163,6 +164,60 @@ async function wipeEnv(): Promise<Env> {
   return env as unknown as Env;
 }
 
+function wipeJobDeps(extra: Partial<AccountWipeJobDeps> & { clock?: { t: number } } = {}): AccountWipeJobDeps {
+  const clock = extra.clock ?? { t: extra.nowMs ?? NOW_MS };
+  return {
+    nowMs: extra.nowMs ?? clock.t,
+    now: extra.now ?? (() => clock.t),
+    maxObjectPages: extra.maxObjectPages,
+    maxVectorBatches: extra.maxVectorBatches,
+  };
+}
+
+type WipeProgressSnap = {
+  updated_at_ms: number;
+  phase: string;
+  reading_ids?: string[];
+  objects_deleted?: number;
+};
+
+function wrapBucketClock(
+  bucket: R2Bucket,
+  tenantId: string,
+  clock: { t: number },
+  opts: {
+    advanceListMs?: number;
+    onProgress?: (progress: WipeProgressSnap) => void | Promise<void>;
+  } = {},
+): R2Bucket {
+  const progressKey = accountWipeProgressKey(tenantId);
+  return new Proxy(bucket, {
+    get(target, prop, receiver) {
+      if (prop === "list") {
+        return async (listOpts?: R2ListOptions) => {
+          if (opts.advanceListMs) clock.t += opts.advanceListMs;
+          return target.list(listOpts as R2ListOptions);
+        };
+      }
+      if (prop === "put") {
+        return async (
+          key: string,
+          value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
+          putOpts?: R2PutOptions,
+        ) => {
+          const result = await target.put(key, value, putOpts);
+          if (key === progressKey && typeof value === "string" && opts.onProgress) {
+            await opts.onProgress(JSON.parse(value) as WipeProgressSnap);
+          }
+          return result;
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
 describe("account wipe (195b PR1)", () => {
   beforeEach(async () => {
     await insertSecondTenant(env as unknown as Env);
@@ -183,7 +238,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result).toEqual({ kind: "skipped", reason: "grace_period" });
     expect(deleteByIds).not.toHaveBeenCalled();
@@ -196,7 +251,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT, force: true }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalled();
@@ -218,7 +273,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(vectorOrder[0]).toBe("vector");
@@ -241,7 +296,7 @@ describe("account wipe (195b PR1)", () => {
     const first = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
-      { nowMs: NOW_MS, maxObjectPages: 1, maxVectorBatches: 20 },
+      wipeJobDeps({ maxObjectPages: 1, maxVectorBatches: 20 }),
     );
     expect(first.kind).toBe("continue");
     expect(memory.keysUnder(PREFIX).length).toBeGreaterThan(0);
@@ -254,7 +309,7 @@ describe("account wipe (195b PR1)", () => {
     const second = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(second.kind).toBe("complete");
     expect(memory.keysUnder(PREFIX)).toEqual([]);
@@ -265,7 +320,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result).toEqual({ kind: "complete", objects_deleted: 0, mutation_ids: [] });
     expect(deleteByIds).not.toHaveBeenCalled();
@@ -275,14 +330,12 @@ describe("account wipe (195b PR1)", () => {
   it("redrives an already-wiped prefix as a no-op success", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), await wipeEnv(), {
-      nowMs: NOW_MS,
-    });
+    await processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), await wipeEnv(), wipeJobDeps());
     deleteByIds.mockClear();
     const again = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(again.kind).toBe("complete");
     expect(deleteByIds).not.toHaveBeenCalled();
@@ -301,7 +354,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalledTimes(4);
@@ -324,7 +377,7 @@ describe("account wipe (195b PR1)", () => {
       processAccountWipeJob(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
         { ...(await wipeEnv()), READINGS_INDEX: undefined },
-        { nowMs: NOW_MS },
+        wipeJobDeps(),
       ),
     ).rejects.toThrow(/index_unbound/);
     await consumeAccountWipeMessage(
@@ -335,7 +388,7 @@ describe("account wipe (195b PR1)", () => {
         attempts: 1,
       },
       { ...(await wipeEnv()), READINGS_INDEX: undefined },
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(ack).not.toHaveBeenCalled();
     expect(retry).toHaveBeenCalled();
@@ -349,9 +402,7 @@ describe("account wipe (195b PR1)", () => {
     const foreignKey = `u/usr_550e8400-e29b-41d4-a716-446655440000/keep.txt`;
     await env.READINGS_BUCKET.put(foreignKey, "stay");
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), await wipeEnv(), {
-      nowMs: NOW_MS,
-    });
+    await processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), await wipeEnv(), wipeJobDeps());
     const foreign = await env.READINGS_BUCKET.get(foreignKey);
     expect(foreign).not.toBeNull();
     await foreign?.text();
@@ -379,7 +430,7 @@ describe("account wipe (195b PR1)", () => {
     const started = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT, force: true }),
       jobEnv,
-      { nowMs: NOW_MS, maxObjectPages: 1, maxVectorBatches: 20 },
+      wipeJobDeps({ maxObjectPages: 1, maxVectorBatches: 20 }),
     );
     expect(started.kind).toBe("continue");
     const progressObj = await memory.bucket.get(accountWipeProgressKey(OTHER_TENANT_ID));
@@ -425,7 +476,7 @@ describe("account wipe (195b PR1)", () => {
     expect(progress.vector_offset).toBe(0);
     expect(progress.force).toBe(true);
 
-    const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), { nowMs: NOW_MS });
+    const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalled();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
@@ -469,7 +520,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(memory.keysUnder(PREFIX)).toEqual([]);
@@ -515,7 +566,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
@@ -538,7 +589,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalledTimes(2);
@@ -569,7 +620,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
@@ -598,7 +649,7 @@ describe("account wipe (195b PR1)", () => {
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
     const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
@@ -660,7 +711,7 @@ describe("account wipe (195b PR1)", () => {
     await consumeAccountWipeMessage(
       { body: { version: 9 }, ack: badAck, retry: vi.fn() },
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(badAck).toHaveBeenCalledOnce();
   });
@@ -682,7 +733,7 @@ describe("account wipe (195b PR1)", () => {
         attempts: 1,
       },
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     expect(ack).not.toHaveBeenCalled();
     expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
@@ -710,7 +761,7 @@ describe("account wipe (195b PR1)", () => {
         attempts: 1,
       },
       await wipeEnv(),
-      { nowMs: NOW_MS },
+      wipeJobDeps(),
     );
     consoleErr.mockRestore();
     const delaySeconds = retryAfterMs / 1000;
@@ -725,6 +776,103 @@ describe("account wipe (195b PR1)", () => {
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: heldUntil + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
       enqueued: 1,
     });
+  });
+
+  it("heartbeats the wipe lease during collectReadingIds and R2 pages", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const clock = { t: NOW_MS };
+    const heartbeats: WipeProgressSnap[] = [];
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, OTHER_TENANT_ID, clock, {
+        advanceListMs: ACCOUNT_WIPE_IN_FLIGHT_MS,
+        onProgress: (progress) => {
+          heartbeats.push(progress);
+        },
+      }),
+    };
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock }),
+    );
+    expect(result.kind).toBe("complete");
+    const midCollect = heartbeats.find(
+      (progress) =>
+        progress.phase === "vectors" &&
+        (progress.reading_ids?.length ?? 0) === 0 &&
+        progress.updated_at_ms >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+    );
+    expect(midCollect).toBeDefined();
+    const midPages = heartbeats.find(
+      (progress) =>
+        (progress.phase === "objects" || (progress.objects_deleted ?? 0) > 0) &&
+        progress.updated_at_ms >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+    );
+    expect(midPages).toBeDefined();
+  });
+
+  it("computes the retry lease from failure time, not consume-start", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const clock = { t: NOW_MS };
+    deleteByIds.mockImplementation(async () => {
+      clock.t = NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS;
+      throw new RateLimitedError(429, 12_500, "https://vectorize.example/delete");
+    });
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumeAccountWipeMessage(
+      {
+        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+        ack,
+        retry,
+        attempts: 1,
+      },
+      await wipeEnv(),
+      wipeJobDeps({ clock }),
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { updated_at_ms: number };
+    expect(progress.updated_at_ms).toBe(NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS + 13_000);
+    expect(progress.updated_at_ms).not.toBe(NOW_MS + 13_000);
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
+      enqueued: 0,
+    });
+    consoleErr.mockRestore();
+  });
+
+  it("cron at the 15-minute boundary still sees the lease while a job heartbeats", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const clock = { t: NOW_MS };
+    let cronDuringHeartbeat: { enqueued: number } | null = null;
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, OTHER_TENANT_ID, clock, {
+        advanceListMs: ACCOUNT_WIPE_IN_FLIGHT_MS,
+        onProgress: async (progress) => {
+          if (cronDuringHeartbeat !== null) return;
+          if (progress.updated_at_ms < NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS) return;
+          cronDuringHeartbeat = { enqueued: -1 };
+          cronDuringHeartbeat = await fanOutDueAccountWipes(jobEnv, {
+            nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+          });
+        },
+      }),
+    };
+    await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock }),
+    );
+    expect(cronDuringHeartbeat).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
   });
 
   it("wipe DLQ acks without touching the tenant prefix", async () => {

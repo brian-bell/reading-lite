@@ -24,8 +24,10 @@ comments of the modules themselves — read those before changing a module.
   R2+Vectorize wipe, wipe DLQ → log/ack).
 - `src/account-wipe.ts` — deferred tenant prefix wipe (issue 195b PR1): 7-day
   grace on `deleting_at_ms` gates *new* wipes; cron resumes in-progress/leftover
-  (preserving `force` on progress.json). Vectorize `deleteByIds` then paged R2.
-  Does not hard-delete the users row.
+  (preserving `force` on progress.json). Heartbeats `updated_at_ms` from current
+  time during collect and R2/vector pages; retry lease is failure time plus
+  delay. Vectorize `deleteByIds` then paged R2. Does not hard-delete the users
+  row.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -237,9 +239,10 @@ Pointers only — the details live in the named files' comments.
   offset 0) before R2 and unions stored `reading_ids` with an R2 re-list.
   After the prefix is empty, wipe re-submits `deleteByIds` for those stored
   ids so a late upsert of a known id cannot outlive the list row. Objects-phase
-  pages union IDs from listed keys into `reading_ids` before delete. A delayed
-  `msg.retry` advances the wipe lease by
-  `delaySeconds` so cron does not enqueue a sibling. An unbound
+  pages union IDs from listed keys into `reading_ids` before delete. Wipe
+  heartbeats `progress.updated_at_ms` from current time during collect and
+  R2/vector pages; a delayed `msg.retry` advances the wipe lease from
+  failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound
   `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2.
   Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
   time to disappear). Continuation cursors live at

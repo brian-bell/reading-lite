@@ -212,7 +212,9 @@ export default {
     if (isAccountWipeQueue(batch.queue)) {
       const nowMs = Date.now();
       for (const msg of batch.messages) {
-        await consumeAccountWipeMessage(msg, env, { nowMs });
+        // Grace uses consume-start nowMs; heartbeats and retry lease use a live
+        // clock so a long collect cannot expire at the */15 boundary.
+        await consumeAccountWipeMessage(msg, env, { nowMs, now: () => Date.now() });
       }
       return;
     }
