@@ -141,15 +141,15 @@ describe("TenantUsageGuard processing leases", () => {
       await post(guard, { kind: "renew_lease", attemptId: "at_f", fence: "not-the-fence", nowMs: NOW }),
     ).toMatchObject({ ok: false, reason: "stale_fence" });
     expect(
+      await post(guard, { kind: "release_lease", attemptId: "at_f", fence: "not-the-fence", nowMs: NOW }),
+    ).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(
       await post(guard, {
         kind: "renew_lease",
         attemptId: "at_f",
         fence: held.fence,
         nowMs: NOW + PROCESSING_LEASE_TTL_MS + 1,
       }),
-    ).toMatchObject({ ok: false, reason: "stale_fence" });
-    expect(
-      await post(guard, { kind: "release_lease", attemptId: "at_f", fence: "not-the-fence", nowMs: NOW }),
     ).toMatchObject({ ok: false, reason: "stale_fence" });
   });
 

@@ -66,7 +66,7 @@ function summaryResponse(): Response {
                 title: "Test Article",
                 tldr: "A short summary.",
                 tags: ["test"],
-                keywords: ["test"],
+                keywords: ["test", "article", "integration"],
                 people: [],
                 orgs: [],
                 novelty_verdict: "novel",
@@ -214,7 +214,7 @@ describe("processing leases (Workers pool)", () => {
     );
 
     expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(sendDelayed.mock.calls[0]?.[1]).toBe(PROCESSING_DEFER_DELAY_SECONDS);
+    expect(sendDelayed).toHaveBeenCalledWith(expect.anything(), PROCESSING_DEFER_DELAY_SECONDS);
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
