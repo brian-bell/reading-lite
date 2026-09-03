@@ -7,8 +7,13 @@
  * stays the suppress path; wipe is a shared-queue job plus the existing
  * 15-minute cron sweep, not an inline handler.
  *
- * Grace: honor `deleting_at_ms`. Default N=7 days. A job payload
- * `{ force: true }` skips grace (no ops CLI in this PR).
+ * Grace: honor `deleting_at_ms`. Default N=7 days. Grace only gates *starting*
+ * a new wipe (no `progress.json`, or a cleanly done empty prefix). A job
+ * payload `{ force: true }` skips grace to start (no ops CLI in this PR).
+ * Cron resumes in-progress or leftover wipes even during grace, and preserves
+ * `force` recorded on `progress.json` so a force job that DLQ'd during grace
+ * is redriven without waiting 7 days. Do not start a brand-new wipe during
+ * grace with `force: false`.
  *
  * Vectorize `deleteByIds` is async (mutationId, no immediate confirm).
  * Embeddings may take a short time to disappear. We fire deletes in ≤1000
@@ -74,6 +79,8 @@ const AccountWipeProgressSchema = z.object({
   mutation_ids: z.array(z.string()),
   objects_deleted: z.number().int().nonnegative(),
   updated_at_ms: z.number().int().nonnegative(),
+  // Optional so pre-force progress still parses; new writes always persist it.
+  force: z.boolean().optional(),
 });
 type AccountWipeProgress = z.infer<typeof AccountWipeProgressSchema>;
 
@@ -126,6 +133,15 @@ export function wipeGraceElapsed(deletingAtMs: number | null | undefined, nowMs:
   return nowMs - deletingAtMs >= ACCOUNT_WIPE_GRACE_MS;
 }
 
+/** Incomplete or leftover progress is a resume, not a new wipe. */
+export function wipeNeedsResume(
+  progress: { phase: "vectors" | "objects" | "done" } | null,
+  hasLeftoverObjects: boolean,
+): boolean {
+  if (!progress) return false;
+  return progress.phase !== "done" || hasLeftoverObjects;
+}
+
 export function readingIdFromRelativeKey(relativeKey: string): string | null {
   if (relativeKey.startsWith(BY_ID_PREFIX)) {
     const rest = relativeKey.slice(BY_ID_PREFIX.length);
@@ -168,26 +184,36 @@ export async function fanOutDueAccountWipes(
     try {
       const tenantId = parseTenantId(row.id);
       if (!tenantId) continue;
-      if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       const progress = await readProgress(env.READINGS_BUCKET, tenantId);
-      if (progress?.phase === "done") {
-        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) continue;
+      const leftover =
+        progress?.phase === "done"
+          ? await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env)
+          : false;
+      if (!wipeNeedsResume(progress, leftover)) {
+        // New wipe (no progress) or cleanly done-and-empty: grace gates start.
+        if (progress) continue;
+        if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (
         progress &&
+        progress.phase !== "done" &&
         deps.nowMs - progress.updated_at_ms < ACCOUNT_WIPE_IN_FLIGHT_MS
       ) {
         continue;
       }
       // Touch before send so the in-flight skip is real for the next cron tick
       // and so leftover `done` recovery does not immediately re-enqueue.
-      const next: AccountWipeProgress = progress ?? emptyProgress(deps.nowMs);
+      // Resume preserves force from progress so a force wipe that DLQ'd during
+      // grace is redriven with force:true; new starts persist force:false.
+      const force = progress?.force === true;
+      const next: AccountWipeProgress = progress ?? emptyProgress(deps.nowMs, force);
       if (next.phase === "done") {
         next.phase = "objects";
         next.r2_cursor = undefined;
       }
+      next.force = force;
       next.updated_at_ms = deps.nowMs;
       await writeProgress(env.READINGS_BUCKET, tenantId, next);
-      await queue.send(accountWipeEnvelopeV1({ tenantId }));
+      await queue.send(accountWipeEnvelopeV1({ tenantId, force }));
       enqueued += 1;
     } catch (error) {
       console.error(
@@ -217,9 +243,6 @@ export async function processAccountWipeJob(
   );
   if (!user) return { kind: "skipped", reason: "not_found" };
   if (user.status !== "deleting") return { kind: "skipped", reason: "not_deleting" };
-  if (!envelope.force && !wipeGraceElapsed(user.deleting_at_ms, deps.nowMs)) {
-    return { kind: "skipped", reason: "grace_period" };
-  }
 
   if (!tenantDataPlaneEnabled(env)) {
     return { kind: "skipped", reason: "no_tenant_prefix" };
@@ -231,15 +254,28 @@ export async function processAccountWipeJob(
   const maxObjectPages = deps.maxObjectPages ?? ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES;
   const maxVectorBatches = deps.maxVectorBatches ?? ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES;
 
-  let progress = (await readProgress(env.READINGS_BUCKET, tenantId)) ?? emptyProgress(deps.nowMs);
+  const stored = await readProgress(env.READINGS_BUCKET, tenantId);
+  const leftover =
+    stored?.phase === "done" ? await prefixHasObjects(env.READINGS_BUCKET, keyRoot) : false;
+  const resuming = wipeNeedsResume(stored, leftover);
+  const force = envelope.force || stored?.force === true;
+  // Grace only gates starting a new wipe. Resume (in-progress, leftover, expired
+  // lease) proceeds even during grace; force:true still starts during grace.
+  if (!force && !wipeGraceElapsed(user.deleting_at_ms, deps.nowMs) && !resuming) {
+    return { kind: "skipped", reason: "grace_period" };
+  }
+
+  let progress = stored ?? emptyProgress(deps.nowMs, force);
+  progress.force = force;
   if (progress.phase === "done") {
-    if (!(await prefixHasObjects(env.READINGS_BUCKET, keyRoot))) {
+    if (!leftover) {
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
     progress = { ...progress, phase: "objects", r2_cursor: undefined };
   }
   // Persist before any listing so a concurrent cron tick sees an in-flight lease
-  // instead of launching a sibling job against the same prefix.
+  // instead of launching a sibling job against the same prefix. Record force so
+  // cron resume can honor a force wipe that DLQ'd during grace.
   progress.updated_at_ms = deps.nowMs;
   await writeProgress(env.READINGS_BUCKET, tenantId, progress);
 
@@ -447,7 +483,7 @@ async function tenantPrefixHasObjects(
   return prefixHasObjects(bucket, keyRoot);
 }
 
-function emptyProgress(nowMs: number): AccountWipeProgress {
+function emptyProgress(nowMs: number, force = false): AccountWipeProgress {
   return {
     version: 1,
     phase: "vectors",
@@ -455,6 +491,7 @@ function emptyProgress(nowMs: number): AccountWipeProgress {
     mutation_ids: [],
     objects_deleted: 0,
     updated_at_ms: nowMs,
+    force,
   };
 }
 

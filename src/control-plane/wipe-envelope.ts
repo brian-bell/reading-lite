@@ -1,10 +1,12 @@
 /**
- * ACCOUNT_WIPE_JOBS envelope v1. Cron fan-out puts one message per deleting
- * tenant past the grace window; an operator may enqueue the same shape with
- * `force: true` to skip grace. The body carries only identity and the force
- * flag — no email, no object keys. Continuation cursors live in R2
- * (`wipe/{tenantId}/progress.json`), not in the message, so a crash redrive
- * resumes without mutating the queue payload.
+ * ACCOUNT_WIPE_JOBS envelope v1. Cron fan-out starts one message per deleting
+ * tenant past the grace window, or resumes in-progress/leftover wipes even
+ * during grace (preserving `force` from progress.json). An operator may
+ * enqueue the same shape with `force: true` to skip grace on a new wipe.
+ * The body carries only identity and the force flag — no email, no object
+ * keys. Continuation cursors live in R2 (`wipe/{tenantId}/progress.json`),
+ * not in the message, so a crash redrive resumes without mutating the
+ * queue payload.
  */
 import { z } from "zod";
 import { parseTenantId, parseUserId, type TenantId } from "./ids";

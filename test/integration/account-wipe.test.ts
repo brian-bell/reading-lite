@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_WIPE_GRACE_MS,
+  ACCOUNT_WIPE_IN_FLIGHT_MS,
   accountWipeProgressKey,
   consumeAccountWipeMessage,
   fanOutDueAccountWipes,
@@ -324,6 +325,7 @@ describe("account wipe (195b PR1)", () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
 
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
@@ -331,6 +333,60 @@ describe("account wipe (195b PR1)", () => {
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
       enqueued: 0,
     });
+  });
+
+  it("cron redrives a force wipe that wrote progress during grace, preserving force:true", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS);
+    const keys = Array.from({ length: 1001 }, (_, i) => `${PREFIX}pad/${String(i).padStart(4, "0")}`);
+    const memory = memoryBucket(keys);
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
+    const started = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT, force: true }),
+      jobEnv,
+      { nowMs: NOW_MS, maxObjectPages: 1, maxVectorBatches: 20 },
+    );
+    expect(started.kind).toBe("continue");
+    const progressObj = await memory.bucket.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { force?: boolean; phase: string };
+    expect(progress.force).toBe(true);
+    expect(progress.phase).not.toBe("done");
+
+    expect(await fanOutDueAccountWipes(jobEnv, { nowMs: NOW_MS })).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
+
+    const resumeAt = NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS;
+    expect(resumeAt - NOW_MS).toBeLessThan(ACCOUNT_WIPE_GRACE_MS);
+    expect(await fanOutDueAccountWipes(jobEnv, { nowMs: resumeAt })).toEqual({ enqueued: 1 });
+    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT, force: true })]);
+  });
+
+  it("cron resumes leftover objects on a force wipe during grace with force:true", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 0,
+        mutation_ids: [],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        force: true,
+      }),
+    );
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT, force: true })]);
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { phase: string; force?: boolean };
+    expect(progress.phase).toBe("objects");
+    expect(progress.force).toBe(true);
+
+    const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), { nowMs: NOW_MS });
+    expect(result.kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
   it("cron fan-out skips entirely when TENANT_DATA_PLANE is off", async () => {

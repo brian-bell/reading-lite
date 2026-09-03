@@ -5,6 +5,7 @@ import {
   isAccountWipeQueue,
   readingIdFromRelativeKey,
   wipeGraceElapsed,
+  wipeNeedsResume,
   wipeRetryDelaySeconds,
 } from "../../../src/account-wipe";
 import {
@@ -24,6 +25,17 @@ describe("wipeGraceElapsed", () => {
     expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS + 1, NOW_MS)).toBe(false);
     expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS, NOW_MS)).toBe(true);
     expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS - 1, NOW_MS)).toBe(true);
+  });
+});
+
+describe("wipeNeedsResume", () => {
+  it("treats missing progress as a new wipe and incomplete/leftover as resume", () => {
+    expect(wipeNeedsResume(null, false)).toBe(false);
+    expect(wipeNeedsResume(null, true)).toBe(false);
+    expect(wipeNeedsResume({ phase: "done" }, false)).toBe(false);
+    expect(wipeNeedsResume({ phase: "done" }, true)).toBe(true);
+    expect(wipeNeedsResume({ phase: "vectors" }, false)).toBe(true);
+    expect(wipeNeedsResume({ phase: "objects" }, false)).toBe(true);
   });
 });
 
