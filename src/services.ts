@@ -1,26 +1,66 @@
-import { lookup as dnsLookup } from "node:dns/promises";
-import type { LookupFn } from "./modules/extractor/safe-fetch";
+import { resolve4, resolve6 } from "node:dns/promises";
+import type { LookupFn, ResolvedAddress } from "./modules/extractor/safe-fetch";
 
 export interface Services {
   fetch: typeof fetch;
-  // Injected DNS lookup for extractor SSRF checks. Production uses
-  // node:dns/promises (nodejs_compat; Cloudflare's node:dns is DoH to 1.1.1.1).
-  // Tests inject fakes. The extractor module never imports node:dns.
+  // Injected DNS lookup for extractor SSRF checks. Tests inject fakes.
+  // The extractor module never imports node:dns.
   lookup: LookupFn;
   now: () => string;
   newId: () => string;
 }
 
+export interface DnsResolvers {
+  resolve4: (hostname: string) => Promise<string[]>;
+  resolve6: (hostname: string) => Promise<string[]>;
+}
+
+// Cloudflare's node:dns is DoH to 1.1.1.1 and throws on lookup / lookupService /
+// resolve. resolve4 + resolve6 are the implemented surface. NODATA on one
+// family is normal for single-stack names; a hard error with no addresses
+// from the other family still fails closed.
+export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
+  return async (hostname) => {
+    const [v4, v6] = await Promise.allSettled([
+      resolvers.resolve4(hostname),
+      resolvers.resolve6(hostname),
+    ]);
+    const addresses: ResolvedAddress[] = [];
+    let hardError: unknown;
+    if (v4.status === "fulfilled") {
+      for (const address of v4.value) addresses.push({ address, family: 4 });
+    } else if (!isNoDataError(v4.reason)) {
+      hardError = v4.reason;
+    }
+    if (v6.status === "fulfilled") {
+      for (const address of v6.value) addresses.push({ address, family: 6 });
+    } else if (!isNoDataError(v6.reason)) {
+      hardError = v6.reason;
+    }
+    if (addresses.length > 0) return addresses;
+    if (hardError !== undefined) throw hardError;
+    return [];
+  };
+}
+
+export const nodeDnsLookup: LookupFn = lookupFromResolvers({
+  resolve4: (hostname) => resolve4(hostname),
+  resolve6: (hostname) => resolve6(hostname),
+});
+
 export function defaultServices(): Services {
   return {
     fetch: globalThis.fetch.bind(globalThis),
-    lookup: async (hostname) => {
-      const result = await dnsLookup(hostname, { all: true });
-      return Array.isArray(result) ? result : [result];
-    },
+    lookup: nodeDnsLookup,
     now: () => new Date().toISOString(),
     newId: mintReadingId,
   };
+}
+
+function isNoDataError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = (error as { code: unknown }).code;
+  return code === "ENODATA" || code === "ENOTFOUND" || code === "ENOENT";
 }
 
 const ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";

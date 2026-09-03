@@ -57,6 +57,9 @@ export async function fetchWithRetry(
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
       // tripping). Retrying would mask the cancellation intent, so surface it.
       if (isAbortError(e)) throw e;
+      // SSRF-guard failures are thrown by the wrapped fetch before/during a
+      // hop. Retrying would re-hit the attacker-controlled first hop.
+      if (isSsrfGuardError(e)) throw e;
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
@@ -84,12 +87,23 @@ function urlToString(input: URL | string): string {
 }
 
 function isAbortError(e: unknown): boolean {
-  return (
-    typeof e === "object" &&
-    e !== null &&
-    "name" in e &&
-    (e as { name: unknown }).name === "AbortError"
-  );
+  return errorName(e) === "AbortError";
+}
+
+const SSRF_GUARD_ERROR_NAMES = new Set([
+  "BlockedHostError",
+  "TooManyRedirectsError",
+  "DestinationResolutionError",
+]);
+
+function isSsrfGuardError(e: unknown): boolean {
+  const name = errorName(e);
+  return name !== undefined && SSRF_GUARD_ERROR_NAMES.has(name);
+}
+
+function errorName(e: unknown): string | undefined {
+  if (typeof e !== "object" || e === null || !("name" in e)) return undefined;
+  return typeof (e as { name: unknown }).name === "string" ? (e as { name: string }).name : undefined;
 }
 
 async function sleepWithAbort(

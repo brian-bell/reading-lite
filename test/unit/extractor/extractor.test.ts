@@ -427,15 +427,48 @@ describe("extractFromUrl", () => {
       expect(calls).toEqual(["https://example.com/start"]);
     });
 
-    it("rejects a hostname whose lookup returns 10.0.0.5 without connecting", async () => {
+    it("does not retry a 302 to a private literal when retry is wired", async () => {
+      const calls: string[] = [];
+      const sleep = vi.fn(async () => {});
+      const fetchFn = fakeFetch(
+        {
+          "https://example.com/start": {
+            status: 302,
+            headers: { location: "http://10.0.0.5/admin" },
+            body: "",
+          },
+        },
+        (url) => calls.push(url),
+      );
+      await expect(
+        extractFromUrl(
+          "https://example.com/start",
+          extractorDeps(fetchFn, {
+            retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BlockedHostError);
+      expect(calls).toEqual(["https://example.com/start"]);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it("does not retry when DNS resolves to no addresses", async () => {
       const fetchFn = vi.fn(async () => {
         throw new Error("must not connect");
       }) as unknown as typeof fetch;
-      const lookup: LookupFn = async () => [{ address: "10.0.0.5" }];
+      const sleep = vi.fn(async () => {});
+      const lookup: LookupFn = async () => [];
       await expect(
-        extractFromUrl("https://rebinder.example/", extractorDeps(fetchFn, { lookup })),
-      ).rejects.toBeInstanceOf(BlockedHostError);
+        extractFromUrl(
+          "https://empty.example/",
+          extractorDeps(fetchFn, {
+            lookup,
+            retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+          }),
+        ),
+      ).rejects.toMatchObject({ name: "DestinationResolutionError" });
       expect(fetchFn).not.toHaveBeenCalled();
+      expect(sleep).not.toHaveBeenCalled();
     });
 
     it("gives up after the hop ceiling", async () => {
