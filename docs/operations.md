@@ -540,14 +540,21 @@ full → ingest 8 URLs → incremental → full:
   scope missed no flag.
 - **Snapshot drift elsewhere was not zero, by design.** The sweep after the
   incremental rewrote two snapshots the incremental never measured — both X
-  readings whose nearest score moved 0.221→0.239 and 0.172→0.268 as the eight
-  new vectors entered their raw topK. Both sit far below the bound (0.45) and
+  readings whose nearest score moved 0.221→0.239 and 0.172→0.268 as the four
+  new vectors entered their raw topK. (Eight rows were ingested and entered the
+  changed set; four reached `ready` and own a vector, and the other four are
+  the "not ready, own no vector" half the scope planner skips.) Both sit far
+  below the bound (0.45) and
   neither can change a flag. The immediately following sweep reported
   `Snapshot drift: 0`, so it is deferred, not lost. That is the
   exact-versus-approximate paragraph above, measured.
-- **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s),
-  because an unchanged `index/list.json` ETag short-circuits the pass before it
-  opens Vectorize or reads a manifest. Modelled onto production (N=553 ready,
+- **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
+  the pass resolves an empty scope and returns before it opens Vectorize or
+  reads a manifest. The measured runs took the ETag short-circuit (an unchanged
+  `index/list.json` ETag ends the scope immediately), but the win does not
+  depend on it — where no ETag is available, which is every wrangler-path run
+  and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
+  the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
   unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
   4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
   ~10 changed readings ~15 s; at 10x corpus that is ~30 min against the same

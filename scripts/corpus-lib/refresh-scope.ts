@@ -52,7 +52,8 @@
 //     included, so a vector merely ADDED anywhere enters some stranger's topK
 //     and moves its `max`/`mean` at any score, well below the bound. Measured
 //     on staging 2026-09-02 (docs/operations.md, "Scope"): an incremental pass
-//     over eight new readings produced flags byte-identical to the sweep that
+//     over eight newly ingested rows — four of them ready and holding a vector —
+//     produced flags byte-identical to the sweep that
 //     followed it, while that sweep still rewrote two snapshots the incremental
 //     never measured — both sub-floor movements (0.221→0.239, 0.172→0.268),
 //     neither able to change a flag. So between sweeps the `similarity`

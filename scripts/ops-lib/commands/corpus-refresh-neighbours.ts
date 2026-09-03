@@ -1,6 +1,7 @@
-// `ops corpus refresh-neighbours` — tier-1 corpus refresh: re-measure every
-// ready reading against Vectorize and emit the staleness report that later
-// judgement slices consume.
+// `ops corpus refresh-neighbours` — tier-1 corpus refresh: re-measure the ready
+// readings this pass's scope selects against Vectorize (the default is what
+// moved since the run marker; --full is every one of them) and emit the
+// staleness report that later judgement slices consume.
 //
 // Zero LLM / embedding spend: each reading is queried by the vector it already
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
@@ -492,7 +493,8 @@ async function refreshNeighbours(
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
   io.stdout(`Corpus: ${items.length} readings`);
-  // In-scope rows only, under --since-last-run; `Corpus` above is the whole list.
+  // In-scope rows only, which on any pass but a sweep is a subset; `Corpus`
+  // above is the whole list.
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}`);
