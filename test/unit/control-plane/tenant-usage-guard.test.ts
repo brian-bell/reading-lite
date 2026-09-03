@@ -250,5 +250,6 @@ describe("tenantUsageFor", () => {
     const usage = failClosedUsage();
     expect(await usage.admitRequest(NOW)).toMatchObject({ ok: false });
     await expect(usage.releaseReading("at_1")).resolves.toBeUndefined();
+    expect(await usage.acquireLease("at_1", NOW)).toEqual({ ok: false, reason: "unavailable" });
   });
 });

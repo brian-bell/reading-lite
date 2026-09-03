@@ -36,8 +36,19 @@ export const AUTH_RATE_IP_MAX = 20;
 export const AUTH_RATE_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 export const AUTH_RATE_GLOBAL_MAX = 200;
 export const AUTH_RATE_GUARD_NAME = "auth-rate-guard";
+/** Singleton GlobalUsageGuard — one fixed name, same pattern as AUTH_RATE_GUARD_NAME. */
+export const GLOBAL_USAGE_GUARD_NAME = "global-usage-guard";
 
 /** TenantUsageGuard: sliding window for every intake write request. */
 export const INGRESS_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 /** Held reading-slot reservations expire if never committed or released. */
 export const READING_RESERVATION_TTL_MS = 60 * 60 * 1000;
+
+/** Crash-timeout for a processing lease; heartbeat/renew must beat this. Stub, not calibrated. */
+export const PROCESSING_LEASE_TTL_MS = 10 * 60 * 1000;
+/** Heartbeat interval while embed/summarize is in flight. Stub, not calibrated. */
+export const PROCESSING_LEASE_HEARTBEAT_MS = 30 * 1000;
+/** READING_JOBS.send delay on concurrency contention. Stub, not calibrated. */
+export const PROCESSING_DEFER_DELAY_SECONDS = 15;
+/** Max age a deferred attempt may loop before a later policy slice resolves it. Stub. */
+export const PROCESSING_DEFER_MAX_AGE_MS = 24 * 60 * 60 * 1000;

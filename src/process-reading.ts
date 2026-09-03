@@ -44,6 +44,16 @@ import type {
   ProcessingStage,
 } from "./schemas/manifest";
 import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
+import {
+  acquireProcessingLeases,
+  DeferPaidWorkError,
+  pauseProcessingLeases,
+  releaseProcessingLeases,
+  renewProcessingLeases,
+  throwIfDeferred,
+  type ProcessingLeaseHold,
+} from "./control-plane/processing-leases";
+import { PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
@@ -70,6 +80,8 @@ export async function processReading(
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
   let readingSlotConsumed = false;
+  let leases: ProcessingLeaseHold | null = null;
+  let stopHeartbeat: (() => void) | null = null;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
@@ -114,6 +126,19 @@ export async function processReading(
 
     const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
 
+    // Foreign active_attempt must drop without taking a lease. Re-check after
+    // extract (unpaid) and before the first paid dispatch.
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
+
+    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, Date.now()));
+    if (acquired === "already_running") return;
+    leases = acquired;
+    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired);
+    await presentLeaseBeforePaidDispatch(env, acquired);
+
     // Embed the extracted text to get top-K similar.
     const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", () =>
       embed(truncateForEmbed(promptText), {
@@ -154,6 +179,7 @@ export async function processReading(
       services,
       "summarize",
       async () => {
+        await presentLeaseBeforePaidDispatch(env, acquired);
         // Reading quota stays held through extract/embed; commit immediately
         // before summarization dispatch so a later failure still consumes the
         // slot. An undispatched failure releases instead (catch below).
@@ -184,6 +210,7 @@ export async function processReading(
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
+    await presentLeaseBeforePaidDispatch(env, acquired);
     const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: services.fetch,
@@ -259,7 +286,20 @@ export async function processReading(
         tenant,
       );
     }
+    stopHeartbeat?.();
+    stopHeartbeat = null;
+    if (leases) await releaseProcessingLeases(env, leases, Date.now());
+    leases = null;
   } catch (e) {
+    stopHeartbeat?.();
+    stopHeartbeat = null;
+    if (e instanceof DeferPaidWorkError) {
+      if (leases) await releaseProcessingLeases(env, leases, Date.now());
+      throw e;
+    }
+    if (e instanceof StaleProcessingLeaseError) {
+      return;
+    }
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this
       // message after the upstream's Retry-After window. The active_attempt
@@ -267,13 +307,38 @@ export async function processReading(
       // PENDING_TTL_SECONDS flips it stale. Held reading-slot reservations
       // stay counted until a later delivery commits or a definitive failure
       // (including markDeadLettered after max_retries) releases them.
+      // Processing leases stay held (paused, not released) so a 429 retry
+      // resumes the same fence instead of taking a second permit.
+      if (leases) await pauseProcessingLeases(env, leases, Date.now());
       throw e;
     }
+    if (leases) await releaseProcessingLeases(env, leases, Date.now());
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
     await markFailed(reader, args, services, attempt, e);
   }
+}
+
+class StaleProcessingLeaseError extends Error {
+  constructor() {
+    super("processing lease fence is stale");
+    this.name = "StaleProcessingLeaseError";
+  }
+}
+
+async function presentLeaseBeforePaidDispatch(env: Env, hold: ProcessingLeaseHold): Promise<void> {
+  const renewed = await renewProcessingLeases(env, hold, Date.now());
+  if (renewed.ok) return;
+  if (renewed.reason === "stale_fence") throw new StaleProcessingLeaseError();
+  throw new DeferPaidWorkError();
+}
+
+function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () => void {
+  const timer = setInterval(() => {
+    void renewProcessingLeases(env, hold, Date.now());
+  }, PROCESSING_LEASE_HEARTBEAT_MS);
+  return () => clearInterval(timer);
 }
 
 async function sendReadingEmailAndLog(

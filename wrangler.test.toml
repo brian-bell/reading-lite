@@ -17,6 +17,10 @@ new_sqlite_classes = ["AuthRateGuard"]
 tag = "v2"
 new_sqlite_classes = ["TenantUsageGuard"]
 
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["GlobalUsageGuard"]
+
 [vars]
 APP_ENV = "test"
 CORS_ALLOWED_ORIGINS = ""
@@ -62,3 +66,7 @@ class_name = "AuthRateGuard"
 [[durable_objects.bindings]]
 name = "TENANT_USAGE_GUARD"
 class_name = "TenantUsageGuard"
+
+[[durable_objects.bindings]]
+name = "GLOBAL_USAGE_GUARD"
+class_name = "GlobalUsageGuard"

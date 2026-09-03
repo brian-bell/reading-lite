@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FOUNDER_PLACEHOLDER_LIMITS,
+  GLOBAL_PLACEHOLDER_CONCURRENCY,
   TOKEN_MAX_TTL_MS,
   bootstrapFounder,
   signupModeForEnv,
@@ -88,10 +89,10 @@ describe("bootstrapFounder", () => {
       "readings:write",
     ]);
 
-    const policy = await db.first<{ signup_mode: string }>(
-      "SELECT signup_mode FROM system_policy WHERE id = 1",
+    const policy = await db.first<{ signup_mode: string; max_concurrent_work: number }>(
+      "SELECT signup_mode, max_concurrent_work FROM system_policy WHERE id = 1",
     );
-    expect(policy?.signup_mode).toBe("open");
+    expect(policy).toEqual({ signup_mode: "open", max_concurrent_work: GLOBAL_PLACEHOLDER_CONCURRENCY });
   });
 
   it("is idempotent and keeps the original founder identity on re-run", async () => {

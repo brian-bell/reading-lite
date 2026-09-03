@@ -1,17 +1,30 @@
 import type { Env } from "../index";
 import { bumpWindow } from "./auth-rate-guard";
 import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_TTL_MS } from "./constants";
+import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
+import {
+  acquireLease as acquireStoredLease,
+  isLeaseKey,
+  pauseLease as pauseStoredLease,
+  releaseLease as releaseStoredLease,
+  renewLease as renewStoredLease,
+  sweepExpiredLeases,
+  type LeaseDecision,
+} from "./processing-lease-state";
 
-// TenantUsageGuard serializes one tenant's ingress request-rate token bucket
-// and paid-work reading-slot reservations (hourly + monthly). D1 tenant_limits
-// is the policy source of truth; callers cannot supply limits. Missing or
-// invalid limits, and an unavailable Durable Object, fail closed.
+// TenantUsageGuard serializes one tenant's ingress request-rate token bucket,
+// paid-work reading-slot reservations (hourly + monthly), and concurrent-work
+// leases. D1 tenant_limits is the policy source of truth; callers cannot supply
+// limits. Missing or invalid limits, and an unavailable Durable Object, fail
+// closed.
 //
 // Request-rate counts every intake write. Reading slots are reserved only for
 // an activation attempt (idempotent on attempt id) and released when the
-// attempt never reaches summarization dispatch. Spend, concurrency leases, and
-// GlobalUsageGuard are out of scope (s1k.9.2–9.4).
+// attempt never reaches summarization dispatch. Spend and the global kill
+// switch stay out of scope (s1k.9.3–9.4). Concurrent-work leases are fenced
+// and expiring; the holder presents the fence before renew, paid dispatch,
+// and release.
 
 type WindowRecord = { start: number; count: number; windowMs?: number };
 type CounterRecord = { count: number };
@@ -37,7 +50,20 @@ type ReserveReadingBody = {
 };
 type ReleaseReadingBody = { kind: "release_reading"; opId: string };
 type CommitReadingBody = { kind: "commit_reading"; opId: string };
-type GuardBody = AdmitRequestBody | ReserveReadingBody | ReleaseReadingBody | CommitReadingBody;
+type AcquireLeaseBody = { kind: "acquire_lease"; tenantId: string; attemptId: string; nowMs: number };
+type FenceLeaseBody = {
+  kind: "renew_lease" | "pause_lease" | "release_lease";
+  attemptId: string;
+  fence: string;
+  nowMs: number;
+};
+type GuardBody =
+  | AdmitRequestBody
+  | ReserveReadingBody
+  | ReleaseReadingBody
+  | CommitReadingBody
+  | AcquireLeaseBody
+  | FenceLeaseBody;
 
 export type UsageDenyReason =
   | "request_rate"
@@ -45,6 +71,12 @@ export type UsageDenyReason =
   | "monthly"
   | "missing_limits"
   | "unavailable";
+
+export type LeaseDenyReason = "contention" | "stale_fence" | "missing_limits" | "unavailable";
+
+export type ProcessingLeaseDecision =
+  | { ok: true; fence: string; alreadyRunning: boolean; expiresAtMs: number }
+  | { ok: false; reason: LeaseDenyReason };
 
 export type UsageDecision =
   | { ok: true }
@@ -55,6 +87,10 @@ export interface TenantUsage {
   reserveReading(opId: string, nowMs: number): Promise<UsageDecision>;
   releaseReading(opId: string): Promise<void>;
   commitReading(opId: string): Promise<void>;
+  acquireLease(attemptId: string, nowMs: number): Promise<ProcessingLeaseDecision>;
+  renewLease(attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
+  pauseLease(attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
+  releaseLease(attemptId: string, fence: string, nowMs: number): Promise<void>;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -108,6 +144,20 @@ async function loadLimits(env: Env, tenantId: string): Promise<TenantIngressLimi
   }
 }
 
+async function loadConcurrencyLimit(env: Env, tenantId: string): Promise<number | null> {
+  try {
+    const row = await env.CONTROL_PLANE.prepare(
+      `SELECT max_concurrent_work FROM tenant_limits WHERE tenant_id = ?`,
+    )
+      .bind(tenantId)
+      .first<{ max_concurrent_work: number }>();
+    if (!row) return null;
+    return positiveInt(row.max_concurrent_work);
+  } catch {
+    return null;
+  }
+}
+
 function parseGuardBody(value: unknown): GuardBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
@@ -130,18 +180,21 @@ function parseGuardBody(value: unknown): GuardBody | null {
     if (!opId) return null;
     return { kind, opId };
   }
-  return null;
-}
-
-async function scheduleCleanupAlarm(storage: DurableObjectStorage, expiresAt: number): Promise<void> {
-  // Never schedule in the past or at Date.now()+1: intake tests freeze `now()`
-  // months behind wall-clock, and an immediate alarm races isolated-storage
-  // teardown (abortAllDurableObjects + sqlite-shm).
-  if (expiresAt <= Date.now()) return;
-  const existing = await storage.getAlarm();
-  if (existing == null || expiresAt < existing) {
-    await storage.setAlarm(expiresAt);
+  if (kind === "acquire_lease") {
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+    const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
+    const nowMs = Number(body.nowMs);
+    if (!tenantId || !attemptId || !Number.isFinite(nowMs) || nowMs < 0) return null;
+    return { kind, tenantId, attemptId, nowMs };
   }
+  if (kind === "renew_lease" || kind === "pause_lease" || kind === "release_lease") {
+    const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
+    const fence = typeof body.fence === "string" ? body.fence : "";
+    const nowMs = Number(body.nowMs);
+    if (!attemptId || !fence || !Number.isFinite(nowMs) || nowMs < 0) return null;
+    return { kind, attemptId, fence, nowMs };
+  }
+  return null;
 }
 
 async function counterOf(storage: DurableObjectStorage, key: string): Promise<number> {
@@ -184,7 +237,11 @@ export class TenantUsageGuard implements DurableObject {
       if (body.kind === "admit_request") return this.admitRequest(body);
       if (body.kind === "reserve_reading") return this.reserveReading(body);
       if (body.kind === "release_reading") return this.releaseReading(body);
-      return this.commitReading(body);
+      if (body.kind === "commit_reading") return this.commitReading(body);
+      if (body.kind === "acquire_lease") return this.acquireLease(body);
+      if (body.kind === "renew_lease") return this.renewHeldLease(body);
+      if (body.kind === "pause_lease") return this.pauseHeldLease(body);
+      return this.releaseHeldLease(body);
     });
   }
 
@@ -260,6 +317,33 @@ export class TenantUsageGuard implements DurableObject {
     return json({ ok: true });
   }
 
+  private async acquireLease(body: AcquireLeaseBody): Promise<Response> {
+    const limit = await this.requireConcurrency(body.tenantId);
+    if (!limit.ok) return json(limit);
+    return jsonLease(await acquireStoredLease(this.state.storage, { id: body.attemptId, limit: limit.limit, nowMs: body.nowMs }));
+  }
+
+  private async renewHeldLease(body: FenceLeaseBody): Promise<Response> {
+    return jsonLease(await renewStoredLease(this.state.storage, { id: body.attemptId, fence: body.fence, nowMs: body.nowMs }));
+  }
+
+  private async pauseHeldLease(body: FenceLeaseBody): Promise<Response> {
+    return jsonLease(await pauseStoredLease(this.state.storage, { id: body.attemptId, fence: body.fence, nowMs: body.nowMs }));
+  }
+
+  private async releaseHeldLease(body: FenceLeaseBody): Promise<Response> {
+    return jsonLease(await releaseStoredLease(this.state.storage, { id: body.attemptId, fence: body.fence, nowMs: body.nowMs }));
+  }
+
+  private async requireConcurrency(
+    tenantId: string,
+  ): Promise<{ ok: true; limit: number } | { ok: false; reason: "missing_limits" }> {
+    if (!parseTenantId(tenantId)) return { ok: false, reason: "missing_limits" };
+    const limit = await loadConcurrencyLimit(this.env, tenantId);
+    if (limit === null) return { ok: false, reason: "missing_limits" };
+    return { ok: true, limit };
+  }
+
   private async requireLimits(
     tenantId: string,
   ): Promise<{ ok: true; limits: TenantIngressLimits } | { ok: false; reason: "missing_limits" }> {
@@ -270,11 +354,13 @@ export class TenantUsageGuard implements DurableObject {
   }
 
   private async cleanup(now: number): Promise<void> {
+    const leaseNext = await sweepExpiredLeases(this.state.storage, now);
     const entries = await this.state.storage.list();
-    let nextAlarm: number | null = null;
+    let nextAlarm: number | null = leaseNext;
     const currentHour = utcHourKey(now);
     const currentMonth = utcMonthKey(now);
     for (const [key, value] of entries) {
+      if (isLeaseKey(key)) continue;
       if (key === "req") {
         const record = value as WindowRecord;
         if (!record || typeof record.start !== "number") continue;
@@ -321,7 +407,23 @@ export class TenantUsageGuard implements DurableObject {
   }
 }
 
+function jsonLease(decision: LeaseDecision): Response {
+  if (decision.ok) {
+    return json({
+      ok: true,
+      fence: decision.fence,
+      already_running: decision.alreadyRunning,
+      expires_at: decision.expiresAt,
+    });
+  }
+  return json({ ok: false, reason: decision.reason });
+}
+
 function denyUnavailable(): UsageDecision {
+  return { ok: false, reason: "unavailable" };
+}
+
+function denyLeaseUnavailable(): ProcessingLeaseDecision {
   return { ok: false, reason: "unavailable" };
 }
 
@@ -331,6 +433,10 @@ export function failClosedUsage(): TenantUsage {
     reserveReading: async () => denyUnavailable(),
     releaseReading: async () => undefined,
     commitReading: async () => undefined,
+    acquireLease: async () => denyLeaseUnavailable(),
+    renewLease: async () => denyLeaseUnavailable(),
+    pauseLease: async () => denyLeaseUnavailable(),
+    releaseLease: async () => undefined,
   };
 }
 
@@ -356,6 +462,37 @@ function parseDecision(payload: unknown): UsageDecision {
   };
 }
 
+function parseLeaseDecision(payload: unknown): ProcessingLeaseDecision {
+  if (!payload || typeof payload !== "object") return denyLeaseUnavailable();
+  const body = payload as {
+    ok?: unknown;
+    reason?: unknown;
+    fence?: unknown;
+    already_running?: unknown;
+    expires_at?: unknown;
+  };
+  if (body.ok === true) {
+    if (typeof body.fence !== "string" || body.fence.length === 0) return denyLeaseUnavailable();
+    const expiresAt = Number(body.expires_at);
+    return {
+      ok: true,
+      fence: body.fence,
+      alreadyRunning: body.already_running === true,
+      expiresAtMs: Number.isFinite(expiresAt) ? expiresAt : 0,
+    };
+  }
+  const reason = body.reason;
+  if (
+    reason !== "contention" &&
+    reason !== "stale_fence" &&
+    reason !== "missing_limits" &&
+    reason !== "unavailable"
+  ) {
+    return denyLeaseUnavailable();
+  }
+  return { ok: false, reason };
+}
+
 export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
   const ns = env.TENANT_USAGE_GUARD;
   if (!ns || !parseTenantId(tenantId)) return failClosedUsage();
@@ -373,6 +510,19 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
       return denyUnavailable();
     }
   };
+  const callLease = async (body: GuardBody): Promise<ProcessingLeaseDecision> => {
+    try {
+      const res = await stub.fetch("https://tenant-usage-guard/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return denyLeaseUnavailable();
+      return parseLeaseDecision(await res.json());
+    } catch {
+      return denyLeaseUnavailable();
+    }
+  };
   return {
     admitRequest: (nowMs) => call({ kind: "admit_request", tenantId, nowMs }),
     reserveReading: (opId, nowMs) => call({ kind: "reserve_reading", tenantId, opId, nowMs }),
@@ -381,6 +531,14 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
     },
     commitReading: async (opId) => {
       await call({ kind: "commit_reading", opId });
+    },
+    acquireLease: (attemptId, nowMs) => callLease({ kind: "acquire_lease", tenantId, attemptId, nowMs }),
+    renewLease: (attemptId, fence, nowMs) =>
+      callLease({ kind: "renew_lease", attemptId, fence, nowMs }),
+    pauseLease: (attemptId, fence, nowMs) =>
+      callLease({ kind: "pause_lease", attemptId, fence, nowMs }),
+    releaseLease: async (attemptId, fence, nowMs) => {
+      await callLease({ kind: "release_lease", attemptId, fence, nowMs });
     },
   };
 }
