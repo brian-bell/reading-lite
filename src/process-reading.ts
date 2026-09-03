@@ -302,9 +302,13 @@ export async function processReading(
       throw e;
     }
     if (e instanceof StaleProcessingLeaseError) {
-      await ackOrDeferIfProcessingIncomplete(reader, args);
+      // Release before ack-or-defer: a tenant-side stale_fence returns without
+      // touching global, and heartbeat may have just renewed it. Under B1 that
+      // leftover in-flight global row is never swept. Fence-mismatched release
+      // is already a no-op, so a live winner's different fence is unharmed.
       if (leases) await releaseProcessingLeases(env, leases, Date.now());
       leases = null;
+      await ackOrDeferIfProcessingIncomplete(reader, args);
       return;
     }
     if (e instanceof RateLimitedError) {

@@ -396,7 +396,7 @@ describe("processing leases (Workers pool)", () => {
     });
   });
 
-  it("incomplete stale fence defers instead of success-ack or markFailed", async () => {
+  it("incomplete stale fence defers, releases leftover leases, and a retry can acquire", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -438,17 +438,12 @@ describe("processing leases (Workers pool)", () => {
     });
     expect(tenantHeld).toMatchObject({ ok: true, already_running: true });
     expect(globalHeld).toMatchObject({ ok: true, already_running: true });
+    // Drop only the tenant row so presentLease hits stale_fence without
+    // touching global — the leftover in-flight global is what must be released.
     await tenantLease(tenantId, {
       kind: "release_lease",
       attemptId: "at_stale",
       fence: tenantHeld.fence,
-      nowMs: Date.now(),
-    });
-    await globalLease({
-      kind: "release_lease",
-      tenantId,
-      attemptId: "at_stale",
-      fence: globalHeld.fence,
       nowMs: Date.now(),
     });
     releaseEmbed(embeddingResponse());
@@ -461,6 +456,23 @@ describe("processing leases (Workers pool)", () => {
       status: "pending",
       active_attempt: { id: "at_stale" },
     });
+
+    const retryTenant = await holdTenantLease(tenantId, "at_stale_retry");
+    expect(retryTenant).toMatchObject({ ok: true, already_running: false });
+    const leftoverGlobal = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_stale",
+      nowMs: Date.now(),
+    });
+    expect(leftoverGlobal).toMatchObject({ ok: true, already_running: false });
+    const retryGlobal = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_stale_retry",
+      nowMs: Date.now(),
+    });
+    expect(retryGlobal).toMatchObject({ ok: true, already_running: false });
   });
 
   it("paused expired lease does not block a later attempt", async () => {
