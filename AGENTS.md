@@ -236,7 +236,8 @@ Pointers only — the details live in the named files' comments.
   `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
   offset 0) before R2 and unions stored `reading_ids` with an R2 re-list.
   After the prefix is empty, wipe re-submits `deleteByIds` for those stored
-  ids so a late upsert of a known id cannot outlive the list row. A delayed
+  ids so a late upsert of a known id cannot outlive the list row. Objects-phase
+  pages union IDs from listed keys into `reading_ids` before delete. A delayed
   `msg.retry` advances the wipe lease by
   `delaySeconds` so cron does not enqueue a sibling. An unbound
   `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2.

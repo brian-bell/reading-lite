@@ -24,7 +24,10 @@
  * `deleteByIds` for those stored ids (async, no wait) so a `processReading`
  * that already passed its tenant check cannot leave a late upsert behind once
  * `index/list.json` is gone. Leftover recovery unions stored ids with an R2
- * re-list. Brand-new intake stays 195a-fenced — this is not a publisher drain.
+ * re-list. Each objects-phase list page unions IDs from listed keys into
+ * `reading_ids` before delete so a write that landed after the vectors
+ * collect still reaches the post-empty sweep. Brand-new intake stays
+ * 195a-fenced — this is not a publisher drain.
  * If `READINGS_INDEX` is unbound while reading ids remain, the job throws
  * (`index_unbound`) instead of skipping to R2 — wiping the prefix would strand
  * namespaced embeddings and delete the only ID source leftover recovery can
@@ -368,13 +371,20 @@ export async function processAccountWipeJob(
         await writeProgress(env.READINGS_BUCKET, tenantId, progress);
         break objects;
       }
-      await env.READINGS_BUCKET.delete(list.objects.map((obj) => obj.key));
+      // Bookkeeping: a write that landed after the vectors collect can appear
+      // on this page. Persist its id before deleting the key so the post-empty
+      // sweep still has something to deleteByIds. Not a publisher drain.
+      progress.reading_ids = mergeReadingIds(
+        progress.reading_ids,
+        readingIdsFromListedKeys(list.objects, layout),
+      );
       progress.objects_deleted += list.objects.length;
       pages += 1;
       cursor = list.truncated ? list.cursor : undefined;
       progress.r2_cursor = cursor;
       progress.updated_at_ms = deps.nowMs;
       await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+      await env.READINGS_BUCKET.delete(list.objects.map((obj) => obj.key));
       if (!cursor) {
         const again = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
         if (again.objects.length === 0) {
@@ -540,6 +550,18 @@ function mergeReadingIds(stored: string[] | undefined, collected: string[]): str
     if (id) ids.add(id);
   }
   return [...ids].sort();
+}
+
+function readingIdsFromListedKeys(
+  objects: Array<{ key: string }>,
+  layout: ReturnType<typeof r2KeyLayout>,
+): string[] {
+  const ids: string[] = [];
+  for (const obj of objects) {
+    const id = readingIdFromRelativeKey(layout.relativeKey(obj.key));
+    if (id) ids.push(id);
+  }
+  return ids;
 }
 
 async function submitStoredVectorDeletes(

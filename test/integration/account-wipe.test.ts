@@ -551,6 +551,35 @@ describe("account wipe (195b PR1)", () => {
     expect(progress.reading_ids).toEqual([ID_A]);
   });
 
+  it("objects phase unions reading ids from listed keys before delete", async () => {
+    await seedTenantObjects([ID_A, ID_B]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "objects",
+        vector_offset: 1,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 0,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+      }),
+    );
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    expect(result.kind).toBe("complete");
+    const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expected);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    const progress = JSON.parse(await progressObj!.text()) as { reading_ids?: string[] };
+    expect(progress.reading_ids).toEqual([ID_A, ID_B]);
+  });
+
   it("leftover recovery unions stored reading ids with an R2 re-list", async () => {
     await seedTenantObjects([ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
