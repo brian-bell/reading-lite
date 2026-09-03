@@ -36,3 +36,8 @@ export const AUTH_RATE_IP_MAX = 20;
 export const AUTH_RATE_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 export const AUTH_RATE_GLOBAL_MAX = 200;
 export const AUTH_RATE_GUARD_NAME = "auth-rate-guard";
+
+/** TenantUsageGuard: sliding window for every intake write request. */
+export const INGRESS_REQUEST_WINDOW_MS = 60 * 60 * 1000;
+/** Held reading-slot reservations expire if never committed or released. */
+export const READING_RESERVATION_TTL_MS = 60 * 60 * 1000;

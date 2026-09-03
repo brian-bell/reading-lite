@@ -337,3 +337,16 @@ export const GetReadingDiagnosticsResponseSchema = z.object({
   attempts: z.array(ProcessingAttemptSchema),
 });
 export type GetReadingDiagnosticsResponse = z.infer<typeof GetReadingDiagnosticsResponseSchema>;
+
+export const QuotaDeniedResponseSchema = z.object({
+  error: z.string().min(1),
+  code: z.enum(["rate_limited", "quota_exhausted"]),
+  limit: z.enum(["request_rate", "hourly", "monthly"]),
+  reset_at: z.string().datetime(),
+});
+export type QuotaDeniedResponse = z.infer<typeof QuotaDeniedResponseSchema>;
+
+export const UsageGuardUnavailableResponseSchema = z.object({
+  error: z.literal("usage guard unavailable"),
+});
+export type UsageGuardUnavailableResponse = z.infer<typeof UsageGuardUnavailableResponseSchema>;

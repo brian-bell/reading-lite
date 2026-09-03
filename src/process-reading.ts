@@ -43,6 +43,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
+import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
@@ -66,15 +67,24 @@ export async function processReading(
   const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
+  const tenantId = String(tenant.tenantId);
+  const opId = resolveAttemptId(args);
+  let readingSlotConsumed = false;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
     // attempt log — so a stale queued message for it is dropped whole, before
     // any write or upstream spend. Conflict/takeover cases below still log
     // their attempt for diagnostics.
-    if (await readingWasPurged(reader, args)) return;
+    if (await readingWasPurged(reader, args)) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
     validateProcessingCredentials({
       provider: env.SUMMARIZER_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
@@ -143,8 +153,13 @@ export async function processReading(
       args.keyPrefix,
       services,
       "summarize",
-      () =>
-        summarizeReading(
+      async () => {
+        // Reading quota stays held through extract/embed; commit immediately
+        // before summarization dispatch so a later failure still consumes the
+        // slot. An undispatched failure releases instead (catch below).
+        readingSlotConsumed = true;
+        await commitReadingSlot(env, tenantId, opId);
+        return summarizeReading(
           {
             url: args.url,
             extractedText: promptText,
@@ -164,7 +179,8 @@ export async function processReading(
               env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
             retry,
           },
-        ),
+        );
+      },
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
@@ -248,8 +264,13 @@ export async function processReading(
       // Don't mark the manifest failed — the queue handler will requeue this
       // message after the upstream's Retry-After window. The active_attempt
       // stays "running" until either a future attempt succeeds or
-      // PENDING_TTL_SECONDS flips it stale.
+      // PENDING_TTL_SECONDS flips it stale. Held reading-slot reservations
+      // stay counted until a later delivery commits or a definitive failure
+      // releases them.
       throw e;
+    }
+    if (!readingSlotConsumed) {
+      await releaseReadingSlot(env, tenantId, opId);
     }
     await markFailed(reader, args, services, attempt, e);
   }

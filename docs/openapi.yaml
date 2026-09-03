@@ -622,6 +622,8 @@ paths:
           $ref: "#/components/responses/IntakeConflict"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
+        "429":
+          $ref: "#/components/responses/QuotaDenied"
         "503":
           $ref: "#/components/responses/Unavailable"
       x-required-scope: readings:write
@@ -670,6 +672,8 @@ paths:
           $ref: "#/components/responses/IntakeConflict"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
+        "429":
+          $ref: "#/components/responses/QuotaDenied"
         "503":
           $ref: "#/components/responses/Unavailable"
       x-required-scope: readings:import
@@ -905,6 +909,8 @@ paths:
           $ref: "#/components/responses/IntakeConflict"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
+        "429":
+          $ref: "#/components/responses/QuotaDenied"
         "503":
           $ref: "#/components/responses/Unavailable"
       x-required-scope: readings:write
@@ -1083,6 +1089,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/UnavailableError"
+    QuotaDenied:
+      description: |
+        Tenant request-rate or paid-work reading quota exceeded, or the usage
+        guard is unavailable / tenant_limits is missing (fail closed). Always
+        429 — never overloaded onto 503. Includes `Retry-After`.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+          description: Seconds until the caller may retry
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/QuotaDeniedResponse"
+              - $ref: "#/components/schemas/UsageGuardUnavailableResponse"
 
   schemas:
     ErrorMessage:
@@ -1139,6 +1162,32 @@ components:
         id:
           type: string
           description: Present when an id was allocated before the failure
+
+    QuotaDeniedResponse:
+      type: object
+      additionalProperties: false
+      required: [error, code, limit, reset_at]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [rate_limited, quota_exhausted]
+        limit:
+          type: string
+          enum: [request_rate, hourly, monthly]
+        reset_at:
+          type: string
+          format: date-time
+
+    UsageGuardUnavailableResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: usage guard unavailable
 
     WhoamiResponse:
       type: object

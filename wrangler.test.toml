@@ -13,6 +13,10 @@ compatibility_flags = ["nodejs_compat"]
 tag = "v1"
 new_sqlite_classes = ["AuthRateGuard"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["TenantUsageGuard"]
+
 [vars]
 APP_ENV = "test"
 CORS_ALLOWED_ORIGINS = ""
@@ -54,3 +58,7 @@ migrations_dir = "migrations"
 [[durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
+
+[[durable_objects.bindings]]
+name = "TENANT_USAGE_GUARD"
+class_name = "TenantUsageGuard"

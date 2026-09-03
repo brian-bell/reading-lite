@@ -16,3 +16,12 @@ await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
   newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
   newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
 });
+// Integration suites submit far more than FOUNDER_PLACEHOLDER_LIMITS; keep
+// those production placeholders intact and only raise the test tenant.
+await env.CONTROL_PLANE.prepare(
+  `UPDATE tenant_limits
+   SET submissions_per_hour = 100000, monthly_readings = 100000
+   WHERE tenant_id = ?`,
+)
+  .bind("usr_550e8400-e29b-41d4-a716-446655440000")
+  .run();

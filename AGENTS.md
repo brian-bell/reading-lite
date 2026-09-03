@@ -52,7 +52,9 @@ comments of the modules themselves — read those before changing a module.
   `AuthenticatedPrincipal`, founder bootstrap (`scripts/lib/founder-bootstrap.ts`),
   and bearer authentication via `requirePrincipal` in `src/middleware.ts`.
   Runtime auth does not fall back to `READER_API_TOKEN`; that secret is imported
-  once as a legacy-format token.
+  once as a legacy-format token. `TenantUsageGuard` (SQLite DO,
+  `idFromName(tenantId)`) enforces tenant-keyed request-rate and
+  hourly/monthly reading-slot reservations from D1 `tenant_limits`.
 - `src/modules/reading-claim.ts` — by-url ownership via
   `index/by-url/{sha256(url)}` pointers.
 - `src/modules/staleness.ts` — the read-time stale-annotation rule.

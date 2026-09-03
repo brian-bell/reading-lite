@@ -11,6 +11,7 @@ import {
   readingApiFor,
 } from "../../scripts/lib/reading-api";
 import { testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant } from "../helpers/tenant-fixtures";
 
 // Contract test for the operator-side Reading API client: the pure
 // decodeIntakeResponse must round-trip the REAL router's responses (toHttp's
@@ -132,6 +133,32 @@ describe("decodeIntakeResponse against the live router", () => {
     expect(out.kind).toBe("unavailable");
     if (out.kind !== "unavailable") return;
     expect(out.message).toContain("READING_JOBS");
+  });
+
+  it("429 monthly quota decodes to quota rather than unavailable", async () => {
+    const { token } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 1,
+    });
+    const app = createApp({ services: services() });
+    const postAs = (url: string) =>
+      app.request(
+        "/api/readings",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ url, email: false }),
+        },
+        env,
+      );
+    expect((await postAs("https://contract.test/quota-a")).status).toBe(202);
+    const res = await postAs("https://contract.test/quota-b");
+    expect(res.status).toBe(429);
+    const out = await decoded(res);
+    expect(out.kind).toBe("quota");
+    if (out.kind !== "quota") return;
+    expect(out.code).toBe("quota_exhausted");
+    expect(out.limit).toBe("monthly");
   });
 });
 

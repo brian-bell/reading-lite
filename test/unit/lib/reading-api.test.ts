@@ -127,6 +127,23 @@ describe("decodeIntakeResponse", () => {
     ).toEqual({ kind: "unavailable", message: "queue send failed", id: "rd_3" });
   });
 
+  it("decodes a 429 quota denial into quota with reset_at", () => {
+    expect(
+      decodeIntakeResponse(429, {
+        error: "monthly reading quota exceeded",
+        code: "quota_exhausted",
+        limit: "monthly",
+        reset_at: "2026-10-01T00:00:00.000Z",
+      }),
+    ).toEqual({
+      kind: "quota",
+      code: "quota_exhausted",
+      limit: "monthly",
+      resetAt: "2026-10-01T00:00:00.000Z",
+      message: "monthly reading quota exceeded",
+    });
+  });
+
   it("decodes any other status into http_error carrying status and message", () => {
     expect(decodeIntakeResponse(500, { error: "internal" })).toEqual({
       kind: "http_error",

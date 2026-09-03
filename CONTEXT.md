@@ -55,12 +55,17 @@ submit, a markdown import, or a lookup. It lives in
 - **Reading intake** — the write-side front door for a reading: `submit` |
   `importMarkdown` | `reprocess`, each returning an **intake outcome**
   (`activated` | `existing` | `initializing` | `conflict` | `not_found` |
-  `unavailable`) that the router — a thin HTTP adapter — maps onto statuses.
+  `unavailable` | `rate_limited` | `quota_exhausted` | `guard_unavailable`)
+  that the router — a thin HTTP adapter — maps onto statuses.
   Owns the claim → pending-manifest → **attempt activation** ordering for all
   three verbs; lives in `src/intake/`. HTTP never crosses the seam: zod body
   parsing and the email defaults stay in the router, and intake takes
   already-typed inputs plus narrow deps (tenant-scoped store, queue-or-null,
-  services, pending TTL). `GET /lookup` is read-path and stays outside intake.
+  services, pending TTL, tenant usage guard). `GET /lookup` is read-path and
+  stays outside intake. Ready/pending/conflict/initializing returns do not
+  consume a reading-quota slot; only a successfully activated attempt does.
+  Request-rate still counts every write. Queue-send and pre-summarization
+  failures release an undispatched reservation.
 - **Attempt activation** — the eager write-and-enqueue counterpart to the
   **terminal write** and the lower half of **Reading intake**, owned by
   `activateAttempt` in `src/intake/activation.ts` (internal to intake — the
@@ -122,7 +127,7 @@ submit, a markdown import, or a lookup. It lives in
   `scripts/lib/reading-api.ts`. It is the inverse of
   the router's `toHttp`: responses decode back into the **intake outcome**
   vocabulary (`activated` | `existing` | `initializing` | `conflict` |
-  `not_found` | `unavailable`) plus the client-only `http_error` and
+  `not_found` | `unavailable` | `quota`) plus the client-only `http_error` and
   `transport_error`, so a 409
   initializing owner is never miscounted as a failure. The client owns transport
   retry — submit/import/lookup retry through the by-url claim's idempotency;
