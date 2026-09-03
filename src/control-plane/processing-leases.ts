@@ -4,7 +4,10 @@ import { globalUsageFor, type GlobalUsage } from "./global-usage-guard";
 import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "./tenant-usage-guard";
 
 // Tenant-first concurrency saga (ADR 0001). Acquire the tenant lease, then the
-// global lease for the same attempt. Global deny compensates the tenant.
+// global lease for the same attempt. Global deny, uncertain global, and global
+// alreadyRunning after a fresh tenant acquire all compensate the tenant.
+// Renew and pause are tenant-first and all-or-nothing: a global failure rolls
+// the tenant mutation back (release after renew, restore inFlight after pause).
 // Uncertain responses are held/denied — never fail open. Duplicate deliveries
 // of the same (tenantId, attemptId) reuse the existing fence.
 
@@ -60,7 +63,14 @@ export async function acquireProcessingLeases(
     await compensateTenant(deps.tenant, attemptId, tenantResult.fence, nowMs);
     return { ok: false, reason: globalResult.reason };
   }
-  if (globalResult.alreadyRunning) return { ok: true, alreadyRunning: true };
+  if (globalResult.alreadyRunning) {
+    // Fresh tenant acquire (alreadyRunning is false — we returned earlier
+    // otherwise) plus a live global lease for this attempt: drop the new
+    // tenant permit so an uncertain global persist cannot leak it, then
+    // still report already_running so dispatch keeps its ack path.
+    await compensateTenant(deps.tenant, attemptId, tenantResult.fence, nowMs);
+    return { ok: true, alreadyRunning: true };
+  }
   return {
     ok: true,
     alreadyRunning: false,
@@ -94,8 +104,17 @@ export async function renewProcessingLeases(
 ): Promise<ProcessingLeaseDecision> {
   const tenant = await deps.tenant.renewLease(hold.attemptId, hold.tenantFence, nowMs);
   if (!tenant.ok) return tenant;
-  const global = await deps.global.renewLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
-  if (!global.ok) return global;
+  let global: ProcessingLeaseDecision;
+  try {
+    global = await deps.global.renewLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+  } catch {
+    await compensateTenant(deps.tenant, hold.attemptId, hold.tenantFence, nowMs);
+    return { ok: false, reason: "unavailable" };
+  }
+  if (!global.ok) {
+    await compensateTenant(deps.tenant, hold.attemptId, hold.tenantFence, nowMs);
+    return global;
+  }
   return tenant;
 }
 
@@ -104,9 +123,34 @@ export async function pauseProcessingLeases(
   hold: ProcessingLeaseHold,
   nowMs: number,
   deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
+): Promise<ProcessingLeaseDecision> {
+  const tenant = await deps.tenant.pauseLease(hold.attemptId, hold.tenantFence, nowMs);
+  if (!tenant.ok) return tenant;
+  let global: ProcessingLeaseDecision;
+  try {
+    global = await deps.global.pauseLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+  } catch {
+    await restoreTenantInFlight(deps.tenant, hold.attemptId, hold.tenantFence, nowMs);
+    return { ok: false, reason: "unavailable" };
+  }
+  if (!global.ok) {
+    await restoreTenantInFlight(deps.tenant, hold.attemptId, hold.tenantFence, nowMs);
+    return global;
+  }
+  return tenant;
+}
+
+async function restoreTenantInFlight(
+  tenant: TenantUsage,
+  attemptId: string,
+  fence: string,
+  nowMs: number,
 ): Promise<void> {
-  await deps.tenant.pauseLease(hold.attemptId, hold.tenantFence, nowMs);
-  await deps.global.pauseLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+  try {
+    await tenant.renewLease(attemptId, fence, nowMs);
+  } catch {
+    // Uncertain restore: tenant stays paused until expiry or a later renew.
+  }
 }
 
 export async function releaseProcessingLeases(
