@@ -17,6 +17,8 @@ export interface LocalCivilTime {
   month: number;
   day: number;
   hour: number;
+  minute: number;
+  second: number;
   isoWeekday: number;
 }
 
@@ -45,6 +47,8 @@ export function localCivilTime(now: Date, timeZone: string): LocalCivilTime | nu
       month: "2-digit",
       day: "2-digit",
       hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
       hourCycle: "h23",
     }).formatToParts(now);
     const value = (type: Intl.DateTimeFormatPartTypes): number => {
@@ -55,11 +59,15 @@ export function localCivilTime(now: Date, timeZone: string): LocalCivilTime | nu
     const month = value("month");
     const day = value("day");
     let hour = value("hour");
+    const minute = value("minute");
+    const second = value("second");
     if (hour === 24) hour = 0;
-    if (![year, month, day, hour].every((n) => Number.isInteger(n))) return null;
-    if (hour < 0 || hour > 23) return null;
+    if (![year, month, day, hour, minute, second].every((n) => Number.isInteger(n))) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+      return null;
+    }
     const jsDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-    return { year, month, day, hour, isoWeekday: WEEKDAY_FROM_JS[jsDay]! };
+    return { year, month, day, hour, minute, second, isoWeekday: WEEKDAY_FROM_JS[jsDay]! };
   } catch {
     return null;
   }
@@ -131,9 +139,9 @@ export interface DigestWindow {
 
 /**
  * Local reading window ending at `now`. Daily is the 24 local hours ending on
- * this local hour; weekly is the last 7 local days. First enable therefore
- * cannot dump the corpus. Start is exclusive so a reading at the previous
- * send instant does not appear twice.
+ * this local civil time (hour, minute, and second); weekly is the last 7 local
+ * days. First enable therefore cannot dump the corpus. Start is exclusive so a
+ * reading at the previous send instant does not appear twice.
  */
 export function digestWindow(
   cadence: DigestEnabledCadence,
@@ -145,28 +153,42 @@ export function digestWindow(
   const days = cadence === "weekly" ? 7 : 1;
   const startDate = addUtcCalendarDays(local.year, local.month, local.day, -days);
   const startMs =
-    zonedLocalHourToUtcMs(timeZone, startDate.year, startDate.month, startDate.day, local.hour) ??
-    now.getTime() - days * 86_400_000;
+    zonedLocalTimeToUtcMs(
+      timeZone,
+      startDate.year,
+      startDate.month,
+      startDate.day,
+      local.hour,
+      local.minute,
+      local.second,
+    ) ?? now.getTime() - days * 86_400_000;
   return { startMs, endMs: now.getTime() };
 }
 
-export function zonedLocalHourToUtcMs(
+export function zonedLocalTimeToUtcMs(
   timeZone: string,
   year: number,
   month: number,
   day: number,
   hour: number,
+  minute: number,
+  second: number,
 ): number | null {
   if (!isIanaTimeZone(timeZone)) return null;
-  const targetKey = civilHourKey(year, month, day, hour);
-  let utc = Date.UTC(year, month - 1, day, hour, 0, 0, 0);
+  const targetKey = civilTimeKey(year, month, day, hour, minute, second);
+  let utc = Date.UTC(year, month - 1, day, hour, minute, second, 0);
   for (let i = 0; i < 8; i++) {
     const local = localCivilTime(new Date(utc), timeZone);
     if (!local) return null;
-    if (civilHourKey(local.year, local.month, local.day, local.hour) === targetKey) return utc;
+    if (
+      civilTimeKey(local.year, local.month, local.day, local.hour, local.minute, local.second) ===
+      targetKey
+    ) {
+      return utc;
+    }
     utc +=
-      Date.UTC(year, month - 1, day, hour) -
-      Date.UTC(local.year, local.month - 1, local.day, local.hour);
+      Date.UTC(year, month - 1, day, hour, minute, second) -
+      Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second);
   }
   return null;
 }
@@ -182,6 +204,13 @@ function addUtcCalendarDays(
   return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
 }
 
-function civilHourKey(year: number, month: number, day: number, hour: number): string {
-  return `${year}-${month}-${day}-${hour}`;
+function civilTimeKey(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+): string {
+  return `${year}-${month}-${day}-${hour}-${minute}-${second}`;
 }
