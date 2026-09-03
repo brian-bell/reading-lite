@@ -215,6 +215,9 @@ describe("DELETE /api/account", () => {
     expect(deleted.res.headers.get("set-cookie") ?? "").toContain("Max-Age=0");
     expect(securityMail).toHaveLength(1);
     expect(securityMail[0]?.kind).toBe("account_deletion_started");
+    expect(securityMail[0]?.text).toMatch(/access is revoked immediately/i);
+    expect(securityMail[0]?.text).toContain("https://github.com/brian-bell/reading-lite");
+    expect(`${securityMail[0]?.subject}\n${securityMail[0]?.text}`).not.toMatch(/sign-in link/i);
     expect(`${securityMail[0]?.subject}\n${securityMail[0]?.text}`).not.toMatch(
       /secret|token|cookie|credential|authorization|hmac/i,
     );

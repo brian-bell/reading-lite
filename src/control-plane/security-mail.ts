@@ -53,12 +53,12 @@ export function renderSecurityMail(kind: SecurityMailKind): { subject: string; h
     const text = [
       "Deletion of your reading-lite account has started.",
       "If you did this, no action is needed. Access is revoked immediately.",
-      "If you did not, request a new sign-in link immediately.",
+      "If you did not, open a GitHub issue on https://github.com/brian-bell/reading-lite.",
     ].join("\n");
     const html = [
       "<p>Deletion of your reading-lite account has started.</p>",
       "<p>If you did this, no action is needed. Access is revoked immediately.</p>",
-      "<p>If you did not, request a new sign-in link immediately.</p>",
+      "<p>If you did not, open a GitHub issue on https://github.com/brian-bell/reading-lite.</p>",
     ].join("\n");
     return { subject, html, text };
   }

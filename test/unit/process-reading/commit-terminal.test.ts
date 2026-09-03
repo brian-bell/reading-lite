@@ -421,4 +421,53 @@ describe("commitTerminalManifest", () => {
     expect(restored).toEqual({ committed: false, published: false });
     expect(append).not.toHaveBeenCalled();
   });
+
+  it("15: status flips to deleting between pre-publish check and publish → compensate remove", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    let checks = 0;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("16: status flips to deleting between restore check and restore write → compensate remove", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+  });
 });

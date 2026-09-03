@@ -30,6 +30,10 @@ export type BeginAccountDeletionResult =
 
 export const ACCOUNT_DELETE_REVOCATION_REASON = "account_delete";
 
+// Confirmed inactive: a row with status !== "active", or a confirmed missing
+// user (null row). Lookup failure (D1 throw/timeout) must not be treated as
+// inactive — callers that fence spend/visibility wrap that throw as a
+// RateLimitedError so the queue retries.
 export async function tenantIsActive(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
   const row = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId);
   return row?.status === "active";

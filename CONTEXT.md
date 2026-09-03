@@ -114,9 +114,13 @@ submit, a markdown import, or a lookup. It lives in
 - **Suppress** (`DELETE /api/account`, issue 195a) — recently authenticated
   session, CSRF, explicit `{ confirm: "delete" }`. Marks `users.status=deleting`
   first, then revokes sessions and API tokens. Queue admit, DLQ, digest, and
-  notification skip a non-active tenant. `commitTerminalManifest` rechecks
-  status immediately before visibility publish (the #179 republish race at
-  tenant scope). Wipe, residue, and email reuse are 195b. This is not
+  notification skip a non-active tenant. A confirmed inactive or missing user
+  skips spend and visibility; a D1 status-lookup failure throws
+  `RateLimitedError` so the queue retries instead of `markFailed`.
+  `commitTerminalManifest` rechecks status immediately before visibility
+  publish and again immediately after (compensate with `visibility.remove` if
+  the tenant flipped deleting in between). Wipe, residue, and email reuse are
+  195b. This is not
   **reading purge** (`DELETE /api/readings/:id`). Production
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 

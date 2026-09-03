@@ -146,4 +146,16 @@ describe("tenantIsActive", () => {
     await expect(tenantIsActive(db, USER)).resolves.toBe(false);
     await expect(tenantIsActive(db, "usr_11111111-1111-4111-8111-111111111111")).resolves.toBe(false);
   });
+
+  it("does not treat a D1 throw as inactive", async () => {
+    const db: ControlPlaneDb = {
+      first: async () => {
+        throw new Error("D1 hiccup");
+      },
+      all: async () => [],
+      batch: async () => [],
+      run: async () => ({ changes: 0 }),
+    };
+    await expect(tenantIsActive(db, USER)).rejects.toThrow("D1 hiccup");
+  });
 });

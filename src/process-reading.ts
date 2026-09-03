@@ -82,8 +82,10 @@ export async function processReading(
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
-    // not spend or write. Admit already acks new queue/DLQ messages; this
-    // covers an in-flight consumer that was admitted while still active.
+    // not spend or write. A confirmed missing user is the same skip. A D1
+    // lookup failure is not inactive — it throws RateLimitedError so the
+    // queue retries. Admit already acks new queue/DLQ messages; this covers
+    // an in-flight consumer that was admitted while still active.
     if (!(await tenantAllowsVisibilityPublish(env, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
@@ -421,8 +423,10 @@ export async function markDeadLettered(
   }
 
   // Account-deletion suppress (195a): do not write a failed list row after
-  // the tenant is already deleting. Admit already drops DLQ envelopes; this
-  // is the in-function fence if markDeadLettered is called directly.
+  // the tenant is already deleting. A D1 lookup failure throws RateLimitedError
+  // (retry) rather than skipping as inactive. Admit already drops DLQ
+  // envelopes; this is the in-function fence if markDeadLettered is called
+  // directly.
   if (!(await tenantAllowsVisibilityPublish(env, tenantId))) {
     await releaseReadingSlot(env, tenantId, opId);
     return;
@@ -617,10 +621,11 @@ export interface CommitTerminalOpts {
   // The success path passes a runStage-bound closure so each sub-write still logs
   // a stage event; failure paths omit it and write plainly.
   instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
-  // Rechecked immediately before visibility publish / restore (issue 195a,
-  // the #179 republish race at tenant scope). When this returns false the
-  // terminal manifest may still be written, but list+vector must not become
-  // visible again. Omit to keep the historical default (allow publish).
+  // Rechecked immediately before visibility publish / restore, and again
+  // immediately after those writes (issue 195a, the #179 republish race at
+  // tenant scope). A false after publish/restore compensates with remove.
+  // A throw (lookup failure) must not be treated as inactive. Omit to keep
+  // the historical default (allow publish).
   tenantAllowsVisibility?: () => Promise<boolean>;
 }
 
@@ -678,6 +683,11 @@ export async function commitTerminalManifest(
       await reconcileVisibility(opts.defensive, () =>
         visibility.restoreIfOwner(args),
       );
+      // Deletion can land between the pre-restore check and the list write.
+      // Compensate in this same consumer; do not wait on DELETE /api/account.
+      if (!(await tenantStillAllowsVisibility(opts))) {
+        await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+      }
     }
     return { committed: false, published: false };
   }
@@ -691,6 +701,12 @@ export async function commitTerminalManifest(
       await reconcileVisibility(opts.defensive, () =>
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
       );
+      // Check-then-publish is still a race; recheck after the writes and
+      // compensate in this same consumer if the tenant is now deleting.
+      if (!(await tenantStillAllowsVisibility(opts))) {
+        await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+        return { committed: true, published: false };
+      }
       return { committed: true, published: true };
     }
     await reconcileVisibility(opts.defensive, () => visibility.remove(args));
@@ -727,10 +743,19 @@ async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<bo
 }
 
 // Fail-open when the worker has no D1 binding (unit tests that stub Env).
-// Production always has CONTROL_PLANE; deleting is then fail-closed.
+// Production always has CONTROL_PLANE; a confirmed deleting/missing user is
+// then fail-closed. A lookup failure is not inactive: wrap it as
+// RateLimitedError so dispatchQueueMessage retries instead of markFailed+ack.
+const TENANT_STATUS_LOOKUP_URL = "d1://control-plane/users.status";
+
 async function tenantAllowsVisibilityPublish(env: Env, tenantId: string): Promise<boolean> {
   if (!env.CONTROL_PLANE) return true;
-  return tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
+  try {
+    return await tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
+  } catch (error) {
+    if (error instanceof RateLimitedError) throw error;
+    throw new RateLimitedError(503, null, TENANT_STATUS_LOOKUP_URL);
+  }
 }
 
 async function terminalWriteState(
