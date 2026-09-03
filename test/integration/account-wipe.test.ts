@@ -333,6 +333,24 @@ describe("account wipe (195b PR1)", () => {
     });
   });
 
+  it("cron fan-out skips entirely when TENANT_DATA_PLANE is off", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      await fanOutDueAccountWipes(
+        { ...(await wipeEnv()), TENANT_DATA_PLANE: undefined },
+        { nowMs: NOW_MS },
+      ),
+    ).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      JSON.stringify({ event: "account_wipe_fanout_skipped", reason: "no_tenant_prefix" }),
+    );
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).toBeNull();
+    warn.mockRestore();
+  });
+
   it("re-lists the prefix before done so a stale cursor cannot hide leftover objects", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const keys = [`${PREFIX}keep-a`, `${PREFIX}keep-z`];

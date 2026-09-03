@@ -154,6 +154,13 @@ export async function fanOutDueAccountWipes(
     console.warn(JSON.stringify({ event: "account_wipe_fanout_skipped", reason: "queue_unbound" }));
     return { enqueued: 0 };
   }
+  // Same gate as processAccountWipeJob: with TENANT_DATA_PLANE off there is no
+  // tenant prefix to wipe. Do not write progress or enqueue — the job would
+  // skip at no_tenant_prefix before the lease write, and cron would retry forever.
+  if (!tenantDataPlaneEnabled(env)) {
+    console.warn(JSON.stringify({ event: "account_wipe_fanout_skipped", reason: "no_tenant_prefix" }));
+    return { enqueued: 0 };
+  }
   const db = fromD1(env.CONTROL_PLANE);
   const rows = await listDeletingUsers(db);
   let enqueued = 0;
