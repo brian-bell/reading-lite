@@ -7,6 +7,22 @@ Operator workflows run through the unified plan-first CLI: `npm run ops --
 <group> <command> [options]`. Every command with durable side effects prints a
 plan by default and acts only with `--execute`.
 
+### Operator Node
+
+`npm run ops` is supported on **Node 20.19.x** (`/usr/bin/node` on Debian).
+That is the supported operator path. Do not upgrade the operator laptop to
+Node 22 — it will not launch under the security boundary Snipe runs in.
+
+Wrangler 4.87+ hard-fails in `bin/wrangler.js` on Node < 22. Ops does not
+spawn that wrapper: it execs `node_modules/wrangler/wrangler-dist/cli.js`
+with the current Node (see `scripts/lib/wrangler-cli.ts`). Corpus, deploy,
+staging, and founder commands therefore run on 20.19.x. Wrangler may print
+a Node 22 warning on the banner; that is wrangler's advertised floor, not a
+reading-lite failure. CI remains Node 22. The production Worker stays on
+workerd.
+
+`package.json` `engines.node` is `>=20.19.0` so npm does not reject Node 20.
+
 Every `corpus` command additionally requires `--tenant <selector>` before it
 plans anything. There is no default — a missing or malformed selector is a
 usage error (exit 2) before any R2 or Vectorize traffic, so an operator can

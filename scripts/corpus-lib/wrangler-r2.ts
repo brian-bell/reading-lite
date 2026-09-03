@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnCommand } from "../lib/wrangler-cli";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -380,11 +380,11 @@ export async function keysForReading(
 // wrote em dashes in three production titles as "\uFFFD\uFFFD" (2026-08-30).
 export const defaultRunner: Runner = (cmd, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { shell: false });
+    const child = spawnCommand(cmd, args);
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout.on("data", (d: Buffer) => stdout.push(d));
-    child.stderr.on("data", (d: Buffer) => stderr.push(d));
+    child.stdout?.on("data", (d: Buffer) => stdout.push(d));
+    child.stderr?.on("data", (d: Buffer) => stderr.push(d));
     child.on("error", reject);
     child.on("close", (code) =>
       resolve({

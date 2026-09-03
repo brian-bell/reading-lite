@@ -15,9 +15,11 @@ describe("dev-setup", () => {
     });
 
     expect(code).toBe(0);
-    expect(calls[0]).toEqual([
-      "npx",
-      "wrangler",
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0]).toBe(process.execPath);
+    expect(calls[0]!.slice(1, 3)).toEqual(["--no-warnings", "--experimental-vm-modules"]);
+    expect(calls[0]![3]).toMatch(/wrangler-dist[/\\]cli\.js$/);
+    expect(calls[0]!.slice(4)).toEqual([
       "d1",
       "migrations",
       "apply",

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnCommand } from "../lib/wrangler-cli";
 import { LIST_INDEX_KEY } from "../../src/modules/stores/layout";
 
 export interface RunResult {
@@ -43,11 +43,11 @@ export async function fetchListIndex(deps: FetchIndexDeps): Promise<string> {
 
 const defaultRunner: Runner = (cmd, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { shell: false });
+    const child = spawnCommand(cmd, args);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout?.on("data", (d) => (stdout += d.toString()));
+    child.stderr?.on("data", (d) => (stderr += d.toString()));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
   });

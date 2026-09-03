@@ -2,7 +2,7 @@
 // Shared by the similarity backfill, neighbour refresh, and tag normalization,
 // which each rewrite exactly one manifest field per reading.
 
-import { spawn } from "node:child_process";
+import { spawnCommand } from "../lib/wrangler-cli";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,11 +16,11 @@ const layout = r2KeyLayout();
 
 const defaultRunner: Runner = (cmd, args) =>
   new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { shell: false });
+    const child = spawnCommand(cmd, args);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout?.on("data", (d) => (stdout += d.toString()));
+    child.stderr?.on("data", (d) => (stderr += d.toString()));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
   });
