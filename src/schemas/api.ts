@@ -129,6 +129,18 @@ export const AuthSessionRevokeResponseSchema = z.object({
 });
 export type AuthSessionRevokeResponse = z.infer<typeof AuthSessionRevokeResponseSchema>;
 
+// DELETE /api/account: session-only, CSRF, recent-auth. Explicit confirm is
+// the string literal "delete" so a stray `{ confirm: true }` cannot fire.
+// This starts suppression (status=deleting + credential revoke). It is not
+// DELETE /api/readings/:id (one-reading purge) and does not wipe R2 (195b).
+export const DeleteAccountBodySchema = z.object({
+  confirm: z.literal("delete"),
+});
+export type DeleteAccountBody = z.infer<typeof DeleteAccountBodySchema>;
+
+export const DeleteAccountResponseSchema = AuthSessionRevokeResponseSchema;
+export type DeleteAccountResponse = z.infer<typeof DeleteAccountResponseSchema>;
+
 const ApiScopeNameSchema = z.enum(["readings:read", "readings:write", "readings:import", "readings:delete"]);
 
 export const PostAuthTokensBodySchema = z.object({

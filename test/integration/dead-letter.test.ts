@@ -106,6 +106,68 @@ describe("markDeadLettered", () => {
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
+  it("writes nothing when the tenant is already deleting", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
+      .bind(FOUNDER_TENANT_ID)
+      .run();
+    try {
+      await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+      expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+      expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+    } finally {
+      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
+        .bind(FOUNDER_TENANT_ID)
+        .run();
+    }
+  });
+
+  it("fail-opens and writes the failed manifest when the tenant-status lookup throws", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+
+    const workerEnv = env as unknown as Env;
+    const wrapped: Env = {
+      ...workerEnv,
+      CONTROL_PLANE: {
+        prepare(sql: string) {
+          const stmt = workerEnv.CONTROL_PLANE.prepare(sql);
+          if (!/SELECT\s+status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\?/i.test(sql)) return stmt;
+          return {
+            bind(...params: unknown[]) {
+              const bound = stmt.bind(...params);
+              return {
+                first: async () => {
+                  throw new Error("D1 hiccup");
+                },
+                run: () => bound.run(),
+                all: () => bound.all(),
+              };
+            },
+          };
+        },
+      } as unknown as D1Database,
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await markDeadLettered(args(), wrapped, services(), founderTenant());
+    } finally {
+      consoleErr.mockRestore();
+    }
+
+    const after = await reader.readManifest(KEY_PREFIX);
+    expect(after?.status).toBe("failed");
+    expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
+    expect(after?.error?.retryable).toBe(true);
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("failed");
+  });
+
   it("still marks when the manifest read fails transiently — an error is not confirmed absence", async () => {
     const reader = testReadingStore(env);
     const manifest = pendingManifest();

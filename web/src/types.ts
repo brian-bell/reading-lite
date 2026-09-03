@@ -271,6 +271,16 @@ export interface WhoamiResponse {
   csrf_token?: string;
 }
 
+// Mirrors DeleteAccountBodySchema / DeleteAccountResponseSchema.
+// DELETE /api/account (session + CSRF + recent-auth). Not DELETE /api/readings/:id.
+export interface DeleteAccountBody {
+  confirm: "delete";
+}
+
+export interface DeleteAccountResponse {
+  ok: true;
+}
+
 // Mirrors AuthLoginOptionsResponseSchema. `turnstile_site_key` is the widget
 // site key when signup is open and configured; otherwise null. The SPA must
 // not infer this from Vite env — only from GET /api/auth/login-options.

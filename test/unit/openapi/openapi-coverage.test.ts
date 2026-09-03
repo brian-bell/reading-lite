@@ -14,6 +14,7 @@ import yaml from "yaml";
 const ROUTER_REST_PATHS = [
   "/health",
   "/api/whoami",
+  "/api/account",
   "/api/auth/login-options",
   "/api/auth/challenge",
   "/api/auth/redeem",
@@ -39,6 +40,7 @@ const ROUTER_REST_PATHS = [
 const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = [
   { path: "/health", method: "get" },
   { path: "/api/whoami", method: "get" },
+  { path: "/api/account", method: "delete" },
   { path: "/api/auth/login-options", method: "get" },
   { path: "/api/auth/challenge", method: "post" },
   { path: "/api/auth/redeem", method: "post" },
@@ -73,6 +75,7 @@ const COOKIE_CSRF_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = 
   { path: "/api/auth/tokens/{id}", method: "delete" },
   { path: "/api/auth/email-change", method: "post" },
   { path: "/api/auth/settings", method: "post" },
+  { path: "/api/account", method: "delete" },
   { path: "/api/readings", method: "post" },
   { path: "/api/readings/import-markdown", method: "post" },
   { path: "/api/readings/similar", method: "post" },
@@ -97,6 +100,8 @@ const REQUIRED_SCHEMAS = [
   "ListTokensResponse",
   "AuthTokenRevokeResponse",
   "AuthEmailChangeBody",
+  "DeleteAccountBody",
+  "DeleteAccountResponse",
   "UserSettingsResponse",
   "PostAuthSettingsBody",
   "PostReadingsBody",

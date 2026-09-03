@@ -172,6 +172,12 @@ describe("resolveImmediateNotification", () => {
       reason: "inactive_user",
     });
 
+    sqlite.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").run(USER_ID);
+    await expect(resolveImmediateNotification(db, sendEnv, USER_ID)).resolves.toEqual({
+      kind: "skip",
+      reason: "inactive_user",
+    });
+
     sqlite
       .prepare("UPDATE users SET status = 'active', email_verified_at_ms = NULL WHERE id = ?")
       .run(USER_ID);
@@ -238,6 +244,12 @@ describe("resolveDigestRecipient", () => {
     });
 
     sqlite.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(USER_ID);
+    await expect(resolveDigestRecipient(db, sendEnv, USER_ID)).resolves.toEqual({
+      kind: "skip",
+      reason: "inactive_user",
+    });
+
+    sqlite.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").run(USER_ID);
     await expect(resolveDigestRecipient(db, sendEnv, USER_ID)).resolves.toEqual({
       kind: "skip",
       reason: "inactive_user",
