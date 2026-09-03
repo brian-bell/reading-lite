@@ -1,7 +1,7 @@
 // What a tier-1 refresh pass has to measure, and the run marker that decides it.
 //
-// `corpus refresh-neighbours` re-measures every ready reading on every run.
-// Vectorize is deterministic for an unchanged index, so a nightly pass over an
+// `corpus refresh-neighbours --full` re-measures every ready reading.
+// Vectorize is deterministic for an unchanged index, so a nightly sweep over an
 // unchanged corpus spends its whole wall clock re-deriving snapshots it already
 // holds: run A's immediate rerun measured 553 readings in 16 minutes and wrote
 // zero of them.
@@ -44,9 +44,21 @@
 //     neighbourhood — index/list.json rows carry no connections, tensions or
 //     judged-candidate ids (manifestToIndexItem), so citations are only
 //     reachable by reading every manifest, which is the O(N) cost the scope
-//     exists to avoid. What goes stale meanwhile is not just a deferred
-//     re-judgement but that stranger's stored `similarity` snapshot and list
-//     row, which the API and the SPA serve;
+//     exists to avoid. That stranger's re-judgement is deferred to the sweep;
+//   - and, more broadly than the moved-vector case, the stored `similarity`
+//     snapshot and list row of ANY reading the scope leaves out. The bound
+//     above is a claim about floored neighbourhoods, and therefore about
+//     FLAGS. The snapshot is not: it summarises the RAW topK, sub-floor scores
+//     included, so a vector merely ADDED anywhere enters some stranger's topK
+//     and moves its `max`/`mean` at any score, well below the bound. Measured
+//     on staging 2026-09-02 (docs/operations.md, "Scope"): an incremental pass
+//     over eight new readings produced flags byte-identical to the sweep that
+//     followed it, while that sweep still rewrote two snapshots the incremental
+//     never measured — both sub-floor movements (0.221→0.239, 0.172→0.268),
+//     neither able to change a flag. So between sweeps the `similarity`
+//     numbers the API and the SPA serve are approximate rather than current.
+//     It is deterministic and it clears on the next `--full`: an immediate
+//     second sweep reported zero drift;
 // A purge and a Vectorize-only write used to be on that list too, and are not
 // any more:
 //
@@ -72,7 +84,8 @@
 // measurement target like any other, so its `similarity` snapshot and its list
 // row are brought current in the same pass, not just flagged for tier 2.
 //
-// `--full` stays the default until the staging proof lands.
+// This scope is the default as of the staging proof recorded in
+// docs/operations.md; `--full` is the explicit weekly sweep.
 //
 // Pure by construction: the reverse-neighbour queries are performed by the
 // command and handed in as data, so every rule here is unit-testable without a

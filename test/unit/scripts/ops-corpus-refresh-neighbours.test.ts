@@ -765,9 +765,20 @@ describe("ops corpus refresh-neighbours", () => {
       return makeDeps({ state: MARKER });
     }
 
-    it("measures everything by default, whatever the marker says", async () => {
+    it("scopes against the marker by default", async () => {
       const { deps, calls, lines } = quietCorpus();
       const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+      expect(code).toBe(0);
+      expect(calls.stateReads).toBe(1);
+      expect(calls.queries).toEqual([]);
+      const text = lines.join("\n");
+      expect(text).toContain("Scope: incremental (0 reading(s))");
+      expect(text).toContain("To measure: 0");
+    });
+
+    it("measures everything under an explicit --full, whatever the marker says", async () => {
+      const { deps, calls, lines } = quietCorpus();
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--full"], deps);
       expect(code).toBe(0);
       // Read, but not scoped against: a full pass overwrites the marker, so it
       // needs the stored one to build the next from.
@@ -945,7 +956,7 @@ describe("ops corpus refresh-neighbours", () => {
     // that it was narrowed.
     it("records --only and a --limit that truncated in the report scope", async () => {
       const { deps, calls } = makeDeps({ state: MARKER, items: [READY, NEIGHBOUR] });
-      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "1"], deps);
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--full", "--limit", "1"], deps);
       expect(JSON.parse(calls.reports[0]!.body).scope).toEqual({
         kind: "full",
         reason: "--full",
@@ -984,7 +995,7 @@ describe("ops corpus refresh-neighbours", () => {
     it("records a full sweep as the last full run", async () => {
       const { deps, calls } = makeDeps({ state: MARKER });
       await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(calls.stateWrites[0]).toMatchObject({
@@ -999,7 +1010,7 @@ describe("ops corpus refresh-neighbours", () => {
       for (const flags of [["rd_r"], ["--limit", "1"]]) {
         const { deps, calls, lines } = makeDeps({ state: MARKER });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer", ...flags],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer", ...flags],
           deps,
         );
         expect(code).toBe(0);
@@ -1014,7 +1025,7 @@ describe("ops corpus refresh-neighbours", () => {
     it("advances the marker when --limit never cut the plan short", async () => {
       const { deps, calls } = makeDeps({ state: MARKER });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "500"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer", "--limit", "500"],
         deps,
       );
       expect(code).toBe(0);
@@ -1032,7 +1043,7 @@ describe("ops corpus refresh-neighbours", () => {
         matchesFor: (id) => (id === "rd_r" ? null : undefined),
       });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       // Still flagged: the reading is unmeasured and the operator must see it.
@@ -1064,7 +1075,7 @@ describe("ops corpus refresh-neighbours", () => {
             : undefined,
       });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(3);
@@ -1084,7 +1095,7 @@ describe("ops corpus refresh-neighbours", () => {
         matches: null,
       });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(1);
@@ -1131,7 +1142,7 @@ describe("ops corpus refresh-neighbours", () => {
           matches: null,
         });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(1);
@@ -1218,7 +1229,7 @@ describe("ops corpus refresh-neighbours", () => {
         queryThrow: (id) => (id === "rd_r" ? new Error("boom") : undefined),
       });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(1);
@@ -1357,7 +1368,7 @@ describe("ops corpus refresh-neighbours", () => {
         matches: [{ id: "rd_r", score: 1 }],
       });
       await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         quiet.deps,
       );
       expect(quiet.calls.indexWrites).toBe(0);
@@ -1369,7 +1380,7 @@ describe("ops corpus refresh-neighbours", () => {
         items: [{ ...READY, similarity: undefined }, NEIGHBOUR],
       });
       await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         flushed.deps,
       );
       expect(flushed.calls.indexWrites).toBe(1);
@@ -1488,10 +1499,13 @@ describe("ops corpus refresh-neighbours", () => {
     // One place that pins the whole contract, so a later change to any single
     // failure mode has to say which side of the 1/3 line it lands on.
     describe("exit-code contract", () => {
+      // Swept explicitly: the codes are scope-independent, but a quiet corpus
+      // under the default scope has no target to fail on, which would make
+      // every case here pass for the wrong reason.
       it("exits 0 when every target measured and nothing is outstanding", async () => {
         const { deps } = makeDeps({ state: MARKER });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(0);
@@ -1503,7 +1517,7 @@ describe("ops corpus refresh-neighbours", () => {
           queryThrow: (id) => (id === "rd_r" ? new Error("503") : undefined),
         });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(1);
@@ -1519,7 +1533,7 @@ describe("ops corpus refresh-neighbours", () => {
           throw new Error("put index/list.json failed: 500");
         };
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(1);
@@ -1529,7 +1543,7 @@ describe("ops corpus refresh-neighbours", () => {
       it("exits 1 when nothing in a non-empty scope could be measured", async () => {
         const { deps, calls } = makeDeps({ state: MARKER, matches: null });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(1);
@@ -1542,7 +1556,7 @@ describe("ops corpus refresh-neighbours", () => {
           matchesFor: (id) => (id === "rd_r" ? null : undefined),
         });
         const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--execute", "--sole-writer"],
+          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
           deps,
         );
         expect(code).toBe(3);
@@ -1566,9 +1580,12 @@ describe("ops corpus refresh-neighbours", () => {
       ).rejects.toThrow(/--since-last-run cannot be combined with --full/);
     });
 
-    it("documents both scope flags in help", () => {
+    it("documents both scope flags in help, with --since-last-run as the default", () => {
       expect(corpusRefreshNeighboursCommand.helpText).toContain("--since-last-run");
       expect(corpusRefreshNeighboursCommand.helpText).toContain("--full ");
+      expect(corpusRefreshNeighboursCommand.helpText).toMatch(
+        /--since-last-run {4}Measure only the readings in scope[^\n]*\n[^\n]*The default\./,
+      );
     });
   });
 });

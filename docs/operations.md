@@ -297,7 +297,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--since-last-run` measures only what changed; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
@@ -439,9 +439,11 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT"
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
 ```
 
-**Scope.** By default (`--full`) the pass measures every ready reading, which
-is O(N) whatever changed — the immediate rerun in run A measured 553 readings
-in 16 minutes and wrote none of them. `--since-last-run` measures only the
+**Scope.** By default the pass measures only what moved (`--since-last-run`,
+which is now the default and stays accepted as a way of saying so out loud).
+`--full` is the explicit sweep: every ready reading, O(N) whatever changed —
+the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
+of them. The default measures only the
 readings whose neighbourhood could have moved since the run marker stored at
 `index/refresh-state.json` (per tenant): those created or reprocessed since it,
 and the reverse neighbourhood of each changed vector (one topK-100
@@ -472,18 +474,31 @@ cron over to it.
 An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched — the backfill's 394
 `connection_below_floor` rows, say — stays invisible until that reading enters
-scope. **Run `--full` weekly**; `--full` remains the default until a staging
-proof of the incremental path is recorded here.
+scope. **The weekly `--full` sweep is what makes the default safe, and it is
+scheduled by the operator, outside this repository** — there is no scheduler in
+git (see "Refresh exit codes" for the wrapper an operator's cron wants). If
+nothing sweeps, those persistent flags never resurface and the served
+`similarity` numbers drift indefinitely.
 
 A reading the scope does bring in is measured like any other target, so its
 `similarity` snapshot and its list row are brought current in the same pass —
 nothing about being in scope defers a measurement to the sweep.
 
-One thing a nightly pass does not bring in, and it waits for the weekly sweep: a
-reprocess that moves a vector far enough to leave a stranger's floored
-neighbourhood. The reverse query runs against the vector's new position, and
-where that stranger had never judged it, its stored `similarity` snapshot and
-list row — which the API and the SPA serve — go stale until the sweep.
+**What an incremental pass keeps exact, and what it only keeps approximate.**
+Flags are exact: the bound is derived so that a reading further away than it
+cannot gain or lose a *floored* neighbour because one vector changed. The
+stored `similarity` snapshot is not, and this is broader than the moved-vector
+case above. That snapshot — and the `index/list.json` row the API and the SPA
+serve — summarises the **raw** topK, sub-floor scores included, so a vector
+merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
+at any score, far below the bound. Between sweeps those numbers are therefore
+approximate on every reading the scope left out. The drift is deterministic and
+the next `--full` clears it.
+
+The moved-vector case remains the one thing that defers a *re-judgement* rather
+than a number: a reprocess that moves a vector far enough to leave a stranger's
+floored neighbourhood is invisible to the reverse query, which runs against the
+vector's new position.
 
 A purge and a Vectorize-only write used to be on that list and are not any more.
 The marker records the list ids it saw, not a row count, so a day that purges
@@ -498,6 +513,51 @@ anything. A refresh pass that finds a stamp it did not start with leaves the
 marker alone rather than clearing a sweep it did not perform, which is what the
 second stamp is for: a pass that swept while vectors were still arriving must
 not report the corpus as covered.
+
+**Staging proof, 2026-09-02** — the measurement the default flip rests on
+(`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
+global`; eight `--execute --sole-writer` passes, all exit 0). The protocol was
+full → ingest 8 URLs → incremental → full:
+
+| | measured | wall | flagged |
+|---|---|---|---|
+| `--full`, quiet corpus (29 ready) | 29 | 10.75 s | 0 |
+| `--since-last-run`, nothing changed | 0 | **0.98–1.00 s** | 0 |
+| `--since-last-run`, 8 readings ingested | 4 | 6.72 s | 2 |
+| `--full` straight after it | 33 | 14.09 s | 2 |
+| `--full` again, immediately | 33 | 11.80 s | 2 |
+
+- **Flags were byte-identical** between the incremental pass and the sweep
+  taken 19 seconds later: same two ids, same `connections`,
+  `current_neighbours`, `novelty_verdict`, `reasons`, `judged_at`. The narrowed
+  scope missed no flag.
+- **Snapshot drift elsewhere was not zero, by design.** The sweep after the
+  incremental rewrote two snapshots the incremental never measured — both X
+  readings whose nearest score moved 0.221→0.239 and 0.172→0.268 as the eight
+  new vectors entered their raw topK. Both sit far below the bound (0.45) and
+  neither can change a flag. The immediately following sweep reported
+  `Snapshot drift: 0`, so it is deferred, not lost. That is the
+  exact-versus-approximate paragraph above, measured.
+- **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s),
+  because an unchanged `index/list.json` ETag short-circuits the pass before it
+  opens Vectorize or reads a manifest. Modelled onto production (N=553 ready,
+  unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
+  4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
+  ~10 changed readings ~15 s; at 10x corpus that is ~30 min against the same
+  ~15 s.
+- **Tier 1 spends no LLM or embedding tokens at all** — 0 across all eight
+  passes. The scope buys wall clock and Cloudflare API calls, not provider
+  spend. What it does change is how many readings tiers 2/3 are handed.
+- **Escalation: 2 of 5 incremental passes (40%)**, both from purges deliberately
+  induced by the measurement; excluding those, 0 of 3. Both escalations named
+  their cause and cost ~1 s more than a plain sweep would have. The saturation
+  hatch never fired.
+
+Two numbers staging could not supply, so the flip does not claim them: the
+production stranger fan-out per changed reading (staging's reverse queries
+returned zero strangers, because that corpus is sparse and clustered, so
+saturation there says nothing about production) and the natural production
+purge rate. Both change the size of the win, not its sign.
 
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
@@ -575,11 +635,14 @@ measured one — and `last_full_run_at` moves only on a full sweep. A failed
 marker write does not fail the run: the cost is the next pass sweeping.
 
 ```sh
-# Nightly.
+# Nightly. --since-last-run is the default; spelled out so the schedule says
+# which scope it means.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --since-last-run --execute --sole-writer
-# Weekly.
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
+# Weekly. The sweep is no longer what a bare invocation does — it must be asked
+# for.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --full --execute --sole-writer
 ```
 
 ### Refresh exit codes
@@ -610,9 +673,10 @@ is an unmeasurable reading — no vector, or a manifest failing `ManifestSchema`
 — used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
-There is no cron wrapper script in this repository — the nightly and weekly
-invocations above are meant to be scheduled directly — so a scheduler wanting
-this distinction has to make it itself:
+There is no cron wrapper script and no scheduler in this repository — the
+nightly and weekly invocations above are scheduled by the operator, directly —
+so a scheduler wanting this distinction has to make it itself (the same `case`
+serves the weekly `--full` sweep):
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
