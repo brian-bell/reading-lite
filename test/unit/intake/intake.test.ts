@@ -526,6 +526,29 @@ describe("ReadingIntake usage quotas", () => {
     expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(true);
   });
 
+  it("releases a reserved slot when the activation rollback write throws", async () => {
+    const usage = recordingUsage();
+    const queue = {
+      send: async () => {
+        throw new Error("queue send failed");
+      },
+    } as unknown as Queue<ProcessReadingEnvelopeV1>;
+    const { intake, reader } = makeIntake({ usage, queue });
+    const writeManifest = reader.writeManifest.bind(reader);
+    let writes = 0;
+    vi.spyOn(reader, "writeManifest").mockImplementation(async (keyPrefix, manifest) => {
+      writes += 1;
+      if (writes > 1) throw new Error("rollback write failed");
+      await writeManifest(keyPrefix, manifest);
+    });
+
+    await expect(
+      intake.submit("https://example.com/quota-rollback-throw", { email: false }),
+    ).rejects.toThrow("rollback write failed");
+    expect(usage.ops.some((op) => op.startsWith("reserve:"))).toBe(true);
+    expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(true);
+  });
+
   it("returns rate_limited without claiming when admitRequest denies", async () => {
     const usage: TenantUsage = {
       ...allowAllUsage(),

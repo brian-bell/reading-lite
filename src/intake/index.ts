@@ -189,9 +189,15 @@ export class ReadingIntake {
     opId: string,
     run: () => Promise<ActivationOutcome>,
   ): Promise<IntakeOutcome> {
-    const out = await run();
-    if (out.kind !== "activated") await this.releaseSlot(opId);
-    return out;
+    let out: ActivationOutcome | undefined;
+    try {
+      out = await run();
+      return out;
+    } finally {
+      // Release unless enqueue succeeded. Covers non-activated outcomes and a
+      // thrown rollback write, which never returns from activateAttempt.
+      if (out?.kind !== "activated") await this.releaseSlot(opId);
+    }
   }
 
   // A submit that lands on a settled owner: ready/pending owners return the
