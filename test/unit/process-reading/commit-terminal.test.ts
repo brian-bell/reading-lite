@@ -391,4 +391,34 @@ describe("commitTerminalManifest", () => {
     expect(out.committed).toBe(false);
     expect(append).toHaveBeenCalledTimes(1); // no-pointer → restore re-syncs
   });
+
+  it("14: tenant deletion fence skips publish and restore after terminal CAS", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    const { similarity, vectors } = fakeVectorize();
+
+    const published = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+    expect(published).toEqual({ committed: true, published: false });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+    const restored = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+    expect(restored).toEqual({ committed: false, published: false });
+    expect(append).not.toHaveBeenCalled();
+  });
 });

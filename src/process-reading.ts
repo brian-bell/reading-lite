@@ -22,6 +22,7 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import { sendReadingEmail } from "./modules/email";
+import { tenantIsActive } from "./control-plane/account-delete";
 import { fromD1 } from "./control-plane/db";
 import { redactEmailsInText } from "./control-plane/email";
 import {
@@ -77,6 +78,13 @@ export async function processReading(
     // any write or upstream spend. Conflict/takeover cases below still log
     // their attempt for diagnostics.
     if (await readingWasPurged(reader, args)) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
+    // Account-deletion suppress (195a): a tenant already marked deleting must
+    // not spend or write. Admit already acks new queue/DLQ messages; this
+    // covers an in-flight consumer that was admitted while still active.
+    if (!(await tenantAllowsVisibilityPublish(env, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -232,6 +240,7 @@ export async function processReading(
       {
         claimMissingPointer: true,
         defensive: false,
+        tenantAllowsVisibility: () => tenantAllowsVisibilityPublish(env, tenantId),
         vector: {
           embedding: tldrEmbed.embedding,
           meta: {
@@ -272,7 +281,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e);
+    await markFailed(reader, args, services, attempt, e, env, tenantId);
   }
 }
 
@@ -411,6 +420,14 @@ export async function markDeadLettered(
     return;
   }
 
+  // Account-deletion suppress (195a): do not write a failed list row after
+  // the tenant is already deleting. Admit already drops DLQ envelopes; this
+  // is the in-function fence if markDeadLettered is called directly.
+  if (!(await tenantAllowsVisibilityPublish(env, tenantId))) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
+
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
   // that window and a *newer* attempt took over the reading (or already brought
@@ -434,7 +451,7 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError());
+  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId);
   // RateLimitedError keeps the slot held through retries; exhausting them is
   // the definitive pre-summarization failure that must release it. release is
   // a no-op if summarization already committed the reservation.
@@ -447,6 +464,8 @@ async function markFailed(
   services: Services,
   attempt: ProcessingAttempt,
   e: unknown,
+  env: Env,
+  tenantId: string,
 ): Promise<void> {
   console.error(e);
   const failedAt = services.now();
@@ -455,6 +474,8 @@ async function markFailed(
   attempt.finished_at = failedAt;
   attempt.error = error;
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
+
+  const tenantAllowsVisibility = () => tenantAllowsVisibilityPublish(env, tenantId);
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -466,6 +487,7 @@ async function markFailed(
       claimMissingPointer: false,
       allowLastAttempt: true,
       defensive: true,
+      tenantAllowsVisibility,
     });
     return;
   }
@@ -486,6 +508,7 @@ async function markFailed(
     claimMissingPointer: false,
     allowLastAttempt: true,
     defensive: true,
+    tenantAllowsVisibility,
   });
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
@@ -594,6 +617,11 @@ export interface CommitTerminalOpts {
   // The success path passes a runStage-bound closure so each sub-write still logs
   // a stage event; failure paths omit it and write plainly.
   instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
+  // Rechecked immediately before visibility publish / restore (issue 195a,
+  // the #179 republish race at tenant scope). When this returns false the
+  // terminal manifest may still be written, but list+vector must not become
+  // visible again. Omit to keep the historical default (allow publish).
+  tenantAllowsVisibility?: () => Promise<boolean>;
 }
 
 // The single home of the terminal-write ordering invariant: CAS-write the
@@ -644,18 +672,29 @@ export async function commitTerminalManifest(
     // Manifest not written despite owning the attempt: a lost CAS (etag changed
     // mid-flight) on either path, or — on the defensive path only — a swallowed
     // write throw. Restore the current list visibility so we don't leave a
-    // half-published row behind.
-    await reconcileVisibility(opts.defensive, () =>
-      visibility.restoreIfOwner(args),
-    );
+    // half-published row behind — unless the tenant-deletion fence forbids
+    // resurrection (issue 195a / #179).
+    if (await tenantStillAllowsVisibility(opts)) {
+      await reconcileVisibility(opts.defensive, () =>
+        visibility.restoreIfOwner(args),
+      );
+    }
     return { committed: false, published: false };
   }
 
   if (state.canPublishVisibility) {
-    await reconcileVisibility(opts.defensive, () =>
-      visibility.publish(manifest, args, opts.vector, { instrument: run }),
-    );
-    return { committed: true, published: true };
+    // Recheck immediately before publish: an in-flight consumer can pause
+    // between terminal CAS and this write. Account deletion marks
+    // users.status=deleting as the durable fence (195a). Per-reading purge
+    // still uses missingManifestStillLive (#179 remainder).
+    if (await tenantStillAllowsVisibility(opts)) {
+      await reconcileVisibility(opts.defensive, () =>
+        visibility.publish(manifest, args, opts.vector, { instrument: run }),
+      );
+      return { committed: true, published: true };
+    }
+    await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+    return { committed: true, published: false };
   }
 
   if (state.canRemoveVisibility) {
@@ -680,6 +719,18 @@ async function reconcileVisibility(
   } catch (e) {
     console.error(e);
   }
+}
+
+async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<boolean> {
+  if (!opts.tenantAllowsVisibility) return true;
+  return opts.tenantAllowsVisibility();
+}
+
+// Fail-open when the worker has no D1 binding (unit tests that stub Env).
+// Production always has CONTROL_PLANE; deleting is then fail-closed.
+async function tenantAllowsVisibilityPublish(env: Env, tenantId: string): Promise<boolean> {
+  if (!env.CONTROL_PLANE) return true;
+  return tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
 }
 
 async function terminalWriteState(

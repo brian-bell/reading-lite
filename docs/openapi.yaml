@@ -77,6 +77,56 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
+  /api/account:
+    delete:
+      tags: [identity]
+      operationId: deleteAccount
+      summary: Start account deletion (credential and write suppression)
+      description: |
+        Session cookie plus `X-CSRF-Token`. Requires recent magic-link
+        authentication (10 minutes). Bearer 403. Body must be
+        `{ "confirm": "delete" }`.
+
+        Marks `users.status=deleting` first, then revokes every session and
+        API token, sends a deletion-start security notification (no secrets)
+        on the first transition, and clears the current cookie. Subsequent
+        authenticated requests 403 because the account is no longer active
+        (revoked cookies/tokens 401). Queue, DLQ, digest, and notification
+        paths refuse to resurrect data for a deleting tenant.
+
+        This is not `DELETE /api/readings/{id}` (one-reading purge). Wipe of
+        tenant R2, Vectorize, Durable Objects, and D1 rows is a later slice
+        (195b). Production `TENANT_DATA_PLANE=1`: the founder is a normal
+        tenant — deleting that account suppresses the founder corpus the same
+        way as any other. GlobalUsageGuard teardown is out of scope.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAccountBody"
+      responses:
+        "200":
+          description: Deletion started (credentials revoked)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteAccountResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden principal, CSRF, bearer, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
   /api/auth/login-options:
     get:
       tags: [identity]
@@ -1288,6 +1338,24 @@ components:
           const: session
 
     AuthLogoutResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+
+    DeleteAccountBody:
+      type: object
+      additionalProperties: false
+      required: [confirm]
+      properties:
+        confirm:
+          type: string
+          const: delete
+
+    DeleteAccountResponse:
       type: object
       additionalProperties: false
       required: [ok]

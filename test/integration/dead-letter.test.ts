@@ -106,6 +106,25 @@ describe("markDeadLettered", () => {
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
+  it("writes nothing when the tenant is already deleting", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
+      .bind(FOUNDER_TENANT_ID)
+      .run();
+    try {
+      await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+      expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+      expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+    } finally {
+      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
+        .bind(FOUNDER_TENANT_ID)
+        .run();
+    }
+  });
+
   it("still marks when the manifest read fails transiently — an error is not confirmed absence", async () => {
     const reader = testReadingStore(env);
     const manifest = pendingManifest();
