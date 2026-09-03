@@ -25,7 +25,10 @@
  * from `tenantKeyRoot` (production `u/{tenantId}/`). An empty prefix is a
  * no-op success. Continuation cursors live at `wipe/{tenantId}/progress.json`
  * outside the tenant prefix so a crash mid-page resumes. A second run on an
- * already-wiped prefix is a no-op success.
+ * already-wiped prefix is a no-op success. Leftover recovery (`phase=done`
+ * with objects still under the tenant prefix) resets to `vectors` at
+ * `vector_offset=0` so missed or late embeddings are submitted to
+ * `deleteByIds` before R2 is emptied.
  *
  * When TENANT_DATA_PLANE is off, `tenantKeyRoot` is empty (pre-tenant global
  * layout). Prefix wipe refuses that root rather than emptying the bucket.
@@ -57,7 +60,16 @@ import { ListIndexSchema } from "./schemas/api";
 import { parseReadingId } from "./services";
 
 export const ACCOUNT_WIPE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Lost-message recovery window: one 15-minute cron interval, and longer than
+ * the default exponential retry cap (5 min). Retry-After can delay the same
+ * message up to 12h (`ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS`); consume
+ * advances `progress.updated_at_ms` by `delaySeconds` so cron does not
+ * enqueue a sibling while that retry is still owed.
+ */
 export const ACCOUNT_WIPE_IN_FLIGHT_MS = 15 * 60_000;
+/** Cloudflare Queues cap on `msg.retry({ delaySeconds })`. */
+export const ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS = 43_200;
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
 export const ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES = 20;
@@ -142,6 +154,11 @@ export function wipeNeedsResume(
   return progress.phase !== "done" || hasLeftoverObjects;
 }
 
+/** True while cron must not enqueue a sibling (includes a future retry-lease). */
+export function wipeLeaseHeld(updatedAtMs: number, nowMs: number): boolean {
+  return nowMs - updatedAtMs < ACCOUNT_WIPE_IN_FLIGHT_MS;
+}
+
 export function readingIdFromRelativeKey(relativeKey: string): string | null {
   if (relativeKey.startsWith(BY_ID_PREFIX)) {
     const rest = relativeKey.slice(BY_ID_PREFIX.length);
@@ -196,7 +213,7 @@ export async function fanOutDueAccountWipes(
       } else if (
         progress &&
         progress.phase !== "done" &&
-        deps.nowMs - progress.updated_at_ms < ACCOUNT_WIPE_IN_FLIGHT_MS
+        wipeLeaseHeld(progress.updated_at_ms, deps.nowMs)
       ) {
         continue;
       }
@@ -205,10 +222,9 @@ export async function fanOutDueAccountWipes(
       // Resume preserves force from progress so a force wipe that DLQ'd during
       // grace is redriven with force:true; new starts persist force:false.
       const force = progress?.force === true;
-      const next: AccountWipeProgress = progress ?? emptyProgress(deps.nowMs, force);
+      let next: AccountWipeProgress = progress ?? emptyProgress(deps.nowMs, force);
       if (next.phase === "done") {
-        next.phase = "objects";
-        next.r2_cursor = undefined;
+        next = reopenLeftoverProgress(next);
       }
       next.force = force;
       next.updated_at_ms = deps.nowMs;
@@ -271,7 +287,9 @@ export async function processAccountWipeJob(
     if (!leftover) {
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
-    progress = { ...progress, phase: "objects", r2_cursor: undefined };
+    // Re-collect reading ids and Vectorize-delete before touching R2. Jumping
+    // to objects would empty the prefix and leave missed/late vectors behind.
+    progress = reopenLeftoverProgress(progress);
   }
   // Persist before any listing so a concurrent cron tick sees an in-flight lease
   // instead of launching a sibling job against the same prefix. Record force so
@@ -433,7 +451,19 @@ export async function consumeAccountWipeMessage(
       }),
     );
     const retryAfterMs = error instanceof RateLimitedError ? error.retryAfterMs : null;
-    msg.retry({ delaySeconds: wipeRetryDelaySeconds(retryAfterMs, msg.attempts ?? 1) });
+    const delaySeconds = wipeRetryDelaySeconds(retryAfterMs, msg.attempts ?? 1);
+    try {
+      await extendWipeLeaseForRetry(env, parsed.envelope.tenantId, deps.nowMs, delaySeconds);
+    } catch (leaseError) {
+      console.error(
+        JSON.stringify({
+          event: "account_wipe_lease_extend_failed",
+          tenant_id: parsed.envelope.tenantId,
+          message: leaseError instanceof Error ? leaseError.message : String(leaseError),
+        }),
+      );
+    }
+    msg.retry({ delaySeconds });
   }
 }
 
@@ -444,7 +474,7 @@ export function wipeRetryDelaySeconds(retryAfterMs: number | null, attempts: num
     retryAfterMs !== null
       ? retryAfterMs
       : Math.min(maxMs, defaultMs * 2 ** Math.max(0, attempts - 1));
-  return Math.max(1, Math.min(43_200, Math.ceil(ms / 1000)));
+  return Math.max(1, Math.min(ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS, Math.ceil(ms / 1000)));
 }
 
 export async function handleAccountWipeDeadLetter(msg: {
@@ -481,6 +511,31 @@ async function tenantPrefixHasObjects(
   const keyRoot = tenantKeyRoot({ tenantId }, true);
   if (keyRoot === "") return false;
   return prefixHasObjects(bucket, keyRoot);
+}
+
+function reopenLeftoverProgress(progress: AccountWipeProgress): AccountWipeProgress {
+  return {
+    ...progress,
+    phase: "vectors",
+    vector_offset: 0,
+    r2_cursor: undefined,
+  };
+}
+
+async function extendWipeLeaseForRetry(
+  env: AccountWipeEnv,
+  tenantId: string,
+  nowMs: number,
+  delaySeconds: number,
+): Promise<void> {
+  const parsed = parseTenantId(tenantId);
+  if (!parsed) return;
+  const progress = await readProgress(env.READINGS_BUCKET, parsed);
+  if (!progress) return;
+  await writeProgress(env.READINGS_BUCKET, parsed, {
+    ...progress,
+    updated_at_ms: nowMs + delaySeconds * 1000,
+  });
 }
 
 function emptyProgress(nowMs: number, force = false): AccountWipeProgress {

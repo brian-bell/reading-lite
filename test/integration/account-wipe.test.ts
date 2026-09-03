@@ -380,12 +380,18 @@ describe("account wipe (195b PR1)", () => {
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT, force: true })]);
     const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { phase: string; force?: boolean };
-    expect(progress.phase).toBe("objects");
+    const progress = JSON.parse(await progressObj!.text()) as {
+      phase: string;
+      force?: boolean;
+      vector_offset?: number;
+    };
+    expect(progress.phase).toBe("vectors");
+    expect(progress.vector_offset).toBe(0);
     expect(progress.force).toBe(true);
 
     const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), { nowMs: NOW_MS });
     expect(result.kind).toBe("complete");
+    expect(deleteByIds).toHaveBeenCalled();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
@@ -451,8 +457,33 @@ describe("account wipe (195b PR1)", () => {
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
     const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { phase: string };
-    expect(progress.phase).toBe("objects");
+    const progress = JSON.parse(await progressObj!.text()) as { phase: string; vector_offset?: number };
+    expect(progress.phase).toBe("vectors");
+    expect(progress.vector_offset).toBe(0);
+  });
+
+  it("leftover recovery re-runs Vectorize deletes before emptying R2", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 99,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+      }),
+    );
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    expect(result.kind).toBe("complete");
+    expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
   it("scheduled() still fans out wipes when digest fan-out throws", async () => {
@@ -535,7 +566,44 @@ describe("account wipe (195b PR1)", () => {
     expect(ack).not.toHaveBeenCalled();
     expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
     expect(consoleErr).toHaveBeenCalled();
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { updated_at_ms: number };
+    expect(progress.updated_at_ms).toBe(NOW_MS + 13_000);
     consoleErr.mockRestore();
+  });
+
+  it("does not fan out a sibling while a delayed retry still holds the lease", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const retryAfterMs = 2 * 60 * 60 * 1000;
+    deleteByIds.mockImplementation(async () => {
+      throw new RateLimitedError(429, retryAfterMs, "https://vectorize.example/delete");
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumeAccountWipeMessage(
+      {
+        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+        ack: vi.fn(),
+        retry: vi.fn(),
+        attempts: 1,
+      },
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    consoleErr.mockRestore();
+    const delaySeconds = retryAfterMs / 1000;
+    const heldUntil = NOW_MS + delaySeconds * 1000;
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
+      enqueued: 0,
+    });
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: heldUntil + ACCOUNT_WIPE_IN_FLIGHT_MS - 1 })).toEqual({
+      enqueued: 0,
+    });
+    expect(queued).toEqual([]);
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: heldUntil + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
+      enqueued: 1,
+    });
   });
 
   it("wipe DLQ acks without touching the tenant prefix", async () => {

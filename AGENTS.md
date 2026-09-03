@@ -233,8 +233,11 @@ Pointers only — the details live in the named files' comments.
   new wipes for `status=deleting` tenants past the 7-day `deleting_at_ms`
   grace; a job `{ force: true }` skips grace to start. Cron resumes
   in-progress or leftover wipes during grace and preserves `force` from
-  `progress.json`. Vectorize `deleteByIds` is async (mutationId;
-  embeddings may take a short time to disappear). Continuation cursors live at
+  `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
+  offset 0) before R2. A delayed `msg.retry` advances the wipe lease by
+  `delaySeconds` so cron does not enqueue a sibling. Vectorize `deleteByIds`
+  is async (mutationId; embeddings may take a short time to disappear).
+  Continuation cursors live at
   `wipe/{tenantId}/progress.json`. The wipe DLQ logs and acks; it must not
   call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;

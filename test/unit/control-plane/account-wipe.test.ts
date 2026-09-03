@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_WIPE_GRACE_MS,
+  ACCOUNT_WIPE_IN_FLIGHT_MS,
+  ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS,
   isAccountWipeDlq,
   isAccountWipeQueue,
   readingIdFromRelativeKey,
   wipeGraceElapsed,
+  wipeLeaseHeld,
   wipeNeedsResume,
   wipeRetryDelaySeconds,
 } from "../../../src/account-wipe";
@@ -36,6 +39,27 @@ describe("wipeNeedsResume", () => {
     expect(wipeNeedsResume({ phase: "done" }, true)).toBe(true);
     expect(wipeNeedsResume({ phase: "vectors" }, false)).toBe(true);
     expect(wipeNeedsResume({ phase: "objects" }, false)).toBe(true);
+  });
+});
+
+describe("wipeLeaseHeld", () => {
+  it("holds through a future retry lease and expires after the in-flight window", () => {
+    expect(wipeLeaseHeld(NOW_MS, NOW_MS)).toBe(true);
+    expect(wipeLeaseHeld(NOW_MS, NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS - 1)).toBe(true);
+    expect(wipeLeaseHeld(NOW_MS, NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS)).toBe(false);
+    expect(wipeLeaseHeld(NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000, NOW_MS)).toBe(true);
+    expect(
+      wipeLeaseHeld(
+        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000,
+        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000 + ACCOUNT_WIPE_IN_FLIGHT_MS - 1,
+      ),
+    ).toBe(true);
+    expect(
+      wipeLeaseHeld(
+        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000,
+        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000 + ACCOUNT_WIPE_IN_FLIGHT_MS,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -82,7 +106,7 @@ describe("wipeRetryDelaySeconds", () => {
     expect(wipeRetryDelaySeconds(null, 1)).toBe(30);
     expect(wipeRetryDelaySeconds(null, 2)).toBe(60);
     expect(wipeRetryDelaySeconds(null, 5)).toBe(300);
-    expect(wipeRetryDelaySeconds(24 * 60 * 60 * 1000, 1)).toBe(43_200);
+    expect(wipeRetryDelaySeconds(24 * 60 * 60 * 1000, 1)).toBe(ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS);
   });
 });
 
