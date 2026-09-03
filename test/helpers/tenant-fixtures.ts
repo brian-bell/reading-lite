@@ -1,5 +1,5 @@
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
-import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
+import { parseTenantId, mintTokenId, mintUserId, type TenantContext } from "../../src/control-plane/ids";
 import { API_SCOPES } from "../../src/control-plane/principal";
 import { FOUNDER_PLACEHOLDER_LIMITS } from "../../src/control-plane/bootstrap";
 import type { Env } from "../../src/index";
@@ -66,8 +66,8 @@ export async function insertSecondTenant(env: Env): Promise<{
   )
     .bind(
       OTHER_TENANT_ID,
-      FOUNDER_PLACEHOLDER_LIMITS.submissions_per_hour,
-      FOUNDER_PLACEHOLDER_LIMITS.monthly_readings,
+      100_000,
+      100_000,
       FOUNDER_PLACEHOLDER_LIMITS.max_concurrent_work,
       FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
       nowMs,
@@ -90,4 +90,65 @@ export async function insertSecondTenant(env: Env): Promise<{
       .run();
   }
   return { tenantId: OTHER_TENANT_ID, token: OTHER_TOKEN_SECRET };
+}
+
+export async function insertQuotaTenant(
+  env: Env,
+  limits: { submissions_per_hour: number; monthly_readings: number },
+): Promise<{ tenantId: string; token: string }> {
+  const nowMs = Date.now();
+  const tenantId = mintUserId();
+  const tokenId = mintTokenId();
+  const token = `quota-test-token-${crypto.randomUUID()}`;
+  const secretHmac = await hmacHex(
+    await deriveHmacKey({ secret: parseAuthRootSecret(env.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
+    token,
+  );
+  await env.CONTROL_PLANE.prepare(
+    `INSERT INTO users (
+       id, email_canonical, email_display, status,
+       email_verified_at_ms, created_at_ms, updated_at_ms
+     ) VALUES (?, ?, ?, 'active', ?, ?, ?)`,
+  )
+    .bind(tenantId, `${tenantId}@test.example`, `${tenantId}@test.example`, nowMs, nowMs, nowMs)
+    .run();
+  await env.CONTROL_PLANE.prepare(
+    `INSERT INTO user_settings (
+       user_id, schema_version, notify_immediate, digest_cadence,
+       time_zone, digest_hour_local, digest_weekday, created_at_ms, updated_at_ms
+     ) VALUES (?, 1, 1, 'off', 'UTC', 9, 1, ?, ?)`,
+  )
+    .bind(tenantId, nowMs, nowMs)
+    .run();
+  await env.CONTROL_PLANE.prepare(
+    `INSERT INTO tenant_limits (
+       tenant_id, policy_version, submissions_per_hour, monthly_readings,
+       max_concurrent_work, daily_spend_microdollars, created_at_ms, updated_at_ms
+     ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      tenantId,
+      limits.submissions_per_hour,
+      limits.monthly_readings,
+      FOUNDER_PLACEHOLDER_LIMITS.max_concurrent_work,
+      FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
+      nowMs,
+      nowMs,
+    )
+    .run();
+  await env.CONTROL_PLANE.prepare(
+    `INSERT INTO api_tokens (
+       id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+     ) VALUES (?, ?, 'quota', 'legacy', ?, 1, ?, ?)`,
+  )
+    .bind(tokenId, tenantId, secretHmac, nowMs, nowMs + 60_000)
+    .run();
+  for (const scope of API_SCOPES) {
+    await env.CONTROL_PLANE.prepare(
+      "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, ?) ON CONFLICT(token_id, scope) DO NOTHING",
+    )
+      .bind(tokenId, scope)
+      .run();
+  }
+  return { tenantId, token };
 }

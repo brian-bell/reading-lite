@@ -19,6 +19,7 @@ import {
 } from "../modules/manifest-drafting";
 import type { ByUrlPointer, Manifest } from "../schemas/manifest";
 import { sha256Hex, type Services } from "../services";
+import type { TenantUsage, UsageDecision } from "../control-plane/tenant-usage-guard";
 import { activateAttempt, type ActivationOutcome } from "./activation";
 
 // Reading intake: the write-side front door for a reading. The three verbs —
@@ -45,6 +46,8 @@ type MarkdownSource = Extract<ProcessReadingSource, { kind: "markdown" }>;
  * - `unavailable`   — retryable service condition (→ 503): the queue binding is
  *                     absent, ownership stayed contended, or activation failed
  *                     after the rollback funnel ran.
+ * - `rate_limited` / `quota_exhausted` — tenant ingress ceilings (→ 429).
+ * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
  */
 export type IntakeOutcome =
   | ActivationOutcome
@@ -55,7 +58,10 @@ export type IntakeOutcome =
   | {
       kind: "unavailable";
       reason: "queue_unbound" | "claim_contention" | "owner_resolution_contention";
-    };
+    }
+  | { kind: "rate_limited"; limit: "request_rate"; resetAtMs: number }
+  | { kind: "quota_exhausted"; limit: "hourly" | "monthly"; resetAtMs: number }
+  | { kind: "guard_unavailable" };
 
 export interface ReadingIntakeDeps {
   /** Tenant-scoped store — hosted callers build it via readingStoreFor. */
@@ -66,6 +72,8 @@ export interface ReadingIntakeDeps {
   /** Parsed once at the seam from PENDING_TTL_SECONDS. */
   pendingTtlSeconds: number;
   principal: AuthenticatedPrincipal;
+  /** Tenant-keyed ingress quotas. Missing/deny fails closed. */
+  usage: TenantUsage;
 }
 
 export function readingIntakeFor(deps: ReadingIntakeDeps): ReadingIntake {
@@ -80,6 +88,8 @@ export class ReadingIntake {
   }
 
   async submit(url: string, opts: { email: boolean }): Promise<IntakeOutcome> {
+    const gated = await this.gateRequest();
+    if (gated) return gated;
     return this.guardContention(async () => {
       const owner = await this.claim.resolveOwner(url);
       switch (owner.kind) {
@@ -98,6 +108,8 @@ export class ReadingIntake {
     markdown: string,
     opts: { title?: string; email: boolean },
   ): Promise<IntakeOutcome> {
+    const gated = await this.gateRequest();
+    if (gated) return gated;
     return this.guardContention(async () => {
       const owner = await this.claim.resolveOwner(url);
       switch (owner.kind) {
@@ -115,6 +127,8 @@ export class ReadingIntake {
     id: string,
     opts: { force?: boolean; email: boolean; source?: MarkdownSource },
   ): Promise<IntakeOutcome> {
+    const gated = await this.gateRequest();
+    if (gated) return gated;
     const found = await this.deps.reader.loadReadingById(id);
     if (!found) return { kind: "not_found" };
     return this.reprocessManifest(found.keyPrefix, found.manifest, opts);
@@ -142,6 +156,48 @@ export class ReadingIntake {
       this.deps.pendingTtlSeconds,
       this.deps.services.now(),
     );
+  }
+
+  private async gateRequest(): Promise<IntakeOutcome | null> {
+    return this.usageOutcome(await this.deps.usage.admitRequest(nowMs(this.deps.services)));
+  }
+
+  private usageOutcome(decision: UsageDecision): IntakeOutcome | null {
+    if (decision.ok) return null;
+    if (decision.reason === "request_rate") {
+      return { kind: "rate_limited", limit: "request_rate", resetAtMs: decision.resetAtMs ?? nowMs(this.deps.services) };
+    }
+    if (decision.reason === "hourly" || decision.reason === "monthly") {
+      return { kind: "quota_exhausted", limit: decision.reason, resetAtMs: decision.resetAtMs ?? nowMs(this.deps.services) };
+    }
+    return { kind: "guard_unavailable" };
+  }
+
+  private async reserveForActivation(opId: string): Promise<IntakeOutcome | null> {
+    return this.usageOutcome(await this.deps.usage.reserveReading(opId, nowMs(this.deps.services)));
+  }
+
+  private async releaseSlot(opId: string): Promise<void> {
+    try {
+      await this.deps.usage.releaseReading(opId);
+    } catch {
+      // Conservative: an uncertain release leaves the held slot counted.
+    }
+  }
+
+  private async activateReserved(
+    opId: string,
+    run: () => Promise<ActivationOutcome>,
+  ): Promise<IntakeOutcome> {
+    let out: ActivationOutcome | undefined;
+    try {
+      out = await run();
+      return out;
+    } finally {
+      // Release unless enqueue succeeded. Covers non-activated outcomes and a
+      // thrown rollback write, which never returns from activateAttempt.
+      if (out?.kind !== "activated") await this.releaseSlot(opId);
+    }
   }
 
   // A submit that lands on a settled owner: ready/pending owners return the
@@ -175,28 +231,42 @@ export class ReadingIntake {
     const queue = this.deps.queue;
     if (!queue) return { kind: "unavailable", reason: "queue_unbound" };
 
+    const denied = await this.reserveForActivation(attemptId);
+    if (denied) return denied;
+
     const pointer = { id: args.id, key_prefix: args.keyPrefix };
-    const claimed = await this.claim.claimSlot(url, pointer, { replaceEtag });
+    let claimed;
+    try {
+      claimed = await this.claim.claimSlot(url, pointer, { replaceEtag });
+    } catch (err) {
+      await this.releaseSlot(attemptId);
+      throw err;
+    }
     switch (claimed.kind) {
       case "owned":
+        await this.releaseSlot(attemptId);
         return this.submitOwned(claimed.pointer, claimed.manifest, email);
       case "initializing":
+        await this.releaseSlot(attemptId);
         return { kind: "initializing", id: claimed.pointer.id };
       case "contended":
+        await this.releaseSlot(attemptId);
         return { kind: "unavailable", reason: "claim_contention" };
       case "claimed":
         break;
     }
 
-    return activateAttempt(this.deps.reader, queue, this.deps.services, {
-      keyPrefix: args.keyPrefix,
-      manifest: pendingManifest,
-      writeByIdPointer: true,
-      rollbackManifest: pendingManifest,
-      rollbackAttempt: activeAttempt,
-      queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "submit", email },
-      principal: this.deps.principal,
-    });
+    return this.activateReserved(attemptId, () =>
+      activateAttempt(this.deps.reader, queue, this.deps.services, {
+        keyPrefix: args.keyPrefix,
+        manifest: pendingManifest,
+        writeByIdPointer: true,
+        rollbackManifest: pendingManifest,
+        rollbackAttempt: activeAttempt,
+        queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "submit", email },
+        principal: this.deps.principal,
+      }),
+    );
   }
 
   // An import that lands on a settled owner: ready/pending owners return the
@@ -251,23 +321,27 @@ export class ReadingIntake {
       email: opts.email,
     };
 
-    return activateAttempt(this.deps.reader, queue, this.deps.services, {
-      keyPrefix: pointer.key_prefix,
-      manifest: pendingManifest,
-      writeByIdPointer: true,
-      artifacts: {
-        rawExt: "md",
-        rawBytes: markdownBytes,
-        rawContentType: "text/markdown; charset=utf-8",
-        extractedMarkdown: markdown,
-      },
-      // Rollback lands on the freshly-built pending manifest (→ failed,
-      // retryable), never the prior failed manifest's error.
-      rollbackManifest: pendingManifest,
-      rollbackAttempt: activeAttempt,
-      queueMessage: args,
-      principal: this.deps.principal,
-    });
+    const denied = await this.reserveForActivation(attemptId);
+    if (denied) return denied;
+    return this.activateReserved(attemptId, () =>
+      activateAttempt(this.deps.reader, queue, this.deps.services, {
+        keyPrefix: pointer.key_prefix,
+        manifest: pendingManifest,
+        writeByIdPointer: true,
+        artifacts: {
+          rawExt: "md",
+          rawBytes: markdownBytes,
+          rawContentType: "text/markdown; charset=utf-8",
+          extractedMarkdown: markdown,
+        },
+        // Rollback lands on the freshly-built pending manifest (→ failed,
+        // retryable), never the prior failed manifest's error.
+        rollbackManifest: pendingManifest,
+        rollbackAttempt: activeAttempt,
+        queueMessage: args,
+        principal: this.deps.principal,
+      }),
+    );
   }
 
   private async createForImport(
@@ -297,34 +371,48 @@ export class ReadingIntake {
     const queue = this.deps.queue;
     if (!queue) return { kind: "unavailable", reason: "queue_unbound" };
 
+    const denied = await this.reserveForActivation(attemptId);
+    if (denied) return denied;
+
     const pointer = { id: args.id, key_prefix: args.keyPrefix };
-    const claimed = await this.claim.claimSlot(url, pointer, { replaceEtag });
+    let claimed;
+    try {
+      claimed = await this.claim.claimSlot(url, pointer, { replaceEtag });
+    } catch (err) {
+      await this.releaseSlot(attemptId);
+      throw err;
+    }
     switch (claimed.kind) {
       case "owned":
+        await this.releaseSlot(attemptId);
         return this.importOwned(claimed.pointer, claimed.manifest, markdown, opts);
       case "initializing":
+        await this.releaseSlot(attemptId);
         return { kind: "initializing", id: claimed.pointer.id };
       case "contended":
+        await this.releaseSlot(attemptId);
         return { kind: "unavailable", reason: "claim_contention" };
       case "claimed":
         break;
     }
 
-    return activateAttempt(this.deps.reader, queue, this.deps.services, {
-      keyPrefix: args.keyPrefix,
-      manifest: pendingManifest,
-      writeByIdPointer: true,
-      artifacts: {
-        rawExt: "md",
-        rawBytes: markdownBytes,
-        rawContentType: "text/markdown; charset=utf-8",
-        extractedMarkdown: markdown,
-      },
-      rollbackManifest: pendingManifest,
-      rollbackAttempt: activeAttempt,
-      queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "import", email: opts.email },
-      principal: this.deps.principal,
-    });
+    return this.activateReserved(attemptId, () =>
+      activateAttempt(this.deps.reader, queue, this.deps.services, {
+        keyPrefix: args.keyPrefix,
+        manifest: pendingManifest,
+        writeByIdPointer: true,
+        artifacts: {
+          rawExt: "md",
+          rawBytes: markdownBytes,
+          rawContentType: "text/markdown; charset=utf-8",
+          extractedMarkdown: markdown,
+        },
+        rollbackManifest: pendingManifest,
+        rollbackAttempt: activeAttempt,
+        queueMessage: { ...args, attemptId, attemptStartedAt, trigger: "import", email: opts.email },
+        principal: this.deps.principal,
+      }),
+    );
   }
 
   private async reprocessManifest(
@@ -378,14 +466,23 @@ export class ReadingIntake {
       sourceTypeOnFailure: effective.source_type ?? "url",
       email: opts.email,
     };
-    return activateAttempt(this.deps.reader, queue, this.deps.services, {
-      keyPrefix,
-      manifest: nextManifest,
-      writeByIdPointer: false,
-      rollbackManifest: effective,
-      rollbackAttempt: activeAttempt,
-      queueMessage: args,
-      principal: this.deps.principal,
-    });
+    const denied = await this.reserveForActivation(attemptId);
+    if (denied) return denied;
+    return this.activateReserved(attemptId, () =>
+      activateAttempt(this.deps.reader, queue, this.deps.services, {
+        keyPrefix,
+        manifest: nextManifest,
+        writeByIdPointer: false,
+        rollbackManifest: effective,
+        rollbackAttempt: activeAttempt,
+        queueMessage: args,
+        principal: this.deps.principal,
+      }),
+    );
   }
+}
+
+function nowMs(services: { now: () => string }): number {
+  const parsed = Date.parse(services.now());
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }

@@ -12,6 +12,7 @@ import type { ProcessReadingEnvelopeV1 } from "../../../src/control-plane/envelo
 import { createApiTokenPrincipal } from "../../../src/control-plane/principal";
 import type { Manifest } from "../../../src/schemas/manifest";
 import { sha256Hex, type Services } from "../../../src/services";
+import type { TenantUsage } from "../../../src/control-plane/tenant-usage-guard";
 
 // Reading intake's own test surface: the three verbs against a real R2-backed
 // store and a capturing queue, asserting domain outcomes — no Hono, no HTTP.
@@ -58,6 +59,15 @@ async function clearBucket() {
 beforeEach(clearBucket);
 afterEach(clearBucket);
 
+function allowAllUsage(): TenantUsage {
+  return {
+    admitRequest: async () => ({ ok: true }),
+    reserveReading: async () => ({ ok: true }),
+    releaseReading: async () => undefined,
+    commitReading: async () => undefined,
+  };
+}
+
 function makeIntake(overrides: Partial<ReadingIntakeDeps> = {}) {
   const reader = new ReadingStore(env.READINGS_BUCKET);
   const { queue, sent } = captureQueue();
@@ -67,6 +77,7 @@ function makeIntake(overrides: Partial<ReadingIntakeDeps> = {}) {
     services: seqServices(),
     pendingTtlSeconds: TTL,
     principal: PRINCIPAL,
+    usage: allowAllUsage(),
     ...overrides,
   };
   return { intake: readingIntakeFor(deps), reader, sent };
@@ -405,6 +416,203 @@ describe("ReadingIntake.reprocess", () => {
     await expect(intake.reprocess(owner.id, { email: false })).resolves.toEqual({
       kind: "unavailable",
       reason: "queue_unbound",
+    });
+  });
+});
+
+function recordingUsage(): TenantUsage & { ops: string[] } {
+  const ops: string[] = [];
+  return {
+    ops,
+    admitRequest: async () => {
+      ops.push("admit");
+      return { ok: true };
+    },
+    reserveReading: async (opId) => {
+      ops.push(`reserve:${opId}`);
+      return { ok: true };
+    },
+    releaseReading: async (opId) => {
+      ops.push(`release:${opId}`);
+    },
+    commitReading: async (opId) => {
+      ops.push(`commit:${opId}`);
+    },
+  };
+}
+
+describe("ReadingIntake usage quotas", () => {
+  it("does not reserve a reading slot for a ready or pending owner", async () => {
+    const usage = recordingUsage();
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-ready";
+    await writeOwnedReading(reader, url, { id: "rd_QREADY", status: "ready" });
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out.kind).toBe("existing");
+    expect(usage.ops).toEqual(["admit"]);
+  });
+
+  it("does not reserve a reading slot for an initializing owner", async () => {
+    const usage = recordingUsage();
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-init";
+    await reader.writeByUrlPointer(await sha256Hex(url), {
+      id: "rd_QINIT",
+      key_prefix: buildKeyPrefix("rd_QINIT", NOW),
+    });
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out.kind).toBe("initializing");
+    expect(usage.ops).toEqual(["admit"]);
+  });
+
+  it("does not reserve a reading slot for an active-attempt conflict", async () => {
+    const usage = recordingUsage();
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-conflict";
+    const owner = await writeOwnedReading(reader, url, {
+      id: "rd_QBUSY",
+      status: "pending",
+      active_attempt: {
+        id: "at_QBUSY",
+        trigger: "submit",
+        status: "running",
+        stage: "summarize",
+        started_at: NOW,
+      },
+    });
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toEqual({ kind: "conflict", reason: "active_attempt" });
+    expect(usage.ops).toEqual(["admit"]);
+  });
+
+  it("reserves a reading slot when re-activating a failed owner in place", async () => {
+    const usage = recordingUsage();
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-failed";
+    await writeOwnedReading(reader, url, {
+      id: "rd_QFAIL",
+      status: "failed",
+      content_status: "failed",
+      error: { code: "FetchTimeoutError", message: "timeout", failed_at: NOW, retryable: true },
+    });
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out.kind).toBe("activated");
+    expect(usage.ops[0]).toBe("admit");
+    expect(usage.ops.some((op) => op.startsWith("reserve:"))).toBe(true);
+    expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(false);
+  });
+
+  it("releases a reserved slot when queue send fails", async () => {
+    const usage = recordingUsage();
+    const queue = {
+      send: async () => {
+        throw new Error("queue send failed");
+      },
+    } as unknown as Queue<ProcessReadingEnvelopeV1>;
+    const { intake } = makeIntake({ usage, queue });
+
+    const out = await intake.submit("https://example.com/quota-send-fail", { email: false });
+
+    expect(out).toMatchObject({ kind: "unavailable", reason: "queue_send_failed" });
+    expect(usage.ops.some((op) => op.startsWith("reserve:"))).toBe(true);
+    expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(true);
+  });
+
+  it("releases a reserved slot when the activation rollback write throws", async () => {
+    const usage = recordingUsage();
+    const queue = {
+      send: async () => {
+        throw new Error("queue send failed");
+      },
+    } as unknown as Queue<ProcessReadingEnvelopeV1>;
+    const { intake, reader } = makeIntake({ usage, queue });
+    const writeManifest = reader.writeManifest.bind(reader);
+    let writes = 0;
+    vi.spyOn(reader, "writeManifest").mockImplementation(async (keyPrefix, manifest) => {
+      writes += 1;
+      if (writes > 1) throw new Error("rollback write failed");
+      await writeManifest(keyPrefix, manifest);
+    });
+
+    await expect(
+      intake.submit("https://example.com/quota-rollback-throw", { email: false }),
+    ).rejects.toThrow("rollback write failed");
+    expect(usage.ops.some((op) => op.startsWith("reserve:"))).toBe(true);
+    expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(true);
+  });
+
+  it("returns rate_limited without claiming when admitRequest denies", async () => {
+    const usage: TenantUsage = {
+      ...allowAllUsage(),
+      admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
+    };
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-rate";
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out).toEqual({
+      kind: "rate_limited",
+      limit: "request_rate",
+      resetAtMs: Date.parse(NOW) + 60_000,
+    });
+    await expect(reader.readByUrlPointer(await sha256Hex(url))).resolves.toBeNull();
+  });
+
+  it("returns quota_exhausted without claiming when reserve denies", async () => {
+    const usage: TenantUsage = {
+      ...allowAllUsage(),
+      reserveReading: async () => ({ ok: false, reason: "monthly", resetAtMs: Date.parse(NOW) + 86_400_000 }),
+    };
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-month";
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out).toEqual({
+      kind: "quota_exhausted",
+      limit: "monthly",
+      resetAtMs: Date.parse(NOW) + 86_400_000,
+    });
+    await expect(reader.readByUrlPointer(await sha256Hex(url))).resolves.toBeNull();
+  });
+
+  it("releases a reserved slot when claim stays contended", async () => {
+    const usage = recordingUsage();
+    const { intake, reader } = makeIntake({ usage });
+    const url = "https://example.com/quota-contended";
+    await reader.writeByUrlPointer(await sha256Hex(url), {
+      id: "rd_QORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_QORPHAN",
+    });
+    const cas = vi.spyOn(reader, "replaceByUrlPointerIfCurrent").mockResolvedValue(false);
+
+    const out = await intake.submit(url, { email: true });
+
+    expect(out).toEqual({ kind: "unavailable", reason: "claim_contention" });
+    const reserved = usage.ops.filter((op) => op.startsWith("reserve:"));
+    const released = usage.ops.filter((op) => op.startsWith("release:"));
+    expect(reserved).toHaveLength(1);
+    expect(released).toEqual(reserved.map((op) => op.replace("reserve:", "release:")));
+    cas.mockRestore();
+  });
+
+  it("fails closed when the usage guard is unavailable", async () => {
+    const usage: TenantUsage = {
+      ...allowAllUsage(),
+      admitRequest: async () => ({ ok: false, reason: "unavailable" }),
+    };
+    const { intake } = makeIntake({ usage });
+    await expect(intake.submit("https://example.com/quota-guard", { email: false })).resolves.toEqual({
+      kind: "guard_unavailable",
     });
   });
 });

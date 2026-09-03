@@ -56,9 +56,17 @@ compatibility_flags = ["nodejs_compat"]
 tag = "v1"
 new_sqlite_classes = ["AuthRateGuard"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["TenantUsageGuard"]
+
 [[durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
+
+[[durable_objects.bindings]]
+name = "TENANT_USAGE_GUARD"
+class_name = "TenantUsageGuard"
 
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
@@ -218,6 +226,10 @@ migrations_dir = "migrations"
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
 
+[[env.staging.durable_objects.bindings]]
+name = "TENANT_USAGE_GUARD"
+class_name = "TenantUsageGuard"
+
 [[env.staging.routes]]
 pattern = "reading-lite-staging.bbell.dev/api/*"
 zone_name = "bbell.dev"
@@ -352,6 +364,10 @@ migrations_dir = "migrations"
 [[env.production.durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
+
+[[env.production.durable_objects.bindings]]
+name = "TENANT_USAGE_GUARD"
+class_name = "TenantUsageGuard"
 
 # Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.

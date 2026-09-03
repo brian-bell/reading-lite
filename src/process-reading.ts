@@ -43,6 +43,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
+import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
@@ -66,15 +67,24 @@ export async function processReading(
   const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
+  const tenantId = String(tenant.tenantId);
+  const opId = resolveAttemptId(args);
+  let readingSlotConsumed = false;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
     // attempt log — so a stale queued message for it is dropped whole, before
     // any write or upstream spend. Conflict/takeover cases below still log
     // their attempt for diagnostics.
-    if (await readingWasPurged(reader, args)) return;
+    if (await readingWasPurged(reader, args)) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
     validateProcessingCredentials({
       provider: env.SUMMARIZER_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
@@ -143,8 +153,13 @@ export async function processReading(
       args.keyPrefix,
       services,
       "summarize",
-      () =>
-        summarizeReading(
+      async () => {
+        // Reading quota stays held through extract/embed; commit immediately
+        // before summarization dispatch so a later failure still consumes the
+        // slot. An undispatched failure releases instead (catch below).
+        readingSlotConsumed = true;
+        await commitReadingSlot(env, tenantId, opId);
+        return summarizeReading(
           {
             url: args.url,
             extractedText: promptText,
@@ -164,7 +179,8 @@ export async function processReading(
               env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
             retry,
           },
-        ),
+        );
+      },
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
@@ -248,8 +264,13 @@ export async function processReading(
       // Don't mark the manifest failed — the queue handler will requeue this
       // message after the upstream's Retry-After window. The active_attempt
       // stays "running" until either a future attempt succeeds or
-      // PENDING_TTL_SECONDS flips it stale.
+      // PENDING_TTL_SECONDS flips it stale. Held reading-slot reservations
+      // stay counted until a later delivery commits or a definitive failure
+      // (including markDeadLettered after max_retries) releases them.
       throw e;
+    }
+    if (!readingSlotConsumed) {
+      await releaseReadingSlot(env, tenantId, opId);
     }
     await markFailed(reader, args, services, attempt, e);
   }
@@ -380,7 +401,15 @@ export async function markDeadLettered(
   // tenant's list (or resurrect deleted data), so the mark requires the
   // manifest to exist. A URL stranded this way stays recoverable: its damaged
   // by-url pointer is repaired by the next submit/import.
-  if (confirmedAbsent) return;
+  const tenantId = String(tenant.tenantId);
+  const opId = resolveAttemptId(args);
+
+  // Confirmed-absent: this attempt will never commit. Release a still-held
+  // reservation (idempotent if already consumed/released).
+  if (confirmedAbsent) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
 
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
@@ -398,11 +427,18 @@ export async function markDeadLettered(
   // Strict active-only ownership: a newer attempt taking over (active flipped to
   // a different id) means this DLQ message is stale and must not clobber it.
   // (null here is the read-error path, where ownership cannot be judged.)
-  if (existing && !attemptOwnership(existing, args).isActive) return;
+  if (existing && !attemptOwnership(existing, args).isActive) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
   await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError());
+  // RateLimitedError keeps the slot held through retries; exhausting them is
+  // the definitive pre-summarization failure that must release it. release is
+  // a no-op if summarization already committed the reservation.
+  await releaseReadingSlot(env, tenantId, opId);
 }
 
 async function markFailed(

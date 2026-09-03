@@ -39,6 +39,7 @@ export interface Env {
   APP_ENV?: string;
   AUTH_MAIL_ALLOWLIST?: string;
   AUTH_RATE_GUARD?: DurableObjectNamespace;
+  TENANT_USAGE_GUARD?: DurableObjectNamespace;
   AUTH_RATE_EMAIL_WINDOW_MS?: string;
   AUTH_RATE_EMAIL_MAX?: string;
   AUTH_RATE_IP_WINDOW_MS?: string;
@@ -203,3 +204,4 @@ export default {
 
 export { createApp } from "./router";
 export { AuthRateGuard } from "./control-plane/auth-rate-guard";
+export { TenantUsageGuard } from "./control-plane/tenant-usage-guard";

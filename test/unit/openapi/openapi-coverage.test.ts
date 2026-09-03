@@ -113,6 +113,7 @@ const REQUIRED_SCHEMAS = [
   "PostReadingsSimilarResponse",
   "DeleteReadingResponse",
   "GetReadingDiagnosticsResponse",
+  "QuotaDeniedResponse",
 ] as const;
 
 type OpenApiDoc = {

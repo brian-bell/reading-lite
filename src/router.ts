@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Env } from "./index";
 import {
@@ -50,6 +51,7 @@ import { handleGetSettings, handlePostSettings } from "./control-plane/settings-
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
+import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
   services?: Services;
@@ -68,6 +70,7 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
     services,
     pendingTtlSeconds: pendingTtlSeconds(env),
     principal,
+    usage: tenantUsageFor(env, String(principal.tenantId)),
   });
 }
 
@@ -166,8 +169,7 @@ export function createApp(opts: AppOptions = {}) {
     }
     const intake = intakeFor(c.env, c.get("principal"), services);
     const out = await intake.submit(parsed.data.url, { email: parsed.data.email ?? true });
-    const res = toHttp(out);
-    return c.json(res.body, res.status);
+    return respondIntake(c, out);
   });
 
   app.post("/api/readings/import-markdown", requireScope("readings:import"), async (c) => {
@@ -181,8 +183,7 @@ export function createApp(opts: AppOptions = {}) {
       title: parsed.data.title,
       email: parsed.data.email ?? false,
     });
-    const res = toHttp(out);
-    return c.json(res.body, res.status);
+    return respondIntake(c, out);
   });
 
   app.get("/api/readings", requireScope("readings:read"), async (c) => {
@@ -299,8 +300,7 @@ export function createApp(opts: AppOptions = {}) {
       email: parsed.data.email ?? false,
       source: parsed.data.source,
     });
-    const res = toHttp(out);
-    return c.json(res.body, res.status);
+    return respondIntake(c, out);
   });
 
   app.delete("/api/readings/:id", requireScope("readings:delete"), async (c) => {
@@ -380,11 +380,18 @@ const UNAVAILABLE_MESSAGES: Record<
   queue_send_failed: "queue send failed",
 };
 
+const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
+  request_rate: "request rate limit exceeded",
+  hourly: "hourly reading quota exceeded",
+  monthly: "monthly reading quota exceeded",
+};
+
 // The single outcome → HTTP mapping. Reading intake is HTTP-free; everything
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 404 | 409 | 503;
+  status: 200 | 202 | 404 | 409 | 429 | 503;
+  headers?: Record<string, string>;
 } {
   switch (out.kind) {
     case "activated":
@@ -428,7 +435,45 @@ function toHttp(out: IntakeOutcome): {
         },
         status: 503,
       };
+    case "rate_limited":
+      return quotaHttp("rate_limited", out.limit, out.resetAtMs);
+    case "quota_exhausted":
+      return quotaHttp("quota_exhausted", out.limit, out.resetAtMs);
+    case "guard_unavailable":
+      return {
+        body: { error: "usage guard unavailable" },
+        status: 429,
+        headers: { "Retry-After": "5" },
+      };
   }
+}
+
+function quotaHttp(
+  error: "rate_limited" | "quota_exhausted",
+  limit: "request_rate" | "hourly" | "monthly",
+  resetAtMs: number,
+): {
+  body: unknown;
+  status: 429;
+  headers: Record<string, string>;
+} {
+  const retryAfter = Math.max(1, Math.ceil((resetAtMs - Date.now()) / 1000));
+  return {
+    body: {
+      error: QUOTA_MESSAGES[limit],
+      code: error,
+      limit,
+      reset_at: new Date(resetAtMs).toISOString(),
+    },
+    status: 429,
+    headers: { "Retry-After": String(retryAfter) },
+  };
+}
+
+function respondIntake(c: Context<AppBindings>, out: IntakeOutcome): Response {
+  const mapped = toHttp(out);
+  if (mapped.headers) return c.json(mapped.body, mapped.status, mapped.headers);
+  return c.json(mapped.body, mapped.status);
 }
 
 function extFromContentType(contentType: string): string {

@@ -23,6 +23,14 @@ export type ReadingApiOutcome =
   | { kind: "not_found" }
   // 503: a retryable service condition (queue unbound, claim contention, …).
   | { kind: "unavailable"; message: string; id?: string }
+  // 429: tenant request-rate or reading-quota ceiling, or fail-closed guard.
+  | {
+      kind: "quota";
+      code: "rate_limited" | "quota_exhausted" | "usage_guard_unavailable";
+      limit?: "request_rate" | "hourly" | "monthly";
+      resetAt?: string;
+      message: string;
+    }
   // Client-only kinds, outside the router's intake-outcome vocabulary:
   // any status toHttp never produces (4xx auth, 5xx, malformed success).
   | { kind: "http_error"; status: number; message: string }
@@ -70,6 +78,22 @@ export function decodeIntakeResponse(status: number, body: unknown): ReadingApiO
       kind: "unavailable",
       message: messageFrom(body, b),
       ...(id === undefined ? {} : { id }),
+    };
+  }
+  if (status === 429) {
+    const code =
+      b.code === "rate_limited" || b.code === "quota_exhausted"
+        ? b.code
+        : "usage_guard_unavailable";
+    const limit =
+      b.limit === "request_rate" || b.limit === "hourly" || b.limit === "monthly" ? b.limit : undefined;
+    const resetAt = typeof b.reset_at === "string" ? b.reset_at : undefined;
+    return {
+      kind: "quota",
+      code,
+      ...(limit === undefined ? {} : { limit }),
+      ...(resetAt === undefined ? {} : { resetAt }),
+      message: messageFrom(body, b),
     };
   }
   return { kind: "http_error", status, message: messageFrom(body, b) };
@@ -157,6 +181,8 @@ export function classifyOutcome(out: ReadingApiOutcome): OutcomeClassification {
       return { classification: "error", error: "not found" };
     case "unavailable":
       return { classification: "error", error: `503 ${out.message}`.trim() };
+    case "quota":
+      return { classification: "error", error: `429 ${out.message}`.trim() };
     case "http_error":
       return { classification: "error", error: `${out.status} ${out.message}`.trim() };
     case "transport_error":
