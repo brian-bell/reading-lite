@@ -4,7 +4,14 @@ import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-rea
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
 import { manifestToIndexItem } from "../../src/modules/stores/reading-store";
-import { FOUNDER_TENANT_ID, founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
+import { parseTenantId } from "../../src/control-plane/ids";
+import { tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
+import {
+  FOUNDER_TENANT_ID,
+  founderTenant,
+  insertQuotaTenant,
+  testReadingStore,
+} from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
 
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
@@ -206,7 +213,72 @@ describe("markDeadLettered", () => {
     expect(after?.title).toBe("v2 (newer attempt)");
     expect(after?.last_attempt?.id).toBe("at_NEWER");
   });
+
+  it("releases a held reading slot when retries are exhausted", async () => {
+    const { tenant, usage, reader } = await quotaUsage();
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    const opId = `at_${READING_ID}`;
+    expect(await usage.reserveReading(opId, Date.now())).toEqual({ ok: true });
+
+    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
+
+    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("failed");
+    expect(await usage.reserveReading("at_after_dlq", Date.now())).toEqual({ ok: true });
+  });
+
+  it("releases a held slot on a confirmed-absent dead-letter", async () => {
+    const { tenant, usage } = await quotaUsage();
+    expect(await usage.reserveReading(`at_${READING_ID}`, Date.now())).toEqual({ ok: true });
+
+    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
+
+    expect(await usage.reserveReading("at_after_absent", Date.now())).toEqual({ ok: true });
+  });
+
+  it("releases a held slot when a stale dead-lettered attempt no longer owns the reading", async () => {
+    const { tenant, usage, reader } = await quotaUsage();
+    const v2: Manifest = {
+      ...pendingManifest(),
+      status: "ready",
+      title: "v2 (newer attempt)",
+      active_attempt: undefined,
+      last_attempt: {
+        id: "at_NEWER",
+        trigger: "reprocess",
+        status: "succeeded",
+        started_at: "2026-05-07T12:30:00.000Z",
+      },
+    };
+    await reader.writeManifest(KEY_PREFIX, v2);
+    expect(await usage.reserveReading("at_ORIGINAL", Date.now())).toEqual({ ok: true });
+
+    await markDeadLettered(
+      args({ attemptId: "at_ORIGINAL" }),
+      env as unknown as Env,
+      services(),
+      tenant,
+    );
+
+    expect((await reader.readManifest(KEY_PREFIX))?.title).toBe("v2 (newer attempt)");
+    expect(await usage.reserveReading("at_after_stale", Date.now())).toEqual({ ok: true });
+  });
 });
+
+async function quotaUsage() {
+  const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+    submissions_per_hour: 20,
+    monthly_readings: 1,
+  });
+  const parsed = parseTenantId(tenantId);
+  if (!parsed) throw new Error(`expected tenant id, got ${tenantId}`);
+  const tenant = { tenantId: parsed };
+  return {
+    tenant,
+    usage: tenantUsageFor(env as unknown as Env, tenantId),
+    reader: testReadingStore(env, tenant),
+  };
+}
 
 function dlqMessage(): Message<unknown> {
   return {

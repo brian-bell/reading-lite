@@ -266,7 +266,7 @@ export async function processReading(
       // stays "running" until either a future attempt succeeds or
       // PENDING_TTL_SECONDS flips it stale. Held reading-slot reservations
       // stay counted until a later delivery commits or a definitive failure
-      // releases them.
+      // (including markDeadLettered after max_retries) releases them.
       throw e;
     }
     if (!readingSlotConsumed) {
@@ -401,7 +401,15 @@ export async function markDeadLettered(
   // tenant's list (or resurrect deleted data), so the mark requires the
   // manifest to exist. A URL stranded this way stays recoverable: its damaged
   // by-url pointer is repaired by the next submit/import.
-  if (confirmedAbsent) return;
+  const tenantId = String(tenant.tenantId);
+  const opId = resolveAttemptId(args);
+
+  // Confirmed-absent: this attempt will never commit. Release a still-held
+  // reservation (idempotent if already consumed/released).
+  if (confirmedAbsent) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
 
   // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
   // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
@@ -419,11 +427,18 @@ export async function markDeadLettered(
   // Strict active-only ownership: a newer attempt taking over (active flipped to
   // a different id) means this DLQ message is stale and must not clobber it.
   // (null here is the read-error path, where ownership cannot be judged.)
-  if (existing && !attemptOwnership(existing, args).isActive) return;
+  if (existing && !attemptOwnership(existing, args).isActive) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
   await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError());
+  // RateLimitedError keeps the slot held through retries; exhausting them is
+  // the definitive pre-summarization failure that must release it. release is
+  // a no-op if summarization already committed the reservation.
+  await releaseReadingSlot(env, tenantId, opId);
 }
 
 async function markFailed(
