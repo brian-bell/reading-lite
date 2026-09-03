@@ -245,7 +245,7 @@ describe("fetchWithRetry", () => {
   });
 
   it.each(["BlockedHostError", "TooManyRedirectsError", "DestinationResolutionError"] as const)(
-    "does not retry %s (SSRF guard — would re-hit the first hop)",
+    "does not retry %s (SSRF guard - would re-hit the first hop)",
     async (name) => {
       const guard = new Error(name);
       guard.name = name;
