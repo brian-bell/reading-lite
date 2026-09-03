@@ -27,6 +27,7 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
+  PUBLIC_LOOKUP,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -266,6 +267,7 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
   const start = Date.parse(baseTime);
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => new Date(start + idCounter.n * 1000).toISOString(),
     newId: () => {
       idCounter.n++;

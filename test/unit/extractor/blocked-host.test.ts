@@ -36,7 +36,13 @@ const BLOCKED: Array<[string, string]> = [
   ["255.255.255.255", "broadcast"],
   ["febf::1", "link-local v6 upper bound"],
   ["fec0::1", "site-local v6 (deprecated, still routed on some LANs)"],
-  ["feff::1", "site-local v6 upper bound"],
+  ["ff02::1", "IPv6 multicast (link-local all-nodes)"],
+  ["ff00::1", "IPv6 multicast ff00::/8"],
+  ["2002:a00:5::1", "6to4 embedding 10.0.0.5"],
+  ["2002:c0a8:1::1", "6to4 embedding 192.168.0.1"],
+  ["64:ff9b::a00:5", "NAT64 well-known prefix embedding 10.0.0.5"],
+  ["64:ff9b::7f00:1", "NAT64 embedding 127.0.0.1"],
+  ["64:ff9b::10.0.0.5", "NAT64 dotted embedding 10.0.0.5"],
 ];
 
 const ALLOWED: Array<[string, string]> = [
@@ -56,6 +62,8 @@ const ALLOWED: Array<[string, string]> = [
   ["2606:4700::6810:84e5", "public v6"],
   ["fe7f::1", "just below link-local fe80/10"],
   ["::ffff:808:808", "v4-mapped public (8.8.8.8)"],
+  ["2002:808:808::1", "6to4 embedding public 8.8.8.8"],
+  ["64:ff9b::808:808", "NAT64 embedding public 8.8.8.8"],
 ];
 
 describe("isBlockedHost", () => {

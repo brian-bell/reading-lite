@@ -23,6 +23,7 @@ const NOW = "2026-04-26T20:00:05.000Z";
 function services(): Services {
   return {
     fetch: vi.fn() as unknown as typeof fetch,
+    lookup: async () => [{ address: "93.184.216.34" }],
     now: () => NOW,
     newId: () => "rd_UNUSED",
   };

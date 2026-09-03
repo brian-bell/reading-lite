@@ -754,6 +754,7 @@ async function extractSource(
   return runStage(attempt, reader, args.keyPrefix, services, "fetch_source", () =>
     extractFromUrl(args.url, {
       fetch: services.fetch,
+      lookup: services.lookup,
       timeoutMs: parseIntEnv(env.FETCH_TIMEOUT_MS, 20_000),
       maxBytes: parseIntEnv(env.FETCH_MAX_BYTES, 10 * 1024 * 1024),
       retry: retryDepsFromEnv(env),

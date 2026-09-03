@@ -10,6 +10,7 @@ import {
   FOUNDER_TENANT_ID,
   founderTenant,
   insertQuotaTenant,
+  PUBLIC_LOOKUP,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -26,6 +27,7 @@ function services(): Services {
     fetch: (() => {
       throw new Error("no network in this test");
     }) as unknown as typeof fetch,
+    lookup: PUBLIC_LOOKUP,
     now: () => "2026-05-07T13:00:00.000Z",
     newId: () => READING_ID,
   };

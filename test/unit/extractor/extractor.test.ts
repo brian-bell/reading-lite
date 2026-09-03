@@ -1,7 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
-import { extractFromUrl, FetchTimeoutError, OversizedResponseError, BadStatusError, BlockedHostError, RedditManualImportError, XApiConfigError } from "../../../src/modules/extractor";
+import {
+  extractFromUrl,
+  FetchTimeoutError,
+  OversizedResponseError,
+  BadStatusError,
+  BlockedHostError,
+  RedditManualImportError,
+  TooManyRedirectsError,
+  XApiConfigError,
+  type ExtractorDeps,
+  type LookupFn,
+} from "../../../src/modules/extractor";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import { canonicalWatchUrl, oembedUrl, timedtextJson3Url } from "../../../src/modules/extractor/youtube";
+
+const publicLookup: LookupFn = async () => [{ address: "93.184.216.34" }];
+
+function extractorDeps(fetch: ExtractorDeps["fetch"], extra: Partial<ExtractorDeps> = {}): ExtractorDeps {
+  return { fetch, lookup: publicLookup, timeoutMs: 5_000, maxBytes: 1_000_000, ...extra };
+}
 
 function fakeFetch(
   responses: Record<string, { status?: number; headers?: Record<string, string>; body: BodyInit }>,
@@ -38,9 +55,7 @@ describe("extractFromUrl", () => {
 
     await expect(
       extractFromUrl("https://x.com/distributionat/status/2081655420314419450?s=46", {
-        fetch: fetchFn as unknown as typeof fetch,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
+        ...extractorDeps(fetchFn as unknown as typeof fetch),
       }),
     ).rejects.toBeInstanceOf(XApiConfigError);
     expect(fetchFn).not.toHaveBeenCalled();
@@ -54,9 +69,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/a", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_type).toMatch(/^text\/html/);
     expect(out.content_status).toBe("captured");
@@ -91,9 +104,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://docs.example/no-body", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toContain("Reference");
@@ -114,9 +125,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://docs.example/titled", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("captured");
     expect(out.title).toBe("Page Title Should Not Leak");
@@ -135,9 +144,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://docs.example/script-only", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("raw_only");
     expect(out.markdown).toBeUndefined();
@@ -151,9 +158,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/sparse", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("raw_only");
     expect(out.markdown).toBeUndefined();
@@ -168,9 +173,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/p.pdf", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_type).toBe("application/pdf");
     expect(out.content_status).toBe("raw_only");
@@ -186,9 +189,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/r.txt", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toBe("Just some plain text content.");
@@ -206,9 +207,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/r.json", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toContain('"a": 1');
@@ -220,9 +219,7 @@ describe("extractFromUrl", () => {
 
     await expect(
       extractFromUrl("https://www.reddit.com/r/golang/comments/d0zpsh/learning_idiomatic_go_coming_from_java/", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
+        ...extractorDeps(fetchFn),
       }),
     ).rejects.toBeInstanceOf(RedditManualImportError);
 
@@ -235,9 +232,7 @@ describe("extractFromUrl", () => {
     const fetchFn = fakeFetch({});
     await expect(
       extractFromUrl("https://redd.it/d0zpsh", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
+        ...extractorDeps(fetchFn),
       }),
     ).rejects.toBeInstanceOf(RedditManualImportError);
   });
@@ -247,9 +242,7 @@ describe("extractFromUrl", () => {
     const fetchFn = fakeFetch({}, (url) => calls.push({ url }));
     await expect(
       extractFromUrl("https://www.reddit.com/r/golang/s/AbC123xyz", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
+        ...extractorDeps(fetchFn),
       }),
     ).rejects.toBeInstanceOf(RedditManualImportError);
     // Must not follow the share redirect and capture the bot-challenge page.
@@ -261,11 +254,7 @@ describe("extractFromUrl", () => {
       "https://example.com/missing": { status: 404, body: "not found" },
     });
     await expect(
-      extractFromUrl("https://example.com/missing", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
-      }),
+      extractFromUrl("https://example.com/missing", extractorDeps(fetchFn)),
     ).rejects.toBeInstanceOf(BadStatusError);
   });
 
@@ -278,11 +267,7 @@ describe("extractFromUrl", () => {
       },
     });
     await expect(
-      extractFromUrl("https://example.com/big", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000,
-      }),
+      extractFromUrl("https://example.com/big", extractorDeps(fetchFn, { maxBytes: 1_000 })),
     ).rejects.toBeInstanceOf(OversizedResponseError);
   });
 
@@ -295,11 +280,7 @@ describe("extractFromUrl", () => {
       },
     });
     await expect(
-      extractFromUrl("https://example.com/big", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000,
-      }),
+      extractFromUrl("https://example.com/big", extractorDeps(fetchFn, { maxBytes: 1_000 })),
     ).rejects.toBeInstanceOf(OversizedResponseError);
   });
 
@@ -312,11 +293,7 @@ describe("extractFromUrl", () => {
         init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       });
     await expect(
-      extractFromUrl("https://example.com/slow", {
-        fetch: slowFetch,
-        timeoutMs: 50,
-        maxBytes: 1_000_000,
-      }),
+      extractFromUrl("https://example.com/slow", extractorDeps(slowFetch, { timeoutMs: 50 })),
     ).rejects.toBeInstanceOf(FetchTimeoutError);
   });
 
@@ -339,9 +316,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://passed.example/article", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_status).toBe("captured");
     expect(out.markdown).toContain("canonical.example");
@@ -386,13 +361,15 @@ describe("extractFromUrl", () => {
       "http://[::10.0.0.1]/",
       // Long-form loopback (uncompressed ::1).
       "http://[0:0:0:0:0:0:0:1]/",
+      "https://user:pass@example.com/",
+      "https://user@example.com/",
     ];
 
     for (const url of blocked) {
       it(`rejects ${url} with BlockedHostError without calling fetch`, async () => {
         const fetchFn = failingFetch();
         await expect(
-          extractFromUrl(url, { fetch: fetchFn, timeoutMs: 5_000, maxBytes: 1_000_000 }),
+          extractFromUrl(url, extractorDeps(fetchFn)),
         ).rejects.toBeInstanceOf(BlockedHostError);
         expect(fetchFn).not.toHaveBeenCalled();
       });
@@ -402,7 +379,7 @@ describe("extractFromUrl", () => {
       it(`rejects ${url} (non-http(s) scheme)`, async () => {
         const fetchFn = failingFetch();
         await expect(
-          extractFromUrl(url, { fetch: fetchFn, timeoutMs: 5_000, maxBytes: 1_000_000 }),
+          extractFromUrl(url, extractorDeps(fetchFn)),
         ).rejects.toBeInstanceOf(BlockedHostError);
         expect(fetchFn).not.toHaveBeenCalled();
       });
@@ -412,11 +389,7 @@ describe("extractFromUrl", () => {
       const fetchFn = fakeFetch({
         "http://1.1.1.1/": { headers: { "content-type": "text/plain" }, body: "ok" },
       });
-      const out = await extractFromUrl("http://1.1.1.1/", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
-      });
+      const out = await extractFromUrl("http://1.1.1.1/", extractorDeps(fetchFn));
       expect(out.content_status).toBe("captured");
     });
 
@@ -424,11 +397,7 @@ describe("extractFromUrl", () => {
       const fetchFn = fakeFetch({
         "http://172.32.0.1/": { headers: { "content-type": "text/plain" }, body: "ok" },
       });
-      const out = await extractFromUrl("http://172.32.0.1/", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
-      });
+      const out = await extractFromUrl("http://172.32.0.1/", extractorDeps(fetchFn));
       expect(out.content_status).toBe("captured");
     });
 
@@ -436,12 +405,68 @@ describe("extractFromUrl", () => {
       const fetchFn = fakeFetch({
         "https://example.com/": { headers: { "content-type": "text/plain" }, body: "ok" },
       });
-      const out = await extractFromUrl("https://example.com/", {
-        fetch: fetchFn,
-        timeoutMs: 5_000,
-        maxBytes: 1_000_000,
-      });
+      const out = await extractFromUrl("https://example.com/", extractorDeps(fetchFn));
       expect(out.content_status).toBe("captured");
+    });
+
+    it("rejects a 302 to a private literal without issuing the second fetch", async () => {
+      const calls: string[] = [];
+      const fetchFn = fakeFetch(
+        {
+          "https://example.com/start": {
+            status: 302,
+            headers: { location: "http://192.168.1.1/admin" },
+            body: "",
+          },
+        },
+        (url) => calls.push(url),
+      );
+      await expect(extractFromUrl("https://example.com/start", extractorDeps(fetchFn))).rejects.toBeInstanceOf(
+        BlockedHostError,
+      );
+      expect(calls).toEqual(["https://example.com/start"]);
+    });
+
+    it("rejects a hostname whose lookup returns 10.0.0.5 without connecting", async () => {
+      const fetchFn = vi.fn(async () => {
+        throw new Error("must not connect");
+      }) as unknown as typeof fetch;
+      const lookup: LookupFn = async () => [{ address: "10.0.0.5" }];
+      await expect(
+        extractFromUrl("https://rebinder.example/", extractorDeps(fetchFn, { lookup })),
+      ).rejects.toBeInstanceOf(BlockedHostError);
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    it("gives up after the hop ceiling", async () => {
+      const calls: string[] = [];
+      const fetchFn = async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        calls.push(url);
+        const n = Number(new URL(url).pathname.slice(1) || 0);
+        return new Response(null, { status: 302, headers: { location: `https://example.com/${n + 1}` } });
+      };
+      await expect(extractFromUrl("https://example.com/0", extractorDeps(fetchFn))).rejects.toBeInstanceOf(
+        TooManyRedirectsError,
+      );
+      expect(calls).toHaveLength(6);
+    });
+
+    it("rejects an X JSON redirect to a private literal without connecting", async () => {
+      const calls: string[] = [];
+      const fetchFn = async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        calls.push(url);
+        return new Response(null, { status: 302, headers: { location: "http://127.0.0.1/secret" } });
+      };
+      await expect(
+        extractFromUrl(
+          "https://x.com/someone/status/123456789",
+          extractorDeps(fetchFn, { xBearerToken: "test-x-token" }),
+        ),
+      ).rejects.toBeInstanceOf(BlockedHostError);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.some((url) => url.includes("127.0.0.1"))).toBe(false);
     });
   });
 
@@ -453,9 +478,7 @@ describe("extractFromUrl", () => {
       },
     });
     const out = await extractFromUrl("https://example.com/binary", {
-      fetch: fetchFn,
-      timeoutMs: 5_000,
-      maxBytes: 1_000_000,
+      ...extractorDeps(fetchFn),
     });
     expect(out.content_type).toBe("application/octet-stream");
     expect(out.content_status).toBe("raw_only");
@@ -482,7 +505,7 @@ describe("extractFromUrl — YouTube", () => {
     events: [{ segs: [{ utf8: "hello there" }] }, { segs: [{ utf8: " friends" }] }],
   });
 
-  const deps = { timeoutMs: 5_000, maxBytes: 1_000_000 };
+  const deps = { lookup: publicLookup, timeoutMs: 5_000, maxBytes: 1_000_000 };
 
   it("captures title, author, description and transcript from a watch URL", async () => {
     const calls: string[] = [];
@@ -588,5 +611,22 @@ describe("extractFromUrl — YouTube", () => {
     // Resolved to the canonical oEmbed lookup rather than fetching the short link.
     expect(calls).toContain(OEMBED);
     expect(calls).not.toContain("https://youtu.be/YtTWNzOtkxU?t=30");
+  });
+
+  it("rejects a timedtext redirect to a private literal without connecting", async () => {
+    const calls: string[] = [];
+    const timedtext = timedtextJson3Url(CAPTION_BASE);
+    const fetchFn = fakeFetch(
+      {
+        [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+        [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: WATCH_HTML },
+        [timedtext]: { status: 302, headers: { location: "http://169.254.169.254/" }, body: "" },
+      },
+      (url) => calls.push(url),
+    );
+
+    await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(BlockedHostError);
+    expect(calls).toContain(timedtext);
+    expect(calls.some((url) => url.includes("169.254"))).toBe(false);
   });
 });

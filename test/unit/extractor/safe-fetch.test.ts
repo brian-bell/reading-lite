@@ -4,7 +4,7 @@ import {
   safeFetch,
   TooManyRedirectsError,
   type LookupFn,
-} from "../../../scripts/extract-agent-lib/safe-fetch";
+} from "../../../src/modules/extractor/safe-fetch";
 
 const publicLookup: LookupFn = async () => [{ address: "93.184.216.34" }];
 

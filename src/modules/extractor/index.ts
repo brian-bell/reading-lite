@@ -1,3 +1,7 @@
+// HTML / YouTube / X extraction. Fetch is always wrapped with safeFetch so
+// every hop shares scheme, DNS-vs-private, redirect, byte, and time limits.
+// LookupFn is injected; this module does not import node:dns.
+
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
@@ -17,6 +21,13 @@ import {
 } from "./errors";
 import { isRedditThreadUrl } from "./reddit";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
+import {
+  assertSafeUrl,
+  DestinationResolutionError,
+  safeFetch,
+  TooManyRedirectsError,
+  type LookupFn,
+} from "./safe-fetch";
 import { extractXThread, isXPostUrl } from "./x";
 import {
   buildYoutubeMarkdown,
@@ -42,9 +53,20 @@ export {
   XThreadIncompleteError,
   XThreadOutsideRecentWindowError,
 } from "./errors";
+export {
+  assertSafeUrl,
+  DestinationResolutionError,
+  isBlockedHost,
+  safeFetch,
+  TooManyRedirectsError,
+  type LookupFn,
+  type ResolvedAddress,
+  type SafeFetchDeps,
+} from "./safe-fetch";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
+  lookup: LookupFn;
   timeoutMs: number;
   maxBytes: number;
   retry?: RetryDeps;
@@ -71,10 +93,16 @@ export interface ExtractedContent {
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
+  // Fail closed on the submitted URL (scheme / userinfo / literal host) before
+  // routing. HTML, YouTube, and X then share one per-hop DNS / redirect envelope
+  // via safeFetch. lookup is required and injected — this module does not import
+  // node:dns.
   assertSafeUrl(url);
+  const fetch = safeFetch(deps.fetch, { lookup: deps.lookup });
+  const guarded = { ...deps, fetch };
   if (isXPostUrl(url)) {
     return extractXThread(url, {
-      fetch: deps.fetch,
+      fetch,
       bearerToken: deps.xBearerToken,
       timeoutMs: deps.timeoutMs,
       maxBytes: deps.maxBytes,
@@ -89,9 +117,9 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
   // YouTube watch pages are JS shells with no article body. Build markdown from
   // the public oEmbed metadata (reliable floor) plus best-effort description +
   // transcript scraped from the watch page (issue #17).
-  if (isYoutubeWatchUrl(url)) return extractYoutube(url, deps);
+  if (isYoutubeWatchUrl(url)) return extractYoutube(url, guarded);
 
-  const { raw, contentType } = await fetchBounded(url, deps);
+  const { raw, contentType } = await fetchBounded(url, guarded);
   const content_sha256 = await sha256Bytes(raw);
   const base = {
     raw,
@@ -145,9 +173,11 @@ const YOUTUBE_WATCH_HEADERS = {
 } as const;
 
 // Tiered YouTube extraction: oEmbed is the required floor (title + author, and a
-// 429 here surfaces RateLimitedError so the queue retries); the watch-page
-// description/captions and the timedtext transcript are best-effort enrichment
-// that degrade to the floor on any error rather than fail the reading.
+  // 429 here surfaces RateLimitedError so the queue retries); the watch-page
+  // description/captions and the timedtext transcript are best-effort enrichment
+  // that degrade to the floor on ordinary errors. SSRF-guard failures
+  // (BlockedHostError, TooManyRedirectsError, DestinationResolutionError,
+  // OversizedResponseError) stay terminal.
 async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   const videoId = parseVideoId(url);
   if (!videoId) throw new BadStatusError(url, 400);
@@ -169,6 +199,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     description = player?.shortDescription;
     captionBaseUrl = player?.captionTracks[0]?.baseUrl;
   } catch (e) {
+    if (isTerminalFetchGuardError(e)) throw e;
     console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
   }
 
@@ -179,6 +210,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
       const tt = await fetchBounded(timedtextJson3Url(captionBaseUrl), deps);
       transcript = timedtextToText(new TextDecoder("utf-8").decode(tt.raw)) || undefined;
     } catch (e) {
+      if (isTerminalFetchGuardError(e)) throw e;
       console.warn(`youtube transcript fetch failed for ${watchUrl}:`, e);
     }
   }
@@ -360,101 +392,11 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-// Exported for the local extraction agent (scripts/extract-agent-lib), whose
-// safe-fetch wrapper re-runs these checks on every redirect hop and resolved
-// IP — the Worker relies on Cloudflare blocking private egress, the home box
-// has no such backstop. Single-homed here so the rules can't drift.
-export function assertSafeUrl(rawUrl: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new BlockedHostError(rawUrl, "invalid url");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new BlockedHostError(rawUrl, `non-http(s) scheme: ${parsed.protocol}`);
-  }
-  let host = parsed.hostname.toLowerCase();
-  if (host.startsWith("[") && host.endsWith("]")) {
-    host = host.slice(1, -1);
-  }
-  if (isBlockedHost(host)) {
-    throw new BlockedHostError(rawUrl, `private/loopback/link-local: ${host}`);
-  }
-}
-
-// Takes a normalized hostname: lowercased, IPv6 brackets stripped.
-export function isBlockedHost(host: string): boolean {
-  if (host === "localhost" || host === "localhost.") return true;
-  if (host.endsWith(".local") || host.endsWith(".local.")) return true;
-
-  if (isBlockedV4(host)) return true;
-
-  if (host.includes(":")) {
-    if (host === "::" || host === "::1") return true;
-    // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) decode to
-    // the embedded IPv4; re-run the v4 rules against that address.
-    const embedded = embeddedIPv4(host);
-    if (embedded && isBlockedV4(embedded)) return true;
-    const head = host.split(":")[0] ?? "";
-    if (head.startsWith("fc") || head.startsWith("fd")) return true;
-    // fe80::/10 link-local (fe80–febf) and fec0::/10 site-local (fec0–feff).
-    // Site-local is deprecated but some home LANs still route it, and the home
-    // box has no platform egress guard — so the whole fe80–feff span is blocked.
-    if (/^fe[89a-f][0-9a-f]{0,2}$/.test(head)) return true;
-  }
-  return false;
-}
-
-function isBlockedV4(host: string): boolean {
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!v4) return false;
-  const a = Number(v4[1]);
-  const b = Number(v4[2]);
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  // Shared address space (RFC 6598). Tailscale and CGNAT both live here, so a
-  // redirect into 100.64/10 reaches overlay/internal services from the home box
-  // exactly like RFC1918 would — no public source is ever hosted on it.
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 192 && b === 0 && Number(v4[3]) === 0) return true; // IETF protocol assignments
-  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
-  if (a >= 224) return true; // multicast 224/4, reserved 240/4, broadcast
-  return false;
-}
-
-function embeddedIPv4(host: string): string | null {
-  // host is bracket-stripped, lowercased. WHATWG URL canonicalizes
-  // "[::ffff:127.0.0.1]" to "[::ffff:7f00:1]" so we need to expand "::" and
-  // decode the trailing 32 bits. The dotted spelling never reaches us from a
-  // parsed URL, but DNS-resolved addresses (the extraction agent's per-hop
-  // lookup checks) do use it — normalize it to the hex form first.
-  const dotted = host.match(/^(.+):(\d{1,3}(?:\.\d{1,3}){3})$/);
-  if (dotted) {
-    const quad = dotted[2]!.split(".").map(Number);
-    if (quad.some((n) => n > 255)) return null;
-    host = `${dotted[1]}:${((quad[0]! << 8) | quad[1]!).toString(16)}:${((quad[2]! << 8) | quad[3]!).toString(16)}`;
-  }
-  let segments: string[];
-  if (host.includes("::")) {
-    const [left, right] = host.split("::", 2) as [string, string];
-    const leftParts = left === "" ? [] : left.split(":");
-    const rightParts = right === "" ? [] : right.split(":");
-    const fill = 8 - leftParts.length - rightParts.length;
-    if (fill < 0) return null;
-    segments = [...leftParts, ...Array<string>(fill).fill("0"), ...rightParts];
-  } else {
-    segments = host.split(":");
-  }
-  if (segments.length !== 8) return null;
-  for (let i = 0; i < 5; i++) {
-    if (segments[i] !== "0") return null;
-  }
-  if (segments[5] !== "0" && segments[5] !== "ffff") return null;
-  const hi = parseInt(segments[6]!, 16);
-  const lo = parseInt(segments[7]!, 16);
-  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+function isTerminalFetchGuardError(error: unknown): boolean {
+  return (
+    error instanceof BlockedHostError ||
+    error instanceof TooManyRedirectsError ||
+    error instanceof DestinationResolutionError ||
+    error instanceof OversizedResponseError
+  );
 }

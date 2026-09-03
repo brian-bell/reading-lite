@@ -47,8 +47,14 @@ const CASES: Array<{ name: string; row: ListIndexItem; expected: Partial<Decisio
     expected: { decision: "out_of_scope" },
   },
   {
-    name: "BlockedHostError is never retried (SSRF guard fired)",
-    row: failedRow({ error: { code: "BlockedHostError", message: "blocked host (private): https://x", stage: "fetch_source" } }),
+    name: "TooManyRedirectsError is never retried (SSRF redirect hop cap)",
+    row: failedRow({
+      error: {
+        code: "TooManyRedirectsError",
+        message: "redirect chain exceeded 5 hops: https://x",
+        stage: "fetch_source",
+      },
+    }),
     expected: { decision: "never" },
   },
   {
