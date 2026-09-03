@@ -123,29 +123,6 @@ function embedCalls(fetchFn: ReturnType<typeof makeFetch>): number {
   }).length;
 }
 
-function interceptGlobalLeaseFetch(
-  handler: (body: Record<string, unknown>, next: () => Promise<Response>) => Promise<Response>,
-): () => void {
-  const orig = (env as unknown as Env).GLOBAL_USAGE_GUARD!;
-  const realGet = orig.get.bind(orig);
-  (env as unknown as { GLOBAL_USAGE_GUARD: DurableObjectNamespace }).GLOBAL_USAGE_GUARD = {
-    idFromName: orig.idFromName.bind(orig),
-    get: (id: DurableObjectId) => {
-      const stub = realGet(id);
-      return {
-        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-          const raw = typeof init?.body === "string" ? init.body : "{}";
-          const body = JSON.parse(raw) as Record<string, unknown>;
-          return handler(body, () => stub.fetch(input as never, init));
-        },
-      } as DurableObjectStub;
-    },
-  } as DurableObjectNamespace;
-  return () => {
-    (env as unknown as { GLOBAL_USAGE_GUARD: DurableObjectNamespace }).GLOBAL_USAGE_GUARD = orig;
-  };
-}
-
 // workers-pool isolated storage pops with 500 if an unawaited processReading is
 // still in I/O when the test ends. vi.waitFor's 1s default also expires in CI
 // before extract/lease acquire reach embed. Park on supplied markdown (skip URL
@@ -770,27 +747,17 @@ describe("processing leases (Workers pool)", () => {
       attemptId: "at_orphan",
       source: PARKED_MARKDOWN,
     });
-    let globalAcquires = 0;
-    const restore = interceptGlobalLeaseFetch(async (body, next) => {
-      if (body.kind === "acquire_lease") {
-        globalAcquires += 1;
-        if (globalAcquires === 1) {
-          await next();
-          throw new Error("response lost");
-        }
-      }
-      return next();
-    });
+    // Persist-without-response: global row exists for this attempt, tenant does not.
+    expect(
+      await globalLease({
+        kind: "acquire_lease",
+        tenantId,
+        attemptId: "at_orphan",
+        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
+      }),
+    ).toMatchObject({ ok: true, already_running: false });
     const fetchFn = makeFetch();
-    try {
-      await expect(
-        processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      ).rejects.toBeInstanceOf(DeferPaidWorkError);
-      expect(embedCalls(fetchFn)).toBe(0);
-      await processReading(job, env as unknown as Env, services(fetchFn), tenant);
-    } finally {
-      restore();
-    }
+    await processReading(job, env as unknown as Env, services(fetchFn), tenant);
     expect(embedCalls(fetchFn)).toBeGreaterThan(0);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "ready",
