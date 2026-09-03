@@ -131,7 +131,6 @@ interface Opts {
    * measured identical flags between the two and 12–14x less wall clock.
    */
   full: boolean;
-  fullExplicit: boolean;
   limit?: number;
   out: string;
 }
@@ -144,7 +143,6 @@ function parseRefreshArgs(argv: string[]): Opts {
     execute: false,
     soleWriter: false,
     full: false,
-    fullExplicit: false,
     out: "refresh-report.json",
   };
   let sinceLastRun = false;
@@ -152,7 +150,7 @@ function parseRefreshArgs(argv: string[]): Opts {
     const a = argv[i]!;
     if (a === "--execute") opts.execute = true;
     else if (a === "--sole-writer") opts.soleWriter = true;
-    else if (a === "--full") opts.fullExplicit = true;
+    else if (a === "--full") opts.full = true;
     else if (a === "--since-last-run") sinceLastRun = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
@@ -171,14 +169,14 @@ function parseRefreshArgs(argv: string[]): Opts {
   }
   // The two scope flags say opposite things; picking one silently would let a
   // nightly cron think it ran incrementally while it swept.
-  if (sinceLastRun && opts.fullExplicit) {
+  // --since-last-run is the default, so the flag only ever says out loud what
+  // the absence of --full already means, and it is parsed for that conflict
+  // check alone. It stays accepted because every recorded invocation and
+  // runbook example spells it, and because a schedule that names its scope
+  // does not change meaning under a later default.
+  if (sinceLastRun && opts.full) {
     throw new UsageError("--since-last-run cannot be combined with --full");
   }
-  // --since-last-run is the default, so the flag only ever says out loud what
-  // the absence of --full already means. It stays accepted because every
-  // recorded invocation and runbook example spells it, and because a schedule
-  // that names its scope does not change meaning under a later default.
-  opts.full = opts.fullExplicit;
   return opts;
 }
 
@@ -966,8 +964,9 @@ export const corpusRefreshNeighboursCommand: CommandDefinition<CorpusRefreshNeig
   safety: "plan-first",
   helpText: `Usage: npm run ops -- corpus refresh-neighbours [rd_ID...] [options]
 
-Queries Vectorize with each ready reading's stored vector (no embedding calls)
-and diffs the current floored ready-neighbourhood against stored connections
+Queries Vectorize with the stored vector of each ready reading in scope (no
+embedding calls; see Scope below for which those are, and --full for all of
+them) and diffs the current floored ready-neighbourhood against stored connections
 and novelty_verdict. The report distinguishes missing or non-ready citations,
 ready citations below the floor, new uncited neighbours, and uncited candidate-set
 drift against the latest judged neighbourhood (an older reading entering, or a

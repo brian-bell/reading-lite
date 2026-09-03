@@ -401,8 +401,10 @@ no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
 retry but carry no deadline of their own. A stall on any of them still looks
 like a silent pass — the `Timing:` block is what makes it visible.
 
-`ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
-stored vector id (no embedding calls, no LLM), prints the staleness inventory,
+`ops corpus refresh-neighbours` re-queries Vectorize by the stored vector id of
+each ready reading in scope — by default the readings that moved since the run
+marker, and under `--full` every one of them, per **Scope** below — with no
+embedding calls and no LLM. It prints the staleness inventory,
 and always writes `refresh-report.json` — the input contract for later
 judgement slices. The report compares stored connection IDs with the current
 floored ready-neighbourhood. It distinguishes missing or non-ready citations
@@ -637,6 +639,12 @@ marker write does not fail the run: the cost is the next pass sweeping.
 ```sh
 # Nightly. --since-last-run is the default; spelled out so the schedule says
 # which scope it means.
+#
+# UPGRADING AN EXISTING SCHEDULE: before this change the weekly sweep was a bare
+# invocation with no scope flag. That exact line now runs incrementally and
+# never sweeps, and nothing at runtime says so — `last_full_run_at` is recorded
+# on the marker but no pass reads it back or warns on its age. Add --full to
+# the weekly cron at the same time as taking this change.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --since-last-run --execute --sole-writer
 # Weekly. The sweep is no longer what a bare invocation does — it must be asked

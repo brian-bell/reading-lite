@@ -968,7 +968,10 @@ describe("ops corpus refresh-neighbours", () => {
     // narrowed nothing, and the pass is complete by both accounts.
     it("does not call a pass narrowed by a --limit it never reached", async () => {
       const { deps, calls } = makeDeps({ state: MARKER });
-      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--limit", "500"], deps);
+      await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--full", "--limit", "500"],
+        deps,
+      );
       expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
     });
 
@@ -1252,7 +1255,7 @@ describe("ops corpus refresh-neighbours", () => {
           : { ...(state as Record<string, unknown>), invalidated_by: "corpus backfill-vectors" };
       };
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(0);
@@ -1287,7 +1290,7 @@ describe("ops corpus refresh-neighbours", () => {
         return base(d);
       };
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(0);
@@ -1321,7 +1324,7 @@ describe("ops corpus refresh-neighbours", () => {
         return reads === 1 ? base(d) : { version: 99 };
       };
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(0);
@@ -1349,7 +1352,7 @@ describe("ops corpus refresh-neighbours", () => {
     it("does not fail a completed pass whose marker write failed", async () => {
       const { deps, lines } = makeDeps({ state: MARKER, stateWriteThrow: "no write" });
       const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
         deps,
       );
       expect(code).toBe(0);
