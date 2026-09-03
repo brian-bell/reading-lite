@@ -15,6 +15,24 @@ export type ImmediateNotificationDecision =
   | { kind: "send"; to: string; from: string }
   | { kind: "skip"; reason: ImmediateNotificationSkip };
 
+export type DigestRecipientSkip =
+  | "empty_from"
+  | "missing_user"
+  | "inactive_user"
+  | "unverified_email"
+  | "allowlist";
+
+export type DigestRecipientDecision =
+  | { kind: "send"; to: string; from: string }
+  | { kind: "skip"; reason: DigestRecipientSkip };
+
+type MailEnv = {
+  APP_ENV?: string;
+  AUTH_MAIL_ALLOWLIST?: string;
+  FOUNDER_EMAIL?: string;
+  EMAIL_FROM: string;
+};
+
 /**
  * Send-time item gate. Import is always silent, even when the body or
  * `--email` asked for mail. Submit defaults to true when `email` is absent
@@ -43,12 +61,7 @@ interface NotificationUserRow {
  */
 export async function resolveImmediateNotification(
   db: ControlPlaneDb,
-  env: {
-    APP_ENV?: string;
-    AUTH_MAIL_ALLOWLIST?: string;
-    FOUNDER_EMAIL?: string;
-    EMAIL_FROM: string;
-  },
+  env: MailEnv,
   tenantId: string,
 ): Promise<ImmediateNotificationDecision> {
   const from = env.EMAIL_FROM?.trim() ?? "";
@@ -67,6 +80,38 @@ export async function resolveImmediateNotification(
   if (row.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
   if (row.notify_immediate == null) return { kind: "skip", reason: "missing_settings" };
   if (row.notify_immediate !== 1) return { kind: "skip", reason: "opted_out" };
+  if (!isAuthMailAllowed(env, row.email_canonical)) {
+    return { kind: "skip", reason: "allowlist" };
+  }
+  return { kind: "send", to: row.email_display, from };
+}
+
+/**
+ * Digest send-time recipient: verified `users.email_display`. Independent of
+ * `notify_immediate` — digest opt-out is `digest_cadence = off`, checked by
+ * the pipeline before this helper runs.
+ */
+export async function resolveDigestRecipient(
+  db: ControlPlaneDb,
+  env: MailEnv,
+  tenantId: string,
+): Promise<DigestRecipientDecision> {
+  const from = env.EMAIL_FROM?.trim() ?? "";
+  if (!from) return { kind: "skip", reason: "empty_from" };
+
+  const row = await db.first<{
+    email_canonical: string;
+    email_display: string;
+    status: string;
+    email_verified_at_ms: number | null;
+  }>(
+    `SELECT email_canonical, email_display, status, email_verified_at_ms
+       FROM users WHERE id = ?`,
+    tenantId,
+  );
+  if (!row) return { kind: "skip", reason: "missing_user" };
+  if (row.status !== "active") return { kind: "skip", reason: "inactive_user" };
+  if (row.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
   if (!isAuthMailAllowed(env, row.email_canonical)) {
     return { kind: "skip", reason: "allowlist" };
   }

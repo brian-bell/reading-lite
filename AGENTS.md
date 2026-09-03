@@ -18,8 +18,9 @@ comments of the modules themselves — read those before changing a module.
 
 ## Module Map
 
-- `src/index.ts` — Worker fetch + queue handlers (main queue → `processReading`,
-  DLQ → `markDeadLettered`).
+- `src/index.ts` — Worker fetch + queue + scheduled handlers (READING_JOBS →
+  `processReading`, reading DLQ → `markDeadLettered`, DIGEST_JOBS → stub digest
+  send, digest DLQ → ledger `failed` only).
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -34,6 +35,10 @@ comments of the modules themselves — read those before changing a module.
   write-and-enqueue ordering plus the shared rollback-to-failed funnel.
 - `src/process-reading.ts` — background pipeline, attempt logging, terminal
   manifest commits, failure handling.
+- `src/digest-pipeline.ts` — digest cron fan-out + DIGEST_JOBS consumer (issue
+  196 B1 stub send: ledger `sent` without Resend/HTML). One job per tenant;
+  send-time re-read honors cadence off. Digest DLQ must not touch reading
+  manifests.
 - `src/reading-visibility.ts` — list-row + Vectorize-vector lockstep and the
   owner gate protecting it.
 - `src/reading-purge.ts` — `DELETE /api/readings/:id`: visibility-first purge
@@ -202,7 +207,8 @@ Pointers only — the details live in the named files' comments.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
   delay, manifest stays pending; other errors → failed manifest + ack.
   Exhausted retries hit the DLQ, where `markDeadLettered` writes a retryable
-  `failed`.
+  `failed`. Digest jobs use `DIGEST_JOBS` (never `READING_JOBS`); the digest
+  DLQ marks `digest_deliveries` failed and must not call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

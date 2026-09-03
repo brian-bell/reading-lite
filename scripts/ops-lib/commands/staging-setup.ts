@@ -82,8 +82,9 @@ export const stagingSetupCommand: CommandDefinition<StagingSetupDeps> = {
   helpText: `Usage: npm run ops -- staging setup [--provider openai|anthropic] [--execute]
 
 Creates the one-time Cloudflare staging resources for reading-lite:
-R2 bucket, Vectorize index, Queue, and DLQ. Plans by default; --execute
-creates resources. Idempotent — "already exists" is treated as success.
+R2 bucket, Vectorize index, reading Queue + DLQ, and digest Queue + DLQ.
+Plans by default; --execute creates resources. Idempotent — "already exists"
+is treated as success.
 
 Secrets are not written by this command because wrangler secret put is
 interactive; the plan prints the commands to run afterwards. OpenAI is the

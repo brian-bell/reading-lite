@@ -250,9 +250,10 @@ npm run ops -- staging teardown --execute
 ```
 
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-Queue/DLQ and Vectorize index, empties the bucket via the S3-compatible R2 API,
-and deletes the bucket. The bucket-empty step needs the `CORPUS_R2_*`
-credentials above.
+reading and digest Queue/DLQ pairs and Vectorize index, empties the bucket via
+the S3-compatible R2 API, and deletes the bucket. The bucket-empty step needs
+the `CORPUS_R2_*` credentials above. `ops staging setup` also creates
+`reading-lite-staging-digest` and `reading-lite-staging-digest-dlq`.
 
 Smoke-test idempotent submits against staging:
 

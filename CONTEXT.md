@@ -104,6 +104,17 @@ submit, a markdown import, or a lookup. It lives in
   that read the TTL from env and apply the verdict onto the manifest / index-item
   shape.
 
+## Digest delivery
+
+- **Digest cadence** — `off` | `daily` | `weekly` on `user_settings`. Independent
+  of `notify_immediate`. Opt-out is cadence `off`.
+- **period_key** — local civil key the ledger is unique on: daily `YYYY-MM-DD`,
+  weekly ISO week `YYYY-Www` (Monday=1). Computed in the user's IANA zone.
+- **Digest job** — one `DIGEST_JOBS` message per tenant, envelope v1
+  `{ tenantId, userId, period_key, cadence }` only. The consumer re-reads
+  settings immediately before send. B1 stub-sends by marking the ledger `sent`
+  without calling Resend.
+
 ## Operator surface
 
 - **Reading API client** — the operator tools' one way of speaking to the
