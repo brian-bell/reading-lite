@@ -783,15 +783,16 @@ describe("processing leases (Workers pool)", () => {
       "SELECT max_concurrent_work FROM system_policy WHERE id = 1",
     ).first<{ max_concurrent_work: number }>();
     await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = 1 WHERE id = 1").run();
+    let holderFence: string | undefined;
     try {
-      expect(
-        await globalLease({
-          kind: "acquire_lease",
-          tenantId,
-          attemptId: "at_foreign_holder",
-          nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
-        }),
-      ).toMatchObject({ ok: true, already_running: false });
+      const held = await globalLease({
+        kind: "acquire_lease",
+        tenantId,
+        attemptId: "at_foreign_holder",
+        nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
+      });
+      expect(held).toMatchObject({ ok: true, already_running: false });
+      holderFence = typeof held.fence === "string" ? held.fence : undefined;
       const fetchFn = makeFetch();
       const job = await seedPending(tenant, {
         id: "rd_LEASE_FOREIGN_G",
@@ -814,6 +815,15 @@ describe("processing leases (Workers pool)", () => {
         active_attempt: { id: "at_foreign_job" },
       });
     } finally {
+      if (holderFence) {
+        await globalLease({
+          kind: "release_lease",
+          tenantId,
+          attemptId: "at_foreign_holder",
+          fence: holderFence,
+          nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
+        });
+      }
       await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = ? WHERE id = 1")
         .bind(previous?.max_concurrent_work ?? 3)
         .run();

@@ -9,6 +9,10 @@ export default [
   defineWorkersProject({
     test: {
       name: "workers",
+      // Lease acquire/presentLease add DO round-trips on every processReading.
+      // GitHub Actions workers-pool regularly exceeds Vitest's 5s default
+      // (two-tenant save-to-ready and MCP import+poll timed out at 5000ms).
+      testTimeout: 20_000,
       include: [
         "test/integration/**/*.test.ts",
         "test/unit/schemas/**/*.test.ts",
