@@ -138,7 +138,7 @@ describe("TenantUsageGuard processing leases", () => {
     expect([...map.keys()].filter((key) => key.startsWith("lease:"))).toHaveLength(1);
   });
 
-  it("rejects renew, pause, and release with a stale or expired fence", async () => {
+  it("rejects renew and release with a stale fence; in-flight past TTL can still renew", async () => {
     const guard = new TenantUsageGuard(guardState(memoryStorage()), tenantEnv());
     const held = await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_f", nowMs: NOW });
     expect(
@@ -154,7 +154,7 @@ describe("TenantUsageGuard processing leases", () => {
         fence: held.fence,
         nowMs: NOW + PROCESSING_LEASE_TTL_MS + 1,
       }),
-    ).toMatchObject({ ok: false, reason: "stale_fence" });
+    ).toMatchObject({ ok: true, fence: held.fence });
   });
 
   it("lets the holder renew and then release so a second attempt can acquire", async () => {
@@ -213,9 +213,9 @@ describe("TenantUsageGuard processing leases", () => {
     expect(map.has(leaseStorageKey("at_x"))).toBe(false);
   });
 
-  it("alarm expires a lease so a later acquire is not blocked", async () => {
+  it("alarm expires a paused lease so a later acquire is not blocked", async () => {
     const map = new Map<string, unknown>([
-      [leaseStorageKey("at_stale"), { fence: "old", expiresAt: NOW - 1, inFlight: true }],
+      [leaseStorageKey("at_stale"), { fence: "old", expiresAt: NOW - 1, inFlight: false }],
     ]);
     const storage = memoryStorage(false, map);
     const guard = new TenantUsageGuard(guardState(storage), tenantEnv());
@@ -224,6 +224,39 @@ describe("TenantUsageGuard processing leases", () => {
     expect(
       await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_fresh", nowMs: Date.now() }),
     ).toMatchObject({ ok: true });
+  });
+
+  it("does not sweep an in-flight lease past TTL and keeps the slot held", async () => {
+    const map = new Map<string, unknown>([
+      [leaseStorageKey("at_live"), { fence: "held", expiresAt: NOW - 1, inFlight: true }],
+    ]);
+    const storage = memoryStorage(false, map);
+    const guard = new TenantUsageGuard(guardState(storage), tenantEnv());
+    await guard.alarm();
+    expect(map.get(leaseStorageKey("at_live"))).toMatchObject({ fence: "held", inFlight: true });
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_live", nowMs: NOW }),
+    ).toMatchObject({ ok: true, already_running: true, fence: "held" });
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_other", nowMs: NOW }),
+    ).toMatchObject({ ok: false, reason: "contention" });
+  });
+
+  it("pause then complete still releases; paused expiry frees the slot", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    const held = await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_p2", nowMs: NOW });
+    expect(
+      await post(guard, { kind: "pause_lease", attemptId: "at_p2", fence: held.fence, nowMs: NOW + 1 }),
+    ).toMatchObject({ ok: true });
+    expect(map.get(leaseStorageKey("at_p2"))).toMatchObject({ inFlight: false });
+    expect(
+      await post(guard, { kind: "release_lease", attemptId: "at_p2", fence: held.fence, nowMs: NOW + 2 }),
+    ).toMatchObject({ ok: true });
+    expect(map.has(leaseStorageKey("at_p2"))).toBe(false);
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_after", nowMs: NOW + 2 }),
+    ).toMatchObject({ ok: true, already_running: false });
   });
 
   it("does not schedule a cleanup alarm in the past", async () => {
@@ -264,11 +297,11 @@ describe("GlobalUsageGuard processing leases", () => {
     ).toEqual({ ok: false, reason: "missing_limits" });
   });
 
-  it("expired fence cannot renew after alarm sweep", async () => {
+  it("expired paused fence cannot renew after alarm sweep", async () => {
     const map = new Map<string, unknown>([
       [
         leaseStorageKey(`${TENANT}:at_old`),
-        { fence: "f1", expiresAt: Date.now() - 1, inFlight: true },
+        { fence: "f1", expiresAt: Date.now() - 1, inFlight: false },
       ],
     ]);
     const guard = new GlobalUsageGuard(guardState(memoryStorage(false, map)), globalEnv());
@@ -282,6 +315,38 @@ describe("GlobalUsageGuard processing leases", () => {
         nowMs: Date.now(),
       }),
     ).toMatchObject({ ok: false, reason: "stale_fence" });
+  });
+
+  it("in-flight past TTL can still renew and then release", async () => {
+    const map = new Map<string, unknown>([
+      [
+        leaseStorageKey(`${TENANT}:at_hold`),
+        { fence: "f1", expiresAt: Date.now() - 1, inFlight: true },
+      ],
+    ]);
+    const guard = new GlobalUsageGuard(guardState(memoryStorage(false, map)), globalEnv());
+    await guard.alarm();
+    expect(
+      await post(guard, {
+        kind: "renew_lease",
+        tenantId: TENANT,
+        attemptId: "at_hold",
+        fence: "f1",
+        nowMs: Date.now(),
+      }),
+    ).toMatchObject({ ok: true, fence: "f1" });
+    expect(
+      await post(guard, {
+        kind: "release_lease",
+        tenantId: TENANT,
+        attemptId: "at_hold",
+        fence: "f1",
+        nowMs: Date.now(),
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_next", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
   });
 });
 

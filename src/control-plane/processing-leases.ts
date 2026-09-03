@@ -68,8 +68,8 @@ export async function acquireProcessingLeases(
   if (globalResult.alreadyRunning) {
     // Fresh tenant acquire (alreadyRunning is false — we returned earlier
     // otherwise) plus a live global lease for this attempt: drop the new
-    // tenant permit so an uncertain global persist cannot leak it, then
-    // still report already_running so dispatch keeps its ack path.
+    // tenant permit so an uncertain global persist cannot leak it. processReading
+    // then checks whether the reading is already terminal before acking or deferring.
     await compensateTenant(deps.tenant, attemptId, tenantResult.fence, nowMs);
     return { ok: true, alreadyRunning: true };
   }

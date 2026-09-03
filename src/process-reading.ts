@@ -135,7 +135,10 @@ export async function processReading(
     }
 
     const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, Date.now()));
-    if (acquired === "already_running") return;
+    if (acquired === "already_running") {
+      await ackOrDeferIfProcessingIncomplete(reader, args);
+      return;
+    }
     leases = acquired;
     stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired);
     await presentLeaseBeforePaidDispatch(env, acquired);
@@ -299,6 +302,9 @@ export async function processReading(
       throw e;
     }
     if (e instanceof StaleProcessingLeaseError) {
+      await ackOrDeferIfProcessingIncomplete(reader, args);
+      if (leases) await releaseProcessingLeases(env, leases, Date.now());
+      leases = null;
       return;
     }
     if (e instanceof RateLimitedError) {
@@ -319,6 +325,22 @@ export async function processReading(
     }
     await markFailed(reader, args, services, attempt, e);
   }
+}
+
+// Duplicate or stale-fence deliveries must not ack-as-success unless this
+// reading already has a terminal ready/failed manifest. Incomplete work is
+// deferred with the same delayed-send contract as lease contention.
+async function ackOrDeferIfProcessingIncomplete(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  try {
+    const manifest = await reader.readManifest(args.keyPrefix);
+    if (manifest?.status === "ready" || manifest?.status === "failed") return;
+  } catch (err) {
+    console.error(err);
+  }
+  throw new DeferPaidWorkError();
 }
 
 class StaleProcessingLeaseError extends Error {

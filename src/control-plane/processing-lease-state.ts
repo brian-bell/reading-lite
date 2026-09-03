@@ -2,9 +2,11 @@ import { PROCESSING_LEASE_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 
 // Shared expiring-fenced-lease book for TenantUsageGuard and GlobalUsageGuard.
-// One lease per attempt key. Capacity is the count of unexpired rows. Duplicate
-// acquire of the same key returns the existing fence (no second permit). An
-// in-flight holder blocks a second paid start until pause (429) or expiry.
+// One lease per attempt key. Capacity is in-flight rows plus unexpired paused
+// rows. Duplicate acquire of the same key returns the existing fence (no second
+// permit). An in-flight holder blocks a second paid start until pause (429) or
+// complete (release). Sweep must not steal an in-flight row when its TTL
+// elapses — the owner heartbeat/presentLease path still renews.
 
 export const LEASE_KEY_PREFIX = "lease:";
 
@@ -44,6 +46,10 @@ function asLease(value: unknown): LeaseRecord | null {
   };
 }
 
+function leaseOccupiesSlot(lease: LeaseRecord, nowMs: number): boolean {
+  return lease.inFlight || nowMs < lease.expiresAt;
+}
+
 export async function sweepExpiredLeases(
   storage: DurableObjectStorage,
   nowMs: number,
@@ -55,6 +61,12 @@ export async function sweepExpiredLeases(
     const lease = asLease(value);
     if (!lease) {
       await storage.delete(key);
+      continue;
+    }
+    if (lease.inFlight) {
+      if (nowMs < lease.expiresAt && (nextAlarm == null || lease.expiresAt < nextAlarm)) {
+        nextAlarm = lease.expiresAt;
+      }
       continue;
     }
     if (nowMs >= lease.expiresAt) {
@@ -72,7 +84,7 @@ async function liveLeaseCount(storage: DurableObjectStorage, nowMs: number): Pro
   for (const [key, value] of entries) {
     if (!isLeaseKey(key)) continue;
     const lease = asLease(value);
-    if (lease && nowMs < lease.expiresAt) count += 1;
+    if (lease && leaseOccupiesSlot(lease, nowMs)) count += 1;
   }
   return count;
 }
@@ -93,7 +105,7 @@ export async function acquireLease(
   await sweepExpiredLeases(storage, opts.nowMs);
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
-  if (existing && opts.nowMs < existing.expiresAt) {
+  if (existing && leaseOccupiesSlot(existing, opts.nowMs)) {
     if (existing.inFlight) {
       return {
         ok: true,
@@ -124,19 +136,29 @@ export async function acquireLease(
   return { ok: true, fence: created.fence, alreadyRunning: false, expiresAt: created.expiresAt };
 }
 
+function fenceMismatchOrIdleExpired(
+  existing: LeaseRecord | null,
+  opts: { fence: string; nowMs: number },
+): { stale: true; drop: boolean } | { stale: false; lease: LeaseRecord } {
+  if (!existing) return { stale: true, drop: false };
+  if (existing.fence !== opts.fence) return { stale: true, drop: false };
+  if (!existing.inFlight && opts.nowMs >= existing.expiresAt) return { stale: true, drop: true };
+  return { stale: false, lease: existing };
+}
+
 export async function renewLease(
   storage: DurableObjectStorage,
   opts: { id: string; fence: string; nowMs: number },
 ): Promise<LeaseDecision> {
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
-  if (!existing || opts.nowMs >= existing.expiresAt) {
-    if (existing && opts.nowMs >= existing.expiresAt) await storage.delete(key);
+  const verdict = fenceMismatchOrIdleExpired(existing, opts);
+  if (verdict.stale) {
+    if (verdict.drop) await storage.delete(key);
     return { ok: false, reason: "stale_fence" };
   }
-  if (existing.fence !== opts.fence) return { ok: false, reason: "stale_fence" };
   const next: LeaseRecord = {
-    ...existing,
+    ...verdict.lease,
     inFlight: true,
     expiresAt: opts.nowMs + PROCESSING_LEASE_TTL_MS,
   };
@@ -150,13 +172,13 @@ export async function pauseLease(
 ): Promise<LeaseDecision> {
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
-  if (!existing || opts.nowMs >= existing.expiresAt) {
-    if (existing && opts.nowMs >= existing.expiresAt) await storage.delete(key);
+  const verdict = fenceMismatchOrIdleExpired(existing, opts);
+  if (verdict.stale) {
+    if (verdict.drop) await storage.delete(key);
     return { ok: false, reason: "stale_fence" };
   }
-  if (existing.fence !== opts.fence) return { ok: false, reason: "stale_fence" };
   const next: LeaseRecord = {
-    ...existing,
+    ...verdict.lease,
     inFlight: false,
     expiresAt: opts.nowMs + PROCESSING_LEASE_TTL_MS,
   };

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
-import { PROCESSING_DEFER_DELAY_SECONDS } from "../../src/control-plane/constants";
+import { PROCESSING_DEFER_DELAY_SECONDS, GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
@@ -123,29 +123,35 @@ function embedCalls(fetchFn: ReturnType<typeof makeFetch>): number {
   }).length;
 }
 
-async function seedPending(
+async function seedReading(
   tenant: TenantContext,
-  opts: { id: string; url: string; attemptId: string },
+  opts: { id: string; url: string; attemptId: string; status?: Manifest["status"] },
 ): Promise<ProcessReadingArgs> {
   const createdAt = "2026-09-03T00:00:00.000Z";
   const keyPrefix = buildKeyPrefix(opts.id, createdAt);
   const urlHash = await sha256Hex(opts.url);
   const reader = testReadingStore(env, tenant);
+  const status = opts.status ?? "pending";
   const manifest: Manifest = {
     id: opts.id,
     url: opts.url,
     url_hash: urlHash,
     source_type: "url",
-    status: "pending",
+    status,
     active_attempt: {
       id: opts.attemptId,
       trigger: "submit",
-      status: "running",
-      stage: "queued",
+      status: status === "pending" ? "running" : status === "ready" ? "succeeded" : "failed",
+      stage: status === "pending" ? "queued" : "write_indexes",
       started_at: createdAt,
+      ...(status === "pending" ? {} : { finished_at: createdAt }),
     },
+    ...(status === "failed"
+      ? { error: { code: "TestError", message: "seeded failure", retryable: true } }
+      : {}),
+    ...(status === "ready" ? { title: "Seeded", tldr: "Already done." } : {}),
     content_type: "application/octet-stream",
-    content_status: "captured",
+    content_status: status === "failed" ? "failed" : "captured",
     content_bytes: 0,
     content_sha256: "0".repeat(64),
     created_at: createdAt,
@@ -167,15 +173,40 @@ async function seedPending(
   };
 }
 
-async function holdTenantLease(tenantId: string, attemptId: string, nowMs = Date.now()): Promise<Record<string, unknown>> {
+async function seedPending(
+  tenant: TenantContext,
+  opts: { id: string; url: string; attemptId: string },
+): Promise<ProcessReadingArgs> {
+  return seedReading(tenant, opts);
+}
+
+async function tenantLease(
+  tenantId: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const ns = (env as unknown as Env).TENANT_USAGE_GUARD!;
   const stub = ns.get(ns.idFromName(tenantId));
   const res = await stub.fetch("https://tenant-usage-guard/", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind: "acquire_lease", tenantId, attemptId, nowMs }),
+    body: JSON.stringify(body),
   });
   return (await res.json()) as Record<string, unknown>;
+}
+
+async function globalLease(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const ns = (env as unknown as Env).GLOBAL_USAGE_GUARD!;
+  const stub = ns.get(ns.idFromName(GLOBAL_USAGE_GUARD_NAME));
+  const res = await stub.fetch("https://global-usage-guard/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}
+
+async function holdTenantLease(tenantId: string, attemptId: string, nowMs = Date.now()): Promise<Record<string, unknown>> {
+  return tenantLease(tenantId, { kind: "acquire_lease", tenantId, attemptId, nowMs });
 }
 
 function fakeMessage(body: unknown): Message<unknown> {
@@ -224,7 +255,7 @@ describe("processing leases (Workers pool)", () => {
     });
   });
 
-  it("duplicate delivery of the same attempt performs one paid dispatch", async () => {
+  it("duplicate delivery of the same in-flight attempt defers without a second embed", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -253,20 +284,202 @@ describe("processing leases (Workers pool)", () => {
     const svc = services(fetchFn);
     const first = processReading(job, env as unknown as Env, svc, tenant);
     await vi.waitFor(() => expect(embedStarted).toBe(1));
-    await processReading(job, env as unknown as Env, svc, tenant);
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, svc, tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
     expect(embedStarted).toBe(1);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "pending",
+    });
     releaseEmbed(embeddingResponse());
     await first;
   });
 
-  it("expired lease does not block a later attempt", async () => {
+  it("already_running on a ready reading acks as done without requeue", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
       max_concurrent_work: 1,
     });
     const tenant = tenantOf(tenantId);
-    expect(await holdTenantLease(tenantId, "at_expired", 1_000)).toMatchObject({ ok: true });
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_DONE",
+      url: "https://lease.test/done",
+      attemptId: "at_done",
+      status: "ready",
+    });
+    expect(await holdTenantLease(tenantId, "at_done")).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
+  });
+
+  it("already_running on a failed reading acks as done without requeue", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_FAILDONE",
+      url: "https://lease.test/faildone",
+      attemptId: "at_faildone",
+      status: "failed",
+    });
+    expect(await holdTenantLease(tenantId, "at_faildone")).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("incomplete already_running defers instead of success-ack or markFailed", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    expect(await holdTenantLease(tenantId, "at_duphold")).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_DUPHOLD",
+      url: "https://lease.test/duphold",
+      attemptId: "at_duphold",
+    });
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(sendDelayed).toHaveBeenCalledWith(expect.anything(), PROCESSING_DEFER_DELAY_SECONDS);
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "pending",
+      active_attempt: { id: "at_duphold" },
+    });
+  });
+
+  it("incomplete stale fence defers instead of success-ack or markFailed", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 2,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_STALE",
+      url: "https://lease.test/stale",
+      attemptId: "at_stale",
+    });
+    let releaseEmbed!: (value: Response) => void;
+    let embedStarted = 0;
+    const fetchFn = makeFetch({
+      onEmbed: () => {
+        embedStarted += 1;
+        if (embedStarted === 1) {
+          return new Promise<Response>((resolve) => {
+            releaseEmbed = resolve;
+          });
+        }
+        return embeddingResponse();
+      },
+    });
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const dispatched = dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    await vi.waitFor(() => expect(embedStarted).toBe(1));
+    const tenantHeld = await holdTenantLease(tenantId, "at_stale");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_stale",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true, already_running: true });
+    expect(globalHeld).toMatchObject({ ok: true, already_running: true });
+    await tenantLease(tenantId, {
+      kind: "release_lease",
+      attemptId: "at_stale",
+      fence: tenantHeld.fence,
+      nowMs: Date.now(),
+    });
+    await globalLease({
+      kind: "release_lease",
+      tenantId,
+      attemptId: "at_stale",
+      fence: globalHeld.fence,
+      nowMs: Date.now(),
+    });
+    releaseEmbed(embeddingResponse());
+    await dispatched;
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect(embedStarted).toBe(1);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "pending",
+      active_attempt: { id: "at_stale" },
+    });
+  });
+
+  it("paused expired lease does not block a later attempt", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const held = await holdTenantLease(tenantId, "at_expired", 1_000);
+    expect(held).toMatchObject({ ok: true });
+    expect(
+      await tenantLease(tenantId, {
+        kind: "pause_lease",
+        attemptId: "at_expired",
+        fence: held.fence,
+        nowMs: 1_000,
+      }),
+    ).toMatchObject({ ok: true });
 
     const fetchFn = makeFetch();
     const job = await seedPending(tenant, {
@@ -278,6 +491,37 @@ describe("processing leases (Workers pool)", () => {
     expect(embedCalls(fetchFn)).toBeGreaterThan(0);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "ready",
+    });
+  });
+
+  it("in-flight lease past TTL still defers a later attempt", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    expect(await holdTenantLease(tenantId, "at_inflight_old", 1_000)).toMatchObject({ ok: true });
+
+    const fetchFn = makeFetch();
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_INFLIGHT",
+      url: "https://lease.test/inflight",
+      attemptId: "at_inflight_new",
+    });
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "pending",
     });
   });
 
