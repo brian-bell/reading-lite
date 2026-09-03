@@ -20,7 +20,7 @@ await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
 // those production placeholders intact and only raise the test tenant.
 await env.CONTROL_PLANE.prepare(
   `UPDATE tenant_limits
-   SET submissions_per_hour = 100000, monthly_readings = 100000
+   SET submissions_per_hour = 100000, monthly_readings = 100000, max_concurrent_work = 100000
    WHERE tenant_id = ?`,
 )
   .bind("usr_550e8400-e29b-41d4-a716-446655440000")

@@ -94,7 +94,11 @@ export async function insertSecondTenant(env: Env): Promise<{
 
 export async function insertQuotaTenant(
   env: Env,
-  limits: { submissions_per_hour: number; monthly_readings: number },
+  limits: {
+    submissions_per_hour: number;
+    monthly_readings: number;
+    max_concurrent_work?: number;
+  },
 ): Promise<{ tenantId: string; token: string }> {
   const nowMs = Date.now();
   const tenantId = mintUserId();
@@ -130,7 +134,7 @@ export async function insertQuotaTenant(
       tenantId,
       limits.submissions_per_hour,
       limits.monthly_readings,
-      FOUNDER_PLACEHOLDER_LIMITS.max_concurrent_work,
+      limits.max_concurrent_work ?? FOUNDER_PLACEHOLDER_LIMITS.max_concurrent_work,
       FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
       nowMs,
       nowMs,

@@ -18,6 +18,8 @@ import {
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
+import { DeferPaidWorkError } from "./control-plane/processing-leases";
+import { PROCESSING_DEFER_DELAY_SECONDS } from "./control-plane/constants";
 import { defaultServices } from "./services";
 
 export interface Env {
@@ -40,6 +42,7 @@ export interface Env {
   AUTH_MAIL_ALLOWLIST?: string;
   AUTH_RATE_GUARD?: DurableObjectNamespace;
   TENANT_USAGE_GUARD?: DurableObjectNamespace;
+  GLOBAL_USAGE_GUARD?: DurableObjectNamespace;
   AUTH_RATE_EMAIL_WINDOW_MS?: string;
   AUTH_RATE_EMAIL_MAX?: string;
   AUTH_RATE_IP_WINDOW_MS?: string;
@@ -95,11 +98,26 @@ const DEAD_LETTER_QUEUE = "reading-lite-dlq";
 export async function dispatchQueueMessage(
   msg: Message<unknown>,
   process: () => Promise<void>,
+  deps: {
+    sendDelayed?: (body: unknown, delaySeconds: number) => Promise<void>;
+  } = {},
 ): Promise<void> {
   try {
     await process();
     msg.ack();
   } catch (e) {
+    if (e instanceof DeferPaidWorkError) {
+      const delaySeconds = e.delaySeconds > 0 ? e.delaySeconds : PROCESSING_DEFER_DELAY_SECONDS;
+      try {
+        if (!deps.sendDelayed) throw new Error("delayed send unavailable");
+        await deps.sendDelayed(msg.body, delaySeconds);
+        msg.ack();
+      } catch {
+        // ADR fallback only: delayed enqueue failed, so retry the current message.
+        msg.retry({ delaySeconds });
+      }
+      return;
+    }
     if (e instanceof RateLimitedError) {
       msg.retry({ delaySeconds: rateLimitedDelaySeconds(e, msg.attempts) });
       return;
@@ -196,7 +214,13 @@ export default {
         db: fromD1(env.CONTROL_PLANE),
         nowMs: Date.now(),
         process: (job, tenant) =>
-          dispatchQueueMessage(msg, () => processReading(job, env, services, tenant)),
+          dispatchQueueMessage(msg, () => processReading(job, env, services, tenant), {
+            sendDelayed: async (body, delaySeconds) => {
+              const queue = env.READING_JOBS;
+              if (!queue) throw new Error("READING_JOBS unbound");
+              await queue.send(body as ProcessReadingEnvelopeV1, { delaySeconds });
+            },
+          }),
       });
     }
   },
@@ -205,3 +229,4 @@ export default {
 export { createApp } from "./router";
 export { AuthRateGuard } from "./control-plane/auth-rate-guard";
 export { TenantUsageGuard } from "./control-plane/tenant-usage-guard";
+export { GlobalUsageGuard } from "./control-plane/global-usage-guard";

@@ -65,6 +65,11 @@ function allowAllUsage(): TenantUsage {
     reserveReading: async () => ({ ok: true }),
     releaseReading: async () => undefined,
     commitReading: async () => undefined,
+    acquireLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    renewLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    releaseLease: async () => undefined,
+    refreshReading: async () => undefined,
   };
 }
 
@@ -438,6 +443,11 @@ function recordingUsage(): TenantUsage & { ops: string[] } {
     commitReading: async (opId) => {
       ops.push(`commit:${opId}`);
     },
+    acquireLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    renewLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
+    releaseLease: async () => undefined,
+    refreshReading: async () => undefined,
   };
 }
 

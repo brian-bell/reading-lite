@@ -60,6 +60,10 @@ new_sqlite_classes = ["AuthRateGuard"]
 tag = "v2"
 new_sqlite_classes = ["TenantUsageGuard"]
 
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["GlobalUsageGuard"]
+
 [[durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
@@ -67,6 +71,10 @@ class_name = "AuthRateGuard"
 [[durable_objects.bindings]]
 name = "TENANT_USAGE_GUARD"
 class_name = "TenantUsageGuard"
+
+[[durable_objects.bindings]]
+name = "GLOBAL_USAGE_GUARD"
+class_name = "GlobalUsageGuard"
 
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
@@ -230,6 +238,10 @@ class_name = "AuthRateGuard"
 name = "TENANT_USAGE_GUARD"
 class_name = "TenantUsageGuard"
 
+[[env.staging.durable_objects.bindings]]
+name = "GLOBAL_USAGE_GUARD"
+class_name = "GlobalUsageGuard"
+
 [[env.staging.routes]]
 pattern = "reading-lite-staging.bbell.dev/api/*"
 zone_name = "bbell.dev"
@@ -368,6 +380,10 @@ class_name = "AuthRateGuard"
 [[env.production.durable_objects.bindings]]
 name = "TENANT_USAGE_GUARD"
 class_name = "TenantUsageGuard"
+
+[[env.production.durable_objects.bindings]]
+name = "GLOBAL_USAGE_GUARD"
+class_name = "GlobalUsageGuard"
 
 # Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.

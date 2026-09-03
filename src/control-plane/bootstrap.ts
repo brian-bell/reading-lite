@@ -14,6 +14,9 @@ export const FOUNDER_PLACEHOLDER_LIMITS = {
   daily_spend_microdollars: 1_000_000,
 } as const;
 
+/** Global processing concurrency placeholder. Do not treat as production economics (s1k.9.5). */
+export const GLOBAL_PLACEHOLDER_CONCURRENCY = 3;
+
 export type SignupMode = "closed" | "invite_only" | "open";
 
 export interface FounderBootstrapInput {
@@ -184,9 +187,10 @@ export async function bootstrapFounder(
       : [
           {
             sql: `INSERT INTO system_policy (
-                    id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at_ms
-                  ) VALUES (1, ?, 1, 1, 1, ?)`,
-            params: [input.signupMode, input.nowMs],
+                    id, signup_mode, paid_work_enabled, policy_version, catalog_version,
+                    updated_at_ms, max_concurrent_work
+                  ) VALUES (1, ?, 1, 1, 1, ?, ?)`,
+            params: [input.signupMode, input.nowMs, GLOBAL_PLACEHOLDER_CONCURRENCY],
           },
         ]),
   ];

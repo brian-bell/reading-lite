@@ -10,6 +10,10 @@ import type { ListIndex, ListIndexItem } from "../../schemas/api";
 import type { TenantContext } from "../../control-plane/ids";
 import { parseTenantId } from "../../control-plane/ids";
 import {
+  ProcessingCheckpointSchema,
+  type ProcessingCheckpoint,
+} from "../processing-checkpoint";
+import {
   ListIndexStore,
   manifestToIndexItem,
   type ListIndexCasDeps,
@@ -196,6 +200,31 @@ export class ReadingStore {
         httpMetadata: { contentType: "application/json" },
       },
     );
+  }
+
+  async writeProcessingCheckpoint(
+    keyPrefix: string,
+    attemptId: string,
+    checkpoint: ProcessingCheckpoint,
+  ): Promise<void> {
+    await this.bucket.put(
+      this.layout.processingCheckpointKey(keyPrefix, attemptId),
+      JSON.stringify(checkpoint),
+      {
+        httpMetadata: { contentType: "application/json" },
+      },
+    );
+  }
+
+  async readProcessingCheckpoint(
+    keyPrefix: string,
+    attemptId: string,
+  ): Promise<ProcessingCheckpoint | null> {
+    const obj = await this.bucket.get(this.layout.processingCheckpointKey(keyPrefix, attemptId));
+    if (!obj) return null;
+    const json: unknown = JSON.parse(await obj.text());
+    const parsed = ProcessingCheckpointSchema.safeParse(json);
+    return parsed.success ? parsed.data : null;
   }
 
   async listAttempts(keyPrefix: string, limit = 20): Promise<ProcessingAttempt[]> {

@@ -237,6 +237,90 @@ describe("TenantUsageGuard", () => {
     expect(map.has("op:at_live")).toBe(true);
     expect(await storage.getAlarm()).toBe(expiresAt);
   });
+
+  it("refresh_reading extends a held reservation past the original TTL so cleanup keeps it", async () => {
+    const originalExpiry = NOW + 60 * 60 * 1000;
+    const map = new Map<string, unknown>([
+      [
+        "op:at_defer",
+        {
+          status: "held",
+          hourKey: utcHourKey(NOW),
+          monthKey: utcMonthKey(NOW),
+          expiresAt: originalExpiry,
+        },
+      ],
+      [`h:${utcHourKey(NOW)}`, { count: 1 }],
+      [`m:${utcMonthKey(NOW)}`, { count: 1 }],
+    ]);
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    const later = NOW + 60 * 60 * 1000 + 1;
+    expect(
+      await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_defer", nowMs: later }),
+    ).toEqual({ ok: true });
+    const row = map.get("op:at_defer") as { status: string; expiresAt: number };
+    expect(row.status).toBe("held");
+    expect(row.expiresAt).toBe(later + 60 * 60 * 1000);
+    expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
+  });
+
+  it("refresh_reading does not resurrect consumed or released reservations", async () => {
+    const map = new Map<string, unknown>([
+      [
+        "op:at_consumed",
+        {
+          status: "consumed",
+          hourKey: utcHourKey(NOW),
+          monthKey: utcMonthKey(NOW),
+          expiresAt: NOW + 1,
+        },
+      ],
+    ]);
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    expect(
+      await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_consumed", nowMs: NOW + 10 }),
+    ).toEqual({ ok: true });
+    expect(map.get("op:at_consumed")).toMatchObject({ status: "consumed", expiresAt: NOW + 1 });
+  });
+
+  it("commit after a refreshed hold still consumes hourly and monthly counts", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    expect((await post(guard, { kind: "reserve_reading", tenantId: TENANT, opId: "at_1", nowMs: NOW })).ok).toBe(true);
+    expect(
+      (await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_1", nowMs: NOW + 2 * 60 * 60 * 1000 })).ok,
+    ).toBe(true);
+    expect((await post(guard, { kind: "commit_reading", opId: "at_1" })).ok).toBe(true);
+    expect(map.get("op:at_1")).toMatchObject({ status: "consumed" });
+    expect(map.get(`h:${utcHourKey(NOW)}`)).toEqual({ count: 1 });
+    expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
+    expect((await post(guard, { kind: "release_reading", opId: "at_1" })).ok).toBe(true);
+    expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
+  });
+
+  it("alarm keeps a held reservation after refresh moves expiry past now", async () => {
+    const now = Date.now();
+    const map = new Map<string, unknown>([
+      [
+        "op:at_refresh",
+        {
+          status: "held",
+          hourKey: utcHourKey(now),
+          monthKey: utcMonthKey(now),
+          expiresAt: now - 1,
+        },
+      ],
+      [`h:${utcHourKey(now)}`, { count: 1 }],
+      [`m:${utcMonthKey(now)}`, { count: 1 }],
+    ]);
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    expect(
+      await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_refresh", nowMs: now }),
+    ).toEqual({ ok: true });
+    await guard.alarm();
+    expect(map.has("op:at_refresh")).toBe(true);
+    expect(map.get(`m:${utcMonthKey(now)}`)).toEqual({ count: 1 });
+  });
 });
 
 describe("tenantUsageFor", () => {
@@ -250,5 +334,6 @@ describe("tenantUsageFor", () => {
     const usage = failClosedUsage();
     expect(await usage.admitRequest(NOW)).toMatchObject({ ok: false });
     await expect(usage.releaseReading("at_1")).resolves.toBeUndefined();
+    expect(await usage.acquireLease("at_1", NOW)).toEqual({ ok: false, reason: "unavailable" });
   });
 });

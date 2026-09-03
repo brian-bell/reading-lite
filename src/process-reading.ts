@@ -21,6 +21,9 @@ import {
   type SimilarContext,
   validateProcessingCredentials,
 } from "./modules/summarizer";
+import {
+  summarizeCheckpoint,
+} from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
 import { tenantIsActive } from "./control-plane/account-delete";
 import { fromD1 } from "./control-plane/db";
@@ -44,7 +47,18 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
-import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
+import { commitReadingSlot, refreshReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
+import {
+  acquireProcessingLeases,
+  DeferPaidWorkError,
+  heartbeatProcessingLeases,
+  pauseOrReleaseProcessingLeases,
+  releaseProcessingLeases,
+  renewProcessingLeases,
+  throwIfDeferred,
+  type ProcessingLeaseHold,
+} from "./control-plane/processing-leases";
+import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
 import type { Services } from "./services";
@@ -71,6 +85,8 @@ export async function processReading(
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
   let readingSlotConsumed = false;
+  let leases: ProcessingLeaseHold | null = null;
+  let stopHeartbeat: (() => Promise<void>) | null = null;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
@@ -126,38 +142,70 @@ export async function processReading(
 
     const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
 
+    // Foreign active_attempt must drop without taking a lease. Re-check after
+    // extract (unpaid) and before the first paid dispatch.
+    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await releaseReadingSlot(env, tenantId, opId);
+      return;
+    }
+
+    const clock = () => nowMs(services);
+    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, clock()));
+    if (acquired === "already_running") {
+      await ackOrDeferIfProcessingIncomplete(reader, args);
+      return;
+    }
+    leases = acquired;
+    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
+
+    let checkpoint = (await reader.readProcessingCheckpoint(args.keyPrefix, opId)) ?? {};
+
     // Embed the extracted text to get top-K similar.
-    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", () =>
-      embed(truncateForEmbed(promptText), {
+    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", async () => {
+      if (checkpoint.embed_source) return checkpoint.embed_source;
+      const result = await embed(truncateForEmbed(promptText), {
         fetch: services.fetch,
         apiKey: env.OPENAI_API_KEY,
         retry,
-      }),
-    );
-    const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
-      // Over-fetch by one: on a reprocess this reading's own vector is already
-      // indexed and would otherwise consume a slot (see excludeSelf).
-      similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
-    );
-    // Exclude self once. The snapshot then measures the UNFLOORED
-    // neighbourhood, while only the prompt context is floored.
-    //
-    // That split is deliberate. The snapshot is a measurement: for a novel
-    // reading whose nearest neighbour sits at 0.30, "nearest was 0.30" is the
-    // useful fact, and flooring first would throw it away and record count 0.
-    // The prompt is a judgement input: handing the model five distant titles
-    // under a heading that presupposes relatedness is what made everything look
-    // familiar, so those get dropped.
-    const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
-    const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
-    const similarContext: SimilarContext[] = related.map((s) => ({
-      id: s.id,
-      url: s.url,
-      ...(s.title === undefined ? {} : { title: s.title }),
-      ...(s.tldr === undefined ? {} : { tldr: s.tldr }),
-      score: s.score,
-    }));
-    const similaritySnapshot = summarizeSimilarity(neighbours, services.now());
+      });
+      checkpoint = { ...checkpoint, embed_source: result };
+      await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+      return result;
+    });
+
+    const cachedSummary = checkpoint.summarize;
+    let similarContext: SimilarContext[];
+    let similaritySnapshot: ReturnType<typeof summarizeSimilarity>;
+    if (cachedSummary) {
+      similarContext = cachedSummary.similar_context;
+      similaritySnapshot = cachedSummary.similarity_snapshot;
+    } else {
+      const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
+        // Over-fetch by one: on a reprocess this reading's own vector is already
+        // indexed and would otherwise consume a slot (see excludeSelf).
+        similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
+      );
+      // Exclude self once. The snapshot then measures the UNFLOORED
+      // neighbourhood, while only the prompt context is floored.
+      //
+      // That split is deliberate. The snapshot is a measurement: for a novel
+      // reading whose nearest neighbour sits at 0.30, "nearest was 0.30" is the
+      // useful fact, and flooring first would throw it away and record count 0.
+      // The prompt is a judgement input: handing the model five distant titles
+      // under a heading that presupposes relatedness is what made everything look
+      // familiar, so those get dropped.
+      const neighbours = excludeSelf(similar, args.id, SIMILAR_TOP_K);
+      const related = aboveFloor(neighbours, SIMILARITY_FLOOR);
+      similarContext = related.map((s) => ({
+        id: s.id,
+        url: s.url,
+        ...(s.title === undefined ? {} : { title: s.title }),
+        ...(s.tldr === undefined ? {} : { tldr: s.tldr }),
+        score: s.score,
+      }));
+      similaritySnapshot = summarizeSimilarity(neighbours, services.now());
+    }
 
     const llm = await runStage(
       attempt,
@@ -166,12 +214,21 @@ export async function processReading(
       services,
       "summarize",
       async () => {
+        if (cachedSummary) {
+          // commit_reading is idempotent for already-consumed slots. Call it
+          // here too: tenantUsageFor.commitReading swallows non-ok RPC, so the
+          // delivery that wrote this artifact may have left the slot held.
+          readingSlotConsumed = true;
+          await commitReadingSlot(env, tenantId, opId);
+          return { reading: cachedSummary.reading, usage: cachedSummary.usage };
+        }
+        await presentLeaseBeforePaidDispatch(env, acquired, clock);
         // Reading quota stays held through extract/embed; commit immediately
         // before summarization dispatch so a later failure still consumes the
         // slot. An undispatched failure releases instead (catch below).
         readingSlotConsumed = true;
         await commitReadingSlot(env, tenantId, opId);
-        return summarizeReading(
+        const result = await summarizeReading(
           {
             url: args.url,
             extractedText: promptText,
@@ -192,10 +249,17 @@ export async function processReading(
             retry,
           },
         );
+        checkpoint = {
+          ...checkpoint,
+          summarize: summarizeCheckpoint(result, similarContext, similaritySnapshot),
+        };
+        await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+        return result;
       },
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
     const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: services.fetch,
@@ -272,7 +336,35 @@ export async function processReading(
         tenant,
       );
     }
+    await stopHeartbeat?.();
+    stopHeartbeat = null;
+    if (leases) await releaseProcessingLeases(env, leases, clock());
+    leases = null;
   } catch (e) {
+    await stopHeartbeat?.();
+    stopHeartbeat = null;
+    const clockNow = nowMs(services);
+    if (e instanceof DeferPaidWorkError || e instanceof StaleProcessingLeaseError) {
+      if (leases) await releaseProcessingLeases(env, leases, clockNow);
+      leases = null;
+      if (e instanceof StaleProcessingLeaseError) {
+        try {
+          const manifest = await reader.readManifest(args.keyPrefix);
+          if (manifest?.status === "ready" || manifest?.status === "failed") return;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (deferLoopExceeded(args, clockNow)) {
+        if (!readingSlotConsumed) {
+          await releaseReadingSlot(env, tenantId, opId);
+        }
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+        return;
+      }
+      await refreshReadingSlot(env, tenantId, opId, clockNow);
+      throw e instanceof DeferPaidWorkError ? e : new DeferPaidWorkError();
+    }
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this
       // message after the upstream's Retry-After window. The active_attempt
@@ -280,13 +372,101 @@ export async function processReading(
       // PENDING_TTL_SECONDS flips it stale. Held reading-slot reservations
       // stay counted until a later delivery commits or a definitive failure
       // (including markDeadLettered after max_retries) releases them.
+      // Processing leases stay held (paused, not released) so a 429 retry
+      // resumes the same fence instead of taking a second permit. If pause
+      // cannot park both guards, release so the retry is not pinned already_running.
+      if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
       throw e;
     }
+    if (leases) await releaseProcessingLeases(env, leases, clockNow);
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
     await markFailed(reader, args, services, attempt, e, env, tenantId);
   }
+}
+
+// Duplicate or stale-fence deliveries must not ack-as-success unless this
+// reading already has a terminal ready/failed manifest. Incomplete work is
+// deferred with the same delayed-send contract as lease contention.
+async function ackOrDeferIfProcessingIncomplete(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  try {
+    const manifest = await reader.readManifest(args.keyPrefix);
+    if (manifest?.status === "ready" || manifest?.status === "failed") return;
+  } catch (err) {
+    console.error(err);
+  }
+  throw new DeferPaidWorkError();
+}
+
+class StaleProcessingLeaseError extends Error {
+  constructor() {
+    super("processing lease fence is stale");
+    this.name = "StaleProcessingLeaseError";
+  }
+}
+
+export class ProcessingDeferExpiredError extends Error {
+  constructor() {
+    super("processing defer loop exceeded PROCESSING_DEFER_MAX_AGE_MS");
+    this.name = "ProcessingDeferExpiredError";
+  }
+}
+
+function nowMs(services: Services): number {
+  const parsed = Date.parse(services.now());
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function deferLoopExceeded(args: ProcessReadingArgs, now: number): boolean {
+  const origin = Date.parse(args.attemptStartedAt ?? args.createdAt);
+  if (!Number.isFinite(origin)) return false;
+  return now - origin > PROCESSING_DEFER_MAX_AGE_MS;
+}
+
+async function presentLeaseBeforePaidDispatch(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): Promise<void> {
+  const renewed = await renewProcessingLeases(env, hold, nowMs());
+  if (renewed.ok) return;
+  if (renewed.reason === "stale_fence") throw new StaleProcessingLeaseError();
+  throw new DeferPaidWorkError();
+}
+
+function startProcessingLeaseHeartbeat(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): () => Promise<void> {
+  let generation = 0;
+  let inflight: Promise<void> = Promise.resolve();
+  const timer = setInterval(() => {
+    const epoch = generation;
+    const previous = inflight;
+    inflight = (async () => {
+      try {
+        await previous;
+      } catch {
+        // Prior heartbeat is best-effort.
+      }
+      if (epoch !== generation) return;
+      await heartbeatProcessingLeases(env, hold, nowMs());
+    })();
+  }, PROCESSING_LEASE_HEARTBEAT_MS);
+  return async () => {
+    generation += 1;
+    clearInterval(timer);
+    try {
+      await inflight;
+    } catch {
+      // Heartbeat is best-effort; stop must not fail the 429/abort path.
+    }
+  };
 }
 
 async function sendReadingEmailAndLog(
@@ -1044,6 +1224,7 @@ export function retryableError(e: unknown): boolean {
   }
   if (e.name === "FetchTimeoutError") return true;
   if (e.name === "QueueRetriesExhaustedError") return true;
+  if (e.name === "ProcessingDeferExpiredError") return true;
   return false;
 }
 

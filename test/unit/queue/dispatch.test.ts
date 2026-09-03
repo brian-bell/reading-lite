@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { dispatchQueueMessage } from "../../../src/index";
+import { DeferPaidWorkError } from "../../../src/control-plane/processing-leases";
+import { PROCESSING_DEFER_DELAY_SECONDS } from "../../../src/control-plane/constants";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
 
@@ -86,5 +88,38 @@ describe("dispatchQueueMessage", () => {
       throw new RateLimitedError(429, 0, "https://api.anthropic.com/v1/messages");
     });
     expect(msg.retry).toHaveBeenCalledWith({ delaySeconds: 1 });
+  });
+
+  it("defer_paid_work delayed-sends the same envelope then acks without retry", async () => {
+    const msg = fakeMessage();
+    const sendDelayed = vi.fn(async () => {});
+    await dispatchQueueMessage(
+      msg,
+      async () => {
+        throw new DeferPaidWorkError();
+      },
+      { sendDelayed },
+    );
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(sendDelayed).toHaveBeenCalledWith(msg.body, PROCESSING_DEFER_DELAY_SECONDS);
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("retries the current message when delayed send fails", async () => {
+    const msg = fakeMessage();
+    const sendDelayed = vi.fn(async () => {
+      throw new Error("queue send failed");
+    });
+    await dispatchQueueMessage(
+      msg,
+      async () => {
+        throw new DeferPaidWorkError();
+      },
+      { sendDelayed },
+    );
+    expect(msg.retry).toHaveBeenCalledOnce();
+    expect(msg.retry).toHaveBeenCalledWith({ delaySeconds: PROCESSING_DEFER_DELAY_SECONDS });
+    expect(msg.ack).not.toHaveBeenCalled();
   });
 });
