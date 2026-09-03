@@ -19,10 +19,16 @@
  * Embeddings may take a short time to disappear. We fire deletes in ≤1000
  * id batches, record whatever the API returns, and do not poll the index
  * as if it were synchronously empty. Vectors are submitted before any R2
- * delete so ids cannot dangle after the prefix is gone. If `READINGS_INDEX`
- * is unbound while reading ids remain, the job throws (`index_unbound`)
- * instead of skipping to R2 — wiping the prefix would strand namespaced
- * embeddings and delete the only ID source leftover recovery can rescan.
+ * delete so ids cannot dangle after the prefix is gone. Collected reading ids
+ * are persisted on `progress.json`. After the prefix is empty we re-submit
+ * `deleteByIds` for those stored ids (async, no wait) so a `processReading`
+ * that already passed its tenant check cannot leave a late upsert behind once
+ * `index/list.json` is gone. Leftover recovery unions stored ids with an R2
+ * re-list. Brand-new intake stays 195a-fenced — this is not a publisher drain.
+ * If `READINGS_INDEX` is unbound while reading ids remain, the job throws
+ * (`index_unbound`) instead of skipping to R2 — wiping the prefix would strand
+ * namespaced embeddings and delete the only ID source leftover recovery can
+ * rescan.
  *
  * R2 `list()`/`delete()` cap at 1000 objects. Wipe pages the tenant prefix
  * from `tenantKeyRoot` (production `u/{tenantId}/`). An empty prefix is a
@@ -30,8 +36,8 @@
  * outside the tenant prefix so a crash mid-page resumes. A second run on an
  * already-wiped prefix is a no-op success. Leftover recovery (`phase=done`
  * with objects still under the tenant prefix) resets to `vectors` at
- * `vector_offset=0` so missed or late embeddings are submitted to
- * `deleteByIds` before R2 is emptied.
+ * `vector_offset=0`, unions stored `reading_ids` with an R2 re-list, and
+ * re-submits those ids to `deleteByIds` after R2 is emptied.
  *
  * When TENANT_DATA_PLANE is off, `tenantKeyRoot` is empty (pre-tenant global
  * layout). Prefix wipe refuses that root rather than emptying the bucket.
@@ -88,7 +94,7 @@ export const ACCOUNT_WIPE_DLQ_NAMES = [
 
 const AccountWipeProgressSchema = z.object({
   version: z.literal(1),
-  phase: z.enum(["vectors", "objects", "done"]),
+  phase: z.enum(["vectors", "objects", "sweep", "done"]),
   vector_offset: z.number().int().nonnegative(),
   r2_cursor: z.string().min(1).optional(),
   mutation_ids: z.array(z.string()),
@@ -96,6 +102,9 @@ const AccountWipeProgressSchema = z.object({
   updated_at_ms: z.number().int().nonnegative(),
   // Optional so pre-force progress still parses; new writes always persist it.
   force: z.boolean().optional(),
+  // Collected reading ids survive R2 deletion so a late vector upsert of a
+  // known id can still be deleteByIds'd after the prefix is empty.
+  reading_ids: z.array(z.string()).optional(),
 });
 type AccountWipeProgress = z.infer<typeof AccountWipeProgressSchema>;
 
@@ -150,7 +159,7 @@ export function wipeGraceElapsed(deletingAtMs: number | null | undefined, nowMs:
 
 /** Incomplete or leftover progress is a resume, not a new wipe. */
 export function wipeNeedsResume(
-  progress: { phase: "vectors" | "objects" | "done" } | null,
+  progress: { phase: "vectors" | "objects" | "sweep" | "done" } | null,
   hasLeftoverObjects: boolean,
 ): boolean {
   if (!progress) return false;
@@ -290,8 +299,9 @@ export async function processAccountWipeJob(
     if (!leftover) {
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
-    // Re-collect reading ids and Vectorize-delete before touching R2. Jumping
-    // to objects would empty the prefix and leave missed/late vectors behind.
+    // Union stored reading ids with an R2 re-list, then Vectorize-delete
+    // before touching R2. Jumping to objects would empty the prefix and
+    // leave missed/late vectors behind.
     progress = reopenLeftoverProgress(progress);
   }
   // Persist before any listing so a concurrent cron tick sees an in-flight lease
@@ -301,117 +311,122 @@ export async function processAccountWipeJob(
   await writeProgress(env.READINGS_BUCKET, tenantId, progress);
 
   if (progress.phase === "vectors") {
-    const readingIds = await collectReadingIds(env.READINGS_BUCKET, layout);
-    const remaining = readingIds.slice(progress.vector_offset);
-    if (remaining.length > 0) {
-      if (!env.READINGS_INDEX) {
-        throw new Error("account_wipe index_unbound");
-      }
-      const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-      const batchLimit = Math.min(remaining.length, maxVectorBatches * VECTORIZE_DELETE_MAX_IDS);
-      const toDelete = remaining.slice(0, batchLimit);
-      const mutations = await store.deleteMany(toDelete);
-      for (const mutationId of mutations) {
-        progress.mutation_ids.push(mutationId);
-        console.info(
-          JSON.stringify({
-            event: "account_wipe_vector_delete_submitted",
-            tenant_id: tenantId,
-            mutation_id: mutationId,
-            note: "Vectorize deletes are async; embeddings may take a short time to disappear",
-          }),
-        );
-      }
-      progress.vector_offset += toDelete.length;
-      progress.updated_at_ms = deps.nowMs;
-      await writeProgress(env.READINGS_BUCKET, tenantId, progress);
-      if (progress.vector_offset < readingIds.length) {
-        return {
-          kind: "continue",
-          objects_deleted: progress.objects_deleted,
-          mutation_ids: progress.mutation_ids,
-        };
-      }
+    const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout);
+    progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
+    progress.updated_at_ms = deps.nowMs;
+    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+    const vec = await submitStoredVectorDeletes(progress, env, tenantId, deps.nowMs, maxVectorBatches);
+    if (vec === "continue") {
+      return {
+        kind: "continue",
+        objects_deleted: progress.objects_deleted,
+        mutation_ids: progress.mutation_ids,
+      };
     }
     progress.phase = "objects";
     progress.updated_at_ms = deps.nowMs;
     await writeProgress(env.READINGS_BUCKET, tenantId, progress);
   }
 
-  let pages = 0;
-  let cursor = progress.r2_cursor;
-  for (;;) {
-    const list = await env.READINGS_BUCKET.list({
-      prefix: keyRoot,
-      limit: R2_LIST_LIMIT,
-      ...(cursor ? { cursor } : {}),
-    });
-    if (list.objects.length === 0) {
-      // A stored cursor can land on an empty page while objects remain earlier
-      // in the prefix. Confirm emptiness without the cursor before `done`.
-      if (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) {
-        cursor = undefined;
+  if (progress.phase === "objects") {
+    if (!progress.reading_ids?.length) {
+      const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout);
+      progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
+      progress.updated_at_ms = deps.nowMs;
+      await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+    }
+    let pages = 0;
+    let cursor = progress.r2_cursor;
+    objects: for (;;) {
+      const list = await env.READINGS_BUCKET.list({
+        prefix: keyRoot,
+        limit: R2_LIST_LIMIT,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (list.objects.length === 0) {
+        // A stored cursor can land on an empty page while objects remain earlier
+        // in the prefix. Confirm emptiness without the cursor before sweep.
+        if (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) {
+          cursor = undefined;
+          progress.r2_cursor = undefined;
+          progress.updated_at_ms = deps.nowMs;
+          await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+          if (pages >= maxObjectPages) {
+            return {
+              kind: "continue",
+              objects_deleted: progress.objects_deleted,
+              mutation_ids: progress.mutation_ids,
+              r2_cursor: undefined,
+            };
+          }
+          continue;
+        }
+        progress.phase = "sweep";
+        progress.vector_offset = 0;
         progress.r2_cursor = undefined;
         progress.updated_at_ms = deps.nowMs;
         await writeProgress(env.READINGS_BUCKET, tenantId, progress);
-        if (pages >= maxObjectPages) {
-          return {
-            kind: "continue",
-            objects_deleted: progress.objects_deleted,
-            mutation_ids: progress.mutation_ids,
-            r2_cursor: undefined,
-          };
-        }
-        continue;
+        break objects;
       }
-      progress = {
-        ...progress,
-        phase: "done",
-        r2_cursor: undefined,
-        updated_at_ms: deps.nowMs,
-      };
+      await env.READINGS_BUCKET.delete(list.objects.map((obj) => obj.key));
+      progress.objects_deleted += list.objects.length;
+      pages += 1;
+      cursor = list.truncated ? list.cursor : undefined;
+      progress.r2_cursor = cursor;
+      progress.updated_at_ms = deps.nowMs;
       await writeProgress(env.READINGS_BUCKET, tenantId, progress);
-      return {
-        kind: "complete",
-        objects_deleted: progress.objects_deleted,
-        mutation_ids: progress.mutation_ids,
-      };
-    }
-    await env.READINGS_BUCKET.delete(list.objects.map((obj) => obj.key));
-    progress.objects_deleted += list.objects.length;
-    pages += 1;
-    cursor = list.truncated ? list.cursor : undefined;
-    progress.r2_cursor = cursor;
-    progress.updated_at_ms = deps.nowMs;
-    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
-    if (!cursor) {
-      const again = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
-      if (again.objects.length === 0) {
-        progress = {
-          ...progress,
-          phase: "done",
-          r2_cursor: undefined,
-          updated_at_ms: deps.nowMs,
-        };
-        await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+      if (!cursor) {
+        const again = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
+        if (again.objects.length === 0) {
+          progress.phase = "sweep";
+          progress.vector_offset = 0;
+          progress.r2_cursor = undefined;
+          progress.updated_at_ms = deps.nowMs;
+          await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+          break objects;
+        }
+        cursor = undefined;
+        progress.r2_cursor = undefined;
+      }
+      if (pages >= maxObjectPages) {
         return {
-          kind: "complete",
+          kind: "continue",
           objects_deleted: progress.objects_deleted,
           mutation_ids: progress.mutation_ids,
+          r2_cursor: progress.r2_cursor,
         };
       }
-      cursor = undefined;
-      progress.r2_cursor = undefined;
     }
-    if (pages >= maxObjectPages) {
+  }
+
+  if (progress.phase === "sweep") {
+    const sweep = await submitStoredVectorDeletes(progress, env, tenantId, deps.nowMs, maxVectorBatches);
+    if (sweep === "continue") {
       return {
         kind: "continue",
         objects_deleted: progress.objects_deleted,
         mutation_ids: progress.mutation_ids,
-        r2_cursor: progress.r2_cursor,
       };
     }
+    progress = {
+      ...progress,
+      phase: "done",
+      r2_cursor: undefined,
+      updated_at_ms: deps.nowMs,
+    };
+    await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+    return {
+      kind: "complete",
+      objects_deleted: progress.objects_deleted,
+      mutation_ids: progress.mutation_ids,
+    };
   }
+
+  return {
+    kind: "complete",
+    objects_deleted: progress.objects_deleted,
+    mutation_ids: progress.mutation_ids,
+  };
 }
 
 export async function consumeAccountWipeMessage(
@@ -518,6 +533,49 @@ function reopenLeftoverProgress(progress: AccountWipeProgress): AccountWipeProgr
   };
 }
 
+function mergeReadingIds(stored: string[] | undefined, collected: string[]): string[] {
+  const ids = new Set<string>();
+  for (const raw of [...(stored ?? []), ...collected]) {
+    const id = parseReadingId(raw);
+    if (id) ids.add(id);
+  }
+  return [...ids].sort();
+}
+
+async function submitStoredVectorDeletes(
+  progress: AccountWipeProgress,
+  env: AccountWipeEnv,
+  tenantId: TenantId,
+  nowMs: number,
+  maxVectorBatches: number,
+): Promise<"continue" | "done"> {
+  const ids = progress.reading_ids ?? [];
+  const remaining = ids.slice(progress.vector_offset);
+  if (remaining.length === 0) return "done";
+  if (!env.READINGS_INDEX) {
+    throw new Error("account_wipe index_unbound");
+  }
+  const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
+  const batchLimit = Math.min(remaining.length, maxVectorBatches * VECTORIZE_DELETE_MAX_IDS);
+  const toDelete = remaining.slice(0, batchLimit);
+  const mutations = await store.deleteMany(toDelete);
+  for (const mutationId of mutations) {
+    progress.mutation_ids.push(mutationId);
+    console.info(
+      JSON.stringify({
+        event: "account_wipe_vector_delete_submitted",
+        tenant_id: tenantId,
+        mutation_id: mutationId,
+        note: "Vectorize deletes are async; embeddings may take a short time to disappear",
+      }),
+    );
+  }
+  progress.vector_offset += toDelete.length;
+  progress.updated_at_ms = nowMs;
+  await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+  return progress.vector_offset < ids.length ? "continue" : "done";
+}
+
 async function extendWipeLeaseForRetry(
   env: AccountWipeEnv,
   tenantId: string,
@@ -543,6 +601,7 @@ function emptyProgress(nowMs: number, force = false): AccountWipeProgress {
     objects_deleted: 0,
     updated_at_ms: nowMs,
     force,
+    reading_ids: [],
   };
 }
 

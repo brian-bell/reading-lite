@@ -208,8 +208,10 @@ describe("account wipe (195b PR1)", () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     deleteByIds.mockImplementation(async (ids: string[]) => {
       vectorOrder.push("vector");
-      const remaining = await listPrefixKeys(PREFIX);
-      expect(remaining.length).toBeGreaterThan(0);
+      if (vectorOrder.length === 1) {
+        const remaining = await listPrefixKeys(PREFIX);
+        expect(remaining.length).toBeGreaterThan(0);
+      }
       return { mutationId: `mut_${ids.length}` };
     });
 
@@ -220,10 +222,10 @@ describe("account wipe (195b PR1)", () => {
     );
     expect(result.kind).toBe("complete");
     expect(vectorOrder[0]).toBe("vector");
-    expect(deleteByIds).toHaveBeenCalledWith([
-      tenantVectorId(OTHER_TENANT_ID, ID_A),
-      tenantVectorId(OTHER_TENANT_ID, ID_B),
-    ]);
+    const expectedIds = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expectedIds);
+    expect(deleteByIds.mock.calls.at(-1)?.[0]).toEqual(expectedIds);
+    expect(deleteByIds.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
     // Vectorize deletes are async: we recorded a mutationId and did not query
     // the index to pretend it is synchronously empty.
@@ -302,9 +304,11 @@ describe("account wipe (195b PR1)", () => {
       { nowMs: NOW_MS },
     );
     expect(result.kind).toBe("complete");
-    expect(deleteByIds).toHaveBeenCalledTimes(2);
+    expect(deleteByIds).toHaveBeenCalledTimes(4);
     expect((deleteByIds.mock.calls[0]![0] as string[]).length).toBe(1000);
     expect((deleteByIds.mock.calls[1]![0] as string[]).length).toBe(1);
+    expect((deleteByIds.mock.calls[2]![0] as string[]).length).toBe(1000);
+    expect((deleteByIds.mock.calls[3]![0] as string[]).length).toBe(1);
     expect(memory.keysUnder(PREFIX)).toEqual([]);
   });
 
@@ -515,6 +519,62 @@ describe("account wipe (195b PR1)", () => {
     );
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+  });
+
+  it("persists collected reading ids and re-submits deleteByIds after R2 is emptied", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    let calls = 0;
+    deleteByIds.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        expect((await listPrefixKeys(PREFIX)).length).toBeGreaterThan(0);
+      } else {
+        expect(await listPrefixKeys(PREFIX)).toEqual([]);
+      }
+      return { mutationId: `mut_${calls}` };
+    });
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    expect(result.kind).toBe("complete");
+    expect(deleteByIds).toHaveBeenCalledTimes(2);
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
+    expect(deleteByIds.mock.calls[1]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { reading_ids?: string[]; phase: string };
+    expect(progress.phase).toBe("done");
+    expect(progress.reading_ids).toEqual([ID_A]);
+  });
+
+  it("leftover recovery unions stored reading ids with an R2 re-list", async () => {
+    await seedTenantObjects([ID_B]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 0,
+        mutation_ids: [],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+      }),
+    );
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    expect(result.kind).toBe("complete");
+    const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expected);
+    expect(deleteByIds.mock.calls.at(-1)?.[0]).toEqual(expected);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
