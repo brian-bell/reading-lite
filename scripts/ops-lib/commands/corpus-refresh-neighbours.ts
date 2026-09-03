@@ -178,6 +178,11 @@ function parseRefreshArgs(argv: string[]): Opts {
   if (sinceLastRun && opts.full) {
     throw new UsageError("--since-last-run cannot be combined with --full");
   }
+  // Behaviour-identical while incremental is the default, and written anyway so
+  // the flag SELECTS its scope rather than merely agreeing with the current
+  // default. A schedule that spells it must not start sweeping if the default
+  // is ever flipped back.
+  if (sinceLastRun) opts.full = false;
   return opts;
 }
 

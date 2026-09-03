@@ -405,7 +405,8 @@ like a silent pass — the `Timing:` block is what makes it visible.
 each ready reading in scope — by default the readings that moved since the run
 marker, and under `--full` every one of them, per **Scope** below — with no
 embedding calls and no LLM. It prints the staleness inventory,
-and always writes `refresh-report.json` — the input contract for later
+and always writes its report (`--out`, default `./refresh-report.json`; give
+each writer its own path, see below) — the input contract for later
 judgement slices. The report compares stored connection IDs with the current
 floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`stale_connection`), still-ready citations that fell below the floor
@@ -441,12 +442,13 @@ writes nothing.
 # bare invocation is scoped to what moved since the run marker (see Scope), so
 # on a quiet night it measures nothing and exits 0.
 #
-# --out keeps an ad-hoc sweep off the nightly schedule's report path; see
-# "different --out paths" below for why the two must not share one.
+# --out keeps an ad-hoc sweep off BOTH schedules' report paths — the nightly's
+# and the weekly's. See "different --out paths" below for why no two writers
+# may share one.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --full \
-  --out ./refresh-report-full.json
+  --out ./refresh-report-adhoc.json
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
-  --full --execute --sole-writer --out ./refresh-report-full.json
+  --full --execute --sole-writer --out ./refresh-report-adhoc.json
 ```
 
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
@@ -684,8 +686,9 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --full --execute --sole-writer --out ./refresh-report-full.json
 ```
 
-Give the two schedules **different `--out` paths**, as above, and point each
-schedule's tier-2/3 run at its own report:
+Give every writer of a refresh report its **own `--out` path** — the nightly,
+the weekly sweep, and any ad-hoc run — and point each schedule's tier-2/3 run at
+its own report:
 
 ```sh
 # Weekly, consuming the sweep — not the nightly report.
