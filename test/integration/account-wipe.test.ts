@@ -20,6 +20,7 @@ import {
   otherTenant,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { RateLimitedError } from "../../src/modules/http-retry";
 
 const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");
 const TENANT = parseTenantId(OTHER_TENANT_ID)!;
@@ -327,6 +328,74 @@ describe("account wipe (195b PR1)", () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
+      enqueued: 0,
+    });
+  });
+
+  it("re-lists the prefix before done so a stale cursor cannot hide leftover objects", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const keys = [`${PREFIX}keep-a`, `${PREFIX}keep-z`];
+    const memory = memoryBucket(keys);
+    await memory.bucket.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "objects",
+        vector_offset: 0,
+        r2_cursor: `${PREFIX}keep-z`,
+        mutation_ids: [],
+        objects_deleted: 0,
+        updated_at_ms: NOW_MS,
+      }),
+    );
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      { nowMs: NOW_MS },
+    );
+    expect(result.kind).toBe("complete");
+    expect(memory.keysUnder(PREFIX)).toEqual([]);
+  });
+
+  it("cron re-enqueues a done tenant that still has prefix objects", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 0,
+        mutation_ids: [],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+      }),
+    );
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
+    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(progressObj).not.toBeNull();
+    const progress = JSON.parse(await progressObj!.text()) as { phase: string };
+    expect(progress.phase).toBe("objects");
+  });
+
+  it("scheduled() still fans out wipes when digest fan-out throws", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const digestBomb = new Proxy(env as object, {
+      get(target, prop, receiver) {
+        if (prop === "DIGEST_JOBS") throw new Error("digest boom");
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Env;
+    await worker.scheduled(
+      { scheduledTime: NOW_MS, cron: "*/15 * * * *" } as ScheduledController,
+      digestBomb,
+    );
+    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
+    consoleErr.mockRestore();
   });
 
   it("scheduled() fans out wipe jobs without dropping digest fan-out", async () => {
@@ -368,6 +437,31 @@ describe("account wipe (195b PR1)", () => {
       { nowMs: NOW_MS },
     );
     expect(badAck).toHaveBeenCalledOnce();
+  });
+
+  it("retries a failed wipe with a delay and logs the error", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    deleteByIds.mockImplementation(async () => {
+      throw new RateLimitedError(429, 12_500, "https://vectorize.example/delete");
+    });
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumeAccountWipeMessage(
+      {
+        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+        ack,
+        retry,
+        attempts: 1,
+      },
+      await wipeEnv(),
+      { nowMs: NOW_MS },
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 
   it("wipe DLQ acks without touching the tenant prefix", async () => {

@@ -5,6 +5,7 @@ import {
   isAccountWipeQueue,
   readingIdFromRelativeKey,
   wipeGraceElapsed,
+  wipeRetryDelaySeconds,
 } from "../../../src/account-wipe";
 import {
   parseAccountWipeEnvelope,
@@ -60,6 +61,16 @@ describe("readingIdFromRelativeKey", () => {
     );
     expect(readingIdFromRelativeKey("index/list.json")).toBeNull();
     expect(readingIdFromRelativeKey("index/by-url/deadbeef")).toBeNull();
+  });
+});
+
+describe("wipeRetryDelaySeconds", () => {
+  it("uses Retry-After when present and exponential otherwise", () => {
+    expect(wipeRetryDelaySeconds(12_500, 1)).toBe(13);
+    expect(wipeRetryDelaySeconds(null, 1)).toBe(30);
+    expect(wipeRetryDelaySeconds(null, 2)).toBe(60);
+    expect(wipeRetryDelaySeconds(null, 5)).toBe(300);
+    expect(wipeRetryDelaySeconds(24 * 60 * 60 * 1000, 1)).toBe(43_200);
   });
 });
 

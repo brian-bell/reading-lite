@@ -47,6 +47,7 @@ import {
   similarityStoreFor,
   VECTORIZE_DELETE_MAX_IDS,
 } from "./modules/stores/similarity-store";
+import { RateLimitedError } from "./modules/http-retry";
 import { ListIndexSchema } from "./schemas/api";
 import { parseReadingId } from "./services";
 
@@ -162,13 +163,23 @@ export async function fanOutDueAccountWipes(
       if (!tenantId) continue;
       if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       const progress = await readProgress(env.READINGS_BUCKET, tenantId);
-      if (progress?.phase === "done") continue;
-      if (
+      if (progress?.phase === "done") {
+        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) continue;
+      } else if (
         progress &&
         deps.nowMs - progress.updated_at_ms < ACCOUNT_WIPE_IN_FLIGHT_MS
       ) {
         continue;
       }
+      // Touch before send so the in-flight skip is real for the next cron tick
+      // and so leftover `done` recovery does not immediately re-enqueue.
+      const next: AccountWipeProgress = progress ?? emptyProgress(deps.nowMs);
+      if (next.phase === "done") {
+        next.phase = "objects";
+        next.r2_cursor = undefined;
+      }
+      next.updated_at_ms = deps.nowMs;
+      await writeProgress(env.READINGS_BUCKET, tenantId, next);
       await queue.send(accountWipeEnvelopeV1({ tenantId }));
       enqueued += 1;
     } catch (error) {
@@ -215,12 +226,15 @@ export async function processAccountWipeJob(
 
   let progress = (await readProgress(env.READINGS_BUCKET, tenantId)) ?? emptyProgress(deps.nowMs);
   if (progress.phase === "done") {
-    const leftover = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
-    if (leftover.objects.length === 0) {
+    if (!(await prefixHasObjects(env.READINGS_BUCKET, keyRoot))) {
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
-    progress = { ...progress, phase: "objects", r2_cursor: undefined, updated_at_ms: deps.nowMs };
+    progress = { ...progress, phase: "objects", r2_cursor: undefined };
   }
+  // Persist before any listing so a concurrent cron tick sees an in-flight lease
+  // instead of launching a sibling job against the same prefix.
+  progress.updated_at_ms = deps.nowMs;
+  await writeProgress(env.READINGS_BUCKET, tenantId, progress);
 
   if (progress.phase === "vectors") {
     const readingIds = await collectReadingIds(env.READINGS_BUCKET, layout);
@@ -276,6 +290,23 @@ export async function processAccountWipeJob(
       ...(cursor ? { cursor } : {}),
     });
     if (list.objects.length === 0) {
+      // A stored cursor can land on an empty page while objects remain earlier
+      // in the prefix. Confirm emptiness without the cursor before `done`.
+      if (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) {
+        cursor = undefined;
+        progress.r2_cursor = undefined;
+        progress.updated_at_ms = deps.nowMs;
+        await writeProgress(env.READINGS_BUCKET, tenantId, progress);
+        if (pages >= maxObjectPages) {
+          return {
+            kind: "continue",
+            objects_deleted: progress.objects_deleted,
+            mutation_ids: progress.mutation_ids,
+            r2_cursor: undefined,
+          };
+        }
+        continue;
+      }
       progress = {
         ...progress,
         phase: "done",
@@ -331,6 +362,7 @@ export async function consumeAccountWipeMessage(
     body: unknown;
     ack: () => void;
     retry: (opts?: { delaySeconds?: number }) => void;
+    attempts?: number;
   },
   env: AccountWipeEnv,
   deps: AccountWipeJobDeps,
@@ -349,9 +381,27 @@ export async function consumeAccountWipeMessage(
       await queue.send(parsed.envelope);
     }
     msg.ack();
-  } catch {
-    msg.retry();
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "account_wipe_failed",
+        tenant_id: parsed.envelope.tenantId,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    const retryAfterMs = error instanceof RateLimitedError ? error.retryAfterMs : null;
+    msg.retry({ delaySeconds: wipeRetryDelaySeconds(retryAfterMs, msg.attempts ?? 1) });
   }
+}
+
+export function wipeRetryDelaySeconds(retryAfterMs: number | null, attempts: number): number {
+  const defaultMs = 30_000;
+  const maxMs = 300_000;
+  const ms =
+    retryAfterMs !== null
+      ? retryAfterMs
+      : Math.min(maxMs, defaultMs * 2 ** Math.max(0, attempts - 1));
+  return Math.max(1, Math.min(43_200, Math.ceil(ms / 1000)));
 }
 
 export async function handleAccountWipeDeadLetter(msg: {
@@ -372,6 +422,22 @@ export async function handleAccountWipeDeadLetter(msg: {
   } finally {
     msg.ack();
   }
+}
+
+async function prefixHasObjects(bucket: R2Bucket, keyRoot: string): Promise<boolean> {
+  const leftover = await bucket.list({ prefix: keyRoot, limit: 1 });
+  return leftover.objects.length > 0;
+}
+
+async function tenantPrefixHasObjects(
+  bucket: R2Bucket,
+  tenantId: TenantId,
+  env: { TENANT_DATA_PLANE?: string },
+): Promise<boolean> {
+  if (!tenantDataPlaneEnabled(env)) return false;
+  const keyRoot = tenantKeyRoot({ tenantId }, true);
+  if (keyRoot === "") return false;
+  return prefixHasObjects(bucket, keyRoot);
 }
 
 function emptyProgress(nowMs: number): AccountWipeProgress {

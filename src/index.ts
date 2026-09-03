@@ -191,8 +191,15 @@ export default {
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const nowMs = controller.scheduledTime;
-    await fanOutDueDigests(env, { nowMs });
-    await fanOutDueAccountWipes(env, { nowMs });
+    // Digest and wipe fan-out must not share fate: a D1/queue throw on one
+    // path cannot skip the other for the whole */15 tick.
+    const settled = await Promise.allSettled([
+      fanOutDueDigests(env, { nowMs }),
+      fanOutDueAccountWipes(env, { nowMs }),
+    ]);
+    for (const result of settled) {
+      if (result.status === "rejected") console.error(result.reason);
+    }
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const services = defaultServices();
