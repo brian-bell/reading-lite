@@ -996,19 +996,20 @@ Scope. --since-last-run is the default: it measures only the readings whose
 floored neighbourhood could have moved since the run marker at
 index/refresh-state.json — those created or reprocessed since it, and the
 reverse neighbourhood of each changed vector (a topK-${REVERSE_TOP_K} query).
---full measures every ready reading, as this command always did by default; it
-is the explicit weekly sweep. It escalates to a
-full sweep whenever that reasoning runs out — no marker, a marker invalidated by
-\`corpus backfill-vectors\`, a reading of any status the marker saw that has since
-left the list, a failed reverse query, a changed ready reading with no vector to scope
-from, or a reverse neighbourhood that came back full at topK with no match below
-the bound. Purges are caught by name, not by row count, so a day that ingests as
+That scope escalates to a full sweep whenever that reasoning runs out — no
+marker, a marker invalidated by \`corpus backfill-vectors\`, a reading of any
+status the marker saw that has since left the list, a failed reverse query, a
+changed ready reading with no vector to scope from, or a reverse neighbourhood
+that came back full at topK with no match below the bound. Purges are caught by name, not by row count, so a day that ingests as
 many readings as it purges still escalates.
-An incremental report is a statement about its scope: a persistent flag on a
-reading nobody touched stays invisible until the next full sweep, so run --full
-weekly. The bound keeps FLAGS exact, not the stored numbers: a vector added
-anywhere enters some stranger's raw topK, and manifest.similarity max/mean and
-the index/list.json row the API and the SPA serve summarise that raw topK,
+--full measures every ready reading, as this command always did by default. It
+is now the explicit weekly sweep, and an incremental report is a statement about
+its scope rather than about the corpus: a persistent flag on a reading nobody
+touched stays invisible until that sweep.
+
+The bound keeps FLAGS exact, not the stored numbers: a vector added anywhere
+enters some stranger's raw topK, and manifest.similarity max/mean and the
+index/list.json row the API and the SPA serve summarise that raw topK,
 sub-floor scores included. So between sweeps those numbers are approximate on
 readings nothing brought into scope — deterministic, and cleared by the next
 --full. The scope and its reason are printed and recorded in the report header,
