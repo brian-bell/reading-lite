@@ -578,7 +578,7 @@ denominator for the escalation rate below.
   the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
   unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
   4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
-  ~10 changed readings ~15 s; at 10x corpus that is ~30 min against the same
+  ~10 changed readings ~15 s; at 10x corpus that is ~35–40 min against the same
   ~15 s.
 - **Tier 1 spends no LLM or embedding tokens at all** — 0 across all eight
   passes. The scope buys wall clock and Cloudflare API calls, not provider
