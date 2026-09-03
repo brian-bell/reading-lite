@@ -47,6 +47,7 @@ import { commitReadingSlot, releaseReadingSlot } from "./control-plane/tenant-us
 import {
   acquireProcessingLeases,
   DeferPaidWorkError,
+  heartbeatProcessingLeases,
   pauseProcessingLeases,
   releaseProcessingLeases,
   renewProcessingLeases,
@@ -336,7 +337,7 @@ async function presentLeaseBeforePaidDispatch(env: Env, hold: ProcessingLeaseHol
 
 function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () => void {
   const timer = setInterval(() => {
-    void renewProcessingLeases(env, hold, Date.now());
+    void heartbeatProcessingLeases(env, hold, Date.now());
   }, PROCESSING_LEASE_HEARTBEAT_MS);
   return () => clearInterval(timer);
 }

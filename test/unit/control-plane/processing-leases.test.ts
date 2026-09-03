@@ -4,6 +4,7 @@ import { GlobalUsageGuard } from "../../../src/control-plane/global-usage-guard"
 import {
   acquireProcessingLeases,
   DeferPaidWorkError,
+  heartbeatProcessingLeases,
   pauseProcessingLeases,
   renewProcessingLeases,
   throwIfDeferred,
@@ -530,6 +531,78 @@ describe("tenant-first lease saga", () => {
     );
     expect(result).toEqual({ ok: false, reason: "unavailable" });
     expect(calls).toEqual(["tenant.pause", "global.pause", "tenant.renew"]);
+    expect(released).toEqual([]);
+  });
+
+  it("heartbeat renews both sides without releasing tenant when global denies", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    await heartbeatProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantRenew: { ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+        globalRenew: { ok: false, reason: "stale_fence" },
+      }),
+    );
+    expect(calls).toEqual(["tenant.renew", "global.renew"]);
+    expect(released).toEqual([]);
+  });
+
+  it("heartbeat renews both sides without releasing tenant when global throws", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    await heartbeatProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantRenew: { ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+        globalRenew: new Error("do timeout"),
+      }),
+    );
+    expect(calls).toEqual(["tenant.renew", "global.renew"]);
+    expect(released).toEqual([]);
+  });
+
+  it("heartbeat still renews global when tenant renew fails", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    await heartbeatProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantRenew: { ok: false, reason: "stale_fence" },
+        globalRenew: { ok: true, fence: "gf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+      }),
+    );
+    expect(calls).toEqual(["tenant.renew", "global.renew"]);
+    expect(released).toEqual([]);
+  });
+
+  it("heartbeat still renews global when tenant renew throws", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    await heartbeatProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantRenew: new Error("do timeout"),
+        globalRenew: { ok: true, fence: "gf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+      }),
+    );
+    expect(calls).toEqual(["tenant.renew", "global.renew"]);
     expect(released).toEqual([]);
   });
 

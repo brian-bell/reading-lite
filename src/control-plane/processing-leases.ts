@@ -6,8 +6,10 @@ import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "
 // Tenant-first concurrency saga (ADR 0001). Acquire the tenant lease, then the
 // global lease for the same attempt. Global deny, uncertain global, and global
 // alreadyRunning after a fresh tenant acquire all compensate the tenant.
-// Renew and pause are tenant-first and all-or-nothing: a global failure rolls
-// the tenant mutation back (release after renew, restore inFlight after pause).
+// presentLease renew and pause are tenant-first and all-or-nothing: a global
+// failure rolls the tenant mutation back (release after renew, restore inFlight
+// after pause). Heartbeat renews each side best-effort and never compensates —
+// a mid-job TTL refresh must not releaseLease while work continues.
 // Uncertain responses are held/denied — never fail open. Duplicate deliveries
 // of the same (tenantId, attemptId) reuse the existing fence.
 
@@ -116,6 +118,24 @@ export async function renewProcessingLeases(
     return global;
   }
   return tenant;
+}
+
+export async function heartbeatProcessingLeases(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: number,
+  deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
+): Promise<void> {
+  try {
+    await deps.tenant.renewLease(hold.attemptId, hold.tenantFence, nowMs);
+  } catch {
+    // Best-effort TTL refresh. Compensation stays on presentLease/abort.
+  }
+  try {
+    await deps.global.renewLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+  } catch {
+    // Best-effort TTL refresh. Compensation stays on presentLease/abort.
+  }
 }
 
 export async function pauseProcessingLeases(
