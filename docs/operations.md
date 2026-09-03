@@ -482,8 +482,10 @@ An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched — the backfill's 394
 `connection_below_floor` rows, say — stays invisible until that reading enters
 scope. **The weekly `--full` sweep is what makes the default safe, and it is
-scheduled by the operator, outside this repository** — there is no scheduler in
-git (see "Refresh exit codes" for the wrapper an operator's cron wants). If
+scheduled by the operator, outside this repository** — nothing in git schedules
+a corpus refresh pass (the `crons` triggers in `wrangler.toml` drive the
+Worker's own scheduled handler, not these commands), so see "Refresh exit codes"
+for the wrapper an operator's cron wants. If
 nothing sweeps, those persistent flags never resurface and the served
 `similarity` numbers drift indefinitely.
 
@@ -523,16 +525,25 @@ not report the corpus as covered.
 
 **Staging proof, 2026-09-02** — the measurement the default flip rests on
 (`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
-global`; eight `--execute --sole-writer` passes, all exit 0). The protocol was
-full → ingest 8 URLs → incremental → full:
+global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
+protocol proper — full → ingest 8 URLs → incremental → full → full; 6–8 were
+added to price a quiet night and to exercise the escalation path deliberately.
+All eight, in order:
 
-| | measured | wall | flagged |
-|---|---|---|---|
-| `--full`, quiet corpus (29 ready) | 29 | 10.75 s | 0 |
-| `--since-last-run`, nothing changed | 0 | **0.98–1.00 s** | 0 |
-| `--since-last-run`, 8 readings ingested | 4 | 6.72 s | 2 |
-| `--full` straight after it | 33 | 14.09 s | 2 |
-| `--full` again, immediately | 33 | 11.80 s | 2 |
+| # | invocation | scope taken | measured | wall | flagged |
+|---|---|---|---|---|---|
+| 1 | `--full` | full | 29 | 10.75 s | 0 |
+| 2 | `--since-last-run` | incremental (0) | 0 | 1.00 s | 0 |
+| — | *ingest leg, 8 URLs → 4 ready + 4 failed* | — | — | 118 s | — |
+| 3 | `--since-last-run` | incremental (8) | 4 | 6.72 s | 2 |
+| 4 | `--full` | full | 33 | 14.09 s | 2 |
+| 5 | `--full` (immediate rerun) | full | 33 | 11.80 s | 2 |
+| 6 | `--since-last-run` | incremental (0) | 0 | **0.98 s** | 0 |
+| 7 | `--since-last-run` | **escalated** — 1 reading purged | 33 | 12.75 s | 2 |
+| 8 | `--since-last-run` | **escalated** — 3 readings purged | 33 | 13.54 s | 2 |
+
+Five of the eight were `--since-last-run` (2, 3, 6, 7, 8), which is the
+denominator for the escalation rate below.
 
 - **Flags were byte-identical** between the incremental pass and the sweep
   taken 19 seconds later: same two ids, same `connections`,
@@ -662,8 +673,16 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 # Weekly. The sweep is no longer what a bare invocation does — it must be asked
 # for.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
-  --full --execute --sole-writer
+  --full --execute --sole-writer --out ./refresh-report-full.json
 ```
+
+Give the two schedules **different `--out` paths**, as above. Both default to
+`./refresh-report.json`, which `refresh-connections` and `refresh-tensions`
+consume, and an incremental report is a statement about its scope: a nightly
+pass — or an ad-hoc interactive one — would otherwise overwrite the sweep's
+corpus-wide report with a scope-limited and often empty one, exit 0, and leave
+tier 2/3 judging a handful of readings while believing they had the sweep. The
+tier-2/3 commands echo the report's scope header but neither refuses nor warns.
 
 ### Refresh exit codes
 
@@ -693,8 +712,9 @@ is an unmeasurable reading — no vector, or a manifest failing `ManifestSchema`
 — used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
-There is no cron wrapper script and no scheduler in this repository — the
-nightly and weekly invocations above are scheduled by the operator, directly —
+There is no cron wrapper script in this repository, and nothing in git schedules
+a refresh pass — the nightly and weekly invocations above are scheduled by the
+operator, directly —
 so a scheduler wanting this distinction has to make it itself (the same `case`
 serves the weekly `--full` sweep):
 
