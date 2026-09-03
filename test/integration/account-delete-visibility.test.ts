@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import type { Env } from "../../src/index";
 import { sha256Hex, type Services } from "../../src/services";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix, ReadingStore } from "../../src/modules/stores/reading-store";
 import { founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
@@ -98,7 +98,11 @@ function makeServices(fetchFn: typeof fetch): Services {
   };
 }
 
-function statusLookupPlane(inner: D1Database, succeed: number): D1Database {
+function statusLookupPlane(
+  inner: D1Database,
+  succeed: number,
+  after: "throw" | { status: string } = "throw",
+): D1Database {
   let remaining = succeed;
   return {
     prepare(sql: string) {
@@ -109,7 +113,10 @@ function statusLookupPlane(inner: D1Database, succeed: number): D1Database {
           const bound = stmt.bind(...params);
           return {
             first: async () => {
-              if (remaining <= 0) throw new Error("D1 hiccup");
+              if (remaining <= 0) {
+                if (after === "throw") throw new Error("D1 hiccup");
+                return after;
+              }
               remaining -= 1;
               return bound.first();
             },
@@ -182,5 +189,64 @@ describe("processReading — tenant status lookup at publish", () => {
     expect(manifest?.error).toBeUndefined();
     expect(await reader.findListIndexItem(id)).not.toBeNull();
     expect(vector.upsert).toHaveBeenCalled();
+  });
+
+  it("does not markFailed when tenant-fence visibility.remove throws after ready CAS", async () => {
+    installVectorizeStub();
+    const fetchFn = makeStubFetch();
+    const reader = testReadingStore(env);
+    const url = "https://example.com/hide-failure";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_HIDE";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const job: ProcessReadingArgs = {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_HIDE",
+      attemptStartedAt: createdAt,
+      trigger: "submit",
+      email: false,
+    };
+    await reader.writeManifest(keyPrefix, {
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+
+    const workerEnv = env as unknown as Env;
+    const wrapped: Env = {
+      ...workerEnv,
+      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 1, { status: "deleting" }),
+    };
+    const hide = vi
+      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
+      .mockRejectedValue(new Error("R2 hide failure"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
+      ).resolves.toBeUndefined();
+    } finally {
+      hide.mockRestore();
+      consoleErr.mockRestore();
+    }
+
+    const manifest = await reader.readManifest(keyPrefix);
+    expect(manifest?.status).toBe("ready");
+    expect(manifest?.error).toBeUndefined();
   });
 });

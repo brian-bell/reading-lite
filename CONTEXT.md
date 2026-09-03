@@ -118,7 +118,9 @@ submit, a markdown import, or a lookup. It lives in
   skips spend and visibility. A D1 status-lookup failure **before extract/embed**
   throws `RateLimitedError` so the queue retries. After a terminal CAS, and on
   the DLQ mark path, lookup failure fail-opens (publish/keep, or write failed);
-  compensate/remove only on confirmed inactive. `commitTerminalManifest`
+  compensate/remove only on confirmed inactive. Visibility publish/remove
+  throws after that CAS log-and-continue so a deleting-tenant hide failure
+  cannot `markFailed` over the ready object. `commitTerminalManifest`
   rechecks status immediately before visibility publish and again immediately
   after (compensate with `visibility.remove` if the tenant flipped deleting in
   between). Wipe, residue, and email reuse are 195b. This is not

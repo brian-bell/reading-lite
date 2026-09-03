@@ -695,48 +695,54 @@ export async function commitTerminalManifest(
     return { committed: false, published: false };
   }
 
+  // The terminal object is committed. Visibility throws must not reach
+  // processReading's outer catch: markFailed(allowLastAttempt) would overwrite
+  // ready with failed. Same class of bug sendReadingEmailAndLog already avoids.
   if (state.canPublishVisibility) {
     // Recheck immediately before publish: an in-flight consumer can pause
     // between terminal CAS and this write. Account deletion marks
     // users.status=deleting as the durable fence (195a). Per-reading purge
     // still uses missingManifestStillLive (#179 remainder).
     if (await tenantStillAllowsVisibility(opts)) {
-      await reconcileVisibility(opts.defensive, () =>
+      const published = await reconcileVisibility(true, () =>
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
       );
       // Check-then-publish is still a race; recheck after the writes and
       // compensate in this same consumer if the tenant is now deleting.
       if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+        await reconcileVisibility(true, () => visibility.remove(args));
         return { committed: true, published: false };
       }
-      return { committed: true, published: true };
+      return { committed: true, published };
     }
-    await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+    await reconcileVisibility(true, () => visibility.remove(args));
     return { committed: true, published: false };
   }
 
   if (state.canRemoveVisibility) {
-    await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+    await reconcileVisibility(true, () => visibility.remove(args));
   }
   return { committed: true, published: false };
 }
 
-// Visibility reconciliation honors `defensive`: on the failure path a transient
-// R2 hiccup has nowhere to bubble (the queue consumer acks either way), so log
-// and move on; on the success path throws propagate to the outer catch.
+// Visibility reconciliation honors `defensive`: log-and-continue so a transient
+// R2 hiccup cannot clobber a committed terminal object (or, on the failure
+// path, bubble out of a consumer that will ack either way). Before the
+// terminal CAS, the success path still lets throws propagate to the outer catch.
 async function reconcileVisibility(
   defensive: boolean,
   fn: () => Promise<void>,
-): Promise<void> {
+): Promise<boolean> {
   if (!defensive) {
     await fn();
-    return;
+    return true;
   }
   try {
     await fn();
+    return true;
   } catch (e) {
     console.error(e);
+    return false;
   }
 }
 

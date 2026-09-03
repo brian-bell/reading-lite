@@ -519,4 +519,50 @@ describe("commitTerminalManifest", () => {
     expect(await reader.findListIndexItem(ID)).not.toBeNull();
     expect(vectors.has(ID)).toBe(true);
   });
+
+  it("19: after ready CAS, tenant-fence remove throw leaves ready (does not propagate)", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    vi.spyOn(reader, "removeListIndexItemIf").mockRejectedValue(new Error("R2 hide failure"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => false,
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: false });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("20: after ready CAS, post-publish compensate remove throw leaves ready", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity } = fakeVectorize();
+    let checks = 0;
+    vi.spyOn(reader, "removeListIndexItemIf").mockRejectedValue(new Error("R2 hide failure"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        return checks === 1;
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+  });
 });
