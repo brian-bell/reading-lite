@@ -134,10 +134,13 @@ function parseGuardBody(value: unknown): GuardBody | null {
 }
 
 async function scheduleCleanupAlarm(storage: DurableObjectStorage, expiresAt: number): Promise<void> {
-  const when = Math.max(expiresAt, Date.now() + 1);
+  // Never schedule in the past or at Date.now()+1: intake tests freeze `now()`
+  // months behind wall-clock, and an immediate alarm races isolated-storage
+  // teardown (abortAllDurableObjects + sqlite-shm).
+  if (expiresAt <= Date.now()) return;
   const existing = await storage.getAlarm();
-  if (existing == null || when < existing) {
-    await storage.setAlarm(when);
+  if (existing == null || expiresAt < existing) {
+    await storage.setAlarm(expiresAt);
   }
 }
 
@@ -198,7 +201,7 @@ export class TenantUsageGuard implements DurableObject {
     const current = (await this.state.storage.get("req")) as WindowRecord | undefined;
     const next = bumpWindow(current, now, INGRESS_REQUEST_WINDOW_MS);
     await this.state.storage.put("req", { ...next, windowMs: INGRESS_REQUEST_WINDOW_MS });
-    await scheduleCleanupAlarm(this.state.storage, next.start + INGRESS_REQUEST_WINDOW_MS);
+    await scheduleCleanupAlarm(this.state.storage, Date.now() + INGRESS_REQUEST_WINDOW_MS);
     if (next.count > limits.limits.submissionsPerHour) {
       return json({ ok: false, reason: "request_rate", reset_at: next.start + INGRESS_REQUEST_WINDOW_MS });
     }
@@ -227,7 +230,7 @@ export class TenantUsageGuard implements DurableObject {
 
     await putCounter(this.state.storage, `h:${hourKey}`, hourCount + 1);
     await putCounter(this.state.storage, `m:${monthKey}`, monthCount + 1);
-    const expiresAt = body.nowMs + READING_RESERVATION_TTL_MS;
+    const expiresAt = Date.now() + READING_RESERVATION_TTL_MS;
     await this.state.storage.put(opKey, {
       status: "held",
       hourKey,
@@ -309,8 +312,8 @@ export class TenantUsageGuard implements DurableObject {
         }
       }
     }
-    if (nextAlarm != null) {
-      await this.state.storage.setAlarm(Math.max(nextAlarm, now + 1));
+    if (nextAlarm != null && nextAlarm > now) {
+      await this.state.storage.setAlarm(nextAlarm);
     } else {
       await this.state.storage.deleteAlarm();
     }
