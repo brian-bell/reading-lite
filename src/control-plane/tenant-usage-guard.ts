@@ -297,17 +297,18 @@ export class TenantUsageGuard implements DurableObject {
       if (key.startsWith("op:")) {
         const reservation = value as Reservation;
         if (!reservation || typeof reservation.expiresAt !== "number") continue;
-        if (reservation.status === "held" && now >= reservation.expiresAt) {
-          await decrementCounter(this.state.storage, `h:${reservation.hourKey}`);
-          await decrementCounter(this.state.storage, `m:${reservation.monthKey}`);
+        if (now >= reservation.expiresAt) {
+          // Held slots return to the counters. Consumed/released records are
+          // dropped with no decrement so a successful attempt cannot leak an
+          // op:* row forever, while commit stays idempotent within TTL.
+          if (reservation.status === "held") {
+            await decrementCounter(this.state.storage, `h:${reservation.hourKey}`);
+            await decrementCounter(this.state.storage, `m:${reservation.monthKey}`);
+          }
           await this.state.storage.delete(key);
           continue;
         }
-        if (reservation.status === "released" && now >= reservation.expiresAt) {
-          await this.state.storage.delete(key);
-          continue;
-        }
-        if (reservation.status === "held" && (nextAlarm == null || reservation.expiresAt < nextAlarm)) {
+        if (nextAlarm == null || reservation.expiresAt < nextAlarm) {
           nextAlarm = reservation.expiresAt;
         }
       }

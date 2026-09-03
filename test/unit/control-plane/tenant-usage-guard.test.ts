@@ -197,6 +197,46 @@ describe("TenantUsageGuard", () => {
     expect(map.has("op:at_stale")).toBe(false);
     expect(map.get(`m:${utcMonthKey(NOW)}`)).toBeUndefined();
   });
+
+  it("alarm drops expired consumed ops without decrementing paid-work counts", async () => {
+    const now = Date.now();
+    const hourKey = utcHourKey(now);
+    const monthKey = utcMonthKey(now);
+    const map = new Map<string, unknown>([
+      [
+        "op:at_consumed",
+        { status: "consumed", hourKey, monthKey, expiresAt: now - 1 },
+      ],
+      [`h:${hourKey}`, { count: 1 }],
+      [`m:${monthKey}`, { count: 1 }],
+    ]);
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    await guard.alarm();
+    expect(map.has("op:at_consumed")).toBe(false);
+    expect(map.get(`m:${monthKey}`)).toEqual({ count: 1 });
+    expect(map.get(`h:${hourKey}`)).toEqual({ count: 1 });
+  });
+
+  it("alarm keeps an unexpired consumed op and schedules its cleanup", async () => {
+    const now = Date.now();
+    const expiresAt = now + 60_000;
+    const map = new Map<string, unknown>([
+      [
+        "op:at_live",
+        {
+          status: "consumed",
+          hourKey: utcHourKey(now),
+          monthKey: utcMonthKey(now),
+          expiresAt,
+        },
+      ],
+    ]);
+    const storage = memoryStorage(false, map);
+    const guard = new TenantUsageGuard(guardState(storage), envWithLimits());
+    await guard.alarm();
+    expect(map.has("op:at_live")).toBe(true);
+    expect(await storage.getAlarm()).toBe(expiresAt);
+  });
 });
 
 describe("tenantUsageFor", () => {
