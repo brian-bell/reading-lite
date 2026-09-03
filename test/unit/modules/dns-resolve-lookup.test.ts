@@ -3,7 +3,7 @@ import { defaultServices, lookupFromResolvers, nodeDnsLookup } from "../../../sr
 
 function codedError(code: string, message = code): Error {
   const error = new Error(message);
-  (error as { code: string }).code = code;
+  (error as unknown as { code: string }).code = code;
   return error;
 }
 
