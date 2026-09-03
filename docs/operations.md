@@ -321,7 +321,7 @@ and a failed one preserves the ready manifest with
 | `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
 | `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure every ready reading against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; `--since-last-run` measures only what changed; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
@@ -425,9 +425,12 @@ no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
 retry but carry no deadline of their own. A stall on any of them still looks
 like a silent pass — the `Timing:` block is what makes it visible.
 
-`ops corpus refresh-neighbours` re-queries Vectorize by every ready reading's
-stored vector id (no embedding calls, no LLM), prints the staleness inventory,
-and always writes `refresh-report.json` — the input contract for later
+`ops corpus refresh-neighbours` re-queries Vectorize by the stored vector id of
+each ready reading in scope — by default the readings that moved since the run
+marker, and under `--full` every one of them, per **Scope** below — with no
+embedding calls and no LLM. It prints the staleness inventory,
+and always writes its report (`--out`, default `./refresh-report.json`; give
+each writer its own path, see below) — the input contract for later
 judgement slices. The report compares stored connection IDs with the current
 floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`stale_connection`), still-ready citations that fell below the floor
@@ -459,13 +462,26 @@ entities, and `summary_markdown` untouched. A second immediate `--execute`
 writes nothing.
 
 ```sh
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT"
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
+# The corpus-wide staleness inventory this section describes needs --full: a
+# bare invocation is scoped to what moved since the run marker (see Scope), so
+# on a quiet night it measures nothing and exits 0.
+#
+# --out keeps an ad-hoc sweep off BOTH schedules' report paths — the nightly's
+# and the weekly's. See "different --out paths" below for why no two writers
+# may share one.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --full \
+  --out ./refresh-report-adhoc.json
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --full --execute --sole-writer --out ./refresh-report-adhoc.json
 ```
 
-**Scope.** By default (`--full`) the pass measures every ready reading, which
-is O(N) whatever changed — the immediate rerun in run A measured 553 readings
-in 16 minutes and wrote none of them. `--since-last-run` measures only the
+**Scope.** By default the pass measures only what moved (`--since-last-run`,
+which is now the default and stays accepted as a way of saying so out loud).
+`--full` is the explicit sweep: every ready reading, O(N) whatever changed —
+the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
+of them. (That 16 minutes is the wrangler path; the same sweep on the now-default
+direct path models at ~3.5–4 min — see the staging proof below. The argument for
+the narrowed scope does not rest on the slower figure.) The default measures only the
 readings whose neighbourhood could have moved since the run marker stored at
 `index/refresh-state.json` (per tenant): those created or reprocessed since it,
 and the reverse neighbourhood of each changed vector (one topK-100
@@ -489,25 +505,41 @@ full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown — never a narrower pass. A short result is a complete
 one, so an isolated reading, whose only match is itself, does not escalate. An
 escalation reports how many of the changed readings caused it and names the
-first, because a corpus that saturates most nights is buying nothing from
-`--since-last-run` and that rate is the number to measure before switching a
-cron over to it.
+first, because a corpus that saturates most nights is buying nothing from the
+narrowed scope — that rate is the number to watch, and a corpus that escalates
+every night should be run as `--full` outright rather than paying the reverse
+queries first.
 
 An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched — the backfill's 394
 `connection_below_floor` rows, say — stays invisible until that reading enters
-scope. **Run `--full` weekly**; `--full` remains the default until a staging
-proof of the incremental path is recorded here.
+scope. **The weekly `--full` sweep is what makes the default safe, and it is
+scheduled by the operator, outside this repository** — nothing in git schedules
+a corpus refresh pass (the `crons` triggers in `wrangler.toml` drive the
+Worker's own scheduled handler, not these commands), so see "Refresh exit codes"
+for the wrapper an operator's cron wants. If
+nothing sweeps, those persistent flags never resurface and the served
+`similarity` numbers drift indefinitely.
 
 A reading the scope does bring in is measured like any other target, so its
 `similarity` snapshot and its list row are brought current in the same pass —
 nothing about being in scope defers a measurement to the sweep.
 
-One thing a nightly pass does not bring in, and it waits for the weekly sweep: a
-reprocess that moves a vector far enough to leave a stranger's floored
-neighbourhood. The reverse query runs against the vector's new position, and
-where that stranger had never judged it, its stored `similarity` snapshot and
-list row — which the API and the SPA serve — go stale until the sweep.
+**What an incremental pass keeps exact, and what it only keeps approximate.**
+Flags are exact: the bound is derived so that a reading further away than it
+cannot gain or lose a *floored* neighbour because one vector changed. The
+stored `similarity` snapshot is not, and this is broader than the moved-vector
+case above. That snapshot — and the `index/list.json` row the API and the SPA
+serve — summarises the **raw** topK, sub-floor scores included, so a vector
+merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
+at any score, far below the bound. Between sweeps those numbers are therefore
+approximate on every reading the scope left out. The drift is deterministic and
+the next `--full` clears it.
+
+The moved-vector case remains the one thing that defers a *re-judgement* rather
+than a number: a reprocess that moves a vector far enough to leave a stranger's
+floored neighbourhood is invisible to the reverse query, which runs against the
+vector's new position.
 
 A purge and a Vectorize-only write used to be on that list and are not any more.
 The marker records the list ids it saw, not a row count, so a day that purges
@@ -522,6 +554,69 @@ anything. A refresh pass that finds a stamp it did not start with leaves the
 marker alone rather than clearing a sweep it did not perform, which is what the
 second stamp is for: a pass that swept while vectors were still arriving must
 not report the corpus as covered.
+
+**Staging proof, 2026-09-02** — the measurement the default flip rests on
+(`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
+global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
+protocol proper — full → incremental (quiet) → ingest 8 URLs → incremental →
+full → full; 6–8 were added to price a second quiet night and to exercise the
+escalation path deliberately. All eight, in order:
+
+| # | invocation | scope taken | measured | wall | flagged |
+|---|---|---|---|---|---|
+| 1 | `--full` | full | 29 | 10.75 s | 0 |
+| 2 | `--since-last-run` | incremental (0) | 0 | 1.00 s | 0 |
+| — | *ingest leg, 8 URLs → 4 ready + 4 failed* | — | — | 118 s | — |
+| 3 | `--since-last-run` | incremental (8) | 4 | 6.72 s | 2 |
+| 4 | `--full` | full | 33 | 14.09 s | 2 |
+| 5 | `--full` (immediate rerun) | full | 33 | 11.80 s | 2 |
+| 6 | `--since-last-run` | incremental (0) | 0 | **0.98 s** | 0 |
+| 7 | `--since-last-run` | **escalated** — 1 reading purged | 33 | 12.75 s | 2 |
+| 8 | `--since-last-run` | **escalated** — 3 readings purged | 33 | 13.54 s | 2 |
+
+Five of the eight were `--since-last-run` (2, 3, 6, 7, 8), which is the
+denominator for the escalation rate below.
+
+- **Flags were byte-identical** between the incremental pass and the sweep
+  taken 19 seconds later: same two ids, same `connections`,
+  `current_neighbours`, `novelty_verdict`, `reasons`, `judged_at`. The narrowed
+  scope missed no flag.
+- **Snapshot drift elsewhere was not zero, by design.** The sweep after the
+  incremental rewrote two snapshots the incremental never measured — both X
+  readings whose nearest score moved 0.221→0.239 and 0.172→0.268 as the four
+  new vectors entered their raw topK. (Eight rows were ingested and entered the
+  changed set; four reached `ready` and own a vector, and the other four are
+  the "not ready, own no vector" half the scope planner skips.) Both sit far
+  below the bound (0.45) and
+  neither can change a flag. The immediately following sweep reported
+  `Snapshot drift: 0`, so it is deferred, not lost. That is the
+  exact-versus-approximate paragraph above, measured.
+- **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
+  the pass resolves an empty scope and returns before it opens Vectorize or
+  reads a manifest — provided the marker carries no still-ready
+  `unmeasurable_ids`, each of which costs a query and a manifest read on even
+  the quietest night, by design. The measured runs took the ETag short-circuit (an unchanged
+  `index/list.json` ETag ends the scope immediately), but the win does not
+  depend on it — where no ETag is available, which is every wrangler-path run
+  and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
+  the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
+  unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
+  4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
+  ~10 changed readings ~15 s; at 10x corpus that is ~35–40 min against the same
+  ~15 s.
+- **Tier 1 spends no LLM or embedding tokens at all** — 0 across all eight
+  passes. The scope buys wall clock and Cloudflare API calls, not provider
+  spend. What it does change is how many readings tiers 2/3 are handed.
+- **Escalation: 2 of 5 incremental passes (40%)**, both from purges deliberately
+  induced by the measurement; excluding those, 0 of 3. Both escalations named
+  their cause and cost ~1 s more than a plain sweep would have. The saturation
+  hatch never fired.
+
+Two numbers staging could not supply, so the flip does not claim them: the
+production stranger fan-out per changed reading (staging's reverse queries
+returned zero strangers, because that corpus is sparse and clustered, so
+saturation there says nothing about production) and the natural production
+purge rate. Both change the size of the win, not its sign.
 
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
@@ -599,12 +694,43 @@ measured one — and `last_full_run_at` moves only on a full sweep. A failed
 marker write does not fail the run: the cost is the next pass sweeping.
 
 ```sh
-# Nightly.
+# Nightly. --since-last-run is the default; spelled out so the schedule says
+# which scope it means.
+#
+# UPGRADING AN EXISTING SCHEDULE: before this change the weekly sweep was a bare
+# invocation with no scope flag. That exact line now runs incrementally and
+# never sweeps, and nothing at runtime says so — `last_full_run_at` is recorded
+# on the marker but no pass reads it back or warns on its age. Add --full to
+# the weekly cron at the same time as taking this change.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --since-last-run --execute --sole-writer
-# Weekly.
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" --execute --sole-writer
+# Weekly. The sweep is no longer what a bare invocation does — it must be asked
+# for.
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
+  --full --execute --sole-writer --out ./refresh-report-full.json
 ```
+
+Give every writer of a refresh report its **own `--out` path** — the nightly,
+the weekly sweep, and any ad-hoc run — and point each schedule's tier-2/3 run at
+its own report:
+
+```sh
+# Weekly, consuming the sweep — not the nightly report.
+npm run ops -- corpus refresh-connections \
+  --tenant "$TENANT" --report ./refresh-report-full.json
+npm run ops -- corpus refresh-tensions \
+  --tenant "$TENANT" --report ./refresh-report-full.json
+```
+
+Both tiers default to `./refresh-report.json`, and an incremental report is a
+statement about its scope: sharing one path would let a nightly pass — or an
+ad-hoc interactive one — overwrite the sweep's corpus-wide report with a
+scope-limited and often empty one, exit 0, and leave tier 2/3 judging a handful
+of readings while believing they had the sweep. The tier-2/3 commands echo the
+report's scope header but neither refuses nor warns about its scope. Consume the
+sweep's report promptly, though: both `refresh-connections` and
+`refresh-tensions` reject a report whose readings were rewritten after it was
+generated.
 
 ### Refresh exit codes
 
@@ -634,9 +760,11 @@ is an unmeasurable reading — no vector, or a manifest failing `ManifestSchema`
 — used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
-There is no cron wrapper script in this repository — the nightly and weekly
-invocations above are meant to be scheduled directly — so a scheduler wanting
-this distinction has to make it itself:
+There is no cron wrapper script in this repository, and nothing in git schedules
+a refresh pass — the nightly and weekly invocations above are scheduled by the
+operator, directly —
+so a scheduler wanting this distinction has to make it itself (the same `case`
+serves the weekly `--full` sweep):
 
 ```sh
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \

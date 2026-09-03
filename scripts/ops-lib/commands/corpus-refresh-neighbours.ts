@@ -1,6 +1,7 @@
-// `ops corpus refresh-neighbours` — tier-1 corpus refresh: re-measure every
-// ready reading against Vectorize and emit the staleness report that later
-// judgement slices consume.
+// `ops corpus refresh-neighbours` — tier-1 corpus refresh: re-measure the ready
+// readings this pass's scope selects against Vectorize (the default is what
+// moved since the run marker; --full is every one of them) and emit the
+// staleness report that later judgement slices consume.
 //
 // Zero LLM / embedding spend: each reading is queried by the vector it already
 // owns (`--vector-id`). Plan-first: a mode-less run reads, scores, prints the
@@ -18,11 +19,13 @@
 // inventing new_neighbour or hiding stale_connection).
 //
 // What the pass measures is a separate decision from how it measures it.
-// --full (the default) is every ready reading; --since-last-run narrows to the
-// readings whose neighbourhood could have moved since the run marker at
+// The default (--since-last-run, and its absence) narrows to the readings whose
+// neighbourhood could have moved since the run marker at
 // index/refresh-state.json, which this command reads, hands to the pure planner
 // in corpus-lib/refresh-scope.ts along with one reverse-neighbour query per
-// changed reading, and advances only after a complete --execute pass.
+// changed reading, and advances only after a complete --execute pass. --full is
+// every ready reading: the explicit weekly sweep the narrowed scope defers work
+// to.
 
 import path from "node:path";
 import { loadDotVars } from "../../lib/dotvars";
@@ -123,9 +126,12 @@ interface Opts {
   remote: boolean;
   execute: boolean;
   soleWriter: boolean;
-  /** False only under --since-last-run: full is the default until the proof lands. */
+  /**
+   * True only under an explicit --full. The default is the marker-scoped pass:
+   * the staging proof recorded in docs/operations.md ("Scope", 2026-09-02)
+   * measured identical flags between the two and 12–14x less wall clock.
+   */
   full: boolean;
-  fullExplicit: boolean;
   limit?: number;
   out: string;
 }
@@ -137,8 +143,7 @@ function parseRefreshArgs(argv: string[]): Opts {
     remote: true,
     execute: false,
     soleWriter: false,
-    full: true,
-    fullExplicit: false,
+    full: false,
     out: "refresh-report.json",
   };
   let sinceLastRun = false;
@@ -146,7 +151,7 @@ function parseRefreshArgs(argv: string[]): Opts {
     const a = argv[i]!;
     if (a === "--execute") opts.execute = true;
     else if (a === "--sole-writer") opts.soleWriter = true;
-    else if (a === "--full") opts.fullExplicit = true;
+    else if (a === "--full") opts.full = true;
     else if (a === "--since-last-run") sinceLastRun = true;
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
@@ -165,10 +170,19 @@ function parseRefreshArgs(argv: string[]): Opts {
   }
   // The two scope flags say opposite things; picking one silently would let a
   // nightly cron think it ran incrementally while it swept.
-  if (sinceLastRun && opts.fullExplicit) {
+  // --since-last-run is the default, so the flag only ever says out loud what
+  // the absence of --full already means, and it is parsed for that conflict
+  // check alone. It stays accepted because every recorded invocation and
+  // runbook example spells it, and because a schedule that names its scope
+  // does not change meaning under a later default.
+  if (sinceLastRun && opts.full) {
     throw new UsageError("--since-last-run cannot be combined with --full");
   }
-  opts.full = !sinceLastRun;
+  // Behaviour-identical while incremental is the default, and written anyway so
+  // the flag SELECTS its scope rather than merely agreeing with the current
+  // default. A schedule that spells it must not start sweeping if the default
+  // is ever flipped back.
+  if (sinceLastRun) opts.full = false;
   return opts;
 }
 
@@ -484,7 +498,9 @@ async function refreshNeighbours(
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
   io.stdout(`Corpus: ${items.length} readings`);
-  // In-scope rows only, under --since-last-run; `Corpus` above is the whole list.
+  // In-scope rows only — a subset whenever the marker scope or --only narrowed
+  // this pass (not --limit, which planRefresh applies after counting these);
+  // `Corpus` above is the whole list.
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}`);
@@ -956,8 +972,9 @@ export const corpusRefreshNeighboursCommand: CommandDefinition<CorpusRefreshNeig
   safety: "plan-first",
   helpText: `Usage: npm run ops -- corpus refresh-neighbours [rd_ID...] [options]
 
-Queries Vectorize with each ready reading's stored vector (no embedding calls)
-and diffs the current floored ready-neighbourhood against stored connections
+Queries Vectorize with the stored vector of each ready reading in scope (no
+embedding calls; see Scope below for which those are, and --full for all of
+them) and diffs the current floored ready-neighbourhood against stored connections
 and novelty_verdict. The report distinguishes missing or non-ready citations,
 ready citations below the floor, new uncited neighbours, and uncited candidate-set
 drift against the latest judged neighbourhood (an older reading entering, or a
@@ -982,22 +999,30 @@ refused without --sole-writer for that reason.
 The direct path removes the ~0.8s child-process spawn the wrangler path pays on
 every Vectorize query and every manifest read, and needs no wrangler at all.
 
-Scope. --full (the default) measures every ready reading, as this command
-always has. --since-last-run measures only the readings whose neighbourhood
-could have moved since the run marker at index/refresh-state.json: those
-created or reprocessed since it, and the reverse neighbourhood of each changed
-vector (a topK-${REVERSE_TOP_K} query). It escalates to a
-full sweep whenever that reasoning runs out — no marker, a marker invalidated by
-\`corpus backfill-vectors\`, a reading of any status the marker saw that has since
-left the list, a failed reverse query, a changed ready reading with no vector to scope
-from, or a reverse neighbourhood that came back full at topK with no match below
-the bound. Purges are caught by name, not by row count, so a day that ingests as
+Scope. --since-last-run is the default: it measures only the readings whose
+floored neighbourhood could have moved since the run marker at
+index/refresh-state.json — those created or reprocessed since it, and the
+reverse neighbourhood of each changed vector (a topK-${REVERSE_TOP_K} query).
+That scope escalates to a full sweep whenever that reasoning runs out — no
+marker, a marker invalidated by \`corpus backfill-vectors\`, a reading of any
+status the marker saw that has since left the list, a failed reverse query, a
+changed ready reading with no vector to scope from, or a reverse neighbourhood
+that came back full at topK with no match below the bound. Purges are caught by name, not by row count, so a day that ingests as
 many readings as it purges still escalates.
-An incremental report is a statement about its scope: a persistent flag on a
-reading nobody touched stays invisible until the next full sweep, so run --full
-weekly. The scope and its reason are printed and recorded in the report header,
+--full measures every ready reading, as this command always did by default. It
+is now the explicit weekly sweep, and an incremental report is a statement about
+its scope rather than about the corpus: a persistent flag on a reading nobody
+touched stays invisible until that sweep.
+
+The bound keeps FLAGS exact, not the stored numbers: a vector added anywhere
+enters some stranger's raw topK, and manifest.similarity max/mean and the
+index/list.json row the API and the SPA serve summarise that raw topK,
+sub-floor scores included. So between sweeps those numbers are approximate on
+readings nothing brought into scope — deterministic, and cleared by the next
+--full. The scope and its reason are printed and recorded in the report header,
 and an escalation names how many changed readings caused it — a corpus that
-saturates every night is buying nothing from --since-last-run.
+saturates every night is buying nothing from the narrowed scope, and is better
+run as --full outright than paying the reverse queries first.
 
 Only a complete --execute pass advances the marker: never a plan pass, never
 with --only, and not when --limit actually cut the pass short (a limit carried
@@ -1034,7 +1059,8 @@ it never reports one either: it measured the subset it was told to.
 
 Options:
   --since-last-run    Measure only the readings in scope (see above).
-  --full              Measure every ready reading. The default.
+                      The default.
+  --full              Measure every ready reading. The weekly sweep.
   --limit <n>         Cap how many readings are measured this pass.
   --out <path>        Report path. Default: ./refresh-report.json
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
