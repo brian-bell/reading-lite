@@ -123,9 +123,9 @@ when --branch matches the project's configured production branch (default
   defaultDeps: (io: CommandIo): DeployWebDeps => ({
     io,
     runCmd: async (cmd, args, cwd) => {
-      const { spawn } = await import("node:child_process");
+      const { spawnCommand } = await import("../../lib/wrangler-cli");
       return new Promise((resolve, reject) => {
-        const child = spawn(cmd, args, { stdio: "inherit", shell: false, cwd });
+        const child = spawnCommand(cmd, args, { stdio: "inherit", cwd });
         child.on("error", reject);
         child.on("exit", (code) => resolve(code ?? 1));
       });

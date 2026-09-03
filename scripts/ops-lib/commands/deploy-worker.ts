@@ -107,9 +107,9 @@ warns instead of failing.`,
   defaultDeps: (io: CommandIo): DeployWorkerDeps => ({
     io,
     runWrangler: async (wranglerArgs) => {
-      const { spawn } = await import("node:child_process");
+      const { spawnWrangler } = await import("../../lib/wrangler-cli");
       return new Promise((resolve, reject) => {
-        const child = spawn("wrangler", wranglerArgs, { stdio: "inherit", shell: false });
+        const child = spawnWrangler(wranglerArgs, { stdio: "inherit" });
         child.on("error", reject);
         child.on("exit", (code) => resolve(code ?? 1));
       });

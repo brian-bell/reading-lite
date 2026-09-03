@@ -2,13 +2,13 @@
 // and the wrangler-backed D1 adapter. The operator entry point is
 // `ops founder bootstrap` (scripts/ops-lib/commands/founder-bootstrap.ts);
 // dev-setup and cloud-agent-install reuse the same run function.
-import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { bootstrapFounder, signupModeForEnv, type SignupMode } from "../../src/control-plane/bootstrap";
 import { parseAuthRootKeyVersion, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import { redactEmail } from "../../src/control-plane/email";
 import type { ControlPlaneDb, SqlStatement } from "../../src/control-plane/db";
 import { loadDotVars } from "./dotvars";
+import { spawnWrangler } from "./wrangler-cli";
 
 export type BootstrapEnvName = "local" | "staging" | "production";
 
@@ -217,13 +217,13 @@ function parseWranglerD1Rows(stdout: string): Record<string, unknown>[] {
 
 function runWrangler(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const child = spawn("npx", ["wrangler", ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnWrangler(args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
     child.on("close", (code) => {

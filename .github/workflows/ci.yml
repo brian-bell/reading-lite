@@ -25,6 +25,23 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  ops-node20:
+    name: Ops CLI (Node 20)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20.19.2"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-engines
+      # Wrangler 4.87+ advertises engines.node >=22; ops launches
+      # wrangler-dist/cli.js on Node 20.19.x instead of the bin wrapper.
+      - run: npm run ops -- --help
+      - run: npm run ops -- deploy worker --help
+      - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
+
   web:
     name: Web (test + build)
     runs-on: ubuntu-latest

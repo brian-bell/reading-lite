@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
-import { spawn } from "node:child_process";
 import { loadDotVars } from "./lib/dotvars";
+import { spawnWrangler } from "./lib/wrangler-cli";
 import type { R2Client, R2Config } from "./lib/cf-clients";
 import type { SummarizerProvider } from "../src/modules/summarizer/config";
 
@@ -312,9 +312,8 @@ export async function runWranglerCommands(
 
 function runWrangler(args: string[]): Promise<WranglerRunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("wrangler", args, {
+    const child = spawnWrangler(args, {
       stdio: ["inherit", "pipe", "pipe"],
-      shell: false,
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];

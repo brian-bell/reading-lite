@@ -104,6 +104,14 @@ founder@example.com --execute`, `npm run ops -- corpus recover --tenant "$TENANT
 ./index.json --execute`. Production `$TENANT` is `GET /api/whoami` `tenant_id`
 (see `docs/operations.md` or `--help` for the full matrix).
 
+Operator Node for `npm run ops` is **20.19.x** (Debian `/usr/bin/node`). Do
+not bump the operator laptop to 22: Node 22 will not launch under the
+operator security boundary, and Wrangler 4.87+ refuses Node 20 in
+`bin/wrangler.js`. Ops launches `wrangler-dist/cli.js` on the current Node
+instead, so R2/D1/deploy commands work on 20.19.x. Wrangler may still print a
+Node 22 warning; that is not a hard fail. CI stays on Node 22. The Worker
+runtime is workerd, not Node.
+
 Production summarizer comparisons on live readings (N ids/URLs, OpenAI
 efforts including max, optional Anthropic Sonnet, GET-only, no production
 writes) use `.agents/skills/compare-summary-effort` — dry-run first,
