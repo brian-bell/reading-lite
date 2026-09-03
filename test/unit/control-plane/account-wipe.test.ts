@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+import {
+  ACCOUNT_WIPE_GRACE_MS,
+  isAccountWipeDlq,
+  isAccountWipeQueue,
+  readingIdFromRelativeKey,
+  wipeGraceElapsed,
+} from "../../../src/account-wipe";
+import {
+  parseAccountWipeEnvelope,
+  accountWipeEnvelopeV1,
+} from "../../../src/control-plane/wipe-envelope";
+import { parseTenantId } from "../../../src/control-plane/ids";
+
+const TENANT = parseTenantId("usr_550e8400-e29b-41d4-a716-446655440000")!;
+const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");
+
+describe("wipeGraceElapsed", () => {
+  it("requires deleting_at_ms and a full 7-day window", () => {
+    expect(wipeGraceElapsed(null, NOW_MS)).toBe(false);
+    expect(wipeGraceElapsed(undefined, NOW_MS)).toBe(false);
+    expect(wipeGraceElapsed(NOW_MS, NOW_MS)).toBe(false);
+    expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS + 1, NOW_MS)).toBe(false);
+    expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS, NOW_MS)).toBe(true);
+    expect(wipeGraceElapsed(NOW_MS - ACCOUNT_WIPE_GRACE_MS - 1, NOW_MS)).toBe(true);
+  });
+});
+
+describe("parseAccountWipeEnvelope", () => {
+  it("parses v1 identity and defaults force to false", () => {
+    expect(parseAccountWipeEnvelope({ version: 1, tenantId: TENANT })).toEqual({
+      ok: true,
+      envelope: { version: 1, tenantId: TENANT, force: false },
+    });
+    expect(parseAccountWipeEnvelope(accountWipeEnvelopeV1({ tenantId: TENANT, force: true }))).toEqual({
+      ok: true,
+      envelope: { version: 1, tenantId: TENANT, force: true },
+    });
+  });
+
+  it("rejects malformed payloads", () => {
+    expect(parseAccountWipeEnvelope(null)).toEqual({ ok: false, reason: "unknown_version" });
+    expect(parseAccountWipeEnvelope({ version: 2, tenantId: TENANT })).toEqual({
+      ok: false,
+      reason: "unknown_version",
+    });
+    expect(parseAccountWipeEnvelope({ version: 1 })).toEqual({ ok: false, reason: "absent_tenant" });
+    expect(parseAccountWipeEnvelope({ version: 1, tenantId: "founder" })).toEqual({
+      ok: false,
+      reason: "malformed_id",
+    });
+  });
+});
+
+describe("readingIdFromRelativeKey", () => {
+  it("extracts ids from by-id pointers and reading object keys", () => {
+    expect(readingIdFromRelativeKey("index/by-id/rd_0123456780")).toBe("rd_0123456780");
+    expect(readingIdFromRelativeKey("readings/2026/04/26T200000Z-rd_0123456780/manifest.json")).toBe(
+      "rd_0123456780",
+    );
+    expect(readingIdFromRelativeKey("index/list.json")).toBeNull();
+    expect(readingIdFromRelativeKey("index/by-url/deadbeef")).toBeNull();
+  });
+});
+
+describe("wipe queue names", () => {
+  it("recognizes the shared wipe queues only", () => {
+    expect(isAccountWipeQueue("reading-lite-wipe")).toBe(true);
+    expect(isAccountWipeQueue("reading-lite-staging-wipe")).toBe(true);
+    expect(isAccountWipeQueue("reading-lite")).toBe(false);
+    expect(isAccountWipeDlq("reading-lite-wipe-dlq")).toBe(true);
+    expect(isAccountWipeDlq("reading-lite-staging-wipe-dlq")).toBe(true);
+    expect(isAccountWipeDlq("reading-lite-dlq")).toBe(false);
+  });
+});

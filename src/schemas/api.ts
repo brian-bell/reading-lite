@@ -132,7 +132,8 @@ export type AuthSessionRevokeResponse = z.infer<typeof AuthSessionRevokeResponse
 // DELETE /api/account: session-only, CSRF, recent-auth. Explicit confirm is
 // the string literal "delete" so a stray `{ confirm: true }` cannot fire.
 // This starts suppression (status=deleting + credential revoke). It is not
-// DELETE /api/readings/:id (one-reading purge) and does not wipe R2 (195b).
+// DELETE /api/readings/:id (one-reading purge) and does not wipe R2 inline
+// (195b wipe is a deferred ACCOUNT_WIPE_JOBS job).
 export const DeleteAccountBodySchema = z.object({
   confirm: z.literal("delete"),
 });

@@ -1,8 +1,9 @@
 # Test-only wrangler config used by vitest-pool-workers / Miniflare.
 # Omits the Vectorize binding (Miniflare has no native Vectorize stub);
 # tests inject a fake VectorizeIndex via the SimilarityStore constructor.
-# No cron / DIGEST_JOBS binding: digest due+enqueue is exercised by calling
-# fanOutDueDigests / scheduled() with a frozen now in tests.
+# No cron / DIGEST_JOBS / ACCOUNT_WIPE_JOBS binding: digest and wipe due+enqueue
+# are exercised by calling fanOutDueDigests / fanOutDueAccountWipes / scheduled()
+# with a frozen now in tests.
 
 name = "reading-lite-test"
 main = "src/index.ts"

@@ -13,6 +13,8 @@ export interface StagingResources {
   dlq: string;
   digestQueue: string;
   digestDlq: string;
+  wipeQueue: string;
+  wipeDlq: string;
   d1: string;
 }
 
@@ -44,6 +46,8 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   dlq: "reading-lite-staging-dlq",
   digestQueue: "reading-lite-staging-digest",
   digestDlq: "reading-lite-staging-digest-dlq",
+  wipeQueue: "reading-lite-staging-wipe",
+  wipeDlq: "reading-lite-staging-wipe-dlq",
   d1: "reading-lite-control-staging",
 };
 
@@ -124,6 +128,16 @@ export function buildStagingSetupCommands(
       idempotentOk: ALREADY_EXISTS,
     },
     {
+      label: "Create staging wipe queue",
+      args: ["queues", "create", resources.wipeQueue],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
+      label: "Create staging wipe dead-letter queue",
+      args: ["queues", "create", resources.wipeDlq],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
       label: "Create staging D1 control plane",
       args: ["d1", "create", resources.d1],
       idempotentOk: ALREADY_EXISTS,
@@ -157,6 +171,16 @@ export function buildStagingTeardownCommands(
       idempotentOk: MISSING_CONSUMER,
     },
     {
+      label: "Remove staging wipe queue consumer",
+      args: ["queues", "consumer", "remove", resources.wipeQueue, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
+      label: "Remove staging wipe dead-letter queue consumer",
+      args: ["queues", "consumer", "remove", resources.wipeDlq, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
       label: "Delete staging Worker",
       args: ["delete", resources.worker, "--env", resources.env, "--force"],
       idempotentOk: MISSING_RESOURCE,
@@ -179,6 +203,16 @@ export function buildStagingTeardownCommands(
     {
       label: "Delete staging digest dead-letter queue",
       args: ["queues", "delete", resources.digestDlq],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging wipe queue",
+      args: ["queues", "delete", resources.wipeQueue],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging wipe dead-letter queue",
+      args: ["queues", "delete", resources.wipeDlq],
       idempotentOk: MISSING_RESOURCE,
     },
     {

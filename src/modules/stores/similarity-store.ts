@@ -128,6 +128,20 @@ export function summarizeSimilarity(
 const MIN_TOP_K = 1;
 const MAX_TOP_K = 50;
 
+// Vectorize `deleteByIds` accepts at most 1000 ids per call. The API is
+// asynchronous: it returns a mutationId and does not confirm the index is
+// empty. Embeddings may take a short time to disappear; callers must not poll
+// or wait as if the delete were synchronous.
+export const VECTORIZE_DELETE_MAX_IDS = 1000;
+
+export function vectorizeMutationRecord(result: unknown): string {
+  if (result && typeof result === "object" && "mutationId" in result) {
+    const mutationId = (result as { mutationId: unknown }).mutationId;
+    if (typeof mutationId === "string" && mutationId.length > 0) return mutationId;
+  }
+  return JSON.stringify(result ?? null);
+}
+
 // Vectorize namespace for a tenant, or undefined while the data plane gate is
 // off. Namespaces are Vectorize's own segmentation primitive: a query in one
 // namespace cannot match a vector in another, with no metadata index to create
@@ -201,7 +215,29 @@ export class SimilarityStore {
   }
 
   async delete(id: string): Promise<void> {
-    await this.index.deleteByIds([tenantVectorId(this.namespace, id)]);
+    await this.deleteMany([id]);
+  }
+
+  // Submit `deleteByIds` in ≤1000 batches and return whatever identifier the
+  // API yields (`mutationId` on current Vectorize; `ids`/`count` on the typed
+  // beta binding). Does not query the index afterwards — Vectorize deletes
+  // are async and embeddings may take a short time to disappear.
+  async deleteMany(ids: readonly string[]): Promise<string[]> {
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      unique.push(id);
+    }
+    const mutations: string[] = [];
+    for (let offset = 0; offset < unique.length; offset += VECTORIZE_DELETE_MAX_IDS) {
+      const chunk = unique
+        .slice(offset, offset + VECTORIZE_DELETE_MAX_IDS)
+        .map((id) => tenantVectorId(this.namespace, id));
+      mutations.push(vectorizeMutationRecord(await this.index.deleteByIds(chunk)));
+    }
+    return mutations;
   }
 
   async query(embedding: number[], topK: number): Promise<SimilarityMatch[]> {

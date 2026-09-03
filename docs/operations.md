@@ -52,8 +52,13 @@ Then `--tenant "$TENANT"`.
 **Account deletion.** `DELETE /api/account` (195a) marks the caller `deleting`
 and revokes credentials. Production `TENANT_DATA_PLANE=1`: the founder is a
 normal tenant. Deleting that account suppresses the founder corpus the same
-way as any other — there is no silent founder exception. Wipe, residue scan,
-and email reuse are 195b. `DELETE /api/readings/:id` remains one-reading
+way as any other — there is no silent founder exception. After a 7-day grace
+(`deleting_at_ms`), the shared `ACCOUNT_WIPE_JOBS` queue plus the existing
+*/15 cron sweep delete the tenant R2 prefix and submit Vectorize `deleteByIds`
+(async: embeddings may take a short time to disappear). A job payload
+`{ force: true }` skips grace. Wipe is not inline in `DELETE /api/account`.
+Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
+are later 195b slices. `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,

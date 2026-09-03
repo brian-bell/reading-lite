@@ -123,7 +123,11 @@ submit, a markdown import, or a lookup. It lives in
   cannot `markFailed` over the ready object. `commitTerminalManifest`
   rechecks status immediately before visibility publish and again immediately
   after (compensate with `visibility.remove` if the tenant flipped deleting in
-  between). Wipe, residue, and email reuse are 195b. This is not
+  between). Wipe of tenant R2 + Vectorize (195b PR1) is a deferred shared-queue
+  job plus the */15 cron sweep, honoring a 7-day `deleting_at_ms` grace unless
+  the job payload sets `force`. Vectorize `deleteByIds` is async — embeddings
+  may take a short time to disappear. Residue scan, users-row hard-delete, and
+  email reuse are later 195b slices. This is not
   **reading purge** (`DELETE /api/readings/:id`). Production
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 

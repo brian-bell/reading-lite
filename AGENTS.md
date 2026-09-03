@@ -20,7 +20,11 @@ comments of the modules themselves — read those before changing a module.
 
 - `src/index.ts` — Worker fetch + queue + scheduled handlers (READING_JOBS →
   `processReading`, reading DLQ → `markDeadLettered`, DIGEST_JOBS → digest
-  send, digest DLQ → ledger `failed` only).
+  send, digest DLQ → ledger `failed` only, ACCOUNT_WIPE_JOBS → tenant
+  R2+Vectorize wipe, wipe DLQ → log/ack).
+- `src/account-wipe.ts` — deferred tenant prefix wipe (issue 195b PR1): 7-day
+  grace on `deleting_at_ms`, Vectorize `deleteByIds` then paged R2, continuation
+  cursors. Does not hard-delete the users row.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -224,6 +228,12 @@ Pointers only — the details live in the named files' comments.
   Fan-out re-enqueues leftover pending only after `DIGEST_PENDING_STALE_MS`
   (15 minutes / one cron interval). Digest Resend POSTs set `Idempotency-Key`
   to `digestDeliveryKeyId`.
+  Account wipe uses `ACCOUNT_WIPE_JOBS` (never `READING_JOBS`): cron enqueues
+  `status=deleting` tenants past the 7-day `deleting_at_ms` grace; a job
+  `{ force: true }` skips grace. Vectorize `deleteByIds` is async (mutationId;
+  embeddings may take a short time to disappear). Continuation cursors live at
+  `wipe/{tenantId}/progress.json`. The wipe DLQ logs and acks; it must not
+  call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

@@ -9,6 +9,14 @@ import {
   type ProcessReadingEnvelopeV1,
 } from "./control-plane/envelope";
 import {
+  consumeAccountWipeMessage,
+  fanOutDueAccountWipes,
+  handleAccountWipeDeadLetter,
+  isAccountWipeDlq,
+  isAccountWipeQueue,
+} from "./account-wipe";
+import type { AccountWipeEnvelopeV1 } from "./control-plane/wipe-envelope";
+import {
   consumeDigestMessage,
   fanOutDueDigests,
   handleDigestDeadLetter,
@@ -31,6 +39,9 @@ export interface Env {
   READING_JOBS?: Queue<ProcessReadingEnvelopeV1>;
   // Staging/production only. Local wrangler has no digest queue or cron.
   DIGEST_JOBS?: Queue<DigestEnvelopeV1>;
+  // Shared tenant-wipe queue (issue 195b PR1). Not per-tenant. Local wrangler
+  // has no wipe queue; tests inject a stub. Wipe is never inline in DELETE /api/account.
+  ACCOUNT_WIPE_JOBS?: Queue<AccountWipeEnvelopeV1>;
   // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
@@ -179,10 +190,25 @@ export default {
     return app.fetch(request, env, ctx);
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-    await fanOutDueDigests(env, { nowMs: controller.scheduledTime });
+    const nowMs = controller.scheduledTime;
+    await fanOutDueDigests(env, { nowMs });
+    await fanOutDueAccountWipes(env, { nowMs });
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const services = defaultServices();
+    if (isAccountWipeDlq(batch.queue)) {
+      for (const msg of batch.messages) {
+        await handleAccountWipeDeadLetter(msg);
+      }
+      return;
+    }
+    if (isAccountWipeQueue(batch.queue)) {
+      const nowMs = Date.now();
+      for (const msg of batch.messages) {
+        await consumeAccountWipeMessage(msg, env, { nowMs });
+      }
+      return;
+    }
     if (isDigestDlq(batch.queue)) {
       const nowMs = Date.now();
       for (const msg of batch.messages) {
