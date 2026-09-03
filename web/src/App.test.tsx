@@ -203,6 +203,40 @@ function defaultSettings(overrides: Partial<UserSettingsResponse> = {}): UserSet
   };
 }
 
+function settingsPostRequest(fetchMock: ReturnType<typeof vi.fn>): Request | undefined {
+  const post = fetchMock.mock.calls.find((c) => {
+    const req = c[0] as Request;
+    return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+  });
+  return post ? (post[0] as Request) : undefined;
+}
+
+function stubSecurityPage(rowHolder: { row: UserSettingsResponse }) {
+  const fetchMock = vi.fn(async (request: Request) => {
+    const url = new URL(request.url);
+    if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+    if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+    if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+      return jsonResponse({ tokens: [] });
+    }
+    if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+      return jsonResponse(rowHolder.row);
+    }
+    if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+      const body = (await request.clone().json()) as Partial<UserSettingsResponse>;
+      rowHolder.row = {
+        ...rowHolder.row,
+        ...body,
+        updated_at_ms: rowHolder.row.updated_at_ms + 1
+      };
+      return jsonResponse(rowHolder.row);
+    }
+    return jsonResponse(emptyPage);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -2518,6 +2552,276 @@ describe("App", () => {
       await user.click(screen.getByRole("link", { name: "Security" }));
     }
     expect(await screen.findByLabelText("Email me when a reading is ready")).toBeChecked();
+  });
+
+  it("hides digest schedule controls when cadence is off", async () => {
+    stubSecurityPage({ row: defaultSettings() });
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByRole("heading", { name: "Digest email" })).toBeInTheDocument();
+    const cadence = await screen.findByLabelText("Cadence");
+    expect(cadence).toHaveValue("off");
+    expect(screen.queryByLabelText("Time zone")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Local hour")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(screen.getByText(/independent of immediate/i)).toBeInTheDocument();
+  });
+
+  it("shows time zone and hour for daily cadence, and weekday only for weekly", async () => {
+    stubSecurityPage({
+      row: defaultSettings({
+        digest_cadence: "daily",
+        time_zone: "America/New_York",
+        digest_hour_local: 8
+      })
+    });
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByLabelText("Cadence")).toHaveValue("daily");
+    expect(screen.getByLabelText("Time zone")).toHaveValue("America/New_York");
+    expect(screen.getByLabelText("Local hour")).toHaveValue("8");
+    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+  });
+
+  it("shows ISO weekday Monday=1 when cadence is weekly", async () => {
+    stubSecurityPage({
+      row: defaultSettings({
+        digest_cadence: "weekly",
+        time_zone: "Europe/London",
+        digest_hour_local: 7,
+        digest_weekday: 1
+      })
+    });
+
+    render(<App initialPath="/account/security" />);
+    const weekday = await screen.findByLabelText("Weekday");
+    expect(weekday).toHaveValue("1");
+    expect(screen.getByRole("option", { name: "Monday" })).toHaveValue("1");
+    expect(screen.getByRole("option", { name: "Sunday" })).toHaveValue("7");
+  });
+
+  it("keeps cadence off and reveals schedule as a draft until Save posts atomically", async () => {
+    const holder = {
+      row: defaultSettings({
+        time_zone: "America/New_York",
+        digest_hour_local: 9,
+        digest_weekday: 5
+      })
+    };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.selectOptions(await screen.findByLabelText("Cadence"), "daily");
+    expect(screen.getByLabelText("Cadence")).toHaveValue("daily");
+    expect(screen.getByLabelText("Time zone")).toHaveValue("America/New_York");
+    expect(screen.getByLabelText("Local hour")).toHaveValue("9");
+    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(screen.getByText(/stays off until you save/i)).toBeInTheDocument();
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    expect(holder.row.digest_cadence).toBe("off");
+
+    await user.selectOptions(screen.getByLabelText("Local hour"), "17");
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+
+    await user.click(screen.getByRole("button", { name: "Save digest" }));
+    await waitFor(() => expect(holder.row.digest_cadence).toBe("daily"));
+    const post = settingsPostRequest(fetchMock);
+    expect(post).toBeDefined();
+    expect(post!.headers.get("x-csrf-token")).toBe(sessionWhoami.csrf_token);
+    expect(post!.credentials).toBe("include");
+    expect(await post!.clone().json()).toEqual({
+      notify_immediate: true,
+      digest_cadence: "daily",
+      time_zone: "America/New_York",
+      digest_hour_local: 17,
+      digest_weekday: 5
+    });
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Cadence")).toHaveValue("daily");
+  });
+
+  it("cancels an Off→Daily draft without POSTing", async () => {
+    const holder = { row: defaultSettings({ time_zone: "UTC", digest_hour_local: 9 }) };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.selectOptions(await screen.findByLabelText("Cadence"), "daily");
+    expect(screen.getByLabelText("Time zone")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByLabelText("Cadence")).toHaveValue("off");
+    expect(screen.queryByLabelText("Time zone")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    expect(holder.row.digest_cadence).toBe("off");
+  });
+
+  it("POSTs cadence off with hour, weekday, and time zone still in the body", async () => {
+    const holder = {
+      row: defaultSettings({
+        digest_cadence: "weekly",
+        time_zone: "Europe/London",
+        digest_hour_local: 0,
+        digest_weekday: 7
+      })
+    };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByLabelText("Weekday")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Cadence"), "off");
+    await waitFor(() => expect(screen.getByLabelText("Cadence")).toHaveValue("off"));
+    expect(screen.queryByLabelText("Time zone")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Local hour")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
+    expect(await settingsPostRequest(fetchMock)!.clone().json()).toEqual({
+      notify_immediate: true,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7
+    });
+  });
+
+  it("POSTs a new local hour with CSRF while leaving the immediate toggle unchanged", async () => {
+    const holder = {
+      row: defaultSettings({
+        digest_cadence: "daily",
+        time_zone: "UTC",
+        digest_hour_local: 9,
+        digest_weekday: 1
+      })
+    };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.selectOptions(await screen.findByLabelText("Local hour"), "17");
+    await waitFor(() => expect(screen.getByLabelText("Local hour")).toHaveValue("17"));
+    expect(await settingsPostRequest(fetchMock)!.clone().json()).toEqual({
+      notify_immediate: true,
+      digest_cadence: "daily",
+      time_zone: "UTC",
+      digest_hour_local: 17,
+      digest_weekday: 1
+    });
+    expect(screen.getByLabelText("Email me when a reading is ready")).toBeChecked();
+  });
+
+  it("keeps the immediate-email POST body free of digest fields", async () => {
+    const holder = { row: defaultSettings({ digest_cadence: "daily", time_zone: "UTC" }) };
+    const fetchMock = stubSecurityPage(holder);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    const toggle = await screen.findByLabelText("Email me when a reading is ready");
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(await settingsPostRequest(fetchMock)!.clone().json()).toEqual({ notify_immediate: false });
+  });
+
+  it("shows a digest POST 403 without asking for recent-auth step-up", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse(defaultSettings());
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({ error: "forbidden" }, 403);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    await user.selectOptions(await screen.findByLabelText("Cadence"), "weekly");
+    expect(settingsPostRequest(fetchMock)).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Save digest" }));
+    expect(await screen.findByText("forbidden")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request a fresh sign-in link" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Cadence")).toHaveValue("weekly");
+    expect(screen.getByLabelText("Weekday")).toBeInTheDocument();
+    expect(await settingsPostRequest(fetchMock)!.clone().json()).toMatchObject({
+      digest_cadence: "weekly"
+    });
+  });
+
+  it("hides digest controls when GET settings is 404", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami);
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        return jsonResponse({ error: "not found" }, 404);
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByText("not found")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Cadence")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Digest email" })).toBeInTheDocument();
+  });
+
+  it("does not leak the previous account's digest cadence after logout", async () => {
+    const otherWhoami = {
+      tenant_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      user_id: "usr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      principal: "session" as const,
+      tenant_data_plane: true,
+      email: "other@example.com",
+      csrf_token: "cd".repeat(32)
+    };
+    let identity: "a" | "b" = "a";
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") {
+        if (identity === "a") return jsonResponse(sessionWhoami);
+        return jsonResponse(otherWhoami);
+      }
+      if (url.pathname === "/api/auth/logout") {
+        identity = "b";
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === "/api/auth/settings" && request.method === "GET") {
+        if (identity === "a") {
+          return jsonResponse(defaultSettings({ digest_cadence: "weekly", digest_weekday: 3 }));
+        }
+        return jsonResponse(defaultSettings({ user_id: otherWhoami.user_id, digest_cadence: "off" }));
+      }
+      if (url.pathname === "/api/auth/sessions") return jsonResponse(emptySessions());
+      if (url.pathname === "/api/auth/tokens" && request.method === "GET") {
+        return jsonResponse({ tokens: [] });
+      }
+      return jsonResponse(emptyPage);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App initialPath="/account/security" />);
+    expect(await screen.findByLabelText("Cadence")).toHaveValue("weekly");
+    expect(screen.getByLabelText("Weekday")).toHaveValue("3");
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+    expect(await screen.findByText("other@example.com")).toBeInTheDocument();
+    if (!screen.queryByRole("heading", { name: "Security" })) {
+      await user.click(screen.getByRole("link", { name: "Security" }));
+    }
+    expect(await screen.findByLabelText("Cadence")).toHaveValue("off");
+    expect(screen.queryByLabelText("Weekday")).not.toBeInTheDocument();
   });
 
   it("lists usable, expired, and revoked tokens and warns at the 10-token cap", async () => {

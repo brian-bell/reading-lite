@@ -229,9 +229,11 @@ A small React SPA in `web/` renders the list (with search + tag chips),
 submission form, and detail page (TL;DR, summary markdown, entities,
 connections, content links). Browser login uses a magic-link cookie session
 (identity + logout in the top bar). The Security page lists sessions and API
-tokens, and toggles immediate-notification mail (`notify_immediate`; uncheck
-to opt out). It does not store bearer material in `localStorage` or
-`sessionStorage`.
+tokens, toggles immediate-notification mail (`notify_immediate`; uncheck to
+opt out), and sets digest cadence (`off` | `daily` | `weekly`) with IANA time
+zone, local hour, and ISO weekday (Monday=1). Digest opt-out is cadence `off`
+and is independent of immediate mail. It does not store bearer material in
+`localStorage` or `sessionStorage`.
 
 ```sh
 # In one terminal — Worker:

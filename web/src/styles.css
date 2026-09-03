@@ -220,6 +220,37 @@ input {
   margin-top: 0.25em;
 }
 
+.digest-schedule {
+  margin-bottom: 8px;
+}
+
+.digest-schedule-fields {
+  display: grid;
+  gap: 10px;
+  justify-items: stretch;
+  max-width: 28rem;
+}
+
+.digest-schedule-fields label {
+  color: #526071;
+  display: grid;
+  font-size: 0.85rem;
+  gap: 4px;
+}
+
+.digest-schedule-fields select {
+  border: 1px solid #c9d2dd;
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.digest-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .token-create-form {
   display: grid;
   gap: 8px;

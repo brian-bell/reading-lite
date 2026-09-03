@@ -287,7 +287,7 @@ describe("GET/POST /api/auth/settings", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     expect(await getWhoami()).toMatchObject({ csrf_token: freshToken });
-    expect(await updateAuthSettings(false)).toEqual({
+    expect(await updateAuthSettings({ notify_immediate: false })).toEqual({
       ...settingsRow,
       notify_immediate: false,
       updated_at_ms: 3
@@ -315,10 +315,99 @@ describe("GET/POST /api/auth/settings", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await getWhoami();
-    await expect(updateAuthSettings(true)).rejects.toMatchObject({
+    await expect(updateAuthSettings({ notify_immediate: true })).rejects.toMatchObject({
       name: "ApiError",
       status: 403,
       message: "forbidden"
+    });
+  });
+
+  it("POSTs digest schedule fields with CSRF and still requires notify_immediate", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami(freshToken));
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({
+          ...settingsRow,
+          digest_cadence: "weekly",
+          time_zone: "America/New_York",
+          digest_hour_local: 8,
+          digest_weekday: 5,
+          updated_at_ms: 4
+        });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getWhoami();
+    expect(
+      await updateAuthSettings({
+        notify_immediate: true,
+        digest_cadence: "weekly",
+        time_zone: "America/New_York",
+        digest_hour_local: 8,
+        digest_weekday: 5
+      })
+    ).toMatchObject({
+      digest_cadence: "weekly",
+      time_zone: "America/New_York",
+      digest_hour_local: 8,
+      digest_weekday: 5
+    });
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(post).toBeDefined();
+    const req = post![0] as Request;
+    expect(req.credentials).toBe("include");
+    expect(req.headers.get("x-csrf-token")).toBe(freshToken);
+    expect(await req.clone().json()).toEqual({
+      notify_immediate: true,
+      digest_cadence: "weekly",
+      time_zone: "America/New_York",
+      digest_hour_local: 8,
+      digest_weekday: 5
+    });
+  });
+
+  it("POSTs cadence off with hour, weekday, and time zone still in the body", async () => {
+    const fetchMock = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/whoami") return jsonResponse(sessionWhoami(freshToken));
+      if (url.pathname === "/api/auth/settings" && request.method === "POST") {
+        return jsonResponse({
+          ...settingsRow,
+          digest_cadence: "off",
+          time_zone: "Europe/London",
+          digest_hour_local: 0,
+          digest_weekday: 7,
+          updated_at_ms: 5
+        });
+      }
+      return jsonResponse({ error: "unexpected" }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getWhoami();
+    await updateAuthSettings({
+      notify_immediate: false,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7
+    });
+    const post = fetchMock.mock.calls.find((c) => {
+      const req = c[0] as Request;
+      return req.method === "POST" && new URL(req.url).pathname === "/api/auth/settings";
+    });
+    expect(await (post![0] as Request).clone().json()).toEqual({
+      notify_immediate: false,
+      digest_cadence: "off",
+      time_zone: "Europe/London",
+      digest_hour_local: 0,
+      digest_weekday: 7
     });
   });
 });

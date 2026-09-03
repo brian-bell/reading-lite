@@ -13,6 +13,7 @@ import type {
   CreateTokenResponse,
   ListTokensResponse,
   DigestCadence,
+  PostAuthSettingsBody,
   UserSettingsResponse
 } from "./types";
 
@@ -278,11 +279,11 @@ export async function getAuthSettings(): Promise<UserSettingsResponse> {
   return parseUserSettings(body);
 }
 
-export async function updateAuthSettings(notifyImmediate: boolean): Promise<UserSettingsResponse> {
+export async function updateAuthSettings(payload: PostAuthSettingsBody): Promise<UserSettingsResponse> {
   const response = await apiFetch(new URL("/api/auth/settings", window.location.origin), {
     method: "POST",
     headers: mutationHeaders(),
-    body: JSON.stringify({ notify_immediate: notifyImmediate })
+    body: JSON.stringify(payload)
   });
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to update settings"));
