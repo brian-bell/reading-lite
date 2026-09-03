@@ -107,6 +107,7 @@ describe("processReading — tenant deletion visibility fence", () => {
   it("retries when the initial tenant-status lookup throws", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const { bucket } = workingBucket();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
       await processReading(args(), envWith(bucket, statusPlane("throw")), services(fetchFn), founderTenant());
@@ -118,6 +119,9 @@ describe("processReading — tenant deletion visibility fence", () => {
       expect((error as RateLimitedError).retryAfterMs).toBeNull();
     }
 
+    expect(consoleErr).toHaveBeenCalled();
+    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/D1 hiccup/);
+    consoleErr.mockRestore();
     expect(fetchFn).not.toHaveBeenCalled();
     expect(lastManifest(bucket)).toBeNull();
   });

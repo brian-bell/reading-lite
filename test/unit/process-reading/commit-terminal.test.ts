@@ -470,4 +470,53 @@ describe("commitTerminalManifest", () => {
     expect(checks).toBe(2);
     expect(await reader.findListIndexItem(ID)).toBeNull();
   });
+
+  it("17: D1 throw after terminal CAS fail-opens and still publishes", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        throw new Error("D1 hiccup");
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: true });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("18: D1 throw on the post-publish recheck keeps visibility (compensate only on confirmed false)", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    let checks = 0;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      tenantAllowsVisibility: async () => {
+        checks += 1;
+        if (checks === 1) return true;
+        throw new Error("D1 hiccup");
+      },
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: true });
+    expect(checks).toBe(2);
+    expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
 });

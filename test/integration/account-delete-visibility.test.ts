@@ -1,6 +1,5 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RateLimitedError } from "../../src/modules/http-retry";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import type { Env } from "../../src/index";
 import { sha256Hex, type Services } from "../../src/services";
@@ -131,8 +130,8 @@ async function clearBucket() {
 beforeEach(clearBucket);
 
 describe("processReading — tenant status lookup at publish", () => {
-  it("retries a pre-publish D1 throw instead of markFailed", async () => {
-    installVectorizeStub();
+  it("fail-opens and publishes when the post-CAS tenant-status lookup throws", async () => {
+    const vector = installVectorizeStub();
     const fetchFn = makeStubFetch();
     const reader = testReadingStore(env);
     const url = "https://example.com/pre-publish-lookup";
@@ -170,21 +169,18 @@ describe("processReading — tenant status lookup at publish", () => {
       ...workerEnv,
       CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 1),
     };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    try {
-      await processReading(job, wrapped, makeServices(fetchFn), founderTenant());
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toBeInstanceOf(RateLimitedError);
-      expect((error as RateLimitedError).status).toBe(503);
-      expect((error as RateLimitedError).url).toBe("d1://control-plane/users.status");
-      expect((error as RateLimitedError).retryAfterMs).toBeNull();
-    }
+    await expect(
+      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
+    ).resolves.toBeUndefined();
 
+    consoleErr.mockRestore();
     expect(fetchFn).toHaveBeenCalled();
     const manifest = await reader.readManifest(keyPrefix);
     expect(manifest?.status).toBe("ready");
     expect(manifest?.error).toBeUndefined();
-    expect(await reader.findListIndexItem(id)).toBeNull();
+    expect(await reader.findListIndexItem(id)).not.toBeNull();
+    expect(vector.upsert).toHaveBeenCalled();
   });
 });

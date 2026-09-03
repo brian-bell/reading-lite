@@ -32,8 +32,8 @@ export const ACCOUNT_DELETE_REVOCATION_REASON = "account_delete";
 
 // Confirmed inactive: a row with status !== "active", or a confirmed missing
 // user (null row). Lookup failure (D1 throw/timeout) must not be treated as
-// inactive — callers that fence spend/visibility wrap that throw as a
-// RateLimitedError so the queue retries.
+// inactive. The pre-spend gate wraps that throw as RateLimitedError so the
+// queue retries; post-CAS publish and the DLQ mark path fail-open instead.
 export async function tenantIsActive(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
   const row = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId);
   return row?.status === "active";
