@@ -69,6 +69,7 @@ function allowAllUsage(): TenantUsage {
     renewLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     releaseLease: async () => undefined,
+    refreshReading: async () => undefined,
   };
 }
 
@@ -446,6 +447,7 @@ function recordingUsage(): TenantUsage & { ops: string[] } {
     renewLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     releaseLease: async () => undefined,
+    refreshReading: async () => undefined,
   };
 }
 

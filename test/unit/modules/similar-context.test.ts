@@ -35,6 +35,12 @@ describe("SimilarityStore tldr metadata", () => {
     expect(out[0]).toMatchObject({ id: "rd_b", score: 0.8, tldr: "About B." });
   });
 
+  it("defaults omitted url metadata to an empty string", async () => {
+    const { index } = indexReturning([{ id: "rd_bare", score: 0.9, metadata: { title: "Bare" } }]);
+    const out = await new SimilarityStore(index).query(vec(), 5);
+    expect(out[0]).toMatchObject({ id: "rd_bare", url: "" });
+  });
+
   it("tolerates a vector written before tldr was stored", async () => {
     const { index } = indexReturning([
       { id: "rd_old", score: 0.5, metadata: { url: "https://old.com", title: "Old" } },
