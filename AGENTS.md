@@ -235,9 +235,10 @@ Pointers only — the details live in the named files' comments.
   in-progress or leftover wipes during grace and preserves `force` from
   `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
   offset 0) before R2. A delayed `msg.retry` advances the wipe lease by
-  `delaySeconds` so cron does not enqueue a sibling. Vectorize `deleteByIds`
-  is async (mutationId; embeddings may take a short time to disappear).
-  Continuation cursors live at
+  `delaySeconds` so cron does not enqueue a sibling. An unbound
+  `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2.
+  Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
+  time to disappear). Continuation cursors live at
   `wipe/{tenantId}/progress.json`. The wipe DLQ logs and acks; it must not
   call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;

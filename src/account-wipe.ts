@@ -19,7 +19,10 @@
  * Embeddings may take a short time to disappear. We fire deletes in ≤1000
  * id batches, record whatever the API returns, and do not poll the index
  * as if it were synchronously empty. Vectors are submitted before any R2
- * delete so ids cannot dangle after the prefix is gone.
+ * delete so ids cannot dangle after the prefix is gone. If `READINGS_INDEX`
+ * is unbound while reading ids remain, the job throws (`index_unbound`)
+ * instead of skipping to R2 — wiping the prefix would strand namespaced
+ * embeddings and delete the only ID source leftover recovery can rescan.
  *
  * R2 `list()`/`delete()` cap at 1000 objects. Wipe pages the tenant prefix
  * from `tenantKeyRoot` (production `u/{tenantId}/`). An empty prefix is a
@@ -300,7 +303,10 @@ export async function processAccountWipeJob(
   if (progress.phase === "vectors") {
     const readingIds = await collectReadingIds(env.READINGS_BUCKET, layout);
     const remaining = readingIds.slice(progress.vector_offset);
-    if (remaining.length > 0 && env.READINGS_INDEX) {
+    if (remaining.length > 0) {
+      if (!env.READINGS_INDEX) {
+        throw new Error("account_wipe index_unbound");
+      }
       const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
       const batchLimit = Math.min(remaining.length, maxVectorBatches * VECTORIZE_DELETE_MAX_IDS);
       const toDelete = remaining.slice(0, batchLimit);
@@ -326,16 +332,6 @@ export async function processAccountWipeJob(
           mutation_ids: progress.mutation_ids,
         };
       }
-    } else if (remaining.length > 0) {
-      console.info(
-        JSON.stringify({
-          event: "account_wipe_vector_delete_skipped",
-          tenant_id: tenantId,
-          reason: "index_unbound",
-          count: remaining.length,
-        }),
-      );
-      progress.vector_offset = readingIds.length;
     }
     progress.phase = "objects";
     progress.updated_at_ms = deps.nowMs;

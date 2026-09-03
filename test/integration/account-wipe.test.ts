@@ -308,6 +308,38 @@ describe("account wipe (195b PR1)", () => {
     expect(memory.keysUnder(PREFIX)).toEqual([]);
   });
 
+  it("does not wipe the tenant prefix when READINGS_INDEX is unbound", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const before = await listPrefixKeys(PREFIX);
+    expect(before).not.toEqual([]);
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(
+      processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { ...(await wipeEnv()), READINGS_INDEX: undefined },
+        { nowMs: NOW_MS },
+      ),
+    ).rejects.toThrow(/index_unbound/);
+    await consumeAccountWipeMessage(
+      {
+        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+        ack,
+        retry,
+        attempts: 1,
+      },
+      { ...(await wipeEnv()), READINGS_INDEX: undefined },
+      { nowMs: NOW_MS },
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalled();
+    expect(deleteByIds).not.toHaveBeenCalled();
+    expect(await listPrefixKeys(PREFIX)).toEqual(before);
+    consoleErr.mockRestore();
+  });
+
   it("does not touch another tenant's prefix", async () => {
     await seedTenantObjects([ID_A]);
     const foreignKey = `u/usr_550e8400-e29b-41d4-a716-446655440000/keep.txt`;
