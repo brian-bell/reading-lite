@@ -493,8 +493,9 @@ async function refreshNeighbours(
   for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(describeScope(scope));
   io.stdout(`Corpus: ${items.length} readings`);
-  // In-scope rows only — a subset whenever anything narrowed this pass, whether
-  // that is the marker scope, --only or --limit; `Corpus` above is the whole list.
+  // In-scope rows only — a subset whenever the marker scope or --only narrowed
+  // this pass (not --limit, which planRefresh applies after counting these);
+  // `Corpus` above is the whole list.
   io.stdout(`Not ready (skipped, own no vector): ${plan.skippedNotReady}`);
   io.stdout(`To measure: ${plan.targets.length}`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}`);

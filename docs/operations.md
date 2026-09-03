@@ -449,7 +449,9 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 which is now the default and stays accepted as a way of saying so out loud).
 `--full` is the explicit sweep: every ready reading, O(N) whatever changed —
 the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
-of them. The default measures only the
+of them. (That 16 minutes is the wrangler path; the same sweep on the now-default
+direct path models at ~3.5–4 min — see the staging proof below. The argument for
+the narrowed scope does not rest on the slower figure.) The default measures only the
 readings whose neighbourhood could have moved since the run marker stored at
 `index/refresh-state.json` (per tenant): those created or reprocessed since it,
 and the reverse neighbourhood of each changed vector (one topK-100
@@ -561,7 +563,9 @@ denominator for the escalation rate below.
   exact-versus-approximate paragraph above, measured.
 - **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
   the pass resolves an empty scope and returns before it opens Vectorize or
-  reads a manifest. The measured runs took the ETag short-circuit (an unchanged
+  reads a manifest — provided the marker carries no still-ready
+  `unmeasurable_ids`, each of which costs a query and a manifest read on even
+  the quietest night, by design. The measured runs took the ETag short-circuit (an unchanged
   `index/list.json` ETag ends the scope immediately), but the win does not
   depend on it — where no ETag is available, which is every wrangler-path run
   and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
@@ -676,13 +680,25 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --full --execute --sole-writer --out ./refresh-report-full.json
 ```
 
-Give the two schedules **different `--out` paths**, as above. Both default to
-`./refresh-report.json`, which `refresh-connections` and `refresh-tensions`
-consume, and an incremental report is a statement about its scope: a nightly
-pass — or an ad-hoc interactive one — would otherwise overwrite the sweep's
-corpus-wide report with a scope-limited and often empty one, exit 0, and leave
-tier 2/3 judging a handful of readings while believing they had the sweep. The
-tier-2/3 commands echo the report's scope header but neither refuses nor warns.
+Give the two schedules **different `--out` paths**, as above, and point each
+schedule's tier-2/3 run at its own report:
+
+```sh
+# Weekly, consuming the sweep — not the nightly report.
+npm run ops -- corpus refresh-connections \
+  --tenant "$TENANT" --report ./refresh-report-full.json
+npm run ops -- corpus refresh-tensions \
+  --tenant "$TENANT" --report ./refresh-report-full.json
+```
+
+Both tiers default to `./refresh-report.json`, and an incremental report is a
+statement about its scope: sharing one path would let a nightly pass — or an
+ad-hoc interactive one — overwrite the sweep's corpus-wide report with a
+scope-limited and often empty one, exit 0, and leave tier 2/3 judging a handful
+of readings while believing they had the sweep. The tier-2/3 commands echo the
+report's scope header but neither refuses nor warns. Consume the sweep's report
+promptly: `refresh-tensions` rejects one whose readings were rewritten after it
+was generated.
 
 ### Refresh exit codes
 
