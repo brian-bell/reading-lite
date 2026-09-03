@@ -4,7 +4,7 @@ import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
 import { PROCESSING_DEFER_DELAY_SECONDS, GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
-import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
+import { processReading, type ProcessReadingArgs, type ProcessReadingSource } from "../../src/process-reading";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
@@ -123,9 +123,68 @@ function embedCalls(fetchFn: ReturnType<typeof makeFetch>): number {
   }).length;
 }
 
+// workers-pool isolated storage pops with 500 if an unawaited processReading is
+// still in I/O when the test ends. vi.waitFor's 1s default also expires in CI
+// before extract/lease acquire reach embed. Park on supplied markdown (skip URL
+// extract) and wait with scheduler.wait so workerd can flush DO/R2 between polls.
+const IN_FLIGHT_EMBED_TIMEOUT_MS = 15_000;
+const PARKED_MARKDOWN: Extract<ProcessReadingSource, { kind: "markdown" }> = {
+  kind: "markdown",
+  markdown: "# Test Article\n\nIn-flight embed park fixture. Skips URL extract in the workers pool.",
+  title: "Test Article",
+};
+
+async function waitForCondition(check: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + IN_FLIGHT_EMBED_TIMEOUT_MS;
+  while (!check()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`${label} (timed out after ${IN_FLIGHT_EMBED_TIMEOUT_MS}ms)`);
+    }
+    await scheduler.wait(25);
+  }
+}
+
+function parkAtFirstEmbed(): {
+  fetchFn: ReturnType<typeof makeFetch>;
+  started: () => number;
+  waitUntilStarted: () => Promise<void>;
+  release: (value?: Response) => void;
+} {
+  let releaseEmbed!: (value: Response) => void;
+  const firstEmbed = new Promise<Response>((resolve) => {
+    releaseEmbed = resolve;
+  });
+  let embedStarted = 0;
+  const fetchFn = makeFetch({
+    onEmbed: () => {
+      embedStarted += 1;
+      if (embedStarted === 1) return firstEmbed;
+      return embeddingResponse();
+    },
+  });
+  return {
+    fetchFn,
+    started: () => embedStarted,
+    waitUntilStarted: () =>
+      waitForCondition(
+        () => embedStarted === 1,
+        `expected embedStarted to be 1, received ${embedStarted}`,
+      ),
+    release: (value = embeddingResponse()) => {
+      releaseEmbed(value);
+    },
+  };
+}
+
 async function seedReading(
   tenant: TenantContext,
-  opts: { id: string; url: string; attemptId: string; status?: Manifest["status"] },
+  opts: {
+    id: string;
+    url: string;
+    attemptId: string;
+    status?: Manifest["status"];
+    source?: ProcessReadingSource;
+  },
 ): Promise<ProcessReadingArgs> {
   const createdAt = "2026-09-03T00:00:00.000Z";
   const keyPrefix = buildKeyPrefix(opts.id, createdAt);
@@ -170,12 +229,13 @@ async function seedReading(
     attemptStartedAt: createdAt,
     trigger: "submit",
     email: false,
+    ...(opts.source ? { source: opts.source } : {}),
   };
 }
 
 async function seedPending(
   tenant: TenantContext,
-  opts: { id: string; url: string; attemptId: string },
+  opts: { id: string; url: string; attemptId: string; source?: ProcessReadingSource },
 ): Promise<ProcessReadingArgs> {
   return seedReading(tenant, opts);
 }
@@ -266,41 +326,33 @@ describe("processing leases (Workers pool)", () => {
       id: "rd_LEASE_DUP",
       url: "https://lease.test/dup",
       attemptId: "at_dup",
+      source: PARKED_MARKDOWN,
     });
 
-    let releaseEmbed!: (value: Response) => void;
-    let embedStarted = 0;
-    const fetchFn = makeFetch({
-      onEmbed: () => {
-        embedStarted += 1;
-        if (embedStarted === 1) {
-          return new Promise<Response>((resolve) => {
-            releaseEmbed = resolve;
-          });
-        }
-        return embeddingResponse();
-      },
-    });
-    const svc = services(fetchFn);
+    const parked = parkAtFirstEmbed();
+    const svc = services(parked.fetchFn);
     const first = processReading(job, env as unknown as Env, svc, tenant);
-    await vi.waitFor(() => expect(embedStarted).toBe(1));
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, svc, tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(msg.retry).not.toHaveBeenCalled();
-    expect(embedStarted).toBe(1);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "pending",
-    });
-    releaseEmbed(embeddingResponse());
-    await first;
-  });
+    try {
+      await parked.waitUntilStarted();
+      const sendDelayed = vi.fn(async () => {});
+      const msg = fakeMessage({ version: 1, job });
+      await dispatchQueueMessage(
+        msg,
+        () => processReading(job, env as unknown as Env, svc, tenant),
+        { sendDelayed },
+      );
+      expect(sendDelayed).toHaveBeenCalledOnce();
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(msg.retry).not.toHaveBeenCalled();
+      expect(parked.started()).toBe(1);
+      await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+        status: "pending",
+      });
+    } finally {
+      parked.release();
+      await first.catch(() => {});
+    }
+  }, 20_000);
 
   it("already_running on a ready reading acks as done without requeue", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
@@ -407,73 +459,67 @@ describe("processing leases (Workers pool)", () => {
       id: "rd_LEASE_STALE",
       url: "https://lease.test/stale",
       attemptId: "at_stale",
+      source: PARKED_MARKDOWN,
     });
-    let releaseEmbed!: (value: Response) => void;
-    let embedStarted = 0;
-    const fetchFn = makeFetch({
-      onEmbed: () => {
-        embedStarted += 1;
-        if (embedStarted === 1) {
-          return new Promise<Response>((resolve) => {
-            releaseEmbed = resolve;
-          });
-        }
-        return embeddingResponse();
-      },
-    });
+    const parked = parkAtFirstEmbed();
     const sendDelayed = vi.fn(async () => {});
     const msg = fakeMessage({ version: 1, job });
     const dispatched = dispatchQueueMessage(
       msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      () => processReading(job, env as unknown as Env, services(parked.fetchFn), tenant),
       { sendDelayed },
     );
-    await vi.waitFor(() => expect(embedStarted).toBe(1));
-    const tenantHeld = await holdTenantLease(tenantId, "at_stale");
-    const globalHeld = await globalLease({
-      kind: "acquire_lease",
-      tenantId,
-      attemptId: "at_stale",
-      nowMs: Date.now(),
-    });
-    expect(tenantHeld).toMatchObject({ ok: true, already_running: true });
-    expect(globalHeld).toMatchObject({ ok: true, already_running: true });
-    // Drop only the tenant row so presentLease hits stale_fence without
-    // touching global — the leftover in-flight global is what must be released.
-    await tenantLease(tenantId, {
-      kind: "release_lease",
-      attemptId: "at_stale",
-      fence: tenantHeld.fence,
-      nowMs: Date.now(),
-    });
-    releaseEmbed(embeddingResponse());
-    await dispatched;
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(msg.retry).not.toHaveBeenCalled();
-    expect(embedStarted).toBe(1);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "pending",
-      active_attempt: { id: "at_stale" },
-    });
+    try {
+      await parked.waitUntilStarted();
+      const tenantHeld = await holdTenantLease(tenantId, "at_stale");
+      const globalHeld = await globalLease({
+        kind: "acquire_lease",
+        tenantId,
+        attemptId: "at_stale",
+        nowMs: Date.now(),
+      });
+      expect(tenantHeld).toMatchObject({ ok: true, already_running: true });
+      expect(globalHeld).toMatchObject({ ok: true, already_running: true });
+      // Drop only the tenant row so presentLease hits stale_fence without
+      // touching global — the leftover in-flight global is what must be released.
+      await tenantLease(tenantId, {
+        kind: "release_lease",
+        attemptId: "at_stale",
+        fence: tenantHeld.fence,
+        nowMs: Date.now(),
+      });
+      parked.release();
+      await dispatched;
+      expect(sendDelayed).toHaveBeenCalledOnce();
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(msg.retry).not.toHaveBeenCalled();
+      expect(parked.started()).toBe(1);
+      await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+        status: "pending",
+        active_attempt: { id: "at_stale" },
+      });
 
-    const retryTenant = await holdTenantLease(tenantId, "at_stale_retry");
-    expect(retryTenant).toMatchObject({ ok: true, already_running: false });
-    const leftoverGlobal = await globalLease({
-      kind: "acquire_lease",
-      tenantId,
-      attemptId: "at_stale",
-      nowMs: Date.now(),
-    });
-    expect(leftoverGlobal).toMatchObject({ ok: true, already_running: false });
-    const retryGlobal = await globalLease({
-      kind: "acquire_lease",
-      tenantId,
-      attemptId: "at_stale_retry",
-      nowMs: Date.now(),
-    });
-    expect(retryGlobal).toMatchObject({ ok: true, already_running: false });
-  });
+      const retryTenant = await holdTenantLease(tenantId, "at_stale_retry");
+      expect(retryTenant).toMatchObject({ ok: true, already_running: false });
+      const leftoverGlobal = await globalLease({
+        kind: "acquire_lease",
+        tenantId,
+        attemptId: "at_stale",
+        nowMs: Date.now(),
+      });
+      expect(leftoverGlobal).toMatchObject({ ok: true, already_running: false });
+      const retryGlobal = await globalLease({
+        kind: "acquire_lease",
+        tenantId,
+        attemptId: "at_stale_retry",
+        nowMs: Date.now(),
+      });
+      expect(retryGlobal).toMatchObject({ ok: true, already_running: false });
+    } finally {
+      parked.release();
+      await dispatched.catch(() => {});
+    }
+  }, 20_000);
 
   it("paused expired lease does not block a later attempt", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
