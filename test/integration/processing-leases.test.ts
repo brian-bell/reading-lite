@@ -1053,7 +1053,7 @@ describe("processing leases (Workers pool)", () => {
       expect(sendDelayed).toHaveBeenCalledOnce();
       expect(summaryCalls(fetchFn)).toBe(1);
       await expect(
-        testReadingStore(env, tenant).readProcessingCheckpoint(job.keyPrefix, job.attemptId),
+        testReadingStore(env, tenant).readProcessingCheckpoint(job.keyPrefix, "at_skip_sum_url"),
       ).resolves.toMatchObject({
         summarize: { similar_context: [{ id: "rd_NEIGHBOUR", url: "" }] },
       });
