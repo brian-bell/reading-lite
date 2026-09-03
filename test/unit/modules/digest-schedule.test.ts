@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   currentPeriodKey,
   digestDueAt,
+  digestWindow,
   isoWeekPeriodKey,
   localCivilTime,
   periodKeyFor,
@@ -51,7 +52,7 @@ describe("digestDueAt with frozen now", () => {
       due: true,
       cadence: "daily",
       period_key: "2026-09-02",
-      local: { year: 2026, month: 9, day: 2, hour: 9, isoWeekday: 3 },
+      local: { year: 2026, month: 9, day: 2, hour: 9, minute: 0, second: 0, isoWeekday: 3 },
     });
     expect(digestDueAt(daily(9), new Date("2026-09-02T08:45:00.000Z")).due).toBe(false);
     expect(digestDueAt(daily(9), new Date("2026-09-02T09:15:00.000Z"))).toMatchObject({
@@ -128,6 +129,70 @@ describe("currentPeriodKey (send-time, no hour/weekday gate)", () => {
       ok: true,
       cadence: "weekly",
       period_key: "2026-W36",
+    });
+  });
+});
+
+describe("digestWindow", () => {
+  it("uses the last 24 local hours ending at this send for daily", () => {
+    const now = new Date("2026-09-02T09:00:00.000Z");
+    expect(digestWindow("daily", "UTC", now)).toEqual({
+      startMs: Date.parse("2026-09-01T09:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("uses the last 7 local days ending at this send for weekly", () => {
+    const now = new Date("2026-09-02T09:00:00.000Z");
+    expect(digestWindow("weekly", "UTC", now)).toEqual({
+      startMs: Date.parse("2026-08-26T09:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("computes local hours in a non-UTC zone", () => {
+    // 09:00 America/Los_Angeles on 2026-09-02 is 16:00Z.
+    const now = new Date("2026-09-02T16:00:00.000Z");
+    expect(digestWindow("daily", "America/Los_Angeles", now)).toEqual({
+      startMs: Date.parse("2026-09-01T16:00:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("returns null for an invalid time zone", () => {
+    expect(digestWindow("daily", "Not/A_Zone", new Date("2026-09-02T09:00:00.000Z"))).toBeNull();
+  });
+
+  it("anchors the daily window at local 09:00:00 in America/St_Johns, not 09:30", () => {
+    // NDT is UTC−2:30. 09:00 NDT = 11:30Z; dropping minutes matches 09:30 NDT = 12:00Z.
+    const now = new Date("2026-09-02T11:30:00.000Z");
+    expect(localCivilTime(now, "America/St_Johns")).toMatchObject({
+      year: 2026,
+      month: 9,
+      day: 2,
+      hour: 9,
+      minute: 0,
+      second: 0,
+    });
+    expect(digestWindow("daily", "America/St_Johns", now)).toEqual({
+      startMs: Date.parse("2026-09-01T11:30:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("keeps a mid-hour St_Johns retry on a true 24h local window", () => {
+    const now = new Date("2026-09-02T11:45:00.000Z"); // 09:15:00 NDT
+    expect(digestWindow("daily", "America/St_Johns", now)).toEqual({
+      startMs: Date.parse("2026-09-01T11:45:00.000Z"),
+      endMs: now.getTime(),
+    });
+  });
+
+  it("preserves seconds and the weekly 7-day bound in America/St_Johns", () => {
+    const now = new Date("2026-09-02T11:30:17.000Z"); // 09:00:17 NDT
+    expect(digestWindow("weekly", "America/St_Johns", now)).toEqual({
+      startMs: Date.parse("2026-08-26T11:30:17.000Z"),
+      endMs: now.getTime(),
     });
   });
 });

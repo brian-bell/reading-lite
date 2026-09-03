@@ -1,18 +1,26 @@
 /**
- * Digest pipeline (issue 196 B1): cron due-selection + DIGEST_JOBS fan-out
- * and a stub send consumer. One job per tenant. The consumer re-reads
- * settings immediately before "send" and honors opt-out; it does not call
- * Resend or build digest HTML (196 B2). Send-time re-read checks cadence, TZ,
- * recipient, and that `period_key` still matches the current local day/week.
- * Hour and weekday matching is enqueue-only so a delayed/retried job in the
- * same period still stub-sends. Fan-out also re-enqueues current-period
- * `pending` rows (via `currentPeriodKey`) so a producer miss through the due
- * hour can still land on DIGEST_JOBS later that day/week. A `queue.send`
- * failure after this tick *inserted* a pending claim deletes that row so a
- * later tick can claim again. An already-existing `pending` row is left in
- * place: it belongs to an earlier enqueue still in flight. Each tenant is
- * claimed+enqueued in its own try/catch so one failure cannot abort the rest
- * of the cron tick.
+ * Digest pipeline (issue 196 B2): cron due-selection + DIGEST_JOBS fan-out
+ * and a Resend digest send. One job per tenant. The consumer re-reads
+ * settings immediately before send and honors opt-out. Send-time re-read
+ * checks cadence, TZ, recipient, and that `period_key` still matches the
+ * current local day/week. Hour and weekday matching is enqueue-only so a
+ * delayed/retried job in the same period still sends. Fan-out also
+ * re-enqueues current-period `pending` rows (via `currentPeriodKey`) so a
+ * producer miss through the due hour can still land on DIGEST_JOBS later
+ * that day/week. Leftover re-enqueue only applies to *stale* pending rows
+ * (`DIGEST_PENDING_STALE_MS` = 15 minutes, one cron interval — longer
+ * than the digest 429 retry cap of 5 minutes) so an in-flight or mid-retry
+ * job is not double-queued. A `queue.send` failure after this tick *inserted* a pending
+ * claim deletes that row so a later tick can claim again. An already-existing
+ * `pending` row is left in place: it belongs to an earlier enqueue still in
+ * flight. Each tenant is claimed+enqueued in its own try/catch so one failure
+ * cannot abort the rest of the cron tick.
+ *
+ * The send window is ready title+tldr readings whose updated_at (else
+ * created_at) falls in the local period ending at this send. Empty windows
+ * skip without a Resend POST so the period stays closed. Digest mail is
+ * Resend-only: it does not use LOCAL_MAIL_SINK. Recipient is verified
+ * email_display (never EMAIL_TO).
  *
  * Digest DLQ handling lives next to this module so it can mark the ledger
  * failed without touching reading manifests.
@@ -31,15 +39,39 @@ import {
   finalizeDigestDelivery,
   getDigestDelivery,
   listPendingDigestDeliveries,
+  touchPendingDigestDelivery,
   type DigestDeliveryKey,
   type DigestSkipReason,
 } from "./control-plane/digest-ledger";
 import { parseTenantId, parseUserId } from "./control-plane/ids";
+import { redactEmailsInText } from "./control-plane/email";
 import { resolveDigestRecipient } from "./control-plane/reading-notification";
-import { currentPeriodKey, digestDueAt, type DigestScheduleSettings } from "./modules/digest-schedule";
+import {
+  buildTitleById,
+  selectDigestReadings,
+  sendDigestEmail,
+} from "./modules/digest-email";
+import {
+  currentPeriodKey,
+  digestDueAt,
+  digestWindow,
+  type DigestScheduleSettings,
+} from "./modules/digest-schedule";
+import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
+import { readingStoreFor } from "./modules/stores/reading-store";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
+
+/**
+ * Age a pending ledger row must reach before fan-out may `queue.send` again.
+ * One 15-minute cron interval, and longer than the digest 429 retry cap (5 min).
+ */
+export const DIGEST_PENDING_STALE_MS = 15 * 60_000;
+
+export function isStaleDigestPending(updatedAtMs: number, nowMs: number): boolean {
+  return nowMs - updatedAtMs >= DIGEST_PENDING_STALE_MS;
+}
 
 export function isDigestQueue(name: string): boolean {
   return (DIGEST_QUEUE_NAMES as readonly string[]).includes(name);
@@ -52,10 +84,21 @@ export function isDigestDlq(name: string): boolean {
 export interface DigestEnv {
   CONTROL_PLANE: D1Database;
   DIGEST_JOBS?: Queue<DigestEnvelopeV1>;
+  READINGS_BUCKET?: R2Bucket;
+  TENANT_DATA_PLANE?: string;
+  RESEND_API_KEY?: string;
   EMAIL_FROM: string;
+  EMAIL_TO?: string;
+  WEB_BASE_URL?: string;
   APP_ENV?: string;
   AUTH_MAIL_ALLOWLIST?: string;
   FOUNDER_EMAIL?: string;
+}
+
+export interface DigestJobDeps {
+  nowMs: number;
+  fetch?: typeof fetch;
+  retry?: RetryDeps;
 }
 
 interface EnabledDigestRow extends DigestScheduleSettings {
@@ -99,7 +142,7 @@ export function selectDueDigestUsers(
   return due;
 }
 
-/** Due-hour users plus leftover pending rows still in the current local period. */
+/** Due-hour users plus leftover *stale* pending rows still in the current local period. */
 export function selectFanOutDigestUsers(
   rows: readonly EnabledDigestRow[],
   pendingIds: ReadonlySet<string>,
@@ -142,7 +185,9 @@ export async function fanOutDueDigests(
   const db = fromD1(env.CONTROL_PLANE);
   const now = new Date(deps.nowMs);
   const pendingIds = new Set(
-    (await listPendingDigestDeliveries(db)).map((key) => digestDeliveryKeyId(key)),
+    (await listPendingDigestDeliveries(db))
+      .filter((row) => isStaleDigestPending(row.updated_at_ms, deps.nowMs))
+      .map((key) => digestDeliveryKeyId(key)),
   );
   const due = selectFanOutDigestUsers(await listEnabledDigestUsers(db), pendingIds, now);
   let enqueued = 0;
@@ -158,6 +203,10 @@ export async function fanOutDueDigests(
       if (!tenantId || !userId) continue;
       const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
       if (claim === "terminal") continue;
+      if (claim === "pending") {
+        const existing = await getDigestDelivery(db, key);
+        if (!existing || !isStaleDigestPending(existing.updated_at_ms, deps.nowMs)) continue;
+      }
       try {
         await queue.send(
           digestEnvelopeV1({
@@ -167,6 +216,9 @@ export async function fanOutDueDigests(
             cadence: row.digest_cadence,
           }),
         );
+        if (claim === "pending") {
+          await touchPendingDigestDelivery(db, key, deps.nowMs);
+        }
         enqueued += 1;
       } catch (error) {
         if (claim === "inserted") {
@@ -200,7 +252,7 @@ export async function fanOutDueDigests(
 export async function processDigestJob(
   envelope: DigestEnvelopeV1,
   env: DigestEnv,
-  deps: { nowMs: number },
+  deps: DigestJobDeps,
 ): Promise<void> {
   const db = fromD1(env.CONTROL_PLANE);
   const key: DigestDeliveryKey = {
@@ -213,9 +265,9 @@ export async function processDigestJob(
     return;
   }
 
-  const skip = await sendTimeSkipReason(db, envelope, env, deps.nowMs);
-  if (skip) {
-    if (skip === "invalid_time_zone") {
+  const verdict = await sendTimeVerdict(db, envelope, env, deps.nowMs);
+  if (verdict.kind === "skip") {
+    if (verdict.reason === "invalid_time_zone") {
       console.warn(
         JSON.stringify({
           event: "digest_skipped",
@@ -224,17 +276,101 @@ export async function processDigestJob(
         }),
       );
     }
-    await finalizeDigestDelivery(db, key, { status: "skipped", reason: skip }, deps.nowMs);
+    await finalizeDigestDelivery(db, key, { status: "skipped", reason: verdict.reason }, deps.nowMs);
     return;
   }
 
-  await finalizeDigestDelivery(db, key, { status: "sent" }, deps.nowMs);
+  const now = new Date(deps.nowMs);
+  const window = digestWindow(envelope.cadence, verdict.settings.time_zone, now);
+  if (!window) {
+    await finalizeDigestDelivery(
+      db,
+      key,
+      { status: "skipped", reason: "invalid_time_zone" },
+      deps.nowMs,
+    );
+    return;
+  }
+
+  const tenantId = parseTenantId(envelope.tenantId);
+  if (!tenantId) {
+    await finalizeDigestDelivery(db, key, { status: "skipped", reason: "missing_user" }, deps.nowMs);
+    return;
+  }
+  if (!env.READINGS_BUCKET) {
+    throw new Error("READINGS_BUCKET is not configured");
+  }
+
+  const reader = readingStoreFor(env.READINGS_BUCKET, { tenantId }, env);
+  const listIndex = await reader.readListIndex();
+  const items = selectDigestReadings(listIndex?.items ?? [], window);
+  if (items.length === 0) {
+    await finalizeDigestDelivery(
+      db,
+      key,
+      { status: "skipped", reason: "empty_window" },
+      deps.nowMs,
+    );
+    return;
+  }
+
+  if (existing?.status !== "pending") {
+    const claim = await claimPendingDigestDelivery(db, key, deps.nowMs);
+    if (claim === "terminal") return;
+  }
+
+  const apiKey = env.RESEND_API_KEY?.trim() ?? "";
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+
+  try {
+    const sent = await sendDigestEmail(
+      {
+        cadence: envelope.cadence,
+        items,
+        webBaseUrl: env.WEB_BASE_URL ?? "",
+        titleById: buildTitleById(listIndex),
+      },
+      {
+        fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
+        apiKey,
+        from: verdict.from,
+        to: verdict.to,
+        retry: deps.retry,
+        idempotencyKey: digestDeliveryKeyId(key),
+      },
+    );
+    await finalizeDigestDelivery(
+      db,
+      key,
+      { status: "sent", resendId: sent.id },
+      deps.nowMs,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "digest_send_failed",
+        user_id: envelope.userId,
+        message: redactEmailsInText(error instanceof Error ? error.message : String(error), [
+          verdict.to,
+          env.EMAIL_FROM,
+        ]),
+      }),
+    );
+    throw error;
+  }
 }
 
 export async function consumeDigestMessage(
-  msg: { body: unknown; ack: () => void; retry: () => void },
+  msg: {
+    body: unknown;
+    ack: () => void;
+    retry: (opts?: { delaySeconds?: number }) => void;
+    attempts?: number;
+  },
   env: DigestEnv,
-  deps: { nowMs: number },
+  deps: DigestJobDeps,
 ): Promise<void> {
   const parsed = parseDigestEnvelope(msg.body);
   if (!parsed.ok) {
@@ -246,7 +382,10 @@ export async function consumeDigestMessage(
     await processDigestJob(parsed.envelope, env, deps);
     msg.ack();
   } catch (error) {
-    console.error(error);
+    if (error instanceof RateLimitedError) {
+      msg.retry({ delaySeconds: digestRetryDelaySeconds(error, msg.attempts ?? 1) });
+      return;
+    }
     msg.retry();
   }
 }
@@ -277,37 +416,50 @@ export async function handleDigestDeadLetter(
   }
 }
 
-async function sendTimeSkipReason(
+async function sendTimeVerdict(
   db: ControlPlaneDb,
   envelope: DigestEnvelopeV1,
   env: DigestEnv,
   nowMs: number,
-): Promise<DigestSkipReason | null> {
+): Promise<
+  | { kind: "skip"; reason: DigestSkipReason }
+  | { kind: "send"; settings: DigestScheduleSettings; to: string; from: string }
+> {
   const user = await db.first<{ status: string; email_verified_at_ms: number | null }>(
     "SELECT status, email_verified_at_ms FROM users WHERE id = ?",
     envelope.userId,
   );
-  if (!user) return "missing_user";
-  if (user.status !== "active") return "inactive_user";
-  if (user.email_verified_at_ms == null) return "unverified_email";
+  if (!user) return { kind: "skip", reason: "missing_user" };
+  if (user.status !== "active") return { kind: "skip", reason: "inactive_user" };
+  if (user.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
 
   const settings = await db.first<DigestScheduleSettings>(
     `SELECT digest_cadence, time_zone, digest_hour_local, digest_weekday
        FROM user_settings WHERE user_id = ?`,
     envelope.userId,
   );
-  if (!settings) return "missing_settings";
-  if (settings.digest_cadence === "off") return "cadence_off";
+  if (!settings) return { kind: "skip", reason: "missing_settings" };
+  if (settings.digest_cadence === "off") return { kind: "skip", reason: "cadence_off" };
 
   // Hour/weekday gate enqueue only. Send re-reads cadence, TZ, and whether
   // the envelope's period_key is still this local day/week.
   const current = currentPeriodKey(settings, new Date(nowMs));
-  if (!current.ok) return current.reason;
+  if (!current.ok) return { kind: "skip", reason: current.reason };
   if (current.cadence !== envelope.cadence || current.period_key !== envelope.period_key) {
-    return "schedule_mismatch";
+    return { kind: "skip", reason: "schedule_mismatch" };
   }
 
   const recipient = await resolveDigestRecipient(db, env, envelope.userId);
-  if (recipient.kind === "skip") return recipient.reason;
-  return null;
+  if (recipient.kind === "skip") return { kind: "skip", reason: recipient.reason };
+  return { kind: "send", settings, to: recipient.to, from: recipient.from };
+}
+
+function digestRetryDelaySeconds(error: RateLimitedError, attempts: number): number {
+  const defaultMs = 30_000;
+  const maxMs = 300_000;
+  const ms =
+    error.retryAfterMs !== null
+      ? error.retryAfterMs
+      : Math.min(maxMs, defaultMs * 2 ** Math.max(0, attempts - 1));
+  return Math.max(1, Math.min(43_200, Math.ceil(ms / 1000)));
 }

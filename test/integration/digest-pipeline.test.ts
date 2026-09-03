@@ -1,12 +1,14 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
-import { getDigestDelivery } from "../../src/control-plane/digest-ledger";
+import { digestDeliveryKeyId, getDigestDelivery } from "../../src/control-plane/digest-ledger";
 import { fromD1 } from "../../src/control-plane/db";
 import {
   consumeDigestMessage,
+  DIGEST_PENDING_STALE_MS,
   fanOutDueDigests,
   handleDigestDeadLetter,
+  isStaleDigestPending,
   processDigestJob,
 } from "../../src/digest-pipeline";
 import worker, { type Env } from "../../src/index";
@@ -15,9 +17,12 @@ import type { Manifest } from "../../src/schemas/manifest";
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
+  founderTenant,
   insertSecondTenant,
+  otherTenant,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
+import type { ListIndexItem } from "../../src/schemas/api";
 
 const NOW_MS = Date.parse("2026-09-02T09:00:00.000Z");
 const READING_ID = "rd_0123456780";
@@ -82,7 +87,16 @@ async function resetState(): Promise<void> {
   installDigestQueue();
 }
 
-describe("digest fan-out + stub send", () => {
+describe("isStaleDigestPending", () => {
+  it("treats one cron interval as stale and younger rows as fresh", () => {
+    expect(isStaleDigestPending(NOW_MS, NOW_MS)).toBe(false);
+    expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS - 1)).toBe(false);
+    expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS)).toBe(true);
+    expect(DIGEST_PENDING_STALE_MS).toBe(15 * 60_000);
+  });
+});
+
+describe("digest fan-out + send-time skips", () => {
   beforeEach(resetState);
 
   it("enqueues one job per due tenant and ignores notify_immediate", async () => {
@@ -107,12 +121,15 @@ describe("digest fan-out + stub send", () => {
     }
   });
 
-  it("CAS on period_key so two due ticks still result in one sent row", async () => {
+  it("CAS on period_key so two due ticks still result in one terminal row", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
       enqueued: 1,
     });
-    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + 15 * 60_000 })).toEqual({
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS - 1 })).toEqual({
+      enqueued: 0,
+    });
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS })).toEqual({
       enqueued: 1,
     });
     expect(queued).toHaveLength(2);
@@ -127,11 +144,11 @@ describe("digest fan-out + stub send", () => {
       cadence: "daily",
       periodKey: "2026-09-02",
     });
-    expect(row?.status).toBe("sent");
-    expect(row?.skip_reason).toBeNull();
+    expect(row?.status).toBe("skipped");
+    expect(row?.skip_reason).toBe("empty_window");
   });
 
-  it("honors opt-out between enqueue and stub send", async () => {
+  it("honors opt-out between enqueue and send", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
     await setDigest(FOUNDER_TENANT_ID, { cadence: "off" });
@@ -169,7 +186,7 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "skipped", skip_reason: "invalid_time_zone" });
   });
 
-  it("is idempotent when the same pending job is redelivered after stub send", async () => {
+  it("is idempotent when the same pending job is redelivered after skip", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
     const msg = {
@@ -187,7 +204,7 @@ describe("digest fan-out + stub send", () => {
         cadence: "daily",
         periodKey: "2026-09-02",
       }),
-    ).toMatchObject({ status: "sent" });
+    ).toMatchObject({ status: "skipped", skip_reason: "empty_window" });
   });
 
   it("skips a staging allowlist miss at send", async () => {
@@ -212,7 +229,7 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "skipped", skip_reason: "allowlist" });
   });
 
-  it("stub-sends after the local hour has passed when period_key still matches", async () => {
+  it("still sends after the local hour has passed when period_key still matches", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
     const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
@@ -223,7 +240,7 @@ describe("digest fan-out + stub send", () => {
         cadence: "daily",
         periodKey: "2026-09-02",
       }),
-    ).toMatchObject({ status: "sent", skip_reason: null });
+    ).toMatchObject({ status: "skipped", skip_reason: "empty_window" });
   });
 
   it("skips when the local period_key has rolled even if cadence is still on", async () => {
@@ -306,7 +323,7 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "pending" });
   });
 
-  it("keeps an existing pending claim when a duplicate queue.send fails", async () => {
+  it("does not re-enqueue a fresh pending claim on a later due tick", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
       enqueued: 1,
@@ -320,11 +337,10 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "pending" });
 
     installRejectingDigestQueue();
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + 60_000 })).toEqual({
       enqueued: 0,
     });
-    consoleErr.mockRestore();
+    expect(queued).toHaveLength(0);
 
     expect(
       await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
@@ -335,7 +351,7 @@ describe("digest fan-out + stub send", () => {
     ).toMatchObject({ status: "pending" });
   });
 
-  it("re-enqueues a current-period pending row after the due hour", async () => {
+  it("re-enqueues a stale current-period pending row after the due hour", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
@@ -347,7 +363,7 @@ describe("digest fan-out + stub send", () => {
          (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
        VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
     )
-      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
+      .bind(FOUNDER_TENANT_ID, laterMs - DIGEST_PENDING_STALE_MS, laterMs - DIGEST_PENDING_STALE_MS)
       .run();
 
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
@@ -362,6 +378,23 @@ describe("digest fan-out + stub send", () => {
         cadence: "daily",
       },
     ]);
+  });
+
+  it("does not re-enqueue a fresh leftover pending row after the due hour", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
+    await env.CONTROL_PLANE.prepare(
+      `INSERT INTO digest_deliveries
+         (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+       VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
+    )
+      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
+      .run();
+
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
+      enqueued: 0,
+    });
+    expect(queued).toEqual([]);
   });
 
   it("wires scheduled() to due+enqueue with frozen scheduledTime", async () => {
@@ -471,5 +504,206 @@ describe("digest DLQ does not touch reading manifests", () => {
     );
     expect(ack).toHaveBeenCalledOnce();
     consoleErr.mockRestore();
+  });
+});
+
+const FOUNDER_TITLE = "Founder Only Title";
+const OTHER_TITLE = "Other Only Secret Title";
+const IN_WINDOW_AT = "2026-09-02T08:00:00.000Z";
+const OLD_AT = "2026-01-01T00:00:00.000Z";
+const WEB_BASE = "https://reading.test.example";
+
+function digestItem(
+  id: string,
+  title: string,
+  at: string,
+  status: ListIndexItem["status"] = "ready",
+): ListIndexItem {
+  return {
+    id,
+    key_prefix: `readings/${id}`,
+    url: `https://example.com/${id}`,
+    title,
+    tldr: `${title} tldr`,
+    status,
+    created_at: at,
+    updated_at: at,
+  };
+}
+
+function resendOkFetch(): ReturnType<typeof vi.fn<typeof fetch>> {
+  let n = 0;
+  return vi.fn<typeof fetch>(async () => {
+    n += 1;
+    return new Response(JSON.stringify({ id: `re_digest_${n}` }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+}
+
+function resendBodies(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): Array<{
+  to: string;
+  from: string;
+  subject: string;
+  html: string;
+  text: string;
+}> {
+  return fetchFn.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as {
+    to: string;
+    from: string;
+    subject: string;
+    html: string;
+    text: string;
+  });
+}
+
+async function clearBucket(): Promise<void> {
+  const list = await env.READINGS_BUCKET.list();
+  for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
+}
+
+async function seedList(
+  tenant: ReturnType<typeof founderTenant>,
+  items: ListIndexItem[],
+): Promise<void> {
+  await testReadingStore(env, tenant).writeListIndex({ version: 1, items });
+}
+
+describe("digest send isolation (196 B2)", () => {
+  beforeEach(async () => {
+    await resetState();
+    await clearBucket();
+    await insertSecondTenant(env as unknown as Env);
+  });
+
+  it("sends one Resend mail per tenant from that tenant's index and never EMAIL_TO", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily", notifyImmediate: 0 });
+    await setDigest(OTHER_TENANT_ID, { cadence: "daily", notifyImmediate: 0 });
+    await seedList(founderTenant(), [
+      digestItem("rd_FNDR01", FOUNDER_TITLE, IN_WINDOW_AT),
+      digestItem("rd_FNDR02", "Founder Corpus Dump", OLD_AT),
+    ]);
+    await seedList(otherTenant(), [digestItem("rd_OTHR01", OTHER_TITLE, IN_WINDOW_AT)]);
+
+    expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({
+      enqueued: 2,
+    });
+    const fetchFn = resendOkFetch();
+    for (const body of queued) {
+      await processDigestJob(body, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    }
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const bodies = resendBodies(fetchFn);
+    const keys = fetchFn.mock.calls.map((call) => new Headers(call[1]?.headers).get("Idempotency-Key"));
+    expect(keys.sort()).toEqual(
+      [
+        digestDeliveryKeyId({
+          userId: FOUNDER_TENANT_ID,
+          cadence: "daily",
+          periodKey: "2026-09-02",
+        }),
+        digestDeliveryKeyId({
+          userId: OTHER_TENANT_ID,
+          cadence: "daily",
+          periodKey: "2026-09-02",
+        }),
+      ].sort(),
+    );
+    expect(bodies.map((b) => b.to).sort()).toEqual(
+      ["founder@test.example", "other@test.example"].sort(),
+    );
+
+    const founderMail = bodies.find((b) => b.to === "founder@test.example")!;
+    const otherMail = bodies.find((b) => b.to === "other@test.example")!;
+    expect(founderMail.html).toContain(FOUNDER_TITLE);
+    expect(founderMail.html).toContain(`${WEB_BASE}/readings/rd_FNDR01`);
+    expect(founderMail.html).not.toContain(OTHER_TITLE);
+    expect(founderMail.html).not.toContain("rd_OTHR01");
+    expect(founderMail.html).not.toContain("Founder Corpus Dump");
+    expect(otherMail.html).toContain(OTHER_TITLE);
+    expect(otherMail.html).toContain(`${WEB_BASE}/readings/rd_OTHR01`);
+    expect(otherMail.html).not.toContain(FOUNDER_TITLE);
+    expect(otherMail.html).not.toContain("rd_FNDR01");
+    for (const body of bodies) {
+      expect(JSON.stringify(body)).not.toContain("reader@test.example");
+      expect(JSON.stringify(body)).not.toContain("EMAIL_TO");
+      expect(body.to).not.toBe((env as unknown as Env).EMAIL_TO);
+    }
+
+    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    await processDigestJob(queued[1]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "sent", resend_id: expect.stringMatching(/^re_digest_/) });
+  });
+
+  it("skips without Resend when the user opts out after enqueue", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await seedList(founderTenant(), [digestItem("rd_FNDR01", FOUNDER_TITLE, IN_WINDOW_AT)]);
+    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "off" });
+    const fetchFn = resendOkFetch();
+    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "skipped", skip_reason: "cadence_off" });
+  });
+
+  it("writes skipped and sends zero Resend for an empty window", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await seedList(founderTenant(), [
+      digestItem("rd_FNDR02", "Founder Corpus Dump", OLD_AT),
+      digestItem("rd_FAIL01", "Failed in window", IN_WINDOW_AT, "failed"),
+      digestItem("rd_PEND01", "Pending in window", IN_WINDOW_AT, "pending"),
+    ]);
+    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
+    const fetchFn = resendOkFetch();
+    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "skipped", skip_reason: "empty_window" });
+  });
+
+  it("retries a Resend 429 and leaves the ledger pending", async () => {
+    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
+    await seedList(founderTenant(), [digestItem("rd_FNDR01", FOUNDER_TITLE, IN_WINDOW_AT)]);
+    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
+    const fetchFn = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ message: "slow" }), {
+          status: 429,
+          headers: { "retry-after": "30" },
+        }),
+    );
+    const msg = { body: queued[0], ack: vi.fn(), retry: vi.fn(), attempts: 1 };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await consumeDigestMessage(msg, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    consoleErr.mockRestore();
+    expect(msg.ack).not.toHaveBeenCalled();
+    expect(msg.retry).toHaveBeenCalledWith({ delaySeconds: 30 });
+    expect(
+      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+        userId: FOUNDER_TENANT_ID,
+        cadence: "daily",
+        periodKey: "2026-09-02",
+      }),
+    ).toMatchObject({ status: "pending" });
   });
 });

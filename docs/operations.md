@@ -121,6 +121,14 @@ all skip send (no `send_email` event). Resend failures still log a failed
 `send_email` event with recipients redacted; the reading stays `ready` and the
 job is not requeued.
 
+Scheduled digests also go through Resend to the current verified
+`email_display` — never `EMAIL_TO`, independent of `notify_immediate`, and
+never `LOCAL_MAIL_SINK`. An empty window skips without mail and closes the
+period in `digest_deliveries`. Resend 429 retries the digest job and leaves
+the ledger `pending`. Fan-out re-enqueues leftover pending only after 15
+minutes (`DIGEST_PENDING_STALE_MS`, one cron interval). Digest Resend POSTs
+set `Idempotency-Key` to `userId:cadence:period_key`.
+
 The offline corpus tools authenticate directly against Cloudflare rather than
 through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 `CORPUS_R2_SECRET_KEY`, and `CORPUS_CF_API_TOKEN` from the environment or
