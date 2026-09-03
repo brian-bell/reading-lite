@@ -56,6 +56,7 @@ type FenceLeaseBody = {
   attemptId: string;
   fence: string;
   nowMs: number;
+  preserveInFlight?: boolean;
 };
 type GuardBody =
   | AdmitRequestBody
@@ -88,7 +89,12 @@ export interface TenantUsage {
   releaseReading(opId: string): Promise<void>;
   commitReading(opId: string): Promise<void>;
   acquireLease(attemptId: string, nowMs: number): Promise<ProcessingLeaseDecision>;
-  renewLease(attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
+  renewLease(
+    attemptId: string,
+    fence: string,
+    nowMs: number,
+    opts?: { preserveInFlight?: boolean },
+  ): Promise<ProcessingLeaseDecision>;
   pauseLease(attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
   releaseLease(attemptId: string, fence: string, nowMs: number): Promise<void>;
 }
@@ -192,7 +198,13 @@ function parseGuardBody(value: unknown): GuardBody | null {
     const fence = typeof body.fence === "string" ? body.fence : "";
     const nowMs = Number(body.nowMs);
     if (!attemptId || !fence || !Number.isFinite(nowMs) || nowMs < 0) return null;
-    return { kind, attemptId, fence, nowMs };
+    return {
+      kind,
+      attemptId,
+      fence,
+      nowMs,
+      ...(kind === "renew_lease" && body.preserveInFlight === true ? { preserveInFlight: true } : {}),
+    };
   }
   return null;
 }
@@ -324,7 +336,14 @@ export class TenantUsageGuard implements DurableObject {
   }
 
   private async renewHeldLease(body: FenceLeaseBody): Promise<Response> {
-    return jsonLease(await renewStoredLease(this.state.storage, { id: body.attemptId, fence: body.fence, nowMs: body.nowMs }));
+    return jsonLease(
+      await renewStoredLease(this.state.storage, {
+        id: body.attemptId,
+        fence: body.fence,
+        nowMs: body.nowMs,
+        preserveInFlight: body.preserveInFlight === true,
+      }),
+    );
   }
 
   private async pauseHeldLease(body: FenceLeaseBody): Promise<Response> {
@@ -533,8 +552,14 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
       await call({ kind: "commit_reading", opId });
     },
     acquireLease: (attemptId, nowMs) => callLease({ kind: "acquire_lease", tenantId, attemptId, nowMs }),
-    renewLease: (attemptId, fence, nowMs) =>
-      callLease({ kind: "renew_lease", attemptId, fence, nowMs }),
+    renewLease: (attemptId, fence, nowMs, opts) =>
+      callLease({
+        kind: "renew_lease",
+        attemptId,
+        fence,
+        nowMs,
+        ...(opts?.preserveInFlight === true ? { preserveInFlight: true } : {}),
+      }),
     pauseLease: (attemptId, fence, nowMs) =>
       callLease({ kind: "pause_lease", attemptId, fence, nowMs }),
     releaseLease: async (attemptId, fence, nowMs) => {

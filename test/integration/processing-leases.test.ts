@@ -633,6 +633,9 @@ describe("processing leases (Workers pool)", () => {
       processReading(firstJob, env as unknown as Env, services(fetchFn), tenant),
     ).rejects.toBeInstanceOf(RateLimitedError);
 
+    const retrySame = await holdTenantLease(tenantId, "at_429");
+    expect(retrySame).toMatchObject({ ok: true, already_running: false });
+
     const secondFetch = makeFetch();
     const second = await seedPending(tenant, {
       id: "rd_LEASE_429B",

@@ -148,7 +148,7 @@ function fenceMismatchOrIdleExpired(
 
 export async function renewLease(
   storage: DurableObjectStorage,
-  opts: { id: string; fence: string; nowMs: number },
+  opts: { id: string; fence: string; nowMs: number; preserveInFlight?: boolean },
 ): Promise<LeaseDecision> {
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
@@ -159,7 +159,7 @@ export async function renewLease(
   }
   const next: LeaseRecord = {
     ...verdict.lease,
-    inFlight: true,
+    inFlight: opts.preserveInFlight === true ? verdict.lease.inFlight : true,
     expiresAt: opts.nowMs + PROCESSING_LEASE_TTL_MS,
   };
   await putLease(storage, key, next);

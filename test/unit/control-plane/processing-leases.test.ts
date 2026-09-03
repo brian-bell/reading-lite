@@ -6,6 +6,7 @@ import {
   DeferPaidWorkError,
   heartbeatProcessingLeases,
   pauseProcessingLeases,
+  pauseOrReleaseProcessingLeases,
   renewProcessingLeases,
   throwIfDeferred,
   type ProcessingLeaseDeps,
@@ -183,6 +184,31 @@ describe("TenantUsageGuard processing leases", () => {
     expect(
       await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_other", nowMs: NOW + 2 }),
     ).toMatchObject({ ok: false, reason: "contention" });
+  });
+
+  it("heartbeat after pause extends TTL without resurrecting inFlight", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    const held = await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_hb", nowMs: NOW });
+    expect(
+      await post(guard, { kind: "pause_lease", attemptId: "at_hb", fence: held.fence, nowMs: NOW + 1 }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await post(guard, {
+        kind: "renew_lease",
+        attemptId: "at_hb",
+        fence: held.fence,
+        nowMs: NOW + 2,
+        preserveInFlight: true,
+      }),
+    ).toMatchObject({ ok: true, fence: held.fence });
+    expect(map.get(leaseStorageKey("at_hb"))).toMatchObject({ inFlight: false, fence: held.fence });
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_other", nowMs: NOW + 2 }),
+    ).toMatchObject({ ok: false, reason: "contention" });
+    expect(
+      await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_hb", nowMs: NOW + 2 }),
+    ).toMatchObject({ ok: true, already_running: false, fence: held.fence });
   });
 
   it("does not let a concurrent acquire burst past the cap", async () => {
@@ -653,6 +679,35 @@ describe("tenant-first lease saga", () => {
     expect(released).toEqual([]);
   });
 
+  it("heartbeat asks both sides to preserve inFlight", async () => {
+    const flags: Array<boolean | undefined> = [];
+    const released: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      renewLease: async (_attemptId, _fence, _nowMs, opts) => {
+        flags.push(opts?.preserveInFlight);
+        return { ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 };
+      },
+      releaseLease: async () => {
+        released.push("tenant");
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async (_tenantId, _attemptId, _fence, _nowMs, opts) => {
+        flags.push(opts?.preserveInFlight);
+        return { ok: true, fence: "gf", alreadyRunning: false, expiresAtMs: NOW + 1 };
+      },
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => {
+        released.push("global");
+      },
+    };
+    await heartbeatProcessingLeases({} as Env, HOLD, NOW, { tenant, global });
+    expect(flags).toEqual([true, true]);
+    expect(released).toEqual([]);
+  });
+
   it("heartbeat still renews global when tenant renew throws", async () => {
     const released: string[] = [];
     const calls: string[] = [];
@@ -688,5 +743,43 @@ describe("tenant-first lease saga", () => {
     expect(result).toEqual({ ok: false, reason: "stale_fence" });
     expect(calls).toEqual(["tenant.pause"]);
     expect(released).toEqual([]);
+  });
+
+  it("releases both leases when pause is not ok so a retry can acquire", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    const result = await pauseOrReleaseProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantPause: { ok: false, reason: "stale_fence" },
+      }),
+    );
+    expect(result).toEqual({ ok: false, reason: "stale_fence" });
+    expect(calls).toEqual(["tenant.pause"]);
+    expect(released).toEqual(["global", "tenant"]);
+  });
+
+  it("releases both leases when global pause fails after tenant restore", async () => {
+    const released: string[] = [];
+    const calls: string[] = [];
+    const result = await pauseOrReleaseProcessingLeases(
+      {} as Env,
+      HOLD,
+      NOW,
+      opsDeps({
+        released,
+        calls,
+        tenantPause: { ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+        globalPause: { ok: false, reason: "stale_fence" },
+        tenantRenew: { ok: true, fence: "tf", alreadyRunning: false, expiresAtMs: NOW + 1 },
+      }),
+    );
+    expect(result).toEqual({ ok: false, reason: "stale_fence" });
+    expect(calls).toEqual(["tenant.pause", "global.pause", "tenant.renew"]);
+    expect(released).toEqual(["global", "tenant"]);
   });
 });

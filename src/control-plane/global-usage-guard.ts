@@ -23,6 +23,7 @@ type FenceLeaseBody = {
   attemptId: string;
   fence: string;
   nowMs: number;
+  preserveInFlight?: boolean;
 };
 type GuardBody = AcquireLeaseBody | FenceLeaseBody;
 
@@ -79,7 +80,14 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (kind === "renew_lease" || kind === "pause_lease" || kind === "release_lease") {
     const fence = typeof body.fence === "string" ? body.fence : "";
     if (!fence) return null;
-    return { kind, tenantId, attemptId, fence, nowMs };
+    return {
+      kind,
+      tenantId,
+      attemptId,
+      fence,
+      nowMs,
+      ...(kind === "renew_lease" && body.preserveInFlight === true ? { preserveInFlight: true } : {}),
+    };
   }
   return null;
 }
@@ -110,6 +118,7 @@ export class GlobalUsageGuard implements DurableObject {
             id: leaseId(body.tenantId, body.attemptId),
             fence: body.fence,
             nowMs: body.nowMs,
+            preserveInFlight: body.preserveInFlight === true,
           }),
         );
       }
@@ -160,7 +169,13 @@ export class GlobalUsageGuard implements DurableObject {
 
 export interface GlobalUsage {
   acquireLease(tenantId: string, attemptId: string, nowMs: number): Promise<ProcessingLeaseDecision>;
-  renewLease(tenantId: string, attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
+  renewLease(
+    tenantId: string,
+    attemptId: string,
+    fence: string,
+    nowMs: number,
+    opts?: { preserveInFlight?: boolean },
+  ): Promise<ProcessingLeaseDecision>;
   pauseLease(tenantId: string, attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
   releaseLease(tenantId: string, attemptId: string, fence: string, nowMs: number): Promise<void>;
 }
@@ -228,8 +243,15 @@ export function globalUsageFor(env: Env): GlobalUsage {
   };
   return {
     acquireLease: (tenantId, attemptId, nowMs) => call({ kind: "acquire_lease", tenantId, attemptId, nowMs }),
-    renewLease: (tenantId, attemptId, fence, nowMs) =>
-      call({ kind: "renew_lease", tenantId, attemptId, fence, nowMs }),
+    renewLease: (tenantId, attemptId, fence, nowMs, opts) =>
+      call({
+        kind: "renew_lease",
+        tenantId,
+        attemptId,
+        fence,
+        nowMs,
+        ...(opts?.preserveInFlight === true ? { preserveInFlight: true } : {}),
+      }),
     pauseLease: (tenantId, attemptId, fence, nowMs) =>
       call({ kind: "pause_lease", tenantId, attemptId, fence, nowMs }),
     releaseLease: async (tenantId, attemptId, fence, nowMs) => {

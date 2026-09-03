@@ -48,7 +48,7 @@ import {
   acquireProcessingLeases,
   DeferPaidWorkError,
   heartbeatProcessingLeases,
-  pauseProcessingLeases,
+  pauseOrReleaseProcessingLeases,
   releaseProcessingLeases,
   renewProcessingLeases,
   throwIfDeferred,
@@ -82,7 +82,7 @@ export async function processReading(
   const opId = resolveAttemptId(args);
   let readingSlotConsumed = false;
   let leases: ProcessingLeaseHold | null = null;
-  let stopHeartbeat: (() => void) | null = null;
+  let stopHeartbeat: (() => Promise<void>) | null = null;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
@@ -290,12 +290,12 @@ export async function processReading(
         tenant,
       );
     }
-    stopHeartbeat?.();
+    await stopHeartbeat?.();
     stopHeartbeat = null;
     if (leases) await releaseProcessingLeases(env, leases, Date.now());
     leases = null;
   } catch (e) {
-    stopHeartbeat?.();
+    await stopHeartbeat?.();
     stopHeartbeat = null;
     if (e instanceof DeferPaidWorkError) {
       if (leases) await releaseProcessingLeases(env, leases, Date.now());
@@ -319,8 +319,9 @@ export async function processReading(
       // stay counted until a later delivery commits or a definitive failure
       // (including markDeadLettered after max_retries) releases them.
       // Processing leases stay held (paused, not released) so a 429 retry
-      // resumes the same fence instead of taking a second permit.
-      if (leases) await pauseProcessingLeases(env, leases, Date.now());
+      // resumes the same fence instead of taking a second permit. If pause
+      // cannot park both guards, release so the retry is not pinned already_running.
+      if (leases) await pauseOrReleaseProcessingLeases(env, leases, Date.now());
       throw e;
     }
     if (leases) await releaseProcessingLeases(env, leases, Date.now());
@@ -361,11 +362,31 @@ async function presentLeaseBeforePaidDispatch(env: Env, hold: ProcessingLeaseHol
   throw new DeferPaidWorkError();
 }
 
-function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () => void {
+function startProcessingLeaseHeartbeat(env: Env, hold: ProcessingLeaseHold): () => Promise<void> {
+  let generation = 0;
+  let inflight: Promise<void> = Promise.resolve();
   const timer = setInterval(() => {
-    void heartbeatProcessingLeases(env, hold, Date.now());
+    const epoch = generation;
+    const previous = inflight;
+    inflight = (async () => {
+      try {
+        await previous;
+      } catch {
+        // Prior heartbeat is best-effort.
+      }
+      if (epoch !== generation) return;
+      await heartbeatProcessingLeases(env, hold, Date.now());
+    })();
   }, PROCESSING_LEASE_HEARTBEAT_MS);
-  return () => clearInterval(timer);
+  return async () => {
+    generation += 1;
+    clearInterval(timer);
+    try {
+      await inflight;
+    } catch {
+      // Heartbeat is best-effort; stop must not fail the 429/abort path.
+    }
+  };
 }
 
 async function sendReadingEmailAndLog(

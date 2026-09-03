@@ -8,8 +8,8 @@ import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "
 // alreadyRunning after a fresh tenant acquire all compensate the tenant.
 // presentLease renew and pause are tenant-first and all-or-nothing: a global
 // failure rolls the tenant mutation back (release after renew, restore inFlight
-// after pause). Heartbeat renews each side best-effort and never compensates —
-// a mid-job TTL refresh must not releaseLease while work continues.
+// after pause). Heartbeat renews each side best-effort, never compensates, and
+// preserves inFlight so a late TTL refresh cannot unpause a 429-parked row.
 // Uncertain responses are held/denied — never fail open. Duplicate deliveries
 // of the same (tenantId, attemptId) reuse the existing fence.
 
@@ -127,12 +127,14 @@ export async function heartbeatProcessingLeases(
   deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
 ): Promise<void> {
   try {
-    await deps.tenant.renewLease(hold.attemptId, hold.tenantFence, nowMs);
+    await deps.tenant.renewLease(hold.attemptId, hold.tenantFence, nowMs, { preserveInFlight: true });
   } catch {
     // Best-effort TTL refresh. Compensation stays on presentLease/abort.
   }
   try {
-    await deps.global.renewLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+    await deps.global.renewLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs, {
+      preserveInFlight: true,
+    });
   } catch {
     // Best-effort TTL refresh. Compensation stays on presentLease/abort.
   }
@@ -158,6 +160,17 @@ export async function pauseProcessingLeases(
     return global;
   }
   return tenant;
+}
+
+export async function pauseOrReleaseProcessingLeases(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: number,
+  deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
+): Promise<ProcessingLeaseDecision> {
+  const paused = await pauseProcessingLeases(env, hold, nowMs, deps);
+  if (!paused.ok) await releaseProcessingLeases(env, hold, nowMs, deps);
+  return paused;
 }
 
 async function restoreTenantInFlight(
