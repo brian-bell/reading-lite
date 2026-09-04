@@ -111,7 +111,7 @@ already-paused queue leaves the pause intact:
 ```zsh
 wr queues info reading-lite | tee "$RUN_DIR/queue-before.log"
 wr queues info reading-lite-dlq | tee "$RUN_DIR/dlq-before.log"
-node --input-type=module <<'JS'
+node --input-type=module <<'JS' || exit 1
 import { readFileSync } from 'node:fs';
 const path = `${process.env.RUN_DIR}/queue-delivery-before.json`;
 const names = ['reading-lite', 'reading-lite-dlq'];
