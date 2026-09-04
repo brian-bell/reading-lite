@@ -25,8 +25,9 @@ comments of the modules themselves — read those before changing a module.
 - `src/account-wipe.ts` — deferred tenant prefix wipe (issue 195b PR1): 7-day
   grace on `deleting_at_ms` gates *new* wipes; cron resumes in-progress/leftover
   (preserving `force` from the wipe record). Two phases: Vectorize `deleteByIds`
-  then paged R2. Does not hard-delete the users row. The header comment is the
-  invariant list — read it first.
+  then paged R2. The wipe *job* does not hard-delete the users row; cron
+  fan-out hands a completed, empty-prefix tenant to `account-teardown.ts` for
+  that. The header comment is the invariant list — read it first.
 - `src/control-plane/vector-ledger.ts` — the durable per-tenant vector-id
   ledger (`vector_ledger`, migration `0010`) and its confirmation rule. Every
   vector writer records the reading id here before upserting, which takes R2 out
@@ -55,6 +56,16 @@ comments of the modules themselves — read those before changing a module.
   them; `first_completed_at_ms`/`first_residue` are written once and pinned in
   SQL, so a reopen that never finishes cannot erase the history. Its foreign key
   does not cascade, on purpose.
+- `src/control-plane/account-teardown.ts` — the control plane's half of account
+  deletion (issue 195 S4), run by the wipe cron fan-out once a wipe has
+  completed and the prefix is confirmed empty. Writes the `account_deletions`
+  audit row FIRST (migration `0011`, deliberately no foreign key — it outlives
+  the `users` row it describes), purges the tenant's `TenantUsageGuard` and its
+  `GlobalUsageGuard` leases fail-closed, then deletes every tenant-keyed row and
+  the `users` row in one ordered batch. Gates on
+  `wipe_progress.completed_at_ms`, never `first_completed_at_ms`. Nothing in
+  this schema cascades, so `wipe_progress` is deleted explicitly, after the gate
+  has been read.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -295,8 +306,16 @@ Pointers only — the details live in the named files' comments.
   `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS`, while anything a later delivery needs is
   written unconditionally — which is why a frozen job clock and a 12-hour
   `Retry-After` no longer need special-casing. The completion record is
-  **kept**, with the R2 cursor cleared, and is what the later users-row
-  hard-delete gates on — never infer a wipe's outcome from R2 state. Gate on
+  **kept**, with the R2 cursor cleared, and is what the users-row hard-delete in
+  `account-teardown.ts` gates on — never infer a wipe's outcome from R2 state.
+  Teardown runs from cron fan-out, not from the wipe delivery: audit row first,
+  guards fail-closed, then one ordered D1 batch ending at `users`. Under
+  `invite_only`, the freed address needs a **fresh** invite, because teardown
+  deletes the account's consumed `signup_invites` row. It frees every address
+  the account ever used, collected from its own challenges — but only where
+  ownership is proven (redeemed, or a login challenge), and it never deletes an
+  *unconsumed* invite except on the current address, since that is somebody
+  else's pending grant (`docs/operations.md`). Gate on
   `completed_at_ms` (a reopen clears it); report history from
   `first_completed_at_ms`/`first_residue`, which no reopen can move. `residue`
   plus `probe_saw_residue` carry the terminal verdict.

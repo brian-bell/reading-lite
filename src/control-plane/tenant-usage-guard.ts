@@ -2,6 +2,7 @@ import type { Env } from "../index";
 import { bumpWindow } from "./auth-rate-guard";
 import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
+import { logUnboundGuardPurge } from "./global-usage-guard";
 import { parseTenantId } from "./ids";
 import {
   acquireLease as acquireStoredLease,
@@ -64,7 +65,22 @@ type FenceLeaseBody = {
   nowMs: number;
   preserveInFlight?: boolean;
 };
+/**
+ * Account teardown (issue 195 S4): empty this tenant's guard entirely.
+ *
+ * This DO is `idFromName(tenantId)`, so every key it holds — the request-rate
+ * window, the hourly/monthly counters, the reading reservations, and the
+ * concurrency leases — belongs to the one tenant being deleted. That is what
+ * makes `deleteAll()` the right verb here and the wrong one on the singleton
+ * `GlobalUsageGuard`, which purges by key prefix instead.
+ *
+ * `deleteAll()` does not cancel a pending alarm, so the alarm is deleted too;
+ * otherwise the object would be woken up again after deletion to sweep storage
+ * that is already gone.
+ */
+type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
 type GuardBody =
+  | PurgeTenantBody
   | AdmitRequestBody
   | ReserveReadingBody
   | RefreshReadingBody
@@ -176,6 +192,15 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const kind = body.kind;
+  if (kind === "purge_tenant") {
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+    // Shape check only — it does not, and cannot cheaply, prove the id names
+    // *this* object. Routing is what does that: the sole caller derives the
+    // stub from `idFromName(tenantId)`, so the request lands on the object the
+    // id names. This rejects a malformed body rather than emptying an object
+    // on the strength of one.
+    return parseTenantId(tenantId) ? { kind, tenantId } : null;
+  }
   if (kind === "admit_request") {
     const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
     const nowMs = Number(body.nowMs);
@@ -254,6 +279,7 @@ export class TenantUsageGuard implements DurableObject {
     if (!parsed) return json({ error: "invalid_body" }, 400);
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
+      if (body.kind === "purge_tenant") return this.purgeTenant();
       if (body.kind === "admit_request") return this.admitRequest(body);
       if (body.kind === "reserve_reading") return this.reserveReading(body);
       if (body.kind === "refresh_reading") return this.refreshReading(body);
@@ -270,6 +296,16 @@ export class TenantUsageGuard implements DurableObject {
     await this.state.blockConcurrencyWhile(async () => {
       await this.cleanup(Date.now());
     });
+  }
+
+  /**
+   * Empty this tenant's guard. Idempotent — an already-empty object purges
+   * nothing and still answers ok, which is what lets teardown be retried.
+   */
+  private async purgeTenant(): Promise<Response> {
+    await this.state.storage.deleteAll();
+    await this.state.storage.deleteAlarm();
+    return json({ ok: true });
   }
 
   private async admitRequest(body: AdmitRequestBody): Promise<Response> {
@@ -530,6 +566,44 @@ function parseLeaseDecision(payload: unknown): ProcessingLeaseDecision {
     return denyLeaseUnavailable();
   }
   return { ok: false, reason };
+}
+
+/** The bindings account teardown needs from this module. */
+export interface TenantUsageGuardEnv {
+  TENANT_USAGE_GUARD?: DurableObjectNamespace;
+}
+
+/**
+ * Empty one tenant's usage guard and cancel its alarm, for account teardown.
+ *
+ * Kept off the `TenantUsage` interface for the same reason as
+ * `purgeGlobalUsageLeases`: that interface has a fail-closed implementation
+ * whose every method quietly denies, and a teardown verb that "succeeds" by
+ * doing nothing is the wrong failure on a deletion path. An **unbound**
+ * namespace holds no state for this tenant, so `"unbound"` is an honest
+ * success; a **bound** namespace that errors throws, and teardown stops before
+ * hard-deleting the `users` row.
+ */
+export async function purgeTenantUsageGuard(
+  env: TenantUsageGuardEnv,
+  tenantId: string,
+): Promise<"purged" | "unbound"> {
+  const ns = env.TENANT_USAGE_GUARD;
+  if (!ns) {
+    logUnboundGuardPurge("TENANT_USAGE_GUARD", tenantId);
+    return "unbound";
+  }
+  if (!parseTenantId(tenantId)) throw new Error(`tenant_usage_guard purge: malformed tenant id`);
+  const stub = ns.get(ns.idFromName(tenantId));
+  const res = await stub.fetch("https://tenant-usage-guard/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "purge_tenant", tenantId } satisfies PurgeTenantBody),
+  });
+  if (!res.ok) {
+    throw new Error(`tenant_usage_guard purge_tenant failed with ${res.status}`);
+  }
+  return "purged";
 }
 
 export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {

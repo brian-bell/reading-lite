@@ -1,0 +1,827 @@
+// Control-plane teardown (issue 195 S4 / #263): the gate, the ordering, the
+// audit row that outlives the account, and email reuse.
+//
+// The node-pool helper opens SQLite with `PRAGMA foreign_keys = ON`, which D1
+// does not, so a delete in the wrong order fails here rather than leaving
+// debris in production.
+
+import { describe, expect, it } from "vitest";
+import { beginAccountDeletion } from "../../../src/control-plane/account-delete";
+import {
+  tearDownAccount,
+  type AccountTeardownEnv,
+  type PrefixVerdict,
+} from "../../../src/control-plane/account-teardown";
+import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
+import {
+  SESSION_ABSOLUTE_TTL_MS,
+  SESSION_IDLE_TTL_MS,
+} from "../../../src/control-plane/constants";
+import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
+import type { ControlPlaneDb, SqlStatement } from "../../../src/control-plane/db";
+import { resolveLoginEligibility } from "../../../src/control-plane/eligibility";
+import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+
+const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const NOW_MS = Date.parse("2026-09-04T10:00:00.000Z");
+const USER = "usr_550e8400-e29b-41d4-a716-446655440000";
+const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
+const SESSION = "ses_550e8400-e29b-41d4-a716-446655440000";
+const CHALLENGE = "ml_550e8400-e29b-41d4-a716-446655440000";
+const EMAIL = "founder@example.com";
+
+/** Every table teardown is responsible for emptying, and how it is keyed. */
+const CHILD_TABLES: ReadonlyArray<{ table: string; column: string; value: string }> = [
+  { table: "user_settings", column: "user_id", value: USER },
+  { table: "tenant_limits", column: "tenant_id", value: USER },
+  { table: "api_tokens", column: "user_id", value: USER },
+  { table: "sessions", column: "user_id", value: USER },
+  { table: "auth_challenges", column: "email_canonical", value: EMAIL },
+  { table: "digest_deliveries", column: "user_id", value: USER },
+  { table: "signup_invites", column: "email_canonical", value: EMAIL },
+  { table: "wipe_progress", column: "tenant_id", value: USER },
+];
+
+/**
+ * The precondition teardown checks for itself: the wipe emptied the prefix.
+ * Every case that is not about the prefix passes this.
+ */
+const emptyPrefix = async (): Promise<PrefixVerdict> => "empty";
+
+/** A namespace that records the purge bodies it was sent. */
+function fakeGuardNamespace(options: { fails?: boolean } = {}): {
+  ns: DurableObjectNamespace;
+  bodies: unknown[];
+  names: string[];
+} {
+  const bodies: unknown[] = [];
+  const names: string[] = [];
+  const ns = {
+    idFromName(name: string) {
+      names.push(name);
+      return name;
+    },
+    get() {
+      return {
+        async fetch(_url: string, init: { body: string }) {
+          bodies.push(JSON.parse(init.body));
+          if (options.fails) return new Response("nope", { status: 500 });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        },
+      };
+    },
+  } as unknown as DurableObjectNamespace;
+  return { ns, bodies, names };
+}
+
+function guardEnv(options: { tenantFails?: boolean; globalFails?: boolean } = {}): {
+  env: AccountTeardownEnv;
+  tenant: ReturnType<typeof fakeGuardNamespace>;
+  global: ReturnType<typeof fakeGuardNamespace>;
+} {
+  const tenant = fakeGuardNamespace({ fails: options.tenantFails });
+  const global = fakeGuardNamespace({ fails: options.globalFails });
+  return {
+    env: { TENANT_USAGE_GUARD: tenant.ns, GLOBAL_USAGE_GUARD: global.ns },
+    tenant,
+    global,
+  };
+}
+
+/** A tenant that has been fenced by `DELETE /api/account` and fully populated. */
+async function seeded(options: { signupMode?: "open" | "invite_only" } = {}) {
+  const { sqlite, db } = openMigratedControlPlane();
+  await bootstrapFounder(db, {
+    email: EMAIL,
+    legacyToken: "test-token",
+    signupMode: options.signupMode ?? "open",
+    nowMs: NOW_MS,
+    authRoot: { secret: parseAuthRootSecret(ROOT_HEX), version: 1 },
+    newUserId: () => USER,
+    newTokenId: () => TOKEN,
+  });
+  sqlite
+    .prepare(
+      `INSERT INTO sessions (
+         id, user_id, secret_hmac, hash_key_version,
+         created_at_ms, authenticated_at_ms, last_seen_at_ms,
+         idle_expires_at_ms, absolute_expires_at_ms, created_from_claim_id
+       ) VALUES (?, ?, 'hmac', 1, ?, ?, ?, ?, ?, 'clm_teardown')`,
+    )
+    .run(
+      SESSION,
+      USER,
+      NOW_MS,
+      NOW_MS,
+      NOW_MS,
+      NOW_MS + SESSION_IDLE_TTL_MS,
+      NOW_MS + SESSION_ABSOLUTE_TTL_MS,
+    );
+  sqlite
+    .prepare(
+      `INSERT INTO auth_challenges (
+         id, purpose, email_canonical, email_display, user_id, secret_hmac,
+         hash_key_version, issued_at_ms, expires_at_ms, state
+       ) VALUES (?, 'login', ?, ?, ?, 'hmac', 1, ?, ?, 'issued')`,
+    )
+    .run(CHALLENGE, EMAIL, EMAIL, USER, NOW_MS, NOW_MS + 900_000);
+  sqlite
+    .prepare(
+      `INSERT INTO digest_deliveries (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+       VALUES (?, 'daily', '2026-09-03', 'sent', ?, ?)`,
+    )
+    .run(USER, NOW_MS, NOW_MS);
+  sqlite
+    .prepare(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, consumed_at_ms)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(EMAIL, EMAIL, NOW_MS - 1000, NOW_MS - 500);
+  await beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS });
+  return { sqlite, db };
+}
+
+type Sqlite = Awaited<ReturnType<typeof seeded>>["sqlite"];
+
+/** Insert a `wipe_progress` row with an explicit completion state. */
+function wipeRecord(
+  sqlite: Sqlite,
+  fields: {
+    completedAtMs: number | null;
+    residue?: 0 | 1;
+    firstCompletedAtMs?: number | null;
+    firstResidue?: 0 | 1;
+  },
+): void {
+  sqlite
+    .prepare(
+      `INSERT INTO wipe_progress (
+         tenant_id, phase, lease_seq, updated_at_ms, force,
+         completed_at_ms, residue, first_completed_at_ms, first_residue
+       ) VALUES (?, 'done', 3, ?, 0, ?, ?, ?, ?)`,
+    )
+    .run(
+      USER,
+      NOW_MS,
+      fields.completedAtMs,
+      fields.residue ?? 0,
+      fields.firstCompletedAtMs === undefined ? fields.completedAtMs : fields.firstCompletedAtMs,
+      fields.firstResidue ?? fields.residue ?? 0,
+    );
+}
+
+function count(sqlite: Sqlite, table: string, column: string, value: string): number {
+  const row = sqlite
+    .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`)
+    .get(value) as { n: number };
+  return row.n;
+}
+
+function auditRow(sqlite: Sqlite): Record<string, number | string | null> | undefined {
+  return sqlite.prepare("SELECT * FROM account_deletions WHERE tenant_id = ?").get(USER) as
+    | Record<string, number | string | null>
+    | undefined;
+}
+
+/** Wraps a db so its `batch` throws, standing in for a crash mid-teardown. */
+function batchThrows(inner: ControlPlaneDb): ControlPlaneDb {
+  return {
+    first: (sql, ...params) => inner.first(sql, ...params),
+    all: (sql, ...params) => inner.all(sql, ...params),
+    run: (sql, ...params) => inner.run(sql, ...params),
+    batch: async (_statements: readonly SqlStatement[]) => {
+      throw new Error("D1 batch died mid-teardown");
+    },
+  };
+}
+
+describe("tearDownAccount — the completion gate", () => {
+  it("refuses a tenant with no wipe record at all and deletes nothing", async () => {
+    const { sqlite, db } = await seeded();
+    const { env, tenant, global } = guardEnv();
+
+    await expect(tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).resolves.toEqual({
+      kind: "wipe_incomplete",
+    });
+
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    for (const { table, column, value } of CHILD_TABLES) {
+      if (table === "wipe_progress") continue;
+      expect(count(sqlite, table, column, value), table).toBe(1);
+    }
+    // Not even the audit row: teardown that refuses must leave no trace, or the
+    // residue scan would report an account as deleted while it is still whole.
+    expect(auditRow(sqlite)).toBeUndefined();
+    expect(tenant.bodies).toEqual([]);
+    expect(global.bodies).toEqual([]);
+  });
+
+  it("refuses a wipe that finished once and was then reopened", async () => {
+    const { sqlite, db } = await seeded();
+    // The reopened shape: durable history says it completed, current state says
+    // there is work in flight right now. Gating on `first_completed_at_ms`
+    // instead would hard-delete the users row out from under a running pass.
+    wipeRecord(sqlite, { completedAtMs: null, firstCompletedAtMs: NOW_MS - 60_000 });
+    const { env } = guardEnv();
+
+    await expect(tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).resolves.toEqual({
+      kind: "wipe_incomplete",
+    });
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    expect(count(sqlite, "wipe_progress", "tenant_id", USER)).toBe(1);
+    expect(auditRow(sqlite)).toBeUndefined();
+  });
+
+  it("refuses an account that is not in the deletion pipeline", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    sqlite.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(USER);
+    const { env } = guardEnv();
+
+    await expect(tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).resolves.toEqual({
+      kind: "not_deleting",
+      status: "active",
+    });
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    expect(auditRow(sqlite)).toBeUndefined();
+  });
+
+  it("refuses unless the tenant prefix is confirmed empty, and deletes nothing", async () => {
+    for (const verdict of ["not_empty", "unknown"] as const) {
+      const { sqlite, db } = await seeded();
+      wipeRecord(sqlite, { completedAtMs: NOW_MS });
+      const { env, tenant, global } = guardEnv();
+
+      await expect(
+        tearDownAccount(db, env, {
+          tenantId: USER,
+          nowMs: NOW_MS,
+          prefixVerdict: async () => verdict,
+        }),
+      ).resolves.toEqual({ kind: "prefix_not_empty", verdict });
+
+      expect(count(sqlite, "users", "id", USER), verdict).toBe(1);
+      // Refused before the audit row and before either guard was touched.
+      expect(auditRow(sqlite), verdict).toBeUndefined();
+      expect(tenant.bodies, verdict).toEqual([]);
+      expect(global.bodies, verdict).toEqual([]);
+    }
+  });
+
+  // "We could not look" must never read as "confirmed clean": objects orphaned
+  // by this delete can never be found through the tenant again, because the
+  // hard delete removes it from `listDeletingUsers` for good.
+  it("checks the prefix itself rather than trusting the caller", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const { env } = guardEnv();
+    let asked = 0;
+
+    await tearDownAccount(db, env, {
+      tenantId: USER,
+      nowMs: NOW_MS,
+      prefixVerdict: async () => {
+        asked += 1;
+        return "empty";
+      },
+    });
+
+    expect(asked).toBe(1);
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+  });
+
+  it("reports not_found for an unknown or malformed tenant", async () => {
+    const { db } = await seeded();
+    const { env } = guardEnv();
+    await expect(
+      tearDownAccount(db, env, { tenantId: "usr_11111111-1111-4111-8111-111111111111", nowMs: NOW_MS, prefixVerdict: emptyPrefix }),
+    ).resolves.toEqual({ kind: "not_found" });
+    await expect(tearDownAccount(db, env, { tenantId: "not-an-id", nowMs: NOW_MS, prefixVerdict: emptyPrefix })).resolves.toEqual({
+      kind: "not_found",
+    });
+  });
+});
+
+describe("tearDownAccount — the deletes", () => {
+  it("removes every tenant-keyed row, the wipe record, and the users row", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS - 5_000 });
+    const { env } = guardEnv();
+
+    const result = await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+    expect(result.kind).toBe("torn_down");
+
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+    for (const { table, column, value } of CHILD_TABLES) {
+      expect(count(sqlite, table, column, value), table).toBe(0);
+    }
+    // Reachable only through api_tokens, so it has to go first or be orphaned.
+    expect(count(sqlite, "api_token_scopes", "token_id", TOKEN)).toBe(0);
+  });
+
+  it("purges the tenant guard and the tenant's global leases", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const { env, tenant, global } = guardEnv();
+
+    await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    // The tenant guard is addressed by tenant id; the global guard is the
+    // singleton, so its purge has to name the tenant in the body instead.
+    expect(tenant.names).toEqual([USER]);
+    expect(tenant.bodies).toEqual([{ kind: "purge_tenant", tenantId: USER }]);
+    expect(global.bodies).toEqual([{ kind: "purge_tenant", tenantId: USER }]);
+    expect(global.names).not.toContain(USER);
+  });
+
+  // The status is read before two Durable Object round-trips. If the account
+  // leaves `deleting` in that window it must come out whole, not gutted: every
+  // statement in the batch carries the same predicate, so all of them match
+  // nothing together.
+  it("leaves a reactivated account entirely intact", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    // Someone flips the account back *during* the guard purge — after the
+    // status read, before the batch. Reproduced by reactivating from inside the
+    // stubbed Durable Object call, which is exactly that window.
+    const reactivating = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        async fetch() {
+          sqlite.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(USER);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        },
+      }),
+    } as unknown as DurableObjectNamespace;
+    const env: AccountTeardownEnv = {
+      TENANT_USAGE_GUARD: reactivating,
+      GLOBAL_USAGE_GUARD: fakeGuardNamespace().ns,
+    };
+
+    await expect(
+      tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix }),
+    ).resolves.toEqual({ kind: "reactivated" });
+
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    for (const { table, column, value } of CHILD_TABLES) {
+      expect(count(sqlite, table, column, value), table).toBe(1);
+    }
+    expect(count(sqlite, "api_token_scopes", "token_id", TOKEN)).toBeGreaterThan(0);
+    // The audit row still stands, and should: it records that teardown was
+    // attempted at this moment, which is true. A later successful run upserts
+    // it. Evidence-before-destruction means evidence survives a run that then
+    // destroyed nothing.
+    expect(auditRow(sqlite)).toBeDefined();
+  });
+
+  // The other race the batch has to survive: a concurrent fan-out tick sees
+  // leftover objects and reopens the finished wipe (clearing `completed_at_ms`)
+  // while the guards are being purged. Deleting the users row then would strand
+  // that pass and orphan whatever it had not yet removed, with the tenant no
+  // longer enumerable to find it again.
+  it("leaves the account alone when a concurrent tick reopens the wipe", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
+    const reopening = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        async fetch() {
+          sqlite
+            .prepare("UPDATE wipe_progress SET completed_at_ms = NULL, phase = 'vectors' WHERE tenant_id = ?")
+            .run(USER);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        },
+      }),
+    } as unknown as DurableObjectNamespace;
+
+    await expect(
+      tearDownAccount(
+        db,
+        { TENANT_USAGE_GUARD: reopening, GLOBAL_USAGE_GUARD: fakeGuardNamespace().ns },
+        { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix },
+      ),
+    ).resolves.toEqual({ kind: "wipe_reopened" });
+
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    // The reopened record survives to be worked, and so does everything else.
+    expect(count(sqlite, "wipe_progress", "tenant_id", USER)).toBe(1);
+    for (const { table, column, value } of CHILD_TABLES) {
+      expect(count(sqlite, table, column, value), table).toBe(1);
+    }
+  });
+
+  it("is idempotent: a second run finds the account already torn down", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const { env } = guardEnv();
+
+    await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+    await expect(tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS + 1000, prefixVerdict: emptyPrefix })).resolves.toEqual({
+      kind: "already_torn_down",
+    });
+    expect(auditRow(sqlite)?.torn_down_at_ms).toBe(NOW_MS);
+  });
+});
+
+describe("tearDownAccount — the audit row", () => {
+  it("survives the rest of teardown and carries no email or reading id", async () => {
+    const { sqlite, db } = await seeded();
+    // A wipe that finished once cleanly, was reopened, and finished again with
+    // residue: the two pairs disagree, which is the whole reason both exist.
+    wipeRecord(sqlite, {
+      completedAtMs: NOW_MS - 5_000,
+      residue: 1,
+      firstCompletedAtMs: NOW_MS - 90_000,
+      firstResidue: 0,
+    });
+    const { env } = guardEnv();
+
+    await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(auditRow(sqlite)).toEqual({
+      tenant_id: USER,
+      deleting_at_ms: NOW_MS,
+      completed_at_ms: NOW_MS - 5_000,
+      residue: 1,
+      // Carried across before `wipe_progress` was deleted: this is the durable
+      // history S5's residue scan reads, and teardown is what destroys the only
+      // other copy of it.
+      first_completed_at_ms: NOW_MS - 90_000,
+      first_residue: 0,
+      torn_down_at_ms: NOW_MS,
+    });
+    // The point of decision E: the record outlives the users row it names, so
+    // it must not be a foreign key into it.
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+    const columns = Object.keys(auditRow(sqlite) ?? {});
+    expect(columns).not.toContain("email_canonical");
+    expect(columns).not.toContain("email_display");
+    expect(columns).not.toContain("reading_ids");
+  });
+
+  it("is written before the destructive deletes, so a crash still leaves evidence", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS - 1 });
+    const { env } = guardEnv();
+
+    await expect(
+      tearDownAccount(batchThrows(db), env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix }),
+    ).rejects.toThrow("D1 batch died mid-teardown");
+
+    expect(auditRow(sqlite)?.completed_at_ms).toBe(NOW_MS - 1);
+    // Nothing destructive ran, so the account is exactly as it was and the next
+    // cron tick can retry it.
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    expect(count(sqlite, "sessions", "user_id", USER)).toBe(1);
+  });
+
+  it("records a NULL deleting_at_ms rather than inventing one", async () => {
+    // The F6 shape S2 added a warning for: `deleting` with no timestamp.
+    const { sqlite, db } = await seeded();
+    sqlite.prepare("UPDATE users SET deleting_at_ms = NULL WHERE id = ?").run(USER);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const { env } = guardEnv();
+
+    await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+    expect(auditRow(sqlite)?.deleting_at_ms).toBeNull();
+  });
+});
+
+describe("tearDownAccount — Durable Object failure is fail-closed", () => {
+  it("throws before deleting anything when a bound guard errors", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const { env } = guardEnv({ globalFails: true });
+
+    await expect(tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).rejects.toThrow(
+      /purge_tenant failed/,
+    );
+
+    // The users row must not go while state keyed to that tenant may survive.
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    expect(count(sqlite, "sessions", "user_id", USER)).toBe(1);
+    // The audit row is already committed, so the retry is clean.
+    expect(auditRow(sqlite)).toBeDefined();
+  });
+
+  it("treats an unbound namespace as nothing to clear", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    const result = await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+    expect(result.kind).toBe("torn_down");
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+  });
+});
+
+describe("tearDownAccount — email reuse", () => {
+  async function eligibility(db: ControlPlaneDb): Promise<string> {
+    return (await resolveLoginEligibility(db, EMAIL, NOW_MS)).kind;
+  }
+
+  it("frees the address only once teardown has run", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "open" });
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    // Fenced but not yet torn down: the users row is still there and not
+    // active, so the address is claimed and unusable by anyone.
+    await expect(eligibility(db)).resolves.toBe("ineligible");
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    await expect(eligibility(db)).resolves.toBe("provisionable");
+  });
+
+  it("under invite_only the freed address needs a FRESH invite", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    // The old invite was deleted with everything else keyed to the address, so
+    // the address is free but not invited — documented in docs/operations.md
+    // rather than left to surprise an operator.
+    expect(count(sqlite, "signup_invites", "email_canonical", EMAIL)).toBe(0);
+    await expect(eligibility(db)).resolves.toBe("ineligible");
+
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+         VALUES (?, ?, ?)`,
+      )
+      .run(EMAIL, EMAIL, NOW_MS);
+    await expect(eligibility(db)).resolves.toBe("provisionable");
+  });
+
+  it("clears the issued challenge holding the freed address", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    // Both because it carries email_canonical/email_display, and because a
+    // leftover `issued` row occupies the auth_challenges_one_issued slot for an
+    // address that is supposed to be free.
+    expect(count(sqlite, "auth_challenges", "email_canonical", EMAIL)).toBe(0);
+  });
+
+  // The signup challenge that created the account: issued with a NULL user_id,
+  // stamped with completed_user_id on redeem. If the account later changed
+  // address, its email_canonical is no longer the account's, so neither the
+  // user_id arm nor the NULL-owner-by-address arm reaches it — and nothing
+  // else in this codebase ever deletes from auth_challenges, so it would be a
+  // permanent record of a deleted account's old address.
+  // `signup_invites` is keyed by address and `users` remembers only the current
+  // one, so an account that changed address would otherwise leave the invite
+  // row for its old address behind — keeping that address's `email_display`
+  // and, being consumed, blocking re-signup there forever for an account that
+  // no longer exists.
+  it("frees every address the account ever used, not just its last one", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const oldAddress = "before-the-change@example.com";
+    // The account signed up at the old address and later moved to EMAIL. Both
+    // addresses were invited; both invites are consumed.
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, consumed_at_ms)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(oldAddress, oldAddress, NOW_MS - 2000, NOW_MS - 1500);
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state, completed_user_id
+         ) VALUES (?, 'login', ?, ?, NULL, 'hmac', 1, ?, ?, 'consumed', ?)`,
+      )
+      .run(
+        "ml_44444444-4444-4444-8444-444444444444",
+        oldAddress,
+        oldAddress,
+        NOW_MS - 2000,
+        NOW_MS - 1000,
+        USER,
+      );
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", oldAddress)).toBe(0);
+    expect(count(sqlite, "signup_invites", "email_canonical", EMAIL)).toBe(0);
+    // Neither address retains anything belonging to the deleted account. Under
+    // invite_only both are now "free to be invited": no user row, no consumed
+    // invite standing in the way of a fresh one.
+    expect((await resolveLoginEligibility(db, oldAddress, NOW_MS)).kind).toBe("ineligible");
+    expect((await resolveLoginEligibility(db, EMAIL, NOW_MS)).kind).toBe("ineligible");
+  });
+
+  // The cross-account hole the address widening could have opened. An
+  // `email_change` challenge stores the requester's user_id against the address
+  // they *asked* for, with no proof they own it — so collecting addresses by
+  // user_id alone would let anyone name a stranger's address, delete their own
+  // account, and have teardown destroy that stranger's outstanding invite,
+  // silently blocking their signup under invite_only. Only redemption
+  // (completed_user_id) or a login challenge proves ownership.
+  it("does not free an address this account merely requested via email_change", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const victim = "victim@example.com";
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+         VALUES (?, ?, ?)`,
+      )
+      .run(victim, victim, NOW_MS);
+    // Unredeemed: state 'issued', completed_user_id NULL. Nothing here proves
+    // the deleted account has any claim on the address.
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'email_change', ?, ?, ?, 'hmac', 1, ?, ?, 'issued')`,
+      )
+      .run(
+        "ml_55555555-5555-4555-8555-555555555555",
+        victim,
+        victim,
+        USER,
+        NOW_MS,
+        NOW_MS + 900_000,
+      );
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", victim)).toBe(1);
+    expect((await resolveLoginEligibility(db, victim, NOW_MS)).kind).toBe("provisionable");
+    // The challenge row itself is still this tenant's and does go.
+    expect(count(sqlite, "auth_challenges", "user_id", USER)).toBe(0);
+  });
+
+  // The same address, once the change was actually redeemed, IS the account's.
+  it("frees an address whose email_change was redeemed", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const moved = "moved-to@example.com";
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, consumed_at_ms)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(moved, moved, NOW_MS - 2000, NOW_MS - 1000);
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state, completed_user_id
+         ) VALUES (?, 'email_change', ?, ?, ?, 'hmac', 1, ?, ?, 'consumed', ?)`,
+      )
+      .run(
+        "ml_66666666-6666-4666-8666-666666666666",
+        moved,
+        moved,
+        USER,
+        NOW_MS - 2000,
+        NOW_MS - 1000,
+        USER,
+      );
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", moved)).toBe(0);
+  });
+
+  // Ownership is only ever proven as of the past: an address this account
+  // released can legitimately have been re-invited to somebody else since.
+  // That invite is UNCONSUMED — a pending grant — and destroying it would
+  // silently block a third party's signup under invite_only, which is the same
+  // harm as the email_change case reached a different way.
+  it("leaves an unconsumed invite for a released address alone", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const released = "released@example.com";
+    // The account used to be at this address (a login challenge proves it) and
+    // has since moved to EMAIL. Somebody else has now been invited there.
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'login', ?, ?, ?, 'hmac', 1, ?, ?, 'consumed')`,
+      )
+      .run(
+        "ml_77777777-7777-4777-8777-777777777777",
+        released,
+        released,
+        USER,
+        NOW_MS - 5000,
+        NOW_MS - 4000,
+      );
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+         VALUES (?, ?, ?)`,
+      )
+      .run(released, released, NOW_MS - 100);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", released)).toBe(1);
+    expect((await resolveLoginEligibility(db, released, NOW_MS)).kind).toBe("provisionable");
+    // The account's own consumed invite still goes.
+    expect(count(sqlite, "signup_invites", "email_canonical", EMAIL)).toBe(0);
+  });
+
+  // The exception to the consumed rule. "An account's own invite is always
+  // consumed" is false for its CURRENT address: `consumeChallenge` only writes
+  // `consumed_at_ms` on the login path, and `completeEmailChange` swaps
+  // `users.email_canonical` without touching `signup_invites` at all — so an
+  // account that moved to an address holding an outstanding invite owns it with
+  // the invite unconsumed. Leaving that row would keep the deleted account's
+  // own address in D1 and leave a standing grant on the address just freed.
+  it("clears an unconsumed invite on the account's current address", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    // The seeded account's invite for EMAIL is consumed; replace it with the
+    // unconsumed shape an email change into an invited address leaves behind.
+    sqlite.prepare("DELETE FROM signup_invites WHERE email_canonical = ?").run(EMAIL);
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+         VALUES (?, ?, ?)`,
+      )
+      .run(EMAIL, EMAIL, NOW_MS - 100);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", EMAIL)).toBe(0);
+  });
+
+  // An address belonging to somebody else must not be swept up. Only addresses
+  // proven to be this tenant's — via its own challenges — are collected.
+  it("leaves an unrelated address's invite alone", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const stranger = "stranger@example.com";
+    sqlite
+      .prepare(
+        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+         VALUES (?, ?, ?)`,
+      )
+      .run(stranger, stranger, NOW_MS);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "signup_invites", "email_canonical", stranger)).toBe(1);
+    expect((await resolveLoginEligibility(db, stranger, NOW_MS)).kind).toBe("provisionable");
+  });
+
+  it("clears the signup challenge that created the account, after an address change", async () => {
+    const { sqlite, db } = await seeded();
+    const oldAddress = "before-the-change@example.com";
+    const signupChallenge = "ml_33333333-3333-4333-8333-333333333333";
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state, completed_user_id
+         ) VALUES (?, 'login', ?, ?, NULL, 'hmac', 1, ?, ?, 'consumed', ?)`,
+      )
+      .run(signupChallenge, oldAddress, oldAddress, NOW_MS - 900_000, NOW_MS, USER);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "auth_challenges", "id", signupChallenge)).toBe(0);
+    expect(count(sqlite, "auth_challenges", "email_canonical", oldAddress)).toBe(0);
+  });
+
+  // Freeing the address must not reach into a live account. A different user
+  // moving their own address to this one has a challenge that names the freed
+  // address but belongs to them.
+  it("leaves another live user's email_change challenge to that address alone", async () => {
+    const { sqlite, db } = await seeded();
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const otherChallenge = "ml_22222222-2222-4222-8222-222222222222";
+    sqlite
+      .prepare(
+        `INSERT INTO users (id, email_canonical, email_display, status, created_at_ms, updated_at_ms)
+         VALUES (?, 'live@example.com', 'live@example.com', 'active', ?, ?)`,
+      )
+      .run(other, NOW_MS, NOW_MS);
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'email_change', ?, ?, ?, 'hmac', 1, ?, ?, 'claimed')`,
+      )
+      .run(otherChallenge, EMAIL, EMAIL, other, NOW_MS, NOW_MS + 900_000);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(count(sqlite, "auth_challenges", "id", otherChallenge)).toBe(1);
+    expect(count(sqlite, "auth_challenges", "user_id", USER)).toBe(0);
+  });
+});

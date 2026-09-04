@@ -8,10 +8,16 @@
  *
  * It deletes exactly two things for a tenant already marked
  * `users.status='deleting'` by 195a: their Vectorize vectors and everything
- * under their R2 key root. It does not hard-delete the users row, tear down
- * Durable Objects, cascade D1, or decide email reuse — that is control-plane
- * teardown, a later slice. `DELETE /api/account` is the suppress path and never
- * enqueues; the wipe is a shared-queue job plus the existing 15-minute cron.
+ * under their R2 key root. The *job* still touches no D1 row but the wipe
+ * record, no Durable Object, and no email: hard-deleting the `users` row,
+ * clearing the child rows and the guards, and freeing the address are
+ * control-plane teardown (`src/control-plane/account-teardown.ts`, issue 195
+ * S4). Fan-out invokes that as its own stage, for a tenant whose wipe has
+ * already completed and whose prefix is confirmed empty — never inside a
+ * delivery, so a teardown failure retries on the next tick rather than dragging
+ * a finished wipe back through the queue. `DELETE /api/account` is the suppress
+ * path and never enqueues; the wipe is a shared-queue job plus the existing
+ * 15-minute cron.
  *
  * ## Invariants
  *
@@ -219,6 +225,11 @@
  * reporting figure — but do not read it as an audited count of what was
  * destroyed.
  */
+import {
+  tearDownAccount,
+  type AccountTeardownEnv,
+  type PrefixVerdict,
+} from "./control-plane/account-teardown";
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
 import { parseTenantId, type TenantId } from "./control-plane/ids";
 import {
@@ -367,6 +378,9 @@ export const ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS = 60_000;
 export const ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT = "account_wipe_namespace_residue";
 /** Operator alert: `status='deleting'` with no `deleting_at_ms` (finding F6). */
 export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_deleting_at";
+export const ACCOUNT_TEARDOWN_COMPLETE_EVENT = "account_teardown_complete";
+export const ACCOUNT_TEARDOWN_SKIPPED_EVENT = "account_teardown_skipped";
+export const ACCOUNT_TEARDOWN_FAILED_EVENT = "account_teardown_failed";
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
 /**
@@ -416,7 +430,7 @@ export const ACCOUNT_WIPE_DLQ_NAMES = [
   "reading-lite-staging-wipe-dlq",
 ] as const;
 
-export interface AccountWipeEnv {
+export interface AccountWipeEnv extends AccountTeardownEnv {
   CONTROL_PLANE: D1Database;
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX?: VectorizeIndex;
@@ -595,6 +609,65 @@ function warnMissingDeletingAt(tenantId: string, deletingAtMs: number | null | u
   );
 }
 
+/**
+ * Control-plane teardown for a tenant whose data-plane wipe is finished
+ * (issue 195 S4). Called from fan-out rather than from the wipe delivery, so
+ * that it is an independently resumable stage: a failure logs and the next
+ * tick tries again, instead of dragging a finished wipe back through the queue.
+ *
+ * Never throws. Fan-out's job is to keep every *other* tenant moving. The
+ * per-tenant `account_teardown_complete` log is the observable signal; the
+ * fan-out's return value deliberately stays `{ enqueued }`, since a teardown
+ * is not an enqueue and a second counter nothing reads would only be noise.
+ */
+async function tearDownFinishedAccount(
+  db: ControlPlaneDb,
+  env: AccountWipeEnv,
+  tenantId: TenantId,
+  nowMs: number,
+): Promise<void> {
+  try {
+    const result = await tearDownAccount(db, env, {
+      tenantId,
+      nowMs,
+      // Asked again here, inside teardown, immediately before the batch — not
+      // reused from the check above, which is a whole Durable Object round-trip
+      // older by then.
+      prefixVerdict: () => tenantPrefixVerdict(env.READINGS_BUCKET, tenantId, env),
+    });
+    if (result.kind === "torn_down") {
+      console.log(
+        JSON.stringify({
+          event: ACCOUNT_TEARDOWN_COMPLETE_EVENT,
+          tenant_id: tenantId,
+          rows_deleted: result.rowsDeleted,
+        }),
+      );
+      return;
+    }
+    // Fan-out only calls this for a tenant it has just seen as completed with an
+    // empty prefix, so every other verdict means the row moved underneath us or
+    // is inconsistent. Silence here would repeat forever on every tick with
+    // nothing to show for it.
+    console.warn(
+      JSON.stringify({
+        event: ACCOUNT_TEARDOWN_SKIPPED_EVENT,
+        tenant_id: tenantId,
+        reason: result.kind,
+      }),
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: ACCOUNT_TEARDOWN_FAILED_EVENT,
+        tenant_id: tenantId,
+        message: error instanceof Error ? error.message : String(error),
+        note: "control-plane teardown did not finish; the audit row is written and the next tick retries",
+      }),
+    );
+  }
+}
+
 export async function fanOutDueAccountWipes(
   env: AccountWipeEnv,
   deps: { nowMs: number },
@@ -632,8 +705,16 @@ export async function fanOutDueAccountWipes(
         if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (stored.completedAtMs !== null) {
         // Finished. Reopen only if objects turned up under the prefix after the
-        // fact; otherwise leave the completion record exactly as it is.
-        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) continue;
+        // fact; otherwise leave the completion record exactly as it is and hand
+        // the tenant to control-plane teardown (S4) — the data plane is done,
+        // so the `users` row, its child rows, and its Durable Object state come
+        // down. Once that succeeds this tenant leaves `listDeletingUsers` and
+        // is never enumerated again (finding F10). Teardown is deliberately not
+        // run while leftover objects are reopening the wipe.
+        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) {
+          await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
+          continue;
+        }
       } else if (wipeLeaseHeld(stored.updatedAtMs, deps.nowMs)) {
         continue;
       }
@@ -1058,10 +1139,26 @@ async function tenantPrefixHasObjects(
   tenantId: TenantId,
   env: { TENANT_DATA_PLANE?: string },
 ): Promise<boolean> {
-  if (!tenantDataPlaneEnabled(env)) return false;
+  return (await tenantPrefixVerdict(bucket, tenantId, env)) === "not_empty";
+}
+
+/**
+ * The same question, but keeping "we could not look" apart from "it is empty".
+ *
+ * Fan-out only decides whether to re-enqueue, so collapsing the two into
+ * `false` costs it nothing. Teardown hard-deletes a `users` row on the answer,
+ * and after that the tenant is gone from `listDeletingUsers` and its leftover
+ * objects can never be found through it again — so it needs the distinction.
+ */
+async function tenantPrefixVerdict(
+  bucket: R2Bucket,
+  tenantId: TenantId,
+  env: { TENANT_DATA_PLANE?: string },
+): Promise<PrefixVerdict> {
+  if (!tenantDataPlaneEnabled(env)) return "unknown";
   const keyRoot = tenantKeyRoot({ tenantId }, true);
-  if (keyRoot === "") return false;
-  return prefixHasObjects(bucket, keyRoot);
+  if (keyRoot === "") return "unknown";
+  return (await prefixHasObjects(bucket, keyRoot)) ? "not_empty" : "empty";
 }
 
 /**
