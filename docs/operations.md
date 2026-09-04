@@ -566,11 +566,20 @@ of them whose 7-day grace has elapsed. Look before you deploy:
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT id, email_canonical, status, deleting_at_ms FROM users WHERE status <> 'active'"
+  --command "SELECT u.id, u.email_canonical, u.status, u.deleting_at_ms FROM users u \
+             LEFT JOIN wipe_progress w ON w.tenant_id = u.id \
+             WHERE u.status <> 'active' AND w.completed_at_ms IS NULL"
 ```
 
-Anything you do not intend to destroy — the staging founder above all — must be
-back to `status='active'` first. Flipping the status back is **not** a full
+The join is what makes this list *actionable* rather than just true. A tenant
+whose `wipe_progress` row carries a `completed_at_ms` has already been wiped and
+fan-out skips it, so it can never be what the deploy arms — it would only be
+recurring noise in the one check the next operator is told to trust. The
+`IS NULL` also covers a *reopened* wipe (a reopen clears `completed_at_ms`),
+which is still live and does belong in the list.
+
+Anything left in that result and not meant to be destroyed — the staging founder
+above all — must be back to `status='active'` first. Flipping the status back is **not** a full
 rescue: `beginAccountDeletion` stamped `revoked_at_ms` on every session and API
 token and nothing reverses that, so the account is `active` but cannot
 authenticate. Re-run `ops founder bootstrap --env staging --execute` for the
@@ -737,11 +746,10 @@ have no rows in those tables at all, which is not evidence either way.
 
 **Tear the drill tenant down when you are finished.** Left in place it is not
 inert: fan-out re-reads the row on every `*/15` tick and, with `completed_at_ms`
-set, runs an R2 prefix list per tick; anything that ever lands under `u/$DRILL/`
-reopens the wipe; and it becomes permanent noise in the `status='deleting'`
-preflight above, which the next operator is told to trust. Order matters — the
-`wipe_progress` foreign key deliberately does not cascade (migration `0009`), so
-delete the child row first:
+set, runs an R2 prefix list per tick, and anything that ever lands under
+`u/$DRILL/` reopens the wipe — which also puts it back into the preflight above,
+correctly. Order matters — the `wipe_progress` foreign key deliberately does not
+cascade (migration `0009`), so delete the child row first:
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
@@ -753,6 +761,11 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 Keep the tenant only if you are deliberately handing it to the control-plane
 teardown slice as a fixture — a completed wipe awaiting its hard delete is
 exactly what that work needs — and say so where the next operator will see it.
+**Staging currently carries one such fixture on purpose**:
+`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
+clean on 2026-09-04 and held for the control-plane teardown slice. It is
+excluded from the preflight above by its completion record; do not delete it
+without checking with that slice first.
 
 ## Diagnosing a single reading
 
