@@ -69,7 +69,7 @@ describe("production worker routes", () => {
   });
 
   it("routes exactly those six patterns and nothing else", () => {
-    // `www` is handled by a Cloudflare redirect rule, not by a worker route.
+    // `www` belongs to a Cloudflare redirect rule, never to a worker route.
     expect(routes).toHaveLength(6);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);

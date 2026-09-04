@@ -443,8 +443,9 @@ class_name = "GlobalUsageGuard"
 # host-scoped (the session cookie carries no Domain attribute); see the
 # "bbookmarks.com dual-serve" section of docs/operations.md for the caveats.
 # Keep the bbell.dev routes until the old host is formally retired — they are
-# the rollback path. `www.bbookmarks.com` is a Cloudflare redirect rule to the
-# apex, not a Worker route: the redirect happens before the Worker is reached.
+# the rollback path. `www.bbookmarks.com` gets no Worker route: `www` -> apex
+# belongs to a Cloudflare redirect rule (still to be configured), which fires
+# before the Worker is ever reached.
 # Deploying these routes needs CLOUDFLARE_API_TOKEN scoped for Workers Routes
 # on the bbookmarks.com zone as well as bbell.dev (see docs/operations.md).
 [[env.production.routes]]

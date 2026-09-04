@@ -320,12 +320,14 @@ not sign you in on the other. The old routes stay until the old host is
 formally retired; they are the rollback path.
 
 `www.bbookmarks.com` is **not** a Worker route, and must not become one. `www` →
-apex is a Cloudflare Redirect Rule (301) to be created in the dashboard
-alongside the Pages custom domain; it fires before a request ever reaches the
-Worker. Until that rule exists, `www` falls through to whatever the zone serves
-— which, once the apex is proxied, is Pages rather than a redirect.
+apex belongs to a Cloudflare Redirect Rule (301), which fires before a request
+ever reaches the Worker. As of 2026-09-04 `www` has no record at all and returns
+NXDOMAIN; proxying the apex does not change that, since a Pages custom domain
+creates a record only for the hostname it is bound to. So `www` stays
+unreachable — not wrongly served — until it is given its own proxied record and
+the redirect rule.
 
-Two prerequisites, both dashboard work, both outside this repo:
+Three prerequisites, all dashboard work, all outside this repo:
 
 - `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
@@ -367,6 +369,9 @@ Two prerequisites, both dashboard work, both outside this repo:
   page, another site or Worker), these routes take `/api/*`, `/health` and
   `/mcp*` on that hostname from the next production deploy, before any
   deliberate cutover. Check the apex before deploying if that may have changed.
+- `www.bbookmarks.com` needs a proxied record plus the `www` → apex Redirect
+  Rule, if `www` is to resolve at all. Nothing in this repo configures it, and
+  no Worker route should: the 301 is meant to happen ahead of the Worker.
 
 `WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
 addition: emitted links and the MCP Origin allowlist still name
