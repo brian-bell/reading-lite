@@ -67,18 +67,54 @@ compare-and-set on the R2 etag, so with `max_concurrency = 3` a duplicate
 delivery fails loudly (`progress_conflict`) and retries instead of silently
 overwriting the live job's cursor.
 
-Before reporting success the wipe probes the tenant's Vectorize namespace once
-and refuses to finish while anything still answers (`namespace_not_empty`,
-retried like any other failure), logging `account_wipe_vector_count_delta` with
-the `describe()` count either side. Read that as evidence, not proof: Vectorize
-offers no list or scan at any scope, so a nearest-K probe samples the namespace
-and cannot demonstrate absence. **Known gap:** a vector whose reading id was
+That record is also the only "already wiped" marker, and `users.status` stays
+`deleting` until the PR2 hard-delete. So cron **skips a tenant that has no
+progress record and an already-empty R2 prefix** — without that skip it would
+start a fresh wipe every 15 minutes forever and re-create the tenant-named
+object the delete exists to remove. **Known gap:** a tenant whose R2 prefix is
+empty but whose Vectorize namespace still holds vectors is therefore never
+swept again. R2 is the only source of the reading ids `deleteByIds` needs, so
+such a sweep could not address those vectors anyway; the durable per-tenant
+vector ledger (issue 195b move 2, `rl-wipe-vector-ledger`) is what closes it.
+
+**Second known gap, same cause: there is no durable record of a wipe's
+outcome.** Because a finished wipe deletes its progress object and leaves an
+empty prefix, three states are indistinguishable on disk — wiped cleanly, wiped
+but leaving residue the probe bound gave up on, and never wiped at all (a user
+who submitted nothing has an empty prefix too, so the skip above means their
+wipe never runs). The residue alert is a log line; nothing durable survives it.
+Do not build the PR2 users-row hard-delete on an inference from R2 state: the
+D1 `wipe_progress` table in move 2 (`rl-wipe-vector-ledger`) is scoped to carry
+the completion record and its residue flag, and that is what the hard-delete
+should gate on.
+
+Before reporting success the wipe probes the tenant's Vectorize namespace and
+refuses to finish while anything still answers, logging
+`account_wipe_vector_count_delta` with the `describe()` count either side. Read
+that as evidence, not proof: Vectorize offers no list or scan at any scope, so a
+nearest-K probe samples the namespace and cannot demonstrate absence.
+
+A probe hit retries on a deliberately slow schedule
+(`ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS`, minutes rather than the 30s
+exponential): `deleteByIds` propagates asynchronously, so the first probe after
+submitting is expected to be dirty, and the fast schedule would dead-letter
+every real wipe before propagation landed. A probe that *errors* takes the same
+slow path rather than the fast one, so a transient Vectorize failure cannot
+dead-letter an otherwise finished wipe. Those retries are bounded by
+`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`, held equal to the wipe consumer's
+`max_retries` so the whole bound is spent inside one message's own retry budget
+and a probe hit never reaches the dead-letter queue — a unit test pins the two
+together, because raising one without the other makes every healthy wipe DLQ
+before the bound trips. **Known gap:** a vector whose reading id was
 already missing from R2 before the wipe started is not addressable at all —
-`deleteByIds` needs the id and nothing remains to derive one from — so it
-survives the wipe, and no residue scan can find it either. Closing that needs a
-durable per-tenant vector-id ledger, a later slice. An unbound `READINGS_INDEX`
-now fails the job even when no ids were collected, so a wipe can no longer
-report success without having addressed the index at all.
+`deleteByIds` needs the id and nothing remains to derive one from — so no number
+of retries can clear it. On exhausting the bound the wipe therefore logs a
+high-severity `account_wipe_namespace_residue` alert (tenant id only, never
+reading ids) and **completes** rather than looping through the DLQ and cron
+forever. Treat that alert as "this account's wipe left residue an operator must
+know about", and note the same vector ledger is what makes it fixable. An
+unbound `READINGS_INDEX` fails the job even when no ids were collected, so a
+wipe can no longer report success without having addressed the index at all.
 
 Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
 are later 195b slices. `DELETE /api/readings/:id` remains one-reading

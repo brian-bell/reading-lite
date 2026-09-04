@@ -251,11 +251,25 @@ Pointers only — the details live in the named files' comments.
   heartbeats `progress.updated_at_ms` from current time during collect and
   R2/vector pages; a delayed `msg.retry` advances the wipe lease from
   failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound
-  `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2.
+  `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2, and that
+  check runs before the "no ids to delete" short-circuit, so a wipe cannot
+  report success without having addressed the index.
   Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
   time to disappear). Continuation cursors live at
-  `wipe/{tenantId}/progress.json`. The wipe DLQ logs and acks; it must not
-  call `markDeadLettered`.
+  `wipe/{tenantId}/progress.json`, written compare-and-set on the R2 etag (a
+  losing sibling fails with `progress_conflict` instead of clobbering the
+  cursor) and **deleted** at the terminal transition — that key names a deleted
+  tenant and its body lists their reading ids, so it must not outlive the wipe.
+  Because that record is the only "already wiped" marker, fan-out skips a
+  tenant with no record and an empty prefix, and CAS-clears any object left at
+  a finished tenant's key. Before success the wipe probes the tenant namespace,
+  retrying a hit on a minutes-scale delay bounded at the queue's `max_retries`,
+  then emits a high-severity `account_wipe_namespace_residue` (tenant id only,
+  never reading ids) and completes rather than looping forever. Two gaps are
+  deliberate and written down in `docs/operations.md`: an empty-prefix tenant
+  with stranded vectors is never swept again, and there is no durable record of
+  a wipe's outcome — do not gate the PR2 hard-delete on inferring one from R2
+  state. The wipe DLQ logs and acks; it must not call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

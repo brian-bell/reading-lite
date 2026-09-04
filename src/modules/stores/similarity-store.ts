@@ -261,12 +261,25 @@ export class SimilarityStore {
   // are swallowed for the same reason.
   async indexVectorCount(): Promise<number | null> {
     const index = this.index as {
-      describe?: () => Promise<{ vectorCount?: number } | null>;
+      describe?: () => Promise<{ vectorsCount?: number; vectorCount?: number } | null>;
     };
     if (typeof index.describe !== "function") return null;
     try {
       const info = await index.describe();
-      return typeof info?.vectorCount === "number" ? info.vectorCount : null;
+      // Two spellings in @cloudflare/workers-types: the `VectorizeIndex`
+      // binding this class is typed against returns
+      // `VectorizeIndexDetails.vectorsCount`, while the V2 `Vectorize` class
+      // returns `VectorizeIndexInfo.vectorCount`. Read both — reading only one
+      // is how this returns null on every wipe forever, with the swallowed
+      // catch and the cast between them hiding it from tsc and from the logs.
+      const count = info?.vectorsCount ?? info?.vectorCount;
+      // Callers persist this, and the account-wipe progress schema requires a
+      // non-negative integer. A fractional or negative value out of an external
+      // API read through an untyped cast would pass zod nowhere but here, then
+      // fail the schema on the NEXT read — which now means the record is
+      // treated as unparseable and deleted. Validate rather than let upstream
+      // drift cost a wipe its cursor.
+      return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : null;
     } catch {
       return null;
     }

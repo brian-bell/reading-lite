@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_WIPE_GRACE_MS,
   ACCOUNT_WIPE_IN_FLIGHT_MS,
+  ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
+  ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS,
   accountWipeProgressKey,
   consumeAccountWipeMessage,
   fanOutDueAccountWipes,
@@ -436,6 +438,10 @@ describe("account wipe (195b PR1)", () => {
   });
 
   it("cron fan-out enqueues past-grace deleting tenants and skips the grace window", async () => {
+    // A tenant with something to wipe: fan-out now skips a no-progress tenant
+    // whose prefix is already empty, since that is what an already-wiped one
+    // looks like once the terminal transition removes the record.
+    await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
@@ -686,6 +692,8 @@ describe("account wipe (195b PR1)", () => {
   });
 
   it("scheduled() still fans out wipes when digest fan-out throws", async () => {
+    // Needs a non-empty prefix to be a fan-out candidate at all.
+    await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const digestBomb = new Proxy(env as object, {
@@ -703,6 +711,8 @@ describe("account wipe (195b PR1)", () => {
   });
 
   it("scheduled() fans out wipe jobs without dropping digest fan-out", async () => {
+    // Needs a non-empty prefix to be a fan-out candidate at all.
+    await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     await worker.scheduled(
       { scheduledTime: NOW_MS, cron: "*/15 * * * *" } as ScheduledController,
@@ -1001,5 +1011,271 @@ describe("account wipe (195b PR1)", () => {
     const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(surviving).not.toBeNull();
     expect(JSON.parse(await surviving!.text())).toMatchObject({ phase: "sweep" });
+  });
+
+  // Ruling 1: deleting the progress record at the terminal transition removes
+  // the only "already wiped" marker, and users.status stays 'deleting' until
+  // PR2. Without this skip cron restarts a full wipe every 15 minutes forever
+  // and re-creates the tenant-named object the delete exists to remove.
+  it("cron fan-out does not restart a wipe for a tenant with no progress and an empty prefix", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+
+    const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
+
+    expect(result).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
+    // Nothing re-created: the whole point of the skip.
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+  });
+
+  // Ruling 2: Vectorize deletes propagate asynchronously, so a probe hit right
+  // after submitting is expected. Retrying on the ordinary 30s exponential
+  // would DLQ every real wipe in ~3.5 minutes, well before propagation.
+  it("retries a probe hit on the propagation-lag delay, not the fast exponential", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    queryIndex.mockImplementation(async () => ({
+      count: 1,
+      matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+    }));
+    const retry = vi.fn();
+    const ack = vi.fn();
+    await consumeAccountWipeMessage(
+      { body: accountWipeEnvelopeV1({ tenantId: TENANT }), ack, retry, attempts: 1 },
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({
+      delaySeconds: ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS,
+    });
+    expect(ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS).toBeGreaterThanOrEqual(120);
+  });
+
+  // Ruling 3: the probe must not gate forever on a vector the code documents as
+  // structurally unaddressable. Bound the attempts, then alert and finish.
+  it("alerts and completes once the probe attempt bound is exhausted", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "sweep",
+        vector_offset: 1,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+      }),
+    );
+    queryIndex.mockImplementation(async () => ({
+      count: 1,
+      matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+    }));
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+    try {
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      expect(result.kind).toBe("complete");
+    } finally {
+      spy.mockRestore();
+    }
+    const alert = errors.find((line) => line.includes("account_wipe_namespace_residue"));
+    expect(alert).toBeDefined();
+    const payload = JSON.parse(alert!) as Record<string, unknown>;
+    expect(payload.severity).toBe("high");
+    expect(payload.tenant_id).toBe(OTHER_TENANT_ID);
+    // Tenant id only: an operator alert about a deleted account must not carry
+    // that account's reading ids.
+    expect(alert).not.toContain(ID_A);
+    // Completed, so the record is gone like any other successful wipe.
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect(payload.outcome).toBe("residue");
+  });
+
+  // If a terminal delete never landed, cron is the only thing that looks at that
+  // tenant again — and it used to skip it, so once redelivery stopped the
+  // tenant-naming record was permanent.
+  it("cron fan-out clears a stranded done record whose terminal delete never landed", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 1,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 3,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+      }),
+    );
+    const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
+    expect(result).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+  });
+
+  // A probe that errors is "we could not check", not "vectors are still there".
+  // It must not dead-letter an otherwise finished wipe on the fast schedule, and
+  // the alert it eventually raises must not read as a residue finding.
+  it("treats a failing probe as unconfirmed, not as residue", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "sweep",
+        vector_offset: 1,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+      }),
+    );
+    queryIndex.mockImplementation(async () => {
+      throw new Error("vectorize unavailable");
+    });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      expect(result.kind).toBe("complete");
+    } finally {
+      spy.mockRestore();
+      warns.mockRestore();
+    }
+    const alert = errors.find((line) => line.includes("account_wipe_namespace_residue"));
+    expect(alert).toBeDefined();
+    const payload = JSON.parse(alert!) as Record<string, unknown>;
+    expect(payload.outcome).toBe("unconfirmed");
+    expect(payload.tenant_id).toBe(OTHER_TENANT_ID);
+    expect(alert).not.toContain(ID_A);
+  });
+
+  // An unparseable body is still an object sitting at the tenant's progress key.
+  // It has no resume value, and fan-out is the only thing that ever sees it.
+  it("cron fan-out clears an unparseable progress record on a wiped tenant", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({ version: 1, phase: "not-a-phase", junk: true }),
+    );
+    const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
+    expect(result).toEqual({ enqueued: 0 });
+    expect(queued).toEqual([]);
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+  });
+
+  // Observed residue must not be downgraded by a later transient probe error:
+  // the verdict is sticky across attempts, not taken from the last one.
+  it("keeps the residue verdict when a later probe errors", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "sweep",
+        vector_offset: 1,
+        mutation_ids: ["mut_old"],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+        // Earlier attempts in this wipe saw actual vectors.
+        probe_saw_residue: true,
+      }),
+    );
+    queryIndex.mockImplementation(async () => {
+      throw new Error("vectorize unavailable");
+    });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+    const warns = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      expect(result.kind).toBe("complete");
+    } finally {
+      spy.mockRestore();
+      warns.mockRestore();
+    }
+    const alert = errors.find((line) => line.includes("account_wipe_namespace_residue"));
+    const payload = JSON.parse(alert!) as Record<string, unknown>;
+    // Not "unconfirmed": a finding already observed is not erased by one error.
+    expect(payload.outcome).toBe("residue");
+    expect(alert).not.toContain(ID_A);
+  });
+
+  // A reopened leftover pass submits fresh deletes, so it must get a fresh probe
+  // budget: inheriting a used-up count made the first probe of a brand-new pass
+  // declare residue before those deletes had any chance to propagate.
+  it("resets the probe budget when reopening a leftover wipe", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "done",
+        vector_offset: 0,
+        mutation_ids: [],
+        objects_deleted: 1,
+        updated_at_ms: NOW_MS,
+        reading_ids: [ID_A],
+        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
+      }),
+    );
+    queryIndex.mockImplementation(async () => ({
+      count: 1,
+      matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+    }));
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      errors.push(String(line));
+    });
+    try {
+      // Retries rather than completing: the reopened pass gets its own budget.
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/namespace_not_empty/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.find((l) => l.includes("account_wipe_namespace_residue"))).toBeUndefined();
+    const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(surviving).not.toBeNull();
+    expect(JSON.parse(await surviving!.text())).toMatchObject({ probe_attempts: 1 });
   });
 });
