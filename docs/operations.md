@@ -154,6 +154,45 @@ know about", and note the same vector ledger is what makes it fixable. An
 unbound `READINGS_INDEX` fails the job even when no ids were collected, so a
 wipe can no longer report success without having addressed the index at all.
 
+**Sweeping the `wipe/` prefix.** Slice S2 of issue #195 moves wipe progress out
+of R2 and into D1, and deletes the only code that ever removed
+`wipe/{tenantId}/progress.json`. Any record an in-flight wipe leaves behind at
+that moment is a permanent orphan: a bucket key naming a deleted tenant, with a
+body carrying that tenant's `vector_cursor` (a reading id). Clear it with
+
+```sh
+npm run ops -- account sweep-wipe-prefix                 # plan: list only
+npm run ops -- account sweep-wipe-prefix --execute       # delete, then verify
+```
+
+Rollout sequence, in order:
+
+1. **Before merging S2**, run it in plan mode. It lists every object under
+   `wipe/` with size and last-modified time and writes nothing. Empty is the
+   easy case; anything listed is a wipe you want finished, not interrupted.
+2. **After S2's deploy has landed** — the new Worker is live, so nothing writes
+   the R2 record any more — confirm no tenant is mid-wipe, the same check S1's
+   merge used:
+
+   ```sh
+   npx wrangler d1 execute reading-lite-control --env production --remote \
+     --command "select count(*) from users where status='deleting'"
+   ```
+
+   That count must be 0. A tenant still `deleting` may hold a live cursor, and
+   deleting it would restart that wipe from the beginning.
+3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
+   the prefix, and **exits non-zero if anything remains** — so a green exit is
+   evidence the prefix is empty, not just that the deletes were submitted.
+   Re-run on a non-zero exit; investigate if it does not converge.
+
+Deletes are hard-restricted to keys literally under `wipe/`. A tenant-rooted key
+(`u/{tenantId}/…`) or a legacy pre-cutover corpus key (`readings/`, `index/`)
+is refused, and a listing containing one aborts the run before any delete. The
+command takes no `--tenant`: these keys sit outside every tenant key root, and
+the sweep clears the prefix as a whole. Default `--bucket` is production
+`reading-lite`.
+
 Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
 are later 195b slices. `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.

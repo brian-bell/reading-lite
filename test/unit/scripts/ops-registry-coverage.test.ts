@@ -45,6 +45,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   founder: ["bootstrap"],
   extract: ["agent", "probe"],
   eval: ["summarizer"],
+  account: ["sweep-wipe-prefix"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");
