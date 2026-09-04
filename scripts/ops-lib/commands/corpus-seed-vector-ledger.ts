@@ -55,6 +55,7 @@ import { resolveBucket } from "../../corpus-lib/config";
 import { requireOperatorTenant } from "../tenant-flag";
 import type { OperatorTenant } from "../../corpus-lib/tenant";
 import { operatorVectorLedger } from "../../account-lib/operator-ledger";
+import { CONTROL_PLANE_BY_BUCKET, controlPlaneForBucket } from "../../account-lib/control-plane";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 /** The corpus reads this command needs, as a seam tests can supply. */
@@ -174,11 +175,17 @@ async function runCorpusSeedVectorLedger(
   io.stdout(`Key root: ${tenant.keyRoot}`);
   io.stdout(`Mode: ${args.execute ? "EXECUTE" : "PLAN"}`);
 
-  // Resolved before the walk, in both modes. An unrecognised --bucket has no
-  // known control plane, and this command must refuse that before it lists a
-  // single object rather than after — the operator's next step on a successful
-  // plan is `--execute`, and a plan that only fails at the end teaches them
-  // nothing until they have already committed.
+  // The bucket names the control plane the rows go to, and an unrecognised one
+  // has none. Refused here, in BOTH modes, rather than only when `--execute`
+  // reaches the write: the operator's next step after a clean plan is
+  // `--execute`, and a plan that succeeds against a bucket the execute will
+  // reject teaches them nothing until they have already committed.
+  if (controlPlaneForBucket(args.bucket) === undefined) {
+    throw new UsageError(
+      `no control-plane database is mapped to bucket '${args.bucket}', so there is nowhere to ` +
+        `write ledger rows. Known buckets: ${Object.keys(CONTROL_PLANE_BY_BUCKET).join(", ")}.`,
+    );
+  }
   const ledger = deps.makeLedger({ tenant, bucket: args.bucket, execute: args.execute });
 
   const storage = await deps.createStorage(args.bucket);

@@ -168,6 +168,18 @@ describe("ops corpus seed-vector-ledger — plan and execute", () => {
     expect(h.ledgered).toEqual([]);
   });
 
+  it("refuses a bucket with no control plane, in plan mode as well as execute", async () => {
+    // The rows have to go somewhere. A plan that succeeds against a bucket the
+    // execute would reject is worse than no plan: the operator learns about it
+    // only after committing to --execute.
+    const h = harness(CORPUS);
+    await expect(run(["--tenant", TENANT, "--bucket", "nope"], h.deps)).rejects.toThrow(UsageError);
+    await expect(
+      run(["--tenant", TENANT, "--bucket", "nope", "--execute"], h.deps),
+    ).rejects.toThrow(UsageError);
+    expect(h.ledgered).toEqual([]);
+  });
+
   it("refuses a missing or malformed tenant selector", async () => {
     const h = harness(CORPUS);
     await expect(run([], h.deps)).rejects.toThrow(UsageError);
