@@ -32,6 +32,13 @@ const passthrough: Instrument = (_stage, fn) => fn();
 // `similarity` is null on the failure paths (and locally / in tests with no
 // Vectorize binding), which encodes the deliberate success/failure asymmetry:
 // success removal clears list AND vector, failure removal clears list only.
+//
+// There are two removal verbs, and the difference is who they protect against.
+// `remove` is the ordinary reconciliation, gated on this attempt still owning
+// what it is about to unpublish. `removeForDeletedTenant` is the account-deletion
+// fence: it drops the vector unconditionally, because a tenant marked `deleting`
+// has no data left worth guarding and because a concurrent account wipe may
+// already have removed the list row and manifest those gates read.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,
@@ -69,6 +76,46 @@ export class ReadingVisibility {
     if (!(await this.removeListRow(args))) return;
     if (!(await this.canRemoveVector(args))) return;
     await this.similarity.delete(args.id);
+  }
+
+  // Deletion-fence compensation: the tenant was confirmed `deleting` around this
+  // attempt's terminal write, so nothing this reading owns may survive.
+  //
+  // Unlike `remove`, the vector delete is NOT gated on the list row still being
+  // there, and not on the manifest ownership gate either. Both gates protect a
+  // *live* tenant's data from an attempt that no longer owns the reading; on a
+  // tenant being deleted there is nothing left to protect, and the gates are
+  // actively harmful — an account wipe running concurrently deletes
+  // `index/list.json` and the manifest out from under this consumer, and a
+  // vector upserted after the wipe collected its ids would then be
+  // unaddressable, because R2 is the only place reading ids come from.
+  //
+  // The list row is still removed under the ordinary ownership gate: removing a
+  // foreign attempt's row buys nothing here (the wipe deletes the whole index
+  // anyway) and re-spelling that gate would be a second, divergent copy of it.
+  //
+  // Note for anyone adding a "cancel deletion during the grace window": this
+  // fires on `deleting` regardless of whether a wipe has started, so a reading
+  // that completed during grace would survive a cancellation with its list row
+  // and manifest but no embedding. Safe today only because `beginAccountDeletion`
+  // is one-way; a reactivation path has to reconcile vectors (see `ops corpus
+  // backfill-vectors`) or narrow this gate.
+  // Vector first, list row second — the same ordering `reading-purge.ts` uses,
+  // and here it is load-bearing. `removeListIndexItemIf` throws when its CAS
+  // retries are exhausted, which is exactly what a concurrent wipe rewriting or
+  // deleting `index/list.json` provokes. Sequencing the vector delete behind that
+  // write would let the one outcome this method exists to prevent — a vector
+  // outliving the only source of its id — fall out of the failure it is most
+  // likely to meet.
+  //
+  // Not free: when the list write is what fails, the vector is already gone
+  // while the row and manifest survive, so the reading stays listed and readable
+  // but missing from semantic search. That is the better half of the trade (the
+  // id stays derivable, so the wipe can still finish the job) and it is confined
+  // to a tenant being deleted, but it is a real intermediate state, not none.
+  async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
+    if (this.similarity) await this.similarity.delete(args.id);
+    await this.removeListRow(args);
   }
 
   // Re-append the current list row after a lost manifest CAS, but only if the

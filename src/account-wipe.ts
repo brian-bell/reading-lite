@@ -1,91 +1,126 @@
 /**
- * Deferred tenant R2 + Vectorize wipe (issue 195b / s1k.10.1 PR1).
+ * Deferred tenant R2 + Vectorize wipe (issue 195b / s1k.10.1).
  *
- * Accounts already marked `users.status='deleting'` by 195a stay fenced.
- * This module does not hard-delete the users row, tear down Durable Objects,
- * cascade D1, or decide email reuse — those are PR2. DELETE /api/account
- * stays the suppress path; wipe is a shared-queue job plus the existing
- * 15-minute cron sweep, not an inline handler.
+ * The invariants this module holds, and the one race it still does not close.
  *
- * Grace: honor `deleting_at_ms`. Default N=7 days. Grace only gates *starting*
- * a new wipe (no `progress.json`, or a cleanly done empty prefix). A job
- * payload `{ force: true }` skips grace to start (no ops CLI in this PR).
- * Cron resumes in-progress or leftover wipes even during grace, and preserves
- * `force` recorded on `progress.json` so a force job that DLQ'd during grace
- * is redriven without waiting 7 days. Do not start a brand-new wipe during
- * grace with `force: false`.
+ * ## Scope
  *
- * Vectorize `deleteByIds` is async (mutationId, no immediate confirm).
- * Embeddings may take a short time to disappear. We fire deletes in ≤1000
- * id batches, record whatever the API returns, and never wait or poll for the
- * index to report itself empty. The single exception is the terminal probe
- * below, which reads the namespace once to refuse a false success — it fails
- * the job into the ordinary retry path rather than blocking on propagation.
- * Vectors are submitted before any R2
- * delete so ids cannot dangle after the prefix is gone. Collected reading ids
- * are persisted on `progress.json`. After the prefix is empty we re-submit
- * `deleteByIds` for those stored ids (async, no wait) so a `processReading`
- * that already passed its tenant check cannot leave a late upsert behind once
- * `index/list.json` is gone. Leftover recovery unions stored ids with an R2
- * re-list. Each objects-phase list page unions IDs from listed keys into
- * `reading_ids` before delete so a write that landed after the vectors
- * collect still reaches the post-empty sweep. The job heartbeats
- * `progress.updated_at_ms` from current time during collectReadingIds and
- * each R2/vector page (not once at consume-start) so a long collect cannot
- * expire the 15-minute lease at the every-15-minute cron boundary and let a
- * sibling last-write-wins progress.json after R2 is gone. Retry lease is
- * computed from failure time, not the frozen job-start clock. Brand-new intake stays
- * 195a-fenced — this is not a publisher drain.
- * If `READINGS_INDEX` is unbound the vectors phase throws (`index_unbound`)
- * instead of skipping to R2 — wiping the prefix would strand namespaced
- * embeddings and delete the only ID source leftover recovery can rescan. That
- * check runs BEFORE the "no ids to delete" short-circuit: an empty
- * `reading_ids` means only that R2 yielded no ids, which is also true once R2
- * is already gone.
+ * It deletes exactly two things for a tenant already marked
+ * `users.status='deleting'` by 195a: their Vectorize vectors and everything
+ * under their R2 key root. It does not hard-delete the users row, tear down
+ * Durable Objects, cascade D1, or decide email reuse — that is control-plane
+ * teardown, a later slice. `DELETE /api/account` is the suppress path and never
+ * enqueues; the wipe is a shared-queue job plus the existing 15-minute cron.
  *
- * The guarantee that buys is "no wipe reports success without addressing the
- * index", not "no R2 object is deleted first": a job resuming from a stored
- * `phase:"objects"` empties the prefix before it reaches a vector call, and
- * throws at sweep. Recovery is intact because `reading_ids` are persisted on
- * progress.json, so the sweep still has ids to submit once the binding is back.
+ * ## Invariants
  *
- * Terminal assurance (review finding F3). Before the wipe may report success it
- * probes the tenant namespace once and refuses to finish while anything still
- * answers, and logs a `describe()` count delta beside it. Vectorize has no
- * list/scan at any scope, so absence is unprovable and this is sampling, not
- * enumeration: a clean probe is evidence, never a guarantee. Vectors whose
- * reading id was already lost from R2 before the wipe began remain unaddressable
- * — deleteByIds needs an id, and there is nothing left to derive one from. That
- * gap is known and written down here rather than silently implied; closing it
- * needs a durable per-tenant vector-id ledger, which is a later slice.
+ * **Vectors before objects.** Every vector delete for a phase is submitted
+ * before that phase's first R2 delete. Reading ids come only from R2 (the list
+ * index and the key layout), so emptying the prefix first would strand the
+ * embeddings permanently.
  *
- * Progress writes are compare-and-set on the etag we last read or wrote, the
- * `index/list.json` idiom from `src/modules/stores/list-index.ts`. With
- * `max_concurrency = 3` and at-least-once delivery two siblings can be live on
- * one tenant; the loser now fails loudly and retries instead of last-write-wins
- * clobbering the winner's cursor. The record is DELETED at the terminal
- * transition, not rewritten as `phase:"done"` — its key names the deleted tenant
- * and its body lists every reading they had, so it must not outlive the wipe.
+ * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
+ * (`index_unbound`) before either phase runs, so no R2 object is deleted while
+ * nothing can delete the matching vectors — including on a delivery that resumes
+ * straight into `objects` and would otherwise never reach a vector call. The
+ * vectors phase repeats the check *before* its "no ids to delete" short-circuit
+ * — an empty id set means "R2 yielded no ids", which is also what an
+ * already-emptied prefix looks like — and the terminal probe repeats it again.
+ * Cron fan-out has no such check, so with the binding gone it still writes a
+ * progress record and enqueues; every delivery then throws. That is loud rather
+ * than destructive, which is the side to err on.
  *
- * That deletion removes the only "already wiped" marker, and `users.status`
- * stays 'deleting' until the PR2 hard-delete, so cron would otherwise treat
- * every finished tenant as a fresh candidate forever. Fan-out therefore skips a
- * tenant with no progress record AND an empty tenant prefix — the shape an
- * already-wiped tenant has. Accepted consequence: a tenant with an empty prefix
- * and stranded vectors is never swept again, which changes nothing in practice
- * because R2 is the only source of the ids such a sweep would need.
+ * **A wipe never reports success without addressing the index.** Before the
+ * terminal transition it probes the tenant namespace and refuses to finish
+ * while anything still answers, retrying on a minutes-scale delay because
+ * `deleteByIds` propagates asynchronously. The retries are bounded
+ * (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`); past the bound it raises a
+ * high-severity `account_wipe_namespace_residue` alert carrying the tenant id
+ * and nothing else, and completes rather than looping a doomed job through the
+ * DLQ every 15 minutes.
  *
- * R2 `list()`/`delete()` cap at 1000 objects. Wipe pages the tenant prefix
- * from `tenantKeyRoot` (production `u/{tenantId}/`). An empty prefix is a
- * no-op success. Continuation cursors live at `wipe/{tenantId}/progress.json`
- * outside the tenant prefix so a crash mid-page resumes. A second run on an
- * already-wiped prefix is a no-op success. Leftover recovery (`phase=done`
- * with objects still under the tenant prefix) resets to `vectors` at
- * `vector_offset=0`, unions stored `reading_ids` with an R2 re-list, and
- * re-submits those ids to `deleteByIds` after R2 is emptied.
+ * **The gate is a kill switch, not a fallback.** With `TENANT_DATA_PLANE` off
+ * (or an empty key root) both fan-out and job skip with `no_tenant_prefix`.
+ * They never fall back to the pre-tenant global layout — an empty key root must
+ * not be read as "wipe the bucket".
  *
- * When TENANT_DATA_PLANE is off, `tenantKeyRoot` is empty (pre-tenant global
- * layout). Prefix wipe refuses that root rather than emptying the bucket.
+ * **One writer at a time.** Progress writes are compare-and-set on the etag we
+ * last read or wrote (the `index/list.json` idiom from
+ * `src/modules/stores/list-index.ts`). A losing sibling fails loudly and
+ * retries instead of clobbering the winner's cursor. The consumer runs at
+ * `max_concurrency = 1`, so the CAS is a backstop against at-least-once
+ * redelivery rather than the primary serialization.
+ *
+ * **Progress does not outlive the wipe.** `wipe/{tenantId}/progress.json` names
+ * a deleted tenant, so the terminal transition CAS-writes `done` and then
+ * DELETES the record rather than leaving a `phase:"done"` object behind. R2 has
+ * no conditional delete; the CAS-write immediately before is what proves the
+ * object being deleted is still ours.
+ *
+ * **Grace gates only the start.** `deleting_at_ms` + 7 days gates starting a
+ * *new* wipe. Resume (in-progress, leftover objects, expired lease) proceeds
+ * during grace, and `force` recorded on the progress record survives a DLQ so a
+ * forced wipe is redriven without waiting out the 7 days.
+ *
+ * **Resumability is stateless beyond two cursors.** Reading ids are re-derived
+ * from R2 on every pass rather than persisted; the progress record carries only
+ * phase, the two cursors, and lease/probe bookkeeping. Both cursors are values,
+ * not indices — `vector_cursor` is the last reading id submitted, so an id
+ * disappearing between deliveries, or appearing above the cursor, cannot shift a
+ * window past an id that was never sent. (An id that first becomes derivable
+ * from R2 *below* the cursor is still missed; see the race below.)
+ *
+ * ## The race this does not close
+ *
+ * A vector whose reading id is no longer derivable from R2 is unaddressable:
+ * `deleteByIds` needs an id and there is nothing left to compute one from.
+ *
+ * `processReading` narrows the live half of this at the publisher: a consumer
+ * that publishes against a tenant confirmed `deleting` deletes its own vector
+ * directly (`ReadingVisibility.removeForDeletedTenant`) instead of waiting for a
+ * wipe that has already collected its ids. **Narrows, not closes.** That recheck
+ * fails open on a D1 lookup error, and an isolate that dies between the upsert
+ * and the recheck never runs the compensation at all; in either case a wipe
+ * whose vectors phase is already past will empty the reading's R2 objects and
+ * leave the vector with no id source. The terminal probe can sample for such a
+ * vector but cannot delete it, and so can a stranding that predates the wipe
+ * entirely (review finding F3).
+ *
+ * A third, narrower instance of the same shape: a reading that first becomes
+ * derivable from R2 *between* two vectors-phase deliveries, and whose (random)
+ * id sorts below `vector_cursor`, is never submitted by this wipe — the resume
+ * window only looks forward. It needs a tenant with more than one delivery's
+ * worth of vectors and a publish landing inside that window.
+ *
+ * And a fourth: the fence lives in `processReading`, so it covers the publisher
+ * and nothing else. The offline vector writers — `corpus-backfill-vectors`,
+ * `corpus-migrate-founder`, and `batch/write-phase` — check no `users.status`
+ * and can upsert into a tenant whose wipe is already past its vectors phase. The
+ * removed post-empty re-submit used to catch that; nothing does now. It takes an
+ * operator running one of those `--execute` against an account being deleted,
+ * and the terminal probe still *sees* an upsert that lands before it (refusing
+ * to finish, then alerting) — it just cannot delete it.
+ *
+ * All four close the same way: a durable per-tenant vector-id ledger, which
+ * takes R2 out of the id-source role entirely — issue #261, out of scope here.
+ *
+ * A second, accepted consequence of deleting the progress record: fan-out skips
+ * a tenant with no record AND an empty prefix, because that pair is what an
+ * already-wiped tenant looks like and `users.status` stays `deleting` until the
+ * hard-delete. So a tenant with an empty prefix and stranded vectors is never
+ * swept again — which changes nothing, since such a sweep would have no ids to
+ * work with either.
+ *
+ * ## Mechanics worth knowing
+ *
+ * R2 `list()`/`delete()` cap at 1000 objects, so the prefix is paged with a
+ * cursor stored on the progress record. Vectorize `deleteByIds` is async
+ * (a mutationId, no immediate confirm) and is fired in ≤1000-id batches; we
+ * record what it returns and never poll. The job heartbeats
+ * `progress.updated_at_ms` from a live clock during the id collect and each
+ * R2/vector page — not once at consume-start — so a long pass cannot expire the
+ * 15-minute lease at the every-15-minute cron boundary. A delayed `msg.retry`
+ * advances the lease from failure time by `delaySeconds` for the same reason.
  */
 import { z } from "zod";
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
@@ -168,19 +203,34 @@ export const ACCOUNT_WIPE_DLQ_NAMES = [
   "reading-lite-staging-wipe-dlq",
 ] as const;
 
+// Unknown keys are stripped, so a record written before the sweep phase was
+// removed still parses (a stale `reading_ids` or `vector_offset` is simply
+// dropped, and the vectors phase re-derives what it needs). Only a stored
+// `phase:"sweep"` does not parse, and that is worth naming rather than waving
+// at: such a record reads as unparseable, so fan-out CAS-clears it and — since a
+// sweep-phase tenant has an already-empty R2 prefix — the tenant then matches
+// the "no record, empty prefix" shape and is not swept again, while a delivery
+// that reaches the job path instead restarts at `vectors`, collects no ids, and
+// can burn the probe budget into a spurious residue alert. Reachable only for a
+// wipe caught mid-sweep inside one deploy window, and the sweep it loses is the
+// re-submit this slice deliberately removed.
 const AccountWipeProgressSchema = z.object({
   version: z.literal(1),
-  phase: z.enum(["vectors", "objects", "sweep", "done"]),
-  vector_offset: z.number().int().nonnegative(),
+  phase: z.enum(["vectors", "objects", "done"]),
+  // Resume point for the vectors phase, by VALUE: the last reading id submitted
+  // to deleteByIds. Not an index — the id list is re-derived from R2 on every
+  // delivery, so an id appearing or disappearing between two deliveries would
+  // shift a numeric offset's window and silently skip whichever id landed on the
+  // boundary. "Everything sorted after the last id we submitted" survives a
+  // removal and an append above the cursor; an id that first appears BELOW the
+  // cursor is still missed, which is one of the strandings the header names.
+  vector_cursor: z.string().optional(),
   r2_cursor: z.string().min(1).optional(),
   mutation_ids: z.array(z.string()),
   objects_deleted: z.number().int().nonnegative(),
   updated_at_ms: z.number().int().nonnegative(),
   // Optional so pre-force progress still parses; new writes always persist it.
   force: z.boolean().optional(),
-  // Collected reading ids survive R2 deletion so a late vector upsert of a
-  // known id can still be deleteByIds'd after the prefix is empty.
-  reading_ids: z.array(z.string()).optional(),
   // Whole-index vector count sampled when this wipe started, for the terminal
   // delta log. Optional: absent on pre-existing progress and when the binding
   // has no describe().
@@ -308,7 +358,7 @@ export function wipeGraceElapsed(deletingAtMs: number | null | undefined, nowMs:
 
 /** Incomplete or leftover progress is a resume, not a new wipe. */
 export function wipeNeedsResume(
-  progress: { phase: "vectors" | "objects" | "sweep" | "done" } | null,
+  progress: { phase: "vectors" | "objects" | "done" } | null,
   hasLeftoverObjects: boolean,
 ): boolean {
   if (!progress) return false;
@@ -510,11 +560,25 @@ export async function processAccountWipeJob(
       await doneWriter.remove();
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
-    // Union stored reading ids with an R2 re-list, then Vectorize-delete
-    // before touching R2. Jumping to objects would empty the prefix and
-    // leave missed/late vectors behind.
+    // Re-derive the ids from an R2 re-list and Vectorize-delete before touching
+    // R2. Jumping straight to objects would empty the prefix and leave the ids
+    // this pass has not yet submitted with no source to derive them from.
     progress = reopenLeftoverProgress(progress);
   }
+
+  // Fail closed on an unbound index, before either phase runs. The vectors phase
+  // and the terminal probe each enforce this on their own, but neither covers a
+  // delivery that resumes straight into `objects`: that path would empty the
+  // tenant prefix and only then discover it has no way to delete the vectors —
+  // having just destroyed the only source of their ids. Deliberately placed
+  // BELOW the grace gate and the stored-`done` cleanup above: those two touch
+  // neither R2 objects nor Vectorize, and the cleanup's whole job is to remove a
+  // progress object naming a deleted tenant. Throwing over either would trade a
+  // safe skip, or that object's removal, for a dead-lettered job.
+  if (!env.READINGS_INDEX) {
+    throw new Error("account_wipe index_unbound");
+  }
+
   const writer = new WipeProgressWriter(env.READINGS_BUCKET, tenantId, record.etag);
   const heartbeat = async () => {
     progress.updated_at_ms = now();
@@ -536,10 +600,14 @@ export async function processAccountWipeJob(
   await heartbeat();
 
   if (progress.phase === "vectors") {
-    const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
-    progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
+    // Re-derived from R2 on every pass rather than persisted. The wipe itself
+    // does not touch R2 until the objects phase, but a consumer still committing
+    // a terminal manifest for this tenant can add or remove an id between
+    // deliveries — which is why `vector_cursor` resumes by value rather than by
+    // index (see submitVectorDeletes).
+    const ids = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
     await heartbeat();
-    const vec = await submitStoredVectorDeletes(progress, env, tenantId, now, maxVectorBatches, writer);
+    const vec = await submitVectorDeletes(progress, ids, env, tenantId, now, maxVectorBatches, writer);
     if (vec === "continue") {
       return {
         kind: "continue",
@@ -552,11 +620,6 @@ export async function processAccountWipeJob(
   }
 
   if (progress.phase === "objects") {
-    if (!progress.reading_ids?.length) {
-      const fromR2 = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
-      progress.reading_ids = mergeReadingIds(progress.reading_ids, fromR2);
-      await heartbeat();
-    }
     let pages = 0;
     let cursor = progress.r2_cursor;
     objects: for (;;) {
@@ -567,7 +630,7 @@ export async function processAccountWipeJob(
       });
       if (list.objects.length === 0) {
         // A stored cursor can land on an empty page while objects remain earlier
-        // in the prefix. Confirm emptiness without the cursor before sweep.
+        // in the prefix. Confirm emptiness without the cursor before finishing.
         if (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) {
           cursor = undefined;
           progress.r2_cursor = undefined;
@@ -582,19 +645,10 @@ export async function processAccountWipeJob(
           }
           continue;
         }
-        progress.phase = "sweep";
-        progress.vector_offset = 0;
         progress.r2_cursor = undefined;
         await heartbeat();
         break objects;
       }
-      // Bookkeeping: a write that landed after the vectors collect can appear
-      // on this page. Persist its id before deleting the key so the post-empty
-      // sweep still has something to deleteByIds. Not a publisher drain.
-      progress.reading_ids = mergeReadingIds(
-        progress.reading_ids,
-        readingIdsFromListedKeys(list.objects, layout),
-      );
       progress.objects_deleted += list.objects.length;
       pages += 1;
       cursor = list.truncated ? list.cursor : undefined;
@@ -604,8 +658,6 @@ export async function processAccountWipeJob(
       if (!cursor) {
         const again = await env.READINGS_BUCKET.list({ prefix: keyRoot, limit: 1 });
         if (again.objects.length === 0) {
-          progress.phase = "sweep";
-          progress.vector_offset = 0;
           progress.r2_cursor = undefined;
           await heartbeat();
           break objects;
@@ -624,38 +676,25 @@ export async function processAccountWipeJob(
     }
   }
 
-  if (progress.phase === "sweep") {
-    const sweep = await submitStoredVectorDeletes(progress, env, tenantId, now, maxVectorBatches, writer);
-    if (sweep === "continue") {
-      return {
-        kind: "continue",
-        objects_deleted: progress.objects_deleted,
-        mutation_ids: progress.mutation_ids,
-      };
-    }
-    // Terminal assurance before we are allowed to claim success (F3). The probe
-    // throws while the namespace still answers, so an unbound index, a
-    // never-submitted delete, or a delete that did not take leaves the job
-    // retrying instead of reporting a wipe that removed nothing.
-    await assertNamespaceEmptied(progress, env, tenantId, writer);
-    progress = {
-      ...progress,
-      phase: "done",
-      r2_cursor: undefined,
-      updated_at_ms: now(),
-    };
-    // CAS-write `done` first: it is the proof we still own this wipe, and R2 has
-    // no conditional delete. A sibling that took over fails this write, so it
-    // cannot have its live progress deleted out from under it by our remove().
-    await writer.write(progress);
-    await writer.remove();
-    return {
-      kind: "complete",
-      objects_deleted: progress.objects_deleted,
-      mutation_ids: progress.mutation_ids,
-    };
-  }
-
+  // Both phases are done — the objects loop only falls through here once the
+  // prefix is confirmed empty; every partial pass returned `continue` above.
+  //
+  // Terminal assurance before we are allowed to claim success (F3). The probe
+  // throws while the namespace still answers, so an unbound index, a
+  // never-submitted delete, or a delete that did not take leaves the job
+  // retrying instead of reporting a wipe that removed nothing.
+  await assertNamespaceEmptied(progress, env, tenantId, writer);
+  progress = {
+    ...progress,
+    phase: "done",
+    r2_cursor: undefined,
+    updated_at_ms: now(),
+  };
+  // CAS-write `done` first: it is the proof we still own this wipe, and R2 has
+  // no conditional delete. A sibling that took over fails this write, so it
+  // cannot have its live progress deleted out from under it by our remove().
+  await writer.write(progress);
+  await writer.remove();
   return {
     kind: "complete",
     objects_deleted: progress.objects_deleted,
@@ -774,7 +813,7 @@ function reopenLeftoverProgress(progress: AccountWipeProgress): AccountWipeProgr
   return {
     ...progress,
     phase: "vectors",
-    vector_offset: 0,
+    vector_cursor: undefined,
     r2_cursor: undefined,
     // Reopening is a fresh pass that will submit fresh deletes, so its probe
     // budget and count baseline must be fresh too. Carrying them over meant a
@@ -787,50 +826,37 @@ function reopenLeftoverProgress(progress: AccountWipeProgress): AccountWipeProgr
   };
 }
 
-function mergeReadingIds(stored: string[] | undefined, collected: string[]): string[] {
-  const ids = new Set<string>();
-  for (const raw of [...(stored ?? []), ...collected]) {
-    const id = parseReadingId(raw);
-    if (id) ids.add(id);
-  }
-  return [...ids].sort();
-}
-
-function readingIdsFromListedKeys(
-  objects: Array<{ key: string }>,
-  layout: ReturnType<typeof r2KeyLayout>,
-): string[] {
-  const ids: string[] = [];
-  for (const obj of objects) {
-    const id = readingIdFromRelativeKey(layout.relativeKey(obj.key));
-    if (id) ids.push(id);
-  }
-  return ids;
-}
-
-async function submitStoredVectorDeletes(
+async function submitVectorDeletes(
   progress: AccountWipeProgress,
+  ids: string[],
   env: AccountWipeEnv,
   tenantId: TenantId,
   now: () => number,
   maxVectorBatches: number,
   writer: WipeProgressWriter,
 ): Promise<"continue" | "done"> {
-  // Fail closed BEFORE the emptiness test (F3). An empty `reading_ids` means
-  // "R2 yielded no ids", not "this tenant has no vectors" — R2 is the only id
+  // Fail closed BEFORE the emptiness test (F3). An empty id list means "R2
+  // yielded no ids", not "this tenant has no vectors" — R2 is the only id
   // source and it may already be gone. Returning "done" here on an unbound
   // index let the wipe advance to the objects phase and report success without
-  // ever addressing the index, which is exactly what commit a9a9f0f set out to
-  // prevent; the short-circuit below it silently defeated that.
+  // ever addressing the index.
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
-  const ids = progress.reading_ids ?? [];
-  if (progress.vector_offset >= ids.length) return "done";
+  // Resume by value. `ids` is sorted and re-derived per delivery, so slicing by
+  // a stored index would drop whichever id fell on the boundary when the set
+  // changed in between; "sorted after the last id submitted" cannot. It does
+  // still miss an id that first appears below the cursor — a forward-only window
+  // cannot see backwards — which the header lists with the other strandings
+  // #261's ledger closes.
+  const cursor = progress.vector_cursor;
+  const pending = cursor === undefined ? ids : ids.filter((id) => id > cursor);
+  if (pending.length === 0) return "done";
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
   let batches = 0;
-  while (progress.vector_offset < ids.length && batches < maxVectorBatches) {
-    const chunk = ids.slice(progress.vector_offset, progress.vector_offset + VECTORIZE_DELETE_MAX_IDS);
+  let sent = 0;
+  while (sent < pending.length && batches < maxVectorBatches) {
+    const chunk = pending.slice(sent, sent + VECTORIZE_DELETE_MAX_IDS);
     const mutations = await store.deleteMany(chunk);
     for (const mutationId of mutations) {
       progress.mutation_ids.push(mutationId);
@@ -843,12 +869,13 @@ async function submitStoredVectorDeletes(
         }),
       );
     }
-    progress.vector_offset += chunk.length;
+    sent += chunk.length;
+    progress.vector_cursor = chunk[chunk.length - 1];
     progress.updated_at_ms = now();
     await writer.write(progress);
     batches += 1;
   }
-  return progress.vector_offset < ids.length ? "continue" : "done";
+  return sent < pending.length ? "continue" : "done";
 }
 
 /**
@@ -996,12 +1023,10 @@ function emptyProgress(nowMs: number, force = false): AccountWipeProgress {
   return {
     version: 1,
     phase: "vectors",
-    vector_offset: 0,
     mutation_ids: [],
     objects_deleted: 0,
     updated_at_ms: nowMs,
     force,
-    reading_ids: [],
   };
 }
 
@@ -1031,9 +1056,10 @@ async function readProgressRecord(
  * Compare-and-set writer for one tenant's `progress.json`, lifted from the
  * `index/list.json` idiom in `src/modules/stores/list-index.ts`: the put is
  * conditional on the etag we last read or wrote (`If-None-Match: *` when we
- * believe the object is absent). With `max_concurrency = 3` and at-least-once
- * delivery two siblings can be live on one tenant; without this the loser
- * last-write-wins the winner's cursor and `reading_ids` (review finding F8).
+ * believe the object is absent). The consumer runs at `max_concurrency = 1`,
+ * but at-least-once delivery can still put two deliveries of one tenant in
+ * flight; without this the loser last-write-wins the winner's cursor and phase
+ * (review finding F8).
  *
  * Unlike the list index we do NOT re-read and re-apply on conflict. A conflict
  * here means another job owns this wipe, and the right answer is to stop: the

@@ -26,8 +26,8 @@ comments of the modules themselves — read those before changing a module.
   grace on `deleting_at_ms` gates *new* wipes; cron resumes in-progress/leftover
   (preserving `force` on progress.json). Heartbeats `updated_at_ms` from current
   time during collect and R2/vector pages; retry lease is failure time plus
-  delay. Vectorize `deleteByIds` then paged R2. Does not hard-delete the users
-  row.
+  delay. Two phases: Vectorize `deleteByIds` then paged R2. Does not hard-delete
+  the users row. The header comment is the invariant list — read it first.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -244,11 +244,15 @@ Pointers only — the details live in the named files' comments.
   grace; a job `{ force: true }` skips grace to start. Cron resumes
   in-progress or leftover wipes during grace and preserves `force` from
   `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
-  offset 0) before R2 and unions stored `reading_ids` with an R2 re-list.
-  After the prefix is empty, wipe re-submits `deleteByIds` for those stored
-  ids so a late upsert of a known id cannot outlive the list row. Objects-phase
-  pages union IDs from listed keys into `reading_ids` before delete. Wipe
-  heartbeats `progress.updated_at_ms` from current time during collect and
+  cursor cleared) and re-derives reading ids from an R2 re-list — ids are never
+  persisted on the progress record; `vector_cursor` resumes by id value, never
+  by index. There is no post-empty re-submit: a consumer publishing against a
+  tenant confirmed `deleting` deletes its own vector directly
+  (`ReadingVisibility.removeForDeletedTenant`) instead of routing through an
+  `index/list.json` row the wipe may already have removed. That narrows the
+  late-publish race rather than closing it — the recheck fails open on a lookup
+  error — and the residual is the same #261 gap.
+  Wipe heartbeats `progress.updated_at_ms` from current time during collect and
   R2/vector pages; a delayed `msg.retry` advances the wipe lease from
   failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound
   `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2, and that
@@ -257,9 +261,10 @@ Pointers only — the details live in the named files' comments.
   Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
   time to disappear). Continuation cursors live at
   `wipe/{tenantId}/progress.json`, written compare-and-set on the R2 etag (a
-  losing sibling fails with `progress_conflict` instead of clobbering the
-  cursor) and **deleted** at the terminal transition — that key names a deleted
-  tenant and its body lists their reading ids, so it must not outlive the wipe.
+  losing duplicate delivery fails with `progress_conflict` instead of clobbering
+  the cursor; the consumer also runs at `max_concurrency = 1`) and **deleted**
+  at the terminal transition — that key names a deleted tenant, so it must not
+  outlive the wipe.
   Because that record is the only "already wiped" marker, fan-out skips a
   tenant with no record and an empty prefix, and CAS-clears any object left at
   a finished tenant's key. Before success the wipe probes the tenant namespace,

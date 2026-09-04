@@ -192,6 +192,134 @@ describe("processReading — tenant status lookup at publish", () => {
     expect(vector.upsert).toHaveBeenCalled();
   });
 
+  // The publisher-side deletion fence (S1 of #195). A consumer that publishes
+  // against a tenant already `deleting` must delete its own vector directly,
+  // without depending on the `index/list.json` row still being there — a
+  // concurrent account wipe deletes that row, and R2 is the only source of the
+  // reading ids the wipe's deleteByIds would need.
+  it("deletes the vector it just upserted when the tenant is deleting and the list row is gone", async () => {
+    const vector = installVectorizeStub();
+    const fetchFn = makeStubFetch();
+    const reader = testReadingStore(env);
+    const url = "https://example.com/wiped-list-row";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_FENCE";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const job: ProcessReadingArgs = {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_FENCE",
+      attemptStartedAt: createdAt,
+      trigger: "submit",
+      email: false,
+    };
+    await reader.writeManifest(keyPrefix, {
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+
+    const workerEnv = env as unknown as Env;
+    // Active for the pre-spend and pre-publish checks, `deleting` for the
+    // post-publish recheck: the exact window this fence exists for.
+    const wrapped: Env = {
+      ...workerEnv,
+      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "deleting" }),
+    };
+    // The wipe got there first: `index/list.json` is gone, so there is no row
+    // for the ordinary removal path to find.
+    const wipedListRow = vi
+      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
+      .mockResolvedValue(undefined);
+
+    try {
+      await expect(
+        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
+      ).resolves.toBeUndefined();
+    } finally {
+      wipedListRow.mockRestore();
+    }
+
+    expect(vector.upsert).toHaveBeenCalled();
+    expect(vector.deleteByIds).toHaveBeenCalled();
+    expect(vector.vectors.size).toBe(0);
+  });
+
+  // The fence is for `deleting` only. Any other reason the tenant stopped
+  // allowing visibility — `suspended` here — keeps the ordinary gated removal,
+  // which does nothing to the vector when there is no list row to remove. No
+  // account wipe runs for a suspended tenant, so nothing has raced away the
+  // state those gates read.
+  it("does not delete the vector for a non-deleting inactive tenant", async () => {
+    const vector = installVectorizeStub();
+    const fetchFn = makeStubFetch();
+    const reader = testReadingStore(env);
+    const url = "https://example.com/suspended-not-deleting";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_SUSPND";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const job: ProcessReadingArgs = {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_SUSPND",
+      attemptStartedAt: createdAt,
+      trigger: "submit",
+      email: false,
+    };
+    await reader.writeManifest(keyPrefix, {
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+
+    const workerEnv = env as unknown as Env;
+    const wrapped: Env = {
+      ...workerEnv,
+      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "suspended" }),
+    };
+    const noListRow = vi
+      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
+      .mockResolvedValue(undefined);
+
+    try {
+      await expect(
+        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
+      ).resolves.toBeUndefined();
+    } finally {
+      noListRow.mockRestore();
+    }
+
+    expect(vector.upsert).toHaveBeenCalled();
+    expect(vector.deleteByIds).not.toHaveBeenCalled();
+    expect(vector.vectors.size).toBe(1);
+  });
+
   it("does not markFailed when tenant-fence visibility.remove throws after ready CAS", async () => {
     installVectorizeStub();
     const fetchFn = makeStubFetch();

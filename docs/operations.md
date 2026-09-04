@@ -62,10 +62,47 @@ Wipe is not inline in `DELETE /api/account`.
 
 The resume record at `wipe/{tenantId}/progress.json` is **deleted** when the
 wipe finishes, not left behind as `phase:"done"` — its key names the deleted
-tenant and its body lists every reading id they had. Progress writes are
-compare-and-set on the R2 etag, so with `max_concurrency = 3` a duplicate
-delivery fails loudly (`progress_conflict`) and retries instead of silently
-overwriting the live job's cursor.
+tenant. Progress writes are compare-and-set on the R2 etag, so an
+at-least-once duplicate delivery fails loudly (`progress_conflict`) and retries
+instead of silently overwriting the live job's cursor; the consumer also runs at
+`max_concurrency = 1`, so that CAS is a backstop rather than the only guard.
+
+The wipe has two phases, vectors then objects. It does **not** re-submit
+`deleteByIds` after the prefix is empty, and does not persist reading ids on the
+progress record. The late-publish race that re-submit covered — a
+`processReading` that passed its tenant check before the wipe collected ids and
+upserts a vector afterwards — is handled at the publisher instead: a consumer
+publishing against a tenant confirmed `deleting` deletes its own vector directly
+(`ReadingVisibility.removeForDeletedTenant`) rather than waiting on an
+`index/list.json` row the wipe has already removed.
+
+**Deploy note, one time only:** the `sweep` phase this removed is no longer a
+valid stored phase. A wipe caught mid-sweep when the new Worker rolls out leaves
+an unparseable progress record; cron clears it and the tenant is not re-swept,
+and a redelivery that reaches the job first restarts at `vectors` against an
+empty prefix and can raise a spurious `account_wipe_namespace_residue` for a
+tenant that was in fact wiped. Neither loses anything the removed re-submit did
+not already cover, but if `reading-lite-wipe` has messages in flight at deploy
+time, treat one residue alert in that window as suspect rather than a finding.
+A rollback breaks the same way in reverse — the older schema requires the
+`vector_offset` this version stopped writing — so a record cleared on rollback
+while its wipe sat at the terminal probe leaves the "no record, empty prefix"
+shape, and that tenant is not swept again. Both directions are one deploy
+window; neither is a reason to hold a rollback.
+
+One more record shape in the same window, and this one parses cleanly: a
+`phase:"objects"` record written by the old code carries `reading_ids` harvested
+from listed keys, which the old code deferred to the removed post-empty
+re-submit. Unknown keys are stripped, the objects phase does not re-collect, and
+there is no re-submit — so those vectors can strand even though nothing looked
+wrong. Read a residue alert in the rollout window with that in mind.
+
+**That narrows the race rather than closing it.** The publisher's post-publish
+status recheck fails open on a D1 lookup error, and an isolate that dies between
+the vector upsert and the recheck never compensates at all. A vector published
+in either of those windows, whose R2 objects the same wipe pass then deletes, is
+unaddressable — the terminal probe can sample for it but nothing can delete it.
+Same cause, same fix as the gap below: the durable vector ledger (issue #261).
 
 That record is also the only "already wiped" marker, and `users.status` stays
 `deleting` until the PR2 hard-delete. So cron **skips a tenant that has no

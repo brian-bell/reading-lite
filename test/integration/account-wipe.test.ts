@@ -204,7 +204,6 @@ function wipeJobDeps(extra: Partial<AccountWipeJobDeps> & { clock?: { t: number 
 type WipeProgressSnap = {
   updated_at_ms: number;
   phase: string;
-  reading_ids?: string[];
   objects_deleted?: number;
 };
 
@@ -306,8 +305,9 @@ describe("account wipe (195b PR1)", () => {
     expect(vectorOrder[0]).toBe("vector");
     const expectedIds = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
     expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expectedIds);
-    expect(deleteByIds.mock.calls.at(-1)?.[0]).toEqual(expectedIds);
-    expect(deleteByIds.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // One submit per id set, not two: the post-empty re-submit is gone, and the
+    // late-publish case it covered is fenced at the publisher instead.
+    expect(deleteByIds).toHaveBeenCalledTimes(1);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
     // Vectorize deletes are async: we recorded a mutationId rather than waiting
     // for the index to report itself empty. The one query is the terminal
@@ -371,6 +371,52 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
+  // The id list is re-derived from R2 on every delivery, so the vectors-phase
+  // resume point has to be a VALUE. With a numeric offset, an id that appears
+  // between two deliveries shifts the window and the id on the boundary is never
+  // submitted at all.
+  it("resumes the vectors phase by id value, so a shifted id set skips nothing", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const ids = Array.from({ length: 1001 }, (_, i) => `rd_${String(i).padStart(10, "0")}`);
+    const memory = memoryBucket();
+    const writeListIndex = async (items: string[]) =>
+      memory.bucket.put(
+        `${PREFIX}index/list.json`,
+        JSON.stringify({ version: 1, items: items.map(indexItem) }),
+      );
+    await writeListIndex(ids);
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
+
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ maxVectorBatches: 1 }),
+    );
+    expect(first.kind).toBe("continue");
+    expect(deleteByIds).toHaveBeenCalledTimes(1);
+    const firstBatch = deleteByIds.mock.calls[0]![0] as string[];
+    expect(firstBatch.length).toBe(1000);
+
+    // A reading disappears from the list between deliveries (a purge, say). The
+    // set shrinks below the stored offset, so an offset-based resume would call
+    // itself done and never submit the last id at all.
+    await writeListIndex(ids.slice(1));
+    deleteByIds.mockClear();
+
+    const second = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps(),
+    );
+    expect(second.kind).toBe("complete");
+    // Exactly the ids after the cursor: the last one, and nothing skipped.
+    const submitted = deleteByIds.mock.calls.flatMap(
+      (call) => call[0] as string[],
+    );
+    expect(submitted).toEqual([tenantVectorId(OTHER_TENANT_ID, ids[1000]!)]);
+    expect(memory.keysUnder(PREFIX)).toEqual([]);
+  });
+
   it("submits vector deletes in 1000-id batches from the list index", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const ids = Array.from({ length: 1001 }, (_, i) => `rd_${String(i).padStart(10, "0")}`);
@@ -386,12 +432,41 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
-    expect(deleteByIds).toHaveBeenCalledTimes(4);
+    expect(deleteByIds).toHaveBeenCalledTimes(2);
     expect((deleteByIds.mock.calls[0]![0] as string[]).length).toBe(1000);
     expect((deleteByIds.mock.calls[1]![0] as string[]).length).toBe(1);
-    expect((deleteByIds.mock.calls[2]![0] as string[]).length).toBe(1000);
-    expect((deleteByIds.mock.calls[3]![0] as string[]).length).toBe(1);
     expect(memory.keysUnder(PREFIX)).toEqual([]);
+  });
+
+  // The vectors phase is not the only entry point: a delivery resuming from a
+  // stored `phase:"objects"` never reaches it. Without a check above the phase
+  // blocks such a job would empty the prefix and only then find it cannot delete
+  // the vectors — having just destroyed the only source of their ids.
+  it("does not wipe the tenant prefix when the index is unbound and the job resumes at objects", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "objects",
+        mutation_ids: [],
+        objects_deleted: 0,
+        updated_at_ms: NOW_MS,
+      }),
+    );
+    const before = await listPrefixKeys(PREFIX);
+    expect(before).not.toEqual([]);
+
+    await expect(
+      processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { ...(await wipeEnv()), READINGS_INDEX: undefined } as unknown as Env,
+        wipeJobDeps(),
+      ),
+    ).rejects.toThrow(/index_unbound/);
+
+    expect(await listPrefixKeys(PREFIX)).toEqual(before);
   });
 
   it("does not wipe the tenant prefix when READINGS_INDEX is unbound", async () => {
@@ -489,7 +564,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -503,10 +577,10 @@ describe("account wipe (195b PR1)", () => {
     const progress = JSON.parse(await progressObj!.text()) as {
       phase: string;
       force?: boolean;
-      vector_offset?: number;
+      vector_cursor?: string;
     };
     expect(progress.phase).toBe("vectors");
-    expect(progress.vector_offset).toBe(0);
+    expect(progress.vector_cursor).toBeUndefined();
     expect(progress.force).toBe(true);
 
     const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
@@ -542,7 +616,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 0,
         r2_cursor: `${PREFIX}keep-z`,
         mutation_ids: [],
         objects_deleted: 0,
@@ -567,7 +640,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -577,9 +649,12 @@ describe("account wipe (195b PR1)", () => {
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
     const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { phase: string; vector_offset?: number };
+    const progress = JSON.parse(await progressObj!.text()) as {
+      phase: string;
+      vector_cursor?: string;
+    };
     expect(progress.phase).toBe("vectors");
-    expect(progress.vector_offset).toBe(0);
+    expect(progress.vector_cursor).toBeUndefined();
   });
 
   it("leftover recovery re-runs Vectorize deletes before emptying R2", async () => {
@@ -590,7 +665,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 99,
+        vector_cursor: "rd_9999999999",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -606,17 +681,15 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
-  it("persists collected reading ids and re-submits deleteByIds after R2 is emptied", async () => {
-    await seedTenantObjects([ID_A]);
+  // Vectors before objects: reading ids come only from R2, so every delete this
+  // pass will submit must be submitted while the prefix is still there.
+  it("submits every vector delete before the first R2 delete", async () => {
+    await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     let calls = 0;
     deleteByIds.mockImplementation(async () => {
       calls += 1;
-      if (calls === 1) {
-        expect((await listPrefixKeys(PREFIX)).length).toBeGreaterThan(0);
-      } else {
-        expect(await listPrefixKeys(PREFIX)).toEqual([]);
-      }
+      expect((await listPrefixKeys(PREFIX)).length).toBeGreaterThan(0);
       return { mutationId: `mut_${calls}` };
     });
     const result = await processAccountWipeJob(
@@ -625,16 +698,21 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
-    expect(deleteByIds).toHaveBeenCalledTimes(2);
-    expect(deleteByIds.mock.calls[0]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
-    expect(deleteByIds.mock.calls[1]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
-    // The stored ids drove that second submit, which is what this test pins.
-    // The record itself is gone at the terminal transition (Move 1 / F4) rather
-    // than persisting as phase:"done" with the deleted user's ids in it.
+    expect(deleteByIds).toHaveBeenCalledTimes(1);
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual([
+      tenantVectorId(OTHER_TENANT_ID, ID_A),
+      tenantVectorId(OTHER_TENANT_ID, ID_B),
+    ]);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    // Gone at the terminal transition (F4): the key names a deleted tenant.
     expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
   });
 
-  it("objects phase unions reading ids from listed keys before delete", async () => {
+  // No post-empty re-submit any more: a job resuming at the objects phase had
+  // its ids collected by the pass that set that phase, and a vector published
+  // afterwards is deleted by the publisher itself
+  // (ReadingVisibility.removeForDeletedTenant), not by a sweep here.
+  it("resuming at the objects phase empties the prefix without re-collecting ids", async () => {
     await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     await env.READINGS_BUCKET.put(
@@ -642,11 +720,9 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 1,
         mutation_ids: ["mut_old"],
         objects_deleted: 0,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
       }),
     );
     const result = await processAccountWipeJob(
@@ -655,16 +731,14 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
-    const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
-    expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expected);
+    expect(deleteByIds).not.toHaveBeenCalled();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    // ID_B was unioned in from a listed key before that key was deleted — the
-    // submit above is the proof. The record is removed at the terminal
-    // transition (Move 1 / F4), so there is no surviving copy to read it from.
     expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
   });
 
-  it("leftover recovery unions stored reading ids with an R2 re-list", async () => {
+  // Leftover recovery re-derives its ids from R2 rather than from anything the
+  // finished record carried: the record no longer stores reading ids at all.
+  it("leftover recovery re-derives reading ids from an R2 re-list", async () => {
     await seedTenantObjects([ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     await env.READINGS_BUCKET.put(
@@ -672,11 +746,9 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
       }),
     );
     const result = await processAccountWipeJob(
@@ -685,9 +757,7 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps(),
     );
     expect(result.kind).toBe("complete");
-    const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
-    expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expected);
-    expect(deleteByIds.mock.calls.at(-1)?.[0]).toEqual(expected);
+    expect(deleteByIds.mock.calls[0]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_B)]);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
@@ -838,7 +908,6 @@ describe("account wipe (195b PR1)", () => {
     const midCollect = heartbeats.find(
       (progress) =>
         progress.phase === "vectors" &&
-        (progress.reading_ids?.length ?? 0) === 0 &&
         progress.updated_at_ms >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
     );
     expect(midCollect).toBeDefined();
@@ -1010,7 +1079,7 @@ describe("account wipe (195b PR1)", () => {
     // body: an unconsumed R2 stream breaks the pool's isolated-storage teardown.
     const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(surviving).not.toBeNull();
-    expect(JSON.parse(await surviving!.text())).toMatchObject({ phase: "sweep" });
+    expect(JSON.parse(await surviving!.text())).toMatchObject({ phase: "objects" });
   });
 
   // Ruling 1: deleting the progress record at the terminal transition removes
@@ -1063,12 +1132,11 @@ describe("account wipe (195b PR1)", () => {
       accountWipeProgressKey(OTHER_TENANT_ID),
       JSON.stringify({
         version: 1,
-        phase: "sweep",
-        vector_offset: 1,
+        phase: "objects",
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
         probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
       }),
     );
@@ -1114,11 +1182,10 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 1,
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 3,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
       }),
     );
     const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
@@ -1137,12 +1204,11 @@ describe("account wipe (195b PR1)", () => {
       accountWipeProgressKey(OTHER_TENANT_ID),
       JSON.stringify({
         version: 1,
-        phase: "sweep",
-        vector_offset: 1,
+        phase: "objects",
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
         probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
       }),
     );
@@ -1197,12 +1263,11 @@ describe("account wipe (195b PR1)", () => {
       accountWipeProgressKey(OTHER_TENANT_ID),
       JSON.stringify({
         version: 1,
-        phase: "sweep",
-        vector_offset: 1,
+        phase: "objects",
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
         probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
         // Earlier attempts in this wipe saw actual vectors.
         probe_saw_residue: true,
@@ -1245,11 +1310,9 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
-        reading_ids: [ID_A],
         probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
       }),
     );

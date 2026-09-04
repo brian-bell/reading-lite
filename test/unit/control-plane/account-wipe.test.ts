@@ -39,7 +39,6 @@ describe("wipeNeedsResume", () => {
     expect(wipeNeedsResume({ phase: "done" }, true)).toBe(true);
     expect(wipeNeedsResume({ phase: "vectors" }, false)).toBe(true);
     expect(wipeNeedsResume({ phase: "objects" }, false)).toBe(true);
-    expect(wipeNeedsResume({ phase: "sweep" }, false)).toBe(true);
   });
 });
 
