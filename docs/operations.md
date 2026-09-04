@@ -864,6 +864,11 @@ and a failed one preserves the ready manifest with
 
 ## Corpus tools
 
+For a complete production refresh window, use the
+[full-run procedure](corpus-refresh/runbook.md). The
+[September 4, 2026 report](corpus-refresh/2026-09-04-results.md) records the
+first complete calibration run, its costs, and the retained thresholds.
+
 | Script | What it does |
 |---|---|
 | `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
