@@ -285,16 +285,25 @@ Pointers only — the details live in the named files' comments.
   `completed_at_ms` (a reopen clears it); report history from
   `first_completed_at_ms`/`first_residue`, which no reopen can move. `residue`
   plus `probe_saw_residue` carry the terminal verdict.
-  A wipe terminates on **an empty ledger for the tenant**, not on an empty R2
-  prefix. Clearing a row follows the rule S6 measured on staging, which
-  supersedes the design sketch: a namespaced `query` fast path clears the whole
-  tenant at once when it returns nothing; otherwise per-id `getByIds` (≤20 ids,
+  A wipe terminates on **a clean namespace probe AND an empty ledger for the
+  tenant**, never on an empty R2 prefix. The probe is unconditional — including
+  when the ledger is empty, which is also exactly what an *unseeded* tenant
+  looks like, so short-circuiting there would report a clean wipe having asked
+  Vectorize nothing (the F3 failure the probe was added to catch). Clearing a
+  row follows the rule S6 measured on staging, which supersedes the design
+  sketch: an empty namespaced `query` clears the tenant's `delete_submitted`
+  rows in one call (never its `live` ones — a vector nobody has submitted a
+  delete for is not something an empty probe speaks to); otherwise per-id
+  `getByIds` (≤20 ids,
   the measured REST cap — the Workers binding limit is unverified and
   deliberately not assumed higher) needs **two consecutive absences from
   *successful* responses, ≥60s apart**, with the first attempt no earlier than
   **+120s** after `deleteByIds` returned and a **120/240/480s** backoff
   thereafter, bounded at 4 attempts (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`, which
-  must stay ≤ the wipe consumers' `max_retries` in `wrangler.toml`). A
+  must stay STRICTLY BELOW the wipe consumers' `max_retries` in
+  `wrangler.toml` — the first-confirmation deferral and any transient error
+  retry without spending an attempt, so an equal budget dead-letters a healthy
+  wipe). A
   **non-200 is no information**: it resets the streak and never counts as
   absence — the 20-id cap makes that concrete, since a 21-id chunk answers 400
   with an empty body. `describe()`/`vectorCount`/`processedUpToMutation` are

@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 import { resolveBatchConfig, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorVectorLedger } from "../../account-lib/operator-ledger";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../import-markdown-lib/parse";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import { selectEligibleArticles } from "../../corpus-lib/ingest-eligible";
@@ -292,6 +293,10 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
       const fetchFn = globalThis.fetch;
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
       return runFreshMarkdownBatch(eligible, {
+        // Ledger every vector this batch writes (issue #195 S3). Resolved from
+        // the run's own tenant and bucket; the no-op for --tenant global, which
+        // no account wipe addresses.
+        ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
         ...(opts.limit === undefined ? {} : { limit: opts.limit }),
         r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
         vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),

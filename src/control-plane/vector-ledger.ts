@@ -183,54 +183,75 @@ export const NO_OP_VECTOR_LEDGER: VectorLedger = {
   async markDeleteSubmitted() {},
 };
 
+/**
+ * Reading ids per statement.
+ *
+ * Two limits meet here and the smaller one wins. SQLite caps bound parameters
+ * per statement (D1 is conservative about it), and the offline operator path
+ * reaches D1 through `makeWranglerD1`, whose `batch()` spawns one
+ * `wrangler d1 execute --remote` subprocess PER STATEMENT. So a one-statement-
+ * per-id shape would make `ops corpus seed-vector-ledger` spawn one subprocess
+ * and one remote round trip per reading — minutes to hours on a real corpus,
+ * on a command that is a rollout prerequisite. Every write below is therefore
+ * ONE multi-row statement per chunk, and the chunk is sized so the widest of
+ * them (4 parameters a row) stays well inside the parameter cap.
+ */
+export const VECTOR_LEDGER_WRITE_CHUNK = 20;
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let offset = 0; offset < items.length; offset += size) {
+    out.push(items.slice(offset, offset + size));
+  }
+  return out;
+}
+
 /** D1-backed ledger for one tenant. */
 export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLedger {
   return {
     async markLive(readingIds, nowMs) {
-      const ids = dedupe(readingIds);
-      if (ids.length === 0) return;
       // Re-marking an id `live` resets its delete bookkeeping, and that is the
       // point: a reading re-published after a delete was submitted for it has a
       // NEW vector, and carrying the old `deleted_at_ms` or absent streak
       // forward would let a confirmation about the previous vector clear a row
       // describing the current one.
-      await db.batch(
-        ids.map((readingId) => ({
-          sql: `INSERT INTO vector_ledger (
-                  tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms,
-                  absent_streak, last_absent_at_ms
-                ) VALUES (?, ?, 'live', ?, NULL, 0, NULL)
-                ON CONFLICT (tenant_id, reading_id) DO UPDATE SET
-                  state = 'live',
-                  upserted_at_ms = excluded.upserted_at_ms,
-                  deleted_at_ms = NULL,
-                  absent_streak = 0,
-                  last_absent_at_ms = NULL`,
-          params: [tenantId, readingId, nowMs],
-        })),
-      );
+      for (const chunk of chunked(dedupe(readingIds), VECTOR_LEDGER_WRITE_CHUNK)) {
+        const values = chunk.map(() => "(?, ?, 'live', ?, NULL, 0, NULL)").join(", ");
+        await db.run(
+          `INSERT INTO vector_ledger (
+             tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms,
+             absent_streak, last_absent_at_ms
+           ) VALUES ${values}
+           ON CONFLICT (tenant_id, reading_id) DO UPDATE SET
+             state = 'live',
+             upserted_at_ms = excluded.upserted_at_ms,
+             deleted_at_ms = NULL,
+             absent_streak = 0,
+             last_absent_at_ms = NULL`,
+          ...chunk.flatMap((readingId) => [tenantId, readingId, nowMs]),
+        );
+      }
     },
     async markDeleteSubmitted(readingIds, nowMs) {
-      const ids = dedupe(readingIds);
-      if (ids.length === 0) return;
       // INSERT-or-update, not a bare UPDATE. A delete submitted for an id with
       // no ledger row (a pre-ledger reading, a purge racing a seed) still needs
       // its id kept: that id is the only thing that can address the vector if
       // the delete did not take.
-      await db.batch(
-        ids.map((readingId) => ({
-          sql: `INSERT INTO vector_ledger (
-                  tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms,
-                  absent_streak, last_absent_at_ms
-                ) VALUES (?, ?, 'delete_submitted', ?, ?, 0, NULL)
-                ON CONFLICT (tenant_id, reading_id) DO UPDATE SET
-                  state = 'delete_submitted',
-                  deleted_at_ms = excluded.deleted_at_ms,
-                  absent_streak = 0,
-                  last_absent_at_ms = NULL`,
-          params: [tenantId, readingId, nowMs, nowMs],
-        })),
-      );
+      for (const chunk of chunked(dedupe(readingIds), VECTOR_LEDGER_WRITE_CHUNK)) {
+        const values = chunk.map(() => "(?, ?, 'delete_submitted', ?, ?, 0, NULL)").join(", ");
+        await db.run(
+          `INSERT INTO vector_ledger (
+             tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms,
+             absent_streak, last_absent_at_ms
+           ) VALUES ${values}
+           ON CONFLICT (tenant_id, reading_id) DO UPDATE SET
+             state = 'delete_submitted',
+             deleted_at_ms = excluded.deleted_at_ms,
+             absent_streak = 0,
+             last_absent_at_ms = NULL`,
+          ...chunk.flatMap((readingId) => [tenantId, readingId, nowMs, nowMs]),
+        );
+      }
     },
   };
 }
@@ -310,52 +331,100 @@ export async function countLedgerRows(
   return { live, deleteSubmitted, total: live + deleteSubmitted };
 }
 
-/** Remove specific rows: the vector is confirmed gone. */
+/**
+ * Remove specific rows: the vector is confirmed gone.
+ *
+ * Scoped to `state = 'delete_submitted'` AND to the exact `deleted_at_ms` the
+ * observation was made against, and both halves are load-bearing. A reading
+ * re-published between the `getByIds` that observed its absence and this DELETE
+ * has a brand-new vector and a fresh `live` row; deleting it because a *previous*
+ * vector was confirmed gone would strand the new one — the precise failure the
+ * ledger exists to prevent, reintroduced by the code meant to close it. A
+ * changed stamp means the row is no longer the one that was observed, so it is
+ * left alone and the next pass observes it properly.
+ */
 export async function clearLedgerRows(
   db: ControlPlaneDb,
   tenantId: TenantId,
-  readingIds: readonly string[],
+  cleared: ReadonlyArray<{ readingId: string; deletedAtMs: number }>,
 ): Promise<void> {
-  const ids = dedupe(readingIds);
-  if (ids.length === 0) return;
-  await db.batch(
-    ids.map((readingId) => ({
-      sql: `DELETE FROM vector_ledger WHERE tenant_id = ? AND reading_id = ?`,
-      params: [tenantId, readingId],
-    })),
-  );
+  const seen = new Set<string>();
+  const rows = cleared.filter((row) => {
+    if (row.readingId.length === 0 || seen.has(row.readingId)) return false;
+    seen.add(row.readingId);
+    return true;
+  });
+  for (const chunk of chunked(rows, VECTOR_LEDGER_WRITE_CHUNK)) {
+    const predicate = chunk.map(() => "(reading_id = ? AND deleted_at_ms = ?)").join(" OR ");
+    await db.run(
+      `DELETE FROM vector_ledger
+        WHERE tenant_id = ? AND state = 'delete_submitted' AND (${predicate})`,
+      tenantId,
+      ...chunk.flatMap((row) => [row.readingId, row.deletedAtMs]),
+    );
+  }
 }
 
 /**
- * Remove every row for a tenant — the fast path's one call.
+ * Remove this tenant's confirmed rows — the fast path's one call.
  *
  * Only ever reached from a 200 namespaced `query` that returned nothing: no id
  * in a namespace can be live when the namespace itself answers nothing.
+ *
+ * Scoped to `delete_submitted` for the same reason `clearLedgerRows` is. The
+ * probe happens between the row count and this DELETE, and a publisher or an
+ * offline writer can insert a `live` row inside that window — a vector that has
+ * never been submitted to `deleteByIds` and that the empty probe therefore says
+ * nothing about. Clearing it here would delete the only record of it.
  */
 export async function clearTenantLedger(
   db: ControlPlaneDb,
   tenantId: TenantId,
 ): Promise<number> {
-  const result = await db.run(`DELETE FROM vector_ledger WHERE tenant_id = ?`, tenantId);
+  const result = await db.run(
+    `DELETE FROM vector_ledger WHERE tenant_id = ? AND state = 'delete_submitted'`,
+    tenantId,
+  );
   return result.changes;
 }
 
-/** Persist an updated streak for one row. */
-export async function recordAbsence(
+/**
+ * Persist advanced streaks, in as few statements as the parameter budget allows.
+ *
+ * `state = 'delete_submitted'` again: a row re-marked `live` between the
+ * observation and this write describes a different vector, and stamping it with
+ * an absence observed about the previous one is how a later pass would clear it
+ * early.
+ */
+export async function recordAbsences(
   db: ControlPlaneDb,
   tenantId: TenantId,
-  readingId: string,
-  absentStreak: number,
+  advanced: ReadonlyArray<{ readingId: string; absentStreak: number }>,
   lastAbsentAtMs: number,
 ): Promise<void> {
-  await db.run(
-    `UPDATE vector_ledger SET absent_streak = ?, last_absent_at_ms = ?
-      WHERE tenant_id = ? AND reading_id = ?`,
-    absentStreak,
-    lastAbsentAtMs,
-    tenantId,
-    readingId,
-  );
+  // Grouped by streak so one UPDATE covers every row moving to the same value.
+  // In practice there is only ever one group (the streak is 1 on the way to 2,
+  // and 2 clears rather than advancing), so this is one statement per pass.
+  const byStreak = new Map<number, string[]>();
+  for (const row of advanced) {
+    const bucket = byStreak.get(row.absentStreak) ?? [];
+    bucket.push(row.readingId);
+    byStreak.set(row.absentStreak, bucket);
+  }
+  for (const [absentStreak, ids] of byStreak) {
+    for (const chunk of chunked(dedupe(ids), VECTOR_LEDGER_WRITE_CHUNK)) {
+      const placeholders = chunk.map(() => "?").join(", ");
+      await db.run(
+        `UPDATE vector_ledger SET absent_streak = ?, last_absent_at_ms = ?
+          WHERE tenant_id = ? AND state = 'delete_submitted'
+            AND reading_id IN (${placeholders})`,
+        absentStreak,
+        lastAbsentAtMs,
+        tenantId,
+        ...chunk,
+      );
+    }
+  }
 }
 
 /** Reset a row's streak: it was seen live, or the call carried no information. */
@@ -364,15 +433,16 @@ export async function resetAbsenceStreaks(
   tenantId: TenantId,
   readingIds: readonly string[],
 ): Promise<void> {
-  const ids = dedupe(readingIds);
-  if (ids.length === 0) return;
-  await db.batch(
-    ids.map((readingId) => ({
-      sql: `UPDATE vector_ledger SET absent_streak = 0, last_absent_at_ms = NULL
-             WHERE tenant_id = ? AND reading_id = ?`,
-      params: [tenantId, readingId],
-    })),
-  );
+  for (const chunk of chunked(dedupe(readingIds), VECTOR_LEDGER_WRITE_CHUNK)) {
+    const placeholders = chunk.map(() => "?").join(", ");
+    await db.run(
+      `UPDATE vector_ledger SET absent_streak = 0, last_absent_at_ms = NULL
+        WHERE tenant_id = ? AND state = 'delete_submitted'
+          AND reading_id IN (${placeholders})`,
+      tenantId,
+      ...chunk,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,8 +464,15 @@ export type GetByIdsObservation =
   | { ok: false; requested: readonly string[]; reason: string };
 
 export interface AbsenceVerdict {
-  /** Rows to delete: the streak reached `VECTOR_LEDGER_REQUIRED_ABSENCES`. */
-  clear: string[];
+  /**
+   * Rows to delete: the streak reached `VECTOR_LEDGER_REQUIRED_ABSENCES`.
+   *
+   * Carries the `deleted_at_ms` the observation was made against, so the DELETE
+   * can refuse a row that has been re-marked since — a re-published reading has
+   * a new vector, and clearing its row on a confirmation about the old one
+   * would strand it.
+   */
+  clear: Array<{ readingId: string; deletedAtMs: number }>;
   /** Rows whose streak advanced but has not yet reached the bar. */
   advanced: Array<{ readingId: string; absentStreak: number }>;
   /** Rows whose streak must go back to zero. */
@@ -444,8 +521,12 @@ export function applyAbsenceObservation(
     }
     if (!absenceCounts(entry, nowMs)) continue;
     const next = entry.absentStreak + 1;
-    if (next >= VECTOR_LEDGER_REQUIRED_ABSENCES) verdict.clear.push(entry.readingId);
-    else verdict.advanced.push({ readingId: entry.readingId, absentStreak: next });
+    if (next >= VECTOR_LEDGER_REQUIRED_ABSENCES) {
+      // `absenceCounts` already refused a null stamp, so this is non-null.
+      verdict.clear.push({ readingId: entry.readingId, deletedAtMs: entry.deletedAtMs! });
+    } else {
+      verdict.advanced.push({ readingId: entry.readingId, absentStreak: next });
+    }
   }
   return verdict;
 }

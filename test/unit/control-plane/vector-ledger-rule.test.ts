@@ -129,7 +129,10 @@ describe("vector ledger — applying one getByIds observation", () => {
       { ok: true, requested: ["rd_0123456789"], present: [] },
       DUE + VECTOR_LEDGER_MIN_CONFIRM_SPACING_MS,
     );
-    expect(second.clear).toEqual(["rd_0123456789"]);
+    // Carries the stamp the observation was made against, so the DELETE can
+    // refuse a row re-marked since — a re-published reading has a NEW vector,
+    // and clearing its row on a confirmation about the old one would strand it.
+    expect(second.clear).toEqual([{ readingId: "rd_0123456789", deletedAtMs: T0 }]);
     expect(second.advanced).toEqual([]);
     expect(VECTOR_LEDGER_REQUIRED_ABSENCES).toBe(2);
   });
@@ -182,10 +185,12 @@ describe("vector ledger — applying one getByIds observation", () => {
     // Returned by a 200 → live → its streak resets.
     expect(verdict.reset).toEqual(["rd_present"]);
     // Requested and missing from a 200 → candidate absent → second one clears.
-    expect(verdict.clear).toEqual(["rd_absent"]);
+    expect(verdict.clear).toEqual([{ readingId: "rd_absent", deletedAtMs: T0 }]);
     // Never in the request → untouched, in every list.
     expect(verdict.advanced).toEqual([]);
-    expect([...verdict.clear, ...verdict.reset]).not.toContain("rd_unasked");
+    expect([...verdict.clear.map((c) => c.readingId), ...verdict.reset]).not.toContain(
+      "rd_unasked",
+    );
   });
 
   it("resets a streak the moment the id is seen alive again", () => {

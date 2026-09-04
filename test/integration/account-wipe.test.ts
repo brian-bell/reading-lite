@@ -19,6 +19,8 @@ import { fromD1 } from "../../src/control-plane/db";
 import {
   VECTOR_LEDGER_BACKOFF_MS,
   VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS,
+  clearLedgerRows,
+  clearTenantLedger,
   d1VectorLedger,
 } from "../../src/control-plane/vector-ledger";
 import { parseTenantId } from "../../src/control-plane/ids";
@@ -1903,6 +1905,75 @@ describe("account wipe (195b PR1)", () => {
       expect(done.kind).toBe("complete");
       expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_B)]);
       expect(await ledgerRows()).toEqual([]);
+    });
+
+    // The unseeded-tenant case, and the reason the namespace probe is
+    // unconditional. An empty ledger is NOT proof of an empty namespace — it is
+    // also exactly what a corpus that predates this slice looks like, and
+    // merging auto-deploys production before anyone can run
+    // `ops corpus seed-vector-ledger`. Short-circuiting to success on an empty
+    // ledger would report a clean wipe having asked Vectorize nothing at all.
+    it("refuses to complete an unseeded tenant whose namespace still answers", async () => {
+      await seedTenantObjects([ID_A], { ledger: false });
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      expect(await ledgerRows()).toEqual([]);
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      // It retries rather than completing, and it spends its attempts, because
+      // there is nothing in the ledger it could ever delete by.
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/ledger_not_empty/);
+      expect((await readProgress())!.probeAttempts).toBe(1);
+      expect((await readProgress())!.completedAtMs).toBeNull();
+      consoleErr.mockRestore();
+    });
+
+    it("completes an unseeded tenant only once the namespace is confirmed clean", async () => {
+      // The other half: with nothing in the ledger AND a clean probe, there is
+      // genuinely nothing left, and the wipe finishes in one pass because there
+      // was no delete to wait out.
+      await seedTenantObjects([ID_A], { ledger: false });
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      expect(result).toMatchObject({ kind: "complete", residue: false });
+      expect(queryIndex).toHaveBeenCalledTimes(1);
+    });
+
+    it("the fast path clears confirmed rows but never a vector nobody has deleted", async () => {
+      // The probe happens between the row read and the DELETE, so a publisher
+      // can insert a `live` row inside that window. An empty namespace says
+      // nothing about a vector that was upserted after it answered, and
+      // clearing that row would delete the only record of it.
+      await seedLedgerSubmitted([ID_A]);
+      await seedLedger([ID_B]);
+      expect(await clearTenantLedger(controlPlane(), TENANT)).toBe(1);
+      expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_B, "live"]]);
+    });
+
+    it("does not clear a row that was re-marked live after the absence was observed", async () => {
+      // A reading re-published between the getByIds that observed its absence
+      // and the DELETE has a brand-new vector. Clearing its row because the
+      // PREVIOUS vector was confirmed gone is the exact stranding the ledger
+      // exists to prevent, reintroduced by the code meant to close it.
+      const observedAt = NOW_MS - VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS - 1;
+      await seedLedgerSubmitted([ID_A], observedAt);
+      await seedLedger([ID_A]); // republished: state live, stamp cleared
+      await clearLedgerRows(controlPlane(), TENANT, [
+        { readingId: ID_A, deletedAtMs: observedAt },
+      ]);
+      expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_A, "live"]]);
     });
 
     it("re-marking a reading live clears the delete bookkeeping of its previous vector", async () => {

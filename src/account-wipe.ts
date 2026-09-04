@@ -195,7 +195,7 @@ import {
   earliestConfirmableAtMs,
   listDeleteSubmittedEntries,
   listLiveLedgerIds,
-  recordAbsence,
+  recordAbsences,
   resetAbsenceStreaks,
   type GetByIdsObservation,
 } from "./control-plane/vector-ledger";
@@ -1022,19 +1022,11 @@ async function assertLedgerEmptied(
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
   logVectorCountDelta(progress, tenantId, await store.indexVectorCount());
   const counts = await countLedgerRows(db, tenantId);
-  if (counts.total === 0) {
-    // Nothing to confirm. Clear the sticky flag on the way out (defect D1):
-    // `probe_saw_residue` set by an earlier attempt must not survive onto the
-    // completion record of a wipe that came back clean.
-    progress.probeSawResidue = false;
-    return false;
-  }
-
   const pending = await listDeleteSubmittedEntries(db, tenantId, ACCOUNT_WIPE_CONFIRM_BATCH);
   const nowMs = now();
   // Rule 1. Deliberately outside the attempt accounting: waiting is not a
   // failed observation, and charging it as one is exactly defect D2.
-  if (counts.live === 0 && pending.length > 0) {
+  if (pending.length > 0) {
     const due = earliestConfirmableAtMs(pending, nowMs);
     if (due !== null) {
       const waitSeconds = Math.max(1, Math.ceil((due - nowMs) / 1000));
@@ -1048,30 +1040,42 @@ async function assertLedgerEmptied(
     }
   }
 
-  // Rule 2, the fast path. Guarded on `live === 0` — the caller already sends a
-  // pass with live rows back to the vectors phase, so this is belt and braces,
-  // but the guard is the one that matters: a `live` row is a vector nobody has
-  // asked Vectorize to delete, and an empty namespace would then be describing
-  // a delete that never happened.
+  // Rule 2, the namespace probe — UNCONDITIONAL, including when the ledger is
+  // empty, and that is the point rather than an oversight.
+  //
+  // An empty ledger is not proof of an empty namespace. It is also exactly what
+  // an UNSEEDED tenant looks like: a corpus that predates this slice has
+  // vectors and no rows, and merging auto-deploys production before anyone can
+  // run `ops corpus seed-vector-ledger`. Short-circuiting to success on
+  // `total === 0` would let such a wipe report clean having asked Vectorize
+  // nothing at all — which is precisely the failure the original terminal probe
+  // (review finding F3) was added to catch, reintroduced by the change that was
+  // supposed to strengthen it. So the probe stays the floor: the ledger says
+  // WHICH vectors to delete, the probe says whether any remain.
   let sawLiveVector = false;
-  if (counts.live === 0) {
-    let probeErrored = false;
-    let remaining: Awaited<ReturnType<typeof store.probeNamespace>> = [];
-    try {
-      remaining = await store.probeNamespace();
-    } catch (error) {
-      probeErrored = true;
-      console.warn(
-        JSON.stringify({
-          event: "account_wipe_probe_failed",
-          tenant_id: tenantId,
-          message: error instanceof Error ? error.message : String(error),
-          note: "namespace probe gave no answer; falling back to per-id getByIds confirmation",
-        }),
-      );
-    }
-    if (!probeErrored && remaining.length === 0) {
-      const cleared = await clearTenantLedger(db, tenantId);
+  let probeErrored = false;
+  let remaining: Awaited<ReturnType<typeof store.probeNamespace>> = [];
+  try {
+    remaining = await store.probeNamespace();
+  } catch (error) {
+    probeErrored = true;
+    console.warn(
+      JSON.stringify({
+        event: "account_wipe_probe_failed",
+        tenant_id: tenantId,
+        message: error instanceof Error ? error.message : String(error),
+        note: "namespace probe gave no answer; falling back to per-id getByIds confirmation",
+      }),
+    );
+  }
+  if (!probeErrored && remaining.length === 0) {
+    // Empty namespace, so nothing in it can be live and the fast path clears
+    // the tenant's confirmed rows in one call (S6 §5.3). `live` rows are left
+    // alone by `clearTenantLedger`: a vector nobody has submitted a delete for
+    // is not something an empty probe says anything about, and the caller sends
+    // such a pass back to the vectors phase anyway.
+    const cleared = await clearTenantLedger(db, tenantId);
+    if (cleared > 0) {
       console.info(
         JSON.stringify({
           event: "account_wipe_ledger_cleared",
@@ -1081,13 +1085,18 @@ async function assertLedgerEmptied(
           note: "an empty namespaced query cannot coexist with a live vector in that namespace",
         }),
       );
-      progress.probeSawResidue = false;
-      return false;
     }
-    sawLiveVector = !probeErrored && remaining.length > 0;
+    // Clear the sticky flag on the way out (defect D1): `probe_saw_residue` set
+    // by an earlier attempt must not survive onto the completion record of a
+    // wipe that came back clean.
+    progress.probeSawResidue = false;
+    return false;
   }
+  sawLiveVector = !probeErrored && remaining.length > 0;
 
-  // Rule 3, the fallback.
+  // Rule 3, the per-id fallback. It can only clear rows the ledger knows about,
+  // so for an unseeded tenant it finds nothing to do and the pass falls through
+  // to the residue alert below — loudly, which is the right outcome.
   if (pending.length > 0) {
     const byId = new Map(pending.map((entry) => [entry.readingId, entry]));
     for (const chunk of chunkForGetByIds(pending.map((entry) => entry.readingId))) {
@@ -1105,8 +1114,8 @@ async function assertLedgerEmptied(
       const verdict = applyAbsenceObservation(pending, observation, nowMs);
       await clearLedgerRows(db, tenantId, verdict.clear);
       await resetAbsenceStreaks(db, tenantId, verdict.reset);
+      await recordAbsences(db, tenantId, verdict.advanced, nowMs);
       for (const advanced of verdict.advanced) {
-        await recordAbsence(db, tenantId, advanced.readingId, advanced.absentStreak, nowMs);
         // Keep the in-memory view honest for the rest of this pass. Chunks are
         // disjoint today, so nothing reads it again — but an id observed twice
         // in one pass must not double-count a single instant into a clear.
@@ -1119,12 +1128,10 @@ async function assertLedgerEmptied(
     }
   }
 
-  const after = await countLedgerRows(db, tenantId);
-  if (after.total === 0) {
-    progress.probeSawResidue = false;
-    return false;
-  }
-
+  // The namespace still answered (or never answered at all), so this pass has
+  // not confirmed the wipe however few ledger rows are left. There is no
+  // early return on an empty ledger here either: a clean namespace is the only
+  // thing that ends the wipe cleanly, and it was checked above.
   const attempts = progress.probeAttempts + 1;
   // Sticky, but only within a pass that ends dirty: once a call has actually
   // seen a vector, a later transient failure must not downgrade the verdict to
@@ -1139,7 +1146,7 @@ async function assertLedgerEmptied(
     await writer.write(progress);
     throw new AccountWipeNamespaceNotEmptyError(
       tenantId,
-      after.total,
+      (await countLedgerRows(db, tenantId)).total,
       attempts,
       confirmBackoffSeconds(attempts),
       !sawResidue,
@@ -1162,7 +1169,7 @@ async function assertLedgerEmptied(
       event: ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT,
       tenant_id: tenantId,
       probe_attempts: attempts,
-      ledger_rows_remaining: after.total,
+      ledger_rows_remaining: (await countLedgerRows(db, tenantId)).total,
       outcome: sawResidue ? "residue" : "unconfirmed",
       note: sawResidue
         ? "vectors still answered after the confirmation bound. Their ids are retained in " +

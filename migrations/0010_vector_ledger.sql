@@ -81,9 +81,12 @@ CREATE INDEX vector_ledger_tenant_state ON vector_ledger (tenant_id, state);
 -- (0009's header, and `ops account sweep-wipe-prefix`).
 --
 -- Deploy ordering: `ops deploy worker` applies migrations and THEN uploads, so
--- for the length of one deploy the previous Worker writes a column that is
--- gone. Its progress write fails, the delivery retries on the ordinary
--- exponential, and the new Worker serves the retry. That costs an in-flight
--- wipe a retry, never data: every wipe write is idempotent and the queue's
--- retry budget is far longer than the window. See the PR body's deploy note.
+-- for the length of one deploy the previous Worker addresses a column that is
+-- gone. Both directions, not just writes: the old `COLUMNS` list in
+-- wipe-progress.ts SELECTs `vector_cursor` too, so cron fan-out and every
+-- resuming delivery throw as well. The blast radius is bounded to the wipe path
+-- and to one deploy window — every wipe operation is idempotent, the delivery
+-- retries on the ordinary exponential, and the new Worker serves the retry — so
+-- it costs an in-flight wipe retries, never data. See the PR body's deploy note
+-- for the pre-merge check that avoids it entirely.
 ALTER TABLE wipe_progress DROP COLUMN vector_cursor;

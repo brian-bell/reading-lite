@@ -15,6 +15,7 @@ import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorVectorLedger } from "../../account-lib/operator-ledger";
 import {
   classifyOutcome,
   readingApiFor,
@@ -493,6 +494,10 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const lookup = (hostname: string) => dnsLookup(hostname, { all: true });
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
         return runBatch(rows, {
+        // Ledger every vector this batch writes (issue #195 S3). Resolved from
+        // the run's own tenant and bucket; the no-op for --tenant global, which
+        // no account wipe addresses.
+        ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
           r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
           vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
           ...(cfg.anthropicApiKey
