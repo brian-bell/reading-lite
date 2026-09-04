@@ -339,7 +339,10 @@ Pointers only — the details live in the named files' comments.
   this slice; `makeVectorizeClient.upsert` never composed `tenantVectorId`),
   which a composed-id `deleteByIds` cannot address — so every wipe for that
   tenant completes with `residue = 1` while those embeddings survive account
-  deletion. **Do not read `residue = 1` on such a tenant as healthy.** Repairing
+  deletion, and on a LIVE tenant the bare and composed vectors for one reading
+  are two matches to a namespaced query, so it appears twice in its own
+  neighbourhood. The batch writer now retires the bare id as it re-processes a
+  reading; the rest is S5's. **Do not read `residue = 1` on such a tenant as healthy.** Repairing
   it in production is a gate on #195 acceptance bullet 3 ("a repeatable residue
   scan reports zero tenant-owned data"), not optional cleanup; slice S5 owns the
   audit and repair. The wipe DLQ logs and acks; it must not

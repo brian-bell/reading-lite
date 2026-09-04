@@ -78,6 +78,15 @@ export interface VectorizeClient {
     vector: number[],
     opts: { topK: number; returnMetadata?: boolean },
   ): Promise<VectorizeMatch[]>;
+  /**
+   * Delete vectors by index-unique id. Optional because the many in-memory
+   * fakes in tests predate it; `makeVectorizeClient` always provides it.
+   *
+   * Ids are index-unique, so this takes no namespace — the same reason
+   * `deleteByIds` in the Worker's store composes the tenant prefix into the id
+   * rather than passing a namespace alongside it.
+   */
+  deleteByIds?(ids: string[]): Promise<void>;
 }
 
 export interface StoredVector {
@@ -695,6 +704,21 @@ export function makeVectorizeClient(
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Vectorize upsert failed: ${res.status} ${text}`);
+      }
+    },
+    async deleteByIds(ids) {
+      if (ids.length === 0) return;
+      const res = await send(`${indexBase}/delete_by_ids`, {
+        method: "POST",
+        headers: {
+          authorization: authHeader,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Vectorize delete_by_ids failed: ${res.status} ${text}`);
       }
     },
     async query(vector, opts) {

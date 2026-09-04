@@ -143,10 +143,21 @@ function fakeR2(seed: Record<string, string> = {}) {
 
 function fakeVectorize() {
   const upserts: Array<{ id: string; values: number[]; metadata: Record<string, unknown> }> = [];
+  // `order` records deletes and upserts in sequence, because retiring the
+  // legacy bare id has to happen BEFORE the composed one is written.
+  const order: string[] = [];
+  const deleted: string[] = [];
   return {
     upserts,
+    deleted,
+    order,
     upsert: vi.fn(async (vs: any[]) => {
+      order.push(`upsert:${vs.map((v) => v.id).join(",")}`);
       for (const v of vs) upserts.push(v);
+    }),
+    deleteByIds: vi.fn(async (ids: string[]) => {
+      order.push(`delete:${ids.join(",")}`);
+      deleted.push(...ids);
     }),
     query: vi.fn(async () => []),
   };
@@ -315,6 +326,32 @@ describe("writeResults — success path", () => {
     // The stamp matters too: migrate-founder's reconciliation rejects a
     // prefixed vector that lacks it.
     expect(vec.upserts[0]!.metadata).toMatchObject({ tenant_id: TENANT });
+  });
+
+  it("retires the legacy bare-id vector before writing the composed one", async () => {
+    // The composition fix writes a NEW id; it does not replace the old one. On
+    // a tenant that already holds bare-id vectors from an earlier `--tenant`
+    // batch run, that would leave TWO live vectors for one reading — and
+    // `SimilarityStore.query` strips only its own `{tenant}:` prefix, so both
+    // come back as distinct matches and the reading appears twice in its own
+    // neighbourhood. Delete first, then upsert, so the pipeline heals whatever
+    // it re-processes; the bulk repair for readings it never touches is S5's.
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], {
+      ...deps(r2, vec),
+      vectorNamespace: TENANT,
+    });
+    expect(vec.deleted).toEqual(["rd_a"]);
+    expect(vec.order).toEqual([`delete:rd_a`, `upsert:${TENANT}:rd_a`]);
+  });
+
+  it("does not delete anything without a namespace — the bare id IS the id being written", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec));
+    expect(vec.deleted).toEqual([]);
+    expect(vec.order).toEqual(["upsert:rd_a"]);
   });
 
   it("keeps the bare id with no namespace, so the pre-tenant layout is unchanged", async () => {

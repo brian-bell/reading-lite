@@ -416,6 +416,7 @@ async function writeNormalizedResults(
     });
   }
   if (vectors.length > 0) {
+    const readingIds = resolvedSuccess.map(({ target }) => target.id);
     // Ledger BEFORE the upsert. A row for an upsert that then fails costs one
     // redundant `deleteByIds`; an upsert with no row is a vector nothing can
     // address once the reading's R2 objects are gone.
@@ -424,10 +425,30 @@ async function writeNormalizedResults(
     // the reading id and the wipe re-composes through `tenantVectorId`, so
     // there is exactly one spelling of that rule and no stored copy of its
     // output to drift.
-    await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(
-      resolvedSuccess.map(({ target }) => target.id),
-      Date.now(),
-    );
+    await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(readingIds, Date.now());
+    // Retire the legacy bare-id vector for these readings before writing the
+    // composed one.
+    //
+    // The composition fix above writes a NEW id; it does not replace the old
+    // one. Without this, a tenant that already holds bare-id vectors from an
+    // earlier `--tenant` batch run would end up with TWO live vectors for the
+    // same reading — and `SimilarityStore.query` strips only its own
+    // `{tenant}:` prefix, so both come back as distinct matches. The reading
+    // would appear twice in its own neighbourhood, inflating `count`, skewing
+    // `mean`, and spending a neighbour slot on itself. That is a live-tenant
+    // search regression, not merely a deletion one.
+    //
+    // So the pipeline heals what it touches: anything re-processed through it
+    // stops being a duplicate. Readings it never touches again keep their
+    // legacy vector, and that bulk repair is slice S5's.
+    //
+    // Only when there is a namespace — with none, the bare id IS the id being
+    // written and deleting it would delete the vector we are about to upsert.
+    // Failures propagate like the upsert's: leaving a duplicate behind quietly
+    // is the outcome this exists to prevent.
+    if (deps.vectorNamespace !== undefined && deps.vectorize.deleteByIds) {
+      await deps.vectorize.deleteByIds(readingIds);
+    }
     await deps.vectorize.upsert(vectors);
   }
 

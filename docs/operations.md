@@ -196,6 +196,17 @@ bullet 3 ("a repeatable residue scan reports zero tenant-owned data"), and slice
 S5 owns the audit and the repair. `probe_saw_residue` beside `residue` still
 separates "vectors were still there" from "we never got an answer".
 
+That population costs something on a *live* tenant too, which is worth knowing
+before anyone dismisses it as a deletion-only concern: a bare-id vector and a
+composed one for the same reading are two distinct matches to a namespaced
+query, so the reading appears twice in its own neighbourhood and duplicates land
+in `manifest.similarity` — inflating `count`, skewing `mean`, and spending a
+neighbour slot. The batch writer now deletes the bare id as it re-processes a
+reading, so anything put back through `corpus ingest` / `recover --batch` heals
+itself. Readings the pipeline never touches again keep both vectors until S5
+repairs them, and S5's audit should count the duplication as well as the wipe
+residue.
+
 ### Seed the vector ledger before the first ledger-based wipe
 
 **This is a rollout prerequisite, not a tidy-up.** From slice S3 the wipe
