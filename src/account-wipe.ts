@@ -67,6 +67,12 @@
  * an empty R2 prefix, and it is the gate S4's hard delete of the `users` row
  * reads. The foreign key deliberately does not cascade for that reason.
  *
+ * Completion is two pairs. `completed_at_ms`/`residue` are the current state and
+ * a reopen clears them, so a teardown gate does not fire while a reopened pass
+ * is still running. `first_completed_at_ms`/`first_residue` are written once and
+ * never moved, so a reopen that fails or dead-letters cannot leave the row
+ * claiming this tenant was never wiped.
+ *
  * **Grace gates only the start.** `deleting_at_ms` + 7 days gates starting a
  * *new* wipe. Resume (in-progress, leftover objects, expired lease) proceeds
  * during grace, and `force` recorded on the progress record survives a DLQ so a
@@ -141,6 +147,15 @@
  * cursor stored on the progress record. Vectorize `deleteByIds` is async
  * (a mutationId, no immediate confirm) and is fired in ≤1000-id batches; we
  * record what it returns and never poll.
+ *
+ * Writes come in two flavours. `persist` always writes and is used wherever a
+ * later delivery must see the state: the lease claim, a phase transition, a
+ * `continue`'s cursor and continuation count, probe bookkeeping, the terminal
+ * record. `heartbeat` writes at most once per
+ * `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS` and exists only to tell cron the job is
+ * alive — a full-row D1 UPDATE per R2 page cost hundreds of writes a delivery
+ * on a large tenant, and since the lease is a version rather than a clock,
+ * losing a beat costs a re-list or an idempotent re-submit, never correctness.
  */
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
 import { parseTenantId, type TenantId } from "./control-plane/ids";
@@ -234,6 +249,29 @@ export const ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = 3;
  * counter is per pass — reopening a leftover wipe resets it.
  */
 export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;
+/**
+ * Minimum gap between advisory heartbeat writes.
+ *
+ * A heartbeat is a full-row conditional D1 UPDATE. Beating on every id-collect
+ * page, every vector batch and two or three times per R2 delete page put
+ * hundreds of D1 writes inside one delivery for a large tenant, each one
+ * re-serializing the whole row. Since the lease is a version and no longer
+ * load-bearing for correctness, the beat only has to be frequent enough that
+ * cron does not think the job died: one minute is a fifteen-fold margin under
+ * `ACCOUNT_WIPE_IN_FLIGHT_MS`.
+ *
+ * Throttling only ever loses *advisory* state. Everything a later delivery must
+ * see — the lease claim, a phase transition, a `continue`'s cursor and
+ * continuation count, probe bookkeeping, and the terminal record — goes through
+ * `persist()`, which always writes. A crash between beats costs re-listing a
+ * prefix or re-submitting an idempotent `deleteByIds`, never correctness.
+ *
+ * One consequence worth naming: a delivery that has lost the lease now finds
+ * out at the next persist rather than at the next page, so it can keep deleting
+ * for up to this long after a sibling took over. Both are deleting the same
+ * tenant's prefix, so the outcome is identical either way.
+ */
+export const ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS = 60_000;
 /** Operator alert: the namespace still answered after the probe bound. */
 export const ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT = "account_wipe_namespace_residue";
 /** Operator alert: `status='deleting'` with no `deleting_at_ms` (finding F6). */
@@ -588,9 +626,18 @@ async function runAccountWipeJob(
   }
 
   const writer = new WipeProgressWriter(db, tenantId, stored);
-  const heartbeat = async () => {
+  // `persist` always writes; `heartbeat` writes at most once an interval. Use
+  // persist wherever a later delivery must see the state, heartbeat where the
+  // only purpose is telling cron this job is still alive.
+  let lastPersistMs = Number.NEGATIVE_INFINITY;
+  const persist = async () => {
     progress.updatedAtMs = now();
     await writer.write(progress);
+    lastPersistMs = progress.updatedAtMs;
+  };
+  const heartbeat = async () => {
+    if (now() - lastPersistMs < ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS) return;
+    await persist();
   };
   const continueResult = async (): Promise<AccountWipeResult> => {
     // Bound the self-send before making it (F7). Persisted, so the count is the
@@ -600,7 +647,9 @@ async function runAccountWipeJob(
       throw new AccountWipeContinuationBudgetError(tenantId, progress.continuations);
     }
     progress.continuations = next;
-    await heartbeat();
+    // Always persisted: the next delivery resumes from this cursor, and the
+    // budget only bounds anything if it survives the self-send.
+    await persist();
     return {
       kind: "continue",
       objects_deleted: progress.objectsDeleted,
@@ -620,8 +669,9 @@ async function runAccountWipeJob(
   }
   // Claim the lease before any listing, so a concurrent cron tick sees it and
   // skips instead of launching a duplicate against the same prefix. Record force
-  // so cron resume can honor a force wipe that DLQ'd during grace.
-  await heartbeat();
+  // so cron resume can honor a force wipe that DLQ'd during grace. Always
+  // written: this is the claim itself, not a beat.
+  await persist();
 
   if (progress.phase === "vectors") {
     // Re-derived from R2 on every pass rather than persisted. The wipe itself
@@ -631,10 +681,11 @@ async function runAccountWipeJob(
     // index (see submitVectorDeletes).
     const ids = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
     await heartbeat();
-    const vec = await submitVectorDeletes(progress, ids, env, tenantId, now, maxVectorBatches, writer);
+    const vec = await submitVectorDeletes(progress, ids, env, tenantId, maxVectorBatches, heartbeat);
     if (vec === "continue") return continueResult();
     progress.phase = "objects";
-    await heartbeat();
+    // Always persisted: a phase transition is what a resuming delivery reads.
+    await persist();
   }
 
   if (progress.phase === "objects") {
@@ -796,9 +847,8 @@ async function submitVectorDeletes(
   ids: string[],
   env: AccountWipeEnv,
   tenantId: TenantId,
-  now: () => number,
   maxVectorBatches: number,
-  writer: WipeProgressWriter,
+  heartbeat: () => Promise<void>,
 ): Promise<"continue" | "done"> {
   // Fail closed BEFORE the emptiness test (F3). An empty id list means "R2
   // yielded no ids", not "this tenant has no vectors" — R2 is the only id
@@ -836,8 +886,9 @@ async function submitVectorDeletes(
     }
     sent += chunk.length;
     progress.vectorCursor = chunk[chunk.length - 1];
-    progress.updatedAtMs = now();
-    await writer.write(progress);
+    // Advisory: losing this cursor to a crash re-submits ids to `deleteByIds`,
+    // which is idempotent. A `continue` persists it before the self-send.
+    await heartbeat();
     batches += 1;
   }
   return sent < pending.length ? "continue" : "done";

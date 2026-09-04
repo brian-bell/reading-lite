@@ -60,11 +60,29 @@ CREATE TABLE wipe_progress (
   -- little progress and then fails forever, which would otherwise reset its
   -- queue retry budget on every self-send and never reach the DLQ (F7).
   continuations INTEGER NOT NULL DEFAULT 0,
-  -- Completion record. `residue = 1` means the wipe finished without a clean
-  -- namespace confirmation; read alongside `probe_saw_residue` it separates
-  -- "vectors were still there" from "we never got an answer".
+  -- Completion record, in two pairs, because they answer different questions.
+  --
+  -- `completed_at_ms` / `residue` describe the CURRENT state: the wipe has
+  -- nothing left to do. Reopening a finished wipe (leftover objects turned up
+  -- under the prefix) clears them, which is what makes them the right thing for
+  -- the later teardown to gate on — it must not hard-delete the users row while
+  -- a reopened pass is still running.
+  --
+  -- `first_completed_at_ms` / `first_residue` are written ONCE, at the first
+  -- terminal transition, and never overwritten or cleared. They are the durable
+  -- history: proof that this tenant's data plane was wiped at least once, and
+  -- whether that wipe came back clean. Without them a reopen that fails or
+  -- dead-letters would erase the only evidence the earlier wipe ever finished —
+  -- destroying, at the moment it is needed, exactly what the non-cascading
+  -- foreign key above exists to preserve. The residue scan reads this pair.
+  --
+  -- `residue = 1` means the wipe finished without a clean namespace
+  -- confirmation; read alongside `probe_saw_residue` it separates "vectors were
+  -- still there" from "we never got an answer".
   completed_at_ms INTEGER,
-  residue INTEGER NOT NULL DEFAULT 0
+  residue INTEGER NOT NULL DEFAULT 0,
+  first_completed_at_ms INTEGER,
+  first_residue INTEGER NOT NULL DEFAULT 0
 );
 
 -- Fan-out reads every unfinished wipe on each cron tick.

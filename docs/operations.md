@@ -77,15 +77,31 @@ need care therefore no longer do — a job running on a frozen clock, and a wipe
 owed a long `Retry-After` (up to 12h). Cron may take either one over; the
 displaced delivery reports `lease_held` and stands down.
 
-The completion record is **kept**, not deleted. `completed_at_ms` says the wipe
-finished, `residue` says whether the namespace was ever confirmed clean (read
+The completion record is **kept**, not deleted, and it is two pairs.
+`completed_at_ms` / `residue` are the current state: this wipe has nothing left
+to do. A reopen clears them, which is what a teardown gate wants — it must not
+hard-delete the users row while a reopened pass is still running.
+`first_completed_at_ms` / `first_residue` are the durable history, written once
+at the first terminal transition and pinned in SQL so nothing can move them; the
+residue scan reads those. Without the second pair, a reopen whose enqueue failed
+or whose pass dead-lettered would leave the row claiming the tenant had never
+been wiped at all.
+
+`residue` says whether the namespace was ever confirmed clean — read
 `probe_saw_residue` beside it to tell "vectors were still there" from "we never
-got an answer"), and the terminal write clears both cursors so nothing reading-
+got an answer" — and the terminal write clears both cursors so nothing reading-
 shaped survives on a deleted account's row. The foreign key to `users(id)`
 deliberately does **not** cascade: the later control-plane teardown hard-deletes
 the users row and gates that on reading this record, so a cascade would destroy
 the evidence at the moment it is needed. Teardown removes the row explicitly,
 after the gate has been read.
+
+Heartbeats are throttled to `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS` (one minute, a
+fifteen-fold margin under the advisory lease window) rather than firing on every
+R2 page and vector batch, which cost hundreds of full-row D1 writes per delivery
+on a large tenant. Anything a later delivery depends on — the lease claim, phase
+transitions, a `continue`'s cursor and continuation count, probe bookkeeping and
+the terminal record — is written unconditionally regardless of the throttle.
 
 A wipe that keeps making a little progress and then failing used to cycle
 forever: each `continue` acks and self-sends, which starts a fresh queue retry
@@ -160,7 +176,13 @@ durable per-tenant vector ledger (issue #261, 195b move 2,
 
 The completion record is what the later users-row hard-delete gates on: read
 `completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
-state.
+state. Gate on `completed_at_ms` (current state, so a reopened wipe holds the
+gate shut); report history and residue from `first_completed_at_ms` /
+`first_residue`, which no reopen can erase.
+
+A future operator row will add a scripted, verified sweep of the `wipe/` prefix
+for the stale R2 objects described in the deploy note above; until it exists,
+that cleanup is the manual step named there.
 
 Before reporting success the wipe probes the tenant's Vectorize namespace and
 refuses to finish while anything still answers, logging

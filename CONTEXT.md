@@ -135,10 +135,13 @@ submit, a markdown import, or a lookup. It lives in
 - **Wipe progress** — the D1 `wipe_progress` row that is a wipe's whole durable
   state: phase, both cursors, and the `lease_seq` a conditional UPDATE
   compare-and-sets to decide which delivery owns the wipe (`changes = 0` is
-  "someone else owns this"). Its **completion record** (`completed_at_ms`,
-  `residue`) is kept after the wipe finishes rather than deleted — it is the
-  evidence the later control-plane teardown gates its hard delete on, which is
-  why the foreign key to `users` does not cascade. Residue scan, users-row
+  "someone else owns this"). Its **completion record** is kept after the wipe
+  finishes rather than deleted — it is the evidence the later control-plane
+  teardown gates its hard delete on, which is why the foreign key to `users`
+  does not cascade. It is two pairs: `completed_at_ms`/`residue` are the current
+  state, which a reopen clears so the gate stays shut while a reopened pass
+  runs, and `first_completed_at_ms`/`first_residue` are the write-once history a
+  failed reopen cannot erase. Residue scan, users-row
   hard-delete, and email reuse are later 195b slices. Wipe is not
   **reading purge** (`DELETE /api/readings/:id`). Production
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.

@@ -29,9 +29,12 @@ comments of the modules themselves — read those before changing a module.
   invariant list — read it first.
 - `src/control-plane/wipe-progress.ts` — the wipe's whole durable state in D1
   (`wipe_progress`, migration `0009`): phase, both cursors, the `lease_seq`
-  compare-and-set that decides ownership, and the completion record
-  (`completed_at_ms` + `residue`) that outlives the wipe and gates the later
-  control-plane teardown. Its foreign key does not cascade, on purpose.
+  compare-and-set that decides ownership, and the completion record that
+  outlives the wipe and gates the later control-plane teardown. Completion is
+  two pairs: `completed_at_ms`/`residue` are current state and a reopen clears
+  them; `first_completed_at_ms`/`first_residue` are written once and pinned in
+  SQL, so a reopen that never finishes cannot erase the history. Its foreign key
+  does not cascade, on purpose.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -265,10 +268,14 @@ Pointers only — the details live in the named files' comments.
   (`src/control-plane/wipe-progress.ts`, migration `0009`), never in R2. Writes
   are `UPDATE … WHERE lease_seq = ?`; a delivery that changes zero rows skips
   with `lease_held` and acks rather than retrying. `updated_at_ms` still
-  heartbeats but is only advice to cron, which is why a frozen job clock and a
-  12-hour `Retry-After` no longer need special-casing. The completion record is
+  heartbeats but is only advice to cron — throttled to
+  `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS`, while anything a later delivery needs is
+  written unconditionally — which is why a frozen job clock and a 12-hour
+  `Retry-After` no longer need special-casing. The completion record is
   **kept**, with both cursors cleared, and is what the later users-row
-  hard-delete gates on — never infer a wipe's outcome from R2 state. `residue`
+  hard-delete gates on — never infer a wipe's outcome from R2 state. Gate on
+  `completed_at_ms` (a reopen clears it); report history from
+  `first_completed_at_ms`/`first_residue`, which no reopen can move. `residue`
   plus `probe_saw_residue` carry the terminal verdict.
   Before success the wipe probes the tenant namespace, retrying a hit on a
   minutes-scale delay bounded at the queue's `max_retries`, then emits a

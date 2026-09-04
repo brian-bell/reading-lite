@@ -7,6 +7,7 @@ import {
   ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT,
   ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
   ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS,
+  R2_LIST_LIMIT,
   consumeAccountWipeMessage,
   fanOutDueAccountWipes,
   handleAccountWipeDeadLetter,
@@ -1442,6 +1443,127 @@ describe("account wipe (195b PR1)", () => {
     // broken, and the objects still there are what makes it visible.
     expect(queued.length).toBe(1);
     expect(memory.keysUnder(PREFIX).length).toBeGreaterThan(0);
+  });
+
+  // Ruling 1. Reopening clears `completed_at_ms` — correct, the reopened wipe
+  // really does have work left and the teardown gate must not fire — but that
+  // used to erase the only evidence the earlier wipe ever finished. If the
+  // reopen's enqueue fails or its pass dead-letters, the row would be left
+  // saying nothing had ever been wiped. The first-completion pair is write-once
+  // and survives.
+  it("keeps the first-completion record when a wipe is reopened and never finishes", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    // A clean first wipe.
+    await seedTenantObjects([ID_A]);
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    expect(first.kind).toBe("complete");
+    const completed = await readProgress();
+    expect(completed!.completedAtMs).toBe(NOW_MS);
+    expect(completed!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(completed!.firstResidue).toBe(false);
+
+    // Objects turn up again, so cron reopens the wipe.
+    await seedTenantObjects([ID_B]);
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    const reopened = await readProgress();
+    // Current state says work is owed, so a teardown gate on completedAtMs
+    // correctly refuses to fire...
+    expect(reopened!.completedAtMs).toBeNull();
+    expect(reopened!.phase).toBe("vectors");
+    // ...but the history that the earlier wipe completed is intact, which is
+    // what the residue scan and support read.
+    expect(reopened!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(reopened!.firstResidue).toBe(false);
+  });
+
+  // Write-once is enforced in SQL, not only by the caller, so a second
+  // completion cannot move the history even if a caller passes a fresh pair.
+  it("pins the first-completion pair against a later completion", async () => {
+    const db = controlPlane();
+    await seedProgress({ phase: "objects" });
+    const stored = await readWipeProgress(db, TENANT);
+    const writer = new WipeProgressWriter(db, TENANT, stored);
+
+    await writer.complete(stored!, NOW_MS, false);
+    const afterFirst = await readWipeProgress(db, TENANT);
+    expect(afterFirst!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(afterFirst!.firstResidue).toBe(false);
+
+    // A later pass completes again, this time leaving residue.
+    const later = NOW_MS + 60_000;
+    await writer.complete(
+      { ...afterFirst!, firstCompletedAtMs: later, firstResidue: true },
+      later,
+      true,
+    );
+    const afterSecond = await readWipeProgress(db, TENANT);
+    // Current pair moves; the history does not.
+    expect(afterSecond!.completedAtMs).toBe(later);
+    expect(afterSecond!.residue).toBe(true);
+    expect(afterSecond!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(afterSecond!.firstResidue).toBe(false);
+  });
+
+  // Ruling 3. A heartbeat is a full-row D1 UPDATE, and beating on every page put
+  // hundreds of them inside one delivery. The lease is a version now, so the
+  // beat only has to keep cron from thinking the job died.
+  it("heartbeats on an interval rather than once per page", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const pages = 6;
+    const keys = Array.from(
+      { length: R2_LIST_LIMIT * pages },
+      (_, i) => `${PREFIX}pad/${String(i).padStart(6, "0")}`,
+    );
+    const memory = memoryBucket(keys);
+    // A clock that barely moves, so nothing reaches the beat interval.
+    const clock = { t: NOW_MS };
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(memory.bucket, clock, { advanceListMs: 10 }),
+    };
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock }),
+    );
+    expect(result.kind).toBe("complete");
+    expect(memory.keysUnder(PREFIX)).toEqual([]);
+
+    // Every write bumps lease_seq, so it counts the D1 writes this job made.
+    // The claim and the terminal record are unconditional; the per-page beats
+    // are not, and six pages must not cost six-plus writes each.
+    const progress = await readProgress();
+    expect(progress!.leaseSeq).toBeLessThan(pages);
+  });
+
+  // Throttling must never swallow a write a later delivery depends on.
+  it("still persists the cursor and continuation count across a self-send", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const keys = Array.from(
+      { length: R2_LIST_LIMIT * 3 },
+      (_, i) => `${PREFIX}pad/${String(i).padStart(6, "0")}`,
+    );
+    const memory = memoryBucket(keys);
+    const clock = { t: NOW_MS };
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(memory.bucket, clock, { advanceListMs: 10 }),
+    };
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock, maxObjectPages: 1 }),
+    );
+    expect(first.kind).toBe("continue");
+    // Persisted despite the clock never reaching the beat interval.
+    const progress = await readProgress();
+    expect(progress!.phase).toBe("objects");
+    expect(progress!.r2Cursor).toBeTruthy();
+    expect(progress!.continuations).toBe(1);
   });
 
   // Reopening a leftover wipe is a fresh pass, so it gets a fresh continuation
