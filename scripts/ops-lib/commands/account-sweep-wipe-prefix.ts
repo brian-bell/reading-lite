@@ -128,6 +128,10 @@ async function runAccountSweepWipePrefix(
         "nothing was deleted.",
     );
     for (const row of refused) io.stderr(`  ${row.key} — ${row.verdict.reason}`);
+    io.stderr(
+      "This sweep has no override: a key it will not delete must be inspected and removed by hand\n" +
+        "  (`npx wrangler r2 object delete <bucket>/<key> --remote`) before the sweep can report the prefix empty.",
+    );
     return 1;
   }
 
@@ -160,8 +164,28 @@ async function runAccountSweepWipePrefix(
   );
   if (remaining.length > 0) {
     io.stderr(`\nVERIFICATION FAILED: ${remaining.length} object(s) still under ${WIPE_PREFIX}:`);
-    for (const object of remaining) io.stderr(describe(object));
-    io.stderr("Re-run to retry; investigate before merging or deploying anything that depends on the sweep.");
+    // The two causes need opposite responses, and the listing alone does not
+    // separate them: a key that was in the plan listing survived its delete and
+    // re-running is right, while a key that was NOT there appeared after the
+    // operator's users.status check — re-running would delete a record a wipe
+    // may be actively using, which is the harm the acknowledgement exists to
+    // prevent. So say which is which instead of a blanket "re-run".
+    const planned = new Set(listed.map((object) => object.key));
+    const survived = remaining.filter((object) => planned.has(object.key));
+    const appeared = remaining.filter((object) => !planned.has(object.key));
+    if (survived.length > 0) {
+      io.stderr(`  survived the delete (${survived.length}) — re-running is safe:`);
+      for (const object of survived) io.stderr(describe(object));
+    }
+    if (appeared.length > 0) {
+      io.stderr(`  NEW since the plan listing (${appeared.length}) — do NOT re-run blind:`);
+      for (const object of appeared) io.stderr(describe(object));
+      io.stderr(
+        `  Something wrote these after your ${NO_ACTIVE_WIPE_FLAG} check. Re-check D1 for a tenant with\n` +
+          "  status='deleting' before touching them; a live wipe's record must not be deleted.",
+      );
+    }
+    io.stderr("Investigate before merging or deploying anything that depends on this sweep.");
     return 1;
   }
   if (failed > 0) {

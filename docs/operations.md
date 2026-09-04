@@ -188,7 +188,12 @@ Rollout sequence, in order:
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
    evidence the prefix is empty, not just that the deletes were submitted.
-   Re-run on a non-zero exit; investigate if it does not converge.
+   On a non-zero exit read which half of the report it is. Keys that *survived
+   the delete* are safe to re-run against. Keys marked *NEW since the plan
+   listing* appeared after your `status='deleting'` check — re-run the query in
+   step 2 before touching them, because a live wipe's record must not be
+   deleted. A key the guard refuses outright has no override: inspect it and
+   remove it by hand (`npx wrangler r2 object delete <bucket>/<key> --remote`).
 
 Deletes are hard-restricted to keys literally under `wipe/`. A tenant-rooted key
 (`u/{tenantId}/…`) or a legacy pre-cutover corpus key (`readings/`, `index/`)

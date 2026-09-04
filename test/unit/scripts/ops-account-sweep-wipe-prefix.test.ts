@@ -201,7 +201,33 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(storage.deletes).toEqual([PROGRESS_KEY]);
     expect(err).toContain("VERIFICATION FAILED");
     expect(err).toContain(PROGRESS_KEY);
+    expect(err).toContain("survived the delete");
+    expect(err).not.toContain("NEW since the plan listing");
     expect(out).not.toContain("VERIFIED:");
+  });
+
+  it("flags a record that appeared after the plan listing rather than telling the operator to re-run", async () => {
+    const appeared = `${WIPE_PREFIX}${TENANT_ID.replace("1111-1111", "3333-3333")}/progress.json`;
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)], [object(appeared)]] });
+    const { code, err } = await run(["--execute", ACK], storage);
+
+    expect(code).toBe(1);
+    expect(storage.deletes).toEqual([PROGRESS_KEY]);
+    expect(err).toContain("NEW since the plan listing");
+    expect(err).toContain(appeared);
+    expect(err).toContain("do NOT re-run blind");
+    expect(err).toContain("status='deleting'");
+    expect(err).not.toContain("survived the delete");
+  });
+
+  it("tells the operator how to clear a key it refuses to delete itself", async () => {
+    const storage = fakeStorage({ listings: [[object(`${WIPE_PREFIX}a//b.json`)], []] });
+    const { code, err } = await run(["--execute", ACK], storage);
+
+    expect(code).toBe(1);
+    expect(storage.deletes).toEqual([]);
+    expect(err).toContain("REFUSED");
+    expect(err).toContain("wrangler r2 object delete");
   });
 
   it("exits non-zero when a delete errored even if the prefix re-lists empty", async () => {
