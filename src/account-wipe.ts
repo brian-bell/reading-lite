@@ -373,7 +373,16 @@ export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
  * R2 pages the seed step walks per delivery.
  *
  * Five, not the objects phase's twenty, because a seed page costs far more than
- * a list call. A page of up to `R2_LIST_LIMIT` keys can yield that many
+ * a list call.
+ *
+ * READ THIS BEFORE RAISING EITHER THIS OR `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES`.
+ * The three phases are budgeted against the subrequest ceiling individually,
+ * but they all run in ONE invocation when none of them returns `continue`.
+ * Worst case in a single delivery is roughly 250 seed statements, 250
+ * `markDeleteSubmitted` statements, the per-page persists, the objects phase's
+ * listing and delete calls, and up to ~100 confirmation calls — order 600-700
+ * subrequests, before any headroom. Each constant looks safe to raise on its
+ * own and is not. A page of up to `R2_LIST_LIMIT` keys can yield that many
  * distinct reading ids — a run of `index/by-id/{id}` keys is exactly one id per
  * object — and each `VECTOR_LEDGER_WRITE_CHUNK` of them is its own D1
  * statement. Twenty pages would therefore put ~1000 D1 statements in one

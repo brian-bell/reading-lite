@@ -524,8 +524,10 @@ async function runCorpusMigrateFounder(
   const tenantId = tenant.tenantId;
   const { io } = deps;
   // Resolved up front so an unrecognised --bucket (no known control plane)
-  // stops the run before it copies or upserts anything. Plan mode gets the
-  // no-op: plan mode writes nothing to Vectorize either.
+  // stops an EXECUTE before it copies or upserts anything. Plan mode gets the
+  // no-op before the bucket is looked up, so a plan can succeed where the
+  // execute will refuse — plan mode writes nothing to Vectorize either, and has
+  // plenty to report without a control plane.
   const ledger = deps.makeLedger({ tenant, bucket: args.bucket, execute: args.execute });
 
   io.stderr(`Bucket: ${args.bucket}`);

@@ -161,8 +161,13 @@ async function runCorpusBackfillVectors(
     throw new Error("internal error: plan mode attempted a Vectorize write");
   };
   // Resolved before the credential check so an unrecognised --bucket (which has
-  // no known control plane) stops the run before it embeds or upserts anything,
-  // rather than after. An un-ledgered upsert is the stranding this closes.
+  // no known control plane) stops an EXECUTE before it embeds or upserts
+  // anything. Plan mode is deliberately not stopped — `operatorVectorLedger`
+  // returns the no-op before it looks the bucket up — so a plan can succeed
+  // where the execute will refuse. `corpus seed-vector-ledger` refuses in both
+  // modes instead, because writing rows is its whole purpose; here the ledger
+  // is a side effect of a command that has plenty to say in plan mode without
+  // a control plane.
   const ledger = deps.makeLedger({ tenant, bucket: opts.bucket, execute: opts.execute });
   // One clock read for both stamps, so a run is identifiable by it.
   const runAt = new Date(deps.now()).toISOString();
