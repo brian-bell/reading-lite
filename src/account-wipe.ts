@@ -793,14 +793,29 @@ async function runAccountWipeJob(
     await persist();
   }
 
+  // A `live` row that appeared after the vectors phase passed — a publisher, or
+  // an operator's offline writer, landing inside this pass — has never been
+  // submitted to `deleteByIds`. Go back to the vectors phase for it rather than
+  // confirming around it: this delivery's phase is `objects`, so a plain retry
+  // would re-enter below the vectors block and the row would be confirmed
+  // forever without anything ever asking Vectorize to delete it.
+  //
+  // The self-send is bounded by ACCOUNT_WIPE_MAX_CONTINUATIONS like every other
+  // one, so a tenant that somehow keeps acquiring vectors dead-letters where it
+  // can be seen instead of cycling.
+  if ((await countLedgerRows(db, tenantId)).live > 0) {
+    progress.phase = "vectors";
+    return continueResult();
+  }
+
   // Both phases are done — the objects loop only falls through here once the
   // prefix is confirmed empty; every partial pass returned `continue` above.
   //
-  // Terminal assurance before we are allowed to claim success (F3). The probe
-  // throws while the namespace still answers, so an unbound index, a
+  // Terminal assurance before we are allowed to claim success (F3). The ledger
+  // is the gate: it throws while any row survives, so an unbound index, a
   // never-submitted delete, or a delete that did not take leaves the job
   // retrying instead of reporting a wipe that removed nothing. It returns true
-  // only when the bound is spent and the wipe finishes unconfirmed.
+  // only when the attempt bound is spent and the wipe finishes unconfirmed.
   const residue = await assertLedgerEmptied(progress, env, db, tenantId, writer, now);
   const done = await writer.complete(progress, now(), residue);
   return {
@@ -1033,9 +1048,11 @@ async function assertLedgerEmptied(
     }
   }
 
-  // Rule 2, the fast path. Only meaningful once nothing is left to submit: a
-  // `live` row means a vector we have not asked Vectorize to delete yet, and an
-  // empty namespace would then be describing a delete that never happened.
+  // Rule 2, the fast path. Guarded on `live === 0` — the caller already sends a
+  // pass with live rows back to the vectors phase, so this is belt and braces,
+  // but the guard is the one that matters: a `live` row is a vector nobody has
+  // asked Vectorize to delete, and an empty namespace would then be describing
+  // a delete that never happened.
   let sawLiveVector = false;
   if (counts.live === 0) {
     let probeErrored = false;

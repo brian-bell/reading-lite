@@ -1872,6 +1872,39 @@ describe("account wipe (195b PR1)", () => {
       expect(await ledgerRows()).toEqual([]);
     });
 
+    it("goes back to the vectors phase for a row ledgered after that phase passed", async () => {
+      // The late-publish case the ledger exists to catch. A publisher (or an
+      // operator's offline writer) upserts a vector, and ledgers it, after this
+      // pass's vectors phase is already past. Confirming around it would leave a
+      // vector nobody ever asked Vectorize to delete — and, once R2 is empty, the
+      // ledger row would be the only thing that knew about it.
+      // The earlier pass already submitted and confirmed everything it knew
+      // about, so it left no ledger row of its own.
+      await seedTenantObjects([ID_A], { ledger: false });
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      await seedProgress({ phase: "objects", mutationIds: ["mut_old"] });
+      await seedLedger([ID_B]);
+
+      const first = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      // Not "complete" and not a confirmation retry: a self-send that reopens
+      // the vectors phase.
+      expect(first.kind).toBe("continue");
+      expect((await readProgress())!.phase).toBe("vectors");
+      expect(deleteByIds).not.toHaveBeenCalled();
+
+      const done = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      expect(done.kind).toBe("complete");
+      expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_B)]);
+      expect(await ledgerRows()).toEqual([]);
+    });
+
     it("re-marking a reading live clears the delete bookkeeping of its previous vector", async () => {
       // A reading republished after a delete was submitted has a NEW vector.
       // Carrying the old deleted_at_ms or streak forward would let a
