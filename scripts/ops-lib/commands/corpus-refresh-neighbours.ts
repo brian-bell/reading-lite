@@ -68,6 +68,7 @@ import {
 } from "../refresh-timing";
 import {
   chooseNeighboursBackend,
+  describeAccount,
   describeBackend,
   type BackendChoice,
   type NeighboursBackend,
@@ -479,16 +480,20 @@ async function refreshNeighbours(
   const marker = await readMarker(r2, r2Deps, io.stderr);
   const sweepWarning = fullSweepWarning(marker, now);
   if (!opts.full && sweepWarning !== null) {
-    // Pin the already-resolved backend. The default follows credentials, so a
-    // pasted command that omits --via can otherwise switch path — and
-    // Cloudflare account, despite identical bucket/index names.
+    // Pin the already-resolved backend, and name the account stdout would have
+    // printed. The default follows credentials, so a pasted command that omits
+    // --via can otherwise switch path — and Cloudflare account, despite identical
+    // bucket/index names. Scheduled jobs often capture only stderr, so the
+    // account has to live on this warning.
+    const account = describeAccount(choice);
     io.stderr(
       `  ! Full sweep overdue: ${sweepWarning}. ` +
       `Run npm run ops -- corpus refresh-neighbours --tenant "${tenantSelector}" ` +
       "--full --execute --sole-writer --out ./refresh-report-full.json " +
       `--bucket ${shellArg(opts.bucket)} --vectorize ${shellArg(vectorizeIndex)}` +
       (opts.remote ? "" : " --local") +
-      ` --via ${choice.backend}`,
+      ` --via ${choice.backend}` +
+      (account === undefined ? "" : `. ${account}`),
     );
   }
   const { items, etag: listEtag } = await r2.readListIndex(r2Deps);

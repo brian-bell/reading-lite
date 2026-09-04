@@ -119,17 +119,23 @@ export function chooseNeighboursBackend(inputs: BackendInputs): BackendChoice {
   };
 }
 
+/**
+ * The Account: line stdout prints for the direct path. Undefined on wrangler
+ * (which resolves its own account) and when the credentials name none.
+ */
+export function describeAccount(choice: BackendChoice): string | undefined {
+  if (choice.backend !== "direct" || choice.accountId === undefined) return undefined;
+  return choice.vectorizeAccountId === undefined
+    ? `Account: ${choice.accountId}`
+    : `Account: ${choice.accountId} (R2), ${choice.vectorizeAccountId} (Vectorize)`;
+}
+
 /** Header lines naming the path a pass actually ran over, and where. */
 export function describeBackend(choice: BackendChoice): string[] {
   const label = choice.backend === "direct" ? "direct (S3/REST)" : "wrangler";
   const lines = [`Storage: ${label} — ${choice.reason}`];
-  if (choice.backend === "direct" && choice.accountId !== undefined) {
-    lines.push(
-      choice.vectorizeAccountId === undefined
-        ? `Account: ${choice.accountId}`
-        : `Account: ${choice.accountId} (R2), ${choice.vectorizeAccountId} (Vectorize)`,
-    );
-  }
+  const account = describeAccount(choice);
+  if (account !== undefined) lines.push(account);
   return lines;
 }
 

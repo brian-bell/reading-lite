@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   chooseNeighboursBackend,
+  describeAccount,
   describeBackend,
   directNeighboursR2,
 } from "../../../scripts/ops-lib/neighbours-r2";
@@ -163,6 +164,9 @@ describe("chooseNeighboursBackend", () => {
     expect(
       describeBackend({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" }),
     ).toEqual(["Storage: direct (S3/REST) — CORPUS_R2_* keys", "Account: acct"]);
+    expect(
+      describeAccount({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" }),
+    ).toBe("Account: acct");
   });
 
   // The Vectorize client is built with its own account precedence. When the two
@@ -178,6 +182,7 @@ describe("chooseNeighboursBackend", () => {
       },
     });
     expect(describeBackend(choice)).toContain("Account: r2-acct (R2), vec-acct (Vectorize)");
+    expect(describeAccount(choice)).toBe("Account: r2-acct (R2), vec-acct (Vectorize)");
   });
 
   // The wrangler path resolves its own account from `wrangler login`, so this
@@ -186,6 +191,9 @@ describe("chooseNeighboursBackend", () => {
     expect(
       describeBackend({ backend: "wrangler", reason: "--via wrangler", accountId: "acct" }),
     ).toEqual(["Storage: wrangler — --via wrangler"]);
+    expect(
+      describeAccount({ backend: "wrangler", reason: "--via wrangler", accountId: "acct" }),
+    ).toBeUndefined();
   });
 });
 

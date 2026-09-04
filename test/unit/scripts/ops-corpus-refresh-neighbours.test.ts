@@ -216,6 +216,7 @@ describe("ops corpus refresh-neighbours", () => {
       const { deps, lines } = makeDeps({ state: marker });
       await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
       expect(warning(lines)[0]).toContain("--via wrangler");
+      expect(warning(lines)[0]).not.toContain("Account:");
     });
 
     it("pins --via direct when credentials auto-selected that path and --via was omitted", async () => {
@@ -231,6 +232,24 @@ describe("ops corpus refresh-neighbours", () => {
         }),
       });
       expect(warning(lines)[0]).toContain("--via direct");
+      expect(warning(lines)[0]).toContain("Account: acct");
+    });
+
+    it("names both accounts on the recovery warning when R2 and Vectorize differ", async () => {
+      const { deps, lines } = makeDeps({ state: marker });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {
+        ...deps,
+        directR2: () => deps.r2,
+        storageVars: () => ({
+          CORPUS_R2_ACCOUNT_ID: "r2-acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+          CORPUS_CF_API_TOKEN: "tok",
+          CORPUS_VECTORIZE_ACCOUNT_ID: "vec-acct",
+        }),
+      });
+      expect(warning(lines)[0]).toContain("--via direct");
+      expect(warning(lines)[0]).toContain("Account: r2-acct (R2), vec-acct (Vectorize)");
     });
   });
 
