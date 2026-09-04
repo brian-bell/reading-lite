@@ -155,7 +155,16 @@
  * `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS` and exists only to tell cron the job is
  * alive — a full-row D1 UPDATE per R2 page cost hundreds of writes a delivery
  * on a large tenant, and since the lease is a version rather than a clock,
- * losing a beat costs a re-list or an idempotent re-submit, never correctness.
+ * losing a beat costs a re-list or an idempotent re-submit rather than lost
+ * work.
+ *
+ * One thing a lost beat does cost, named rather than hidden behind "never
+ * correctness": `objects_deleted` is incremented before a page's delete and
+ * only reaches D1 on the next write, so an isolate that dies after the delete
+ * but before that write leaves those objects genuinely gone and uncounted. The
+ * completion record's tally can undercount. Nothing branches on it — it is a
+ * reporting figure — but do not read it as an audited count of what was
+ * destroyed.
  */
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
 import { parseTenantId, type TenantId } from "./control-plane/ids";
@@ -264,7 +273,8 @@ export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;
  * see — the lease claim, a phase transition, a `continue`'s cursor and
  * continuation count, probe bookkeeping, and the terminal record — goes through
  * `persist()`, which always writes. A crash between beats costs re-listing a
- * prefix or re-submitting an idempotent `deleteByIds`, never correctness.
+ * prefix or re-submitting an idempotent `deleteByIds` — never un-deleted data,
+ * though it can undercount `objects_deleted` (see the header).
  *
  * One consequence worth naming: a delivery that has lost the lease now finds
  * out at the next persist rather than at the next page, so it can keep deleting

@@ -24,6 +24,13 @@
 -- deletes the users row and reads this record to decide it may, so a cascade
 -- would destroy the evidence at the moment it is needed (design decision E).
 -- S4 removes this row explicitly, after the gate has been read.
+--
+-- Note this is a declaration of intent more than an enforced constraint: like
+-- every other `REFERENCES` in migrations 0001-0008, it does nothing at runtime
+-- unless `PRAGMA foreign_keys = ON`, which this codebase never sets. Declaring
+-- no-cascade still matters — it is what the schema means, and it is what would
+-- happen if enforcement were ever turned on — but S4 must delete this row
+-- explicitly because the ordering is its own responsibility, not the database's.
 CREATE TABLE wipe_progress (
   tenant_id TEXT PRIMARY KEY REFERENCES users(id),
   phase TEXT NOT NULL CHECK (phase IN ('vectors', 'objects', 'done')),
