@@ -44,6 +44,16 @@ const passthrough: Instrument = (_stage, fn) => fn();
 // `src/control-plane/vector-ledger.ts`). It is null in exactly the situations
 // `similarity` is — no Vectorize binding, so no vector to account for — and a
 // write to it always accompanies a write to the vector, never replaces one.
+//
+// One consequence worth naming where it will be read, because the symptom points
+// somewhere else: `publish` awaits the ledger write BEFORE the upsert and lets
+// it throw, so the reading-publish path now depends on D1 being reachable. A
+// transient control-plane error fails the terminal commit and, with
+// `defensive: false` on the success path, marks a fully summarized reading
+// `failed` — after the summarization has been paid for. Previously only
+// Vectorize could do that. It is the correct direction, because a failed publish
+// retries and an un-ledgered vector is unrecoverable, but when it surfaces it
+// will look like a Vectorize fault and it is not.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,

@@ -2265,6 +2265,36 @@ describe("account wipe (195b PR1)", () => {
       expect(await listPrefixKeys(PREFIX)).toEqual([]);
     });
 
+    it("re-verifies a REOPENED wipe rather than trusting the earlier pass's mutations", async () => {
+      // `reopenWipeProgress` clears `coverageVerifiedAtMs` on purpose: leftover
+      // objects mean readings that may never have been ledgered. But it does
+      // NOT clear `mutationIds`, so a bare "has this wipe submitted deletes"
+      // bypass was taken by every reopen — using a previous pass's mutation ids
+      // as evidence about a corpus that has since changed, and making the
+      // re-verification dead code. A reopen always has a first completion
+      // stamped, which is what separates it from the deploy-window case.
+      await seedTenantObjects([ID_A], { ledger: false }); // ready, un-ledgered
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      await seedProgress({
+        phase: "vectors",
+        mutationIds: ["mut_from_the_earlier_pass"],
+        firstCompletedAtMs: NOW_MS - 60_000,
+        firstResidue: false,
+        coverageVerifiedAtMs: null,
+      });
+      const before = await listPrefixKeys(PREFIX);
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+    });
+
     it("accepts a wipe already in flight when the check landed", async () => {
       // The deploy window, and only it. Such a wipe has submitted deletes for
       // rows that were `live` when it read them — the evidence the check looks

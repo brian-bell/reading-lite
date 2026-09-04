@@ -203,14 +203,33 @@ submits `deleteByIds` only for ids the ledger names. An environment whose corpus
 predates the ledger has vectors and no rows, so its first wipe submits nothing,
 empties R2, and leaves every embedding behind.
 
-It does **not** get that far. Before the objects phase deletes a single R2
-object, the wipe checks for the one shape that cannot be recovered from: an
-empty ledger *and* a namespace that still answers. That is an unseeded tenant,
-so it raises a high-severity `account_wipe_unseeded_tenant` alert and throws
-with **nothing deleted** — because R2 is where this command derives its ids
-from, and emptying it first is precisely what would strand those vectors
-forever. The job then dead-letters, which is the right shape: no delivery can
-fix it, only an operator running the seed. Seed, then re-drive the wipe.
+It does **not** get that far. Before **any** phase runs — the vectors phase
+included — the wipe checks that the ledger covers the corpus, and refuses with a
+high-severity `account_wipe_unseeded_tenant` alert and **nothing deleted**,
+because R2 is where this command derives its ids from and emptying it first is
+what would strand those vectors forever.
+
+What exactly it refuses on, since it is stricter than "the ledger is empty":
+
+- **Normally**, every `ready` row in `index/list.json` must have a
+  `vector_ledger` row. One that does not is enough — a *partially* seeded tenant
+  with a non-empty ledger is refused, not only a wholly unseeded one. The
+  namespace is not consulted on this path.
+- **Above `LEDGER_COVERAGE_MAX_SCAN` ready readings**, the corpus is too large to
+  check id by id in one invocation, so it compares live-row counts instead:
+  fewer live rows than ready readings is a refusal. Coarser — it cannot see a
+  partial hole whose count happens to match.
+- **When `index/list.json` cannot be read at all**, it falls back to the one
+  question still answerable without it: no live ledger row *and* a namespace
+  that still answers.
+
+The verdict is stamped on `wipe_progress.coverage_verified_at_ms`, so it costs
+one walk per wipe rather than one per delivery; a reopened wipe re-verifies.
+
+The refusal dead-letters, and because the progress record stays in-progress cron
+re-enqueues on the next 15-minute tick — so the alert **recurs** until an
+operator seeds, at which point the next tick simply proceeds. Self-healing, but
+not self-silencing. Seed, then let cron re-drive it (or force it).
 
 ```sh
 # Plan first. It lists every reading id it would ledger and writes nothing.

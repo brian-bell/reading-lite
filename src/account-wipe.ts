@@ -834,16 +834,26 @@ async function runAccountWipeJob(
   // delivery, and so a resumed delivery honours a verdict reached while the
   // rows still meant something.
   if (progress.coverageVerifiedAtMs === null) {
-    if (progress.mutationIds.length > 0) {
+    if (progress.firstCompletedAtMs === null && progress.mutationIds.length > 0) {
       // A wipe that was already in flight when this check landed — the deploy
       // window, and only that. It has submitted deletes for rows that were
       // `live` when it read them, which is the evidence the check looks for,
       // and its ledger cannot be re-measured now that those rows have flipped.
       // Accept it rather than refuse a wipe that is demonstrably working.
       //
-      // Not a hole in the general case: on any wipe that starts after this
-      // deploys, the check runs before the vectors phase, so `mutationIds` is
-      // empty here and the full comparison is what decides.
+      // `firstCompletedAtMs === null` is what confines it to that window, and it
+      // is load-bearing rather than belt-and-braces. `reopenWipeProgress` clears
+      // `coverageVerifiedAtMs` on purpose — leftover objects mean readings that
+      // may never have been ledgered — but it does NOT clear `mutationIds`, so
+      // on a bare `mutationIds.length > 0` test every reopened wipe took this
+      // branch and skipped the walk, using a previous pass's mutation ids as
+      // evidence about a corpus that has since changed. That made the reopen's
+      // re-verification dead code. A reopen always has a first completion
+      // stamped, so requiring its absence excludes exactly that case.
+      //
+      // Not a hole in the general case either: on any wipe that starts after
+      // this deploys, the check runs before the vectors phase, so `mutationIds`
+      // is empty here and the full comparison is what decides.
       console.info(
         JSON.stringify({
           event: "account_wipe_coverage_assumed",
