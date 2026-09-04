@@ -1,5 +1,5 @@
 import { MAGIC_LINK_VERIFY_PATH } from "./constants";
-import { originOfUrl } from "./origin";
+import { isPublicWebOrigin, originOfUrl } from "./origin";
 
 export interface MagicLinkMail {
   to: string;
@@ -37,11 +37,30 @@ export function buildMagicLinkVerifyUrl(
   return `${base}${MAGIC_LINK_VERIFY_PATH}${qs}#${credential}`;
 }
 
+/**
+ * Base URL for the magic-link mail (both call sites are in `auth-handlers`).
+ * Notification and digest links are queue-side, have no inbound request to
+ * read a host from, and go on using `WEB_BASE_URL` directly.
+ *
+ * The Worker answers on more than one public host during a domain move, so a
+ * login started on either one has to be answered on that same host: the session
+ * cookie is `__Host-`-prefixed and therefore host-only, and a link back to the
+ * other host would drop the user on a page they are not signed in on. The
+ * request's own origin is preferred when it is a known public host, and
+ * `WEB_BASE_URL` is the fallback for every other case.
+ *
+ * `requestUrl` derives from the inbound `Host` header, so it is not
+ * trustworthy on its own — that is exactly what the allowlist is for. An
+ * unrecognised or spoofed host cannot steer a link anywhere; it lands on the
+ * configured base as before.
+ */
 export function publicWebBase(webBaseUrl: string | undefined, requestUrl: string): string {
+  const requestOrigin = originOfUrl(requestUrl);
+  if (requestOrigin && isPublicWebOrigin(requestOrigin)) return requestOrigin;
   if (webBaseUrl && webBaseUrl.trim() !== "") {
     return webBaseUrl.replace(/\/+$/, "");
   }
-  return originOfUrl(requestUrl) ?? "";
+  return requestOrigin ?? "";
 }
 
 export function renderMagicLinkMail(verifyUrl: string): { subject: string; html: string; text: string } {
