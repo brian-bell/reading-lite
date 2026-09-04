@@ -520,8 +520,11 @@ describe("extractFromUrl", () => {
       });
       const sleep = vi.fn(async () => {});
       let attempts = 0;
-      // First resolution answers empty (a DoH hiccup surfaces as ENOTFOUND on
-      // both families, which the adapter folds to []); the second succeeds.
+      // First resolution answers empty; the second succeeds. Measured against
+      // the pinned workerd, a resolver fault is indistinguishable from a dead
+      // domain here — `dnssec-failed.org` answers SERVFAIL at the wire and
+      // ENOTFOUND through node:dns, the same code a missing name gives — so an
+      // empty result has to stay recoverable.
       const lookup: LookupFn = async () => (++attempts === 1 ? [] : [{ address: "93.184.216.34" }]);
       const out = await extractFromUrl(
         "https://blip.example/",

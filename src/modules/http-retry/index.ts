@@ -60,9 +60,15 @@ export async function fetchWithRetry(
       // A rejected destination is a verdict about attacker-controlled egress:
       // the guard already decided this URL (or its redirect chain) must not be
       // reached, so retrying would only re-hit the attacker's first hop.
-      // DestinationResolutionError is deliberately NOT in that set — it means
-      // the resolver gave us nothing, no hop was issued, and a transient DoH
-      // failure must not become a terminal `failed` manifest.
+      //
+      // DestinationResolutionError is deliberately NOT in that set. workerd's
+      // DoH collapses SERVFAIL, NXDOMAIN and no-records onto one code (see
+      // lookupFromResolvers), so an unresolvable destination may be a blip, and
+      // refusing to retry it turns one into a terminal `failed` manifest. The
+      // cost is that when the failure lands on a redirect hop the whole chain
+      // replays from the original URL — bounded by maxAttempts and by the
+      // caller's extraction timeout, and paid only on chains that were already
+      // failing.
       if (isRejectedDestinationError(e)) throw e;
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;

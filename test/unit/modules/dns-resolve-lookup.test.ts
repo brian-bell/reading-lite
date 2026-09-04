@@ -64,7 +64,7 @@ describe("lookupFromResolvers", () => {
     await expect(lookupFromResolvers({ resolve4, resolve6 })("empty.example")).resolves.toEqual([]);
   });
 
-  it("propagates a hard resolver error when the other family has no addresses", async () => {
+  it("reports a hard resolver error when the other family has no addresses", async () => {
     const hard = codedError("ESERVFAIL", "SERVFAIL");
     const resolve4 = vi.fn(async () => {
       throw hard;
@@ -73,7 +73,9 @@ describe("lookupFromResolvers", () => {
       throw codedError("ENODATA");
     });
 
-    await expect(lookupFromResolvers({ resolve4, resolve6 })("broken.example")).rejects.toBe(hard);
+    await expect(
+      lookupFromResolvers({ resolve4, resolve6 })("broken.example"),
+    ).rejects.toMatchObject({ name: "DestinationResolutionError", cause: hard });
   });
 
   // A hard error means one family was never vetted, while `fetch` re-resolves
@@ -89,7 +91,7 @@ describe("lookupFromResolvers", () => {
 
     await expect(
       lookupFromResolvers({ resolve4, resolve6 })("partial.example"),
-    ).rejects.toBe(hard);
+    ).rejects.toMatchObject({ name: "DestinationResolutionError", cause: hard });
   });
 
   it("fails closed when the unvetted family is the one carrying the private record", async () => {
@@ -101,7 +103,27 @@ describe("lookupFromResolvers", () => {
 
     await expect(
       lookupFromResolvers({ resolve4, resolve6 })("split-answer.example"),
-    ).rejects.toBe(hard);
+    ).rejects.toMatchObject({ name: "DestinationResolutionError", cause: hard });
+  });
+
+  // The raw node/workerd DNS error is named "Error", which retryableError does
+  // not whitelist — so an unwrapped throw would commit a terminal, NON-retryable
+  // failed manifest for what is a resolver fault. The typed wrapper is what
+  // keeps the row recoverable, so it must carry the original as `cause` rather
+  // than discard it.
+  it("keeps the original resolver error reachable for diagnostics", async () => {
+    const hard = codedError("ETIMEOUT", "resolver timed out");
+    const resolve4 = vi.fn(async () => ["8.8.8.8"]);
+    const resolve6 = vi.fn(async () => {
+      throw hard;
+    });
+
+    const error = await lookupFromResolvers({ resolve4, resolve6 })("slow.example").then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(error?.message).toContain("slow.example");
+    expect((error?.cause as { code?: string }).code).toBe("ETIMEOUT");
   });
 });
 

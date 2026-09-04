@@ -1,4 +1,5 @@
 import { resolve4, resolve6 } from "node:dns/promises";
+import { DestinationResolutionError } from "./modules/extractor/safe-fetch";
 import type { LookupFn, ResolvedAddress } from "./modules/extractor/safe-fetch";
 
 export interface Services {
@@ -18,24 +19,28 @@ export interface DnsResolvers {
 // Cloudflare's node:dns is DoH to 1.1.1.1 and throws on lookup / lookupService /
 // resolve. resolve4 + resolve6 are the implemented surface.
 //
-// The tolerated set is load-bearing, because this runs on every hop of every
-// reading: get it wrong and single-stack hosts stop resolving corpus-wide.
-// Measured against the workerd this repo pins, a family with no records
-// rejects with `code === "ENOTFOUND"` and message `queryAaaa ENOTFOUND
-// <host>` — the same code an entirely nonexistent name gives on both
-// families. So ENOTFOUND (and node's ENODATA/ENOENT spellings, for the
-// operator paths that inject node's own resolver) means "this family has no
-// records", which is normal and not a reason to refuse the fetch.
+// The tolerated set is load-bearing — this runs on every hop of every reading,
+// so mis-modeling it stops single-stack hosts resolving corpus-wide. Measured
+// against the workerd this repo pins, ENOTFOUND is what comes back for a family
+// with no records (`queryAaaa ENOTFOUND github.com`), for a name that does not
+// exist, AND for a name whose nameservers answer SERVFAIL: `dnssec-failed.org`
+// gets SERVFAIL from 1.1.1.1 at the wire level and ENOTFOUND here. workerd
+// collapses all three onto one code, so this layer CANNOT tell a dead domain
+// from a resolver fault. That is why an empty result is treated as possibly
+// transient downstream (see DestinationResolutionError's handling): the cost of
+// retrying a dead domain is a few attempts, the cost of not retrying a blip is
+// a good reading permanently failed.
 //
-// Anything else means a family went UNVETTED while `fetch` will still
+// A code outside that set therefore means something other than a DNS answer
+// went wrong, and the family it covers went UNVETTED while `fetch` will still
 // re-resolve and may connect over it — so it fails closed even when the other
 // family answered. Returning the survivors would let an attacker whose
 // nameserver faults A queries hide a private A record behind a public AAAA
 // answer: deterministic and attacker-chosen, unlike the DNS-rebinding race
-// safe-fetch.ts documents as an accepted residual. The cost is that a host
-// whose nameserver genuinely faults one family becomes unfetchable; it
-// surfaces as an ordinary transport error, so fetchWithRetry retries it and
-// the manifest stays retryable rather than terminal.
+// safe-fetch.ts documents as an accepted residual. It is wrapped rather than
+// rethrown because the raw error is named "Error", which `retryableError` does
+// not whitelist — an unwrapped throw would commit a terminal, non-retryable
+// manifest for a fault that may well clear.
 export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
   return async (hostname) => {
     const [v4, v6] = await Promise.allSettled([
@@ -54,7 +59,13 @@ export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
     } else if (!isNoDataError(v6.reason)) {
       hardError = v6.reason;
     }
-    if (hardError !== undefined) throw hardError;
+    if (hardError !== undefined) {
+      throw new DestinationResolutionError(
+        hostname,
+        `destination resolver failed for ${hostname}`,
+        { cause: hardError },
+      );
+    }
     return addresses;
   };
 }
