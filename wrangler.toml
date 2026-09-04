@@ -438,8 +438,9 @@ class_name = "GlobalUsageGuard"
 # original reading-lite.bbell.dev and the new bbookmarks.com, on the same Worker
 # script, bucket, D1 and Vectorize index. The data plane does not branch on
 # hostname, so /api/* and /health behave the same on either host. /mcp* and
-# anything link-emitting do NOT yet — MCP_ALLOWED_ORIGINS and WEB_BASE_URL below
-# still name the old host, and sessions are host-scoped; see the
+# anything link-emitting do NOT yet — MCP_ALLOWED_ORIGINS and WEB_BASE_URL in
+# [env.production.vars] above still name the old host, and sessions are
+# host-scoped (the session cookie carries no Domain attribute); see the
 # "bbookmarks.com dual-serve" section of docs/operations.md for the caveats.
 # Keep the bbell.dev routes until the old host is formally retired — they are
 # the rollback path. `www.bbookmarks.com` is a Cloudflare redirect rule to the

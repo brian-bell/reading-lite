@@ -331,7 +331,10 @@ Two prerequisites, both dashboard work, both outside this repo:
   authentication error 10000 on `/zones/.../workers/routes`; with no grant on
   the zone at all (the likely state for a newly added zone) the zone lookup
   returns nothing and wrangler fails with `Could not find zone for
-  bbookmarks.com`. Mind what either leaves behind: the migrations and the new
+  bbookmarks.com`. A third variant has nothing to do with the token: if one of
+  these patterns is already bound to a different Worker in that zone, the
+  publish fails with `Can't deploy routes that are assigned to another worker`.
+  Mind what any of them leaves behind: the migrations and the new
   Worker script **have** landed and are live on the existing
   `reading-lite.bbell.dev` routes; only the route addition fails. And because
   `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only on
@@ -350,8 +353,13 @@ Two prerequisites, both dashboard work, both outside this repo:
   to the `main` branch, with an Active certificate. This is an ordering
   prerequisite, not a cosmetic one: a Worker route only receives traffic for a
   hostname that has a proxied DNS record in the zone, and the Pages custom-domain
-  binding is what creates that record at the apex. Without it the new host serves
-  neither the SPA nor the API — the routes below are simply inert.
+  binding is what creates that record at the apex. While the apex has no proxied
+  record — its state as of 2026-09-04, when it resolved to no A, AAAA or CNAME —
+  the routes are simply inert and the new host serves neither SPA nor API. Note
+  the flip side: if the apex is ever proxied to something else first (a parked
+  page, another site or Worker), these routes take `/api/*`, `/health` and
+  `/mcp*` on that hostname from the next production deploy, before any
+  deliberate cutover. Check the apex before deploying if that may have changed.
 
 `WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
 addition: emitted links and the MCP Origin allowlist still name
