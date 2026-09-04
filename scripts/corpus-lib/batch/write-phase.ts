@@ -25,6 +25,7 @@ import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
 // client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
@@ -45,6 +46,27 @@ export interface WriteDeps {
   // header listed: an upsert landing after the wipe's vectors phase left a
   // vector with no derivable id. The ledger closes it by holding the id.
   ledger?: VectorLedger;
+  /**
+   * The tenant's Vectorize namespace, or undefined for the pre-tenant layout.
+   *
+   * PRE-EXISTING BUG, fixed here (found reviewing issue #195 S3). Every other
+   * vector writer composes the ADR 0002 tenant-scoped vector id —
+   * `similarity-store.ts` in the Worker, `corpus backfill-vectors`, and
+   * `corpus migrate-founder` all write `{tenantId}:{readingId}` — but
+   * `makeVectorizeClient.upsert` only attaches `namespace`, so this pipeline
+   * was writing tenant vectors under the BARE reading id.
+   *
+   * That was inert while nothing addressed those vectors by id. It stops being
+   * inert with the ledger: the wipe composes the tenant-scoped id for both
+   * `deleteByIds` and the per-id confirmation, so a bare-id vector would be
+   * missed by the delete AND read as absent by the confirmation — clearing its
+   * ledger row and declaring gone a vector that is still live, which is the one
+   * outcome the ledger exists to prevent.
+   *
+   * Vectors written under bare ids by earlier `--tenant` batch runs are not
+   * repaired here; that audit belongs to the residue scan (slice S5).
+   */
+  vectorNamespace?: string;
   embedMany(inputs: string[]): Promise<EmbedResult>;
   now(): string;
   log?: (line: string) => void;
@@ -379,17 +401,31 @@ async function writeNormalizedResults(
     );
     successes.push({ target, manifest });
     vectors.push({
-      id: target.id,
+      // The ADR 0002 tenant-scoped id, composed through the one function that
+      // spells that rule (`tenantVectorId`). Bare id when there is no
+      // namespace, exactly as before, so the pre-tenant layout is unchanged.
+      id: tenantVectorId(deps.vectorNamespace, target.id),
       values: embedding,
-      metadata: vectorMetadata(manifest),
+      // ...and its audit stamp, matching what the Worker and the founder
+      // migration write. `migrate-founder`'s reconciliation rejects a prefixed
+      // vector without it.
+      metadata:
+        deps.vectorNamespace === undefined
+          ? vectorMetadata(manifest)
+          : { ...vectorMetadata(manifest), tenant_id: deps.vectorNamespace },
     });
   }
   if (vectors.length > 0) {
     // Ledger BEFORE the upsert. A row for an upsert that then fails costs one
     // redundant `deleteByIds`; an upsert with no row is a vector nothing can
     // address once the reading's R2 objects are gone.
+    //
+    // BARE reading ids, not the composed vector ids above: the ledger stores
+    // the reading id and the wipe re-composes through `tenantVectorId`, so
+    // there is exactly one spelling of that rule and no stored copy of its
+    // output to drift.
     await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(
-      vectors.map((vector) => vector.id),
+      resolvedSuccess.map(({ target }) => target.id),
       Date.now(),
     );
     await deps.vectorize.upsert(vectors);

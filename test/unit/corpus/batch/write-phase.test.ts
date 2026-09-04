@@ -13,6 +13,7 @@ import type {
 import type { BatchResult } from "../../../../scripts/corpus-lib/batch/clients";
 
 const NOW = "2026-06-18T12:00:00.000Z";
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 
 function sidecarTarget(over: Partial<SidecarTarget> = {}): SidecarTarget {
   return {
@@ -293,6 +294,50 @@ describe("writeResults — success path", () => {
     expect(vec.upserts[0]!.id).toBe("rd_a");
     expect(vec.upserts[0]!.values).toHaveLength(1536);
     expect(vec.upserts[0]!.metadata).toMatchObject({ url: "https://example.com/a", title: "Resolved Title", tags: ["ai", "infra"] });
+  });
+
+  // A pre-existing corpus bug, found while reviewing issue #195 S3. Every other
+  // vector writer composes the ADR 0002 tenant-scoped id, but
+  // `makeVectorizeClient.upsert` only attaches `namespace`, so this pipeline
+  // wrote tenant vectors under the BARE reading id. Inert until the ledger
+  // arrived; with it, the wipe composes `{tenantId}:{readingId}` for both the
+  // delete and the confirmation, so a bare-id vector would be missed by the
+  // delete AND read as absent by the confirmation — clearing its ledger row and
+  // declaring gone a vector that is still live.
+  it("upserts the tenant-scoped vector id and its audit stamp under a namespace", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], {
+      ...deps(r2, vec),
+      vectorNamespace: TENANT,
+    });
+    expect(vec.upserts[0]!.id).toBe(`${TENANT}:rd_a`);
+    // The stamp matters too: migrate-founder's reconciliation rejects a
+    // prefixed vector that lacks it.
+    expect(vec.upserts[0]!.metadata).toMatchObject({ tenant_id: TENANT });
+  });
+
+  it("keeps the bare id with no namespace, so the pre-tenant layout is unchanged", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec));
+    expect(vec.upserts[0]!.id).toBe("rd_a");
+    expect(vec.upserts[0]!.metadata).not.toHaveProperty("tenant_id");
+  });
+
+  it("ledgers the BARE reading id even when the vector id is composed", async () => {
+    // The ledger stores reading ids and the wipe re-composes through
+    // `tenantVectorId`, so there is one spelling of that rule and no stored
+    // copy of its output to drift.
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    const { ledger, events } = fakeLedger(vec);
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], {
+      ...deps(r2, vec, embedMany(), ledger),
+      vectorNamespace: TENANT,
+    });
+    expect(events).toEqual(["live:rd_a:0"]);
+    expect(vec.upserts[0]!.id).toBe(`${TENANT}:rd_a`);
   });
 
   it("ledgers every reading id BEFORE upserting its vector", async () => {

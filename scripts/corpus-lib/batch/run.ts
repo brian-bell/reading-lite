@@ -56,6 +56,12 @@ export interface BatchRunDeps {
   // wipe can never address. Omitted for `--tenant global` and in tests, where
   // write-phase falls back to the no-op.
   ledger?: VectorLedger;
+  /**
+   * The tenant's Vectorize namespace, so write-phase can compose the ADR 0002
+   * tenant-scoped vector id. Undefined for `--tenant global`. See
+   * `WriteDeps.vectorNamespace` for the pre-existing bug this closes.
+   */
+  vectorNamespace?: string;
   batch?: AnthropicBatchClient;
   openaiBatch?: OpenAIBatchClient;
   embed: OpenAIEmbedClient;
@@ -462,6 +468,7 @@ async function pollAndWrite(
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     now: deps.now,
     ...(deps.ledger ? { ledger: deps.ledger } : {}),
+    ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
     ...(deps.log ? { log: deps.log } : {}),
   });
 }
@@ -523,6 +530,7 @@ async function pollAndWriteOpenAI(
       embedMany: (inputs) => deps.embed.embedMany(inputs),
       now: deps.now,
       ...(deps.ledger ? { ledger: deps.ledger } : {}),
+      ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
       ...(deps.log ? { log: deps.log } : {}),
     },
   );

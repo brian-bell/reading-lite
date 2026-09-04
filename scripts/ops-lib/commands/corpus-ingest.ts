@@ -305,6 +305,11 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
         // the run's own tenant and bucket; the no-op for --tenant global, which
         // no account wipe addresses.
         ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
+        // So write-phase composes the ADR 0002 tenant-scoped vector id, like
+        // every other writer. Undefined for --tenant global.
+        ...(cfg.vectorize.namespace === undefined
+          ? {}
+          : { vectorNamespace: cfg.vectorize.namespace }),
         ...(opts.limit === undefined ? {} : { limit: opts.limit }),
         r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
         vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
