@@ -60,7 +60,11 @@ import {
 } from "./control-plane/processing-leases";
 import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
-import { vectorLedgerFor, type VectorLedger } from "./control-plane/vector-ledger";
+import {
+  vectorLedgerFor,
+  VectorLedgerWriteError,
+  type VectorLedger,
+} from "./control-plane/vector-ledger";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -372,6 +376,30 @@ export async function processReading(
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
       throw e instanceof DeferPaidWorkError ? e : new DeferPaidWorkError();
+    }
+    if (e instanceof VectorLedgerWriteError) {
+      // Fail closed on a ledger write, but do not destroy anything to do it.
+      // The manifest is already committed `ready` and the summarization is paid
+      // for; marking the reading failed would throw both away over a control-
+      // plane blip. Requeue on the same terms as a 429 instead: the processing
+      // checkpoint means the retry re-uses the cached summary rather than
+      // re-spending, and it re-attempts the one write that did not land.
+      //
+      // The ordering in `ReadingVisibility.publish` is what makes this safe to
+      // retry: the ledger row is written BEFORE the upsert, so a failure here
+      // means no vector was written either. There is no stranded vector to
+      // clean up — only a reading that is not yet in search.
+      console.error(
+        JSON.stringify({
+          event: "reading_ledger_write_failed",
+          reading_id: args.id,
+          tenant_id: tenantId,
+          message: e.message,
+          note: "publish failed closed on the vector ledger; requeuing without marking the reading failed",
+        }),
+      );
+      if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
+      throw e;
     }
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this
@@ -959,6 +987,20 @@ async function reconcileVisibility(
     await fn();
     return true;
   } catch (e) {
+    // The defensive policy exists for writes a later pass repairs: a list row
+    // that did not land is re-appended by the next terminal write, a vector
+    // that did not upsert is restored by `ops corpus backfill-vectors`. Both
+    // are visible and both self-heal, so swallowing them is right — the
+    // manifest is already committed and failing the reading over them would
+    // throw away paid work for a repairable gap.
+    //
+    // A LEDGER write is not in that class. Nothing repairs it on its own, and
+    // nothing reports it: what survives is a published reading with no row in
+    // the one record that says which vectors this tenant owns. So it fails
+    // closed, and the delivery retries (see the outer catch, which requeues
+    // without marking the reading failed — the cached summarization means the
+    // retry costs nothing).
+    if (e instanceof VectorLedgerWriteError) throw e;
     console.error(e);
     return false;
   }

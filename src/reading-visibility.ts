@@ -47,13 +47,24 @@ const passthrough: Instrument = (_stage, fn) => fn();
 //
 // One consequence worth naming where it will be read, because the symptom points
 // somewhere else: `publish` awaits the ledger write BEFORE the upsert and lets
-// it throw, so the reading-publish path now depends on D1 being reachable. A
-// transient control-plane error fails the terminal commit and, with
-// `defensive: false` on the success path, marks a fully summarized reading
-// `failed` — after the summarization has been paid for. Previously only
-// Vectorize could do that. It is the correct direction, because a failed publish
-// retries and an un-ledgered vector is unrecoverable, but when it surfaces it
-// will look like a Vectorize fault and it is not.
+// it throw, so the reading-publish path now depends on D1 being reachable.
+//
+// That throw is NOT swallowed, unlike every other visibility write. The publish
+// path reconciles defensively (`reconcileVisibility(true, …)` in
+// process-reading.ts) because a list row or a vector that did not land is
+// visible and self-heals — the next terminal write re-appends the row, `ops
+// corpus backfill-vectors` restores the vector. A ledger row that did not land
+// is neither: nothing repairs it and nothing reports it, and what survives is a
+// published reading missing from the one record that says which vectors this
+// tenant owns. So `VectorLedgerWriteError` is re-thrown and the delivery
+// retries.
+//
+// Retrying is safe and cheap precisely because of the ordering below: the row
+// is written BEFORE the upsert, so a failure here means no vector was written
+// either — there is no stranded vector to clean up, only a reading not yet in
+// search. The manifest stays `ready`, the processing checkpoint means the retry
+// re-uses the cached summary rather than re-spending, and the queue re-attempts
+// the one write that did not land.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,

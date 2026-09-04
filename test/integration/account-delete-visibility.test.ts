@@ -1,7 +1,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
-import type { Env } from "../../src/index";
+import { dispatchQueueMessage, type Env } from "../../src/index";
+import { VectorLedgerWriteError } from "../../src/control-plane/vector-ledger";
 import { sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix, ReadingStore } from "../../src/modules/stores/reading-store";
 import { founderTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
@@ -140,6 +141,104 @@ async function clearBucket() {
 }
 
 beforeEach(clearBucket);
+
+describe("processReading — vector ledger at publish", () => {
+  it("fails closed and requeues when the ledger write throws, without marking the reading failed", async () => {
+    // Every other visibility write on this path is reconciled defensively —
+    // a list row or a vector that did not land is visible and self-heals. A
+    // LEDGER row that did not land is neither: nothing repairs it and nothing
+    // reports it, and what survives is a published reading missing from the one
+    // record that says which vectors this tenant owns. So it must propagate.
+    //
+    // And it must propagate WITHOUT destroying anything: the manifest is
+    // already committed `ready` and the summarization is paid for, so the
+    // delivery requeues rather than marking the reading failed. Safe to retry
+    // because the ledger row is written BEFORE the upsert — a failure here
+    // means no vector was written either, so there is no stranded vector, only
+    // a reading not yet in search.
+    const vector = installVectorizeStub();
+    const fetchFn = makeStubFetch();
+    const reader = testReadingStore(env);
+    const url = "https://example.com/ledger-fail-closed";
+    const urlHash = await sha256Hex(url);
+    const id = "rd_LEDGERX";
+    const createdAt = "2026-04-26T20:00:00.000Z";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const job: ProcessReadingArgs = {
+      id,
+      url,
+      urlHash,
+      createdAt,
+      keyPrefix,
+      attemptId: "at_LEDGERX",
+      attemptStartedAt: createdAt,
+      trigger: "submit",
+      email: false,
+    };
+    await reader.writeManifest(keyPrefix, {
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+
+    // Fail only the ledger INSERT, leaving every other control-plane read and
+    // write alone, so this test is about the ledger and not about D1 generally.
+    const workerEnv = env as unknown as Env;
+    const inner = workerEnv.CONTROL_PLANE;
+    const wrapped: Env = {
+      ...workerEnv,
+      CONTROL_PLANE: {
+        batch: (statements: unknown[]) => inner.batch(statements as never),
+        prepare(sql: string) {
+          if (/INSERT INTO vector_ledger/i.test(sql)) {
+            const boom = () => {
+              throw new Error("D1 unavailable");
+            };
+            return { bind: () => ({ first: boom, run: boom, all: boom }) };
+          }
+          return inner.prepare(sql);
+        },
+      } as unknown as D1Database,
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
+    ).rejects.toThrow(VectorLedgerWriteError);
+
+    consoleErr.mockRestore();
+    // The reading keeps everything it paid for: still ready, no error stamped.
+    const manifest = await reader.readManifest(keyPrefix);
+    expect(manifest?.status).toBe("ready");
+    expect(manifest?.error).toBeUndefined();
+    // And no vector was written, so nothing is stranded.
+    expect(vector.upsert).not.toHaveBeenCalled();
+  });
+
+  it("retries the delivery rather than acking it", async () => {
+    // The consumer's default branch acks, because processReading normally
+    // writes a failed manifest before throwing. It does not here, so acking
+    // would leave the published reading un-ledgered with nothing to notice.
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await dispatchQueueMessage(
+      { body: {}, ack, retry, attempts: 1 } as unknown as Message<unknown>,
+      async () => {
+        throw new VectorLedgerWriteError("usr_x", new Error("D1 unavailable"));
+      },
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("processReading — tenant status lookup at publish", () => {
   it("fail-opens and publishes when the post-CAS tenant-status lookup throws", async () => {

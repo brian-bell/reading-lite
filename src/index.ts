@@ -26,6 +26,7 @@ import {
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
+import { VectorLedgerWriteError } from "./control-plane/vector-ledger";
 import { DeferPaidWorkError } from "./control-plane/processing-leases";
 import { PROCESSING_DEFER_DELAY_SECONDS } from "./control-plane/constants";
 import { defaultServices } from "./services";
@@ -101,6 +102,16 @@ const RATE_LIMIT_DEFAULT_DELAY_MS = 30_000;
 const RATE_LIMIT_MAX_DELAY_MS = 300_000;
 // Cloudflare Queues caps msg.retry({delaySeconds}) at 12 hours.
 const QUEUE_MAX_DELAY_SECONDS = 43_200;
+/**
+ * How long to wait before retrying a delivery that failed closed on a vector
+ * ledger write.
+ *
+ * A control-plane blip, not an upstream refusing us, so there is no
+ * `Retry-After` to honour and no reason to back off for minutes. Long enough
+ * that a redeploy or a D1 hiccup has passed, short enough that the reading is
+ * in search promptly.
+ */
+const LEDGER_WRITE_RETRY_DELAY_SECONDS = 30;
 
 // Messages that exhaust their retries on the main queue land here (see
 // dead_letter_queue in wrangler.toml). The same worker consumes it.
@@ -131,6 +142,17 @@ export async function dispatchQueueMessage(
     }
     if (e instanceof RateLimitedError) {
       msg.retry({ delaySeconds: rateLimitedDelaySeconds(e, msg.attempts) });
+      return;
+    }
+    if (e instanceof VectorLedgerWriteError) {
+      // The publish path fails closed on a ledger write (issue #195 S3), and
+      // unlike the application errors below it did NOT write a failed manifest
+      // before throwing — deliberately, because the reading is committed
+      // `ready` and its summarization is paid for. Acking here would leave a
+      // published reading with no ledger row and nothing to notice it. Retry:
+      // the processing checkpoint means the retry re-uses the cached summary,
+      // so it costs a D1 write and nothing else.
+      msg.retry({ delaySeconds: LEDGER_WRITE_RETRY_DELAY_SECONDS });
       return;
     }
     // processReading writes a failed manifest before throwing for application

@@ -72,6 +72,30 @@ import { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../modules/stores/similarity-store
 export type VectorLedgerState = "live" | "delete_submitted";
 
 /**
+ * A ledger write failed.
+ *
+ * Typed so the publish path can tell it apart from every other write it makes.
+ * `commitTerminalManifest` reconciles visibility defensively — a failed list-row
+ * or vector write is logged and swallowed, because the manifest is already
+ * committed and a later pass repairs it. A failed LEDGER write must not be
+ * treated that way: swallowing it leaves a published reading with no row, which
+ * is a hole in the one record that says what vectors this tenant owns, and it
+ * is invisible. Fail closed and let the delivery retry instead.
+ */
+export class VectorLedgerWriteError extends Error {
+  constructor(
+    public readonly tenantId: string,
+    public readonly cause: unknown,
+  ) {
+    super(
+      `vector_ledger write failed for ${tenantId}: ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+    this.name = "VectorLedgerWriteError";
+  }
+}
+
+/**
  * How long after `deleteByIds` returns before the first confirmation attempt is
  * allowed to count.
  *
@@ -208,8 +232,19 @@ function chunked<T>(items: readonly T[], size: number): T[][] {
 
 /** D1-backed ledger for one tenant. */
 export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLedger {
+  // Every failure leaves this module as a VectorLedgerWriteError, so callers can
+  // distinguish "the ledger did not record this" from any other write they make
+  // in the same breath. See the class comment for why that distinction matters
+  // on the publish path.
+  const guarded = async (write: () => Promise<void>): Promise<void> => {
+    try {
+      await write();
+    } catch (error) {
+      throw new VectorLedgerWriteError(tenantId, error);
+    }
+  };
   return {
-    async markLive(readingIds, nowMs) {
+    markLive: (readingIds, nowMs) => guarded(async () => {
       // Re-marking an id `live` resets its delete bookkeeping, and that is the
       // point: a reading re-published after a delete was submitted for it has a
       // NEW vector, and carrying the old `deleted_at_ms` or absent streak
@@ -231,8 +266,8 @@ export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLe
           ...chunk.flatMap((readingId) => [tenantId, readingId, nowMs]),
         );
       }
-    },
-    async markDeleteSubmitted(readingIds, nowMs) {
+    }),
+    markDeleteSubmitted: (readingIds, nowMs) => guarded(async () => {
       // INSERT-or-update, not a bare UPDATE. A delete submitted for an id with
       // no ledger row (a pre-ledger reading, a purge racing a seed) still needs
       // its id kept: that id is the only thing that can address the vector if
@@ -252,7 +287,7 @@ export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLe
           ...chunk.flatMap((readingId) => [tenantId, readingId, nowMs, nowMs]),
         );
       }
-    },
+    }),
   };
 }
 
