@@ -283,6 +283,16 @@ export const ACCOUNT_WIPE_CONFIRM_BATCH = 500;
  */
 export const LEDGER_COVERAGE_CHUNK = 50;
 /**
+ * Ready readings above which the coverage check stops going id by id.
+ *
+ * 2000 ids is 40 D1 queries at LEDGER_COVERAGE_CHUNK — comfortable beside the
+ * objects phase's own listing and delete pages in the same invocation. Beyond
+ * it the scan would rival the phase it is guarding for subrequests, so the
+ * check degrades to a count comparison rather than risking a wipe that cannot
+ * start. See `assertLedgerCoversCorpus` for what each branch proves.
+ */
+export const LEDGER_COVERAGE_MAX_SCAN = 2000;
+/**
  * How many `continue` self-sends one wipe pass may make (review finding F7).
  *
  * A `continue` acks the current message and sends a fresh one, which starts a
@@ -1040,6 +1050,19 @@ async function assertLedgerCoversCorpus(
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
+  // Nothing left to protect. This guard exists to keep R2 objects alive because
+  // they are the only source the seeding command can derive ids from; with the
+  // prefix already empty there is no source to save and refusing would be
+  // actively wrong. A tenant that reaches here with residue in its namespace is
+  // the case `assertLedgerEmptied` is designed for — bounded attempts, then a
+  // residue alert and a completion record — and dead-lettering it instead, with
+  // an alert telling the operator to seed a corpus that no longer exists, would
+  // replace a designed outcome with a misleading loop.
+  //
+  // Reached on any delivery that re-enters the objects phase after the prefix
+  // was emptied: a confirmation retry, or a continuation.
+  if (!(await prefixHasObjects(env.READINGS_BUCKET, keyRoot))) return;
+
   const readyIds = await readyReadingIds(env.READINGS_BUCKET, keyRoot);
 
   if (readyIds === null) {
@@ -1053,6 +1076,28 @@ async function assertLedgerCoversCorpus(
     const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
     if ((await store.probeNamespace()).length === 0) return;
     refuseUnseeded(tenantId, "no readable index/list.json, empty ledger, namespace answers");
+  }
+
+  if (readyIds.length > LEDGER_COVERAGE_MAX_SCAN) {
+    // Too large to check id by id inside one invocation: at
+    // LEDGER_COVERAGE_CHUNK ids a query, an exhaustive scan of a very large
+    // corpus would spend more subrequests than the whole objects phase, and the
+    // wipe would fail before deleting anything rather than being protected.
+    //
+    // Fall back to comparing totals, which is one query and still catches the
+    // case that matters. An unseeded corpus has far fewer ledger rows than
+    // ready readings — usually none — so this refuses it. What it cannot see is
+    // a PARTIAL hole in a very large corpus: enough rows to match the count,
+    // with the wrong ids. That is a real gap, named here rather than hidden,
+    // and it is bounded to tenants above the scan limit.
+    const rows = (await countLedgerRows(db, tenantId)).total;
+    if (rows < readyIds.length) {
+      refuseUnseeded(
+        tenantId,
+        "fewer vector_ledger rows than ready readings (corpus too large to check id by id)",
+      );
+    }
+    return;
   }
 
   const missing = await firstUnledgeredId(db, tenantId, readyIds);
@@ -1277,6 +1322,13 @@ async function assertLedgerEmptied(
   let sawLiveVector = false;
   let probeErrored = false;
   let remaining: Awaited<ReturnType<typeof store.probeNamespace>> = [];
+  // Stamped BEFORE the call, not after. `clearTenantLedger` clears every row
+  // whose delete was submitted at or before this instant, on the strength of
+  // this probe — so the instant has to be one the probe's evidence actually
+  // covers. A delete submitted by a concurrent purge WHILE the probe was in
+  // flight would take a stamp below an after-the-fact sample and be cleared on
+  // evidence gathered before that vector's delete was even asked for.
+  const probedAtMs = now();
   try {
     remaining = await store.probeNamespace();
   } catch (error) {
@@ -1290,7 +1342,6 @@ async function assertLedgerEmptied(
       }),
     );
   }
-  const probedAtMs = now();
   if (!probeErrored && remaining.length === 0) {
     // Empty namespace, so nothing in it can be live and the fast path clears
     // the tenant's confirmed rows in one call (S6 §5.3). `live` rows are left

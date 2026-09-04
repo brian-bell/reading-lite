@@ -2062,6 +2062,46 @@ describe("account wipe (195b PR1)", () => {
       expect(await listPrefixKeys(PREFIX)).toEqual(before);
     });
 
+    it("does not fire once the prefix is empty, so residue takes the designed path", async () => {
+      // The guard exists to keep R2 objects alive, because they are the only
+      // source the seeding command derives ids from. With the prefix already
+      // emptied there is nothing to save, and refusing would swap a designed
+      // outcome — bounded attempts, then a residue alert and a completion
+      // record — for a dead-letter loop whose alert tells the operator to seed
+      // a corpus that no longer exists.
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+      // Empty ledger, empty prefix, and a namespace that still answers: exactly
+      // the un-ledgered-residue shape (a legacy bare-id vector, say).
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const errors: string[] = [];
+      const consoleErr = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+        errors.push(String(line));
+      });
+      const clock = { t: NOW_MS };
+      let result: Awaited<ReturnType<typeof processAccountWipeJob>> | null = null;
+      for (let pass = 0; pass < 8 && result === null; pass++) {
+        try {
+          result = await processAccountWipeJob(
+            accountWipeEnvelopeV1({ tenantId: TENANT }),
+            await wipeEnv(),
+            wipeJobDeps({ clock }),
+          );
+        } catch (error) {
+          // Never the unseeded refusal — that is the whole point.
+          expect(error).toBeInstanceOf(AccountWipeNamespaceNotEmptyError);
+          clock.t += (error as AccountWipeNamespaceNotEmptyError).retryAfterSeconds * 1000;
+        }
+      }
+      consoleErr.mockRestore();
+      expect(result).toMatchObject({ kind: "complete", residue: true });
+      expect(errors.find((l) => l.includes("account_wipe_namespace_residue"))).toBeDefined();
+      expect(errors.find((l) => l.includes("account_wipe_unseeded_tenant"))).toBeUndefined();
+    });
+
     it("falls back to the empty-ledger test when the list index cannot be read", async () => {
       // No readable index means coverage cannot be measured, so the guard asks
       // the one question that is still answerable: nothing in the ledger at all
@@ -2155,6 +2195,32 @@ describe("account wipe (195b PR1)", () => {
       // deliberately left behind.
       expect(await clearTenantLedger(controlPlane(), TENANT, NOW_MS)).toBe(1);
       expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_B, "live"]]);
+    });
+
+    it("does not clear a delete submitted while the probe was in flight", async () => {
+      // The probe instant is stamped BEFORE the call, not after. A delete
+      // submitted by a concurrent purge while the probe was in flight takes a
+      // stamp between the two, and an after-the-fact sample would sit above it —
+      // clearing that row on evidence gathered before its vector's delete was
+      // even asked for.
+      await seedLedgerSubmitted([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const clock = { t: NOW_MS };
+      queryIndex.mockImplementation(async () => {
+        // A purge lands mid-probe, for a different reading.
+        clock.t += 5_000;
+        await seedLedgerSubmitted([ID_B], clock.t);
+        return { count: 0, matches: [] };
+      });
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps({ clock }),
+      ).catch((error: unknown) => error);
+      // The row the probe could speak to is cleared; the one submitted after
+      // the probe instant survives, so the wipe is not finished.
+      expect((await ledgerRows()).map((r) => r.reading_id)).toEqual([ID_B]);
+      expect(result).not.toMatchObject({ kind: "complete" });
     });
 
     it("does not clear a row that was re-marked live after the absence was observed", async () => {
