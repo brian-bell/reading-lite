@@ -63,11 +63,4 @@ describe("account wipe wrangler wiring", () => {
       expect(vars![1]).toMatch(/^TENANT_DATA_PLANE = "1"$/m);
     }
   });
-
-  it("holds the staging S6 completed-wipe fixture out of automatic teardown", () => {
-    const source = read("src/account-wipe.ts");
-    expect(source).toContain("usr_5e6d0000-0000-4000-8000-000000000006");
-    expect(source).toMatch(/STAGING_S6_TEARDOWN_HOLD_TENANT_ID/);
-    expect(source).toMatch(/ACCOUNT_TEARDOWN_HELD_EVENT/);
-  });
 });

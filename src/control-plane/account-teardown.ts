@@ -103,11 +103,7 @@ export type AccountTeardownResult =
   | { kind: "not_deleting"; status: string }
   /** No completion record, or a reopened wipe. The gate refused. */
   | { kind: "wipe_incomplete" }
-  /**
-   * Objects remain under the tenant prefix, or we could not confirm. Fan-out
-   * reopens and enqueues on the same tick when the verdict is `not_empty`
-   * (a late leftover during the guard/address window).
-   */
+  /** Objects remain under the tenant prefix, or we could not confirm. */
   | { kind: "prefix_not_empty"; verdict: PrefixVerdict }
   /**
    * The account left `deleting` between the status read and the batch, so the

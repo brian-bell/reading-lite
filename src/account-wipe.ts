@@ -15,14 +15,9 @@
  * S4). Fan-out invokes that as its own stage, for a tenant whose wipe has
  * already completed and whose prefix is confirmed empty — never inside a
  * delivery, so a teardown failure retries on the next tick rather than dragging
- * a finished wipe back through the queue. If teardown's own prefix recheck
- * (after the Durable Object purges and the address-history lookup) finds a
- * late leftover, fan-out reopens the wipe and enqueues on **the same tick**
- * rather than waiting fifteen minutes. The staging S6 completed-wipe fixture
- * (`usr_5e6d0000-0000-4000-8000-000000000006`) is held out of automatic
- * teardown until `wipe_progress.force` is set — the explicit, intentional
- * path. `DELETE /api/account` is the suppress path and never enqueues; the
- * wipe is a shared-queue job plus the existing 15-minute cron.
+ * a finished wipe back through the queue. `DELETE /api/account` is the suppress
+ * path and never enqueues; the wipe is a shared-queue job plus the existing
+ * 15-minute cron.
  *
  * ## Invariants
  *
@@ -233,7 +228,6 @@
 import {
   tearDownAccount,
   type AccountTeardownEnv,
-  type AccountTeardownResult,
   type PrefixVerdict,
 } from "./control-plane/account-teardown";
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
@@ -387,22 +381,6 @@ export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_dele
 export const ACCOUNT_TEARDOWN_COMPLETE_EVENT = "account_teardown_complete";
 export const ACCOUNT_TEARDOWN_SKIPPED_EVENT = "account_teardown_skipped";
 export const ACCOUNT_TEARDOWN_FAILED_EVENT = "account_teardown_failed";
-export const ACCOUNT_TEARDOWN_HELD_EVENT = "account_teardown_held";
-/**
- * Staging S6 completed-wipe fixture. Automatic cron teardown must not destroy
- * it on the next 15-minute tick after S4 deploys: S6 left this tenant as a
- * known-good completed wipe so S4 could rehearse the hard delete under
- * operator control. Fan-out skips teardown for this id unless the wipe
- * record's `force` flag is set — that is the explicit, intentional path
- * (`UPDATE wipe_progress SET force = 1 WHERE tenant_id = …`).
- */
-export const STAGING_S6_TEARDOWN_HOLD_TENANT_ID =
-  "usr_5e6d0000-0000-4000-8000-000000000006";
-
-export function isAccountTeardownHeld(tenantId: string): boolean {
-  return tenantId === STAGING_S6_TEARDOWN_HOLD_TENANT_ID;
-}
-
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
 /**
@@ -641,17 +619,13 @@ function warnMissingDeletingAt(tenantId: string, deletingAtMs: number | null | u
  * per-tenant `account_teardown_complete` log is the observable signal; the
  * fan-out's return value deliberately stays `{ enqueued }`, since a teardown
  * is not an enqueue and a second counter nothing reads would only be noise.
- *
- * Returns the teardown result (or `{ kind: "failed" }` on throw) so fan-out
- * can reopen on the same tick when a late leftover made the prefix recheck
- * `not_empty`. Other non-success verdicts stay a skip for this tick.
  */
 async function tearDownFinishedAccount(
   db: ControlPlaneDb,
   env: AccountWipeEnv,
   tenantId: TenantId,
   nowMs: number,
-): Promise<AccountTeardownResult | { kind: "failed" }> {
+): Promise<void> {
   try {
     const result = await tearDownAccount(db, env, {
       tenantId,
@@ -669,23 +643,19 @@ async function tearDownFinishedAccount(
           rows_deleted: result.rowsDeleted,
         }),
       );
-      return result;
+      return;
     }
     // Fan-out only calls this for a tenant it has just seen as completed with an
     // empty prefix, so every other verdict means the row moved underneath us or
-    // a late leftover landed during the guard/address window. Silence here would
-    // repeat forever on every tick with nothing to show for it. `not_empty` is
-    // the same-tick reopen path; fan-out logs this then enqueues rather than
-    // waiting fifteen minutes.
+    // is inconsistent. Silence here would repeat forever on every tick with
+    // nothing to show for it.
     console.warn(
       JSON.stringify({
         event: ACCOUNT_TEARDOWN_SKIPPED_EVENT,
         tenant_id: tenantId,
         reason: result.kind,
-        ...(result.kind === "prefix_not_empty" ? { verdict: result.verdict } : {}),
       }),
     );
-    return result;
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -695,7 +665,6 @@ async function tearDownFinishedAccount(
         note: "control-plane teardown did not finish; the audit row is written and the next tick retries",
       }),
     );
-    return { kind: "failed" };
   }
 }
 
@@ -735,37 +704,16 @@ export async function fanOutDueAccountWipes(
         // "already wiped": the completion record answers that directly.
         if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (stored.completedAtMs !== null) {
-        // Finished. Reopen if objects turned up under the prefix after the
+        // Finished. Reopen only if objects turned up under the prefix after the
         // fact; otherwise leave the completion record exactly as it is and hand
         // the tenant to control-plane teardown (S4) — the data plane is done,
         // so the `users` row, its child rows, and its Durable Object state come
         // down. Once that succeeds this tenant leaves `listDeletingUsers` and
         // is never enumerated again (finding F10). Teardown is deliberately not
         // run while leftover objects are reopening the wipe.
-        //
-        // The staging S6 fixture is held from that automatic hard-delete unless
-        // `force` is set on the wipe record. Leftover objects still reopen it:
-        // the hold is against teardown, not against wiping data that landed.
         if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) {
-          if (isAccountTeardownHeld(tenantId) && stored.force !== true) {
-            console.warn(
-              JSON.stringify({
-                event: ACCOUNT_TEARDOWN_HELD_EVENT,
-                tenant_id: tenantId,
-                note:
-                  "automatic control-plane teardown skipped: staging S6 completed-wipe fixture. Set wipe_progress.force=1 to tear it down on the next tick.",
-              }),
-            );
-            continue;
-          }
-          const outcome = await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
-          // A late leftover during the Durable Object / address-history window
-          // made teardown's own recheck `not_empty`. Reopen and enqueue on this
-          // tick rather than waiting for the next */15. `unknown` is not that
-          // path: we could not look, so we must not pretend there is work.
-          if (!(outcome.kind === "prefix_not_empty" && outcome.verdict === "not_empty")) {
-            continue;
-          }
+          await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
+          continue;
         }
       } else if (wipeLeaseHeld(stored.updatedAtMs, deps.nowMs)) {
         continue;
@@ -1197,12 +1145,10 @@ async function tenantPrefixHasObjects(
 /**
  * The same question, but keeping "we could not look" apart from "it is empty".
  *
- * Fan-out only decides whether to re-enqueue, so collapsing "empty" and
- * "unknown" into `false` costs the leftover-reopen check nothing. Teardown
- * hard-deletes a `users` row on the answer, and after that the tenant is gone
- * from `listDeletingUsers` and its leftover objects can never be found through
- * it again — so it needs the distinction. A teardown `not_empty` is then
- * propagated back so fan-out can reopen on the same tick.
+ * Fan-out only decides whether to re-enqueue, so collapsing the two into
+ * `false` costs it nothing. Teardown hard-deletes a `users` row on the answer,
+ * and after that the tenant is gone from `listDeletingUsers` and its leftover
+ * objects can never be found through it again — so it needs the distinction.
  */
 async function tenantPrefixVerdict(
   bucket: R2Bucket,

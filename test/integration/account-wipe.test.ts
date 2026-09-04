@@ -1,8 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ACCOUNT_TEARDOWN_HELD_EVENT,
-  ACCOUNT_TEARDOWN_SKIPPED_EVENT,
   ACCOUNT_WIPE_GRACE_MS,
   ACCOUNT_WIPE_IN_FLIGHT_MS,
   ACCOUNT_WIPE_MAX_CONTINUATIONS,
@@ -10,11 +8,9 @@ import {
   ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
   AccountWipeNamespaceNotEmptyError,
   R2_LIST_LIMIT,
-  STAGING_S6_TEARDOWN_HOLD_TENANT_ID,
   consumeAccountWipeMessage,
   fanOutDueAccountWipes,
   handleAccountWipeDeadLetter,
-  isAccountTeardownHeld,
   processAccountWipeJob,
   type AccountWipeJobDeps,
 } from "../../src/account-wipe";
@@ -2455,148 +2451,5 @@ describe("account teardown from cron fan-out (195 S4)", () => {
     expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
       "provisionable",
     );
-  });
-
-  it("reopens and enqueues on the same tick when a late object appears during teardown", async () => {
-    await completedWipe();
-    expect(await listPrefixKeys(PREFIX)).toEqual([]);
-
-    // Fan-out's empty-prefix check runs first. The object has to land after
-    // that and before teardown's own recheck — the Durable Object purge is
-    // that window.
-    (env as unknown as Record<string, DurableObjectNamespace>).TENANT_USAGE_GUARD = {
-      idFromName: (name: string) => name as unknown as DurableObjectId,
-      get: () =>
-        ({
-          fetch: async () => {
-            await env.READINGS_BUCKET.put(`${PREFIX}late.json`, "late");
-            return new Response(JSON.stringify({ ok: true }), { status: 200 });
-          },
-        }) as unknown as DurableObjectStub,
-    } as unknown as DurableObjectNamespace;
-
-    const warns: string[] = [];
-    const spy = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
-      warns.push(String(line));
-    });
-    try {
-      expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
-        enqueued: 1,
-      });
-    } finally {
-      spy.mockRestore();
-    }
-
-    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT, force: false })]);
-    expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(1);
-    const progress = await readProgress();
-    expect(progress!.completedAtMs).toBeNull();
-    expect(progress!.phase).toBe("vectors");
-    expect(warns.some((line) => line.includes(ACCOUNT_TEARDOWN_SKIPPED_EVENT))).toBe(true);
-    expect(warns.some((line) => line.includes('"verdict":"not_empty"'))).toBe(true);
-  });
-
-  const HELD = STAGING_S6_TEARDOWN_HOLD_TENANT_ID;
-  const heldTenant = parseTenantId(HELD)!;
-  const heldPrefix = tenantKeyRoot({ tenantId: heldTenant }, true);
-
-  async function insertHeldFixture(): Promise<void> {
-    await env.CONTROL_PLANE.prepare(
-      `INSERT INTO users (
-         id, email_canonical, email_display, status,
-         email_verified_at_ms, created_at_ms, updated_at_ms
-       ) VALUES (?, 's6-drill@test.example', 's6-drill@test.example', 'active', ?, ?, ?)`,
-    )
-      .bind(HELD, NOW_MS, NOW_MS, NOW_MS)
-      .run();
-  }
-
-  async function seedHeldProgress(partial: Partial<WipeProgress>): Promise<void> {
-    const db = controlPlane();
-    const stored = await readWipeProgress(db, heldTenant);
-    await new WipeProgressWriter(db, heldTenant, stored).write({
-      ...emptyWipeProgress(NOW_MS),
-      ...partial,
-    });
-  }
-
-  async function clearHeldFixture(): Promise<void> {
-    await env.CONTROL_PLANE.prepare("DELETE FROM wipe_progress WHERE tenant_id = ?")
-      .bind(HELD)
-      .run();
-    await env.CONTROL_PLANE.prepare("DELETE FROM account_deletions WHERE tenant_id = ?")
-      .bind(HELD)
-      .run();
-    await env.CONTROL_PLANE.prepare("DELETE FROM users WHERE id = ?").bind(HELD).run();
-    await emptyPrefix(heldPrefix);
-  }
-
-  it("holds the staging S6 fixture from automatic teardown unless force is set", async () => {
-    expect(isAccountTeardownHeld(HELD)).toBe(true);
-    await insertHeldFixture();
-    await markDeleting(HELD, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await seedHeldProgress({ phase: "done", completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
-    await emptyPrefix(heldPrefix);
-
-    const warns: string[] = [];
-    const spy = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
-      warns.push(String(line));
-    });
-    try {
-      expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
-        enqueued: 0,
-      });
-      expect(queued).toEqual([]);
-      expect(await countRows("users", "id", HELD)).toBe(1);
-      expect(await countRows("wipe_progress", "tenant_id", HELD)).toBe(1);
-      expect(await countRows("account_deletions", "tenant_id", HELD)).toBe(0);
-      expect(warns.some((line) => line.includes(ACCOUNT_TEARDOWN_HELD_EVENT))).toBe(true);
-    } finally {
-      spy.mockRestore();
-      await clearHeldFixture();
-    }
-  });
-
-  it("tears down the staging S6 fixture when wipe_progress.force is set", async () => {
-    await insertHeldFixture();
-    await markDeleting(HELD, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await seedHeldProgress({
-      phase: "done",
-      completedAtMs: NOW_MS,
-      firstCompletedAtMs: NOW_MS,
-      force: true,
-    });
-    await emptyPrefix(heldPrefix);
-
-    try {
-      expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
-        enqueued: 0,
-      });
-      expect(queued).toEqual([]);
-      expect(await countRows("users", "id", HELD)).toBe(0);
-      expect(await countRows("wipe_progress", "tenant_id", HELD)).toBe(0);
-      expect(await countRows("account_deletions", "tenant_id", HELD)).toBe(1);
-    } finally {
-      await clearHeldFixture();
-    }
-  });
-
-  it("still reopens leftover objects on the held staging fixture", async () => {
-    await insertHeldFixture();
-    await markDeleting(HELD, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await seedHeldProgress({ phase: "done", completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
-    await env.READINGS_BUCKET.put(`${heldPrefix}left.json`, "left");
-
-    try {
-      expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
-        enqueued: 1,
-      });
-      expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: heldTenant, force: false })]);
-      expect(await countRows("users", "id", HELD)).toBe(1);
-      const progress = await readWipeProgress(controlPlane(), heldTenant);
-      expect(progress!.completedAtMs).toBeNull();
-    } finally {
-      await clearHeldFixture();
-    }
   });
 });
