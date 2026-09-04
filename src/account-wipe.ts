@@ -56,23 +56,29 @@
  * during grace, and `force` recorded on the progress record survives a DLQ so a
  * forced wipe is redriven without waiting out the 7 days.
  *
- * **Resumability is stateless beyond a cursor.** Reading ids are re-derived
+ * **Resumability is stateless beyond two cursors.** Reading ids are re-derived
  * from R2 on every pass rather than persisted; the progress record carries only
- * phase, offsets, the R2 cursor, and lease/probe bookkeeping. R2 is not
- * modified during the vectors phase, so the id list is stable across a
- * continuation and `vector_offset` keeps its meaning.
+ * phase, the two cursors, and lease/probe bookkeeping. Both cursors are values,
+ * not indices — `vector_cursor` is the last reading id submitted, so a set that
+ * gained or lost an id between deliveries cannot shift a window past an id that
+ * was never sent.
  *
  * ## The race this does not close
  *
  * A vector whose reading id is no longer derivable from R2 is unaddressable:
  * `deleteByIds` needs an id and there is nothing left to compute one from.
- * `processReading` closes the live half of this at the publisher — a consumer
+ *
+ * `processReading` narrows the live half of this at the publisher: a consumer
  * that publishes against a tenant confirmed `deleting` deletes its own vector
- * directly (`ReadingVisibility.removeForDeletedTenant`) instead of waiting for
- * a wipe that has already collected its ids. What remains is a vector that was
- * already stranded before the wipe began (review finding F3): the terminal
- * probe can sample for it, but nothing can delete it. Closing that needs a
- * durable per-tenant vector-id ledger — issue #261, out of scope here.
+ * directly (`ReadingVisibility.removeForDeletedTenant`) instead of waiting for a
+ * wipe that has already collected its ids. **Narrows, not closes.** That recheck
+ * fails open on a D1 lookup error, and an isolate that dies between the upsert
+ * and the recheck never runs the compensation at all; in either case a wipe
+ * whose vectors phase is already past will empty the reading's R2 objects and
+ * leave the vector with no id source. The terminal probe can sample for such a
+ * vector but cannot delete it, and so can a stranding that predates the wipe
+ * entirely (review finding F3). Closing this needs a durable per-tenant
+ * vector-id ledger — issue #261, out of scope here.
  *
  * A second, accepted consequence of deleting the progress record: fan-out skips
  * a tenant with no record AND an empty prefix, because that pair is what an
@@ -174,14 +180,25 @@ export const ACCOUNT_WIPE_DLQ_NAMES = [
 ] as const;
 
 // Unknown keys are stripped, so a record written before the sweep phase was
-// removed still parses; only a stored `phase:"sweep"` does not. That record
-// reads as unparseable, which the fan-out and job paths already handle by
-// CAS-claiming the etag and restarting the wipe from `vectors` — idempotent, and
-// only reachable inside one deploy window.
+// removed still parses (a stale `reading_ids` or `vector_offset` is simply
+// dropped, and the vectors phase re-derives what it needs). Only a stored
+// `phase:"sweep"` does not parse, and that is worth naming rather than waving
+// at: such a record reads as unparseable, so fan-out CAS-clears it and — since a
+// sweep-phase tenant has an already-empty R2 prefix — the tenant then matches
+// the "no record, empty prefix" shape and is not swept again, while a delivery
+// that reaches the job path instead restarts at `vectors`, collects no ids, and
+// can burn the probe budget into a spurious residue alert. Reachable only for a
+// wipe caught mid-sweep inside one deploy window, and the sweep it loses is the
+// re-submit this slice deliberately removed.
 const AccountWipeProgressSchema = z.object({
   version: z.literal(1),
   phase: z.enum(["vectors", "objects", "done"]),
-  vector_offset: z.number().int().nonnegative(),
+  // Resume point for the vectors phase, by VALUE: the last reading id submitted
+  // to deleteByIds. Not an index — the id list is re-derived from R2 on every
+  // delivery, so an id appearing or disappearing between two deliveries would
+  // shift a numeric offset's window and silently skip whichever id landed on the
+  // boundary. "Everything sorted after the last id we submitted" survives both.
+  vector_cursor: z.string().optional(),
   r2_cursor: z.string().min(1).optional(),
   mutation_ids: z.array(z.string()),
   objects_deleted: z.number().int().nonnegative(),
@@ -543,9 +560,11 @@ export async function processAccountWipeJob(
   await heartbeat();
 
   if (progress.phase === "vectors") {
-    // Re-derived from R2 on every pass rather than persisted. R2 is untouched
-    // until the objects phase, so this list is stable across a continuation and
-    // `vector_offset` keeps its meaning between deliveries.
+    // Re-derived from R2 on every pass rather than persisted. The wipe itself
+    // does not touch R2 until the objects phase, but a consumer still committing
+    // a terminal manifest for this tenant can add or remove an id between
+    // deliveries — which is why `vector_cursor` resumes by value rather than by
+    // index (see submitVectorDeletes).
     const ids = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
     await heartbeat();
     const vec = await submitVectorDeletes(progress, ids, env, tenantId, now, maxVectorBatches, writer);
@@ -754,7 +773,7 @@ function reopenLeftoverProgress(progress: AccountWipeProgress): AccountWipeProgr
   return {
     ...progress,
     phase: "vectors",
-    vector_offset: 0,
+    vector_cursor: undefined,
     r2_cursor: undefined,
     // Reopening is a fresh pass that will submit fresh deletes, so its probe
     // budget and count baseline must be fresh too. Carrying them over meant a
@@ -784,11 +803,17 @@ async function submitVectorDeletes(
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
-  if (progress.vector_offset >= ids.length) return "done";
+  // Resume by value. `ids` is sorted and re-derived per delivery, so slicing by
+  // a stored index would drop whichever id fell on the boundary when the set
+  // changed in between; "sorted after the last id submitted" cannot.
+  const cursor = progress.vector_cursor;
+  const pending = cursor === undefined ? ids : ids.filter((id) => id > cursor);
+  if (pending.length === 0) return "done";
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
   let batches = 0;
-  while (progress.vector_offset < ids.length && batches < maxVectorBatches) {
-    const chunk = ids.slice(progress.vector_offset, progress.vector_offset + VECTORIZE_DELETE_MAX_IDS);
+  let sent = 0;
+  while (sent < pending.length && batches < maxVectorBatches) {
+    const chunk = pending.slice(sent, sent + VECTORIZE_DELETE_MAX_IDS);
     const mutations = await store.deleteMany(chunk);
     for (const mutationId of mutations) {
       progress.mutation_ids.push(mutationId);
@@ -801,12 +826,13 @@ async function submitVectorDeletes(
         }),
       );
     }
-    progress.vector_offset += chunk.length;
+    sent += chunk.length;
+    progress.vector_cursor = chunk[chunk.length - 1];
     progress.updated_at_ms = now();
     await writer.write(progress);
     batches += 1;
   }
-  return progress.vector_offset < ids.length ? "continue" : "done";
+  return sent < pending.length ? "continue" : "done";
 }
 
 /**
@@ -954,7 +980,6 @@ function emptyProgress(nowMs: number, force = false): AccountWipeProgress {
   return {
     version: 1,
     phase: "vectors",
-    vector_offset: 0,
     mutation_ids: [],
     objects_deleted: 0,
     updated_at_ms: nowMs,

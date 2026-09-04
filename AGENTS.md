@@ -244,11 +244,14 @@ Pointers only — the details live in the named files' comments.
   grace; a job `{ force: true }` skips grace to start. Cron resumes
   in-progress or leftover wipes during grace and preserves `force` from
   `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
-  offset 0) and re-derives reading ids from an R2 re-list — ids are never
-  persisted on the progress record. There is no post-empty re-submit: a
-  consumer publishing against a tenant confirmed `deleting` deletes its own
-  vector directly (`ReadingVisibility.removeForDeletedTenant`) instead of
-  routing through an `index/list.json` row the wipe may already have removed.
+  cursor cleared) and re-derives reading ids from an R2 re-list — ids are never
+  persisted on the progress record; `vector_cursor` resumes by id value, never
+  by index. There is no post-empty re-submit: a consumer publishing against a
+  tenant confirmed `deleting` deletes its own vector directly
+  (`ReadingVisibility.removeForDeletedTenant`) instead of routing through an
+  `index/list.json` row the wipe may already have removed. That narrows the
+  late-publish race rather than closing it — the recheck fails open on a lookup
+  error — and the residual is the same #261 gap.
   Wipe heartbeats `progress.updated_at_ms` from current time during collect and
   R2/vector pages; a delayed `msg.retry` advances the wipe lease from
   failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound

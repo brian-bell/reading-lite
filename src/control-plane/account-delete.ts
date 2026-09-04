@@ -40,6 +40,17 @@ export async function tenantIsActive(db: ControlPlaneDb, tenantId: string): Prom
   return row?.status === "active";
 }
 
+// Confirmed `deleting`: this account is in the deletion pipeline, so an account
+// wipe may be concurrently removing its list index, manifests, and objects.
+// Strictly narrower than `!tenantIsActive`, which is also true for `suspended`
+// and for a confirmed-missing row — neither of which runs a wipe, and neither of
+// which justifies the ungated vector delete the publisher-side deletion fence
+// performs. A lookup failure is not a confirmation and must not be read as one.
+export async function tenantIsDeleting(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
+  const row = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId);
+  return row?.status === "deleting";
+}
+
 export async function beginAccountDeletion(
   db: ControlPlaneDb,
   input: { userId: string; nowMs: number },

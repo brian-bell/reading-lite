@@ -25,7 +25,7 @@ import {
   summarizeCheckpoint,
 } from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
-import { tenantIsActive } from "./control-plane/account-delete";
+import { tenantIsActive, tenantIsDeleting } from "./control-plane/account-delete";
 import { fromD1 } from "./control-plane/db";
 import { redactEmailsInText } from "./control-plane/email";
 import {
@@ -309,6 +309,7 @@ export async function processReading(
         claimMissingPointer: true,
         defensive: false,
         tenantAllowsVisibility: () => tenantConfirmedAllowsVisibility(env, tenantId),
+        tenantConfirmedDeleting: () => tenantConfirmedDeleting(env, tenantId),
         vector: {
           embedding: tldrEmbed.embedding,
           meta: {
@@ -662,6 +663,7 @@ async function markFailed(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
   const tenantAllowsVisibility = () => tenantConfirmedAllowsVisibility(env, tenantId);
+  const confirmedDeleting = () => tenantConfirmedDeleting(env, tenantId);
 
   if (args.preserveReadyManifest?.status === "ready") {
     // preserveReadyManifest is the snapshot the router captured BEFORE writing
@@ -674,6 +676,7 @@ async function markFailed(
       allowLastAttempt: true,
       defensive: true,
       tenantAllowsVisibility,
+      tenantConfirmedDeleting: confirmedDeleting,
     });
     return;
   }
@@ -695,6 +698,7 @@ async function markFailed(
     allowLastAttempt: true,
     defensive: true,
     tenantAllowsVisibility,
+    tenantConfirmedDeleting: confirmedDeleting,
   });
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
@@ -811,6 +815,12 @@ export interface CommitTerminalOpts {
   // because readyManifest already cleared active_attempt and a retry cannot
   // republish. Omit to keep the historical default (allow publish).
   tenantAllowsVisibility?: () => Promise<boolean>;
+  // Narrower than `!tenantAllowsVisibility()`: true only for a tenant confirmed
+  // `deleting`, which is the only status an account wipe runs for and therefore
+  // the only one that justifies the fence's ungated vector delete. A `suspended`
+  // tenant, a confirmed-missing row, or a failed lookup all take the ordinary
+  // gated removal instead. Omit to keep the historical behavior (never fence).
+  tenantConfirmedDeleting?: () => Promise<boolean>;
 }
 
 // The single home of the terminal-write ordering invariant: CAS-write the
@@ -871,7 +881,7 @@ export async function commitTerminalManifest(
       // Compensate in this same consumer; do not wait on DELETE /api/account.
       if (!(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(opts.defensive, () =>
-          visibility.removeForDeletedTenant(args),
+          compensateVisibility(visibility, args, opts),
         );
       }
     }
@@ -891,18 +901,18 @@ export async function commitTerminalManifest(
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
       );
       // Check-then-publish is still a race; recheck after the writes and
-      // compensate in this same consumer if the tenant is now deleting. The
-      // compensation deletes the vector directly (removeForDeletedTenant)
-      // rather than routing through the list row: an account wipe may already
-      // have deleted `index/list.json`, and a vector left behind after that is
-      // unaddressable, because R2 is the only source of reading ids.
+      // compensate in this same consumer if the tenant is now deleting. On a
+      // confirmed-`deleting` tenant that compensation deletes the vector
+      // directly rather than routing through the list row: an account wipe may
+      // already have deleted `index/list.json`, and a vector left behind after
+      // that is unaddressable, because R2 is the only source of reading ids.
       if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () => visibility.removeForDeletedTenant(args));
+        await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
-    await reconcileVisibility(true, () => visibility.removeForDeletedTenant(args));
+    await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
     return { committed: true, published: false };
   }
 
@@ -929,6 +939,38 @@ async function reconcileVisibility(
     return true;
   } catch (e) {
     console.error(e);
+    return false;
+  }
+}
+
+// The removal a compensating consumer performs. `deleting` is the only status
+// an account wipe runs for, so it is the only one where the list row and
+// manifest the ordinary gates read may already be gone — and therefore the only
+// one where dropping the vector ungated is right. Every other reason the tenant
+// stopped allowing visibility (suspended, a confirmed-missing row, or a lookup
+// we could not confirm) takes the gated removal this code has always used.
+async function compensateVisibility(
+  visibility: ReadingVisibility,
+  args: ProcessReadingArgs,
+  opts: CommitTerminalOpts,
+): Promise<void> {
+  if (await tenantConfirmedDeletingForOpts(opts)) {
+    await visibility.removeForDeletedTenant(args);
+    return;
+  }
+  await visibility.remove(args);
+}
+
+// Unconfirmed is not confirmed: a lookup throw falls back to the gated removal
+// rather than the fence. Deleting a vector we should have kept is the worse of
+// the two errors, and a wipe that is genuinely running re-derives this reading's
+// id from R2 on its own pass anyway.
+async function tenantConfirmedDeletingForOpts(opts: CommitTerminalOpts): Promise<boolean> {
+  if (!opts.tenantConfirmedDeleting) return false;
+  try {
+    return await opts.tenantConfirmedDeleting();
+  } catch (error) {
+    console.error(error);
     return false;
   }
 }
@@ -978,6 +1020,14 @@ async function tenantConfirmedAllowsVisibility(env: Env, tenantId: string): Prom
     console.error(error);
     return true;
   }
+}
+
+// Confirmed `deleting` only. Fail-closed for the fence: no D1 binding (unit
+// tests that stub Env) means "not confirmed", so the caller keeps the ordinary
+// ownership gates.
+async function tenantConfirmedDeleting(env: Env, tenantId: string): Promise<boolean> {
+  if (!env.CONTROL_PLANE) return false;
+  return tenantIsDeleting(fromD1(env.CONTROL_PLANE), tenantId);
 }
 
 async function terminalWriteState(

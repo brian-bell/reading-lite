@@ -371,6 +371,52 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
+  // The id list is re-derived from R2 on every delivery, so the vectors-phase
+  // resume point has to be a VALUE. With a numeric offset, an id that appears
+  // between two deliveries shifts the window and the id on the boundary is never
+  // submitted at all.
+  it("resumes the vectors phase by id value, so a shifted id set skips nothing", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const ids = Array.from({ length: 1001 }, (_, i) => `rd_${String(i).padStart(10, "0")}`);
+    const memory = memoryBucket();
+    const writeListIndex = async (items: string[]) =>
+      memory.bucket.put(
+        `${PREFIX}index/list.json`,
+        JSON.stringify({ version: 1, items: items.map(indexItem) }),
+      );
+    await writeListIndex(ids);
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
+
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ maxVectorBatches: 1 }),
+    );
+    expect(first.kind).toBe("continue");
+    expect(deleteByIds).toHaveBeenCalledTimes(1);
+    const firstBatch = deleteByIds.mock.calls[0]![0] as string[];
+    expect(firstBatch.length).toBe(1000);
+
+    // A reading disappears from the list between deliveries (a purge, say). The
+    // set shrinks below the stored offset, so an offset-based resume would call
+    // itself done and never submit the last id at all.
+    await writeListIndex(ids.slice(1));
+    deleteByIds.mockClear();
+
+    const second = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps(),
+    );
+    expect(second.kind).toBe("complete");
+    // Exactly the ids after the cursor: the last one, and nothing skipped.
+    const submitted = deleteByIds.mock.calls.flatMap(
+      (call) => call[0] as string[],
+    );
+    expect(submitted).toEqual([tenantVectorId(OTHER_TENANT_ID, ids[1000]!)]);
+    expect(memory.keysUnder(PREFIX)).toEqual([]);
+  });
+
   it("submits vector deletes in 1000-id batches from the list index", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const ids = Array.from({ length: 1001 }, (_, i) => `rd_${String(i).padStart(10, "0")}`);
@@ -487,7 +533,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -501,10 +546,10 @@ describe("account wipe (195b PR1)", () => {
     const progress = JSON.parse(await progressObj!.text()) as {
       phase: string;
       force?: boolean;
-      vector_offset?: number;
+      vector_cursor?: string;
     };
     expect(progress.phase).toBe("vectors");
-    expect(progress.vector_offset).toBe(0);
+    expect(progress.vector_cursor).toBeUndefined();
     expect(progress.force).toBe(true);
 
     const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
@@ -540,7 +585,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 0,
         r2_cursor: `${PREFIX}keep-z`,
         mutation_ids: [],
         objects_deleted: 0,
@@ -565,7 +609,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -575,9 +618,12 @@ describe("account wipe (195b PR1)", () => {
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
     const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
     expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { phase: string; vector_offset?: number };
+    const progress = JSON.parse(await progressObj!.text()) as {
+      phase: string;
+      vector_cursor?: string;
+    };
     expect(progress.phase).toBe("vectors");
-    expect(progress.vector_offset).toBe(0);
+    expect(progress.vector_cursor).toBeUndefined();
   });
 
   it("leftover recovery re-runs Vectorize deletes before emptying R2", async () => {
@@ -588,7 +634,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 99,
+        vector_cursor: "rd_9999999999",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -643,7 +689,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 0,
         mutation_ids: ["mut_old"],
         objects_deleted: 0,
         updated_at_ms: NOW_MS,
@@ -670,7 +715,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -1058,7 +1102,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 1,
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -1107,7 +1151,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 1,
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 3,
         updated_at_ms: NOW_MS,
@@ -1130,7 +1174,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 1,
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -1189,7 +1233,7 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "objects",
-        vector_offset: 1,
+        vector_cursor: "rd_0123456780",
         mutation_ids: ["mut_old"],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
@@ -1235,7 +1279,6 @@ describe("account wipe (195b PR1)", () => {
       JSON.stringify({
         version: 1,
         phase: "done",
-        vector_offset: 0,
         mutation_ids: [],
         objects_deleted: 1,
         updated_at_ms: NOW_MS,
