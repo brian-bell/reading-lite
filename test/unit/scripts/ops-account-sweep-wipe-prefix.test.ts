@@ -3,7 +3,7 @@
 // than fire-and-forget (issue #195 slice S2).
 
 import { describe, expect, it } from "vitest";
-import { accountWipeProgressKey } from "../../../src/account-wipe";
+import { ACCOUNT_WIPE_IN_FLIGHT_MS, accountWipeProgressKey } from "../../../src/account-wipe";
 import { buildKeyPrefix, r2KeyLayout } from "../../../src/modules/stores/layout";
 import {
   assertSweepableWipeKey,
@@ -189,22 +189,31 @@ describe("ops account sweep-wipe-prefix", () => {
 
     expect(code).toBe(0);
     expect(out).toContain("Tenants named by these records (2)");
-    expect(out).toContain(`where id in ('${TENANT_ID}', '${other}')`);
-    // The bucket-wide count is unsatisfiable — status stays 'deleting' after a
-    // completed wipe — so the runbook must not send the operator to it.
+    expect(out).toContain(`from wipe_progress where tenant_id in ('${TENANT_ID}', '${other}')`);
+    // A users.status count is the signal neither before nor after the deploy —
+    // status survives a completed wipe, so it never returns to 0.
     expect(out).not.toContain("count(*)");
-    expect(out).toContain("status stays 'deleting' after a wipe COMPLETES");
+    expect(out).toContain("status='deleting' is NOT the signal");
   });
 
-  it("names the deploy, not the record's age, as what makes a record safe to delete", async () => {
+  it("makes S2's deploy the precondition and an unfinished wipe_progress row the in-flight signal", async () => {
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
     const { out } = await run([], storage);
 
-    expect(out).toContain("S2's DEPLOY");
-    // An old record is DUE FOR RESUMPTION, not inert — the briefing must not
-    // read as a green light (src/account-wipe.ts wipeLeaseHeld).
-    expect(out).toContain("an OLD record is not inert");
+    expect(out).toContain("BEFORE S2 DEPLOYS");
+    expect(out).toContain("AFTER S2 DEPLOYS");
+    // Pre-deploy the rule is wait, not sweep-around; a stale record is DUE FOR
+    // RESUMPTION, not inert (src/account-wipe.ts wipeLeaseHeld).
+    expect(out).toContain("Do not sweep around it");
     expect(out).toContain("RESUME");
+    // Post-deploy the in-flight signal lives in D1, not in R2.
+    expect(out).toContain("completed_at_ms NULL and a recent updated_at_ms heartbeat");
+  });
+
+  it("states the lease window the worker actually uses", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    const { out } = await run([], storage);
+    expect(out).toContain(`${ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000} minutes`);
   });
 
   it("points the D1 query at the control plane matching the bucket", async () => {
@@ -267,7 +276,7 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(err).toContain("VERIFICATION FAILED");
     expect(err).toContain(PROGRESS_KEY);
     expect(err).toContain("survived the delete");
-    expect(err).not.toContain("NEW since the plan listing");
+    expect(err).not.toContain("NEW or REWRITTEN");
     expect(out).not.toContain("VERIFIED:");
   });
 
@@ -278,10 +287,38 @@ describe("ops account sweep-wipe-prefix", () => {
 
     expect(code).toBe(1);
     expect(storage.deletes).toEqual([PROGRESS_KEY]);
-    expect(err).toContain("NEW since the plan listing");
+    expect(err).toContain("NEW or REWRITTEN");
     expect(err).toContain(appeared);
     expect(err).toContain("do NOT re-run blind");
-    expect(err).toContain("status='deleting'");
+    expect(err).toContain("wipe_progress");
+    expect(err).not.toContain("survived the delete");
+  });
+
+  it("treats the same key re-created with different bytes as rewritten, not survived", async () => {
+    // The worst case: a wipe writes a fresh record for the very tenant whose
+    // record this run just deleted. By key alone that reads as a survivor, and
+    // "re-running is safe" is the one thing it is not.
+    const storage = fakeStorage({
+      listings: [
+        [object(PROGRESS_KEY, { etag: "before" })],
+        [object(PROGRESS_KEY, { etag: "after" })],
+      ],
+    });
+    const { code, err } = await run(["--execute", ACK], storage);
+
+    expect(code).toBe(1);
+    expect(err).toContain("NEW or REWRITTEN");
+    expect(err).not.toContain("survived the delete");
+  });
+
+  it("does not call a row a survivor when neither listing carries an etag", async () => {
+    const storage = fakeStorage({
+      listings: [[object(PROGRESS_KEY, { etag: "" })], [object(PROGRESS_KEY, { etag: "" })]],
+    });
+    const { code, err } = await run(["--execute", ACK], storage);
+
+    expect(code).toBe(1);
+    expect(err).toContain("NEW or REWRITTEN");
     expect(err).not.toContain("survived the delete");
   });
 

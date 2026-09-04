@@ -18,6 +18,7 @@
 // from the layout vocabulary so it cannot touch a corpus root.
 
 import { parseArgs } from "node:util";
+import { ACCOUNT_WIPE_IN_FLIGHT_MS } from "../../../src/account-wipe";
 import type { R2ObjectMeta } from "../../lib/cf-clients";
 import { loadDotVars } from "../../lib/dotvars";
 import { resolveBucket } from "../../corpus-lib/config";
@@ -73,7 +74,9 @@ interface Args {
 // So age and D1 status are reported as evidence of a wipe that is running or
 // due — reasons to stop — never as a green light. The green light is the deploy.
 const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
-const WIPE_IN_FLIGHT_MINUTES = 15;
+// Derived, not retyped: the briefing's "a record older than this has a lapsed
+// lease" claim is only true of the window `wipeLeaseHeld` actually uses.
+const WIPE_IN_FLIGHT_MINUTES = ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000;
 
 // The control-plane database and wrangler env that go with a data bucket. A
 // query pointed at the wrong control plane answers a question about the wrong
@@ -84,13 +87,14 @@ const CONTROL_PLANE_BY_BUCKET: Record<string, { database: string; env: string }>
   "reading-lite-staging": { database: "reading-lite-control-staging", env: "staging" },
 };
 
-function scopedStatusQuery(bucket: string, tenantIds: string[]): string | null {
+function scopedProgressQuery(bucket: string, tenantIds: string[]): string | null {
   const target = CONTROL_PLANE_BY_BUCKET[bucket];
   if (target === undefined) return null;
   const list = tenantIds.map((id) => `'${id}'`).join(", ");
   return (
     `npx wrangler d1 execute ${target.database} --env ${target.env} --remote \\\n` +
-    `  --command "select id, status, deleting_at_ms from users where id in (${list})"`
+    "  --command \"select tenant_id, phase, updated_at_ms, completed_at_ms " +
+    `from wipe_progress where tenant_id in (${list})"`
   );
 }
 
@@ -149,16 +153,16 @@ function reportTenantsAtRisk(io: CommandIo, bucket: string, listed: R2ObjectMeta
   io.stdout(`\nTenants named by these records (${tenantIds.length}):`);
   for (const id of tenantIds) io.stdout(`  ${id}`);
   io.stdout(
-    `\nWhat makes these records safe to delete is S2's DEPLOY, not how they look:\n` +
-      "once the new Worker is live nothing reads or writes this prefix, so every record\n" +
-      `under it is orphaned. ${NO_ACTIVE_WIPE_FLAG} asserts that deploy has landed.\n` +
-      "\nBefore it has, do not sweep. In particular an OLD record is not inert — once its\n" +
-      `last-modified is more than ${WIPE_IN_FLIGHT_MINUTES} minutes stale the wipe lease has lapsed and the cron\n` +
-      "fan-out is free to enqueue a RESUME for that tenant, so deleting it costs the\n" +
-      "resumed wipe its cursor. A fresh record means a wipe is writing right now.\n" +
-      "Either way: let it finish, then sweep after the deploy.",
+    "\nBEFORE S2 DEPLOYS: a record under this prefix means that tenant's wipe is running\n" +
+      `or due to resume — a fresh record is being written now, and one more than ${WIPE_IN_FLIGHT_MINUTES} minutes\n` +
+      "stale has a lapsed lease, which is exactly when cron may enqueue a RESUME. Wait for\n" +
+      "the wipe to finish. Do not sweep around it: deleting the record costs that wipe its\n" +
+      "cursor and restarts it from a full id re-collect.\n" +
+      "\nAFTER S2 DEPLOYS: nothing reads or writes this prefix at all, so every record left\n" +
+      `under it is orphaned by construction. That deploy is what ${NO_ACTIVE_WIPE_FLAG}\n` +
+      "asserts, and it is the only thing that makes --execute safe.",
   );
-  const query = scopedStatusQuery(bucket, tenantIds);
+  const query = scopedProgressQuery(bucket, tenantIds);
   if (query === null) {
     io.stdout(
       `\nNo control-plane database is mapped to bucket '${bucket}', so no D1 query is offered —\n` +
@@ -167,10 +171,12 @@ function reportTenantsAtRisk(io: CommandIo, bucket: string, listed: R2ObjectMeta
     return;
   }
   io.stdout(
-    "\nTo see what D1 says about exactly these tenants:\n\n" +
+    "\nOnce S2 has deployed, D1 carries the in-flight signal — a wipe_progress row with\n" +
+      "completed_at_ms NULL and a recent updated_at_ms heartbeat is a wipe still running:\n\n" +
       query +
-      "\n\nNote: status stays 'deleting' after a wipe COMPLETES, until the 195b PR2 hard-delete —\n" +
-      "so 'deleting' here is expected and is not by itself a reason to stop.",
+      "\n\n(The table exists only after S2's migration applies.) A count of users with\n" +
+      "status='deleting' is NOT the signal, before or after: that status survives a\n" +
+      "COMPLETED wipe until the S4 hard-delete, so it never returns to 0.",
   );
 }
 
@@ -259,19 +265,35 @@ async function runAccountSweepWipePrefix(
     // operator's users.status check — re-running would delete a record a wipe
     // may be actively using, which is the harm the acknowledgement exists to
     // prevent. So say which is which instead of a blanket "re-run".
-    const planned = new Set(listed.map((object) => object.key));
-    const survived = remaining.filter((object) => planned.has(object.key));
-    const appeared = remaining.filter((object) => !planned.has(object.key));
+    //
+    // Identity is (key, etag), not key alone. The worst case reuses the key: a
+    // wipe writing a fresh record for the very tenant whose record this run
+    // just deleted. By key that looks like a survivor — "re-running is safe" —
+    // which is the one thing it is not. A changed etag says the bytes are not
+    // the ones planned against, so it is a re-creation.
+    const plannedEtags = new Map(listed.map((object) => [object.key, object.etag]));
+    const isSurvivor = (object: R2ObjectMeta) =>
+      plannedEtags.has(object.key) &&
+      // An etag missing on either side cannot witness sameness; treat the row
+      // as new so the operator re-checks rather than re-runs.
+      object.etag !== "" &&
+      plannedEtags.get(object.key) === object.etag;
+    const survived = remaining.filter((object) => isSurvivor(object));
+    const appeared = remaining.filter((object) => !isSurvivor(object));
     if (survived.length > 0) {
       io.stderr(`  survived the delete (${survived.length}) — re-running is safe:`);
       for (const object of survived) io.stderr(describe(object));
     }
     if (appeared.length > 0) {
-      io.stderr(`  NEW since the plan listing (${appeared.length}) — do NOT re-run blind:`);
+      io.stderr(
+        `  NEW or REWRITTEN since the plan listing (${appeared.length}) — do NOT re-run blind:`,
+      );
       for (const object of appeared) io.stderr(describe(object));
       io.stderr(
-        `  Something wrote these after your ${NO_ACTIVE_WIPE_FLAG} check. Re-check D1 for a tenant with\n` +
-          "  status='deleting' before touching them; a live wipe's record must not be deleted.",
+        `  Something wrote these after the listing this run planned against — which should be\n` +
+          `  impossible once S2 has deployed, so treat ${NO_ACTIVE_WIPE_FLAG} as unproven.\n` +
+          "  Check wipe_progress for an unfinished row (completed_at_ms NULL, recent heartbeat)\n" +
+          "  before touching them; a live wipe's record must not be deleted.",
       );
     }
     io.stderr("Investigate before merging or deploying anything that depends on this sweep.");
@@ -314,13 +336,14 @@ has landed — that deploy is the precondition, because after it nothing reads o
 writes this prefix and every record under it is orphaned by construction.
 --execute therefore requires ${NO_ACTIVE_WIPE_FLAG}.
 
-Before that deploy, do not sweep, and do not read the listing as reassurance. A
-record older than the ${WIPE_IN_FLIGHT_MINUTES}-minute wipe lease is not inert: that is precisely when
-cron is free to enqueue a RESUME for its tenant. Nor is a bucket-wide count of
-users with status='deleting' a gate — that status survives a COMPLETED wipe
-until the 195b PR2 hard-delete, so the count never returns to 0. Plan mode names
-the tenants the records belong to and prints a D1 query scoped to them, for
-spotting a wipe that is running or due.
+Before that deploy, a record under wipe/ means that tenant's wipe is running or
+due to resume — wait for it to finish rather than sweeping around it. A record
+older than the ${WIPE_IN_FLIGHT_MINUTES}-minute lease is not inert: that is precisely when cron is free
+to enqueue a RESUME. After the deploy, the in-flight signal lives in D1
+(a wipe_progress row with completed_at_ms NULL and a recent heartbeat), which
+plan mode prints a scoped query for. A count of users with status='deleting' is
+not the signal either way — that status survives a COMPLETED wipe until the S4
+hard-delete, so it never returns to 0.
 
 See docs/operations.md, "Sweeping the wipe/ prefix".
 
