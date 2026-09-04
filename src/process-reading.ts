@@ -663,6 +663,10 @@ async function markFailed(
   await writeAttemptSafe(reader, args.keyPrefix, attempt);
 
   const tenantAllowsVisibility = () => tenantConfirmedAllowsVisibility(env, tenantId);
+  // Both commits below pass `similarity: null`, where the fence and the ordinary
+  // removal do the same thing (list row only — the failure-path asymmetry). This
+  // is passed for uniformity, not because the failure path is fenced; its only
+  // effect there is one more D1 read on a compensation that was already rare.
   const confirmedDeleting = () => tenantConfirmedDeleting(env, tenantId);
 
   if (args.preserveReadyManifest?.status === "ready") {

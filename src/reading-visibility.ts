@@ -100,10 +100,17 @@ export class ReadingVisibility {
   // and manifest but no embedding. Safe today only because `beginAccountDeletion`
   // is one-way; a reactivation path has to reconcile vectors (see `ops corpus
   // backfill-vectors`) or narrow this gate.
+  // Vector first, list row second — the same ordering `reading-purge.ts` uses,
+  // and here it is load-bearing. `removeListIndexItemIf` throws when its CAS
+  // retries are exhausted, which is exactly what a concurrent wipe rewriting or
+  // deleting `index/list.json` provokes, and every caller runs this inside the
+  // defensive log-and-continue wrapper. Sequencing the vector delete behind that
+  // write would let the one outcome this method exists to prevent — a vector
+  // outliving the only source of its id — fall out of the failure it is most
+  // likely to meet.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
+    if (this.similarity) await this.similarity.delete(args.id);
     await this.removeListRow(args);
-    if (!this.similarity) return;
-    await this.similarity.delete(args.id);
   }
 
   // Re-append the current list row after a lost manifest CAS, but only if the

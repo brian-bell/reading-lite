@@ -84,6 +84,11 @@ empty prefix and can raise a spurious `account_wipe_namespace_residue` for a
 tenant that was in fact wiped. Neither loses anything the removed re-submit did
 not already cover, but if `reading-lite-wipe` has messages in flight at deploy
 time, treat one residue alert in that window as suspect rather than a finding.
+A rollback breaks the same way in reverse — the older schema requires the
+`vector_offset` this version stopped writing — so a record cleared on rollback
+while its wipe sat at the terminal probe leaves the "no record, empty prefix"
+shape, and that tenant is not swept again. Both directions are one deploy
+window; neither is a reason to hold a rollback.
 
 **That narrows the race rather than closing it.** The publisher's post-publish
 status recheck fails open on a D1 lookup error, and an isolate that dies between

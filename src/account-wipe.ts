@@ -19,10 +19,12 @@
  * index and the key layout), so emptying the prefix first would strand the
  * embeddings permanently.
  *
- * **Fail closed on an unbound index.** With no `READINGS_INDEX` the vectors
- * phase throws (`index_unbound`) rather than advancing to R2. The check runs
- * *before* the "no ids to delete" short-circuit: an empty id set means "R2
- * yielded no ids", which is also what an already-emptied prefix looks like.
+ * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
+ * (`index_unbound`) before it reads or writes anything, so no R2 object is
+ * deleted while nothing can delete the matching vectors. The vectors phase
+ * repeats the check *before* its "no ids to delete" short-circuit — an empty id
+ * set means "R2 yielded no ids", which is also what an already-emptied prefix
+ * looks like — and the terminal probe repeats it again.
  *
  * **A wipe never reports success without addressing the index.** Before the
  * terminal transition it probes the tenant namespace and refuses to finish
@@ -507,6 +509,17 @@ export async function processAccountWipeJob(
   }
   const keyRoot = tenantKeyRoot({ tenantId }, true);
   if (keyRoot === "") return { kind: "skipped", reason: "no_tenant_prefix" };
+
+  // Fail closed on an unbound index, before this job reads or writes anything.
+  // The vectors phase and the terminal probe each enforce this on their own, but
+  // neither covers a delivery that resumes straight into `objects`: that path
+  // would empty the tenant prefix and only then discover it has no way to delete
+  // the vectors — having just destroyed the only source of their ids. Hoisting
+  // the check is what makes "fail closed on an unbound index" true for every
+  // entry point rather than for the two that happen to look.
+  if (!env.READINGS_INDEX) {
+    throw new Error("account_wipe index_unbound");
+  }
 
   const layout = r2KeyLayout(keyRoot);
   const maxObjectPages = deps.maxObjectPages ?? ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES;

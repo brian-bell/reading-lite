@@ -438,6 +438,37 @@ describe("account wipe (195b PR1)", () => {
     expect(memory.keysUnder(PREFIX)).toEqual([]);
   });
 
+  // The vectors phase is not the only entry point: a delivery resuming from a
+  // stored `phase:"objects"` never reaches it. Without a check above the phase
+  // blocks such a job would empty the prefix and only then find it cannot delete
+  // the vectors — having just destroyed the only source of their ids.
+  it("does not wipe the tenant prefix when the index is unbound and the job resumes at objects", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await env.READINGS_BUCKET.put(
+      accountWipeProgressKey(OTHER_TENANT_ID),
+      JSON.stringify({
+        version: 1,
+        phase: "objects",
+        mutation_ids: [],
+        objects_deleted: 0,
+        updated_at_ms: NOW_MS,
+      }),
+    );
+    const before = await listPrefixKeys(PREFIX);
+    expect(before).not.toEqual([]);
+
+    await expect(
+      processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { ...(await wipeEnv()), READINGS_INDEX: undefined } as unknown as Env,
+        wipeJobDeps(),
+      ),
+    ).rejects.toThrow(/index_unbound/);
+
+    expect(await listPrefixKeys(PREFIX)).toEqual(before);
+  });
+
   it("does not wipe the tenant prefix when READINGS_INDEX is unbound", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
