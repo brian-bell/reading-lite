@@ -92,13 +92,49 @@ operator schedules. The account must be active with no wipe in progress.
 Queue pause alone does not stop HTTP intake or administrative writers;
 `--sole-writer` is an operator assertion, not a lock.
 
-Record each queue's existing delivery state in the dashboard or Queue API;
-`wr queues info` identifies the queue but does not expose `delivery_paused`.
-Then pause both queues, leaving any pre-existing pause intact:
+Record each queue's `delivery_paused` flag **before** pausing. `wr queues info`
+identifies the queue but does not expose this field; read it from the dashboard
+or `GET /accounts/{account_id}/queues/{queue_id}` (`settings.delivery_paused`).
+Write both booleans to `$RUN_DIR/queue-delivery-before.json` using this shape:
+
+```json
+{
+  "reading-lite": { "delivery_paused": false },
+  "reading-lite-dlq": { "delivery_paused": false }
+}
+```
+
+`false` means delivery was enabled; `true` means the queue was already paused.
+Do not pause until that file validates. Then pause both queues. Pausing an
+already-paused queue leaves the pause intact:
 
 ```zsh
 wr queues info reading-lite | tee "$RUN_DIR/queue-before.log"
 wr queues info reading-lite-dlq | tee "$RUN_DIR/dlq-before.log"
+node --input-type=module <<'JS'
+import { readFileSync } from 'node:fs';
+const path = `${process.env.RUN_DIR}/queue-delivery-before.json`;
+const names = ['reading-lite', 'reading-lite-dlq'];
+let state;
+try {
+  state = JSON.parse(readFileSync(path, 'utf8'));
+} catch {
+  throw new Error(
+    `Write ${path} before pausing. wr queues info does not expose delivery_paused. ` +
+      'Record each queue from the dashboard or GET /accounts/{account_id}/queues/{queue_id} ' +
+      '(settings.delivery_paused). Required shape: ' +
+      '{"reading-lite":{"delivery_paused":false},"reading-lite-dlq":{"delivery_paused":false}}.',
+  );
+}
+for (const name of names) {
+  if (typeof state[name]?.delivery_paused !== 'boolean') {
+    throw new Error(`${path} must set ${name}.delivery_paused to true or false`);
+  }
+}
+for (const name of names) {
+  console.log(`${name} delivery_paused=${state[name].delivery_paused}`);
+}
+JS
 wr queues pause-delivery reading-lite | tee "$RUN_DIR/queue-pause.log"
 wr queues pause-delivery reading-lite-dlq | tee "$RUN_DIR/dlq-pause.log"
 ```
@@ -106,8 +142,10 @@ wr queues pause-delivery reading-lite-dlq | tee "$RUN_DIR/dlq-pause.log"
 Verify delivery is paused and wait for already-running consumers to finish.
 Pausing does not kill active invocations. Check pending readings and recent
 attempt activity; zero pending rows alone is not proof of drain. Do not purge
-queued messages. If a hold cannot be established, stop and restore only the
-queues this window paused.
+queued messages. If a hold cannot be established, stop and run the restoration
+block below: resume only queues recorded as enabled in
+`$RUN_DIR/queue-delivery-before.json`. Do not resume a queue that was already
+paused, and do not resume if that capture is missing or incomplete.
 
 Capture the live `index/list.json` and every ready manifest before writes,
 including verdicts, computation timestamps, neighbourhood IDs, and tension
@@ -259,17 +297,60 @@ Compare the captured data by reading ID:
 - Save stage times, counts, and provider usage. OpenAI reasoning is a subset of
   output tokens. Distinguish usage-based estimates from reconciled provider bills.
 
-After all refresh processes have stopped, restore **only** the queues this
-window paused. Apply the same restoration on an aborted run once writers have
-stopped; retain any pre-existing pause. Do not resume an unrelated queue.
+After all refresh processes have stopped, restore delivery from the captured
+state: resume **only** queues recorded as enabled (`delivery_paused: false`)
+before this window. Apply the same rule on an aborted run once writers have
+stopped. Retain any pre-existing pause. Do not resume an unrelated queue. If
+`$RUN_DIR/queue-delivery-before.json` is missing or a `delivery_paused` value
+is not a boolean, stop; do not run `resume-delivery`.
 
 ```zsh
-wr queues resume-delivery reading-lite-dlq | tee "$RUN_DIR/dlq-resume.log"
-wr queues resume-delivery reading-lite | tee "$RUN_DIR/queue-resume.log"
+node --input-type=module <<'JS'
+import { readFileSync } from 'node:fs';
+const path = `${process.env.RUN_DIR}/queue-delivery-before.json`;
+const names = ['reading-lite', 'reading-lite-dlq'];
+let state;
+try {
+  state = JSON.parse(readFileSync(path, 'utf8'));
+} catch {
+  throw new Error(
+    `Missing ${path}; do not run resume-delivery. Restore only from captured ` +
+      'pre-hold delivery_paused booleans.',
+  );
+}
+for (const name of names) {
+  if (typeof state[name]?.delivery_paused !== 'boolean') {
+    throw new Error(`${path} must set ${name}.delivery_paused to true or false`);
+  }
+}
+JS
+resume_if_enabled() {
+  local name="$1" log="$2" paused
+  paused=$(node --input-type=module - "$name" <<'JS'
+import { readFileSync } from 'node:fs';
+const name = process.argv[2];
+const path = `${process.env.RUN_DIR}/queue-delivery-before.json`;
+const paused = JSON.parse(readFileSync(path, 'utf8'))[name]?.delivery_paused;
+if (typeof paused !== 'boolean') {
+  throw new Error(`${path} must set ${name}.delivery_paused to true or false`);
+}
+process.stdout.write(paused ? 'true' : 'false');
+JS
+  ) || return 1
+  if [[ "$paused" == true ]]; then
+    printf '%s\n' "Retaining pre-existing pause on $name" | tee "$log"
+    return 0
+  fi
+  wr queues resume-delivery "$name" | tee "$log"
+}
+resume_if_enabled reading-lite-dlq "$RUN_DIR/dlq-resume.log" || exit 1
+resume_if_enabled reading-lite "$RUN_DIR/queue-resume.log" || exit 1
 ```
 
-Verify `delivery_paused: false` for the queues restored, check production health
-and authenticated whoami, then release the HTTP/operator maintenance hold.
+For each queue this window resumed, verify `delivery_paused: false`. For each
+queue recorded as already paused, verify it is still paused. Check production
+health and authenticated whoami, then release the HTTP/operator maintenance
+hold.
 Keep raw reports and captures outside git; publish aggregate results and the
 calibration rationale. For longitudinal churn, compare against a later full run
 (at least a week later or after meaningful ingestion), not just an immediate rerun.
