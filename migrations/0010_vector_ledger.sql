@@ -81,7 +81,16 @@ CREATE INDEX vector_ledger_tenant_state ON vector_ledger (tenant_id, state);
 -- record outlives the account until S4's teardown, so leaving one behind would
 -- put a reading id on a row about a deleted tenant — exactly the leak that
 -- moved this state out of R2 (0009's header, and `ops account
--- sweep-wipe-prefix`). One UPDATE settles that.
+-- sweep-wipe-prefix`).
+--
+-- The UPDATE settles that for every row that exists when it runs, which is not
+-- quite the same as settling it forever. Migrations apply BEFORE the new Worker
+-- uploads, so a wipe in flight during that window can have the old code write
+-- the column again a moment after this clears it — and nothing clears it a
+-- second time, because the new code neither reads nor writes it. That is why
+-- the runbook's first step before merging is to check for an unfinished
+-- wipe_progress row, and why the eventual column drop is what closes it for
+-- good.
 --
 -- Dropping it would buy nothing and cost two things. `ops deploy worker`
 -- applies migrations and THEN uploads, so a dropped column breaks the previous

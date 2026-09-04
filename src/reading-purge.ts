@@ -109,7 +109,7 @@ export async function purgeReading(
     // After the delete: `deleted_at_ms` dates the submission, and the ledger's
     // +120s first-confirmation delay is measured from it. Off the injected
     // clock, like everything else here.
-    await deps.ledger?.markDeleteSubmitted([id], Date.parse(opts.now));
+    await deps.ledger?.markDeleteSubmitted([id], ledgerStamp(opts.now));
   }
 
   // Pointer before list row: when the manifest is corrupt or missing, the row
@@ -142,7 +142,7 @@ export async function purgeReading(
   objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
   if (deps.similarity) {
     await deps.similarity.delete(id);
-    await deps.ledger?.markDeleteSubmitted([id], Date.parse(opts.now));
+    await deps.ledger?.markDeleteSubmitted([id], ledgerStamp(opts.now));
   }
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
@@ -170,6 +170,20 @@ function hasRunningAttempt(
   // TTL reads as failed and must not block the purge forever.
   const effective = applyStaleness(manifest, opts.pendingTtlSeconds, opts.now);
   return effective.active_attempt?.status === "running";
+}
+
+/**
+ * The purge's clock as a ledger stamp.
+ *
+ * Guarded rather than trusted. `deleted_at_ms` is bound straight into D1, and a
+ * `NaN` from an unparseable `opts.now` would be rejected by the binding — after
+ * `similarity.delete` has already been submitted, which is exactly the
+ * unaddressable-vector case the ledger exists to prevent. Every current caller
+ * passes `services.now()`, so this only ever fires on a future one.
+ */
+function ledgerStamp(now: string): number {
+  const parsed = Date.parse(now);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 async function releaseByUrlSlotIfOwned(

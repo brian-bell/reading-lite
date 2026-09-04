@@ -812,13 +812,15 @@ async function runAccountWipeJob(
     // their ids would be gone for good: review finding F3, reproduced by the
     // machinery meant to close it.
     //
-    // So the check moves ahead of the deletes, and it compares the ledger
-    // against the CORPUS rather than testing for a non-empty table — one
-    // reading published or purged since the deploy would otherwise satisfy it
-    // while a whole legacy corpus stayed un-ledgered. This is deliberately the
-    // one place the wipe refuses to make progress rather than retrying into it:
-    // R2 is the last copy of the ids, and the fix is an operator running the
-    // seeding command, not another delivery.
+    // So the check moves ahead of the deletes, and it measures the ledger
+    // against the READY rows of the list index — the readings that actually own
+    // a vector. Neither cruder test works: "any rows at all" is satisfied by one
+    // reading published since the deploy, and "every id derivable from R2"
+    // fires on healthy tenants, because failed and pending readings have
+    // pointers but no vector and so no row. This is deliberately the one place
+    // the wipe refuses to make progress rather than retrying into it: R2 is the
+    // last copy of the ids, and the fix is an operator running the seeding
+    // command, not another delivery.
     await assertLedgerCoversCorpus(env, db, tenantId, keyRoot);
     let pages = 0;
     let cursor = progress.r2Cursor;
@@ -999,34 +1001,35 @@ async function tenantPrefixHasObjects(
 }
 
 /**
- * Refuse to empty R2 while any reading in the corpus is missing from the ledger.
+ * Refuse to empty R2 while a reading that could own a vector is missing from
+ * the ledger.
  *
  * This is the last line of defence against the failure the whole slice exists
- * to prevent, so it is worth being exact about what it checks and why the
- * obvious cheaper check is wrong.
+ * to prevent, so it is worth being exact about what it measures — two earlier
+ * versions of this guard were wrong in opposite directions.
  *
- * **Not "does the ledger have any rows".** That was the first version and it is
- * defeated by a single unrelated row: one reading published after this slice
- * deploys, or one `DELETE /api/readings/:id`, writes a row — and a wipe runs at
- * least seven days after the deletion request, so "this tenant has done exactly
- * one thing since the deploy" is the ordinary case, not an edge one. A tenant
- * whose pre-S3 corpus was never seeded would have sailed through.
+ * **Not "does the ledger have any rows".** That is defeated by a single
+ * unrelated row: one reading published after this slice deploys, or one
+ * `DELETE /api/readings/:id`, writes one — and a wipe runs at least seven days
+ * after the deletion request, so "this tenant has done one thing since the
+ * deploy" is the ordinary case. A never-seeded corpus would sail through.
  *
- * **What it checks instead:** every reading id still derivable from R2 must
- * have a ledger row. R2 is intact at this point — that is the whole reason the
- * check sits ahead of the objects phase rather than at the terminal gate — so
- * the comparison is exact rather than a heuristic, and it is the same walk
- * `ops corpus seed-vector-ledger` performs. An id with no row is a reading
- * whose vector, if it has one, nothing would ever submit a delete for.
+ * **And not "every reading id derivable from R2".** That fires on healthy
+ * tenants. Intake writes an `index/by-id/{id}` pointer for `failed` and
+ * `pending` readings too, and those never get a ledger row because they never
+ * get a vector — the failure paths in `process-reading.ts` publish with a null
+ * similarity store. Any tenant with one failed reading and one live vector
+ * would have been accused of never being seeded.
  *
- * The walk is bounded: it stops at the first un-ledgered id, so the common case
- * (a fully seeded tenant) pays one full listing and the failing case pays
- * almost nothing.
+ * **What it measures:** the `ready` rows of `index/list.json`. A reading is
+ * `ready` exactly when its terminal write published a vector, so that set is
+ * "the readings that should have a ledger row", and nothing else is. R2 is
+ * intact here — that is why the check sits ahead of the objects phase rather
+ * than at the terminal gate — so the comparison is exact, and it costs one
+ * object read rather than two full prefix listings.
  *
- * A `failed` reading legitimately has no vector and no row, which is why the
- * namespace probe is the second half of the test: an un-ledgered id only blocks
- * the wipe when the namespace actually answers. Both conditions together are
- * the unseeded-corpus shape; either alone is not.
+ * The namespace probe is the second half only in the fallback below, where the
+ * list index cannot be read at all.
  */
 async function assertLedgerCoversCorpus(
   env: AccountWipeEnv,
@@ -1037,122 +1040,107 @@ async function assertLedgerCoversCorpus(
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
-  const unledgered = await firstUnledgeredReadingId(env.READINGS_BUCKET, db, tenantId, keyRoot);
-  if (unledgered === null) return;
-  // Something in the corpus is not in the ledger. Only refuse if the namespace
-  // actually holds something — a corpus of `failed` readings has no vectors and
-  // nothing to strand.
-  const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-  const remaining = await store.probeNamespace();
-  if (remaining.length === 0) return;
+  const readyIds = await readyReadingIds(env.READINGS_BUCKET, keyRoot);
+
+  if (readyIds === null) {
+    // No readable list index. Coverage cannot be measured, so fall back to the
+    // one shape that is unambiguous without it: nothing in the ledger at all,
+    // and a namespace that still answers. That is an unseeded corpus however
+    // the index reads. A ledger with rows is evidence that SOMETHING seeded or
+    // published this tenant, and without the index there is no honest way to
+    // ask for more than that.
+    if ((await countLedgerRows(db, tenantId)).total > 0) return;
+    const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
+    if ((await store.probeNamespace()).length === 0) return;
+    refuseUnseeded(tenantId, "no readable index/list.json, empty ledger, namespace answers");
+  }
+
+  const missing = await firstUnledgeredId(db, tenantId, readyIds);
+  if (missing === null) return;
+  refuseUnseeded(tenantId, "a ready reading has no vector_ledger row");
+}
+
+/** Alert and throw. The id is never logged — this is a deleted account. */
+function refuseUnseeded(tenantId: TenantId, reason: string): never {
   console.error(
     JSON.stringify({
       severity: "high",
       event: ACCOUNT_WIPE_UNSEEDED_EVENT,
       tenant_id: tenantId,
+      reason,
       note:
-        "this tenant's namespace still answers and at least one reading in its corpus has no " +
-        "vector_ledger row, so no delete would ever be submitted for that reading's vector. " +
-        "Refusing to delete the R2 objects, because they are the only source " +
-        "`ops corpus seed-vector-ledger` can derive those ids from. Seed this tenant, then " +
-        "re-drive the wipe. Nothing was deleted.",
+        "at least one reading that should own a vector has no vector_ledger row, so no delete " +
+        "would ever be submitted for it. Refusing to delete the R2 objects, because they are " +
+        "the only source `ops corpus seed-vector-ledger` can derive those ids from. Seed this " +
+        "tenant, then re-drive the wipe. Nothing was deleted.",
     }),
   );
   throw new AccountWipeUnseededError(tenantId);
 }
 
 /**
- * The first reading id derivable from this tenant's R2 that has no ledger row,
- * or null when every one of them does.
+ * The reading ids this tenant's list index calls `ready`, or null when the
+ * index cannot be read or parsed.
  *
- * Deliberately short-circuits. The question is "is anything missing", not "what
- * is missing" — naming the id would put a reading id in a log line about an
- * account being deleted, and the operator's next step (`seed-vector-ledger`) is
- * the same whether one row is missing or a thousand.
+ * `ready` is the whole point: it is the status a terminal write sets when it
+ * published a vector, so it is exactly the set that should be ledgered.
+ * `failed` and `pending` readings have pointers and objects but no vector.
  *
- * Ids are checked in batches so a fully-seeded corpus costs `ceil(n / chunk)`
- * D1 reads rather than one per reading.
+ * A corrupt index returns null rather than an empty list — "no ready readings"
+ * and "we could not tell" must not collapse, because the first would wave the
+ * wipe through.
  */
-async function firstUnledgeredReadingId(
+async function readyReadingIds(
   bucket: R2Bucket,
-  db: ControlPlaneDb,
-  tenantId: TenantId,
   keyRoot: string,
-): Promise<string | null> {
+): Promise<string[] | null> {
   const layout = r2KeyLayout(keyRoot);
-  const pending: string[] = [];
-  const seen = new Set<string>();
-  let missing: string | null = null;
-
-  const drain = async (force: boolean): Promise<boolean> => {
-    if (pending.length === 0) return false;
-    if (!force && pending.length < LEDGER_COVERAGE_CHUNK) return false;
-    const batch = pending.splice(0, pending.length);
-    const known = await ledgeredSubset(db, tenantId, batch);
-    for (const id of batch) {
-      if (!known.has(id)) {
-        missing = id;
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const offer = async (id: string | null): Promise<boolean> => {
-    if (id === null || seen.has(id)) return false;
-    seen.add(id);
-    pending.push(id);
-    return drain(false);
-  };
-
-  const listObj = await bucket.get(layout.listIndexKey());
-  if (listObj) {
-    try {
-      const parsed = ListIndexSchema.safeParse(JSON.parse(await listObj.text()));
-      if (parsed.success) {
-        for (const item of parsed.data.items) {
-          if (await offer(parseReadingId(item.id))) return missing;
-        }
-      }
-    } catch {
-      // A corrupt list index contributes nothing; the R2 walks still run.
-    }
+  const obj = await bucket.get(layout.listIndexKey());
+  if (!obj) return null;
+  let parsed: ReturnType<typeof ListIndexSchema.safeParse>;
+  try {
+    parsed = ListIndexSchema.safeParse(JSON.parse(await obj.text()));
+  } catch {
+    return null;
   }
-
-  for (const prefix of [layout.byIdKey(""), layout.readingsPrefix()]) {
-    let cursor: string | undefined;
-    do {
-      const list = await bucket.list({
-        prefix,
-        limit: R2_LIST_LIMIT,
-        ...(cursor ? { cursor } : {}),
-      });
-      for (const obj of list.objects) {
-        if (await offer(readingIdFromRelativeKey(layout.relativeKey(obj.key)))) return missing;
-      }
-      cursor = list.truncated ? list.cursor : undefined;
-    } while (cursor);
+  if (!parsed.success) return null;
+  const ids: string[] = [];
+  for (const item of parsed.data.items) {
+    if (item.status !== "ready") continue;
+    const id = parseReadingId(item.id);
+    if (id) ids.push(id);
   }
-
-  if (await drain(true)) return missing;
-  return null;
+  return ids;
 }
 
-/** Which of these reading ids the ledger already knows, in one query. */
-async function ledgeredSubset(
+/**
+ * The first of these ids with no ledger row, or null when all of them have one.
+ *
+ * Short-circuits: the question is "is anything missing", not "what is missing".
+ * Naming the id would put a reading id in a log line about an account being
+ * deleted, and the operator's next step is the same either way. Batched so a
+ * fully-seeded corpus costs `ceil(n / chunk)` reads rather than one per id.
+ */
+async function firstUnledgeredId(
   db: ControlPlaneDb,
   tenantId: TenantId,
   readingIds: readonly string[],
-): Promise<Set<string>> {
-  if (readingIds.length === 0) return new Set();
-  const placeholders = readingIds.map(() => "?").join(", ");
-  const rows = await db.all<{ reading_id: string }>(
-    `SELECT reading_id FROM vector_ledger
-      WHERE tenant_id = ? AND reading_id IN (${placeholders})`,
-    tenantId,
-    ...readingIds,
-  );
-  return new Set(rows.map((row) => row.reading_id));
+): Promise<string | null> {
+  for (let offset = 0; offset < readingIds.length; offset += LEDGER_COVERAGE_CHUNK) {
+    const chunk = readingIds.slice(offset, offset + LEDGER_COVERAGE_CHUNK);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await db.all<{ reading_id: string }>(
+      `SELECT reading_id FROM vector_ledger
+        WHERE tenant_id = ? AND reading_id IN (${placeholders})`,
+      tenantId,
+      ...chunk,
+    );
+    const known = new Set(rows.map((row) => row.reading_id));
+    for (const id of chunk) {
+      if (!known.has(id)) return id;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1373,12 +1361,18 @@ async function assertLedgerEmptied(
   // deliberately no early return on an empty ledger here: a clean namespace is
   // the only thing that ends a wipe cleanly, and it was checked above.
   const after = await countLedgerRows(db, tenantId);
-  // The bound exists to stop a STUCK wipe, not to time-limit a slow one. A pass
-  // that cleared rows made real progress, so it does not spend an attempt —
-  // otherwise a tenant with more rows than one pass can confirm
-  // (ACCOUNT_WIPE_CONFIRM_BATCH, two spaced absences each) could never finish
-  // whenever the namespace fast path does not fire, and would always end at the
-  // residue alert however healthy it was.
+  // The bound exists to stop a STUCK wipe, not to time-limit a slow one, so a
+  // pass that cleared rows does not spend an attempt.
+  //
+  // Honest about what that does and does not buy: this exemption keeps a
+  // progressing wipe off the RESIDUE ALERT, but it does not give it unlimited
+  // deliveries. Every confirmation pass still ends in a throw, and throws are
+  // bounded by the queue's own `max_retries`. A tenant needing many per-id
+  // passes (ACCOUNT_WIPE_CONFIRM_BATCH rows, two spaced absences each) will
+  // dead-letter mid-confirmation and be picked up by the next cron tick — slow
+  // and noisy, but correct, and it resumes exactly where it stopped because the
+  // cleared rows are gone from the ledger. The namespace fast path is what
+  // keeps that off the normal road.
   const clearedThisPass = before.total - after.total;
   const attempts = clearedThisPass > 0 ? progress.probeAttempts : progress.probeAttempts + 1;
   // Sticky, but only within a pass that ends dirty: once a call has actually

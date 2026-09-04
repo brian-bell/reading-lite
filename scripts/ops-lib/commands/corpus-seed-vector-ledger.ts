@@ -258,6 +258,14 @@ Idempotent: rows are upserts keyed by (tenant_id, reading_id). Re-running after
 a partial run finishes the job, and re-running after new readings have landed
 adds them (they are also ledgered by the Worker at publish time).
 
+One thing to know before re-seeding a tenant whose wipe is already running —
+which is the documented remedy when a wipe refuses with
+'account_wipe_unseeded_tenant'. Seeding marks every id 'live', so it RESETS rows
+the wipe had already moved to 'delete_submitted', clearing their delete stamp
+and absent streak. Nothing is lost and nothing is stranded: the next pass simply
+re-submits those deletes and re-runs the +120s confirmation clock. It costs that
+wipe one more round trip, not correctness.
+
 --tenant global is refused: the pre-tenant corpus has no tenant id to key rows
 by, and no account wipe addresses it.
 

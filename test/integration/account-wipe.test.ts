@@ -149,12 +149,12 @@ async function listPrefixKeys(prefix: string): Promise<string[]> {
   return keys;
 }
 
-function indexItem(id: string): ListIndexItem {
+function indexItem(id: string, status: "ready" | "failed" = "ready"): ListIndexItem {
   return {
     id,
     key_prefix: `readings/2026/04/26T200000Z-${id}`,
     url: `https://example.com/${id}`,
-    status: "ready",
+    status,
     created_at: "2026-04-26T20:00:00.000Z",
   };
 }
@@ -168,9 +168,19 @@ function indexItem(id: string): ListIndexItem {
  * expected to clear. `ops corpus seed-vector-ledger` is the real-world
  * equivalent for a corpus that predates the ledger.
  */
-async function seedTenantObjects(ids: string[], opts: { ledger?: boolean } = {}): Promise<void> {
+async function seedTenantObjects(
+  ids: string[],
+  opts: { ledger?: boolean; status?: "ready" | "failed" } = {},
+): Promise<void> {
+  // `status` matters to more than realism now. Only a `ready` reading ever
+  // published a vector, so only a `ready` row is expected to carry a ledger
+  // entry — which is exactly what the pre-objects coverage guard measures. A
+  // fixture that wrote `ready` rows for readings it deliberately left
+  // un-ledgered would be describing an unseeded corpus, and the guard would be
+  // right to refuse it.
+  const status = opts.status ?? "ready";
   const reader = testReadingStore(env, otherTenant());
-  await reader.writeListIndex({ version: 1, items: ids.map(indexItem) });
+  await reader.writeListIndex({ version: 1, items: ids.map((id) => indexItem(id, status)) });
   for (const id of ids) {
     await reader.writeByIdPointer(id, { id, key_prefix: `readings/2026/04/26T200000Z-${id}` });
     await env.READINGS_BUCKET.put(
@@ -769,7 +779,8 @@ describe("account wipe (195b PR1)", () => {
   // has nothing left in the ledger to submit, and a vector published afterwards
   // ledgers itself, so a LATER pass finds it rather than a sweep here.
   it("resuming at the objects phase empties the prefix without re-submitting deletes", async () => {
-    await seedTenantObjects([ID_A, ID_B], { ledger: false });
+    // Failed readings: no vectors, so no ledger rows are expected of them.
+    await seedTenantObjects([ID_A, ID_B], { ledger: false, status: "failed" });
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     await seedProgress({ phase: "objects", mutationIds: ["mut_old"] });
     const result = await processAccountWipeJob(
@@ -789,7 +800,7 @@ describe("account wipe (195b PR1)", () => {
   it("leftover recovery submits ledger ids even with no R2 objects to derive them from", async () => {
     // Objects for a DIFFERENT reading turn up under the prefix (the leftover),
     // while the ledger still names the one whose vector was never confirmed.
-    await seedTenantObjects([ID_A], { ledger: false });
+    await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
     await seedLedger([ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     await seedProgress({ phase: "done", objectsDeleted: 1, completedAtMs: NOW_MS });
@@ -1882,7 +1893,7 @@ describe("account wipe (195b PR1)", () => {
       // ledger row would be the only thing that knew about it.
       // The earlier pass already submitted and confirmed everything it knew
       // about, so it left no ledger row of its own.
-      await seedTenantObjects([ID_A], { ledger: false });
+      await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       await seedProgress({ phase: "objects", mutationIds: ["mut_old"] });
       await seedLedger([ID_B]);
@@ -1984,6 +1995,98 @@ describe("account wipe (195b PR1)", () => {
       expect(await listPrefixKeys(PREFIX)).toEqual(before);
     });
 
+    it("does not accuse a healthy tenant that has failed readings alongside live vectors", async () => {
+      // The false positive that made the second version of this guard unusable.
+      // Intake writes an `index/by-id/{id}` pointer for `failed` and `pending`
+      // readings, but those never get a ledger row because they never get a
+      // vector — the failure paths publish with a null similarity store. A
+      // guard measuring "every id derivable from R2" therefore fired on the
+      // ordinary shape: one failed reading plus one live vector. And its
+      // namespace check could not save it, because the probe runs in the same
+      // pass that just submitted deletes, inside the 30-90s propagation window.
+      const reader = testReadingStore(env, otherTenant());
+      await reader.writeListIndex({
+        version: 1,
+        items: [indexItem(ID_A, "ready"), indexItem(ID_B, "failed")],
+      });
+      for (const id of [ID_A, ID_B]) {
+        await reader.writeByIdPointer(id, { id, key_prefix: `readings/2026/04/26T200000Z-${id}` });
+        await env.READINGS_BUCKET.put(
+          `${PREFIX}readings/2026/04/26T200000Z-${id}/manifest.json`,
+          JSON.stringify({ id }),
+        );
+      }
+      // Only the ready one is ledgered, which is correct and complete coverage.
+      await seedLedger([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      // The namespace answers, as it does for the whole propagation window.
+      let probes = 0;
+      queryIndex.mockImplementation(async () => {
+        probes += 1;
+        return probes === 1
+          ? { count: 1, matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }] }
+          : { count: 0, matches: [] };
+      });
+
+      const errors: string[] = [];
+      const consoleErr = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+        errors.push(String(line));
+      });
+      const result = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      consoleErr.mockRestore();
+      expect(result.kind).toBe("complete");
+      expect(errors.find((l) => l.includes("account_wipe_unseeded_tenant"))).toBeUndefined();
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
+    it("refuses when a READY reading has no ledger row, even beside a ledgered one", async () => {
+      // The other side of the same line. A ready reading owns a vector, so a
+      // missing row for it is a real coverage hole however many other rows
+      // exist.
+      await seedTenantObjects([ID_A, ID_B], { ledger: false });
+      await seedLedger([ID_B]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const before = await listPrefixKeys(PREFIX);
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+    });
+
+    it("falls back to the empty-ledger test when the list index cannot be read", async () => {
+      // No readable index means coverage cannot be measured, so the guard asks
+      // the one question that is still answerable: nothing in the ledger at all
+      // and a namespace that answers. A ledger with rows is evidence something
+      // seeded or published this tenant, and there is no honest way to ask for
+      // more without the index.
+      await env.READINGS_BUCKET.put(`${PREFIX}index/list.json`, "{not json");
+      await env.READINGS_BUCKET.put(`${PREFIX}readings/x/manifest.json`, "{}");
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
+    });
+
     it("proceeds once every reading in the corpus has a ledger row", async () => {
       // The same corpus, fully seeded. Coverage is what the guard measures, so
       // completing it is what unblocks the wipe.
@@ -2001,7 +2104,7 @@ describe("account wipe (195b PR1)", () => {
       // An un-ledgered id alone does not block — a `failed` reading has no
       // vector. Both halves of the test have to hold: something missing from
       // the ledger AND a namespace that actually answers.
-      await seedTenantObjects([ID_A, ID_B], { ledger: false });
+      await seedTenantObjects([ID_A, ID_B], { ledger: false, status: "failed" });
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       const result = await processAccountWipeJob(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
@@ -2016,7 +2119,7 @@ describe("account wipe (195b PR1)", () => {
       // The other half of the guard. Nothing in the ledger AND a clean probe is
       // a tenant that genuinely has no vectors — the ordinary case for a corpus
       // with no ready readings — so the wipe proceeds and finishes.
-      await seedTenantObjects([ID_A], { ledger: false });
+      await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       const result = await processAccountWipeJob(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
