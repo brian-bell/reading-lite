@@ -244,7 +244,7 @@ describe("fetchWithRetry", () => {
     expect(sleeps).toEqual([]);
   });
 
-  it.each(["BlockedHostError", "TooManyRedirectsError", "DestinationResolutionError"] as const)(
+  it.each(["BlockedHostError", "TooManyRedirectsError"] as const)(
     "does not retry %s (SSRF guard - would re-hit the first hop)",
     async (name) => {
       const guard = new Error(name);
@@ -266,6 +266,26 @@ describe("fetchWithRetry", () => {
       expect(sleeps).toEqual([]);
     },
   );
+
+  it("retries DestinationResolutionError - no hop was issued, so the resolver gets another try", async () => {
+    const guard = new Error("destination resolved to no addresses");
+    guard.name = "DestinationResolutionError";
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(guard)
+      .mockResolvedValueOnce(res(200, "ok"));
+    const { sleep, sleeps } = recordingSleep();
+    const response = await fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
+      maxAttempts: 3,
+      baseDelayMs: 50,
+      maxDelayMs: 1_000,
+      sleep,
+      random: () => 1,
+    });
+    expect(response.status).toBe(200);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(sleeps).toHaveLength(1);
+  });
 
   it("does not retry errors whose name is AbortError on a generic Error", async () => {
     const abortErr = new Error("aborted");

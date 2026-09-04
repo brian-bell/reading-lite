@@ -21,13 +21,7 @@ import {
 } from "./errors";
 import { isRedditThreadUrl } from "./reddit";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
-import {
-  assertSafeUrl,
-  DestinationResolutionError,
-  safeFetch,
-  TooManyRedirectsError,
-  type LookupFn,
-} from "./safe-fetch";
+import { assertSafeUrl, safeFetch, type LookupFn } from "./safe-fetch";
 import { extractXThread, isXPostUrl } from "./x";
 import {
   buildYoutubeMarkdown,
@@ -173,11 +167,15 @@ const YOUTUBE_WATCH_HEADERS = {
 } as const;
 
 // Tiered YouTube extraction: oEmbed is the required floor (title + author, and a
-  // 429 here surfaces RateLimitedError so the queue retries); the watch-page
-  // description/captions and the timedtext transcript are best-effort enrichment
-  // that degrade to the floor on ordinary errors. SSRF-guard failures
-  // (BlockedHostError, TooManyRedirectsError, DestinationResolutionError,
-  // OversizedResponseError) stay terminal.
+// 429 here surfaces RateLimitedError so the queue retries); the watch-page
+// description/captions and the timedtext transcript are best-effort enrichment
+// that degrade to the floor rather than fail the reading.
+//
+// The one exception is BlockedHostError: a tampered player response steering
+// egress at a private address is a finding worth surfacing, not an enrichment
+// miss to swallow. Everything else — hop caps, resolution failures, oversized
+// pages — degrades like a 429 or a 5xx does, because losing the description is
+// always cheaper than losing the reading.
 async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   const videoId = parseVideoId(url);
   if (!videoId) throw new BadStatusError(url, 400);
@@ -393,10 +391,5 @@ function escapeAttr(s: string): string {
 }
 
 function isTerminalFetchGuardError(error: unknown): boolean {
-  return (
-    error instanceof BlockedHostError ||
-    error instanceof TooManyRedirectsError ||
-    error instanceof DestinationResolutionError ||
-    error instanceof OversizedResponseError
-  );
+  return error instanceof BlockedHostError;
 }

@@ -17,8 +17,16 @@ export interface DnsResolvers {
 
 // Cloudflare's node:dns is DoH to 1.1.1.1 and throws on lookup / lookupService /
 // resolve. resolve4 + resolve6 are the implemented surface. NODATA on one
-// family is normal for single-stack names; a hard error with no addresses
-// from the other family still fails closed.
+// family is normal for single-stack names, and workerd reports it as ENOTFOUND,
+// so that whole set is tolerated as "this family has no records".
+//
+// Any other failure means a family went UNVETTED while `fetch` will still
+// re-resolve and may connect over it — so it fails closed even when the other
+// family answered. Returning the survivors would let an attacker whose
+// nameserver fails A queries hide a private A record behind a public AAAA
+// answer, which is a deterministic bypass, not the DNS-rebinding race
+// safe-fetch.ts documents as an accepted residual. The thrown error is an
+// ordinary transport failure, so fetchWithRetry still retries it.
 export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
   return async (hostname) => {
     const [v4, v6] = await Promise.allSettled([
@@ -37,9 +45,8 @@ export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
     } else if (!isNoDataError(v6.reason)) {
       hardError = v6.reason;
     }
-    if (addresses.length > 0) return addresses;
     if (hardError !== undefined) throw hardError;
-    return [];
+    return addresses;
   };
 }
 

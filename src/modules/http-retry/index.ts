@@ -57,9 +57,13 @@ export async function fetchWithRetry(
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
       // tripping). Retrying would mask the cancellation intent, so surface it.
       if (isAbortError(e)) throw e;
-      // SSRF-guard failures are thrown by the wrapped fetch before/during a
-      // hop. Retrying would re-hit the attacker-controlled first hop.
-      if (isSsrfGuardError(e)) throw e;
+      // A rejected destination is a verdict about attacker-controlled egress:
+      // the guard already decided this URL (or its redirect chain) must not be
+      // reached, so retrying would only re-hit the attacker's first hop.
+      // DestinationResolutionError is deliberately NOT in that set — it means
+      // the resolver gave us nothing, no hop was issued, and a transient DoH
+      // failure must not become a terminal `failed` manifest.
+      if (isRejectedDestinationError(e)) throw e;
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
@@ -90,15 +94,14 @@ function isAbortError(e: unknown): boolean {
   return errorName(e) === "AbortError";
 }
 
-const SSRF_GUARD_ERROR_NAMES = new Set([
+const REJECTED_DESTINATION_ERROR_NAMES = new Set([
   "BlockedHostError",
   "TooManyRedirectsError",
-  "DestinationResolutionError",
 ]);
 
-function isSsrfGuardError(e: unknown): boolean {
+function isRejectedDestinationError(e: unknown): boolean {
   const name = errorName(e);
-  return name !== undefined && SSRF_GUARD_ERROR_NAMES.has(name);
+  return name !== undefined && REJECTED_DESTINATION_ERROR_NAMES.has(name);
 }
 
 function errorName(e: unknown): string | undefined {

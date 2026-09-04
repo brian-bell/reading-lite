@@ -514,7 +514,28 @@ describe("extractFromUrl", () => {
       expect(sleep).not.toHaveBeenCalled();
     });
 
-    it("does not retry when DNS resolves to no addresses", async () => {
+    it("retries a resolver blip that clears, instead of failing the reading terminally", async () => {
+      const fetchFn = fakeFetch({
+        "https://blip.example/": { headers: { "content-type": "text/html" }, body: HTML_ARTICLE },
+      });
+      const sleep = vi.fn(async () => {});
+      let attempts = 0;
+      // First resolution answers empty (a DoH hiccup surfaces as ENOTFOUND on
+      // both families, which the adapter folds to []); the second succeeds.
+      const lookup: LookupFn = async () => (++attempts === 1 ? [] : [{ address: "93.184.216.34" }]);
+      const out = await extractFromUrl(
+        "https://blip.example/",
+        extractorDeps(fetchFn, {
+          lookup,
+          retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+        }),
+      );
+      expect(out.content_status).toBe("captured");
+      expect(attempts).toBe(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it("still fails when every attempt resolves to no addresses, without ever connecting", async () => {
       const fetchFn = vi.fn(async () => {
         throw new Error("must not connect");
       }) as unknown as typeof fetch;
@@ -530,7 +551,7 @@ describe("extractFromUrl", () => {
         ),
       ).rejects.toMatchObject({ name: "DestinationResolutionError" });
       expect(fetchFn).not.toHaveBeenCalled();
-      expect(sleep).not.toHaveBeenCalled();
+      expect(sleep).toHaveBeenCalledTimes(2);
     });
 
     it("gives up after the hop ceiling", async () => {
@@ -723,5 +744,65 @@ describe("extractFromUrl — YouTube", () => {
     await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(BlockedHostError);
     expect(calls).toContain(timedtext);
     expect(calls.some((url) => url.includes("169.254"))).toBe(false);
+  });
+
+  // Tier 2 and tier 3 are enrichment. Only BlockedHostError — a redirect that
+  // actually aimed at a private target — is worth losing the reading over; a
+  // hop-cap, a resolver blip, or an oversized watch page must still yield the
+  // oEmbed floor, exactly as a 429 or a 5xx there does.
+  it("degrades to the oEmbed floor when the watch page exceeds the hop ceiling", async () => {
+    const fetchFn = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === OEMBED) {
+        return new Response(OEMBED_JSON, { headers: { "content-type": "application/json" } });
+      }
+      const n = Number(new URL(url).searchParams.get("hop") ?? 0);
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://www.youtube.com/watch?v=${ID}&hop=${n + 1}` },
+      });
+    };
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn as typeof fetch, ...deps });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).not.toContain("A short description of the talk.");
+  });
+
+  it("degrades to the oEmbed floor when a watch-page redirect target cannot be resolved", async () => {
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { status: 302, headers: { location: "https://consent.example/" }, body: "" },
+    });
+    // The consent host answers with no addresses — a resolver blip, not a
+    // private target, so the reading keeps its floor.
+    const lookup: LookupFn = async (hostname) =>
+      hostname === "consent.example" ? [] : [{ address: "93.184.216.34" }];
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps, lookup });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).not.toContain("A short description of the talk.");
+  });
+
+  it("degrades to the oEmbed floor when the transcript exceeds maxBytes", async () => {
+    const timedtext = timedtextJson3Url(CAPTION_BASE);
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: WATCH_HTML },
+      [timedtext]: {
+        headers: { "content-type": "application/json", "content-length": "5000" },
+        body: TIMEDTEXT_JSON3,
+      },
+    });
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps, maxBytes: 1_000 });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).toContain("A short description of the talk.");
+    expect(out.markdown).not.toContain("## Transcript");
   });
 });

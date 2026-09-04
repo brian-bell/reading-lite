@@ -76,15 +76,32 @@ describe("lookupFromResolvers", () => {
     await expect(lookupFromResolvers({ resolve4, resolve6 })("broken.example")).rejects.toBe(hard);
   });
 
-  it("keeps addresses from the successful family when the other hard-fails", async () => {
+  // A hard error means one family was never vetted, while `fetch` re-resolves
+  // and may still connect over it. Returning the other family's addresses would
+  // let an attacker whose nameserver fails A queries hide a private A record
+  // behind a public AAAA answer, so the guard fails closed instead.
+  it("fails closed when one family hard-fails, even if the other resolved", async () => {
+    const hard = new Error("timeout");
     const resolve4 = vi.fn(async () => ["8.8.8.8"]);
     const resolve6 = vi.fn(async () => {
-      throw new Error("timeout");
+      throw hard;
     });
 
-    await expect(lookupFromResolvers({ resolve4, resolve6 })("partial.example")).resolves.toEqual([
-      { address: "8.8.8.8", family: 4 },
-    ]);
+    await expect(
+      lookupFromResolvers({ resolve4, resolve6 })("partial.example"),
+    ).rejects.toBe(hard);
+  });
+
+  it("fails closed when the unvetted family is the one carrying the private record", async () => {
+    const hard = new Error("SERVFAIL");
+    const resolve4 = vi.fn(async () => {
+      throw hard;
+    });
+    const resolve6 = vi.fn(async () => ["2606:4700:4700::1111"]);
+
+    await expect(
+      lookupFromResolvers({ resolve4, resolve6 })("split-answer.example"),
+    ).rejects.toBe(hard);
   });
 });
 
