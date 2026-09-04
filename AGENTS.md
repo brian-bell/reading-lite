@@ -269,7 +269,9 @@ Pointers only — the details live in the named files' comments.
   deliberate and written down in `docs/operations.md`: an empty-prefix tenant
   with stranded vectors is never swept again, and there is no durable record of
   a wipe's outcome — do not gate the PR2 hard-delete on inferring one from R2
-  state. The wipe DLQ logs and acks; it must not call `markDeadLettered`.
+  state. Both close with the durable vector ledger, issue #261
+  (`rl-wipe-vector-ledger`). The wipe DLQ logs and acks; it must not call
+  `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

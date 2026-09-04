@@ -75,7 +75,8 @@ object the delete exists to remove. **Known gap:** a tenant whose R2 prefix is
 empty but whose Vectorize namespace still holds vectors is therefore never
 swept again. R2 is the only source of the reading ids `deleteByIds` needs, so
 such a sweep could not address those vectors anyway; the durable per-tenant
-vector ledger (issue 195b move 2, `rl-wipe-vector-ledger`) is what closes it.
+vector ledger (issue #261, 195b move 2, `rl-wipe-vector-ledger`) is what closes
+it.
 
 **Second known gap, same cause: there is no durable record of a wipe's
 outcome.** Because a finished wipe deletes its progress object and leaves an
@@ -84,9 +85,9 @@ but leaving residue the probe bound gave up on, and never wiped at all (a user
 who submitted nothing has an empty prefix too, so the skip above means their
 wipe never runs). The residue alert is a log line; nothing durable survives it.
 Do not build the PR2 users-row hard-delete on an inference from R2 state: the
-D1 `wipe_progress` table in move 2 (`rl-wipe-vector-ledger`) is scoped to carry
-the completion record and its residue flag, and that is what the hard-delete
-should gate on.
+D1 `wipe_progress` table in move 2 (issue #261, `rl-wipe-vector-ledger`) is
+scoped to carry the completion record and its residue flag, and that is what
+the hard-delete should gate on.
 
 Before reporting success the wipe probes the tenant's Vectorize namespace and
 refuses to finish while anything still answers, logging

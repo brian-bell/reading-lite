@@ -409,7 +409,7 @@ export async function fanOutDueAccountWipes(
         // but whose namespace still holds vectors is never swept again. R2 is
         // the only source of the reading ids `deleteByIds` needs, so such a
         // sweep could not address them anyway — the durable vector ledger
-        // (issue 195b move 2) is what closes it. Documented in
+        // (issue #261, 195b move 2) is what closes it. Documented in
         // docs/operations.md.
         if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) {
           continue;
@@ -965,7 +965,7 @@ async function assertNamespaceEmptied(
       note: sawResidue
         ? "tenant namespace still answered after the probe bound; vectors whose reading id is " +
           "no longer derivable from R2 are unaddressable (deleteByIds needs the id). " +
-          "Wipe completed; residue needs the vector ledger (195b move 2)."
+          "Wipe completed; residue needs the vector ledger (issue #261)."
         : "the namespace probe never returned a clean answer, so the wipe could not be " +
           "confirmed; check Vectorize health. Wipe completed.",
     }),
