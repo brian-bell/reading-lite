@@ -5,6 +5,7 @@
 // their CommandDefinition to `commands` and, if needed, a new group.
 
 import type { AnyCommand, CommandGroup } from "./contract";
+import { accountSweepWipePrefixCommand } from "./commands/account-sweep-wipe-prefix";
 import { corpusAuditCommand } from "./commands/corpus-audit";
 import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
@@ -53,6 +54,10 @@ export const defaultRegistry: Registry = {
     { name: "founder", summary: "Founder control-plane bootstrap" },
     { name: "extract", summary: "Local extraction agent and probe" },
     { name: "eval", summary: "Summarizer quality evaluation" },
+    // Account-deletion housekeeping: operator work on the wipe pipeline's own
+    // bucket-root state, which is neither corpus content nor a deployment. The
+    // residue-scan and wipe operator commands of later #195 slices land here.
+    { name: "account", summary: "Account-deletion housekeeping and wipe residue" },
   ],
   commands: [
     corpusAuditCommand,
@@ -86,5 +91,6 @@ export const defaultRegistry: Registry = {
     extractAgentCommand,
     extractProbeCommand,
     evalSummarizerCommand,
+    accountSweepWipePrefixCommand,
   ],
 };

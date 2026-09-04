@@ -27,6 +27,12 @@ export interface R2ObjectMeta {
   // (everything this corpus writes) it is the content MD5, so source/dest
   // equality is a byte-identity check.
   etag: string;
+  // ISO-8601 upload time as the storage API reports it, when it reports one.
+  // Optional because the many in-memory listing fakes predate it and because
+  // nothing in the copy/inventory paths depends on it — `ops account
+  // sweep-wipe-prefix` prints it so an operator can see the age of an orphaned
+  // record before deleting it.
+  lastModified?: string;
 }
 
 export interface R2ObjectBody {
@@ -355,10 +361,12 @@ export function makeR2Client(
       for (const block of extractXmlTags(xml, "Contents")) {
         const key = extractXmlTags(block, "Key")[0];
         if (key === undefined) continue;
+        const lastModified = extractXmlTags(block, "LastModified")[0];
         objects.push({
           key: decodeXmlEntities(key),
           size: Number(extractXmlTags(block, "Size")[0] ?? "0"),
           etag: decodeXmlEntities(extractXmlTags(block, "ETag")[0] ?? "").replace(/"/g, ""),
+          ...(lastModified === undefined ? {} : { lastModified: decodeXmlEntities(lastModified) }),
         });
       }
       const isTruncated = extractXmlTags(xml, "IsTruncated")[0] === "true";
@@ -562,7 +570,13 @@ export function makeR2RestClient(
       const json = (await res.json()) as {
         success?: boolean;
         errors?: { message?: string }[];
-        result?: Array<{ key?: string; size?: number | string; etag?: string }>;
+        result?: Array<{
+          key?: string;
+          size?: number | string;
+          etag?: string;
+          last_modified?: string;
+          uploaded?: string;
+        }>;
         result_info?: { cursor?: string; is_truncated?: boolean };
       };
       if (json.success === false) {
@@ -571,10 +585,16 @@ export function makeR2RestClient(
       }
       for (const item of json.result ?? []) {
         if (!item.key) continue;
+        // The R2 REST listing has spelled this `uploaded`; `last_modified` is
+        // accepted too so the field does not vanish if the API settles on the
+        // S3 spelling. Absent stays absent — an invented timestamp would be
+        // worse than none.
+        const lastModified = item.last_modified ?? item.uploaded;
         objects.push({
           key: item.key,
           size: Number(item.size ?? 0),
           etag: normalizeEtag(item.etag),
+          ...(lastModified === undefined ? {} : { lastModified }),
         });
       }
       const info = json.result_info;

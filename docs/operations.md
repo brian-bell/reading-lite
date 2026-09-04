@@ -154,6 +154,70 @@ know about", and note the same vector ledger is what makes it fixable. An
 unbound `READINGS_INDEX` fails the job even when no ids were collected, so a
 wipe can no longer report success without having addressed the index at all.
 
+**Sweeping the `wipe/` prefix.** Slice S2 of issue #195 moves wipe progress out
+of R2 and into D1, and deletes the only code that ever removed
+`wipe/{tenantId}/progress.json`. Any record an in-flight wipe leaves behind at
+that moment is a permanent orphan: a bucket key naming a deleted tenant, with a
+body carrying that tenant's `vector_cursor` (a reading id). Clear it with
+
+```sh
+npm run ops -- account sweep-wipe-prefix    # plan: list only
+npm run ops -- account sweep-wipe-prefix --execute --acknowledge-no-active-wipe
+```
+
+Rollout sequence, in order:
+
+1. **Before merging S2**, run it in plan mode. It lists every object under
+   `wipe/` with size and last-modified time and writes nothing. Empty is the
+   easy case; anything listed is a wipe you want finished, not interrupted.
+2. **Wait for S2's deploy. That is the precondition**, and the only thing that
+   makes these records safe to delete: once the new Worker is live, nothing
+   reads or writes `wipe/` at all, so every record under it is orphaned by
+   construction. `--execute` refuses to run without
+   `--acknowledge-no-active-wipe`, which is your assertion that the deploy has
+   landed.
+
+   **Before S2 deploys, any record under `wipe/` means that tenant's wipe is
+   running or due — wait for it, do not sweep around it.** A fresh record is
+   being written right now; one more than 15 minutes stale has a lapsed lease
+   (`wipeLeaseHeld` in `src/account-wipe.ts` goes false at
+   `ACCOUNT_WIPE_IN_FLIGHT_MS`, one cron interval), which is exactly when the
+   fan-out may enqueue a *resume*. Stale means due to be picked up, not finished
+   with. Deleting either costs that wipe its cursor (the next progress write is
+   a compare-and-set on the etag it read) and restarts it from a full id
+   re-collect.
+
+   **After S2 deploys, the in-flight signal lives in D1**, not in R2: a
+   `wipe_progress` row with `completed_at_ms` NULL and a recent `updated_at_ms`
+   heartbeat is a wipe still running. Plan mode prints that query scoped to the
+   tenants its records name, against the control plane matching `--bucket`.
+
+   **A `users.status` count is not the signal, before or after.** `status` stays
+   `deleting` after a wipe *completes*, until the S4 hard-delete, so a count of
+   `deleting` users never returns to 0 once any account has been deleted.
+3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
+   the prefix, and **exits non-zero if anything remains** — so a green exit is
+   evidence the prefix is empty, not just that the deletes were submitted. It is
+   not evidence the run was harmless: R2 has no conditional delete, so a record
+   written between the listing and its delete would be destroyed and then absent
+   from the re-list. That the sweep harmed nothing rests on step 2's deploy, not
+   on the verification.
+   On a non-zero exit read which half of the report it is. Keys that *survived
+   the delete* (same key, same etag) are safe to re-run against. Keys marked
+   *NEW or REWRITTEN since the plan listing* — a new key, or the same key with a
+   different etag — were written after the listing the run planned against,
+   which should be impossible once S2 has deployed. Check `wipe_progress` for an
+   unfinished row before touching them; a live wipe's record must not be
+   deleted. A key the guard refuses outright has no override: inspect it and
+   remove it by hand (`npx wrangler r2 object delete <bucket>/<key> --remote`).
+
+Deletes are hard-restricted to keys literally under `wipe/`. A tenant-rooted key
+(`u/{tenantId}/…`) or a legacy pre-cutover corpus key (`readings/`, `index/`)
+is refused, and a listing containing one aborts the run before any delete. The
+command takes no `--tenant`: these keys sit outside every tenant key root, and
+the sweep clears the prefix as a whole. Default `--bucket` is production
+`reading-lite`.
+
 Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
 are later 195b slices. `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.
