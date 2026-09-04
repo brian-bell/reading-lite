@@ -217,55 +217,43 @@ the sign-off, not inside an unrelated slice.
 S5's audit therefore owns both halves: the wipe residue and the search
 duplication.
 
-### Seed the vector ledger before the first ledger-based wipe
+### The wipe seeds its own ledger
 
-**This is a rollout prerequisite, not a tidy-up.** From slice S3 the wipe
-submits `deleteByIds` only for ids the ledger names. An environment whose corpus
-predates the ledger has vectors and no rows, so its first wipe submits nothing,
-empties R2, and leaves every embedding behind.
+**No operator step is required before a wipe.** From issue #195 slice S3 the
+wipe submits `deleteByIds` only for ids the ledger names — and a corpus that
+predates the ledger has none — so before any phase runs it pages its own key
+root, derives every reading id from the object keys, and inserts the rows it is
+missing. R2 is intact at that moment (it is what the wipe is about to delete),
+so the job holds exactly the inputs the seeding command would.
 
-It does **not** get that far. Before **any** phase runs — the vectors phase
-included — the wipe checks that the ledger covers the corpus, and refuses with a
-high-severity `account_wipe_unseeded_tenant` alert and **nothing deleted**,
-because R2 is where this command derives its ids from and emptying it first is
-what would strand those vectors forever.
+The invariant that buys: **no object is deleted before its reading id is in the
+ledger.** Nothing to remember, nothing to enforce.
 
-What exactly it refuses on, since it is stricter than "the ledger is empty":
+The seed step is insert-only — a row an earlier pass moved to
+`delete_submitted` keeps its state, delete stamp and absent streak — resumable
+on `wipe_progress.seed_cursor`, and it logs its work:
 
-- **Normally**, every `ready` row in `index/list.json` must have a
-  `vector_ledger` row. One that does not is enough — a *partially* seeded tenant
-  with a non-empty ledger is refused, not only a wholly unseeded one. The
-  namespace is not consulted on this path.
-- **Above `LEDGER_COVERAGE_MAX_SCAN` ready readings**, the corpus is too large to
-  check id by id in one invocation, so it compares live-row counts instead:
-  fewer live rows than ready readings is a refusal. Coarser — it cannot see a
-  partial hole whose count happens to match.
-- **When `index/list.json` cannot be read at all**, it falls back to the one
-  question still answerable without it: no live ledger row *and* a namespace
-  that still answers.
+```
+account_wipe_ledger_seeded  rows_created 0   outcome done
+```
 
-The verdict is stamped on `wipe_progress.coverage_verified_at_ms`, so it costs
-one walk per wipe rather than one per delivery; a reopened wipe re-verifies.
+A **nonzero** `rows_created` on a tenant you believe was already seeded means
+the ledger was incomplete. Expected on a corpus predating S3; worth
+investigating on one that should have been covered by the writers.
 
-The refusal dead-letters, and because the progress record stays in-progress cron
-re-enqueues on the next 15-minute tick — so the alert **recurs** until an
-operator seeds, at which point the next tick simply proceeds. Self-healing, but
-not self-silencing. Seed, then let cron re-drive it (or force it).
+`ops corpus seed-vector-ledger` is still worth having — it lets you rehearse
+the walk, and repair a **live** tenant's ledger without waiting for a deletion
+— but it is no longer a prerequisite for anything:
 
 ```sh
-# Plan first. It lists every reading id it would ledger and writes nothing.
 npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
 npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
 ```
 
-It over-seeds on purpose: a row for a reading with no vector costs one no-op
-`deleteByIds` and then clears on the first confirmation, while a missing row is
-unrecoverable. Re-running is safe — rows are upserts keyed by
-`(tenant_id, reading_id)` — so a partial run finishes on the next pass, and
-readings that land after the seed are ledgered by the Worker at publish time.
-`--tenant global` is refused: the pre-tenant corpus has no tenant id to key rows
-by and no account wipe addresses it. Prove the command on staging first, using
-the drill runbook below as the template.
+It over-seeds on purpose, exactly as the wipe's own step does: a row for a
+reading with no vector costs one no-op `deleteByIds` and then clears, while a
+missing row is unrecoverable. `--tenant global` is refused — the pre-tenant
+corpus has no tenant id to key rows by and no account wipe addresses it.
 
 The completion record is what the later users-row hard-delete gates on: read
 `completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
@@ -794,18 +782,16 @@ nothing if you get them wrong:
   deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
   exist for it. The vector is stranded, and surfaces at the end as residue — a
   synthetic reproduction of the issue #261 gap rather than a wipe bug.
-- **Seed the ledger for the drill tenant after writing its objects and vectors,
-  and before marking it `deleting`.** The wipe's ids come from
-  `vector_ledger`, so a drill that skips this step wipes R2, submits no vector
-  delete at all, and then fails its terminal probe on the vectors it left
-  behind — a real finding about the drill's setup rather than about the wipe:
-  `npm run ops -- corpus seed-vector-ledger --tenant "$DRILL" --bucket
-  reading-lite-staging --execute`.
-- **Expect two wipe passes for a healthy tenant.** The first submits the
-  deletes; the confirmation is not allowed to count an absence until 120s after
-  `deleteByIds` returned, because propagation was measured at 30-90s and a
-  probe inside that window carries no information. A single-pass completion
-  means the ledger was empty — check the seed before celebrating.
+- **You do not need to seed the drill tenant.** The wipe seeds its own ledger
+  from the objects you write, before it deletes anything, so a drill that skips
+  seeding is testing the real path rather than a rigged one. Watch for
+  `account_wipe_ledger_seeded` with `rows_created` equal to the number of
+  readings you seeded — that line is the wipe proving it found them.
+- **Expect two wipe passes for a healthy tenant.** The first seeds and submits
+  the deletes; the confirmation is not allowed to count an absence until 120s
+  after `deleteByIds` returned, because propagation was measured at 30-90s and
+  a probe inside that window carries no information. A single-pass completion
+  means nothing was submitted — check `rows_created` before celebrating.
 
 ```sh
 # 1. Create the account. Either sign up on staging for real, or insert the row

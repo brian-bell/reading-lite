@@ -316,22 +316,19 @@ Pointers only — the details live in the named files' comments.
   `status='deleting'` row with a NULL `deleting_at_ms` logs
   `account_wipe_missing_deleting_at` instead of stalling silently, and
   `continuations` bounds the `continue` self-send so a wipe that cannot finish
-  dead-letters instead of resetting its retry budget forever. **An existing
-  corpus must be seeded first** — `ops corpus seed-vector-ledger --tenant
-  "$TENANT" --execute`. An unseeded tenant is REFUSED rather than half-wiped.
-  Before ANY phase runs — the vectors phase included, because that phase flips
-  ledger rows from `live` to `delete_submitted` and a live-row count stops
-  measuring coverage the moment it does — the wipe checks that every `ready`
-  row in `index/list.json` has a ledger row, and refuses with
-  `account_wipe_unseeded_tenant` if one does not while the namespace still
-  answers. Nothing is deleted: R2 is where the seeding command derives those
-  ids from, and emptying it first is what would make them unrecoverable. The
-  verdict is stamped on `wipe_progress.coverage_verified_at_ms` so it costs one
-  walk per wipe, and a reopen re-verifies. Above `LEDGER_COVERAGE_MAX_SCAN`
-  ready readings the check compares live-row counts instead of going id by id
-  — coarser, and it cannot see a partial hole, which the code says plainly. The
-  refusal dead-letters and cron re-enqueues every 15 minutes, so the alert
-  recurs until an operator seeds; self-healing, not self-silencing. Two residuals survive
+  dead-letters instead of resetting its retry budget forever. **The wipe seeds the ledger itself**, before any
+  phase runs: it pages its own key root, derives every reading id via
+  `readingIdFromRelativeKey`, and INSERTs the missing rows (never updating one,
+  so a row an earlier pass moved to `delete_submitted` keeps its confirmation
+  bookkeeping). R2 is intact at that moment, so the wipe holds exactly the
+  inputs `ops corpus seed-vector-ledger` would. The invariant is local and
+  inductive: **no object is deleted before its reading id is in the ledger.**
+  Resumable on `wipe_progress.seed_cursor`, finished at `seed_completed_at_ms`,
+  re-run by a reopen, and it logs `account_wipe_ledger_seeded` with the number
+  of rows it had to create — nonzero on a corpus that predates the ledger,
+  worth investigating on one that should have been complete. Seeding is
+  therefore NOT an operator prerequisite; `ops corpus seed-vector-ledger`
+  remains a rehearsal and live-tenant repair tool. Two residuals survive
   this slice and they are NOT equally benign. A reading purged from R2 with a
   failed vector delete is unseedable by construction — the honest residual of
   #261. But any tenant that ever ran `corpus ingest`/`recover --batch` under

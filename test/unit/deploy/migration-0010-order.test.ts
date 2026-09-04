@@ -112,6 +112,9 @@ describe("migration 0010 — vector_ledger", () => {
       }>).map((c) => c.name);
       expect(wipeCols).toContain("vector_cursor");
       expect(wipeCols).toContain("r2_cursor");
+      // The seed step's own resume state.
+      expect(wipeCols).toContain("seed_cursor");
+      expect(wipeCols).toContain("seed_completed_at_ms");
     } finally {
       db.close();
     }

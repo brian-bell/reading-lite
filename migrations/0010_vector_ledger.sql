@@ -104,16 +104,28 @@ CREATE INDEX vector_ledger_tenant_state ON vector_ledger (tenant_id, state);
 -- a consideration.
 UPDATE wipe_progress SET vector_cursor = NULL;
 
--- Ledger-coverage verification, recorded once per wipe.
+-- The wipe's seed step: its resume cursor and its completion stamp.
 --
--- `src/account-wipe.ts` refuses to delete a tenant's R2 objects while a reading
--- that should own a vector has no ledger row, because R2 is the only source
--- `ops corpus seed-vector-ledger` can derive those ids from. That check has to
--- run BEFORE the vectors phase — once deletes are submitted the rows flip to
--- `delete_submitted` and a live-row count no longer measures coverage — and it
--- must not re-run on every delivery, because the walk is not free.
+-- Before submitting any delete, and before deleting any object, the wipe pages
+-- its own R2 key root and records every reading id it finds in `vector_ledger`
+-- (`src/account-wipe.ts`, `insertMissingLedgerRows`). R2 is intact at that
+-- moment — it is the very thing the wipe is about to delete — so the ledger's
+-- coverage is ESTABLISHED rather than asserted, and the invariant is local and
+-- inductive: no object is deleted before its reading id is in the ledger.
 --
--- So the verdict is stamped here the first time it passes, and every later
--- delivery of the same wipe honours it. A reopen clears it, because a reopened
--- wipe is looking at a corpus that has changed since.
-ALTER TABLE wipe_progress ADD COLUMN coverage_verified_at_ms INTEGER;
+-- That replaces an earlier design in this same slice which compared the ledger
+-- against `index/list.json`'s `ready` rows and refused when it fell short. The
+-- comparison was unsound in the direction that matters: a reading whose vector
+-- outlived its `ready` status (reprocessed to `failed`, dropped from the list
+-- index, partially purged) has a live vector and no `ready` row, so it passed
+-- the check and was stranded anyway — the guard's own failure mode was the one
+-- it existed to prevent. Deriving ids from the key space has no such blind
+-- spot: every reading with any object left carries its id in that object's key.
+--
+-- `seed_cursor` is an R2 list cursor and resumes the walk across deliveries;
+-- `seed_completed_at_ms` distinguishes "not started" from "finished" so a
+-- resume does not re-page a corpus it has already covered. A reopened wipe
+-- clears both, because leftover objects may belong to readings the earlier pass
+-- never saw.
+ALTER TABLE wipe_progress ADD COLUMN seed_cursor TEXT;
+ALTER TABLE wipe_progress ADD COLUMN seed_completed_at_ms INTEGER;

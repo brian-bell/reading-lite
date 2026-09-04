@@ -314,6 +314,47 @@ function dedupe(ids: readonly string[]): string[] {
   return [...new Set(ids.filter((id) => id.length > 0))];
 }
 
+/**
+ * Record ids that have no row yet, and touch nothing that does.
+ *
+ * The account wipe's seed phase derives ids from R2 while R2 still exists and
+ * calls this before deleting anything, so the ledger's coverage is established
+ * rather than asserted. Two properties make it safe to run over a corpus that
+ * is already partly ledgered:
+ *
+ * - `ON CONFLICT DO NOTHING`, not `markLive`. A row already moved to
+ *   `delete_submitted` by an earlier pass keeps its state, its delete stamp and
+ *   its absent streak. Re-marking it `live` would restart the confirmation
+ *   clock and force a redundant re-submit on every resume.
+ * - It never deletes. An id derived from R2 for a reading with no vector costs
+ *   one no-op `deleteByIds` later; a missing row costs a vector nobody can
+ *   address. The asymmetry is the whole reason to over-record.
+ *
+ * @returns how many rows were actually created — the observability that tells
+ * an operator a supposedly-seeded tenant was not.
+ */
+export async function insertMissingLedgerRows(
+  db: ControlPlaneDb,
+  tenantId: TenantId,
+  readingIds: readonly string[],
+  nowMs: number,
+): Promise<number> {
+  let created = 0;
+  for (const chunk of chunked(dedupe(readingIds), VECTOR_LEDGER_WRITE_CHUNK)) {
+    const values = chunk.map(() => "(?, ?, 'live', ?, NULL, 0, NULL)").join(", ");
+    const result = await db.run(
+      `INSERT INTO vector_ledger (
+         tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms,
+         absent_streak, last_absent_at_ms
+       ) VALUES ${values}
+       ON CONFLICT (tenant_id, reading_id) DO NOTHING`,
+      ...chunk.flatMap((readingId) => [tenantId, readingId, nowMs]),
+    );
+    created += result.changes;
+  }
+  return created;
+}
+
 /** Ids still carrying a live vector, oldest first, bounded. */
 export async function listLiveLedgerIds(
   db: ControlPlaneDb,

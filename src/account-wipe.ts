@@ -31,17 +31,27 @@
  * unconfirmed read. "The R2 prefix is empty" is no longer evidence of anything
  * about the index.
  *
- * **An unseeded tenant is refused, before anything is deleted.** The ledger is
- * only an id source for ids it has, and a corpus that predates this slice has
- * vectors and no rows. So the objects phase will not start while the ledger is
- * empty and the namespace still answers: it raises
- * `account_wipe_unseeded_tenant` and throws, leaving R2 intact — because R2 is
- * where `ops corpus seed-vector-ledger` derives those ids from, and emptying it
- * first is what would make them unrecoverable. That is review finding F3, and
- * the guard is what keeps the ledger from reproducing it. The fix is an
- * operator seeding the environment, not another delivery: the job dead-letters
- * and cron re-enqueues it every 15 minutes, so the alert recurs until someone
- * seeds. Self-healing, but not self-silencing.
+ * **The wipe seeds the ledger itself, before anything is deleted.** The ledger
+ * can only name vectors it has rows for, and a corpus that predates it has
+ * none. So the first thing a wipe does is page its own key root, derive every
+ * reading id it finds, and insert the missing rows — R2 is intact at that
+ * moment, being the very thing about to be deleted, so the wipe holds exactly
+ * the inputs an operator's `ops corpus seed-vector-ledger` would.
+ *
+ * The invariant that buys is local and inductive: **no object is deleted before
+ * its reading id is in the ledger.** No global comparison to get right, no
+ * proxy set to be wrong about, no operator in the critical path, and nothing
+ * that can refuse a healthy tenant.
+ *
+ * It replaced a pre-flight coverage CHECK that compared the ledger against the
+ * `ready` rows of `index/list.json` and refused when it fell short. That was
+ * unsound in the direction that mattered: a reading whose vector outlived its
+ * `ready` status — reprocessed to `failed` (the failure path publishes with a
+ * null similarity store and deliberately leaves the vector alone), dropped from
+ * the list index, partially purged — has a live vector and no `ready` row, so
+ * it passed the check and was stranded anyway. The check's own failure mode was
+ * the one it existed to prevent. The key space has no such blind spot: every
+ * reading with any object left carries its id in that object's key.
  *
  * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
  * (`index_unbound`) before either phase runs, so no R2 object is deleted while
@@ -235,6 +245,7 @@ import {
   countLedgerRows,
   d1VectorLedger,
   earliestConfirmableAtMs,
+  insertMissingLedgerRows,
   listDeleteSubmittedEntries,
   listLiveLedgerIds,
   recordAbsences,
@@ -306,23 +317,6 @@ export const ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = 4;
  */
 export const ACCOUNT_WIPE_CONFIRM_BATCH = 500;
 /**
- * Reading ids per ledger-coverage query.
- *
- * Bound by SQLite's parameter cap, like the ledger's own writes: this builds an
- * `IN (…)` list, so the chunk is the number of bound parameters plus one.
- */
-export const LEDGER_COVERAGE_CHUNK = 50;
-/**
- * Ready readings above which the coverage check stops going id by id.
- *
- * 2000 ids is 40 D1 queries at LEDGER_COVERAGE_CHUNK — comfortable beside the
- * objects phase's own listing and delete pages in the same invocation. Beyond
- * it the scan would rival the phase it is guarding for subrequests, so the
- * check degrades to a count comparison rather than risking a wipe that cannot
- * start. See `assertLedgerCoversCorpus` for what each branch proves.
- */
-export const LEDGER_COVERAGE_MAX_SCAN = 2000;
-/**
  * How many `continue` self-sends one wipe pass may make (review finding F7).
  *
  * A `continue` acks the current message and sends a fresh one, which starts a
@@ -365,11 +359,6 @@ export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;
 export const ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS = 60_000;
 /** Operator alert: the namespace still answered after the probe bound. */
 export const ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT = "account_wipe_namespace_residue";
-/**
- * Operator alert: this tenant has vectors but no ledger rows, so the wipe
- * refused to delete the R2 objects those ids can still be recovered from.
- */
-export const ACCOUNT_WIPE_UNSEEDED_EVENT = "account_wipe_unseeded_tenant";
 /** Operator alert: `status='deleting'` with no `deleting_at_ms` (finding F6). */
 export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_deleting_at";
 export const R2_LIST_LIMIT = 1000;
@@ -453,33 +442,6 @@ export class AccountWipeNamespaceNotEmptyError extends Error {
             `(attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS}, retry in ${retryAfterSeconds}s)`,
     );
     this.name = "AccountWipeNamespaceNotEmptyError";
-  }
-}
-
-/**
- * The tenant has vectors and an empty ledger: it was never seeded.
- *
- * Thrown BEFORE the objects phase deletes anything, so the R2 objects the ids
- * can still be derived from survive.
- *
- * What it does next, said accurately rather than optimistically: the delivery
- * retries on the ordinary exponential and dead-letters, and because the
- * progress record is left in-progress, cron re-enqueues the tenant on the next
- * 15-minute tick and the cycle repeats. So this is a recurring alert, not a
- * one-shot one — it will keep firing every 15 minutes until an operator runs
- * `ops corpus seed-vector-ledger`, at which point the next tick simply
- * proceeds. That is the intended shape (the loop is self-healing and costs one
- * listing plus a probe per cycle), but nobody should be told it stops on its
- * own.
- */
-export class AccountWipeUnseededError extends Error {
-  constructor(public readonly tenantId: string) {
-    super(
-      `account_wipe unseeded_tenant for ${tenantId}: the namespace answers but the vector ` +
-        `ledger is empty. Run \`ops corpus seed-vector-ledger --tenant ${tenantId} --execute\` ` +
-        `before wiping; nothing was deleted.`,
-    );
-    this.name = "AccountWipeUnseededError";
   }
 }
 
@@ -828,54 +790,46 @@ async function runAccountWipeJob(
   // written: this is the claim itself, not a beat.
   await persist();
 
-  // Coverage first, before ANY phase runs.
+  // SEED FIRST, before a single delete or a single object is removed.
   //
-  // It has to be before the vectors phase, not merely before the objects phase,
-  // because the vectors phase flips rows from `live` to `delete_submitted` as
-  // it submits — after which no count of live rows measures coverage any more.
-  // The earlier placement at the objects phase forced a short-circuit for
-  // wipes already in flight, and that short-circuit was itself the hole: on a
-  // corpus too large to check id by id it fired before the count comparison,
-  // reducing the whole guard to "does the ledger have any rows at all", which
-  // is the test its own doc-comment rejects.
+  // The ledger can only name vectors it has rows for, and a corpus that
+  // predates it has none. So the wipe establishes that coverage itself rather
+  // than asserting it: it pages its own key root, derives every reading id it
+  // finds, and inserts the missing rows. R2 is intact at this moment — it is
+  // the very thing about to be deleted — so the wipe holds exactly the inputs
+  // an operator's `ops corpus seed-vector-ledger` would.
   //
-  // Recorded when it passes, so it costs one walk per wipe rather than one per
-  // delivery, and so a resumed delivery honours a verdict reached while the
-  // rows still meant something.
-  if (progress.coverageVerifiedAtMs === null) {
-    if (progress.firstCompletedAtMs === null && progress.mutationIds.length > 0) {
-      // A wipe that was already in flight when this check landed — the deploy
-      // window, and only that. It has submitted deletes for rows that were
-      // `live` when it read them, which is the evidence the check looks for,
-      // and its ledger cannot be re-measured now that those rows have flipped.
-      // Accept it rather than refuse a wipe that is demonstrably working.
-      //
-      // `firstCompletedAtMs === null` is what confines it to that window, and it
-      // is load-bearing rather than belt-and-braces. `reopenWipeProgress` clears
-      // `coverageVerifiedAtMs` on purpose — leftover objects mean readings that
-      // may never have been ledgered — but it does NOT clear `mutationIds`, so
-      // on a bare `mutationIds.length > 0` test every reopened wipe took this
-      // branch and skipped the walk, using a previous pass's mutation ids as
-      // evidence about a corpus that has since changed. That made the reopen's
-      // re-verification dead code. A reopen always has a first completion
-      // stamped, so requiring its absence excludes exactly that case.
-      //
-      // Not a hole in the general case either: on any wipe that starts after
-      // this deploys, the check runs before the vectors phase, so `mutationIds`
-      // is empty here and the full comparison is what decides.
-      console.info(
-        JSON.stringify({
-          event: "account_wipe_coverage_assumed",
-          tenant_id: tenantId,
-          note:
-            "wipe was already in flight when the ledger-coverage check was introduced; " +
-            "its submitted deletes are taken as evidence of coverage",
-        }),
-      );
-    } else {
-      await assertLedgerCoversCorpus(env, db, tenantId, keyRoot);
-    }
-    progress.coverageVerifiedAtMs = now();
+  // The invariant this buys is local and inductive: NO OBJECT IS DELETED BEFORE
+  // ITS READING ID IS IN THE LEDGER. There is no global comparison to get
+  // right, no proxy set to be wrong about, and no operator in the critical
+  // path.
+  //
+  // It replaced a pre-flight coverage CHECK that compared the ledger against
+  // the `ready` rows of `index/list.json` and refused when it fell short. That
+  // was unsound in the direction that mattered: a reading whose vector outlived
+  // its `ready` status — reprocessed to `failed` (the failure path publishes
+  // with a null similarity store and deliberately leaves the vector alone),
+  // dropped from the list index, partially purged — has a live vector and no
+  // `ready` row, so it passed the check and was stranded anyway. The check's
+  // own failure mode was the one it existed to prevent. The key space has no
+  // such blind spot: every reading with any object left carries its id in that
+  // object's key.
+  if (progress.seedCompletedAtMs === null) {
+    const seed = await seedLedgerFromCorpus(
+      progress,
+      env.READINGS_BUCKET,
+      db,
+      tenantId,
+      keyRoot,
+      maxObjectPages,
+      heartbeat,
+      now,
+    );
+    if (seed === "continue") return continueResult();
+    progress.seedCompletedAtMs = now();
+    progress.seedCursor = undefined;
+    // Always persisted: a resuming delivery reads this to know it need not
+    // re-page a corpus it has already covered.
     await persist();
   }
 
@@ -1080,203 +1034,117 @@ async function tenantPrefixHasObjects(
 }
 
 /**
- * Refuse to empty R2 while a reading that could own a vector is missing from
- * the ledger.
+ * Record every reading id derivable from this tenant's R2 into the ledger.
  *
- * This is the last line of defence against the failure the whole slice exists
- * to prevent, so it is worth being exact about what it measures — two earlier
- * versions of this guard were wrong in opposite directions.
+ * Insert-only: it never deletes a row and never resets one. A row an earlier
+ * pass already moved to `delete_submitted` keeps its state, its delete stamp
+ * and its absent streak, so re-seeding on a resume costs nothing and restarts
+ * no confirmation clock.
  *
- * **Not "does the ledger have any rows".** That is defeated by a single
- * unrelated row: one reading published after this slice deploys, or one
- * `DELETE /api/readings/:id`, writes one — and a wipe runs at least seven days
- * after the deletion request, so "this tenant has done one thing since the
- * deploy" is the ordinary case. A never-seeded corpus would sail through.
+ * Over-records on purpose. A `failed` or `pending` reading has no vector, and a
+ * row for it costs one no-op `deleteByIds` that then clears on the first
+ * confirmation. A MISSING row costs a vector nobody can ever address. The two
+ * errors are not comparable, so the walk takes the widest id source available —
+ * the same three the operator command uses: `index/list.json`, `index/by-id/`,
+ * and the `readings/` key layout.
  *
- * **And not "every reading id derivable from R2".** That fires on healthy
- * tenants. Intake writes an `index/by-id/{id}` pointer for `failed` and
- * `pending` readings too, and those never get a ledger row because they never
- * get a vector — the failure paths in `process-reading.ts` publish with a null
- * similarity store. Any tenant with one failed reading and one live vector
- * would have been accused of never being seeded.
- *
- * **What it measures:** the `ready` rows of `index/list.json`. A reading is
- * `ready` exactly when its terminal write published a vector, so that set is
- * "the readings that should have a ledger row", and nothing else is. R2 is
- * intact here — that is why the check sits ahead of the objects phase rather
- * than at the terminal gate — so the comparison is exact, and it costs one
- * object read rather than two full prefix listings.
- *
- * **It runs before the vectors phase, once per wipe.** Both halves matter. Before
- * the vectors phase, because that phase flips rows from `live` to
- * `delete_submitted` and a live-row count stops measuring coverage the moment
- * it does — which is why the counts below can be `live` counts and mean
- * something. Once per wipe, because the verdict is stamped on the progress
- * record (`coverage_verified_at_ms`) and honoured by later deliveries: the walk
- * is not free, and re-deciding it against a half-submitted ledger is how the
- * earlier version of this check ended up waving large corpora through.
- *
- * The namespace probe is the second half only in the fallback below, where the
- * list index cannot be read at all.
+ * Paged on the same budget as the objects phase and resumable on its own
+ * cursor, so a corpus larger than one delivery continues rather than timing
+ * out. `index/list.json` is read on the first delivery only (when there is no
+ * cursor yet): re-reading it on every continuation would re-derive ids the walk
+ * has already covered.
  */
-async function assertLedgerCoversCorpus(
-  env: AccountWipeEnv,
+async function seedLedgerFromCorpus(
+  progress: WipeProgress,
+  bucket: R2Bucket,
   db: ControlPlaneDb,
   tenantId: TenantId,
   keyRoot: string,
-): Promise<void> {
-  if (!env.READINGS_INDEX) {
-    throw new Error("account_wipe index_unbound");
-  }
-  // Nothing left to protect. This guard exists to keep R2 objects alive because
-  // they are the only source the seeding command can derive ids from; with the
-  // prefix already empty there is no source to save and refusing would be
-  // actively wrong. A tenant that reaches here with residue in its namespace is
-  // the case `assertLedgerEmptied` is designed for — bounded attempts, then a
-  // residue alert and a completion record — and dead-lettering it instead, with
-  // an alert telling the operator to seed a corpus that no longer exists, would
-  // replace a designed outcome with a misleading loop.
-  //
-  // Reached on any delivery that re-enters the objects phase after the prefix
-  // was emptied: a confirmation retry, or a continuation.
-  if (!(await prefixHasObjects(env.READINGS_BUCKET, keyRoot))) return;
+  maxPages: number,
+  heartbeat: () => Promise<void>,
+  now: () => number,
+): Promise<"continue" | "done"> {
+  const layout = r2KeyLayout(keyRoot);
+  let created = 0;
+  const record = async (ids: string[]): Promise<void> => {
+    if (ids.length === 0) return;
+    created += await insertMissingLedgerRows(db, tenantId, ids, now());
+  };
 
-  const readyIds = await readyReadingIds(env.READINGS_BUCKET, keyRoot);
-
-  if (readyIds === null) {
-    // No readable list index. Coverage cannot be measured, so fall back to the
-    // one shape that is unambiguous without it: no LIVE ledger row, and a
-    // namespace that still answers.
-    //
-    // `live` specifically, not "any row". A `delete_submitted` row is what a
-    // single-reading purge leaves behind (`reading-purge.ts`), and those rows
-    // are permanent on a tenant that is never wiped — so counting them would
-    // let one ordinary `DELETE /api/readings/:id`, months earlier, vouch for a
-    // corpus nobody ever seeded. A `live` row is the thing that actually says a
-    // vector was ledgered.
-    //
-    if ((await countLedgerRows(db, tenantId)).live > 0) return;
-    const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-    if ((await store.probeNamespace()).length === 0) return;
-    refuseUnseeded(
-      tenantId,
-      "no readable index/list.json, no live vector_ledger row, namespace answers",
-    );
-  }
-
-  if (readyIds.length > LEDGER_COVERAGE_MAX_SCAN) {
-    // Too large to check id by id inside one invocation: at
-    // LEDGER_COVERAGE_CHUNK ids a query, an exhaustive scan of a very large
-    // corpus would spend more subrequests than the whole objects phase, and the
-    // wipe would fail before deleting anything rather than being protected.
-    //
-    // Fall back to comparing totals, which is one query and still catches the
-    // case that matters. An unseeded corpus has far fewer ledger rows than
-    // ready readings — usually none — so this refuses it. What it cannot see is
-    // a PARTIAL hole in a very large corpus: enough rows to match the count,
-    // with the wrong ids. That is a real gap, named here rather than hidden,
-    // and it is bounded to tenants above the scan limit.
-    // LIVE rows, not the total. `delete_submitted` rows accumulate from
-    // ordinary `DELETE /api/readings/:id` purges and nothing prunes them
-    // outside a wipe, so counting them would let a tenant's purge history
-    // offset exactly as many unseeded ready readings and wave the corpus
-    // through. On a fresh wipe a seeded corpus's rows are all `live`.
-    const live = (await countLedgerRows(db, tenantId)).live;
-    if (live < readyIds.length) {
-      refuseUnseeded(
-        tenantId,
-        "fewer live vector_ledger rows than ready readings (corpus too large to check id by id)",
-      );
+  if (progress.seedCursor === undefined) {
+    // The list index names readings whose objects may already be partly gone,
+    // so it can carry ids the key walk below will not find. Read once, at the
+    // start of the walk.
+    const listObj = await bucket.get(layout.listIndexKey());
+    if (listObj) {
+      try {
+        const parsed = ListIndexSchema.safeParse(JSON.parse(await listObj.text()));
+        if (parsed.success) {
+          const ids: string[] = [];
+          for (const item of parsed.data.items) {
+            const id = parseReadingId(item.id);
+            if (id) ids.push(id);
+          }
+          await record(ids);
+        }
+      } catch {
+        // A corrupt list index contributes nothing. It is not fatal and must
+        // not be: the key walk below is the wider source anyway, and refusing
+        // to seed over a damaged index would strand the corpus it describes.
+      }
     }
-    return;
+    await heartbeat();
   }
 
-  const missing = await firstUnledgeredId(db, tenantId, readyIds);
-  if (missing === null) return;
-  refuseUnseeded(tenantId, "a ready reading has no vector_ledger row");
+  let pages = 0;
+  let cursor = progress.seedCursor;
+  for (;;) {
+    const list = await bucket.list({
+      prefix: keyRoot,
+      limit: R2_LIST_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    const ids: string[] = [];
+    for (const obj of list.objects) {
+      const id = readingIdFromRelativeKey(layout.relativeKey(obj.key));
+      if (id) ids.push(id);
+    }
+    await record(ids);
+    cursor = list.truncated ? list.cursor : undefined;
+    progress.seedCursor = cursor;
+    pages += 1;
+    await heartbeat();
+    if (cursor === undefined) break;
+    if (pages >= maxPages) {
+      logSeeded(tenantId, created, "continue");
+      return "continue";
+    }
+  }
+  logSeeded(tenantId, created, "done");
+  return "done";
 }
 
-/** Alert and throw. The id is never logged — this is a deleted account. */
-function refuseUnseeded(tenantId: TenantId, reason: string): never {
-  console.error(
+/**
+ * What the seed step had to create.
+ *
+ * The observability the retired coverage alert was really providing: a nonzero
+ * count on a tenant an operator believes they seeded means the ledger was
+ * incomplete, and that is worth knowing even though the wipe has just fixed it.
+ * Zero is the healthy steady state once every writer ledgers before upserting.
+ */
+function logSeeded(tenantId: TenantId, created: number, outcome: "continue" | "done"): void {
+  console.info(
     JSON.stringify({
-      severity: "high",
-      event: ACCOUNT_WIPE_UNSEEDED_EVENT,
+      event: "account_wipe_ledger_seeded",
       tenant_id: tenantId,
-      reason,
+      rows_created: created,
+      outcome,
       note:
-        "at least one reading that should own a vector has no vector_ledger row, so no delete " +
-        "would ever be submitted for it. Refusing to delete the R2 objects, because they are " +
-        "the only source `ops corpus seed-vector-ledger` can derive those ids from. Seed this " +
-        "tenant, then re-drive the wipe. Nothing was deleted.",
+        "reading ids derived from R2 and inserted before any delete. A nonzero count means the " +
+        "ledger did not already cover this corpus — expected on a corpus predating the ledger, " +
+        "worth investigating on one that should have been complete.",
     }),
   );
-  throw new AccountWipeUnseededError(tenantId);
-}
-
-/**
- * The reading ids this tenant's list index calls `ready`, or null when the
- * index cannot be read or parsed.
- *
- * `ready` is the whole point: it is the status a terminal write sets when it
- * published a vector, so it is exactly the set that should be ledgered.
- * `failed` and `pending` readings have pointers and objects but no vector.
- *
- * A corrupt index returns null rather than an empty list — "no ready readings"
- * and "we could not tell" must not collapse, because the first would wave the
- * wipe through.
- */
-async function readyReadingIds(
-  bucket: R2Bucket,
-  keyRoot: string,
-): Promise<string[] | null> {
-  const layout = r2KeyLayout(keyRoot);
-  const obj = await bucket.get(layout.listIndexKey());
-  if (!obj) return null;
-  let parsed: ReturnType<typeof ListIndexSchema.safeParse>;
-  try {
-    parsed = ListIndexSchema.safeParse(JSON.parse(await obj.text()));
-  } catch {
-    return null;
-  }
-  if (!parsed.success) return null;
-  const ids: string[] = [];
-  for (const item of parsed.data.items) {
-    if (item.status !== "ready") continue;
-    const id = parseReadingId(item.id);
-    if (id) ids.push(id);
-  }
-  return ids;
-}
-
-/**
- * The first of these ids with no ledger row, or null when all of them have one.
- *
- * Short-circuits: the question is "is anything missing", not "what is missing".
- * Naming the id would put a reading id in a log line about an account being
- * deleted, and the operator's next step is the same either way. Batched so a
- * fully-seeded corpus costs `ceil(n / chunk)` reads rather than one per id.
- */
-async function firstUnledgeredId(
-  db: ControlPlaneDb,
-  tenantId: TenantId,
-  readingIds: readonly string[],
-): Promise<string | null> {
-  for (let offset = 0; offset < readingIds.length; offset += LEDGER_COVERAGE_CHUNK) {
-    const chunk = readingIds.slice(offset, offset + LEDGER_COVERAGE_CHUNK);
-    const placeholders = chunk.map(() => "?").join(", ");
-    const rows = await db.all<{ reading_id: string }>(
-      `SELECT reading_id FROM vector_ledger
-        WHERE tenant_id = ? AND reading_id IN (${placeholders})`,
-      tenantId,
-      ...chunk,
-    );
-    const known = new Set(rows.map((row) => row.reading_id));
-    for (const id of chunk) {
-      if (!known.has(id)) return id;
-    }
-  }
-  return null;
 }
 
 /**
