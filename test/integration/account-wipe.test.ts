@@ -1955,6 +1955,63 @@ describe("account wipe (195b PR1)", () => {
       expect(alert).not.toContain(ID_A);
     });
 
+    it("is not satisfied by one unrelated ledger row while the corpus is unseeded", async () => {
+      // The bypass that made the first version of this guard useless. A tenant
+      // whose pre-S3 corpus was never seeded but who has published or purged a
+      // SINGLE reading since the deploy has one ledger row — and a wipe runs at
+      // least seven days after the deletion request, so that is the ordinary
+      // state of a live account, not an edge case. Testing for a non-empty
+      // table would wave the whole legacy corpus through to deletion.
+      await seedTenantObjects([ID_A, ID_B], { ledger: false });
+      await seedLedger([ID_B]); // one reading published since the deploy
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const before = await listPrefixKeys(PREFIX);
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      // ID_A is still un-ledgered and its objects — the only source of its id —
+      // are untouched.
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+    });
+
+    it("proceeds once every reading in the corpus has a ledger row", async () => {
+      // The same corpus, fully seeded. Coverage is what the guard measures, so
+      // completing it is what unblocks the wipe.
+      await seedTenantObjects([ID_A, ID_B]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      expect(result.kind).toBe("complete");
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
+    it("lets an unseeded corpus of failed readings through: no vectors, nothing to strand", async () => {
+      // An un-ledgered id alone does not block — a `failed` reading has no
+      // vector. Both halves of the test have to hold: something missing from
+      // the ledger AND a namespace that actually answers.
+      await seedTenantObjects([ID_A, ID_B], { ledger: false });
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      );
+      expect(result).toMatchObject({ kind: "complete", residue: false });
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
     it("lets an empty-ledger tenant through once the namespace is confirmed clean", async () => {
       // The other half of the guard. Nothing in the ledger AND a clean probe is
       // a tenant that genuinely has no vectors — the ordinary case for a corpus
@@ -1991,7 +2048,9 @@ describe("account wipe (195b PR1)", () => {
       // clearing that row would delete the only record of it.
       await seedLedgerSubmitted([ID_A]);
       await seedLedger([ID_B]);
-      expect(await clearTenantLedger(controlPlane(), TENANT)).toBe(1);
+      // The probe instant authorizes the clear; a delete submitted after it is
+      // deliberately left behind.
+      expect(await clearTenantLedger(controlPlane(), TENANT, NOW_MS)).toBe(1);
       expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_B, "live"]]);
     });
 

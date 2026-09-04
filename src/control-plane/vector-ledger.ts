@@ -380,10 +380,24 @@ export async function clearLedgerRows(
 export async function clearTenantLedger(
   db: ControlPlaneDb,
   tenantId: TenantId,
+  /**
+   * When the probe that authorizes this clear was taken.
+   *
+   * Rows whose delete was submitted AFTER that instant are left alone: an empty
+   * probe is evidence about the namespace at the moment it ran and says nothing
+   * about a vector deleted a second later, so clearing such a row would drop an
+   * id on no evidence at all — the stranding this table exists to prevent, in
+   * miniature. A concurrent purge or publisher-fence delete on the same tenant
+   * is exactly how that row appears.
+   */
+  probedAtMs: number,
 ): Promise<number> {
   const result = await db.run(
-    `DELETE FROM vector_ledger WHERE tenant_id = ? AND state = 'delete_submitted'`,
+    `DELETE FROM vector_ledger
+      WHERE tenant_id = ? AND state = 'delete_submitted'
+        AND deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?`,
     tenantId,
+    probedAtMs,
   );
   return result.changes;
 }

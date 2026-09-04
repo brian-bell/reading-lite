@@ -107,8 +107,9 @@ export async function purgeReading(
   if (deps.similarity) {
     await deps.similarity.delete(id);
     // After the delete: `deleted_at_ms` dates the submission, and the ledger's
-    // +120s first-confirmation delay is measured from it.
-    await deps.ledger?.markDeleteSubmitted([id], Date.now());
+    // +120s first-confirmation delay is measured from it. Off the injected
+    // clock, like everything else here.
+    await deps.ledger?.markDeleteSubmitted([id], Date.parse(opts.now));
   }
 
   // Pointer before list row: when the manifest is corrupt or missing, the row
@@ -141,7 +142,7 @@ export async function purgeReading(
   objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
   if (deps.similarity) {
     await deps.similarity.delete(id);
-    await deps.ledger?.markDeleteSubmitted([id], Date.now());
+    await deps.ledger?.markDeleteSubmitted([id], Date.parse(opts.now));
   }
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
