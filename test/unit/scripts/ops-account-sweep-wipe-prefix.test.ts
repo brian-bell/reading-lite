@@ -15,6 +15,7 @@ import {
 } from "../../../scripts/account-lib/wipe-prefix";
 import {
   accountSweepWipePrefixCommand,
+  CONTROL_PLANE_BY_BUCKET,
   type WipeSweepStorage,
 } from "../../../scripts/ops-lib/commands/account-sweep-wipe-prefix";
 import type { R2ObjectMeta } from "../../../scripts/lib/cf-clients";
@@ -160,6 +161,40 @@ describe("wipe/ prefix guard", () => {
   it("accepts other objects genuinely under wipe/", () => {
     expect(isSweepableWipeKey(`${WIPE_PREFIX}${TENANT_ID}/progress.json`)).toBe(true);
     expect(isSweepableWipeKey(`${WIPE_PREFIX}stray.json`)).toBe(true);
+  });
+});
+
+describe("bucket → control-plane mapping", () => {
+  // The mapping decides which control plane the safety briefing sends the
+  // operator to. wrangler.toml owns both names; if either moves, the printed
+  // query would silently point at the wrong (or a nonexistent) database, so
+  // pin the pair rather than trusting two copies to stay in step.
+  it("names, for each env, the bucket and D1 database wrangler.toml declares", async () => {
+    const { promises: fs } = await import("node:fs");
+    const path = await import("node:path");
+    const toml = await fs.readFile(
+      path.resolve(__dirname, "../../../wrangler.toml"),
+      "utf8",
+    );
+
+    // Everything from `[env.<name>]` to the next TOP-LEVEL env header is that
+    // environment's block. The cut must ignore `[env.<name>.vars]` and
+    // `[[env.<name>.r2_buckets]]`, which belong to the block they sit in.
+    const blockFor = (env: string): string => {
+      const start = toml.indexOf(`\n[env.${env}]\n`);
+      expect(start, `wrangler.toml has no [env.${env}] section`).toBeGreaterThanOrEqual(0);
+      const rest = toml.slice(start + 1);
+      const next = /\n\[env\.[A-Za-z0-9_-]+\]\n/.exec(rest.slice(1));
+      return next === null ? rest : rest.slice(0, next.index + 1);
+    };
+    const valueIn = (block: string, key: string): string | undefined =>
+      new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m").exec(block)?.[1];
+
+    for (const [bucket, { database, env }] of Object.entries(CONTROL_PLANE_BY_BUCKET)) {
+      const block = blockFor(env);
+      expect(valueIn(block, "bucket_name"), `${env} bucket_name`).toBe(bucket);
+      expect(valueIn(block, "database_name"), `${env} database_name`).toBe(database);
+    }
   });
 });
 

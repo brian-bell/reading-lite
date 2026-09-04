@@ -61,7 +61,7 @@ interface Args {
 // before the deploy:
 //
 //   - "check that `count(*) from users where status='deleting'` is 0".
-//     `users.status` stays `deleting` after a wipe FINISHES, until the 195b PR2
+//     `users.status` stays `deleting` after a wipe FINISHES, until the S4
 //     hard-delete (docs/operations.md; the src/account-wipe.ts header), so that
 //     count never returns to 0 once any account has been deleted. A
 //     precondition nobody can satisfy is a guard in name only.
@@ -82,7 +82,7 @@ const WIPE_IN_FLIGHT_MINUTES = ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000;
 // query pointed at the wrong control plane answers a question about the wrong
 // environment, and that answer is the input to the acknowledgement — so an
 // unrecognised bucket gets no query rather than a production-shaped guess.
-const CONTROL_PLANE_BY_BUCKET: Record<string, { database: string; env: string }> = {
+export const CONTROL_PLANE_BY_BUCKET: Record<string, { database: string; env: string }> = {
   "reading-lite": { database: "reading-lite-control", env: "production" },
   "reading-lite-staging": { database: "reading-lite-control-staging", env: "staging" },
 };
@@ -305,7 +305,16 @@ async function runAccountSweepWipePrefix(
     io.stderr(`\n${WIPE_PREFIX} re-listed empty, but ${failed} delete(s) reported an error — treat this run as unverified.`);
     return 1;
   }
-  io.stdout(`\nVERIFIED: ${WIPE_PREFIX} is empty.`);
+  // Says exactly what it proves. R2 has no conditional delete, so a record a
+  // live wipe wrote between this run's listing and its delete is destroyed and
+  // then absent from the re-list — indistinguishable from an orphan that was
+  // always there. The re-list proves the prefix is empty; it cannot prove the
+  // run was harmless. Only the deploy assertion does that.
+  io.stdout(
+    `\nVERIFIED: ${WIPE_PREFIX} is empty.\n` +
+      `(That the sweep harmed nothing rests on ${NO_ACTIVE_WIPE_FLAG}, not on this listing:\n` +
+      " a record written between the listing and its delete leaves no trace here.)",
+  );
   return 0;
 }
 

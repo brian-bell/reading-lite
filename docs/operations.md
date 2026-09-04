@@ -197,7 +197,11 @@ Rollout sequence, in order:
    `deleting` users never returns to 0 once any account has been deleted.
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
-   evidence the prefix is empty, not just that the deletes were submitted.
+   evidence the prefix is empty, not just that the deletes were submitted. It is
+   not evidence the run was harmless: R2 has no conditional delete, so a record
+   written between the listing and its delete would be destroyed and then absent
+   from the re-list. That the sweep harmed nothing rests on step 2's deploy, not
+   on the verification.
    On a non-zero exit read which half of the report it is. Keys that *survived
    the delete* (same key, same etag) are safe to re-run against. Keys marked
    *NEW or REWRITTEN since the plan listing* — a new key, or the same key with a
