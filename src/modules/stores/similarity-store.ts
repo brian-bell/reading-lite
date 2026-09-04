@@ -240,6 +240,38 @@ export class SimilarityStore {
     return mutations;
   }
 
+  // Emptiness evidence for a namespace we believe we just wiped. The Vectorize
+  // binding has no list/scan at any scope, so nearest-K against a probe vector
+  // is the only read that returns ids the caller did not already hold. It can
+  // never prove absence — sampling K points of a 1536-dimensional space is not
+  // enumeration — but a single hit disproves it, which is what the account-wipe
+  // terminal check needs: it must not claim success while the namespace answers.
+  async probeNamespace(topK: number = MIN_TOP_K): Promise<SimilarityMatch[]> {
+    // A unit basis vector, not zeros: cosine similarity against a zero vector
+    // is undefined. Any probe returns the namespace's nearest K, which is all
+    // an emptiness check needs.
+    const probe = new Array<number>(EMBEDDING_DIM).fill(0);
+    probe[0] = 1;
+    return this.query(probe, topK);
+  }
+
+  // Whole-index vector count when the binding exposes `describe()`, else null.
+  // Coarse on purpose: VectorizeIndexInfo counts the entire index, not one
+  // namespace, so this is evidence for a delta check, never a gate. Failures
+  // are swallowed for the same reason.
+  async indexVectorCount(): Promise<number | null> {
+    const index = this.index as {
+      describe?: () => Promise<{ vectorCount?: number } | null>;
+    };
+    if (typeof index.describe !== "function") return null;
+    try {
+      const info = await index.describe();
+      return typeof info?.vectorCount === "number" ? info.vectorCount : null;
+    } catch {
+      return null;
+    }
+  }
+
   async query(embedding: number[], topK: number): Promise<SimilarityMatch[]> {
     if (embedding.length !== EMBEDDING_DIM) {
       throw new WrongEmbeddingDimensionError(embedding.length);

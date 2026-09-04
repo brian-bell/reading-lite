@@ -126,19 +126,44 @@ function memoryBucket(initial: Iterable<string> = []): {
   keysUnder(prefix: string): string[];
 } {
   const store = new Map<string, string>();
-  for (const key of initial) store.set(key, "x");
+  const etags = new Map<string, string>();
+  let etagSeq = 0;
+  for (const key of initial) {
+    store.set(key, "x");
+    etags.set(key, `etag-${++etagSeq}`);
+  }
   const bucket = {
-    async put(key: string, value: string | ArrayBuffer | ReadableStream | Blob) {
+    // Models R2's conditional put, so the wipe's compare-and-set is actually
+    // exercised through this double instead of silently bypassed: a mismatched
+    // etag, or If-None-Match:* against a key that exists, returns null as R2
+    // does, and every successful put returns a fresh etag to chain from.
+    async put(
+      key: string,
+      value: string | ArrayBuffer | ReadableStream | Blob,
+      opts?: R2PutOptions,
+    ) {
+      const onlyIf = opts?.onlyIf;
+      const current = etags.get(key);
+      if (onlyIf instanceof Headers) {
+        if (onlyIf.get("If-None-Match") === "*" && current !== undefined) return null;
+      } else if (onlyIf && typeof onlyIf === "object" && "etagMatches" in onlyIf) {
+        if (current !== (onlyIf as { etagMatches?: string }).etagMatches) return null;
+      }
       store.set(key, typeof value === "string" ? value : "x");
-      return {} as R2Object;
+      const etag = `etag-${++etagSeq}`;
+      etags.set(key, etag);
+      return { etag } as R2Object;
     },
     async get(key: string) {
       const value = store.get(key);
       if (value === undefined) return null;
-      return { text: async () => value };
+      return { text: async () => value, etag: etags.get(key) };
     },
     async delete(keys: string | string[]) {
-      for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        store.delete(key);
+        etags.delete(key);
+      }
     },
     async list(opts: R2ListOptions = {}) {
       const prefix = opts.prefix ?? "";
@@ -282,10 +307,12 @@ describe("account wipe (195b PR1)", () => {
     expect(deleteByIds.mock.calls.at(-1)?.[0]).toEqual(expectedIds);
     expect(deleteByIds.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    // Vectorize deletes are async: we recorded a mutationId and did not query
-    // the index to pretend it is synchronously empty.
+    // Vectorize deletes are async: we recorded a mutationId rather than waiting
+    // for the index to report itself empty. The one query is the terminal
+    // emptiness probe (Move 1 / F3) — a single assurance read that fails the
+    // job, never a poll-until-empty loop.
     expect(result.kind === "complete" && result.mutation_ids.length).toBeGreaterThan(0);
-    expect(queryIndex).not.toHaveBeenCalled();
+    expect(queryIndex).toHaveBeenCalledTimes(1);
   });
 
   it("pages more than 1000 R2 objects and resumes from a stored cursor", async () => {
@@ -595,11 +622,10 @@ describe("account wipe (195b PR1)", () => {
     expect(deleteByIds).toHaveBeenCalledTimes(2);
     expect(deleteByIds.mock.calls[0]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
     expect(deleteByIds.mock.calls[1]?.[0]).toEqual([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { reading_ids?: string[]; phase: string };
-    expect(progress.phase).toBe("done");
-    expect(progress.reading_ids).toEqual([ID_A]);
+    // The stored ids drove that second submit, which is what this test pins.
+    // The record itself is gone at the terminal transition (Move 1 / F4) rather
+    // than persisting as phase:"done" with the deleted user's ids in it.
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
   });
 
   it("objects phase unions reading ids from listed keys before delete", async () => {
@@ -626,9 +652,10 @@ describe("account wipe (195b PR1)", () => {
     const expected = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
     expect(deleteByIds.mock.calls[0]?.[0]).toEqual(expected);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    const progress = JSON.parse(await progressObj!.text()) as { reading_ids?: string[] };
-    expect(progress.reading_ids).toEqual([ID_A, ID_B]);
+    // ID_B was unioned in from a listed key before that key was deleted — the
+    // submit above is the proof. The record is removed at the terminal
+    // transition (Move 1 / F4), so there is no surviving copy to read it from.
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
   });
 
   it("leftover recovery unions stored reading ids with an R2 re-list", async () => {
@@ -884,5 +911,95 @@ describe("account wipe (195b PR1)", () => {
     });
     expect(ack).toHaveBeenCalledOnce();
     expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
+  });
+
+  // Move 1 / F4: the progress object carries the deleted tenant id in its key and
+  // their full reading-id list in its body. It must not outlive the wipe.
+  it("deletes the wipe progress object at the terminal transition", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    expect(result.kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+  });
+
+  // Move 1 / F8: max_concurrency = 3 plus at-least-once delivery means two live
+  // siblings. The loser must fail loudly instead of last-write-wins clobbering
+  // the winner's cursor.
+  it("refuses a progress write when a sibling wrote the object underneath it", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const progressKey = accountWipeProgressKey(OTHER_TENANT_ID);
+    const real = env.READINGS_BUCKET;
+    let siblingWrote = false;
+    const raced = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === "put") {
+          return async (key: string, value: unknown, putOpts?: R2PutOptions) => {
+            if (key === progressKey && !siblingWrote) {
+              siblingWrote = true;
+              // A sibling job commits its own progress between our read and our put.
+              await target.put(key, JSON.stringify({ version: 1, phase: "objects" }));
+            }
+            return target.put(
+              key,
+              value as string,
+              putOpts as R2PutOptions,
+            );
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function"
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: raced } as Env;
+    await expect(
+      processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), jobEnv, wipeJobDeps()),
+    ).rejects.toThrow(/progress_conflict/);
+    // The sibling's record survives; the loser did not overwrite it.
+    const obj = await real.get(progressKey);
+    expect(obj).not.toBeNull();
+    expect(JSON.parse(await obj!.text())).toMatchObject({ phase: "objects" });
+  });
+
+  // Move 1 / F3: an empty id list must not let an unbound index short-circuit to
+  // success. Commit a9a9f0f's fail-closed intent applies before the emptiness test.
+  it("throws when the Vectorize index is unbound even with no collected reading ids", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    const jobEnv = { ...(await wipeEnv()), READINGS_INDEX: undefined } as unknown as Env;
+    await expect(
+      processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), jobEnv, wipeJobDeps()),
+    ).rejects.toThrow(/index_unbound/);
+  });
+
+  // Move 1 / F3: the wipe must not claim success while the tenant namespace still
+  // returns vectors. Nearest-K cannot prove absence, but a hit disproves it.
+  it("fails the terminal transition when the tenant namespace still answers", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    queryIndex.mockImplementation(async () => ({
+      count: 1,
+      matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+    }));
+    await expect(
+      processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      ),
+    ).rejects.toThrow(/namespace_not_empty/);
+    // Not a success, so the resume record must survive for the retry. Read the
+    // body: an unconsumed R2 stream breaks the pool's isolated-storage teardown.
+    const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    expect(surviving).not.toBeNull();
+    expect(JSON.parse(await surviving!.text())).toMatchObject({ phase: "sweep" });
   });
 });

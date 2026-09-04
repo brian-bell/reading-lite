@@ -59,6 +59,27 @@ way as any other — there is no silent founder exception. After a 7-day grace
 `{ force: true }` skips grace to start a new wipe. Cron resumes in-progress
 or leftover wipes during grace and preserves `force` from `progress.json`.
 Wipe is not inline in `DELETE /api/account`.
+
+The resume record at `wipe/{tenantId}/progress.json` is **deleted** when the
+wipe finishes, not left behind as `phase:"done"` — its key names the deleted
+tenant and its body lists every reading id they had. Progress writes are
+compare-and-set on the R2 etag, so with `max_concurrency = 3` a duplicate
+delivery fails loudly (`progress_conflict`) and retries instead of silently
+overwriting the live job's cursor.
+
+Before reporting success the wipe probes the tenant's Vectorize namespace once
+and refuses to finish while anything still answers (`namespace_not_empty`,
+retried like any other failure), logging `account_wipe_vector_count_delta` with
+the `describe()` count either side. Read that as evidence, not proof: Vectorize
+offers no list or scan at any scope, so a nearest-K probe samples the namespace
+and cannot demonstrate absence. **Known gap:** a vector whose reading id was
+already missing from R2 before the wipe started is not addressable at all —
+`deleteByIds` needs the id and nothing remains to derive one from — so it
+survives the wipe, and no residue scan can find it either. Closing that needs a
+durable per-tenant vector-id ledger, a later slice. An unbound `READINGS_INDEX`
+now fails the job even when no ids were collected, so a wipe can no longer
+report success without having addressed the index at all.
+
 Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
 are later 195b slices. `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.
