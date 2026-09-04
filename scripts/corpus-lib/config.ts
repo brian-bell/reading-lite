@@ -55,6 +55,12 @@ export interface BatchConfig {
   keyRoot: string;
   /** The validated --tenant selector ('global' or usr_…), for sidecar stamping. */
   tenantSelector: string;
+  /**
+   * The resolved selector itself, so a caller that needs more than the key root
+   * and the string form — the vector ledger needs the tenant id, and needs to
+   * know `global` is not one — does not have to re-parse it (issue #195 S3).
+   */
+  tenant: OperatorTenant;
   vectorize: VectorizeConfig;
   anthropicApiKey: string;
   anthropicModel: string;
@@ -116,6 +122,7 @@ export function resolveBatchConfig(
     r2: { accountId, accessKeyId, secretAccessKey, bucket },
     keyRoot: flags.tenant.keyRoot,
     tenantSelector: operatorTenantSelector(flags.tenant),
+    tenant: flags.tenant,
     vectorize: {
       accountId: vars.CORPUS_VECTORIZE_ACCOUNT_ID ?? accountId,
       index: vars.CORPUS_VECTORIZE_INDEX ?? bucket,

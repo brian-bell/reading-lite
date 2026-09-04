@@ -23,10 +23,13 @@ describe("account wipe wrangler wiring", () => {
   });
 
   // The terminal probe bound is only consumed inside one message's retry budget
-  // while it stays <= the queue's max_retries. Raise max_retries or the constant
-  // alone and every probe hit starts dead-lettering before the bound trips,
-  // which is the loop the bound exists to avoid.
-  it("keeps the probe attempt bound within the wipe queue's retry budget", () => {
+  // while it stays STRICTLY BELOW the queue's max_retries. Not every retry
+  // spends an attempt: the +120s first-confirmation deferral retries without
+  // counting one (S6 defect D2) and so does any transient D1/R2/Vectorize
+  // error, so an equal budget dead-letters a healthy wipe before the bound
+  // trips — the loop the bound exists to avoid. Raise the constant or
+  // max_retries alone and this fails, which is the point.
+  it("leaves the wipe queue retry headroom above the probe attempt bound", () => {
     const wrangler = read("wrangler.toml");
     const source = read("src/account-wipe.ts");
     const bound = /ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = (\d+)/.exec(source)?.[1];
@@ -34,7 +37,10 @@ describe("account wipe wrangler wiring", () => {
     for (const queue of ["reading-lite-wipe", "reading-lite-staging-wipe"]) {
       const block = new RegExp(`queue = "${queue}"[\\s\\S]*?max_retries = (\\d+)`).exec(wrangler);
       expect(block, `${queue} consumer max_retries`).not.toBeNull();
-      expect(Number(bound)).toBeLessThanOrEqual(Number(block![1]));
+      // One spare for the deferral, one for a blip.
+      expect(Number(block![1]), `${queue} consumer max_retries`).toBeGreaterThanOrEqual(
+        Number(bound) + 2,
+      );
     }
   });
 

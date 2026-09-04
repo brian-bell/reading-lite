@@ -156,12 +156,13 @@ duplicated work with no shared lease. Roll back with the queue drained, or
 force-complete the tenant afterwards. As always, `TENANT_DATA_PLANE` off is the
 kill switch that short-circuits the whole path.
 
-**That narrows the race rather than closing it.** The publisher's post-publish
-status recheck fails open on a D1 lookup error, and an isolate that dies between
-the vector upsert and the recheck never compensates at all. A vector published
-in either of those windows, whose R2 objects the same wipe pass then deletes, is
-unaddressable — the terminal probe can sample for it but nothing can delete it.
-Same cause, same fix as the gap below: the durable vector ledger (issue #261).
+**That fence is no longer load-bearing.** It still runs, and it still deletes
+promptly rather than leaving the work to a later pass — but its two escape
+hatches (a D1 recheck that fails open, an isolate that dies between the upsert
+and the recheck) no longer strand anything. Since issue #195 slice S3 every
+vector writer records the reading id in D1 `vector_ledger` **before** it
+upserts, so the id survives the deletion of the reading's R2 objects and the
+wipe can still address the vector.
 
 Cron decides what to do from the record rather than from R2 state: no row means
 never wiped (grace gates the start), a row with no `completed_at_ms` means a
@@ -171,13 +172,88 @@ again. That retires the old "no record AND an empty prefix" probe, which could
 not tell an already-wiped tenant from one whose prefix was emptied while vectors
 stranded, and so had to skip both forever.
 
-**What remains a gap** is re-*sweeping* such a tenant, not recognizing it. R2 is
-still the only source of the reading ids `deleteByIds` needs, so a tenant whose
-prefix is empty and whose namespace still answers has nothing left to delete
-by — but its row now says the wipe ran and `residue = 1` says it never came back
-clean, so the finding is durable rather than inferred from an absence. The
-durable per-tenant vector ledger (issue #261, 195b move 2,
-`rl-wipe-vector-ledger`) is what makes it actionable.
+**What remains a gap is the past, not the future — and one half of it is a
+gate on #195, not a footnote.**
+
+A reading purged from R2 before slice S3, whose vector delete failed, has no
+ledger row and cannot be given one: there is nothing left to derive an id from.
+`ops corpus seed-vector-ledger` covers every reading an existing corpus still
+*has*; a vector already orphaned when the ledger arrived is unseedable by
+construction.
+
+The other half is recoverable and must be recovered. Until S3, the offline batch
+pipeline wrote tenant vectors under **bare** reading ids — `makeVectorizeClient`
+attaches a namespace but never composed the tenant-scoped id. Any tenant that
+has ever run `ops corpus ingest` or `ops corpus recover --batch` under
+`--tenant` therefore holds vectors this wipe cannot address, because
+`deleteByIds` submits the composed id and misses them. Every wipe for such a
+tenant spends its attempts, alerts, and completes with `residue = 1` while those
+embeddings survive account deletion indefinitely.
+
+**So `residue = 1` on such a tenant is not a clean-enough outcome to file away.**
+It is that known gap. Repairing it in production is a gate on #195's acceptance
+bullet 3 ("a repeatable residue scan reports zero tenant-owned data"), and slice
+S5 owns the audit and the repair. `probe_saw_residue` beside `residue` still
+separates "vectors were still there" from "we never got an answer".
+
+That population costs something on a *live* tenant too, which is worth knowing
+before anyone dismisses it as a deletion-only concern: a bare-id vector and a
+composed one for the same reading are two distinct matches to a namespaced
+query, so the reading appears twice in its own neighbourhood and duplicates land
+in `manifest.similarity` — inflating `count`, skewing `mean`, and spending a
+neighbour slot.
+
+**The batch writer deliberately does not fix this by deleting the bare id.**
+Vectorize ids are index-unique and `delete_by_ids` is namespace-blind, so for a
+reading the pipeline has never touched, deleting `rd_…` removes the *legacy
+pre-cutover* vector — the retained `TENANT_DATA_PLANE` rollback set that a
+tenant-scoped operation is not meant to reach, and whose deletion needs its own
+sign-off. A routine `corpus ingest --tenant "$TENANT" --execute` would have
+eroded it silently. Telling the two apart is possible (a legacy vector is
+un-namespaced; a batch-written duplicate carries the namespace, and `getByIds`
+reports it), but that is a destructive production behaviour that belongs with
+the sign-off, not inside an unrelated slice.
+
+S5's audit therefore owns both halves: the wipe residue and the search
+duplication.
+
+### The wipe seeds its own ledger
+
+**No operator step is required before a wipe.** From issue #195 slice S3 the
+wipe submits `deleteByIds` only for ids the ledger names — and a corpus that
+predates the ledger has none — so before any phase runs it pages its own key
+root, derives every reading id from the object keys, and inserts the rows it is
+missing. R2 is intact at that moment (it is what the wipe is about to delete),
+so the job holds exactly the inputs the seeding command would.
+
+The invariant that buys: **no object is deleted before its reading id is in the
+ledger.** Nothing to remember, nothing to enforce.
+
+The seed step is insert-only — a row an earlier pass moved to
+`delete_submitted` keeps its state, delete stamp and absent streak — resumable
+on `wipe_progress.seed_cursor`, and it logs its work:
+
+```
+account_wipe_ledger_seeded  rows_created 0   outcome done
+```
+
+A **nonzero** `rows_created` on a tenant you believe was already seeded means
+the ledger was incomplete. Expected on a corpus predating S3; worth
+investigating on one that should have been covered by the writers.
+
+`ops corpus seed-vector-ledger` is still worth having — it lets you rehearse
+the walk, and repair a **live** tenant's ledger without waiting for a deletion
+— but it is no longer a prerequisite for anything:
+
+```sh
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
+```
+
+It over-seeds on purpose, exactly as the wipe's own step does: a row for a
+reading with no vector costs one no-op `deleteByIds` and then clears, while a
+missing row is unrecoverable. `--tenant global` is refused — the pre-tenant
+corpus has no tenant id to key rows by and no account wipe addresses it.
 
 The completion record is what the later users-row hard-delete gates on: read
 `completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
@@ -702,11 +778,20 @@ nothing if you get them wrong:
   query below quietly miss.
 - **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
   (`src/services.ts` `ID_ALPHABET` — no `I`, `L`, `O`, `U`). An id outside it is
-  not derivable by `collectReadingIds`, so the objects phase still deletes the
-  reading's R2 objects but no `deleteByIds` is ever submitted for it. The vector
-  is stranded with nothing left to derive its id from, and surfaces at the end
-  as probe residue — a synthetic reproduction of the issue #261 gap rather than
-  a wipe bug.
+  skipped by `ops corpus seed-vector-ledger`'s walk, so the objects phase still
+  deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
+  exist for it. The vector is stranded, and surfaces at the end as residue — a
+  synthetic reproduction of the issue #261 gap rather than a wipe bug.
+- **You do not need to seed the drill tenant.** The wipe seeds its own ledger
+  from the objects you write, before it deletes anything, so a drill that skips
+  seeding is testing the real path rather than a rigged one. Watch for
+  `account_wipe_ledger_seeded` with `rows_created` equal to the number of
+  readings you seeded — that line is the wipe proving it found them.
+- **Expect two wipe passes for a healthy tenant.** The first seeds and submits
+  the deletes; the confirmation is not allowed to count an absence until 120s
+  after `deleteByIds` returned, because propagation was measured at 30-90s and
+  a probe inside that window carries no information. A single-pass completion
+  means nothing was submitted — check `rows_created` before celebrating.
 
 ```sh
 # 1. Create the account. Either sign up on staging for real, or insert the row

@@ -67,7 +67,6 @@ export interface WipeProgress {
   phase: WipePhase;
   leaseSeq: number;
   updatedAtMs: number;
-  vectorCursor?: string;
   r2Cursor?: string;
   force: boolean;
   objectsDeleted: number;
@@ -78,6 +77,18 @@ export interface WipeProgress {
   indexCountStart: number | null;
   probeAttempts: number;
   probeSawResidue: boolean;
+  /**
+   * The seed step's R2 list cursor, and when it finished.
+   *
+   * The wipe records every reading id derivable from its own key root into the
+   * ledger before deleting anything, so coverage is established rather than
+   * asserted. The cursor resumes that walk across deliveries; the stamp
+   * separates "not started" from "finished" so a resume does not re-page a
+   * corpus it has already covered. A reopen clears both — leftover objects may
+   * belong to readings the earlier pass never saw.
+   */
+  seedCursor?: string;
+  seedCompletedAtMs: number | null;
   continuations: number;
   /** Current state: nothing left to do. Cleared by a reopen. */
   completedAtMs: number | null;
@@ -104,7 +115,6 @@ interface WipeProgressRow {
   phase: string;
   lease_seq: number;
   updated_at_ms: number;
-  vector_cursor: string | null;
   r2_cursor: string | null;
   force: number;
   objects_deleted: number;
@@ -113,6 +123,8 @@ interface WipeProgressRow {
   index_count_start: number | null;
   probe_attempts: number;
   probe_saw_residue: number;
+  seed_cursor: string | null;
+  seed_completed_at_ms: number | null;
   continuations: number;
   completed_at_ms: number | null;
   residue: number;
@@ -120,10 +132,10 @@ interface WipeProgressRow {
   first_residue: number;
 }
 
-const COLUMNS = `phase, lease_seq, updated_at_ms, vector_cursor, r2_cursor, force,
+const COLUMNS = `phase, lease_seq, updated_at_ms, r2_cursor, force,
     objects_deleted, mutation_ids, index_count_sampled, index_count_start,
     probe_attempts, probe_saw_residue, continuations, completed_at_ms, residue,
-    first_completed_at_ms, first_residue`;
+    first_completed_at_ms, first_residue, seed_cursor, seed_completed_at_ms`;
 
 function parsePhase(value: string): WipePhase {
   return value === "objects" || value === "done" ? value : "vectors";
@@ -145,7 +157,6 @@ function toProgress(row: WipeProgressRow): WipeProgress {
     phase: parsePhase(row.phase),
     leaseSeq: row.lease_seq,
     updatedAtMs: row.updated_at_ms,
-    vectorCursor: row.vector_cursor ?? undefined,
     r2Cursor: row.r2_cursor ?? undefined,
     force: row.force !== 0,
     objectsDeleted: row.objects_deleted,
@@ -154,6 +165,8 @@ function toProgress(row: WipeProgressRow): WipeProgress {
     indexCountStart: row.index_count_start,
     probeAttempts: row.probe_attempts,
     probeSawResidue: row.probe_saw_residue !== 0,
+    seedCursor: row.seed_cursor ?? undefined,
+    seedCompletedAtMs: row.seed_completed_at_ms,
     continuations: row.continuations,
     completedAtMs: row.completed_at_ms,
     residue: row.residue !== 0,
@@ -196,6 +209,7 @@ export function emptyWipeProgress(nowMs: number, force = false): WipeProgress {
     indexCountStart: null,
     probeAttempts: 0,
     probeSawResidue: false,
+    seedCompletedAtMs: null,
     continuations: 0,
     completedAtMs: null,
     residue: false,
@@ -224,11 +238,15 @@ export function reopenWipeProgress(progress: WipeProgress, force: boolean): Wipe
   return {
     ...progress,
     phase: "vectors",
-    vectorCursor: undefined,
     r2Cursor: undefined,
     force,
     probeAttempts: 0,
     probeSawResidue: false,
+    // A reopened wipe re-seeds: leftover objects may belong to readings the
+    // earlier pass never saw, and their ids are only derivable while those
+    // objects are still there.
+    seedCursor: undefined,
+    seedCompletedAtMs: null,
     indexCountSampled: false,
     indexCountStart: null,
     continuations: 0,
@@ -302,18 +320,18 @@ export class WipeProgressWriter {
   private async insertRow(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `INSERT INTO wipe_progress (
-         tenant_id, phase, lease_seq, updated_at_ms, vector_cursor, r2_cursor,
+         tenant_id, phase, lease_seq, updated_at_ms, r2_cursor,
          force, objects_deleted, mutation_ids, index_count_sampled,
          index_count_start, probe_attempts, probe_saw_residue, continuations,
-         completed_at_ms, residue, first_completed_at_ms, first_residue
+         completed_at_ms, residue, first_completed_at_ms, first_residue,
+         seed_cursor, seed_completed_at_ms
        )
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)`,
       this.tenantId,
       progress.phase,
       nextSeq,
       progress.updatedAtMs,
-      progress.vectorCursor ?? null,
       progress.r2Cursor ?? null,
       progress.force ? 1 : 0,
       progress.objectsDeleted,
@@ -327,6 +345,8 @@ export class WipeProgressWriter {
       progress.residue ? 1 : 0,
       progress.firstCompletedAtMs,
       progress.firstResidue ? 1 : 0,
+      progress.seedCursor ?? null,
+      progress.seedCompletedAtMs,
       this.tenantId,
     );
     return result.changes;
@@ -335,11 +355,11 @@ export class WipeProgressWriter {
   private async update(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `UPDATE wipe_progress
-          SET phase = ?, lease_seq = ?, updated_at_ms = ?, vector_cursor = ?,
+          SET phase = ?, lease_seq = ?, updated_at_ms = ?,
               r2_cursor = ?, force = ?, objects_deleted = ?, mutation_ids = ?,
               index_count_sampled = ?, index_count_start = ?, probe_attempts = ?,
               probe_saw_residue = ?, continuations = ?, completed_at_ms = ?,
-              residue = ?,
+              residue = ?, seed_cursor = ?, seed_completed_at_ms = ?,
               -- Write-once, enforced here rather than only in the caller: every
               -- SET expression reads the pre-UPDATE row, so once
               -- first_completed_at_ms is set these two are pinned for the life
@@ -353,7 +373,6 @@ export class WipeProgressWriter {
       progress.phase,
       nextSeq,
       progress.updatedAtMs,
-      progress.vectorCursor ?? null,
       progress.r2Cursor ?? null,
       progress.force ? 1 : 0,
       progress.objectsDeleted,
@@ -365,6 +384,8 @@ export class WipeProgressWriter {
       progress.continuations,
       progress.completedAtMs,
       progress.residue ? 1 : 0,
+      progress.seedCursor ?? null,
+      progress.seedCompletedAtMs,
       progress.firstCompletedAtMs,
       progress.firstResidue ? 1 : 0,
       this.tenantId,
@@ -376,9 +397,11 @@ export class WipeProgressWriter {
   /**
    * The terminal transition. Writes the completion record and keeps it.
    *
-   * Both cursors are cleared first: `vector_cursor` holds a reading id, and a
-   * record that outlives the account must not. Everything else the record
-   * carries is a count, a flag, or an opaque Vectorize mutation handle.
+   * The R2 cursor is cleared first. Nothing this record carries names a
+   * reading: the vectors phase's `vector_cursor` — the one field that held a
+   * reading id — went with `collectReadingIds` when S3's ledger took R2 out of
+   * the id-source role (migration `0010`). Everything left is a count, a flag,
+   * an opaque R2 continuation token, or a Vectorize mutation handle.
    *
    * Two pairs are written. `completedAtMs`/`residue` describe the current state
    * and a later reopen clears them. `firstCompletedAtMs`/`firstResidue` are set
@@ -395,7 +418,6 @@ export class WipeProgressWriter {
     const done: WipeProgress = {
       ...progress,
       phase: "done",
-      vectorCursor: undefined,
       r2Cursor: undefined,
       updatedAtMs: completedAtMs,
       completedAtMs,

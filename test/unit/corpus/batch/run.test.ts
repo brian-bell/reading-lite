@@ -106,6 +106,15 @@ function harness(seedManifests: Record<string, Manifest>) {
     upsert: vi.fn(async () => {}),
     query: vi.fn(async () => []),
   };
+  // The vector ledger (issue #195 S3), recording the upsert count at the moment
+  // each row was written so the "before the upsert" ordering is assertable.
+  const ledgered: string[] = [];
+  const ledger = {
+    markLive: async (ids: readonly string[]) => {
+      for (const id of ids) ledgered.push(`live:${id}:${vectorize.upsert.mock.calls.length}`);
+    },
+    markDeleteSubmitted: async () => {},
+  };
   let sidecar: PersistedSidecar | null = null;
   let inputJsonl: string | null = null;
   const batch = {
@@ -143,6 +152,7 @@ function harness(seedManifests: Record<string, Manifest>) {
   const deps: BatchRunDeps = {
     r2: r2 as any,
     vectorize: vectorize as any,
+    ledger,
     batch: batch as any,
     embed: {
       embedMany: vi.fn(async (inputs: string[]) => ({
@@ -173,7 +183,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
+  return { store, r2, vectorize, ledgered, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
 }
 
 // A minimal OpenAI batch client with sensible defaults so tests don't have to
@@ -274,6 +284,8 @@ h.deps.openaiBatch = fakeOpenAIClient({
   return { upload, create };
 }
 
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
+
 describe("runBatch — fresh run", () => {
   it("fresh-extracts a failed recovery target before OpenAI upload and publishes it at the same owner", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
@@ -333,6 +345,47 @@ describe("runBatch — fresh run", () => {
       key_prefix: "readings/kp-rd_a",
     });
     expect(h.vectorize.upsert).toHaveBeenCalledOnce();
+    // The ledger reaches write-phase through BatchRunDeps, and the row lands
+    // BEFORE the upsert. `ops corpus ingest` and `corpus recover --batch` are
+    // vector writers with no `users.status` check, so an un-ledgered upsert
+    // here is a vector the account wipe will never even ask Vectorize to
+    // delete — and will then report a clean completion around.
+    expect(h.ledgered).toEqual(["live:rd_a:0"]);
+  });
+
+  it("returns neighbours under bare reading ids when writing into a tenant namespace", async () => {
+    // `SimilarityStore.query` in the Worker strips its own `{tenant}:` prefix so
+    // callers only ever see reading ids; `makeVectorizeClient.query` does not,
+    // and this pipeline consumes matches directly. That divergence was
+    // invisible while the pipeline wrote bare ids, and stopped being invisible
+    // the moment write-phase started composing them — the pipeline now reads
+    // back its own prefixed writes.
+    //
+    // Two things go wrong without the strip, and neither is loud: `excludeSelf`
+    // compares the bare reading id against a prefixed match, so a re-ingested
+    // reading spends a neighbour slot on ITSELF at ~1.0; and the ids flow into
+    // `similarity`/`connections` on the manifest this pipeline writes, where
+    // the read path and the SPA expect bare reading ids.
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.vectorNamespace = TENANT;
+    h.deps.vectorize.query = vi.fn(async () => [
+      // The reading's own vector, as Vectorize returns it: prefixed.
+      { id: `${TENANT}:rd_a`, score: 0.99, metadata: { url: "https://a", title: "A" } },
+      { id: `${TENANT}:rd_neighbour`, score: 0.8, metadata: { url: "https://n", title: "N" } },
+    ]);
+
+    const result = await runBatch([row("rd_a")], h.deps);
+    expect(result.report[0]?.status).toBe("ready");
+
+    const written = ManifestSchema.parse(
+      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
+    );
+    // Self excluded despite the prefix, so the slot was not wasted...
+    const ids = (written.similarity?.count ?? 0) > 0 ? written.connections ?? [] : [];
+    expect(JSON.stringify(written)).not.toContain(`${TENANT}:rd_a`);
+    // ...and no prefixed id reached the manifest at all.
+    expect(JSON.stringify(written)).not.toContain(`${TENANT}:rd_neighbour`);
+    void ids;
   });
 
   it("runs an OpenAI batch to ready with one stable run id and the realtime response parser", async () => {

@@ -16,6 +16,10 @@ import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, ty
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
+  assertOperatorLedgerAvailable,
+  operatorVectorLedger,
+} from "../../account-lib/operator-ledger";
+import {
   classifyOutcome,
   readingApiFor,
   type ReadingApi,
@@ -402,6 +406,9 @@ async function runBatchMode(
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
     });
+    // Refuse a tenant/bucket pair the vector ledger cannot serve, before the
+    // batch is submitted rather than at the first upsert (issue #195 S3).
+    assertOperatorLedgerAvailable(cfg.tenant, cfg.r2.bucket);
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
     return 2;
@@ -493,6 +500,15 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const lookup = (hostname: string) => dnsLookup(hostname, { all: true });
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
         return runBatch(rows, {
+        // Ledger every vector this batch writes (issue #195 S3). Resolved from
+        // the run's own tenant and bucket; the no-op for --tenant global, which
+        // no account wipe addresses.
+        ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
+        // So write-phase composes the ADR 0002 tenant-scoped vector id, like
+        // every other writer. Undefined for --tenant global.
+        ...(cfg.vectorize.namespace === undefined
+          ? {}
+          : { vectorNamespace: cfg.vectorize.namespace }),
           r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
           vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
           ...(cfg.anthropicApiKey

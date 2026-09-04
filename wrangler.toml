@@ -252,7 +252,19 @@ max_batch_timeout = 5
 # per deleted account, and a single writer removes the sibling window the
 # progress CAS would otherwise only detect after the fact.
 max_concurrency = 1
-max_retries = 3
+# Must stay STRICTLY ABOVE ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS in src/account-wipe.ts
+# (4), because the confirmation bound is spent inside one message's own retry
+# budget and not every retry spends an attempt:
+#
+#   - A healthy wipe always burns one retry on the +120s first-confirmation
+#     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
+#   - A transient D1, R2 or Vectorize error retries without counting either.
+#
+# So `>=` would leave zero headroom: one deferral plus four attempts exactly
+# exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
+# the loop the bound exists to avoid. Two spare retries cover the deferral and
+# one blip. test/unit/deploy/account-wipe-wrangler.test.ts pins the inequality.
+max_retries = 6
 dead_letter_queue = "reading-lite-staging-wipe-dlq"
 
 [[env.staging.queues.consumers]]
@@ -420,7 +432,19 @@ max_batch_timeout = 5
 # per deleted account, and a single writer removes the sibling window the
 # progress CAS would otherwise only detect after the fact.
 max_concurrency = 1
-max_retries = 3
+# Must stay STRICTLY ABOVE ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS in src/account-wipe.ts
+# (4), because the confirmation bound is spent inside one message's own retry
+# budget and not every retry spends an attempt:
+#
+#   - A healthy wipe always burns one retry on the +120s first-confirmation
+#     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
+#   - A transient D1, R2 or Vectorize error retries without counting either.
+#
+# So `>=` would leave zero headroom: one deferral plus four attempts exactly
+# exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
+# the loop the bound exists to avoid. Two spare retries cover the deferral and
+# one blip. test/unit/deploy/account-wipe-wrangler.test.ts pins the inequality.
+max_retries = 6
 dead_letter_queue = "reading-lite-wipe-dlq"
 
 [[env.production.queues.consumers]]

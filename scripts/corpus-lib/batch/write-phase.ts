@@ -16,11 +16,16 @@ import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
+import {
+  NO_OP_VECTOR_LEDGER,
+  type VectorLedger,
+} from "../../../src/control-plane/vector-ledger";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
 import { serializeReadingPointer, type ReadingPointer } from "./pointers";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
 // client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
@@ -30,6 +35,62 @@ const layout = r2KeyLayout();
 export interface WriteDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
+  // The durable vector-id ledger (issue #195 S3). Defaults to the no-op, which
+  // is what `--tenant global` and every fixture-backed test want: the
+  // pre-tenant corpus has no tenant id to key ledger rows by, and no account
+  // wipe addresses it.
+  //
+  // This writer had no `users.status` check and never will — it is an offline
+  // batch tool, and by the time it runs the tenant it is writing for may be
+  // mid-wipe. That was one of the four strandings `src/account-wipe.ts`'s
+  // header listed: an upsert landing after the wipe's vectors phase left a
+  // vector with no derivable id. The ledger closes it by holding the id.
+  ledger?: VectorLedger;
+  /**
+   * The tenant's Vectorize namespace, or undefined for the pre-tenant layout.
+   *
+   * PRE-EXISTING BUG, fixed here (found reviewing issue #195 S3). Every other
+   * vector writer composes the ADR 0002 tenant-scoped vector id —
+   * `similarity-store.ts` in the Worker, `corpus backfill-vectors`, and
+   * `corpus migrate-founder` all write `{tenantId}:{readingId}` — but
+   * `makeVectorizeClient.upsert` only attaches `namespace`, so this pipeline
+   * was writing tenant vectors under the BARE reading id.
+   *
+   * That was inert while nothing addressed those vectors by id. It stops being
+   * inert with the ledger: the wipe composes the tenant-scoped id for both
+   * `deleteByIds` and the per-id confirmation, so a bare-id vector would be
+   * missed by the delete AND read as absent by the confirmation — clearing its
+   * ledger row and declaring gone a vector that is still live, which is the one
+   * outcome the ledger exists to prevent.
+   *
+   * WHY THIS DOES NOT ALSO DELETE THE BARE ID.
+   *
+   * Composing the id writes a NEW vector rather than replacing the old one, so
+   * on a tenant that already holds bare-id vectors this leaves two live vectors
+   * for one reading: `SimilarityStore.query` strips only its own `{tenant}:`
+   * prefix, so both come back as distinct matches and the reading appears twice
+   * in its own neighbourhood. Deleting the bare id first is the obvious fix and
+   * it is WRONG here.
+   *
+   * Vectorize ids are index-unique and `deleteByIds` is namespace-blind, so
+   * `delete("rd_X")` removes whatever single vector holds that id. For a
+   * reading this pipeline has never touched, that vector is the LEGACY
+   * pre-cutover one — and those are explicitly retained pending a separate
+   * signed-off deletion, as the `TENANT_DATA_PLANE` rollback set (see the
+   * founder-cutover note in CLAUDE.md: "tenant-scoped operations do not reach
+   * that legacy data and are not meant to", and "copy, never move"). A routine
+   * `ops corpus ingest --tenant "$TENANT" --execute` would have silently and
+   * irreversibly eroded that set.
+   *
+   * Distinguishing the two is possible — a legacy vector is un-namespaced, a
+   * batch-written duplicate carries the tenant namespace, and `getByIds`
+   * reports it — but that is a destructive production behaviour that needs its
+   * own sign-off rather than riding along inside this slice.
+   *
+   * So both halves stay with the residue scan (slice S5): the wipe consequence
+   * and the search duplication.
+   */
+  vectorNamespace?: string;
   embedMany(inputs: string[]): Promise<EmbedResult>;
   now(): string;
   log?: (line: string) => void;
@@ -364,12 +425,34 @@ async function writeNormalizedResults(
     );
     successes.push({ target, manifest });
     vectors.push({
-      id: target.id,
+      // The ADR 0002 tenant-scoped id, composed through the one function that
+      // spells that rule (`tenantVectorId`). Bare id when there is no
+      // namespace, exactly as before, so the pre-tenant layout is unchanged.
+      id: tenantVectorId(deps.vectorNamespace, target.id),
       values: embedding,
-      metadata: vectorMetadata(manifest),
+      // ...and its audit stamp, matching what the Worker and the founder
+      // migration write. `migrate-founder`'s reconciliation rejects a prefixed
+      // vector without it.
+      metadata:
+        deps.vectorNamespace === undefined
+          ? vectorMetadata(manifest)
+          : { ...vectorMetadata(manifest), tenant_id: deps.vectorNamespace },
     });
   }
-  if (vectors.length > 0) await deps.vectorize.upsert(vectors);
+  if (vectors.length > 0) {
+    const readingIds = resolvedSuccess.map(({ target }) => target.id);
+    // Ledger BEFORE the upsert. A row for an upsert that then fails costs one
+    // redundant `deleteByIds`; an upsert with no row is a vector nothing can
+    // address once the reading's R2 objects are gone.
+    //
+    // BARE reading ids, not the composed vector ids above: the ledger stores
+    // the reading id and the wipe re-composes through `tenantVectorId`, so
+    // there is exactly one spelling of that rule and no stored copy of its
+    // output to drift.
+    await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(readingIds, Date.now());
+    // DELIBERATELY NOT deleting the bare id here. See the note below.
+    await deps.vectorize.upsert(vectors);
+  }
 
   // 2. Write the success manifests + pointers.
   for (const { target, manifest } of successes) {

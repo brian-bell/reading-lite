@@ -28,6 +28,7 @@ import {
   wipeKeyTenantId,
   WIPE_PREFIX,
 } from "../../account-lib/wipe-prefix";
+import { controlPlaneForBucket } from "../../account-lib/control-plane";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface WipeSweepStorage {
@@ -78,17 +79,14 @@ const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
 // lease" claim is only true of the window `wipeLeaseHeld` actually uses.
 const WIPE_IN_FLIGHT_MINUTES = ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000;
 
-// The control-plane database and wrangler env that go with a data bucket. A
-// query pointed at the wrong control plane answers a question about the wrong
-// environment, and that answer is the input to the acknowledgement — so an
-// unrecognised bucket gets no query rather than a production-shaped guess.
-export const CONTROL_PLANE_BY_BUCKET: Record<string, { database: string; env: string }> = {
-  "reading-lite": { database: "reading-lite-control", env: "production" },
-  "reading-lite-staging": { database: "reading-lite-control-staging", env: "staging" },
-};
+// The bucket → control-plane pairing moved to scripts/account-lib/control-plane.ts
+// when `ops corpus seed-vector-ledger` needed to WRITE through it rather than
+// only print a query. Re-exported so this module's existing consumers and tests
+// keep one import.
+export { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 
 function scopedProgressQuery(bucket: string, tenantIds: string[]): string | null {
-  const target = CONTROL_PLANE_BY_BUCKET[bucket];
+  const target = controlPlaneForBucket(bucket);
   if (target === undefined) return null;
   const list = tenantIds.map((id) => `'${id}'`).join(", ");
   return (

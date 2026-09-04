@@ -36,6 +36,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "normalize-tags",
     "purge-connections",
     "rebuild-list",
+    "seed-vector-ledger",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],

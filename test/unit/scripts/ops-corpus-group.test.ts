@@ -435,6 +435,10 @@ describe("ops corpus backfill-vectors", () => {
       upserts: 0,
       writersMade: 0,
       markerWrites: [] as unknown[],
+      // `live:{readingId}:{upserts at the time}` — issue #195 S3. The suffix is
+      // what makes "before the upsert, not after" assertable.
+      ledgered: [] as string[],
+      ledgersMade: [] as Array<{ tenant: string; bucket: string; execute: boolean }>,
     };
     const deps: CorpusBackfillVectorsDeps = {
       io: cio,
@@ -468,6 +472,19 @@ describe("ops corpus backfill-vectors", () => {
           },
         };
       },
+      makeLedger: (opts) => {
+        calls.ledgersMade.push({
+          tenant: opts.tenant.kind === "tenant" ? opts.tenant.tenantId : "global",
+          bucket: opts.bucket,
+          execute: opts.execute,
+        });
+        return {
+          markLive: async (ids) => {
+            for (const id of ids) calls.ledgered.push(`live:${id}:${calls.upserts}`);
+          },
+          markDeleteSubmitted: async () => {},
+        };
+      },
     };
     return { deps, lines, calls };
   }
@@ -491,6 +508,21 @@ describe("ops corpus backfill-vectors", () => {
     expect(calls.writersMade).toBe(1);
     expect(calls.embeds).toBe(1);
     expect(calls.upserts).toBe(1);
+    // The vector-ledger row is written BEFORE the upsert it describes (the `:0`
+    // suffix is the upsert count at the time). A row for an upsert that then
+    // fails costs one no-op deleteByIds; an upsert with no row is a vector
+    // nothing can address once the reading's R2 objects are gone.
+    expect(calls.ledgered).toEqual(["live:rd_v:0"]);
+  });
+
+  it("resolves the ledger for the run's own tenant, bucket and mode", async () => {
+    const { deps, calls } = makeDeps();
+    await corpusBackfillVectorsCommand.run(["--tenant", "global"], deps);
+    // Plan mode still resolves it — and asks for the no-op by passing
+    // execute:false — so an unrecognised --bucket is refused before any write.
+    expect(calls.ledgersMade).toEqual([
+      { tenant: "global", bucket: "reading-lite", execute: false },
+    ]);
   });
 
   it("tenant mode probes and upserts the ADR-0002 prefixed id with its audit stamp", async () => {
@@ -777,9 +809,13 @@ describe("ops corpus ingest", () => {
       clearSidecar: async () => {
         calls.sidecarClears++;
       },
-      resolveConfig: () => {
+      resolveConfig: (flags) => {
         calls.configResolves++;
-        return { fake: true } as never;
+        // A minimal but SHAPE-HONEST config: `tenant` and `r2.bucket` are what
+        // the vector-ledger availability check reads (issue #195 S3), and a
+        // double that omitted them would make the command look broken for a
+        // reason the test is not about.
+        return { tenant: flags.tenant, r2: { bucket: "reading-lite" } } as never;
       },
       planOwnership: async (eligible) => {
         calls.ownershipPlans++;
@@ -814,6 +850,36 @@ describe("ops corpus ingest", () => {
     expect(calls.ownershipPlans).toBe(1);
     expect(calls.executes).toBe(0);
     expect(lines.join("\n")).toContain("would submit 1 reading(s)");
+  });
+
+  it("refuses a real tenant on a bucket with no control plane, before submitting", async () => {
+    // A vector written without a ledger row is unaddressable once the reading's
+    // R2 objects are gone (issue #195 S3), so a tenant whose ids have nowhere
+    // to be recorded must stop the run — and stop it before the batch, not at
+    // the first upsert half way through a paid, resumable pass.
+    const { deps, calls } = makeDeps();
+    deps.resolveConfig = (flags) => {
+      calls.configResolves++;
+      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
+    };
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(2);
+    expect(calls.executes).toBe(0);
+  });
+
+  it("still allows --tenant global on any bucket", async () => {
+    // The pre-tenant corpus has no tenant id to key ledger rows by, and no
+    // account wipe addresses it, so there is nothing to refuse.
+    const { deps, calls } = makeDeps();
+    deps.resolveConfig = (flags) => {
+      calls.configResolves++;
+      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
+    };
+    const code = await corpusIngestCommand.run(["--tenant", "global", "--dir", "/md"], deps);
+    expect(code).toBe(0);
   });
 
   it("plan mode degrades gracefully without credentials", async () => {

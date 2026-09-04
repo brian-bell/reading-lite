@@ -44,7 +44,9 @@ import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorTenantSelector } from "../../corpus-lib/tenant";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
+import { operatorVectorLedger } from "../../account-lib/operator-ledger";
+import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
 
 export interface CorpusBackfillVectorsDeps extends BaseDeps {
   r2: {
@@ -67,6 +69,17 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
   }>;
   /** Stamps the run marker, so one run's invalidation is identifiably its own. */
   now: () => number;
+  /**
+   * The durable vector-id ledger (issue #195 S3). Every id is recorded before
+   * its upsert, so a vector this command restores stays addressable even if the
+   * tenant's account wipe is already past its vectors phase — this writer has
+   * never checked `users.status` and does not start now.
+   *
+   * Resolved per run rather than injected as a value, because the control plane
+   * it writes to is a function of `--bucket` and it must be the no-op in plan
+   * mode and for `--tenant global`.
+   */
+  makeLedger: (opts: { tenant: OperatorTenant; bucket: string; execute: boolean }) => VectorLedger;
 }
 
 interface Opts {
@@ -147,6 +160,15 @@ async function runCorpusBackfillVectors(
   ): Promise<void> => {
     throw new Error("internal error: plan mode attempted a Vectorize write");
   };
+  // Resolved before the credential check so an unrecognised --bucket (which has
+  // no known control plane) stops an EXECUTE before it embeds or upserts
+  // anything. Plan mode is deliberately not stopped — `operatorVectorLedger`
+  // returns the no-op before it looks the bucket up — so a plan can succeed
+  // where the execute will refuse. `corpus seed-vector-ledger` refuses in both
+  // modes instead, because writing rows is its whole purpose; here the ledger
+  // is a side effect of a command that has plenty to say in plan mode without
+  // a control plane.
+  const ledger = deps.makeLedger({ tenant, bucket: opts.bucket, execute: opts.execute });
   // One clock read for both stamps, so a run is identifiable by it.
   const runAt = new Date(deps.now()).toISOString();
   if (opts.execute) {
@@ -174,18 +196,24 @@ async function runCorpusBackfillVectors(
         r2.vectorExists(vectorizeIndex, tenantVectorId(tenant.namespace, id), tenant.namespace),
       readManifest: (keyPrefix) => r2.readManifest(keyPrefix, r2Deps),
       embedMany,
-      upsert: ((vectors: {
+      upsert: (async (vectors: {
         id: string;
         values: number[];
         metadata?: Record<string, unknown>;
-      }[]) =>
-        upsert(vectors.map((vector) => ({
+      }[]) => {
+        // Ledger BEFORE the upsert, on the BARE reading ids — the
+        // `{tenantId}:{readingId}` composition is applied below and never
+        // stored. A row for an upsert that then fails costs one redundant
+        // `deleteByIds`; an upsert with no row is a vector nothing can address.
+        await ledger.markLive(vectors.map((vector) => vector.id), deps.now());
+        await upsert(vectors.map((vector) => ({
           ...vector,
           id: tenantVectorId(tenant.namespace, vector.id),
           ...(tenant.namespace === undefined
             ? {}
             : { metadata: { ...(vector.metadata ?? {}), tenant_id: tenant.namespace } }),
-        })))) as never,
+        })));
+      }) as never,
     },
   );
 
@@ -393,6 +421,7 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
         },
       };
     },
+    makeLedger: (opts) => operatorVectorLedger(opts),
   }),
   run: runCorpusBackfillVectors,
 };

@@ -28,6 +28,7 @@ import { corpusMigrateFounderCommand } from "./commands/corpus-migrate-founder";
 import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
 import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
+import { corpusSeedVectorLedgerCommand } from "./commands/corpus-seed-vector-ledger";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -75,6 +76,7 @@ export const defaultRegistry: Registry = {
     corpusNormalizeTagsCommand,
     corpusPurgeConnectionsCommand,
     corpusRebuildListCommand,
+    corpusSeedVectorLedgerCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,
