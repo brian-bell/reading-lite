@@ -2,8 +2,7 @@
 // audit row that outlives the account, and email reuse.
 //
 // The node-pool helper opens SQLite with `PRAGMA foreign_keys = ON`, which D1
-// does not, so a delete in the wrong order fails here rather than leaving
-// debris in production.
+// also enforces, so a delete in the wrong order fails here as in production.
 
 import { describe, expect, it } from "vitest";
 import { beginAccountDeletion } from "../../../src/control-plane/account-delete";
@@ -360,6 +359,25 @@ describe("tearDownAccount — the completion gate", () => {
 });
 
 describe("tearDownAccount — the deletes", () => {
+  it("retains residue repair handles while deleting the user with foreign keys enforced", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS - 5_000, residue: 1 });
+    sqlite.prepare(`INSERT INTO vector_ledger
+      (tenant_id, reading_id, state, upserted_at_ms, deleted_at_ms, absent_streak, last_absent_at_ms)
+      VALUES (?, 'rd_residue', 'delete_submitted', ?, ?, 1, ?)`)
+      .run(USER, NOW_MS - 10_000, NOW_MS - 8_000, NOW_MS - 6_000);
+    const before = sqlite.prepare("SELECT * FROM vector_ledger WHERE tenant_id = ?").all(USER);
+    const { env } = guardEnv();
+
+    const result = await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
+
+    expect(result.kind).toBe("torn_down");
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+    expect(sqlite.prepare("SELECT * FROM vector_ledger WHERE tenant_id = ?").all(USER)).toEqual(before);
+    expect(sqlite.prepare("SELECT residue FROM account_deletions WHERE tenant_id = ?").get(USER)).toEqual({ residue: 1 });
+    expect(sqlite.pragma("foreign_key_check")).toEqual([]);
+  });
+
   it("removes every tenant-keyed row, the wipe record, and the users row", async () => {
     const { sqlite, db } = await seeded();
     wipeRecord(sqlite, { completedAtMs: NOW_MS - 5_000 });

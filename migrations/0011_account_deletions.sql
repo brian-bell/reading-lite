@@ -1,17 +1,15 @@
 -- Account-deletion audit record (issue 195 S4 / #263, design decision E).
 --
--- This is the one row that OUTLIVES the account. Every other row keyed to the
--- tenant — `users` itself, `user_settings`, `tenant_limits`, `api_tokens`,
--- `api_token_scopes`, `sessions`, `auth_challenges`, `digest_deliveries`, the
--- account's own `signup_invites` rows, and `wipe_progress` — is deleted by
--- `src/control-plane/account-teardown.ts`. This one stays.
+-- This audit row OUTLIVES the account. Teardown deletes the account-owned
+-- users, settings, limits, tokens, scopes, sessions, challenges, digest,
+-- invite and wipe-progress rows. This audit stays, as do any unconfirmed
+-- vector-ledger repair handles (migration 0012).
 --
 -- Why it is a separate table rather than "keep the wipe_progress row":
 -- `wipe_progress.tenant_id REFERENCES users(id)`, and teardown's whole job is
 -- to remove that `users` row. A record that points at a deleted user is a
--- dangling reference at best and, the day `PRAGMA foreign_keys = ON` is ever
--- turned on, an unsatisfiable one. So the audit row deliberately carries **no
--- foreign key at all**: it must survive the row it describes, which is exactly
+-- foreign-key violation under D1's default enforcement. So the audit row
+-- deliberately carries **no foreign key at all**: it must survive the row it describes, which is exactly
 -- the property a foreign key would deny it.
 --
 -- Nothing here cascades, and nothing anywhere else in this schema does either

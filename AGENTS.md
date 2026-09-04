@@ -71,6 +71,8 @@ comments of the modules themselves — read those before changing a module.
   still orphaned, the same #261 residual).
   Then deletes every tenant-keyed row and the `users` row in one ordered batch.
   Gates on `wipe_progress.completed_at_ms`, never `first_completed_at_ms`.
+  D1 enforces foreign keys. Migration `0012` removes the vector ledger's users
+  reference while preserving its rows so residue repair handles outlive teardown.
   Nothing in this schema cascades, so `wipe_progress` is deleted explicitly,
   after the gate has been read.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single

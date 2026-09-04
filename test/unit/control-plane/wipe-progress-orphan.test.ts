@@ -8,10 +8,9 @@
 // `listDeletingUsers` no longer does — an orphan nothing enumerates and nothing
 // cleans up.
 //
-// Deliberately run with foreign keys OFF, which is how D1 actually behaves: no
-// migration in this schema turns them on, so the `REFERENCES users(id)` on
-// `wipe_progress` is a statement of meaning, not a runtime guard. The INSERT's
-// own `EXISTS` clause is the only thing standing here.
+// Deliberately run with foreign keys OFF to isolate the INSERT's EXISTS
+// guard. D1 enforces the foreign key too, but the guard makes a lost race a
+// clean progress conflict instead of a foreign-key error.
 
 import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
@@ -32,7 +31,7 @@ const TENANT = parseTenantId(USER)!;
 
 async function seeded() {
   const { sqlite, db } = openMigratedControlPlane();
-  // Match D1: references are declared, never enforced.
+  // Isolate the explicit existence guard from D1's additional FK protection.
   sqlite.pragma("foreign_keys = OFF");
   await bootstrapFounder(db, {
     email: "founder@example.com",

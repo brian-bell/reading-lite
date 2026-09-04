@@ -303,10 +303,14 @@ dragging a finished wipe back through the queue. In order:
    `api_token_scopes`, `api_tokens`, `sessions`, `auth_challenges`,
    `digest_deliveries`, `user_settings`, `tenant_limits`, the account's
    `signup_invites` rows (see below), `wipe_progress`, and finally `users`.
-   Nothing in
-   this schema cascades — no migration declares `ON DELETE CASCADE` and none
-   turns on `PRAGMA foreign_keys` — so the ordering is teardown's job, and
-   `wipe_progress` is deleted explicitly, after its gate has been read.
+   D1 enforces foreign keys by default; no migration declares
+   `ON DELETE CASCADE`. Child rows therefore go first, and `wipe_progress` is
+   deleted explicitly after its gate has been read. Unconfirmed `vector_ledger`
+   rows are retained for residue repair. Migration `0012` removes their users
+   foreign key while preserving all rows, columns, other constraints and the
+   index, so those repair handles can outlive the account. The table rebuild
+   runs transactionally before Worker upload; existing ledger writers remain
+   compatible.
 
 **Teardown runs wherever the tenant data plane is on.** Fan-out still returns
 early when `TENANT_DATA_PLANE` is unset (local), because there is no tenant

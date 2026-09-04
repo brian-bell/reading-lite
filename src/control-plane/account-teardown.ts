@@ -45,14 +45,11 @@
  *
  * ## Why the deletes are explicit, and why nothing cascades
  *
- * No migration in this schema declares `ON DELETE CASCADE`, and none sets
- * `PRAGMA foreign_keys = ON` either, so a `REFERENCES` clause here is a
- * statement of meaning rather than an enforced rule. Ordering is therefore this
- * module's job, not the database's. That is not a workaround: a cascade from
- * `users` would take `wipe_progress` with it, destroying the completion record
- * at the instant teardown reads it to decide it may act (design decision E).
- * The `account_deletions` audit row goes further and carries no foreign key at
- * all, because it has to outlive the row it describes.
+ * D1 enforces foreign keys by default. Child rows must be deleted before the
+ * users row, and no relationship uses ON DELETE CASCADE. The audit row has no
+ * foreign key because it must outlive the account. Migration 0012 also removes
+ * the vector ledger's users reference: unconfirmed ids must survive a residue
+ * wipe and teardown so later repair can still address those vectors.
  *
  * ## Email reuse
  *
@@ -344,14 +341,14 @@ async function addressesEverUsed(
 }
 
 /**
- * Every row keyed to this tenant, children before parents.
+ * Account-owned control-plane rows, children before parents.
  *
- * Order is load-bearing even though nothing enforces it at runtime today:
+ * Order is load-bearing under D1 foreign-key enforcement:
  * `api_token_scopes` is reachable only through `api_tokens`, so it goes first
  * or its rows become unreachable orphans; `wipe_progress` goes before `users`
  * for the same reason; and `users` goes last because everything above names it.
- * The node-pool test helper runs with `PRAGMA foreign_keys = ON`, so a wrong
- * order fails a test rather than silently leaving debris in production.
+ * The node-pool test helper also enforces foreign keys, so a wrong order fails
+ * locally just as it would in D1.
  *
  * `auth_challenges` is deleted by user id **and** by address: an
  * `email_change` challenge points at the user while carrying a different
@@ -365,9 +362,10 @@ async function addressesEverUsed(
  * by address rather than by id — and by *every* address this account ever used,
  * not only its current one. See `addressesEverUsed`.
  *
- * Two tables are named here only to say they are NOT touched, because "we
- * deleted everything" is a claim that has to be exact:
+ * These stores are deliberately retained:
  *
+ * - `vector_ledger` retains any unconfirmed vector ids for residue repair.
+ *   Migration 0012 allows these rows to outlive the user.
  * - `AuthRateGuard` (a Durable Object, not a table) is a singleton of hashed,
  *   TTL-windowed email/IP counters with no tenant key to purge by.
  * - `dev_mail_outbox` holds `to_email` and magic-link URLs, but it is the
