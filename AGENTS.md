@@ -217,7 +217,15 @@ Pointers only — the details live in the named files' comments.
   vectors are still in the bucket/index pending a separate signed-off
   deletion — `--tenant global` operator commands still see them; live
   production corpus ops use `--tenant "$TENANT"` from whoami (see
-  `docs/operations.md`). Default
+  `docs/operations.md`). With the gate on, tenant-scoped operations do not
+  reach that legacy data and are not meant to: a tenant-rooted read, write, or
+  delete addresses `u/{tenantId}/` and the tenant's Vectorize namespace, so
+  pre-tenant `readings/`/`index/` objects and un-namespaced `rd_…` vectors
+  survive it — account wipe (`src/account-wipe.ts`) included. With the gate
+  off the stores fall back to the pre-tenant layout (`tenantKeyRoot` is `""`,
+  the namespace unset), but wipe does not follow them there: gate off or an
+  empty key root each skip with `no_tenant_prefix` rather than empty the
+  bucket. The signed-off deletion is what clears the legacy data. Default
   `--bucket` is production `reading-lite`. Copy, never move; restore missing
   vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
