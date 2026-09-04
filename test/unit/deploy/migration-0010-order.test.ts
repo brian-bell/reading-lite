@@ -43,10 +43,14 @@ function statementsOnly(name: string): string {
 /**
  * A stand-in for 0011, spelled from design §4.3's sketch.
  *
- * Deliberately a local fixture rather than an import of the real file: 0011 does
- * not exist on this branch, and the point of the test is that 0010 needs nothing
- * from it. When 0011 lands, `applies after every migration present` covers the
- * real thing and this fixture keeps covering the reverse order.
+ * Still a local fixture now that the real 0011 has landed, and deliberately so:
+ * the reverse-order case has to build a database where `account_deletions`
+ * exists *before* 0010 runs, which applying the real files in numeric order
+ * cannot produce. The forward order below uses the real file. That the fixture
+ * has since diverged from 0011 (which grew two first-completion columns and two
+ * indexes) does not matter here — the claim under test is that 0010 needs
+ * nothing from whatever S4 added, so the cruder the stand-in, the stronger the
+ * result.
  */
 const ACCOUNT_DELETIONS_0011 = `
 CREATE TABLE account_deletions (
@@ -65,10 +69,15 @@ function applyThrough(db: Database.Database, upTo: string): void {
 }
 
 describe("migration 0010 — vector_ledger", () => {
-  it("exists as 0010 and 0011 has not been taken by this branch", () => {
+  // Both slices have now landed, so the numbering question this file was
+  // written to guard is settled rather than open: 0010 is the ledger, 0011 is
+  // S4's audit table, and no third file has claimed either number. The
+  // reverse-order case below still runs against the local fixture, which is
+  // what the original comment said to keep once 0011 arrived.
+  it("is 0010, with 0011 taken by exactly one file — S4's audit table", () => {
     const files = migrationFiles();
-    expect(files).toContain("0010_vector_ledger.sql");
-    expect(files.filter((n) => n.startsWith("0011"))).toEqual([]);
+    expect(files.filter((n) => n.startsWith("0010"))).toEqual(["0010_vector_ledger.sql"]);
+    expect(files.filter((n) => n.startsWith("0011"))).toEqual(["0011_account_deletions.sql"]);
   });
 
   it("declares no cascade anywhere", () => {
@@ -121,11 +130,12 @@ describe("migration 0010 — vector_ledger", () => {
   });
 
   it("applies whether or not 0011's account_deletions table already exists", () => {
-    // Order A: 0010 first, then 0011.
+    // Order A: 0010 first, then 0011 — now the real file, applied by
+    // `applyThrough` in numeric order the way wrangler would. This is the
+    // ordering production actually gets.
     const a = new Database(":memory:");
     try {
       applyThrough(a, "9999");
-      a.exec(ACCOUNT_DELETIONS_0011);
       expect(a.prepare("SELECT count(*) AS n FROM vector_ledger").get()).toEqual({ n: 0 });
       expect(a.prepare("SELECT count(*) AS n FROM account_deletions").get()).toEqual({ n: 0 });
     } finally {
