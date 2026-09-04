@@ -103,12 +103,14 @@ describe("migration 0010 — vector_ledger", () => {
         .sort((a, b) => a.pk - b.pk)
         .map((c) => c.name);
       expect(pk).toEqual(["tenant_id", "reading_id"]);
-      // And `vector_cursor` is gone from wipe_progress, so no reading id can
-      // linger on a record that outlives the account.
+      // `vector_cursor` SURVIVES as an unread column — dropping it would break
+      // the previous Worker for a deploy window and, with no reverse migration,
+      // break a rollback permanently — but its data is cleared, so no reading
+      // id can linger on a record that outlives the account.
       const wipeCols = (db.prepare("PRAGMA table_info(wipe_progress)").all() as Array<{
         name: string;
       }>).map((c) => c.name);
-      expect(wipeCols).not.toContain("vector_cursor");
+      expect(wipeCols).toContain("vector_cursor");
       expect(wipeCols).toContain("r2_cursor");
     } finally {
       db.close();

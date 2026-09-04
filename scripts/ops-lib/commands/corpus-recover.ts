@@ -15,7 +15,10 @@ import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorVectorLedger } from "../../account-lib/operator-ledger";
+import {
+  assertOperatorLedgerAvailable,
+  operatorVectorLedger,
+} from "../../account-lib/operator-ledger";
 import {
   classifyOutcome,
   readingApiFor,
@@ -403,6 +406,9 @@ async function runBatchMode(
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
     });
+    // Refuse a tenant/bucket pair the vector ledger cannot serve, before the
+    // batch is submitted rather than at the first upsert (issue #195 S3).
+    assertOperatorLedgerAvailable(cfg.tenant, cfg.r2.bucket);
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
     return 2;

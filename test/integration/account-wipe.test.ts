@@ -1913,33 +1913,52 @@ describe("account wipe (195b PR1)", () => {
     // merging auto-deploys production before anyone can run
     // `ops corpus seed-vector-ledger`. Short-circuiting to success on an empty
     // ledger would report a clean wipe having asked Vectorize nothing at all.
-    it("refuses to complete an unseeded tenant whose namespace still answers", async () => {
+    // The unseeded-tenant guard, and the reason it sits BEFORE the objects
+    // phase rather than at the terminal gate. A corpus that predates this slice
+    // has vectors and no ledger rows, so the vectors phase submits nothing —
+    // and if the objects phase then ran, it would delete the very R2 objects
+    // `ops corpus seed-vector-ledger` derives those ids from. Noticing at the
+    // terminal probe would be too late: the ids would already be gone.
+    it("refuses to delete R2 for an unseeded tenant whose namespace still answers", async () => {
       await seedTenantObjects([ID_A], { ledger: false });
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       expect(await ledgerRows()).toEqual([]);
+      const before = await listPrefixKeys(PREFIX);
+      expect(before).not.toEqual([]);
       queryIndex.mockImplementation(async () => ({
         count: 1,
         matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
       }));
-      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-      // It retries rather than completing, and it spends its attempts, because
-      // there is nothing in the ledger it could ever delete by.
+      const errors: string[] = [];
+      const consoleErr = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+        errors.push(String(line));
+      });
       await expect(
         processAccountWipeJob(
           accountWipeEnvelopeV1({ tenantId: TENANT }),
           await wipeEnv(),
           wipeJobDeps(),
         ),
-      ).rejects.toThrow(/ledger_not_empty/);
-      expect((await readProgress())!.probeAttempts).toBe(1);
-      expect((await readProgress())!.completedAtMs).toBeNull();
+      ).rejects.toThrow(/unseeded_tenant/);
       consoleErr.mockRestore();
+      // NOTHING was deleted — the ids are still derivable, so seeding can still
+      // rescue this tenant.
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+      expect((await readProgress())!.completedAtMs).toBeNull();
+      const alert = errors.find((line) => line.includes("account_wipe_unseeded_tenant"));
+      expect(alert).toBeDefined();
+      const payload = JSON.parse(alert!) as Record<string, unknown>;
+      expect(payload.severity).toBe("high");
+      expect(payload.tenant_id).toBe(OTHER_TENANT_ID);
+      // Tenant id only: an alert about a deleted account must not carry that
+      // account's reading ids.
+      expect(alert).not.toContain(ID_A);
     });
 
-    it("completes an unseeded tenant only once the namespace is confirmed clean", async () => {
-      // The other half: with nothing in the ledger AND a clean probe, there is
-      // genuinely nothing left, and the wipe finishes in one pass because there
-      // was no delete to wait out.
+    it("lets an empty-ledger tenant through once the namespace is confirmed clean", async () => {
+      // The other half of the guard. Nothing in the ledger AND a clean probe is
+      // a tenant that genuinely has no vectors — the ordinary case for a corpus
+      // with no ready readings — so the wipe proceeds and finishes.
       await seedTenantObjects([ID_A], { ledger: false });
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       const result = await processAccountWipeJob(
@@ -1948,7 +1967,21 @@ describe("account wipe (195b PR1)", () => {
         wipeJobDeps(),
       );
       expect(result).toMatchObject({ kind: "complete", residue: false });
-      expect(queryIndex).toHaveBeenCalledTimes(1);
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
+    it("does not consult the namespace guard for a tenant the ledger already tracks", async () => {
+      // The guard is narrow on purpose: a ledger with rows IS tracking this
+      // tenant's vectors, so the terminal confirmation handles whatever is
+      // left and the objects phase is not blocked.
+      await seedTenantObjects([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      expect(result.kind).toBe("complete");
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
     });
 
     it("the fast path clears confirmed rows but never a vector nobody has deleted", async () => {

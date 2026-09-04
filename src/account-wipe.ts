@@ -26,9 +26,21 @@
  * writer records the reading id in D1 `vector_ledger` (migration `0010`,
  * `src/control-plane/vector-ledger.ts`) BEFORE it upserts. The wipe submits
  * `deleteByIds` for the tenant's `live` rows, marks them `delete_submitted`,
- * and finishes only when no row of either state remains — cleared under the
- * confirmation rule S6 measured, never on a single unconfirmed read. "The R2
- * prefix is empty" is no longer evidence of anything about the index.
+ * and finishes only when the namespace probes clean AND no row of either state
+ * remains — cleared under the confirmation rule S6 measured, never on a single
+ * unconfirmed read. "The R2 prefix is empty" is no longer evidence of anything
+ * about the index.
+ *
+ * **An unseeded tenant is refused, before anything is deleted.** The ledger is
+ * only an id source for ids it has, and a corpus that predates this slice has
+ * vectors and no rows. So the objects phase will not start while the ledger is
+ * empty and the namespace still answers: it raises
+ * `account_wipe_unseeded_tenant` and throws, leaving R2 intact — because R2 is
+ * where `ops corpus seed-vector-ledger` derives those ids from, and emptying it
+ * first is what would make them unrecoverable. That is review finding F3, and
+ * the guard is what keeps the ledger from reproducing it. The fix is an
+ * operator seeding the environment, not another delivery, so the job
+ * dead-letters rather than spinning.
  *
  * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
  * (`index_unbound`) before either phase runs, so no R2 object is deleted while
@@ -231,12 +243,13 @@ export const ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS = 43_200;
 /**
  * How many terminal confirmation passes may fail before the wipe stops waiting.
  *
- * Four, and it must stay `<= max_retries` on both wipe consumers
- * (wrangler.toml), so the bound is consumed inside one message's own retry
- * budget rather than dead-lettering a healthy wipe before it trips.
- * `test/unit/deploy/account-wipe-wrangler.test.ts` pins that relationship;
- * raising this without raising `max_retries` in the same commit turns every
- * probe hit into a dead-letter alarm.
+ * Four, and `max_retries` on both wipe consumers (wrangler.toml) must stay
+ * STRICTLY ABOVE it — currently by two. Not every retry spends an attempt: the
+ * +120s first-confirmation deferral retries without counting one, and so does
+ * any transient D1/R2/Vectorize error, so an equal budget dead-letters a
+ * healthy wipe before the bound ever trips.
+ * `test/unit/deploy/account-wipe-wrangler.test.ts` pins the inequality;
+ * raising this without raising `max_retries` in the same commit fails it.
  *
  * Sized off the measured schedule, not picked round (report
  * `rl-195-s6-staging-gate` §5.2): the first attempt is at +120s and the
@@ -303,11 +316,28 @@ export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;
 export const ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS = 60_000;
 /** Operator alert: the namespace still answered after the probe bound. */
 export const ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT = "account_wipe_namespace_residue";
+/**
+ * Operator alert: this tenant has vectors but no ledger rows, so the wipe
+ * refused to delete the R2 objects those ids can still be recovered from.
+ */
+export const ACCOUNT_WIPE_UNSEEDED_EVENT = "account_wipe_unseeded_tenant";
 /** Operator alert: `status='deleting'` with no `deleting_at_ms` (finding F6). */
 export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_deleting_at";
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
-export const ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES = 20;
+/**
+ * Vector batches per delivery.
+ *
+ * Five, not twenty, because each batch is now more than one call. A batch reads
+ * up to `VECTORIZE_DELETE_MAX_IDS` ledger rows, submits one `deleteByIds`, and
+ * marks them `delete_submitted` in `ceil(1000 / VECTOR_LEDGER_WRITE_CHUNK)`
+ * statements — so twenty batches put ~1000 D1 statements in a single
+ * invocation, at or over the Workers subrequest ceiling for a large tenant, and
+ * the failure mode is silent retry churn. Five keeps a delivery near 250
+ * statements and still moves 5000 ids; `continue` self-sends carry the rest,
+ * bounded by ACCOUNT_WIPE_MAX_CONTINUATIONS.
+ */
+export const ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES = 5;
 
 export const ACCOUNT_WIPE_QUEUE_NAMES = [
   "reading-lite-wipe",
@@ -374,6 +404,25 @@ export class AccountWipeNamespaceNotEmptyError extends Error {
             `(attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS}, retry in ${retryAfterSeconds}s)`,
     );
     this.name = "AccountWipeNamespaceNotEmptyError";
+  }
+}
+
+/**
+ * The tenant has vectors and an empty ledger: it was never seeded.
+ *
+ * Thrown BEFORE the objects phase deletes anything, so the R2 objects the ids
+ * can still be derived from survive. It retries and eventually dead-letters,
+ * which is the right shape: no delivery can fix this, only an operator running
+ * `ops corpus seed-vector-ledger`, and a dead letter is how they find out.
+ */
+export class AccountWipeUnseededError extends Error {
+  constructor(public readonly tenantId: string) {
+    super(
+      `account_wipe unseeded_tenant for ${tenantId}: the namespace answers but the vector ` +
+        `ledger is empty. Run \`ops corpus seed-vector-ledger --tenant ${tenantId} --execute\` ` +
+        `before wiping; nothing was deleted.`,
+    );
+    this.name = "AccountWipeUnseededError";
   }
 }
 
@@ -744,6 +793,22 @@ async function runAccountWipeJob(
   }
 
   if (progress.phase === "objects") {
+    // FAIL CLOSED ON AN UNSEEDED TENANT, before a single R2 object is deleted.
+    //
+    // The vectors phase submits deletes only for ledger rows. A tenant whose
+    // corpus predates this slice has vectors and no rows, so it submits nothing
+    // — and if the objects phase then ran, it would delete the very R2 objects
+    // `ops corpus seed-vector-ledger` derives ids from. The terminal probe
+    // would notice the leftover vectors a moment later and alert, but by then
+    // their ids would be gone for good: review finding F3, reproduced by the
+    // machinery meant to close it.
+    //
+    // So the check moves ahead of the deletes. An empty ledger is only allowed
+    // to proceed when the namespace agrees there is nothing there. This is
+    // deliberately the one place the wipe refuses to make progress rather than
+    // retrying into it: R2 is the last copy of the ids, and the fix is an
+    // operator running the seeding command, not another delivery.
+    await assertLedgerCoversNamespace(env, db, tenantId);
     let pages = 0;
     let cursor = progress.r2Cursor;
     objects: for (;;) {
@@ -923,6 +988,48 @@ async function tenantPrefixHasObjects(
 }
 
 /**
+ * Refuse to empty R2 for a tenant whose vectors the ledger does not know about.
+ *
+ * The guard is narrow on purpose: it only fires when the ledger holds NOTHING
+ * for the tenant and the namespace still answers. A ledger with rows is by
+ * definition tracking this tenant's vectors, and the terminal confirmation
+ * handles whatever is left; a clean namespace means there is nothing to track.
+ * The dangerous shape is exactly the third one — no rows AND vectors present —
+ * because that is an unseeded corpus, and deleting its R2 objects destroys the
+ * only source the ids can still be recovered from.
+ *
+ * A probe that FAILS does not authorize the deletes either. "We could not check"
+ * is not "there is nothing there", and the cost of waiting is a retry while the
+ * cost of being wrong is permanent.
+ */
+async function assertLedgerCoversNamespace(
+  env: AccountWipeEnv,
+  db: ControlPlaneDb,
+  tenantId: TenantId,
+): Promise<void> {
+  if (!env.READINGS_INDEX) {
+    throw new Error("account_wipe index_unbound");
+  }
+  if ((await countLedgerRows(db, tenantId)).total > 0) return;
+  const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
+  const remaining = await store.probeNamespace();
+  if (remaining.length === 0) return;
+  console.error(
+    JSON.stringify({
+      severity: "high",
+      event: ACCOUNT_WIPE_UNSEEDED_EVENT,
+      tenant_id: tenantId,
+      note:
+        "this tenant's namespace still answers but its vector ledger is empty, so no vector " +
+        "delete could be submitted. Refusing to delete the R2 objects, because they are the " +
+        "only source `ops corpus seed-vector-ledger` can derive those ids from. Seed this " +
+        "environment, then re-drive the wipe. Nothing was deleted.",
+    }),
+  );
+  throw new AccountWipeUnseededError(tenantId);
+}
+
+/**
  * Submit `deleteByIds` for this tenant's `live` ledger rows.
  *
  * The ledger is both the id source and the cursor. Each batch is marked
@@ -1021,7 +1128,8 @@ async function assertLedgerEmptied(
   }
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
   logVectorCountDelta(progress, tenantId, await store.indexVectorCount());
-  const counts = await countLedgerRows(db, tenantId);
+  const before = await countLedgerRows(db, tenantId);
+  const counts = before;
   const pending = await listDeleteSubmittedEntries(db, tenantId, ACCOUNT_WIPE_CONFIRM_BATCH);
   const nowMs = now();
   // Rule 1. Deliberately outside the attempt accounting: waiting is not a
@@ -1129,16 +1237,24 @@ async function assertLedgerEmptied(
   }
 
   // The namespace still answered (or never answered at all), so this pass has
-  // not confirmed the wipe however few ledger rows are left. There is no
-  // early return on an empty ledger here either: a clean namespace is the only
-  // thing that ends the wipe cleanly, and it was checked above.
-  const attempts = progress.probeAttempts + 1;
+  // not confirmed the wipe however few ledger rows are left. There is
+  // deliberately no early return on an empty ledger here: a clean namespace is
+  // the only thing that ends a wipe cleanly, and it was checked above.
+  const after = await countLedgerRows(db, tenantId);
+  // The bound exists to stop a STUCK wipe, not to time-limit a slow one. A pass
+  // that cleared rows made real progress, so it does not spend an attempt —
+  // otherwise a tenant with more rows than one pass can confirm
+  // (ACCOUNT_WIPE_CONFIRM_BATCH, two spaced absences each) could never finish
+  // whenever the namespace fast path does not fire, and would always end at the
+  // residue alert however healthy it was.
+  const clearedThisPass = before.total - after.total;
+  const attempts = clearedThisPass > 0 ? progress.probeAttempts : progress.probeAttempts + 1;
   // Sticky, but only within a pass that ends dirty: once a call has actually
   // seen a vector, a later transient failure must not downgrade the verdict to
   // "we could not check". Every clean return above clears it (defect D1), so on
   // the completion record the flag is meaningful only alongside `residue = 1`.
   const sawResidue = progress.probeSawResidue || sawLiveVector;
-  if (attempts < ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS) {
+  if (attempts < ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS || clearedThisPass > 0) {
     // Persist before throwing, so both the bound and the verdict survive the
     // retry this throw causes rather than resetting on every redelivery.
     progress.probeAttempts = attempts;
@@ -1146,7 +1262,7 @@ async function assertLedgerEmptied(
     await writer.write(progress);
     throw new AccountWipeNamespaceNotEmptyError(
       tenantId,
-      (await countLedgerRows(db, tenantId)).total,
+      after.total,
       attempts,
       confirmBackoffSeconds(attempts),
       !sawResidue,
@@ -1169,7 +1285,7 @@ async function assertLedgerEmptied(
       event: ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT,
       tenant_id: tenantId,
       probe_attempts: attempts,
-      ledger_rows_remaining: (await countLedgerRows(db, tenantId)).total,
+      ledger_rows_remaining: after.total,
       outcome: sawResidue ? "residue" : "unconfirmed",
       note: sawResidue
         ? "vectors still answered after the confirmation bound. Their ids are retained in " +

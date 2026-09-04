@@ -809,9 +809,13 @@ describe("ops corpus ingest", () => {
       clearSidecar: async () => {
         calls.sidecarClears++;
       },
-      resolveConfig: () => {
+      resolveConfig: (flags) => {
         calls.configResolves++;
-        return { fake: true } as never;
+        // A minimal but SHAPE-HONEST config: `tenant` and `r2.bucket` are what
+        // the vector-ledger availability check reads (issue #195 S3), and a
+        // double that omitted them would make the command look broken for a
+        // reason the test is not about.
+        return { tenant: flags.tenant, r2: { bucket: "reading-lite" } } as never;
       },
       planOwnership: async (eligible) => {
         calls.ownershipPlans++;
@@ -846,6 +850,36 @@ describe("ops corpus ingest", () => {
     expect(calls.ownershipPlans).toBe(1);
     expect(calls.executes).toBe(0);
     expect(lines.join("\n")).toContain("would submit 1 reading(s)");
+  });
+
+  it("refuses a real tenant on a bucket with no control plane, before submitting", async () => {
+    // A vector written without a ledger row is unaddressable once the reading's
+    // R2 objects are gone (issue #195 S3), so a tenant whose ids have nowhere
+    // to be recorded must stop the run — and stop it before the batch, not at
+    // the first upsert half way through a paid, resumable pass.
+    const { deps, calls } = makeDeps();
+    deps.resolveConfig = (flags) => {
+      calls.configResolves++;
+      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
+    };
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
+    expect(code).toBe(2);
+    expect(calls.executes).toBe(0);
+  });
+
+  it("still allows --tenant global on any bucket", async () => {
+    // The pre-tenant corpus has no tenant id to key ledger rows by, and no
+    // account wipe addresses it, so there is nothing to refuse.
+    const { deps, calls } = makeDeps();
+    deps.resolveConfig = (flags) => {
+      calls.configResolves++;
+      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
+    };
+    const code = await corpusIngestCommand.run(["--tenant", "global", "--dir", "/md"], deps);
+    expect(code).toBe(0);
   });
 
   it("plan mode degrades gracefully without credentials", async () => {

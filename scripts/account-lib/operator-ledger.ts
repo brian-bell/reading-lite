@@ -19,7 +19,12 @@
 import { d1VectorLedger, NO_OP_VECTOR_LEDGER, type VectorLedger } from "../../src/control-plane/vector-ledger";
 import { parseTenantId } from "../../src/control-plane/ids";
 import type { OperatorTenant } from "../corpus-lib/tenant";
-import { controlPlaneDbForBucket } from "./control-plane";
+import { UsageError } from "../ops-lib/contract";
+import {
+  CONTROL_PLANE_BY_BUCKET,
+  controlPlaneDbForBucket,
+  controlPlaneForBucket,
+} from "./control-plane";
 
 export interface OperatorLedgerOpts {
   tenant: OperatorTenant;
@@ -38,6 +43,35 @@ export function operatorVectorLedger(opts: OperatorLedgerOpts): VectorLedger {
   // Throws for an unrecognised bucket rather than guessing a control plane.
   // Deliberately NOT caught: a command that cannot ledger its upserts is the
   // stranding this exists to prevent, so it must fail before it writes vectors
-  // rather than write them un-ledgered.
+  // rather than write them un-ledgered. Callers refuse this at argument-parse
+  // time (`assertOperatorLedgerAvailable`) so an operator hears about it before
+  // a plan they have already accepted, not part-way through an execute.
   return d1VectorLedger(controlPlaneDbForBucket(opts.bucket, opts.run), tenantId);
+}
+
+/**
+ * Refuse, at parse time, a `--tenant`/`--bucket` pair this ledger cannot serve.
+ *
+ * A real tenant against a bucket with no mapped control plane has nowhere to
+ * record its ids, and a vector written without a ledger row is unaddressable
+ * once the reading's R2 objects are gone. The check belongs up front rather
+ * than at the first upsert: `corpus ingest` and `corpus recover --batch` are
+ * long, paid, resumable runs, and discovering this half way through one is the
+ * worst moment to discover it.
+ *
+ * `--tenant global` passes, because no account wipe addresses the pre-tenant
+ * corpus and nothing needs ledgering for it.
+ */
+export function assertOperatorLedgerAvailable(
+  tenant: OperatorTenant,
+  bucket: string,
+): void {
+  if (tenant.kind !== "tenant") return;
+  if (controlPlaneForBucket(bucket) !== undefined) return;
+  throw new UsageError(
+    `--tenant ${tenant.tenantId} needs a control plane to record vector-ledger rows in, and ` +
+      `no control-plane database is mapped to bucket '${bucket}'. Known buckets: ` +
+      `${Object.keys(CONTROL_PLANE_BY_BUCKET).join(", ")}. Use --tenant global for the ` +
+      `pre-tenant corpus, which no account wipe addresses.`,
+  );
 }

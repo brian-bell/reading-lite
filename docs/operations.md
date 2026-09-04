@@ -188,13 +188,14 @@ submits `deleteByIds` only for ids the ledger names. An environment whose corpus
 predates the ledger has vectors and no rows, so its first wipe submits nothing,
 empties R2, and leaves every embedding behind.
 
-It does **not** report that as success. The wipe's terminal gate is a clean
-namespace probe *as well as* an empty ledger, and the probe is made
-unconditionally — precisely because an empty ledger is also what an unseeded
-tenant looks like. Such a wipe therefore spends its confirmation attempts,
-raises a high-severity `account_wipe_namespace_residue` alert, and records
-`residue = 1`. That is a loud failure rather than a silent one, and there is
-still nothing to delete by afterwards. Seed first.
+It does **not** get that far. Before the objects phase deletes a single R2
+object, the wipe checks for the one shape that cannot be recovered from: an
+empty ledger *and* a namespace that still answers. That is an unseeded tenant,
+so it raises a high-severity `account_wipe_unseeded_tenant` alert and throws
+with **nothing deleted** — because R2 is where this command derives its ids
+from, and emptying it first is precisely what would strand those vectors
+forever. The job then dead-letters, which is the right shape: no delivery can
+fix it, only an operator running the seed. Seed, then re-drive the wipe.
 
 ```sh
 # Plan first. It lists every reading id it would ledger and writes nothing.

@@ -263,8 +263,9 @@ Pointers only — the details live in the named files' comments.
   migration `0010`, `src/control-plane/vector-ledger.ts`): every vector writer
   records the id there BEFORE it upserts, the vectors phase submits the
   tenant's `live` rows and flips each batch to `delete_submitted`, and that
-  self-advancing query is the resume point — there is no `vector_cursor` any
-  more. The publisher fence
+  self-advancing query is the resume point; `vector_cursor` is retired and
+  migration `0010` NULLs it (the column stays, so a Worker rollback still
+  reads `wipe_progress`). The publisher fence
   (`ReadingVisibility.removeForDeletedTenant`) still runs and still deletes
   promptly, but the wipe no longer depends on it. An unbound `READINGS_INDEX`
   throws (`index_unbound`) rather than emptying R2, and that check runs before
@@ -317,9 +318,12 @@ Pointers only — the details live in the named files' comments.
   `continuations` bounds the `continue` self-send so a wipe that cannot finish
   dead-letters instead of resetting its retry budget forever. **An existing
   corpus must be seeded first** — `ops corpus seed-vector-ledger --tenant
-  "$TENANT" --execute` — or its wipe submits no vector delete at all and then
-  fails its terminal probe on everything it left behind (loud, not silent: the
-  probe is unconditional for exactly this reason). Readings already
+  "$TENANT" --execute`. An unseeded tenant is REFUSED rather than half-wiped:
+  before the objects phase deletes anything, an empty ledger plus a namespace
+  that still answers raises `account_wipe_unseeded_tenant` and throws, leaving
+  R2 intact — because R2 is where the seeding command derives those ids from,
+  and emptying it first is exactly what would make them unrecoverable. The job
+  dead-letters; the fix is an operator seeding, not another delivery. Readings already
   purged from R2 with a failed vector delete are unseedable by construction;
   that is the honest residual of #261. The wipe DLQ logs and acks; it must not
   call `markDeadLettered`.

@@ -72,21 +72,25 @@ CREATE INDEX vector_ledger_tenant_state ON vector_ledger (tenant_id, state);
 -- full R2 re-list on every delivery and the phase is batch-bounded. The ledger
 -- resumes on `state = 'live'` instead, which advances itself as ids are
 -- submitted and, unlike a forward-only cursor, cannot miss an id that first
--- appears below it.
+-- appears below it. Nothing reads or writes the column after this slice.
 --
--- Dropping the column rather than leaving it unread is deliberate: it holds a
--- reading id, and the completion record outlives the account until S4's
--- teardown. A vestigial column nothing clears would leave that id in a row
--- about a deleted tenant — exactly the leak that moved this state out of R2
--- (0009's header, and `ops account sweep-wipe-prefix`).
+-- ITS DATA IS CLEARED; THE COLUMN IS NOT DROPPED, and the difference is
+-- deliberate.
 --
--- Deploy ordering: `ops deploy worker` applies migrations and THEN uploads, so
--- for the length of one deploy the previous Worker addresses a column that is
--- gone. Both directions, not just writes: the old `COLUMNS` list in
--- wipe-progress.ts SELECTs `vector_cursor` too, so cron fan-out and every
--- resuming delivery throw as well. The blast radius is bounded to the wipe path
--- and to one deploy window — every wipe operation is idempotent, the delivery
--- retries on the ordinary exponential, and the new Worker serves the retry — so
--- it costs an in-flight wipe retries, never data. See the PR body's deploy note
--- for the pre-merge check that avoids it entirely.
-ALTER TABLE wipe_progress DROP COLUMN vector_cursor;
+-- Clearing is not optional: the value is a reading id, and the completion
+-- record outlives the account until S4's teardown, so leaving one behind would
+-- put a reading id on a row about a deleted tenant — exactly the leak that
+-- moved this state out of R2 (0009's header, and `ops account
+-- sweep-wipe-prefix`). One UPDATE settles that.
+--
+-- Dropping it would buy nothing and cost two things. `ops deploy worker`
+-- applies migrations and THEN uploads, so a dropped column breaks the previous
+-- Worker for the length of the deploy — and not only its writes: the old
+-- `COLUMNS` list in wipe-progress.ts SELECTs `vector_cursor` too, so cron
+-- fan-out and every resuming delivery would throw as well. Worse, D1 has no
+-- reverse migration here, so a Worker ROLLBACK would leave that state
+-- permanent rather than lasting one deploy window. An unread, always-NULL
+-- column is free; a rollback that cannot read `wipe_progress` at all is not.
+-- Drop it in a later migration once rolling back past this slice is no longer
+-- a consideration.
+UPDATE wipe_progress SET vector_cursor = NULL;

@@ -13,7 +13,10 @@ import { parseArgs } from "node:util";
 import { resolveBatchConfig, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorVectorLedger } from "../../account-lib/operator-ledger";
+import {
+  assertOperatorLedgerAvailable,
+  operatorVectorLedger,
+} from "../../account-lib/operator-ledger";
 import { MARKDOWN_IMPORT_MAX_BYTES } from "../../import-markdown-lib/parse";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import { selectEligibleArticles } from "../../corpus-lib/ingest-eligible";
@@ -160,6 +163,11 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
     });
+    // Refuse a tenant/bucket pair the vector ledger cannot serve, here rather
+    // than at the first upsert (issue #195 S3). This is a long, paid, resumable
+    // run; half way through one is the worst moment to learn that its vectors
+    // cannot be recorded.
+    assertOperatorLedgerAvailable(cfg.tenant, cfg.r2.bucket);
   } catch (e) {
     if (args.execute) {
       io.stderr(e instanceof Error ? e.message : String(e));
