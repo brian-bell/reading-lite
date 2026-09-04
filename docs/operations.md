@@ -311,7 +311,8 @@ Vectorize index, and nothing in the data plane depends on the hostname, so the
 hosts. The exceptions are anything that *emits a link* — `/api/auth/*` magic-link
 mail is built from `WEB_BASE_URL`, still the old host, so a sign-in started on
 the new host is mailed back to the old one. `/mcp*` is not interchangeable
-either: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
+either — nor is the `/api/mcp` alias the section below offers as a fallback,
+which sits behind the same guard: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
 still lists only the old host, so browser-origin MCP calls to the new host are
 rejected until that allowlist follow-up lands (non-browser clients send no
 `Origin` and work on either host). Browser sessions are host-scoped too — the
@@ -327,7 +328,8 @@ creates a record only for the hostname it is bound to. So `www` stays
 unreachable — not wrongly served — until it is given its own proxied record and
 the redirect rule.
 
-Three prerequisites, all dashboard work, all outside this repo:
+Three things to settle outside this repo — the first two before the routes can
+deploy, the third only if `www` is to resolve:
 
 - `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
