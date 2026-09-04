@@ -167,9 +167,11 @@
  * That population also has a live-tenant cost that has nothing to do with
  * deletion: a bare-id vector and a composed one for the same reading are two
  * distinct matches to a namespaced query, so the reading turns up twice in its
- * own neighbourhood and duplicates land in `manifest.similarity`. The batch
- * writer now retires the bare id as it re-processes a reading, so the pipeline
- * heals what it touches; the readings it never touches again are S5's.
+ * own neighbourhood and duplicates land in `manifest.similarity`. It is NOT
+ * auto-healed here — see `WriteDeps.vectorNamespace` in
+ * `scripts/corpus-lib/batch/write-phase.ts` for why deleting the bare id from
+ * the batch writer would destroy retained legacy vectors instead. S5 owns both
+ * halves: the wipe residue and the search duplication.
  *
  * **So `residue = 1` on such a tenant is not a healthy outcome to be filed
  * away.** It is that known gap, and repairing it in production is a gate on

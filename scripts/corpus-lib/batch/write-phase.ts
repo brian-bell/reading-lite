@@ -63,8 +63,32 @@ export interface WriteDeps {
    * ledger row and declaring gone a vector that is still live, which is the one
    * outcome the ledger exists to prevent.
    *
-   * Vectors written under bare ids by earlier `--tenant` batch runs are not
-   * repaired here; that audit belongs to the residue scan (slice S5).
+   * WHY THIS DOES NOT ALSO DELETE THE BARE ID.
+   *
+   * Composing the id writes a NEW vector rather than replacing the old one, so
+   * on a tenant that already holds bare-id vectors this leaves two live vectors
+   * for one reading: `SimilarityStore.query` strips only its own `{tenant}:`
+   * prefix, so both come back as distinct matches and the reading appears twice
+   * in its own neighbourhood. Deleting the bare id first is the obvious fix and
+   * it is WRONG here.
+   *
+   * Vectorize ids are index-unique and `deleteByIds` is namespace-blind, so
+   * `delete("rd_X")` removes whatever single vector holds that id. For a
+   * reading this pipeline has never touched, that vector is the LEGACY
+   * pre-cutover one — and those are explicitly retained pending a separate
+   * signed-off deletion, as the `TENANT_DATA_PLANE` rollback set (see the
+   * founder-cutover note in CLAUDE.md: "tenant-scoped operations do not reach
+   * that legacy data and are not meant to", and "copy, never move"). A routine
+   * `ops corpus ingest --tenant "$TENANT" --execute` would have silently and
+   * irreversibly eroded that set.
+   *
+   * Distinguishing the two is possible — a legacy vector is un-namespaced, a
+   * batch-written duplicate carries the tenant namespace, and `getByIds`
+   * reports it — but that is a destructive production behaviour that needs its
+   * own sign-off rather than riding along inside this slice.
+   *
+   * So both halves stay with the residue scan (slice S5): the wipe consequence
+   * and the search duplication.
    */
   vectorNamespace?: string;
   embedMany(inputs: string[]): Promise<EmbedResult>;
@@ -426,29 +450,7 @@ async function writeNormalizedResults(
     // there is exactly one spelling of that rule and no stored copy of its
     // output to drift.
     await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(readingIds, Date.now());
-    // Retire the legacy bare-id vector for these readings before writing the
-    // composed one.
-    //
-    // The composition fix above writes a NEW id; it does not replace the old
-    // one. Without this, a tenant that already holds bare-id vectors from an
-    // earlier `--tenant` batch run would end up with TWO live vectors for the
-    // same reading — and `SimilarityStore.query` strips only its own
-    // `{tenant}:` prefix, so both come back as distinct matches. The reading
-    // would appear twice in its own neighbourhood, inflating `count`, skewing
-    // `mean`, and spending a neighbour slot on itself. That is a live-tenant
-    // search regression, not merely a deletion one.
-    //
-    // So the pipeline heals what it touches: anything re-processed through it
-    // stops being a duplicate. Readings it never touches again keep their
-    // legacy vector, and that bulk repair is slice S5's.
-    //
-    // Only when there is a namespace — with none, the bare id IS the id being
-    // written and deleting it would delete the vector we are about to upsert.
-    // Failures propagate like the upsert's: leaving a duplicate behind quietly
-    // is the outcome this exists to prevent.
-    if (deps.vectorNamespace !== undefined && deps.vectorize.deleteByIds) {
-      await deps.vectorize.deleteByIds(readingIds);
-    }
+    // DELIBERATELY NOT deleting the bare id here. See the note below.
     await deps.vectorize.upsert(vectors);
   }
 

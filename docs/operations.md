@@ -201,11 +201,21 @@ before anyone dismisses it as a deletion-only concern: a bare-id vector and a
 composed one for the same reading are two distinct matches to a namespaced
 query, so the reading appears twice in its own neighbourhood and duplicates land
 in `manifest.similarity` — inflating `count`, skewing `mean`, and spending a
-neighbour slot. The batch writer now deletes the bare id as it re-processes a
-reading, so anything put back through `corpus ingest` / `recover --batch` heals
-itself. Readings the pipeline never touches again keep both vectors until S5
-repairs them, and S5's audit should count the duplication as well as the wipe
-residue.
+neighbour slot.
+
+**The batch writer deliberately does not fix this by deleting the bare id.**
+Vectorize ids are index-unique and `delete_by_ids` is namespace-blind, so for a
+reading the pipeline has never touched, deleting `rd_…` removes the *legacy
+pre-cutover* vector — the retained `TENANT_DATA_PLANE` rollback set that a
+tenant-scoped operation is not meant to reach, and whose deletion needs its own
+sign-off. A routine `corpus ingest --tenant "$TENANT" --execute` would have
+eroded it silently. Telling the two apart is possible (a legacy vector is
+un-namespaced; a batch-written duplicate carries the namespace, and `getByIds`
+reports it), but that is a destructive production behaviour that belongs with
+the sign-off, not inside an unrelated slice.
+
+S5's audit therefore owns both halves: the wipe residue and the search
+duplication.
 
 ### Seed the vector ledger before the first ledger-based wipe
 
