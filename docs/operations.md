@@ -274,7 +274,7 @@ GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. Scope the token to this account and zone. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **both** `bbell.dev` and `bbookmarks.com` so migrations apply and the route updates succeed (see "bbookmarks.com dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 
 The imported founder token expires after 90 days; re-running the same
@@ -299,6 +299,38 @@ path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify
 does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
 production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
 `WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
+
+### bbookmarks.com dual-serve
+
+Production serves two hosts during the domain migration. `[env.production.routes]`
+in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
+`/health`, `/mcp*`) **and** the same trio on `bbookmarks.com` (`zone_name =
+"bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
+Vectorize index — nothing in the data plane or the request path depends on the
+hostname — so the two hosts are interchangeable for the API, health check and
+MCP endpoint. The old routes stay until the old host is formally retired; they
+are the rollback path.
+
+`www.bbookmarks.com` is **not** a Worker route. It is a Cloudflare Redirect Rule
+(301 to the apex) configured in the dashboard, which fires before a request ever
+reaches the Worker.
+
+Two prerequisites, both dashboard work, both outside this repo:
+
+- `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
+  zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
+  `ops deploy worker --env production` uploads the script and then fails with
+  authentication error 10000 on `/zones/.../workers/routes`** — the same footgun
+  described under "MCP connector" below, now on a second zone. The failure is not
+  user-visible: existing routes are untouched, so the old host keeps serving.
+  Re-scope the token and re-run the deploy.
+- `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
+  to the `main` branch, with an Active certificate, or the new host serves the
+  API but not the SPA.
+
+`WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
+addition: emitted links and the MCP Origin allowlist still name
+`reading-lite.bbell.dev` until their own cutover steps land.
 
 ### MCP connector
 
