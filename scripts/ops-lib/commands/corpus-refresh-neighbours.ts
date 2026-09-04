@@ -484,16 +484,17 @@ async function refreshNeighbours(
     // printed. The default follows credentials, so a pasted command that omits
     // --via can otherwise switch path — and Cloudflare account, despite identical
     // bucket/index names. Scheduled jobs often capture only stderr, so the
-    // account has to live on this warning.
+    // account has to live on this warning, before the command so copying the
+    // command cannot pick up diagnostic text or punctuation as shell arguments.
     const account = describeAccount(choice);
     io.stderr(
       `  ! Full sweep overdue: ${sweepWarning}. ` +
+      (account === undefined ? "" : `${account}. `) +
       `Run npm run ops -- corpus refresh-neighbours --tenant "${tenantSelector}" ` +
       "--full --execute --sole-writer --out ./refresh-report-full.json " +
       `--bucket ${shellArg(opts.bucket)} --vectorize ${shellArg(vectorizeIndex)}` +
       (opts.remote ? "" : " --local") +
-      ` --via ${choice.backend}` +
-      (account === undefined ? "" : `. ${account}`),
+      ` --via ${choice.backend}`,
     );
   }
   const { items, etag: listEtag } = await r2.readListIndex(r2Deps);

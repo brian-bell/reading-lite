@@ -231,7 +231,7 @@ describe("ops corpus refresh-neighbours", () => {
           CORPUS_CF_API_TOKEN: "tok",
         }),
       });
-      expect(warning(lines)[0]).toContain("--via direct");
+      expect(warning(lines)[0]).toMatch(/--via direct$/);
       expect(warning(lines)[0]).toContain("Account: acct");
     });
 
@@ -248,7 +248,7 @@ describe("ops corpus refresh-neighbours", () => {
           CORPUS_VECTORIZE_ACCOUNT_ID: "vec-acct",
         }),
       });
-      expect(warning(lines)[0]).toContain("--via direct");
+      expect(warning(lines)[0]).toMatch(/--via direct$/);
       expect(warning(lines)[0]).toContain("Account: r2-acct (R2), vec-acct (Vectorize)");
     });
   });
