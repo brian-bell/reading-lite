@@ -16,6 +16,7 @@ import {
 } from "../../src/account-wipe";
 import { accountWipeEnvelopeV1, type AccountWipeEnvelopeV1 } from "../../src/control-plane/wipe-envelope";
 import { fromD1 } from "../../src/control-plane/db";
+import { resolveLoginEligibility } from "../../src/control-plane/eligibility";
 import {
   VECTOR_LEDGER_BACKOFF_MS,
   VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS,
@@ -38,6 +39,7 @@ import { tenantVectorId } from "../../src/modules/stores/similarity-store";
 import type { ListIndexItem } from "../../src/schemas/api";
 import {
   OTHER_TENANT_ID,
+  OTHER_TOKEN_ID,
   insertSecondTenant,
   otherTenant,
   testReadingStore,
@@ -84,6 +86,41 @@ function installVectorizeStub(): ReturnType<typeof vi.fn> {
     deleteByIds,
   } as unknown as VectorizeIndex;
   return deleteByIds;
+}
+
+let guardPurges: Array<{ binding: string; body: unknown }> = [];
+
+/**
+ * Both usage guards, stubbed for this suite.
+ *
+ * Control-plane teardown (S4) purges the tenant's `TenantUsageGuard` and that
+ * tenant's leases from the singleton `GlobalUsageGuard`. Reaching a *real*
+ * Durable Object from this file makes the workers pool fail to pop its
+ * isolated-storage frame ("we were unable to pop Durable Objects storage",
+ * leaving a `.sqlite-shm` sidecar): nothing else here opens a DO, so the
+ * storage is created inside a test frame and is still open when the frame is
+ * popped. Stubbing keeps this suite about what it is about — R2, Vectorize and
+ * D1 — while still proving teardown asks for the purge and in what shape.
+ *
+ * The guards' real purge behaviour, against the actual DO classes, is covered
+ * in test/unit/control-plane/usage-guard-purge.test.ts.
+ */
+function installUsageGuardStubs(): Array<{ binding: string; body: unknown }> {
+  guardPurges = [];
+  for (const binding of ["TENANT_USAGE_GUARD", "GLOBAL_USAGE_GUARD"] as const) {
+    (env as unknown as Record<string, DurableObjectNamespace>)[binding] = {
+      idFromName: (name: string) => name as unknown as DurableObjectId,
+      get: () =>
+        ({
+          fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+            const raw = typeof init?.body === "string" ? init.body : "{}";
+            guardPurges.push({ binding, body: JSON.parse(raw) as unknown });
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          },
+        }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+  }
+  return guardPurges;
 }
 
 async function markDeleting(userId: string, deletingAtMs: number): Promise<void> {
@@ -382,6 +419,7 @@ describe("account wipe (195b PR1)", () => {
     await clearLedger();
     installWipeQueue();
     installVectorizeStub();
+    installUsageGuardStubs();
   });
 
   afterEach(async () => {
@@ -1264,14 +1302,26 @@ describe("account wipe (195b PR1)", () => {
     const completed = await readProgress();
     expect(completed!.completedAtMs).not.toBeNull();
 
-    // Every later tick: the record says it is done, so nothing is re-enqueued —
-    // and, unlike the R2 version, nothing is deleted to make that true.
+    // The next tick: the record says it is done and the prefix is confirmed
+    // empty, so instead of re-enqueuing, fan-out runs control-plane teardown
+    // (S4). The record is deleted here — deliberately, in order, by teardown
+    // itself rather than by a wipe erasing its own evidence, and only after the
+    // audit row that outlives the account has been written.
     queued.length = 0;
     expect(
       await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS }),
     ).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
-    expect((await readProgress())!.completedAtMs).toBe(completed!.completedAtMs);
+    expect(await readProgress()).toBeNull();
+    const audit = await env.CONTROL_PLANE.prepare(
+      "SELECT completed_at_ms FROM account_deletions WHERE tenant_id = ?",
+    )
+      .bind(OTHER_TENANT_ID)
+      .first<{ completed_at_ms: number }>();
+    expect(audit?.completed_at_ms).toBe(completed!.completedAtMs);
+    await env.CONTROL_PLANE.prepare("DELETE FROM account_deletions WHERE tenant_id = ?")
+      .bind(OTHER_TENANT_ID)
+      .run();
   });
 
   // Ruling 2: Vectorize deletes propagate asynchronously, so a probe hit right
@@ -1383,9 +1433,16 @@ describe("account wipe (195b PR1)", () => {
     expect((await ledgerRows()).map((row) => row.reading_id)).toEqual([ID_A]);
   });
 
-  // A completed record is left exactly as it is: it is evidence, and rewriting
-  // it would move `completed_at_ms` a later slice gates on.
-  it("cron fan-out leaves a completed record alone on an empty prefix", async () => {
+  // A completed record is never rewritten in place — that would move the
+  // `completed_at_ms` teardown gates on. On an empty prefix it is instead read
+  // once and then removed by teardown, which carries the two facts that
+  // outlive the account onto the audit row first.
+  //
+  // `residue: true` here on purpose: a wipe that finished without confirming
+  // the namespace clean is still finished, so teardown proceeds and records the
+  // finding rather than pinning the account open forever on evidence the
+  // residue scan is the right tool for.
+  it("cron fan-out tears down a completed record on an empty prefix", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
     await seedProgress({
@@ -1395,11 +1452,27 @@ describe("account wipe (195b PR1)", () => {
       completedAtMs: NOW_MS,
       residue: true,
     });
-    const before = await readProgress();
     const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
     expect(result).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
-    expect(await readProgress()).toEqual(before);
+    expect(await readProgress()).toBeNull();
+
+    const audit = await env.CONTROL_PLANE.prepare(
+      "SELECT completed_at_ms, residue FROM account_deletions WHERE tenant_id = ?",
+    )
+      .bind(OTHER_TENANT_ID)
+      .first<{ completed_at_ms: number; residue: number }>();
+    expect(audit).toEqual({ completed_at_ms: NOW_MS, residue: 1 });
+
+    // Both guards were asked to let the tenant go.
+    expect(guardPurges).toEqual([
+      { binding: "TENANT_USAGE_GUARD", body: { kind: "purge_tenant", tenantId: OTHER_TENANT_ID } },
+      { binding: "GLOBAL_USAGE_GUARD", body: { kind: "purge_tenant", tenantId: OTHER_TENANT_ID } },
+    ]);
+
+    await env.CONTROL_PLANE.prepare("DELETE FROM account_deletions WHERE tenant_id = ?")
+      .bind(OTHER_TENANT_ID)
+      .run();
   });
 
   // A probe that errors is "we could not check", not "vectors are still there".
@@ -2237,5 +2310,146 @@ describe("account wipe (195b PR1)", () => {
       expect(rows[0]!.deleted_at_ms).toBeNull();
       expect(rows[0]!.absent_streak).toBe(0);
     });
+  });
+});
+
+/**
+ * Control-plane teardown from the cron fan-out (issue 195 S4 / #263).
+ *
+ * The wipe delivery deliberately does not tear down: teardown is its own
+ * idempotent, independently resumable stage, run by fan-out for a tenant whose
+ * wipe has already completed and whose prefix is confirmed empty. These cases
+ * pin where it fires, where it must not, and that once it has fired the tenant
+ * disappears from fan-out entirely (finding F10).
+ */
+describe("account teardown from cron fan-out (195 S4)", () => {
+  beforeEach(async () => {
+    await insertSecondTenant(env as unknown as Env);
+    await markActive(OTHER_TENANT_ID);
+    await emptyPrefix(PREFIX);
+    await clearProgress();
+    await clearAuditRow();
+    installWipeQueue();
+    installVectorizeStub();
+    installUsageGuardStubs();
+  });
+
+  afterEach(async () => {
+    await clearAuditRow();
+    await markActive(OTHER_TENANT_ID);
+  });
+
+  async function clearAuditRow(): Promise<void> {
+    await env.CONTROL_PLANE.prepare("DELETE FROM account_deletions WHERE tenant_id = ?")
+      .bind(OTHER_TENANT_ID)
+      .run();
+  }
+
+  async function countRows(table: string, column: string, value: string): Promise<number> {
+    const row = await env.CONTROL_PLANE.prepare(
+      `SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`,
+    )
+      .bind(value)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** The state fan-out sees after a wipe has finished cleanly. */
+  async function completedWipe(): Promise<void> {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await seedProgress({ phase: "done", completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
+  }
+
+  it("tears the account down instead of enqueuing another wipe", async () => {
+    await completedWipe();
+
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
+      enqueued: 0,
+    });
+
+    expect(queued).toEqual([]);
+    expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(0);
+    expect(await countRows("wipe_progress", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+    expect(await countRows("api_tokens", "user_id", OTHER_TENANT_ID)).toBe(0);
+    expect(await countRows("api_token_scopes", "token_id", OTHER_TOKEN_ID)).toBe(0);
+    expect(await countRows("user_settings", "user_id", OTHER_TENANT_ID)).toBe(0);
+    expect(await countRows("tenant_limits", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+    // The one row that outlives the account.
+    expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(1);
+  });
+
+  // F10: the tenant left `users`, so `listDeletingUsers` cannot return it and
+  // there is no `wipe_progress` row to reopen. Cron stops seeing it entirely.
+  it("stops enumerating the tenant on every later tick", async () => {
+    await completedWipe();
+    await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 });
+
+    // Deliberately not re-inserting the fixture: this is the tick after
+    // teardown, and it must be a complete no-op.
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 60_000 })).toEqual({
+      enqueued: 0,
+    });
+    expect(queued).toEqual([]);
+    expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(1);
+  });
+
+  it("reopens the wipe rather than tearing down when objects are left under the prefix", async () => {
+    await completedWipe();
+    await seedTenantObjects([ID_A]);
+
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
+      enqueued: 1,
+    });
+
+    // The data plane is not actually clean, so the account stays whole.
+    expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(1);
+    expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+    expect((await readProgress())!.completedAtMs).toBeNull();
+  });
+
+  it("does not tear down a wipe that is still in flight", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await seedProgress({ phase: "objects", completedAtMs: null });
+
+    await fanOutDueAccountWipes(await wipeEnv(), {
+      nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+    });
+
+    expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(1);
+    expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+  });
+
+  // The reopened shape: finished once, running again now. Gating on
+  // `first_completed_at_ms` would hard-delete the row out from under it.
+  it("does not tear down a wipe that completed once and was reopened", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await seedProgress({
+      phase: "vectors",
+      completedAtMs: null,
+      firstCompletedAtMs: NOW_MS - 60_000,
+    });
+
+    await fanOutDueAccountWipes(await wipeEnv(), {
+      nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+    });
+
+    expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(1);
+    expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+  });
+
+  it("frees the address for a new signup only after teardown", async () => {
+    await completedWipe();
+    const db = fromD1(env.CONTROL_PLANE);
+
+    // Fenced but present: the address is claimed by a non-active row.
+    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
+      "ineligible",
+    );
+
+    await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 });
+
+    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
+      "provisionable",
+    );
   });
 });

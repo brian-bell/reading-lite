@@ -18,6 +18,10 @@
  * confirmation rule below says the vector is actually gone. There is no third
  * state: an empty ledger IS the claim that a tenant has no vectors.
  *
+ * Migration 0012 removes the users foreign key so unconfirmed rows survive
+ * control-plane teardown after a residue wipe. They remain repair evidence;
+ * teardown must not delete them merely to allow the users row to disappear.
+ *
  * ## The confirmation rule
  *
  * Measured on staging (report `rl-195-s6-staging-gate`, §3 and §5), not

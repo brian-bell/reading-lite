@@ -11,8 +11,8 @@ submit, a markdown import, or a lookup. It lives in
 
 - **Tenant R2 root** — hosted stores prepend `u/{tenantId}/` to every reading
   and index key when `TENANT_DATA_PLANE=1`. Stored `key_prefix` stays relative
-  (`readings/YYYY/…`). Production pins the gate on since the founder cutover
-  (2026-08-31); local and staging stay unset.
+  (`readings/YYYY/…`). Production and staging pin the gate on; only local
+  stays unset.
 - **By-url pointer** — `{tenantRoot}index/by-url/{sha256(url)}` → `{ id, key_prefix }`.
   The eager ownership claim is **per tenant**: `POST /readings` writes it
   (conditional create) before queueing work, so concurrent submits of one URL
@@ -141,9 +141,10 @@ submit, a markdown import, or a lookup. It lives in
   does not cascade. It is two pairs: `completed_at_ms`/`residue` are the current
   state, which a reopen clears so the gate stays shut while a reopened pass
   runs, and `first_completed_at_ms`/`first_residue` are the write-once history a
-  failed reopen cannot erase. Residue scan, users-row
-  hard-delete, and email reuse are later 195b slices. Wipe is not
-  **reading purge** (`DELETE /api/readings/:id`). Production
+  failed reopen cannot erase. Users-row hard-delete, Durable Object teardown,
+  and email reuse live in `account-teardown.ts` (issue 195 S4). Residue scan is
+  the remaining later slice (S5). Wipe is not
+  **reading purge** (`DELETE /api/readings/:id`). Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 
 ## Digest delivery

@@ -3,6 +3,7 @@ import { GLOBAL_USAGE_GUARD_NAME } from "./constants";
 import { parseTenantId } from "./ids";
 import {
   acquireLease as acquireStoredLease,
+  leaseStorageKey,
   pauseLease as pauseStoredLease,
   releaseLease as releaseStoredLease,
   renewLease as renewStoredLease,
@@ -25,7 +26,21 @@ type FenceLeaseBody = {
   nowMs: number;
   preserveInFlight?: boolean;
 };
-type GuardBody = AcquireLeaseBody | FenceLeaseBody;
+/**
+ * Account teardown (issue 195 S4): drop every lease belonging to one tenant.
+ *
+ * This DO is a singleton, so unlike `TenantUsageGuard` its storage cannot be
+ * emptied wholesale — the other tenants' leases live in it. Lease keys are
+ * `lease:${tenantId}:${attemptId}` and tenant ids are `usr_<uuid v4>`, which
+ * contain no colon, so `lease:${tenantId}:` is an unambiguous prefix for one
+ * tenant's leases and cannot catch a neighbour's.
+ *
+ * Without this the deleted tenant's in-flight leases would keep occupying
+ * global concurrency slots until their TTL swept them, charging live tenants
+ * for an account that no longer exists.
+ */
+type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
+type GuardBody = AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -75,6 +90,11 @@ function parseGuardBody(value: unknown): GuardBody | null {
   const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
   const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
   const nowMs = Number(body.nowMs);
+  // Purge carries no attempt and no clock: it names a whole tenant. Parsed
+  // before the shared field checks, which would reject it for the missing ones.
+  if (kind === "purge_tenant") {
+    return parseTenantId(tenantId) ? { kind, tenantId } : null;
+  }
   if (!tenantId || !attemptId || !Number.isFinite(nowMs) || nowMs < 0) return null;
   if (kind === "acquire_lease") return { kind, tenantId, attemptId, nowMs };
   if (kind === "renew_lease" || kind === "pause_lease" || kind === "release_lease") {
@@ -112,6 +132,7 @@ export class GlobalUsageGuard implements DurableObject {
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
       if (body.kind === "acquire_lease") return this.acquireLease(body);
+      if (body.kind === "purge_tenant") return this.purgeTenant(body);
       if (body.kind === "renew_lease") {
         return jsonLease(
           await renewStoredLease(this.state.storage, {
@@ -151,6 +172,21 @@ export class GlobalUsageGuard implements DurableObject {
         await this.state.storage.deleteAlarm();
       }
     });
+  }
+
+  /**
+   * Delete this tenant's leases and leave every other tenant's alone.
+   *
+   * Idempotent: a tenant with no leases purges zero and still answers ok, which
+   * is what lets teardown be retried after a crash.
+   */
+  private async purgeTenant(body: PurgeTenantBody): Promise<Response> {
+    const prefix = leaseStorageKey(`${body.tenantId}:`);
+    const entries = await this.state.storage.list({ prefix });
+    for (const key of entries.keys()) {
+      await this.state.storage.delete(key);
+    }
+    return json({ ok: true, purged: entries.size });
   }
 
   private async acquireLease(body: AcquireLeaseBody): Promise<Response> {
@@ -222,6 +258,61 @@ export function failClosedGlobalUsage(): GlobalUsage {
     pauseLease: async () => denyUnavailable(),
     releaseLease: async () => undefined,
   };
+}
+
+/** The bindings account teardown needs from this module. */
+export interface GlobalUsageGuardEnv {
+  GLOBAL_USAGE_GUARD?: DurableObjectNamespace;
+}
+
+export const GUARD_PURGE_UNBOUND_EVENT = "account_teardown_guard_unbound";
+
+/** Shared by both guards' purge helpers. */
+export function logUnboundGuardPurge(binding: string, tenantId: string): void {
+  console.warn(
+    JSON.stringify({
+      event: GUARD_PURGE_UNBOUND_EVENT,
+      binding,
+      tenant_id: tenantId,
+      note: "no Durable Object namespace bound, so nothing was purged for this tenant",
+    }),
+  );
+}
+
+/**
+ * Clear one tenant's global concurrency leases, for account teardown.
+ *
+ * Deliberately NOT part of `GlobalUsage`: that interface is the hot request
+ * path, implemented by a fail-closed stub and by test fakes, and a teardown
+ * verb that quietly "succeeds" by doing nothing there is precisely the wrong
+ * failure. Here the two outcomes are kept apart. An **unbound** namespace has
+ * no lease book at all, so there is nothing to clear and `"unbound"` is an
+ * honest success. A **bound** namespace that errors is a leftover we could not
+ * remove, so it throws — teardown must not hard-delete the `users` row while
+ * state keyed to that tenant may still exist.
+ */
+export async function purgeGlobalUsageLeases(
+  env: GlobalUsageGuardEnv,
+  tenantId: string,
+): Promise<"purged" | "unbound"> {
+  const ns = env.GLOBAL_USAGE_GUARD;
+  if (!ns) {
+    // Said out loud. `Env` makes the binding optional, so a rename or a
+    // dropped `wrangler.toml` entry would otherwise turn the fail-closed
+    // guarantee into a silent skip while the `users` row is still deleted.
+    logUnboundGuardPurge("GLOBAL_USAGE_GUARD", tenantId);
+    return "unbound";
+  }
+  const stub = ns.get(ns.idFromName(GLOBAL_USAGE_GUARD_NAME));
+  const res = await stub.fetch("https://global-usage-guard/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "purge_tenant", tenantId } satisfies PurgeTenantBody),
+  });
+  if (!res.ok) {
+    throw new Error(`global_usage_guard purge_tenant failed with ${res.status}`);
+  }
+  return "purged";
 }
 
 export function globalUsageFor(env: Env): GlobalUsage {

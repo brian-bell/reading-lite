@@ -291,6 +291,16 @@ export class WipeProgressWriter {
    * inserter loses on the primary key rather than silently overwriting: the
    * `INSERT … WHERE NOT EXISTS` changes no rows and raises the same conflict a
    * lost UPDATE does.
+   *
+   * The insert also requires the `users` row to still exist (issue 195 S4).
+   * Queues are at-least-once, so a redelivered wipe job can read `users` as
+   * `deleting` just before teardown commits and then insert a fresh row for an
+   * account that is already gone. That row would carry a NULL
+   * `completed_at_ms`, so it would sit in `listUnfinishedWipes` forever while
+   * the tenant is no longer in `listDeletingUsers` — an orphan nothing
+   * enumerates and nothing cleans up. Losing this way takes the existing
+   * conflict path, which acks, and acking is the right answer for a wipe whose
+   * tenant no longer exists.
    */
   async write(progress: WipeProgress): Promise<void> {
     const next = this.leaseSeq + 1;
@@ -327,7 +337,8 @@ export class WipeProgressWriter {
          seed_cursor, seed_completed_at_ms
        )
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)`,
+       WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)
+         AND EXISTS (SELECT 1 FROM users WHERE id = ?)`,
       this.tenantId,
       progress.phase,
       nextSeq,
@@ -347,6 +358,7 @@ export class WipeProgressWriter {
       progress.firstResidue ? 1 : 0,
       progress.seedCursor ?? null,
       progress.seedCompletedAtMs,
+      this.tenantId,
       this.tenantId,
     );
     return result.changes;
