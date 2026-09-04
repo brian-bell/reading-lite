@@ -920,8 +920,14 @@ export async function commitTerminalManifest(
     return { committed: true, published: false };
   }
 
+  // Unpublish because this reading is not the by-url owner, not because of any
+  // tenant status — but it routes through the same helper, which falls back to
+  // the gated `remove` unless the tenant is confirmed `deleting`. On a deleting
+  // tenant this branch strands a vector exactly like the others do: the wipe may
+  // already have taken `index/list.json`, and `remove` gives up when there is no
+  // row to remove.
   if (state.canRemoveVisibility) {
-    await reconcileVisibility(true, () => visibility.remove(args));
+    await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
   }
   return { committed: true, published: false };
 }

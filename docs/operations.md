@@ -90,6 +90,13 @@ while its wipe sat at the terminal probe leaves the "no record, empty prefix"
 shape, and that tenant is not swept again. Both directions are one deploy
 window; neither is a reason to hold a rollback.
 
+One more record shape in the same window, and this one parses cleanly: a
+`phase:"objects"` record written by the old code carries `reading_ids` harvested
+from listed keys, which the old code deferred to the removed post-empty
+re-submit. Unknown keys are stripped, the objects phase does not re-collect, and
+there is no re-submit — so those vectors can strand even though nothing looked
+wrong. Read a residue alert in the rollout window with that in mind.
+
 **That narrows the race rather than closing it.** The publisher's post-publish
 status recheck fails open on a D1 lookup error, and an isolate that dies between
 the vector upsert and the recheck never compensates at all. A vector published
