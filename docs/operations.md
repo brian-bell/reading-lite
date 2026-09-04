@@ -888,6 +888,8 @@ correctly. Delete every dependent control-plane row, then `users`. Signup
 always creates `user_settings` and `tenant_limits`
 (`src/control-plane/sessions.ts`); a tenant that signed up for real may also
 have sessions, API tokens/scopes, auth challenges, and digest deliveries.
+Signup challenges are issued before the user row exists, so `user_id` stays
+NULL and redemption stamps `completed_user_id` — delete on either column.
 Migration `0009` notes that `REFERENCES` is not enforced (`PRAGMA foreign_keys`
 is never on), so `DELETE FROM users` succeeds while orphaning those rows — do
 not stop at `wipe_progress` + `users`. Order is the operator's: scopes before
@@ -908,7 +910,7 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "DELETE FROM api_tokens WHERE user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM auth_challenges WHERE user_id='$DRILL'"
+  --command "DELETE FROM auth_challenges WHERE user_id='$DRILL' OR completed_user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "DELETE FROM digest_deliveries WHERE user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
