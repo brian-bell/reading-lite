@@ -104,9 +104,11 @@ export class ReadingVisibility {
   // *live* tenant's data from an attempt that no longer owns the reading; on a
   // tenant being deleted there is nothing left to protect, and the gates are
   // actively harmful — an account wipe running concurrently deletes
-  // `index/list.json` and the manifest out from under this consumer, and a
-  // vector upserted after the wipe collected its ids would then be
-  // unaddressable, because R2 is the only place reading ids come from.
+  // `index/list.json` and the manifest out from under this consumer, and this
+  // is the compensation that keeps the vector from outliving the reading it
+  // belongs to. Since issue #195 S3 the id itself is safe either way (the
+  // ledger holds it), so a missed compensation costs a later wipe pass rather
+  // than a permanent stranding — but deleting promptly is still right.
   //
   // The list row is still removed under the ordinary ownership gate: removing a
   // foreign attempt's row buys nothing here (the wipe deletes the whole index
@@ -122,14 +124,14 @@ export class ReadingVisibility {
   // and here it is load-bearing. `removeListIndexItemIf` throws when its CAS
   // retries are exhausted, which is exactly what a concurrent wipe rewriting or
   // deleting `index/list.json` provokes. Sequencing the vector delete behind that
-  // write would let the one outcome this method exists to prevent — a vector
-  // outliving the only source of its id — fall out of the failure it is most
+  // write would let the outcome this method exists to prevent — a vector
+  // outliving the reading it belongs to — fall out of the failure it is most
   // likely to meet.
   //
   // Not free: when the list write is what fails, the vector is already gone
   // while the row and manifest survive, so the reading stays listed and readable
   // but missing from semantic search. That is the better half of the trade (the
-  // id stays derivable, so the wipe can still finish the job) and it is confined
+  // ledger row survives either way, so the wipe can still finish the job) and it is confined
   // to a tenant being deleted, but it is a real intermediate state, not none.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
     if (this.similarity) {
