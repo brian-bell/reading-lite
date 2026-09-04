@@ -321,9 +321,13 @@ Two prerequisites, both dashboard work, both outside this repo:
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
   `ops deploy worker --env production` uploads the script and then fails with
   authentication error 10000 on `/zones/.../workers/routes`** — the same footgun
-  described under "MCP connector" below, now on a second zone. The failure is not
-  user-visible: existing routes are untouched, so the old host keeps serving.
-  Re-scope the token and re-run the deploy.
+  described under "MCP connector" below, now on a second zone. Live traffic is
+  unaffected (existing routes are untouched, so the old host keeps serving the
+  previously deployed script), but the release chain is not: `deploy-worker.yml`
+  exits non-zero, and `deploy-spa.yml` runs only on a successful Worker run, so
+  **no production Worker or SPA deploy lands — for this merge or any later one —
+  until the token is re-scoped**. Re-scope it before merging anything that adds
+  these routes, then re-run the failed workflow.
 - `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
   to the `main` branch, with an Active certificate, or the new host serves the
   API but not the SPA.
