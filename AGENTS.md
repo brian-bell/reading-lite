@@ -24,10 +24,14 @@ comments of the modules themselves — read those before changing a module.
   R2+Vectorize wipe, wipe DLQ → log/ack).
 - `src/account-wipe.ts` — deferred tenant prefix wipe (issue 195b PR1): 7-day
   grace on `deleting_at_ms` gates *new* wipes; cron resumes in-progress/leftover
-  (preserving `force` on progress.json). Heartbeats `updated_at_ms` from current
-  time during collect and R2/vector pages; retry lease is failure time plus
-  delay. Two phases: Vectorize `deleteByIds` then paged R2. Does not hard-delete
-  the users row. The header comment is the invariant list — read it first.
+  (preserving `force` from the wipe record). Two phases: Vectorize `deleteByIds`
+  then paged R2. Does not hard-delete the users row. The header comment is the
+  invariant list — read it first.
+- `src/control-plane/wipe-progress.ts` — the wipe's whole durable state in D1
+  (`wipe_progress`, migration `0009`): phase, both cursors, the `lease_seq`
+  compare-and-set that decides ownership, and the completion record
+  (`completed_at_ms` + `residue`) that outlives the wipe and gates the later
+  control-plane teardown. Its foreign key does not cascade, on purpose.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -242,8 +246,8 @@ Pointers only — the details live in the named files' comments.
   Account wipe uses `ACCOUNT_WIPE_JOBS` (never `READING_JOBS`): cron starts
   new wipes for `status=deleting` tenants past the 7-day `deleting_at_ms`
   grace; a job `{ force: true }` skips grace to start. Cron resumes
-  in-progress or leftover wipes during grace and preserves `force` from
-  `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
+  in-progress or leftover wipes during grace and preserves `force` from the
+  wipe record. Leftover recovery restarts at Vectorize (`phase=vectors`,
   cursor cleared) and re-derives reading ids from an R2 re-list — ids are never
   persisted on the progress record; `vector_cursor` resumes by id value, never
   by index. There is no post-empty re-submit: a consumer publishing against a
@@ -252,31 +256,32 @@ Pointers only — the details live in the named files' comments.
   `index/list.json` row the wipe may already have removed. That narrows the
   late-publish race rather than closing it — the recheck fails open on a lookup
   error — and the residual is the same #261 gap.
-  Wipe heartbeats `progress.updated_at_ms` from current time during collect and
-  R2/vector pages; a delayed `msg.retry` advances the wipe lease from
-  failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound
-  `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2, and that
-  check runs before the "no ids to delete" short-circuit, so a wipe cannot
-  report success without having addressed the index.
+  An unbound `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2,
+  and that check runs before the "no ids to delete" short-circuit, so a wipe
+  cannot report success without having addressed the index.
   Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
-  time to disappear). Continuation cursors live at
-  `wipe/{tenantId}/progress.json`, written compare-and-set on the R2 etag (a
-  losing duplicate delivery fails with `progress_conflict` instead of clobbering
-  the cursor; the consumer also runs at `max_concurrency = 1`) and **deleted**
-  at the terminal transition — that key names a deleted tenant, so it must not
-  outlive the wipe.
-  Because that record is the only "already wiped" marker, fan-out skips a
-  tenant with no record and an empty prefix, and CAS-clears any object left at
-  a finished tenant's key. Before success the wipe probes the tenant namespace,
-  retrying a hit on a minutes-scale delay bounded at the queue's `max_retries`,
-  then emits a high-severity `account_wipe_namespace_residue` (tenant id only,
-  never reading ids) and completes rather than looping forever. Two gaps are
-  deliberate and written down in `docs/operations.md`: an empty-prefix tenant
-  with stranded vectors is never swept again, and there is no durable record of
-  a wipe's outcome — do not gate the PR2 hard-delete on inferring one from R2
-  state. Both close with the durable vector ledger, issue #261
-  (`rl-wipe-vector-ledger`). The wipe DLQ logs and acks; it must not call
-  `markDeadLettered`.
+  time to disappear). All wipe state — phase, both cursors, lease, probe and
+  continuation counters, completion — lives in D1 `wipe_progress`
+  (`src/control-plane/wipe-progress.ts`, migration `0009`), never in R2. Writes
+  are `UPDATE … WHERE lease_seq = ?`; a delivery that changes zero rows skips
+  with `lease_held` and acks rather than retrying. `updated_at_ms` still
+  heartbeats but is only advice to cron, which is why a frozen job clock and a
+  12-hour `Retry-After` no longer need special-casing. The completion record is
+  **kept**, with both cursors cleared, and is what the later users-row
+  hard-delete gates on — never infer a wipe's outcome from R2 state. `residue`
+  plus `probe_saw_residue` carry the terminal verdict.
+  Before success the wipe probes the tenant namespace, retrying a hit on a
+  minutes-scale delay bounded at the queue's `max_retries`, then emits a
+  high-severity `account_wipe_namespace_residue` (tenant id only, never reading
+  ids), records `residue`, and completes rather than looping forever. A
+  `status='deleting'` row with a NULL `deleting_at_ms` logs
+  `account_wipe_missing_deleting_at` instead of stalling silently, and
+  `continuations` bounds the `continue` self-send so a wipe that cannot finish
+  dead-letters instead of resetting its retry budget forever. Re-sweeping an
+  empty-prefix tenant with stranded vectors still needs the durable vector
+  ledger, issue #261 (`rl-wipe-vector-ledger`) — the record now says the wipe
+  ran, but there is still no id to delete by. The wipe DLQ logs and acks; it
+  must not call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

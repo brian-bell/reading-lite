@@ -57,15 +57,48 @@ way as any other — there is no silent founder exception. After a 7-day grace
 */15 cron sweep delete the tenant R2 prefix and submit Vectorize `deleteByIds`
 (async: embeddings may take a short time to disappear). A job payload
 `{ force: true }` skips grace to start a new wipe. Cron resumes in-progress
-or leftover wipes during grace and preserves `force` from `progress.json`.
+or leftover wipes during grace and preserves `force` from the wipe record.
 Wipe is not inline in `DELETE /api/account`.
 
-The resume record at `wipe/{tenantId}/progress.json` is **deleted** when the
-wipe finishes, not left behind as `phase:"done"` — its key names the deleted
-tenant. Progress writes are compare-and-set on the R2 etag, so an
-at-least-once duplicate delivery fails loudly (`progress_conflict`) and retries
-instead of silently overwriting the live job's cursor; the consumer also runs at
-`max_concurrency = 1`, so that CAS is a backstop rather than the only guard.
+Wipe state lives in D1, in the `wipe_progress` table (migration `0009`), one row
+per tenant: phase, the two cursors, lease, probe and continuation bookkeeping,
+and the completion record. Every write is a conditional
+`UPDATE … WHERE tenant_id = ? AND lease_seq = ?` that bumps `lease_seq`, so a
+delivery whose row moved under it changes zero rows, logs
+`account_wipe_lease_held`, and **acks** — the winner is already doing the work,
+and a retry would only lose the same CAS again. The consumer runs at
+`max_concurrency = 1`, so this is a backstop against at-least-once redelivery
+and cron overlap rather than the primary serialization.
+
+Because the lease is a version rather than a timestamp, `updated_at_ms` is
+advice: cron uses it to avoid enqueuing a duplicate it would have to turn away,
+and nothing is lost if it is wrong in either direction. Two things that used to
+need care therefore no longer do — a job running on a frozen clock, and a wipe
+owed a long `Retry-After` (up to 12h). Cron may take either one over; the
+displaced delivery reports `lease_held` and stands down.
+
+The completion record is **kept**, not deleted. `completed_at_ms` says the wipe
+finished, `residue` says whether the namespace was ever confirmed clean (read
+`probe_saw_residue` beside it to tell "vectors were still there" from "we never
+got an answer"), and the terminal write clears both cursors so nothing reading-
+shaped survives on a deleted account's row. The foreign key to `users(id)`
+deliberately does **not** cascade: the later control-plane teardown hard-deletes
+the users row and gates that on reading this record, so a cascade would destroy
+the evidence at the moment it is needed. Teardown removes the row explicitly,
+after the gate has been read.
+
+A wipe that keeps making a little progress and then failing used to cycle
+forever: each `continue` acks and self-sends, which starts a fresh queue retry
+budget. `continuations` on the record counts those self-sends per pass and
+`ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds them (sized at roughly four million
+objects or ids — far past any real tenant). Past the bound the job throws
+instead of self-sending, so the delivery retries normally and dead-letters where
+it can be seen. Reopening a leftover wipe resets the counter.
+
+A tenant left `status='deleting'` with a NULL `deleting_at_ms` can never elapse
+grace, so its wipe would never start. Both fan-out and the job log
+`account_wipe_missing_deleting_at` for that row rather than stalling silently;
+recover it by repairing `deleting_at_ms` or by forcing the wipe.
 
 The wipe has two phases, vectors then objects. It does **not** re-submit
 `deleteByIds` after the prefix is empty, and does not persist reading ids on the
@@ -76,26 +109,31 @@ publishing against a tenant confirmed `deleting` deletes its own vector directly
 (`ReadingVisibility.removeForDeletedTenant`) rather than waiting on an
 `index/list.json` row the wipe has already removed.
 
-**Deploy note, one time only:** the `sweep` phase this removed is no longer a
-valid stored phase. A wipe caught mid-sweep when the new Worker rolls out leaves
-an unparseable progress record; cron clears it and the tenant is not re-swept,
-and a redelivery that reaches the job first restarts at `vectors` against an
-empty prefix and can raise a spurious `account_wipe_namespace_residue` for a
-tenant that was in fact wiped. Neither loses anything the removed re-submit did
-not already cover, but if `reading-lite-wipe` has messages in flight at deploy
-time, treat one residue alert in that window as suspect rather than a finding.
-A rollback breaks the same way in reverse — the older schema requires the
-`vector_offset` this version stopped writing — so a record cleared on rollback
-while its wipe sat at the terminal probe leaves the "no record, empty prefix"
-shape, and that tenant is not swept again. Both directions are one deploy
-window; neither is a reason to hold a rollback.
+**Deploy note, one time only:** progress moved from
+`wipe/{tenantId}/progress.json` to D1, and the new code never reads the R2
+object. A wipe in flight when the new Worker rolls out therefore restarts from
+scratch — a fresh row, `phase:"vectors"`, cursors clear. That is safe (every
+phase is idempotent: re-listing the prefix and re-submitting `deleteByIds` for
+ids still derivable from R2 costs work, not correctness), but a restarted pass
+re-derives ids from whatever R2 holds *now*, so a tenant whose objects the
+interrupted pass had already deleted contributes fewer ids on the retry and can
+raise a `account_wipe_namespace_residue` that reflects the deploy rather than a
+real finding. Confirm `reading-lite-wipe` and `reading-lite-wipe-dlq` are empty
+and no tenant is `status='deleting'` before merging, exactly as the S1 deploy
+did, and treat one residue alert in that window as suspect.
 
-One more record shape in the same window, and this one parses cleanly: a
-`phase:"objects"` record written by the old code carries `reading_ids` harvested
-from listed keys, which the old code deferred to the removed post-empty
-re-submit. Unknown keys are stripped, the objects phase does not re-collect, and
-there is no re-submit — so those vectors can strand even though nothing looked
-wrong. Read a residue alert in the rollout window with that in mind.
+The stale R2 objects left behind by an interrupted wipe are inert but not
+self-clearing: nothing reads or deletes `wipe/{tenantId}/progress.json` any
+more. If any exist after the rollout, delete them by hand — the key names a
+deleted tenant, which is why the old code deleted it on completion.
+
+Rollback is the awkward direction, and worse than S1's: the previous Worker
+reads only R2, so it would see no progress record and start a fresh wipe from
+`vectors` while the D1 row still says otherwise. The D1 table is additive and
+harmless if the code is reverted, but a wipe in flight across a rollback is
+duplicated work with no shared lease. Roll back with the queue drained, or
+force-complete the tenant afterwards. As always, `TENANT_DATA_PLANE` off is the
+kill switch that short-circuits the whole path.
 
 **That narrows the race rather than closing it.** The publisher's post-publish
 status recheck fails open on a D1 lookup error, and an isolate that dies between
@@ -104,27 +142,25 @@ in either of those windows, whose R2 objects the same wipe pass then deletes, is
 unaddressable — the terminal probe can sample for it but nothing can delete it.
 Same cause, same fix as the gap below: the durable vector ledger (issue #261).
 
-That record is also the only "already wiped" marker, and `users.status` stays
-`deleting` until the PR2 hard-delete. So cron **skips a tenant that has no
-progress record and an already-empty R2 prefix** — without that skip it would
-start a fresh wipe every 15 minutes forever and re-create the tenant-named
-object the delete exists to remove. **Known gap:** a tenant whose R2 prefix is
-empty but whose Vectorize namespace still holds vectors is therefore never
-swept again. R2 is the only source of the reading ids `deleteByIds` needs, so
-such a sweep could not address those vectors anyway; the durable per-tenant
-vector ledger (issue #261, 195b move 2, `rl-wipe-vector-ledger`) is what closes
-it.
+Cron decides what to do from the record rather than from R2 state: no row means
+never wiped (grace gates the start), a row with no `completed_at_ms` means a
+wipe still owed work (the advisory lease decides whether to enqueue), and a
+completed row means done — reopened only if objects turn up under the prefix
+again. That retires the old "no record AND an empty prefix" probe, which could
+not tell an already-wiped tenant from one whose prefix was emptied while vectors
+stranded, and so had to skip both forever.
 
-**Second known gap, same cause: there is no durable record of a wipe's
-outcome.** Because a finished wipe deletes its progress object and leaves an
-empty prefix, three states are indistinguishable on disk — wiped cleanly, wiped
-but leaving residue the probe bound gave up on, and never wiped at all (a user
-who submitted nothing has an empty prefix too, so the skip above means their
-wipe never runs). The residue alert is a log line; nothing durable survives it.
-Do not build the PR2 users-row hard-delete on an inference from R2 state: the
-D1 `wipe_progress` table in move 2 (issue #261, `rl-wipe-vector-ledger`) is
-scoped to carry the completion record and its residue flag, and that is what
-the hard-delete should gate on.
+**What remains a gap** is re-*sweeping* such a tenant, not recognizing it. R2 is
+still the only source of the reading ids `deleteByIds` needs, so a tenant whose
+prefix is empty and whose namespace still answers has nothing left to delete
+by — but its row now says the wipe ran and `residue = 1` says it never came back
+clean, so the finding is durable rather than inferred from an absence. The
+durable per-tenant vector ledger (issue #261, 195b move 2,
+`rl-wipe-vector-ledger`) is what makes it actionable.
+
+The completion record is what the later users-row hard-delete gates on: read
+`completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
+state.
 
 Before reporting success the wipe probes the tenant's Vectorize namespace and
 refuses to finish while anything still answers, logging
