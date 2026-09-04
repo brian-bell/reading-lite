@@ -163,6 +163,79 @@ function fakeClock(stepMs: number, startMs = Date.parse("2026-08-22T12:00:00Z"))
 }
 
 describe("ops corpus refresh-neighbours", () => {
+  describe("full sweep cadence", () => {
+    const marker = { version: 2, last_run_at: "2026-08-21T00:00:00.000Z", list_ids: ["rd_r", "rd_n"] };
+    const warning = (lines: string[]) => lines.filter((line) => line.includes("Full sweep overdue:"));
+
+    it.each(["2026-08-22T00:00:00.000Z", "2026-08-15T12:00:00.000Z"])("does not warn for a recent sweep or exactly seven days: %s", async (last_full_run_at) => {
+      for (const flags of [[], ["--execute", "--sole-writer"]]) {
+        const { deps, lines } = makeDeps({ state: { ...marker, last_full_run_at } });
+        await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...flags], deps);
+        expect(warning(lines)).toEqual([]);
+      }
+    });
+
+    it.each([
+      null,
+      { ...marker, last_full_run_at: "damaged" },
+      { ...marker, list_ids: "damaged", last_full_run_at: "2026-08-22T00:00:00.000Z" },
+    ])("warns with unknown age for missing or damaged marker data: %j", async (state) => {
+      for (const flags of [[], ["--execute", "--sole-writer"]]) {
+        const { deps, lines } = makeDeps({ state });
+        await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...flags], deps);
+        expect(warning(lines)).toHaveLength(1);
+        expect(warning(lines)[0]).toContain("age unknown");
+      }
+    });
+
+    it("only clears the warning after a completed executing full sweep", async () => {
+      let stored: unknown = { ...marker, last_full_run_at: "2026-08-01T00:00:00.000Z" };
+      async function run(flags: string[], fail = false) {
+        const h = makeDeps({ queryThrow: fail ? () => new Error("offline") : undefined });
+        h.deps.r2.readRefreshState = async () => stored;
+        h.deps.r2.writeRefreshState = async (state) => { stored = state; };
+        const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...flags], h.deps);
+        return { ...h, code };
+      }
+      await run(["--full"]);
+      expect(warning((await run([])).lines)).toHaveLength(1);
+      expect((await run(["--full", "--execute", "--sole-writer"], true)).code).toBe(1);
+      expect(warning((await run([])).lines)).toHaveLength(1);
+      expect((await run(["--full", "--execute", "--sole-writer"])).code).toBe(0);
+      expect(warning((await run([])).lines)).toEqual([]);
+      expect(stored).toMatchObject({ last_full_run_at: "2026-08-22T12:00:00.000Z" });
+    });
+
+    it("names the selected storage target in the corrective command", async () => {
+      const { deps, lines } = makeDeps({ state: marker });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--bucket", "reading-lite-staging", "--vectorize", "staging-vectors"], deps);
+      expect(warning(lines)[0]).toContain("--bucket reading-lite-staging --vectorize staging-vectors");
+    });
+  });
+
+  it.each([{ flags: [] }, { flags: ["--execute", "--sole-writer"] }])("warns about an old full sweep with the same age with $flags", async ({ flags }) => {
+    const state = { version: 2, last_run_at: "2026-08-21T00:00:00.000Z", list_ids: ["rd_r", "rd_n"], last_full_run_at: "2026-08-14T00:00:00.000Z" };
+    const { deps, lines, calls } = makeDeps({ state });
+    expect(await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...flags], deps)).toBe(0);
+    expect(lines.join("\n")).toContain("Full sweep overdue: last_full_run_at 2026-08-14T00:00:00.000Z (age 8.5 days; threshold 7 days)");
+    expect(calls.queries).toEqual([]);
+    for (const written of calls.stateWrites) expect(written).toMatchObject({ last_full_run_at: state.last_full_run_at });
+  });
+
+  it("warns on stderr when a scoped plan has no full sweep timestamp", async () => {
+    const { deps, calls } = makeDeps({
+      state: { version: 2, last_run_at: LATER, list_ids: ["rd_r", "rd_n"] },
+    });
+    const warnings: string[] = [];
+    deps.io.stderr = (line) => warnings.push(line);
+    expect(await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps)).toBe(0);
+    expect(warnings.join("\n")).toContain("Full sweep overdue: last_full_run_at missing or unusable (age unknown; threshold 7 days)");
+    expect(warnings.join("\n")).toContain('npm run ops -- corpus refresh-neighbours --tenant "global" --full --execute --sole-writer --out ./refresh-report-full.json');
+    expect(calls.puts).toEqual([]);
+    expect(calls.indexWrites).toBe(0);
+    expect(calls.stateWrites).toEqual([]);
+  });
+
   it("prints a Timing block naming every phase the pass used", async () => {
     const { deps, lines } = makeDeps({});
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {

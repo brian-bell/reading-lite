@@ -477,6 +477,17 @@ async function refreshNeighbours(
   // re-derive the fields this pass happens to compute — the next forward-only
   // field added here would be dropped by every sweep.
   const marker = await readMarker(r2, r2Deps, io.stderr);
+  const sweepWarning = fullSweepWarning(marker, now);
+  if (!opts.full && sweepWarning !== null) {
+    io.stderr(
+      `  ! Full sweep overdue: ${sweepWarning}. ` +
+      `Run npm run ops -- corpus refresh-neighbours --tenant "${tenantSelector}" ` +
+      "--full --execute --sole-writer --out ./refresh-report-full.json " +
+      `--bucket ${shellArg(opts.bucket)} --vectorize ${shellArg(vectorizeIndex)}` +
+      (opts.remote ? "" : " --local") +
+      (opts.via === undefined ? "" : ` --via ${opts.via}`),
+    );
+  }
   const { items, etag: listEtag } = await r2.readListIndex(r2Deps);
   // Named ids override the scope (planRefresh), so resolving one would spend a
   // reverse query per changed reading on an answer that cannot change which
@@ -803,6 +814,24 @@ async function refreshNeighbours(
   }
 
   return EXIT_OK;
+}
+
+const FULL_SWEEP_MAX_AGE_DAYS = 7;
+
+/** Read-only cadence check, shared by plan and execute before resolving scope. */
+function fullSweepWarning(marker: RefreshState | null, runAt: string): string | null {
+  const lastFull = marker?.last_full_run_at;
+  if (lastFull === undefined) {
+    return `last_full_run_at missing or unusable (age unknown; threshold ${FULL_SWEEP_MAX_AGE_DAYS} days)`;
+  }
+  const ageDays = (Date.parse(runAt) - Date.parse(lastFull)) / (24 * 60 * 60 * 1000);
+  if (ageDays <= FULL_SWEEP_MAX_AGE_DAYS) return null;
+  return `last_full_run_at ${lastFull} (age ${ageDays.toFixed(1)} days; threshold ${FULL_SWEEP_MAX_AGE_DAYS} days)`;
+}
+
+/** Keep the suggested command copyable even for unusual operator arguments. */
+function shellArg(value: string): string {
+  return /^[a-zA-Z0-9_./-]+$/.test(value) ? value : "'" + value.replaceAll("'", "'\"'\"'") + "'";
 }
 
 /**

@@ -1249,9 +1249,8 @@ marker write does not fail the run: the cost is the next pass sweeping.
 #
 # UPGRADING AN EXISTING SCHEDULE: before this change the weekly sweep was a bare
 # invocation with no scope flag. That exact line now runs incrementally and
-# never sweeps, and nothing at runtime says so — `last_full_run_at` is recorded
-# on the marker but no pass reads it back or warns on its age. Add --full to
-# the weekly cron at the same time as taking this change.
+# never sweeps. Scoped runs now warn when the full sweep is overdue. Add
+# --full to the weekly cron at the same time as taking this change.
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --since-last-run --execute --sole-writer
 # Weekly. The sweep is no longer what a bare invocation does — it must be asked
@@ -1259,6 +1258,22 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
   --full --execute --sole-writer --out ./refresh-report-full.json
 ```
+
+Scoped refreshes (invocations without `--full`) print a stderr warning when
+`last_full_run_at` is missing, unusable, or **older than seven days**. Exactly
+seven days is still within the threshold. The warning shows the timestamp and
+age (or `age unknown`) and a full-sweep command for the selected tenant,
+bucket, and Vectorize index. Check the external weekly schedule and run that
+command after pausing/draining concurrent writers for `--sole-writer`.
+
+Plan and execute evaluate the same stored timestamp before resolving scope,
+including quiet runs and runs that automatically escalate to full. The warning
+itself changes neither corpus state, scope, nor exit status. A completed full
+execute pass clears it for subsequent runs; a plan, failed pass, or incremental
+pass cannot refresh the full-sweep timestamp. Automatically escalated full
+passes count as sweeps. Existing marker rules still apply: partial selections
+do not advance it, while a completed sweep that carries unmeasurable readings
+can advance it and exit 3. Those readings still need the reported repairs.
 
 Give every writer of a refresh report its **own `--out` path** — the nightly,
 the weekly sweep, and any ad-hoc run — and point each schedule's tier-2/3 run at
