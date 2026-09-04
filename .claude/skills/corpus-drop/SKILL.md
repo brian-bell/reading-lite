@@ -75,7 +75,7 @@ npm run ops -- corpus drop --tenant global rd_ABC --bucket some-other-bucket --e
 npm run ops -- corpus drop --tenant global rd_ABC --local --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only, migrate-founder source, and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`),
 `--local` (local miniflare bucket instead of `--remote`), `--execute`, `--help`.
 

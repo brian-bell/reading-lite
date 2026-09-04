@@ -37,4 +37,24 @@ describe("account wipe wrangler wiring", () => {
       expect(Number(bound)).toBeLessThanOrEqual(Number(block![1]));
     }
   });
+
+  // Both fan-out and the job skip with `no_tenant_prefix` while
+  // TENANT_DATA_PLANE is off, so an environment without the pin cannot run the
+  // destructive path at all — including the staging rehearsal issue #203 asks
+  // for. Dropping the pin from either deployed environment is therefore a
+  // silent loss of the wipe, not a config tidy-up.
+  //
+  // Rolling the gate back off IS a supported path (docs/operations.md,
+  // "Rehearsing account deletion on staging" — the corpus migration copies
+  // rather than moves, so the pre-tenant objects are still there). It is just
+  // not a silent one: a rollback commit must relax this assertion for the
+  // environment it rolls back, in the same commit, which is the point.
+  it("pins the tenant data plane in every environment the wipe queue is wired into", () => {
+    const wrangler = read("wrangler.toml");
+    for (const env of ["staging", "production"]) {
+      const vars = new RegExp(`\\[env\\.${env}\\.vars\\]([\\s\\S]*?)\\n\\[`).exec(wrangler);
+      expect(vars, `[env.${env}.vars] block`).not.toBeNull();
+      expect(vars![1]).toMatch(/^TENANT_DATA_PLANE = "1"$/m);
+    }
+  });
 });

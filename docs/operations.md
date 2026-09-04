@@ -30,9 +30,12 @@ never act on the wrong corpus by omission.
 
 A `usr_…` tenant id addresses that tenant's `u/{tenantId}/` key namespace plus
 its Vectorize namespace (the same roots the worker derives from a validated
-`TenantContext`). `global` is the pre-tenant layout selector: local and staging
-(where `TENANT_DATA_PLANE` is still unset), migrate-founder source and
-rollback, and leftover production global objects pending signed-off deletion.
+`TenantContext`). `global` is the pre-tenant layout selector: local (where
+`TENANT_DATA_PLANE` is still unset), migrate-founder source and rollback, and
+the leftover global objects both deployed environments retain — production's
+pending signed-off deletion, staging's kept by its own copy-only migration.
+On a gate-on environment `global` is a direct-R2 selector only: realtime write
+paths reject it (`verifyRealtimeTenant`, `scripts/corpus-lib/realtime-tenant.ts`).
 
 Production has been cut over (`TENANT_DATA_PLANE=1` pinned 2026-08-31). Live
 production corpus commands use the founder tenant from a production bearer,
@@ -313,11 +316,14 @@ accidental bare `wrangler deploy` clobbering production.
 
 `TENANT_DATA_PLANE=1` prefixes hosted R2 keys as `u/{tenantId}/…`. Production
 pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
-`docs/founder-cutover.md`); local and staging stay unset. Workers-pool tests
+`docs/founder-cutover.md`); staging pins it too, so the destructive
+account-wipe path can be rehearsed there ("Rehearsing account deletion on
+staging"). Only local stays unset. Workers-pool tests
 turn it on so two tenants can share a URL without colliding. Operator corpus
-scripts address whichever root their required `--tenant` selector names:
-`$TENANT` from whoami for production (gate on), `global` while the gate is off
-(local and staging) and for leftover production global objects.
+scripts address whichever root their required `--tenant` selector names: the
+tenant id from whoami for production and staging (gate on), and `global` for
+local and for the retained pre-tenant objects both deployed environments still
+carry.
 
 ### Secrets
 
@@ -598,15 +604,247 @@ VARS_FILE=.stg.vars BASE=https://reading-lite-staging.<workers-subdomain>.worker
   ./scripts/manual/idempotency-smoke.sh a "https://example.com/reading-lite-staging-$RANDOM"
 ```
 
-Clean up the throwaways afterwards, including `ready` ones. Staging still has
-`TENANT_DATA_PLANE` unset, so the live layout is `--tenant global`:
+Clean up the throwaways afterwards, including `ready` ones. Staging pins
+`TENANT_DATA_PLANE = "1"` (see the next section), so the live layout is the
+staging founder tenant, not `global`. Resolve `$STG_TENANT` from staging's
+`GET /api/whoami` the same way production's `$TENANT` is resolved:
 
 ```sh
-npm run ops -- corpus audit --tenant global --bucket reading-lite-staging --execute
-npm run ops -- corpus drop --tenant global "https://example.com/reading-lite-staging-123" \
+npm run ops -- corpus audit --tenant "$STG_TENANT" --bucket reading-lite-staging --execute
+npm run ops -- corpus drop --tenant "$STG_TENANT" "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
   --vectorize reading-lite-staging --execute
 ```
+
+`--tenant global` still addresses staging's retained pre-tenant copy, which the
+gate makes invisible to the Worker. Use it only when you mean that copy.
+
+### Rehearsing account deletion on staging
+
+`src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
+is off, so an environment with the gate unset cannot exercise the destructive
+path at all. Staging therefore pins the gate in `[env.staging.vars]`, and its
+pre-tenant corpus was migrated under `u/{founderTenantId}/` by
+`ops corpus migrate-founder` first — that command copies rather than moves, so
+the legacy `readings/` and `index/` objects are all still in the bucket and
+removing the pin is a complete rollback.
+
+One consequence of that to keep in view if the drill is ever pointed at the
+staging *founder* rather than a throwaway tenant: the wipe never touches the
+pre-tenant `readings/` / `index/` objects or bare-id vectors, so a full
+duplicate of the staging corpus survives outside every tenant root. "Nothing
+left under `u/{tenantId}/`" would then not mean the data is gone from staging.
+It is the same hole production carries until the legacy objects are deleted
+under sign-off.
+
+**Preflight, before the deploy that turns the gate on.** While the gate is off,
+fan-out short-circuits with `no_tenant_prefix`, so any account left in
+`status='deleting'` by earlier testing has been accumulating harmlessly. The
+moment the pin ships, the next `*/15` cron enqueues a *real* wipe for every one
+of them whose 7-day grace has elapsed. Look before you deploy:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT u.id, u.email_canonical, u.status, u.deleting_at_ms FROM users u \
+             LEFT JOIN wipe_progress w ON w.tenant_id = u.id \
+             WHERE u.status <> 'active' AND w.completed_at_ms IS NULL"
+```
+
+The join is what makes this list *actionable* rather than just true. A tenant
+whose `wipe_progress` row carries a `completed_at_ms` has already been wiped and
+fan-out skips it, so it can never be what the deploy arms — it would only be
+recurring noise in the one check the next operator is told to trust. The
+`IS NULL` also covers a *reopened* wipe (a reopen clears `completed_at_ms`),
+which is still live and does belong in the list.
+
+Anything left in that result and not meant to be destroyed — the staging founder
+above all — must be back to `status='active'` first. Flipping the status back is **not** a full
+rescue: `beginAccountDeletion` stamped `revoked_at_ms` on every session and API
+token and nothing reverses that, so the account is `active` but cannot
+authenticate. Re-run `ops founder bootstrap --env staging --execute` for the
+founder, or issue a fresh magic link, before assuming staging works again.
+
+Setting staging up this way once, from a checkout of the commit you want to
+rehearse:
+
+```sh
+npm run ops -- corpus migrate-founder --tenant "$STG_TENANT" \
+  --bucket reading-lite-staging --vectorize reading-lite-staging \
+  --state ./founder-migration.staging.state.json --execute --sole-writer
+# rerun without --execute until it reports fully migrated, then:
+npm run ops -- deploy worker --env staging --execute
+```
+
+Pass an explicit `--state` path. The default `./founder-migration.state.json`
+is stamped with the tenant, bucket and index it was created for, and a leftover
+production or older staging state file in the cwd makes the command exit 1
+("refusing to resume it as tenant …") in the middle of the cutover.
+
+Hold the sole-writer pause across the deploy, and run one final plan pass
+immediately before it. Any staging write that lands between the last migrate
+pass and the gate flipping goes to the global layout and becomes invisible the
+instant the Worker starts reading tenant-rooted. "Fully migrated" has to include
+the **vector** re-upsert, not just the object copies: a namespaced query cannot
+see a bare `rd_…` vector, so a corpus copied in R2 but not migrated in Vectorize
+returns zero neighbours with no error anywhere.
+
+The drill itself. Seed a throwaway tenant, fence it, let cron wipe it, then
+prove the residue is gone.
+
+Two id rules, both of which produce a rehearsal that looks perfect and proves
+nothing if you get them wrong:
+
+- **`$DRILL` is a fresh `usr_<uuid4>`, and it must be lowercase.**
+  `parseTenantId` canonicalizes to lowercase (`src/control-plane/ids.ts`), but
+  macOS `uuidgen` emits uppercase. An uppercase id still fans out, and then the
+  wipe addresses `u/{lowercased}/` and writes `wipe_progress.tenant_id`
+  lowercase — so the objects you seeded and every `WHERE tenant_id='$DRILL'`
+  query below quietly miss.
+- **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
+  (`src/services.ts` `ID_ALPHABET` — no `I`, `L`, `O`, `U`). An id outside it is
+  not derivable by `collectReadingIds`, so the objects phase still deletes the
+  reading's R2 objects but no `deleteByIds` is ever submitted for it. The vector
+  is stranded with nothing left to derive its id from, and surfaces at the end
+  as probe residue — a synthetic reproduction of the issue #261 gap rather than
+  a wipe bug.
+
+```sh
+# 1. Create the account. Either sign up on staging for real, or insert the row
+#    directly. The wipe is driven off this row: without it the UPDATE below
+#    matches nothing, listDeletingUsers never returns the tenant, and the whole
+#    drill silently exercises nothing while every residue check passes.
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "INSERT INTO users (id, email_canonical, email_display, status, \
+             email_verified_at_ms, created_at_ms, updated_at_ms) \
+             VALUES ('$DRILL','s6-drill@test.example','s6-drill@test.example', \
+             'active',<now>,<now>,<now>)"
+
+# 2. Seed. Objects under u/$DRILL/ (manifest.json, index/by-id/, index/by-url/,
+#    index/list.json) plus one namespaced vector {$DRILL}:{readingId} per ready
+#    reading. Copying manifests and embeddings out of the staging founder corpus
+#    keeps the shapes real and spends nothing on providers.
+# 3. Confirm the vectors are live in the namespace before deleting anything —
+#    an upsert takes up to ~45s to become visible.
+# 4. Fence the account. The real flow is DELETE /api/account; the equivalent
+#    control-plane write is what 195a's beginAccountDeletion performs:
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE users SET status='deleting', deleting_at_ms=<now - 8 days>, \
+             updated_at_ms=<now> WHERE id='$DRILL' AND status='active'"
+```
+
+**Check that UPDATE reported `changes: 1`.** Zero means the row is missing or
+not `active`, and everything downstream will look like a clean, successful wipe
+of nothing.
+
+Backdating `deleting_at_ms` past the 7-day grace is what lets the ordinary
+`*/15` cron fan-out start the wipe, so the drill exercises the real entry point
+instead of a hand-injected queue message. Then watch it finish:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
+```
+
+Expect one to three passes. Vectorize `deleteByIds` propagates asynchronously —
+measured at 30–90 s on staging — while the terminal probe runs within seconds of
+submitting it, so the usual first pass empties the R2 prefix, sees the namespace
+still answering, records `probe_attempts = 1` / `probe_saw_residue = 1`, and
+retries on the 300-second schedule; the next pass probes clean and writes
+`completed_at_ms` / `first_completed_at_ms` with `residue = 0`. A fast delete can
+probe clean on the first pass. Reading the result:
+
+- **`probe_saw_residue = 1` is the normal outcome of a healthy wipe**, not a
+  warning — it just records that some probe ran inside the propagation window,
+  and nothing clears it once the wipe finishes clean.
+- **`residue = 1` is the finding.** It means the wipe completed unconfirmed after
+  `ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS` (3), with a high-severity
+  `account_wipe_namespace_residue` log line. `probe_saw_residue` beside it
+  separates `outcome: "residue"` (a probe genuinely saw vectors) from
+  `outcome: "unconfirmed"` (every probe threw — a Vectorize health question, not
+  a finding about the account).
+
+Residue checks afterwards.
+
+**1. R2 under the tenant root — expect zero objects.** Do **not** use
+`corpus audit` for this: it reads `index/list.json` first and hard-errors
+("could not read index/list.json") when the object is missing, which is exactly
+the state a successful wipe leaves behind. List the prefix directly instead,
+with the repo's own R2 client rather than a hand-rolled `aws` invocation —
+`r2InventoryClientFromVars` (`scripts/lib/cf-clients.ts`) is what
+`ops account sweep-wipe-prefix` already uses, and it reads the same
+`CORPUS_R2_*` / `CLOUDFLARE_API_TOKEN` values from the environment or
+`.corpus.vars` that the rest of this runbook assumes:
+
+```ts
+// r2ls.ts, run from the repo root with `DRILL=usr_… npx tsx ./r2ls.ts`
+import { loadDotVars } from "./scripts/lib/dotvars";
+import { r2InventoryClientFromVars } from "./scripts/lib/cf-clients";
+
+const vars = { ...loadDotVars(".corpus.vars"), ...process.env };
+const client = r2InventoryClientFromVars(vars, "reading-lite-staging");
+const objects = await client.listObjects(`u/${process.env.DRILL}/`);
+for (const o of objects) console.log(o.key, o.size);
+console.log("objects:", objects.length);
+```
+
+**2. Orphaned R2 wipe progress** (superseded by D1 in slice S2) — expect
+0 objects:
+
+```sh
+npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
+```
+
+3. **Vectorize** — a namespaced query against the tenant namespace must return
+   no matches. That is the same signal `SimilarityStore.probeNamespace()` uses.
+   Do not use whole-index `describe()` counts as evidence: they are served from
+   replicas at different processing frontiers and go backwards, so `vectorCount`
+   and `processedUpToMutation` both flap between values while the underlying
+   per-id reads are correct.
+
+4. **D1** — this is the one to read carefully, because almost nothing here is
+   supposed to be gone. The wipe removes the **data plane only**. The `users`
+   row, the `wipe_progress` completion record, and the tenant's `sessions`,
+   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive by
+   design: `beginAccountDeletion` *revokes* sessions and tokens by stamping
+   `revoked_at_ms` in place rather than deleting them, `user_settings` is never
+   touched, and the completion record is precisely what the later control-plane
+   teardown gates its hard delete of the `users` row on. So check that
+   credentials are **revoked**, not that rows are absent:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT (SELECT COUNT(*) FROM sessions WHERE user_id='$DRILL' AND revoked_at_ms IS NULL) live_sessions, \
+             (SELECT COUNT(*) FROM api_tokens WHERE user_id='$DRILL' AND revoked_at_ms IS NULL) live_tokens, \
+             (SELECT completed_at_ms FROM wipe_progress WHERE tenant_id='$DRILL') completed_at_ms, \
+             (SELECT residue FROM wipe_progress WHERE tenant_id='$DRILL') residue"
+```
+
+Expect `live_sessions = 0`, `live_tokens = 0`, a non-NULL `completed_at_ms`, and
+`residue = 0`. A tenant seeded directly (rather than signed up for) will simply
+have no rows in those tables at all, which is not evidence either way.
+
+**Tear the drill tenant down when you are finished.** Left in place it is not
+inert: fan-out re-reads the row on every `*/15` tick and, with `completed_at_ms`
+set, runs an R2 prefix list per tick, and anything that ever lands under
+`u/$DRILL/` reopens the wipe — which also puts it back into the preflight above,
+correctly. Order matters — the `wipe_progress` foreign key deliberately does not
+cascade (migration `0009`), so delete the child row first:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "DELETE FROM wipe_progress WHERE tenant_id='$DRILL'"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "DELETE FROM users WHERE id='$DRILL'"
+```
+
+Keep the tenant only if you are deliberately handing it to the control-plane
+teardown slice as a fixture — a completed wipe awaiting its hard delete is
+exactly what that work needs — and say so where the next operator will see it.
+**Staging currently carries one such fixture on purpose**:
+`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
+clean on 2026-09-04 and held for the control-plane teardown slice. It is
+excluded from the preflight above by its completion record; do not delete it
+without checking with that slice first.
 
 ## Diagnosing a single reading
 
@@ -1342,7 +1580,7 @@ npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted
 npm run ops -- corpus purge-connections \
   --tenant "$TENANT" --id rd_deleted --execute --sole-writer
 
-# Pre-tenant leftover copy, or a gate-off env (local / staging).
+# Pre-tenant leftover copy, or a gate-off env (local).
 npm run ops -- corpus purge-connections --tenant global --id rd_deleted
 ```
 

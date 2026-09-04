@@ -180,8 +180,10 @@ matrix, not a substitute for real readings.
 - Keep `index/list.json` in sync on every terminal write, via existing
   `ReadingStore` helpers. When `TENANT_DATA_PLANE=1` those objects live under
   `u/{tenantId}/`; stored `key_prefix` stays relative. Production has been
-  cut over (2026-08-31) and pins the gate in `[env.production.vars]`; local
-  and staging stay unset.
+  cut over (2026-08-31) and pins the gate in `[env.production.vars]`; staging
+  pins it too so the account-wipe path can be rehearsed there (issue #203),
+  with its pre-tenant corpus retained by the copy-only migration. Only local
+  stays unset.
 - Keep Vectorize scoped the same way: hosted code builds the store via
   `similarityStoreFor`, which maps the tenant onto a Vectorize **namespace**
   (its own segmentation primitive — a namespaced query cannot match another

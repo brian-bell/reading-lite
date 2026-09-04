@@ -118,9 +118,12 @@ WEB_BASE_URL = "http://127.0.0.1:5173"
 # TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
 # Local-only magic-link outbox. Never set on staging or production.
 LOCAL_MAIL_SINK = "1"
-# Tenant-prefixed R2 keys (u/{tenantId}/…). Local and staging stay unset: "1"
-# would hide their global readings/ and index/ objects. Production pins it
-# under [env.production.vars] since the founder cutover (2026-08-31).
+# Tenant-prefixed R2 keys (u/{tenantId}/…). Local stays unset: "1" would hide
+# the global readings/ and index/ objects a local bucket is seeded with, and
+# `wrangler dev` has no Vectorize binding to namespace anyway. Staging and
+# production both pin it under their own [vars] — staging since the deletion
+# staging gate (issue #203 / #195 S6), production since the founder cutover
+# (2026-08-31).
 # TENANT_DATA_PLANE = "1"
 # In-call retry for Anthropic / OpenAI 429s + 5xx. Honors Retry-After (clamped
 # to RETRY_MAX_DELAY_MS); other transient failures use exponential backoff with
@@ -174,6 +177,25 @@ WEB_BASE_URL = "https://reading-lite-staging.bbell.dev/"
 # signup_mode is open. Staging bootstrap stays invite_only — leave unset until
 # an explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
 # TURNSTILE_SITE_KEY = ""
+# Tenant-rooted keys (u/{tenantId}/) and namespaced vectors, matching
+# production. Pinned so staging can exercise the destructive account-wipe path
+# at all: `src/account-wipe.ts` skips with `no_tenant_prefix` whenever the gate
+# is off, so a staging environment with this unset cannot rehearse deletion —
+# which is what issue #203 asks it to be able to do.
+#
+# Prerequisite, not an assumption: staging's pre-tenant corpus must be migrated
+# under u/{founderTenantId}/ — objects AND vectors — by `ops corpus
+# migrate-founder`, run to a clean "fully migrated" re-plan, before this is
+# pinned. A namespaced query cannot see a bare rd_… vector, so a corpus copied
+# in R2 but not migrated in Vectorize returns zero neighbours silently.
+# That command copies rather than moves, so the pre-tenant readings/ and index/
+# objects stay in the bucket and removing this line and redeploying is a
+# complete rollback with nothing to restore.
+#
+# Turning this on also arms the wipe: fan-out stops short-circuiting, so check
+# for accounts already left in status='deleting' before deploying.
+# See docs/operations.md, "Rehearsing account deletion on staging".
+TENANT_DATA_PLANE = "1"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
