@@ -92,7 +92,16 @@
  * window only looks forward. It needs a tenant with more than one delivery's
  * worth of vectors and a publish landing inside that window.
  *
- * All three close the same way: a durable per-tenant vector-id ledger, which
+ * And a fourth: the fence lives in `processReading`, so it covers the publisher
+ * and nothing else. The offline vector writers — `corpus-backfill-vectors`,
+ * `corpus-migrate-founder`, and `batch/write-phase` — check no `users.status`
+ * and can upsert into a tenant whose wipe is already past its vectors phase. The
+ * removed post-empty re-submit used to catch that; nothing does now. It takes an
+ * operator running one of those `--execute` against an account being deleted,
+ * and the terminal probe still *sees* an upsert that lands before it (refusing
+ * to finish, then alerting) — it just cannot delete it.
+ *
+ * All four close the same way: a durable per-tenant vector-id ledger, which
  * takes R2 out of the id-source role entirely — issue #261, out of scope here.
  *
  * A second, accepted consequence of deleting the progress record: fan-out skips
