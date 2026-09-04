@@ -3,7 +3,7 @@
 // than fire-and-forget (issue #195 slice S2).
 
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_WIPE_IN_FLIGHT_MS, accountWipeProgressKey } from "../../../src/account-wipe";
+import { ACCOUNT_WIPE_IN_FLIGHT_MS } from "../../../src/account-wipe";
 import { buildKeyPrefix, r2KeyLayout } from "../../../src/modules/stores/layout";
 import {
   assertSweepableWipeKey,
@@ -23,6 +23,22 @@ import { runCli } from "../../../scripts/ops-lib/cli";
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 
 const TENANT_ID = "usr_11111111-1111-4111-8111-111111111111";
+
+/**
+ * The key shape the retired R2-backed progress record used.
+ *
+ * S2 (#270) moved wipe progress into D1 and deleted `accountWipeProgressKey`
+ * with the rest of the R2 record; #271's sweep landed in parallel and kept
+ * importing it, which left `main` failing `tsc`. The shape still matters to
+ * this suite — the sweep exists precisely to recognise and remove the objects
+ * that shape left behind in the bucket — so it is pinned here, next to the
+ * `wipeKeyTenantId` parser it has to agree with, rather than resurrected in
+ * `src/`, which no longer writes such a key.
+ */
+function accountWipeProgressKey(tenantId: string): string {
+  return `${WIPE_PREFIX}${tenantId}/progress.json`;
+}
+
 const PROGRESS_KEY = accountWipeProgressKey(TENANT_ID);
 const ACK = "--acknowledge-no-active-wipe";
 
