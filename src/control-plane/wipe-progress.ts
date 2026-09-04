@@ -44,7 +44,7 @@
  * confirmed clean. S4's hard delete of the `users` row gates on
  * `completed_at_ms`, which is also why the foreign key does not cascade.
  */
-import type { ControlPlaneDb } from "./db";
+import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import type { TenantId } from "./ids";
 
 export type WipePhase = "vectors" | "objects" | "done";
@@ -251,6 +251,21 @@ export class WipeProgressWriter {
   }
 
   private async insert(progress: WipeProgress, nextSeq: number): Promise<number> {
+    try {
+      return await this.insertRow(progress, nextSeq);
+    } catch (error) {
+      // `INSERT … WHERE NOT EXISTS` only turns a concurrent insert into
+      // `changes = 0` when the two writers are serialized. If both evaluate
+      // NOT EXISTS before either commits, the loser gets a raw unique-constraint
+      // error instead — which would escape the conflict path and burn queue
+      // retry budget rather than acking as a clean `lease_held` skip. Same
+      // outcome either way: someone else created this row first.
+      if (isUniqueConstraintError(error)) return 0;
+      throw error;
+    }
+  }
+
+  private async insertRow(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `INSERT INTO wipe_progress (
          tenant_id, phase, lease_seq, updated_at_ms, vector_cursor, r2_cursor,

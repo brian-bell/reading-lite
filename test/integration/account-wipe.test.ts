@@ -1022,6 +1022,26 @@ describe("account wipe (195b PR1)", () => {
     expect((await readWipeProgress(db, TENANT))!.objectsDeleted).toBe(9);
   });
 
+  // The first write for a tenant is an INSERT, not an UPDATE, so it has its own
+  // way to lose: `INSERT … WHERE NOT EXISTS` only yields `changes = 0` when the
+  // two writers are serialized. If both evaluate NOT EXISTS before either
+  // commits, the loser hits the primary key. That must surface as the same
+  // conflict, or it escapes the lease path and burns queue retry budget.
+  it("turns a losing first insert into a conflict rather than a raw constraint error", async () => {
+    const db = controlPlane();
+    expect(await readWipeProgress(db, TENANT)).toBeNull();
+    // Both deliveries believe the row is absent, which is what makes them both
+    // take the insert path.
+    const winner = new WipeProgressWriter(db, TENANT, null);
+    const loser = new WipeProgressWriter(db, TENANT, null);
+
+    await winner.write(emptyWipeProgress(NOW_MS));
+    await expect(loser.write(emptyWipeProgress(NOW_MS))).rejects.toBeInstanceOf(
+      AccountWipeProgressConflictError,
+    );
+    expect((await readWipeProgress(db, TENANT))!.leaseSeq).toBe(1);
+  });
+
   // The same contention seen through the job: a delivery whose record moved
   // under it reports `lease_held` and is acked, not retried into the DLQ.
   it("reports lease_held and acks when another delivery owns the wipe", async () => {
