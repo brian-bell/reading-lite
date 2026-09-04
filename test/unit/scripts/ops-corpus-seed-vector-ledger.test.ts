@@ -202,8 +202,9 @@ describe("ops corpus seed-vector-ledger — plan and execute", () => {
     const help = corpusSeedVectorLedgerCommand.helpText;
     expect(help).toContain("--execute");
     expect(help).toContain("--tenant");
-    // The rollout order is the whole point of the command; it must not be
-    // something an operator has to reconstruct from the PR.
-    expect(help).toMatch(/BEFORE the first ledger-based wipe/i);
+    // What it is NOT is the load-bearing part now: the wipe seeds itself, so
+    // an operator must not be told this is a prerequisite for deletion.
+    expect(help).toMatch(/NOT A PREREQUISITE FOR DELETION/i);
+    expect(help).not.toMatch(/MUST RUN THIS/i);
   });
 });

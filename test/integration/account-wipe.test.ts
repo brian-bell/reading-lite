@@ -340,6 +340,7 @@ function wipeJobDeps(extra: Partial<AccountWipeJobDeps> & { clock?: { t: number 
     now: extra.now ?? (() => clock.t),
     maxObjectPages: extra.maxObjectPages,
     maxVectorBatches: extra.maxVectorBatches,
+    maxSeedPages: extra.maxSeedPages,
   };
 }
 
@@ -1697,6 +1698,10 @@ describe("account wipe (195b PR1)", () => {
       ...(await wipeEnv()),
       READINGS_BUCKET: wrapBucketClock(memory.bucket, clock, { advanceListMs: 10 }),
     };
+    // Already seeded: the seed step persists once per page ON PURPOSE (so a
+    // delivery that dies still advanced), which is the opposite of what this
+    // test measures. It is about the objects phase's throttled beat.
+    await seedProgress({ phase: "vectors" });
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
@@ -2091,7 +2096,7 @@ describe("account wipe (195b PR1)", () => {
       const first = await processAccountWipeJob(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
         jobEnv,
-        wipeJobDeps({ maxObjectPages: 1 }),
+        wipeJobDeps({ maxSeedPages: 1 }),
       );
       expect(first.kind).toBe("continue");
       const mid = await readProgress();

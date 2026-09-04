@@ -364,6 +364,21 @@ export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_dele
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
 /**
+ * R2 pages the seed step walks per delivery.
+ *
+ * Five, not the objects phase's twenty, because a seed page costs far more than
+ * a list call. A page of up to `R2_LIST_LIMIT` keys can yield that many
+ * distinct reading ids — a run of `index/by-id/{id}` keys is exactly one id per
+ * object — and each `VECTOR_LEDGER_WRITE_CHUNK` of them is its own D1
+ * statement. Twenty pages would therefore put ~1000 D1 statements in one
+ * invocation on a large tenant, on top of the vectors and objects phases that
+ * may run in the same delivery: the same Workers subrequest ceiling that cut
+ * ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES to 5. Five pages keeps the step near 250
+ * statements and still covers 5000 objects a delivery, with `continue`
+ * self-sends carrying the rest.
+ */
+export const ACCOUNT_WIPE_DEFAULT_SEED_PAGES = 5;
+/**
  * Vector batches per delivery.
  *
  * Five, not twenty, because each batch is now more than one call. A batch reads
@@ -405,6 +420,7 @@ export interface AccountWipeJobDeps {
   now?: () => number;
   maxObjectPages?: number;
   maxVectorBatches?: number;
+  maxSeedPages?: number;
 }
 
 function wipeJobNow(deps: AccountWipeJobDeps): number {
@@ -821,8 +837,8 @@ async function runAccountWipeJob(
       db,
       tenantId,
       keyRoot,
-      maxObjectPages,
-      heartbeat,
+      deps.maxSeedPages ?? ACCOUNT_WIPE_DEFAULT_SEED_PAGES,
+      persist,
       now,
     );
     if (seed === "continue") return continueResult();
@@ -1061,7 +1077,7 @@ async function seedLedgerFromCorpus(
   tenantId: TenantId,
   keyRoot: string,
   maxPages: number,
-  heartbeat: () => Promise<void>,
+  persist: () => Promise<void>,
   now: () => number,
 ): Promise<"continue" | "done"> {
   const layout = r2KeyLayout(keyRoot);
@@ -1077,23 +1093,30 @@ async function seedLedgerFromCorpus(
     // start of the walk.
     const listObj = await bucket.get(layout.listIndexKey());
     if (listObj) {
+      // The READ is outside the catch, deliberately. A transient R2 error is
+      // not a corrupt index, and treating it as one would silently narrow
+      // coverage in exactly the case this read exists for — readings whose
+      // objects are already partly purged, which the key walk below cannot
+      // find. Let it propagate: the delivery retries and seeds properly.
+      const raw = await listObj.text();
+      let ids: string[] = [];
       try {
-        const parsed = ListIndexSchema.safeParse(JSON.parse(await listObj.text()));
+        const parsed = ListIndexSchema.safeParse(JSON.parse(raw));
         if (parsed.success) {
-          const ids: string[] = [];
           for (const item of parsed.data.items) {
             const id = parseReadingId(item.id);
             if (id) ids.push(id);
           }
-          await record(ids);
         }
       } catch {
-        // A corrupt list index contributes nothing. It is not fatal and must
-        // not be: the key walk below is the wider source anyway, and refusing
-        // to seed over a damaged index would strand the corpus it describes.
+        // Genuinely unparseable, which is a different thing and not fatal: the
+        // key walk below is the wider source, and refusing to seed over a
+        // damaged index would strand the corpus it describes.
+        ids = [];
       }
+      await record(ids);
     }
-    await heartbeat();
+    await persist();
   }
 
   let pages = 0;
@@ -1113,7 +1136,13 @@ async function seedLedgerFromCorpus(
     cursor = list.truncated ? list.cursor : undefined;
     progress.seedCursor = cursor;
     pages += 1;
-    await heartbeat();
+    // PERSISTED per page, not heartbeated. The heartbeat is throttled to a
+    // minute, so a delivery that trips the subrequest ceiling part-way through
+    // a large tenant would otherwise write no cursor at all and make zero
+    // forward progress — burning the retry budget and dead-lettering while
+    // repeating the same first pages. One full-row UPDATE per page is a cheap
+    // price for guaranteeing the walk advances.
+    await persist();
     if (cursor === undefined) break;
     if (pages >= maxPages) {
       logSeeded(tenantId, created, "continue");

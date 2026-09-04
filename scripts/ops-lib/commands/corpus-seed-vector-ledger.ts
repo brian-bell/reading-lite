@@ -1,15 +1,23 @@
 // `ops corpus seed-vector-ledger` — walk one tenant's corpus and write a
 // `vector_ledger` row for every reading id it can derive.
 //
-// Why it exists (issue #195 slice S3). From this slice on, the account wipe
-// terminates on "no ledger rows remain for this tenant" rather than "the R2
-// prefix is empty", and it submits `deleteByIds` only for ids the ledger names.
-// Every vector written from now on is ledgered before its upsert — but a corpus
-// that already exists has vectors and no rows. Running the ledger-based wipe
-// against such a corpus would find an empty ledger, submit nothing, empty R2,
-// and report a clean wipe with the whole embedding corpus intact. Seeding is
-// what closes that gap, and it must run before the first ledger-based wipe on
-// any environment with existing data.
+// Why it exists (issue #195 slice S3), and what it is NOT.
+//
+// The account wipe submits `deleteByIds` only for ids the `vector_ledger` names,
+// and a corpus that predates the ledger has none. The wipe closes that itself:
+// before any phase runs it pages its own key root, derives every reading id
+// from the object keys, and inserts the rows it is missing (`seedLedgerFromCorpus`
+// in src/account-wipe.ts). So this command is NOT a prerequisite for deletion
+// and nobody has to remember to run it.
+//
+// It earns its place for two other things:
+//
+//   - Rehearsal. Running the same walk in plan mode says what a wipe would
+//     find, without deleting anything, which is what a staging drill wants.
+//   - Repairing a LIVE tenant. The wipe's own seed only runs when an account is
+//     being deleted; this fills the ledger for an account that is not, so the
+//     rows exist before they are needed and `ops account residue-scan` (slice
+//     S5) has something to compare against.
 //
 // Why it lives in the `corpus` group and not `account`. It reads corpus data
 // and its unit of work is a reading — the same walk `corpus backfill-vectors`
@@ -79,7 +87,15 @@ interface Args {
   limit?: number;
 }
 
-/** Ledger writes go out in batches this size, to bound one D1 statement run. */
+/**
+ * Ids per progress line.
+ *
+ * NOT a bound on the D1 work: `markLive` re-chunks internally at
+ * `VECTOR_LEDGER_WRITE_CHUNK`, and through the wrangler adapter each of those
+ * chunks is its own `wrangler d1 execute` subprocess. This only decides how
+ * often the run reports `seeded n/total`, which on a corpus of any size is
+ * worth having.
+ */
 export const SEED_LEDGER_BATCH = 100;
 
 function parseSeedArgs(argv: string[]): Args {
@@ -241,13 +257,11 @@ Walks one tenant's corpus and writes a D1 'vector_ledger' row, state 'live', for
 every reading id it can derive — from index/list.json, from index/by-id/, and
 from the readings/ key layout, unioned.
 
-WHY YOU MUST RUN THIS. From issue #195 slice S3 on, the account wipe's
-termination condition is "no vector_ledger rows remain for this tenant", and it
-submits deleteByIds only for ids the ledger names. Every vector written after
-that slice is ledgered before its upsert, but a corpus that already exists has
-vectors and no rows. Wiping such a tenant would submit nothing, empty R2, and
-report a clean wipe with the embeddings intact and unaddressable. Seed every
-environment that has data BEFORE the first ledger-based wipe runs there.
+NOT A PREREQUISITE FOR DELETION. The account wipe seeds its own ledger from R2
+before it deletes anything, so an environment whose corpus predates the ledger
+needs nothing done to it first. This command exists to rehearse that walk
+without deleting anything, and to fill the ledger for a LIVE tenant that is not
+being deleted — so the rows are there before they are needed.
 
 It over-seeds on purpose: a row for a reading with no vector costs one no-op
 deleteByIds and then clears, while a MISSING row is a vector nothing can ever
@@ -258,13 +272,13 @@ Idempotent: rows are upserts keyed by (tenant_id, reading_id). Re-running after
 a partial run finishes the job, and re-running after new readings have landed
 adds them (they are also ledgered by the Worker at publish time).
 
-One thing to know before re-seeding a tenant whose wipe is already running —
-which is the documented remedy when a wipe refuses with
-'account_wipe_unseeded_tenant'. Seeding marks every id 'live', so it RESETS rows
-the wipe had already moved to 'delete_submitted', clearing their delete stamp
-and absent streak. Nothing is lost and nothing is stranded: the next pass simply
-re-submits those deletes and re-runs the +120s confirmation clock. It costs that
-wipe one more round trip, not correctness.
+One thing to know before re-seeding a tenant whose wipe is already running.
+Seeding marks every id 'live', so it RESETS rows the wipe had already moved to
+'delete_submitted', clearing their delete stamp and absent streak. Nothing is
+lost and nothing is stranded: the next pass simply re-submits those deletes and
+re-runs the +120s confirmation clock. It costs that wipe one more round trip,
+not correctness. (The wipe's own seed step does not have this effect — it is
+insert-only.)
 
 --tenant global is refused: the pre-tenant corpus has no tenant id to key rows
 by, and no account wipe addresses it.
