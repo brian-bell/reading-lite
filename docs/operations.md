@@ -319,18 +319,23 @@ Two prerequisites, both dashboard work, both outside this repo:
 
 - `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
-  `ops deploy worker --env production` uploads the script and then fails with
-  authentication error 10000 on `/zones/.../workers/routes`** — the same footgun
-  described under "MCP connector" below, now on a second zone. Live traffic is
-  unaffected (existing routes are untouched, so the old host keeps serving the
-  previously deployed script), but the release chain is not: `deploy-worker.yml`
-  exits non-zero, and `deploy-spa.yml` runs only on a successful Worker run, so
-  **no production Worker or SPA deploy lands — for this merge or any later one —
-  until the token is re-scoped**. Re-scope it before merging anything that adds
-  these routes, then re-run the failed workflow.
+  `ops deploy worker --env production` applies the remote D1 migrations, uploads
+  the script, and then fails with authentication error 10000 on
+  `/zones/.../workers/routes`** — the same footgun described under "MCP
+  connector" below, now on a second zone. Mind what that leaves behind: the
+  migrations and the new Worker script **have** landed and are live on the
+  existing `reading-lite.bbell.dev` routes; only the route addition fails. And
+  because `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs
+  only on a successful Worker run — never deploys, so production Worker code
+  sits ahead of the production SPA until someone notices. Re-scope the token
+  before merging anything that adds these routes, then re-run the failed
+  workflow.
 - `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
-  to the `main` branch, with an Active certificate, or the new host serves the
-  API but not the SPA.
+  to the `main` branch, with an Active certificate. This is an ordering
+  prerequisite, not a cosmetic one: a Worker route only receives traffic for a
+  hostname that has a proxied DNS record in the zone, and the Pages custom-domain
+  binding is what creates that record at the apex. Without it the new host serves
+  neither the SPA nor the API — the routes below are simply inert.
 
 `WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
 addition: emitted links and the MCP Origin allowlist still name
