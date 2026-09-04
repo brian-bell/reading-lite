@@ -280,12 +280,25 @@ dragging a finished wipe back through the queue. In order:
    D1 delete, so the `users` row is never removed while guard state keyed to
    that tenant survives.
 3. **The R2 prefix is rechecked** after those Durable Object purges and the
-   address-history lookup, immediately before `db.batch`. A late publisher in
-   that window would otherwise leave an orphan the next tick can no longer
+   address-history lookup, immediately before `db.batch`. A late publisher
+   during those round-trips would otherwise leave an orphan no later tick can
    enumerate, because the hard delete removes the tenant from
-   `listDeletingUsers`. A `not_empty` verdict refuses the batch; fan-out then
-   reopens the wipe and enqueues on **the same tick** rather than waiting
-   fifteen minutes.
+   `listDeletingUsers`. Anything but a confirmed-empty verdict refuses the
+   batch. Reached from fan-out the verdict is only ever `empty` or `not_empty`
+   — the third state, "could not look", needs the data-plane gate off, and
+   fan-out has already returned early in that case — so in practice a refusal
+   means real leftovers, and the next `*/15` tick reopens the wipe for them. An
+   R2 `list` that throws is the genuine could-not-look case: it propagates out
+   of teardown and is logged as `account_teardown_failed`, leaving every row in
+   place for the next tick.
+
+   **This narrows the window; it does not close it.** An object can still land
+   between the verdict resolving and the batch committing, and that one is
+   orphaned by the same argument — the tenant is gone from `listDeletingUsers`
+   and nothing enumerates it again. It is the same residual class as the
+   late-publish race in the wipe itself, and it needs the same fix: the durable
+   per-tenant vector/object provenance that issue #261 tracks. Do not read this
+   step as a guarantee that no orphan can occur.
 4. Every tenant-keyed D1 row goes in one batch, children before parents:
    `api_token_scopes`, `api_tokens`, `sessions`, `auth_challenges`,
    `digest_deliveries`, `user_settings`, `tenant_limits`, the account's
@@ -299,9 +312,9 @@ dragging a finished wipe back through the queue. In order:
 early when `TENANT_DATA_PLANE` is unset (local), because there is no tenant
 prefix to confirm empty. Staging pins the gate in `[env.staging.vars]` (issue
 #203 / slice S6), so a staging account whose wipe has completed is torn down
-on the next `*/15` tick — the same path production uses. The S6 completed-wipe
-fixture is the exception: see "Rehearsing account deletion on staging". Residue
-scan remains slice S5.
+on the next `*/15` tick — the same path production uses, and that includes the
+S6 completed-wipe fixture, which is exempt from nothing: see "Rehearsing
+account deletion on staging". Residue scan remains slice S5.
 
 Teardown runs on a `residue = 1` wipe too. A wipe that finished without
 confirming the namespace clean is still finished; the flag is copied onto the
@@ -853,7 +866,7 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 The join is what makes this list *actionable* rather than just true. A tenant
 whose `wipe_progress` row carries a `completed_at_ms` has already been wiped.
 Before S4 that meant fan-out skipped it; **after S4 it means the next tick
-will hard-delete the account** unless it is the held fixture below. The
+will hard-delete the account** — every such tenant, with no exemption. The
 `IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at_ms`),
 which is still live and does belong in the list. Completed empty-prefix tenants
 are a separate question:
@@ -865,8 +878,8 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
              WHERE u.status = 'deleting' AND w.completed_at_ms IS NOT NULL"
 ```
 
-`usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list and is
-held from automatic teardown until `force = 1`.
+`usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list, and it
+is torn down automatically like any other completed wipe — see below.
 
 Anything left in that result and not meant to be destroyed — the staging founder
 above all — must be back to `status='active'` first. Flipping the status back is **not** a full
@@ -933,11 +946,17 @@ nothing if you get them wrong:
 #    directly. The wipe is driven off this row: without it the UPDATE below
 #    matches nothing, listDeletingUsers never returns the tenant, and the whole
 #    drill silently exercises nothing while every residue check passes.
+#
+#    Use a per-run address. `users.email_canonical` is NOT NULL UNIQUE, and the
+#    original S6 fixture below already holds `s6-drill@test.example` until its
+#    teardown removes the row — reusing it fails this INSERT on the constraint,
+#    which is exactly the "creates nothing, passes everything" outcome the
+#    warning above is about.
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "INSERT INTO users (id, email_canonical, email_display, status, \
              email_verified_at_ms, created_at_ms, updated_at_ms) \
-             VALUES ('$DRILL','s6-drill@test.example','s6-drill@test.example', \
-             'active',<now>,<now>,<now>)"
+             VALUES ('$DRILL','s6-drill-$DRILL@test.example', \
+             's6-drill-$DRILL@test.example','active',<now>,<now>,<now>)"
 
 # 2. Seed. Objects under u/$DRILL/ (manifest.json, index/by-id/, index/by-url/,
 #    index/list.json) plus one namespaced vector {$DRILL}:{readingId} per ready
@@ -1058,25 +1077,33 @@ A new throwaway drill tenant is torn down on the tick after its wipe
 completes. Watch `account_teardown_complete` for it, then confirm the audit
 row and the absent `users` row rather than deleting them by hand.
 
-**The S6 completed-wipe fixture is held from that automatic path.**
-`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
-clean on 2026-09-04, is excluded from automatic teardown so the next `*/15`
-tick after S4 deploys cannot silently destroy it. Fan-out logs
-`account_teardown_held` each tick it skips. The S6 drill backdated
-`deleting_at_ms` rather than setting `force`, so the fixture's `force` is 0.
-To tear it down **intentionally** (the S4 rehearsal), set `force` on its wipe
-record and wait for the next tick:
+**The S6 completed-wipe fixture goes down the same automatic path**, and that
+is deliberate: `usr_5e6d0000-0000-4000-8000-000000000006`
+(`s6-drill@test.example`), wiped clean on 2026-09-04, is a completed wipe like
+any other, so the first `*/15` tick after S4 deploys tears it down. Letting
+that happen unattended **is** the rehearsal S6 exists for — watch it rather
+than arrange around it.
 
-```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE wipe_progress SET force = 1 \
-             WHERE tenant_id='usr_5e6d0000-0000-4000-8000-000000000006' \
-             AND completed_at_ms IS NOT NULL"
-```
+An earlier revision of S4 special-cased this tenant id in `src/account-wipe.ts`
+to hold it back. That was removed before merge and should not come back. Two
+reasons worth writing down, because the idea is tempting each time a fixture
+needs protecting:
 
-That is the explicit path. Leftover objects under the fixture prefix still
-reopen the wipe — the hold is against teardown, not against wiping data that
-landed.
+- The exemption was a bare id comparison in Worker source with no environment
+  gate, so it shipped to production. An account with that id there would have
+  been silently excluded from an irreversible deletion path, visible only as a
+  log line — a deletion-compliance failure, not an operational one. It also
+  contradicted the rule in `src/control-plane/account-delete.ts`: the founder
+  is a normal tenant, and no tenant is silently special-cased.
+- Its release was `wipe_progress.force`, which already means "skip the 7-day
+  grace / redrive this wipe". Since `force` on an envelope is persisted onto
+  the record, an operator redriving the fixture's wipe for any reason would
+  have set it and the next tick would have torn the fixture down anyway. The
+  hold did not hold.
+
+To observe the rehearsal, watch for `account_teardown_complete` on that tenant
+id, then confirm the `account_deletions` row exists and the `users` row is
+gone. Do not delete anything by hand.
 
 ## Diagnosing a single reading
 

@@ -27,7 +27,10 @@ comments of the modules themselves — read those before changing a module.
   (preserving `force` from the wipe record). Two phases: Vectorize `deleteByIds`
   then paged R2. The wipe *job* does not hard-delete the users row; cron
   fan-out hands a completed, empty-prefix tenant to `account-teardown.ts` for
-  that. The header comment is the invariant list — read it first.
+  that — every tenant, with no id special-cased. A teardown prefix recheck that
+  is not confirmed-empty refuses the batch: `not_empty` reopens the wipe next
+  tick, anything else just retries teardown. The header comment is the
+  invariant list — read it first.
 - `src/control-plane/vector-ledger.ts` — the durable per-tenant vector-id
   ledger (`vector_ledger`, migration `0010`) and its confirmation rule. Every
   vector writer records the reading id here before upserting, which takes R2 out
@@ -63,7 +66,9 @@ comments of the modules themselves — read those before changing a module.
   the `users` row it describes), purges the tenant's `TenantUsageGuard` and its
   `GlobalUsageGuard` leases fail-closed, looks up address history, then
   **rechecks the R2 prefix immediately before `db.batch`** (after those
-  round-trips — a late publisher in that window must not orphan an object).
+  round-trips, so a late publisher during them does not orphan an object —
+  narrowed, not closed: one landing between the verdict and the commit is
+  still orphaned, the same #261 residual).
   Then deletes every tenant-keyed row and the `users` row in one ordered batch.
   Gates on `wipe_progress.completed_at_ms`, never `first_completed_at_ms`.
   Nothing in this schema cascades, so `wipe_progress` is deleted explicitly,
@@ -312,9 +317,13 @@ Pointers only — the details live in the named files' comments.
   `account-teardown.ts` gates on — never infer a wipe's outcome from R2 state.
   Teardown runs from cron fan-out, not from the wipe delivery: audit row first,
   guards fail-closed, address-history lookup, then the load-bearing R2 prefix
-  recheck immediately before the ordered D1 batch ending at `users`. A recheck
-  of `not_empty` reopens the wipe and enqueues on the same tick. The staging S6
-  fixture is held from automatic teardown until `wipe_progress.force` is set.
+  recheck immediately before the ordered D1 batch ending at `users`. Anything
+  but confirmed-empty refuses the batch — `not_empty` reopens the wipe on the
+  next tick, anything else retries teardown rather than reopening. No
+  tenant id is exempt: an earlier revision special-cased the staging S6 fixture
+  in Worker source and was reverted before merge — that exemption shipped to
+  production ungated, and its `wipe_progress.force` release was reachable from
+  an unrelated redrive (`docs/operations.md`).
   Under `invite_only`, the freed address needs a **fresh** invite, because
   teardown deletes the account's consumed `signup_invites` row. It frees every
   address the account ever used, collected from its own challenges — but only
