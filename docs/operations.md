@@ -76,6 +76,15 @@ publishing against a tenant confirmed `deleting` deletes its own vector directly
 (`ReadingVisibility.removeForDeletedTenant`) rather than waiting on an
 `index/list.json` row the wipe has already removed.
 
+**Deploy note, one time only:** the `sweep` phase this removed is no longer a
+valid stored phase. A wipe caught mid-sweep when the new Worker rolls out leaves
+an unparseable progress record; cron clears it and the tenant is not re-swept,
+and a redelivery that reaches the job first restarts at `vectors` against an
+empty prefix and can raise a spurious `account_wipe_namespace_residue` for a
+tenant that was in fact wiped. Neither loses anything the removed re-submit did
+not already cover, but if `reading-lite-wipe` has messages in flight at deploy
+time, treat one residue alert in that window as suspect rather than a finding.
+
 **That narrows the race rather than closing it.** The publisher's post-publish
 status recheck fails open on a D1 lookup error, and an isolate that dies between
 the vector upsert and the recheck never compensates at all. A vector published

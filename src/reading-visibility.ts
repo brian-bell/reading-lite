@@ -93,6 +93,13 @@ export class ReadingVisibility {
   // The list row is still removed under the ordinary ownership gate: removing a
   // foreign attempt's row buys nothing here (the wipe deletes the whole index
   // anyway) and re-spelling that gate would be a second, divergent copy of it.
+  //
+  // Note for anyone adding a "cancel deletion during the grace window": this
+  // fires on `deleting` regardless of whether a wipe has started, so a reading
+  // that completed during grace would survive a cancellation with its list row
+  // and manifest but no embedding. Safe today only because `beginAccountDeletion`
+  // is one-way; a reactivation path has to reconcile vectors (see `ops corpus
+  // backfill-vectors`) or narrow this gate.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
     await this.removeListRow(args);
     if (!this.similarity) return;

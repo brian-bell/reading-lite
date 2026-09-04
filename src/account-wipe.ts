@@ -59,9 +59,10 @@
  * **Resumability is stateless beyond two cursors.** Reading ids are re-derived
  * from R2 on every pass rather than persisted; the progress record carries only
  * phase, the two cursors, and lease/probe bookkeeping. Both cursors are values,
- * not indices — `vector_cursor` is the last reading id submitted, so a set that
- * gained or lost an id between deliveries cannot shift a window past an id that
- * was never sent.
+ * not indices — `vector_cursor` is the last reading id submitted, so an id
+ * disappearing between deliveries, or appearing above the cursor, cannot shift a
+ * window past an id that was never sent. (An id that first becomes derivable
+ * from R2 *below* the cursor is still missed; see the race below.)
  *
  * ## The race this does not close
  *
@@ -77,8 +78,16 @@
  * whose vectors phase is already past will empty the reading's R2 objects and
  * leave the vector with no id source. The terminal probe can sample for such a
  * vector but cannot delete it, and so can a stranding that predates the wipe
- * entirely (review finding F3). Closing this needs a durable per-tenant
- * vector-id ledger — issue #261, out of scope here.
+ * entirely (review finding F3).
+ *
+ * A third, narrower instance of the same shape: a reading that first becomes
+ * derivable from R2 *between* two vectors-phase deliveries, and whose (random)
+ * id sorts below `vector_cursor`, is never submitted by this wipe — the resume
+ * window only looks forward. It needs a tenant with more than one delivery's
+ * worth of vectors and a publish landing inside that window.
+ *
+ * All three close the same way: a durable per-tenant vector-id ledger, which
+ * takes R2 out of the id-source role entirely — issue #261, out of scope here.
  *
  * A second, accepted consequence of deleting the progress record: fan-out skips
  * a tenant with no record AND an empty prefix, because that pair is what an
@@ -197,7 +206,9 @@ const AccountWipeProgressSchema = z.object({
   // to deleteByIds. Not an index — the id list is re-derived from R2 on every
   // delivery, so an id appearing or disappearing between two deliveries would
   // shift a numeric offset's window and silently skip whichever id landed on the
-  // boundary. "Everything sorted after the last id we submitted" survives both.
+  // boundary. "Everything sorted after the last id we submitted" survives a
+  // removal and an append above the cursor; an id that first appears BELOW the
+  // cursor is still missed, which is one of the strandings the header names.
   vector_cursor: z.string().optional(),
   r2_cursor: z.string().min(1).optional(),
   mutation_ids: z.array(z.string()),
@@ -534,9 +545,9 @@ export async function processAccountWipeJob(
       await doneWriter.remove();
       return { kind: "complete", objects_deleted: progress.objects_deleted, mutation_ids: progress.mutation_ids };
     }
-    // Union stored reading ids with an R2 re-list, then Vectorize-delete
-    // before touching R2. Jumping to objects would empty the prefix and
-    // leave missed/late vectors behind.
+    // Re-derive the ids from an R2 re-list and Vectorize-delete before touching
+    // R2. Jumping straight to objects would empty the prefix and leave the ids
+    // this pass has not yet submitted with no source to derive them from.
     progress = reopenLeftoverProgress(progress);
   }
   const writer = new WipeProgressWriter(env.READINGS_BUCKET, tenantId, record.etag);
@@ -805,7 +816,10 @@ async function submitVectorDeletes(
   }
   // Resume by value. `ids` is sorted and re-derived per delivery, so slicing by
   // a stored index would drop whichever id fell on the boundary when the set
-  // changed in between; "sorted after the last id submitted" cannot.
+  // changed in between; "sorted after the last id submitted" cannot. It does
+  // still miss an id that first appears below the cursor — a forward-only window
+  // cannot see backwards — which the header lists with the other strandings
+  // #261's ledger closes.
   const cursor = progress.vector_cursor;
   const pending = cursor === undefined ? ids : ids.filter((id) => id > cursor);
   if (pending.length === 0) return "done";
