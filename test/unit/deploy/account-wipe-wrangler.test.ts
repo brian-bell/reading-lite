@@ -45,10 +45,12 @@ describe("account wipe wrangler wiring", () => {
   // silent loss of the wipe, not a config tidy-up.
   //
   // Rolling the gate back off IS a supported path (docs/operations.md,
-  // "Rehearsing account deletion on staging" — the corpus migration copies
-  // rather than moves, so the pre-tenant objects are still there). It is just
-  // not a silent one: a rollback commit must relax this assertion for the
-  // environment it rolls back, in the same commit, which is the point.
+  // "Rehearsing account deletion on staging"). The corpus migration copies
+  // rather than moves, so the pre-tenant objects are still there — but that is
+  // a complete rollback only before post-pin writes resume. After writes,
+  // rollback needs a freeze plus reverse reconciliation, or an explicit
+  // acceptance of loss. A rollback commit must also relax this assertion for
+  // the environment it rolls back, in the same commit.
   it("pins the tenant data plane in every environment the wipe queue is wired into", () => {
     const wrangler = read("wrangler.toml");
     for (const env of ["staging", "production"]) {
@@ -56,5 +58,37 @@ describe("account wipe wrangler wiring", () => {
       expect(vars, `[env.${env}.vars] block`).not.toBeNull();
       expect(vars![1]).toMatch(/^TENANT_DATA_PLANE = "1"$/m);
     }
+  });
+
+  // The S6 rehearsal runbook is the operator-facing pin contract: rolling the
+  // gate back after writes is not free, rescue must clear deleting_at_ms,
+  // fencing a signed-up tenant must revoke credentials, and teardown must
+  // delete dependents.
+  it("documents the staging pin rollback, rescue, fence, and teardown procedures", () => {
+    const wrangler = read("wrangler.toml");
+    const stagingVars = /\[env\.staging\.vars\]([\s\S]*?)\n\[/.exec(wrangler);
+    expect(stagingVars, "[env.staging.vars] block").not.toBeNull();
+    expect(stagingVars![1]).toMatch(/reverse reconcili/i);
+
+    const ops = read("docs/operations.md");
+    const rehearsal = ops.split("### Rehearsing account deletion on staging")[1];
+    expect(rehearsal, "rehearsal section").toBeDefined();
+    const section = rehearsal!.split("\n## ")[0];
+
+    expect(section).toMatch(/complete rollback only before post-pin writes resume/i);
+    expect(section).toMatch(/reverse reconcili/i);
+    expect(section).toMatch(/deleting_at_ms=NULL/);
+    expect(section).toMatch(/COALESCE\(deleting_at_ms/);
+    expect(section).toMatch(/DELETE \/api\/account/);
+    expect(section).toMatch(/revocation_reason='account_delete'/);
+    expect(section).toMatch(/DELETE FROM user_settings/);
+    expect(section).toMatch(/DELETE FROM tenant_limits/);
+    expect(section).toMatch(/DELETE FROM sessions/);
+    expect(section).toMatch(/DELETE FROM api_token_scopes/);
+    expect(section).toMatch(/DELETE FROM api_tokens/);
+    expect(section).toMatch(/DELETE FROM auth_challenges/);
+    expect(section).toMatch(/DELETE FROM digest_deliveries/);
+    expect(section).toMatch(/DELETE FROM wipe_progress/);
+    expect(section).toMatch(/DELETE FROM users/);
   });
 });
