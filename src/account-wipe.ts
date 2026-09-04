@@ -631,8 +631,8 @@ async function tearDownFinishedAccount(
       tenantId,
       nowMs,
       // Asked again here, inside teardown, immediately before the batch — not
-      // reused from the check above, which is a whole Durable Object round-trip
-      // older by then.
+      // reused from the check above, which is two Durable Object round-trips
+      // and an address-history lookup older by then.
       prefixVerdict: () => tenantPrefixVerdict(env.READINGS_BUCKET, tenantId, env),
     });
     if (result.kind === "torn_down") {

@@ -261,10 +261,14 @@ describe("tearDownAccount — the completion gate", () => {
       ).resolves.toEqual({ kind: "prefix_not_empty", verdict });
 
       expect(count(sqlite, "users", "id", USER), verdict).toBe(1);
-      // Refused before the audit row and before either guard was touched.
-      expect(auditRow(sqlite), verdict).toBeUndefined();
-      expect(tenant.bodies, verdict).toEqual([]);
-      expect(global.bodies, verdict).toEqual([]);
+      for (const { table, column, value } of CHILD_TABLES) {
+        expect(count(sqlite, table, column, value), `${verdict}:${table}`).toBe(1);
+      }
+      // Same boundary as a lost race: the prefix check is after the audit row
+      // and the guard purges, so those have already run. D1 rows stay.
+      expect(auditRow(sqlite), verdict).toBeDefined();
+      expect(tenant.bodies, verdict).toEqual([{ kind: "purge_tenant", tenantId: USER }]);
+      expect(global.bodies, verdict).toEqual([{ kind: "purge_tenant", tenantId: USER }]);
     }
   });
 
@@ -288,6 +292,59 @@ describe("tearDownAccount — the completion gate", () => {
 
     expect(asked).toBe(1);
     expect(count(sqlite, "users", "id", USER)).toBe(0);
+  });
+
+  // A late publisher during either Durable Object purge or the address-history
+  // lookup must not see an earlier `empty` verdict used for the hard delete:
+  // cron then stops enumerating the tenant and the new object is orphaned.
+  it("rechecks the prefix after the guard purges and address lookup, immediately before the batch", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const order: string[] = [];
+    let verdict: PrefixVerdict = "empty";
+    const recording = (label: string) =>
+      ({
+        idFromName: (name: string) => name,
+        get: () => ({
+          async fetch() {
+            order.push(label);
+            verdict = "not_empty";
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          },
+        }),
+      }) as unknown as DurableObjectNamespace;
+    const wrapped: ControlPlaneDb = {
+      first: (sql, ...params) => db.first(sql, ...params),
+      all: (sql, ...params) => {
+        order.push("addresses");
+        verdict = "not_empty";
+        return db.all(sql, ...params);
+      },
+      run: (sql, ...params) => db.run(sql, ...params),
+      batch: (statements) => {
+        order.push("batch");
+        return db.batch(statements);
+      },
+    };
+
+    await expect(
+      tearDownAccount(
+        wrapped,
+        { TENANT_USAGE_GUARD: recording("purge_tenant"), GLOBAL_USAGE_GUARD: recording("purge_global") },
+        {
+          tenantId: USER,
+          nowMs: NOW_MS,
+          prefixVerdict: async () => {
+            order.push("prefix");
+            return verdict;
+          },
+        },
+      ),
+    ).resolves.toEqual({ kind: "prefix_not_empty", verdict: "not_empty" });
+
+    expect(order).toEqual(["purge_tenant", "purge_global", "addresses", "prefix"]);
+    expect(count(sqlite, "users", "id", USER)).toBe(1);
+    expect(count(sqlite, "sessions", "user_id", USER)).toBe(1);
   });
 
   it("reports not_found for an unknown or malformed tenant", async () => {

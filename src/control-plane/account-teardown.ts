@@ -35,7 +35,12 @@
  *    that tenant may still be sitting in a lease book charging live tenants for
  *    concurrency. The next cron tick retries, and the audit row is already
  *    there.
- * 3. **The D1 rows last, in one `db.batch([...])`** — children before parents,
+ * 3. **The prefix is rechecked immediately before the batch**, after the
+ *    guard round-trips and the address-history lookup. A late publisher in
+ *    that window would otherwise leave an orphan the next cron tick can no
+ *    longer enumerate, because the hard delete removes the tenant from
+ *    `listDeletingUsers`.
+ * 4. **The D1 rows last, in one `db.batch([...])`** — children before parents,
  *    `wipe_progress` before `users`.
  *
  * ## Why the deletes are explicit, and why nothing cascades
@@ -76,8 +81,8 @@ import {
 export type AccountTeardownEnv = TenantUsageGuardEnv & GlobalUsageGuardEnv;
 
 /**
- * Whether the tenant's R2 prefix is confirmed empty, asked at the moment of
- * the delete rather than taken on trust from the caller.
+ * Whether the tenant's R2 prefix is confirmed empty, asked immediately before
+ * the hard-delete batch rather than taken on trust from the caller.
  *
  * Three states, not two, on purpose. "We looked and it is empty" and "we could
  * not look" are the same `false` to the fan-out's own helper, which is
@@ -144,12 +149,13 @@ export async function tearDownAccount(
     tenantId: string;
     nowMs: number;
     /**
-     * Asks, at the moment of the delete, whether the tenant's R2 prefix is
+     * Asks, immediately before the batch, whether the tenant's R2 prefix is
      * still holding objects. Required: this module enforces its own
      * precondition rather than trusting a caller that checked earlier, because
      * the check the caller made happened before two Durable Object round-trips
-     * and because the hard delete removes the tenant from `listDeletingUsers`,
-     * retiring the leftover-reopen net that used to cover exactly this.
+     * and the address-history lookup, and because the hard delete removes the
+     * tenant from `listDeletingUsers`, retiring the leftover-reopen net that
+     * used to cover exactly this.
      */
     prefixVerdict: () => Promise<PrefixVerdict>;
   },
@@ -185,12 +191,6 @@ export async function tearDownAccount(
   if (!completion || completion.completed_at_ms === null) return { kind: "wipe_incomplete" };
   const completedAtMs = completion.completed_at_ms;
 
-  // The data-plane half has to be confirmed gone, here, now. Anything but a
-  // positive "empty" refuses — including "we could not look", because objects
-  // orphaned by this delete can never be found again through the tenant.
-  const verdict = await input.prefixVerdict();
-  if (verdict !== "empty") return { kind: "prefix_not_empty", verdict };
-
   // (1) Evidence before destruction.
   await writeAuditRow(db, {
     tenantId,
@@ -207,14 +207,22 @@ export async function tearDownAccount(
   await purgeTenantUsageGuard(env, tenantId);
   await purgeGlobalUsageLeases(env, tenantId);
 
-  // (3) The rows, in one batch.
+  // (3) Prefix recheck, immediately before the batch.
   //
   // The addresses are collected BEFORE the batch, because the batch is what
-  // deletes the rows that name them.
-  const statements = teardownStatements(
-    tenantId,
-    await addressesEverUsed(db, tenantId, user.email_canonical),
-  );
+  // deletes the rows that name them. The prefix is rechecked AFTER that lookup
+  // and the guard round-trips: a late publisher during either window would
+  // otherwise leave an orphaned object after the users row is gone, and cron
+  // would stop enumerating the tenant.
+  const addresses = await addressesEverUsed(db, tenantId, user.email_canonical);
+  // The data-plane half has to be confirmed gone, here, now. Anything but a
+  // positive "empty" refuses — including "we could not look", because objects
+  // orphaned by this delete can never be found again through the tenant.
+  const verdict = await input.prefixVerdict();
+  if (verdict !== "empty") return { kind: "prefix_not_empty", verdict };
+
+  // (4) The rows, in one batch.
+  const statements = teardownStatements(tenantId, addresses);
   const results = await db.batch(statements);
   // Every statement carries the same `status = 'deleting'` predicate, so if the
   // account was reactivated during the Durable Object round-trips the whole
