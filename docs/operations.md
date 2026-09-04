@@ -341,7 +341,11 @@ Two prerequisites, both dashboard work, both outside this repo:
   works only while `main` is still at that commit: both deploy workflows
   re-check `origin/main` against the run's `head_sha` and refuse a stale
   release, so once another merge lands, let the newer commit's chain deploy
-  instead.
+  instead. Note the same token scoping bites at retirement, in the other
+  direction: on a zone-scoped token wrangler uses the per-zone route API, which
+  only adds routes and never deletes stale ones, so **removing the `bbell.dev`
+  routes from this file will not remove them from Cloudflare** — delete them in
+  the dashboard when the old host is retired.
 - `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
   to the `main` branch, with an Active certificate. This is an ordering
   prerequisite, not a cosmetic one: a Worker route only receives traffic for a

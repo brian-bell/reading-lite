@@ -7,17 +7,23 @@ type Route = { pattern: string; zone_name: string };
  * Collect the `[[<table>]]` route blocks from wrangler.toml. Deliberately a
  * small hand parser: the repo has no TOML dependency, and the assertion we
  * care about is the exact set of (pattern, zone) pairs per environment.
+ *
+ * A block that does not yield both fields (e.g. one written with `zone_id`, or
+ * a `custom_domain` entry) is reported as `null` rather than skipped — dropping
+ * it silently would let an extra route hide from the exact-set assertions.
  */
-function routesFor(toml: string, table: string): Route[] {
+function routesFor(toml: string, table: string): (Route | null)[] {
   const lines = toml.split("\n");
-  const routes: Route[] = [];
+  const routes: (Route | null)[] = [];
   let current: Partial<Route> | null = null;
+  const close = () => {
+    if (!current) return;
+    routes.push(current.pattern && current.zone_name ? (current as Route) : null);
+  };
   for (const raw of lines) {
     const line = raw.trim();
     if (line.startsWith("[")) {
-      if (current?.pattern && current.zone_name) {
-        routes.push({ pattern: current.pattern, zone_name: current.zone_name });
-      }
+      close();
       current = line === `[[${table}]]` ? {} : null;
       continue;
     }
@@ -27,9 +33,7 @@ function routesFor(toml: string, table: string): Route[] {
     const match = /^(pattern|zone_name)\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/.exec(line);
     if (match) current[match[1] as keyof Route] = match[2] ?? match[3];
   }
-  if (current?.pattern && current.zone_name) {
-    routes.push({ pattern: current.pattern, zone_name: current.zone_name });
-  }
+  close();
   return routes;
 }
 
@@ -61,13 +65,16 @@ describe("production worker routes", () => {
   it("routes exactly those six patterns and nothing else", () => {
     // `www` is handled by a Cloudflare redirect rule, not by a worker route.
     expect(routes).toHaveLength(6);
-    expect(routes.some((route) => route.pattern.startsWith("www."))).toBe(false);
+    expect(routes.every((route) => route !== null)).toBe(true);
+    expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
   });
 
-  it("declares every route as a block this file can see", () => {
-    // The inline `routes = [...]` array is the one form the block parser above
-    // cannot count, which would quietly weaken the exact-set assertions.
+  it("declares every route in the block form the assertions above count", () => {
+    // The inline `routes = [...]` array and the singular `route = "..."` are the
+    // forms the block parser cannot count, and a route hidden in either would
+    // quietly weaken the exact-set assertions.
     expect(wrangler).not.toMatch(/^\s*routes\s*=\s*\[/m);
+    expect(wrangler).not.toMatch(/^\s*route\s*=/m);
   });
 });
 

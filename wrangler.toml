@@ -436,11 +436,13 @@ class_name = "GlobalUsageGuard"
 #
 # Production is dual-serving two hosts during the bbookmarks.com migration: the
 # original reading-lite.bbell.dev and the new bbookmarks.com, on the same Worker
-# script, bucket, D1 and Vectorize index. Nothing branches on hostname
-# (isSameOriginRequest derives same-origin from the request URL, and the SPA
-# calls window.location.origin), so both hosts behave identically. Keep the
-# bbell.dev routes until the old host is formally retired — they are the
-# rollback path. `www.bbookmarks.com` is a Cloudflare redirect rule to the
+# script, bucket, D1 and Vectorize index. The data plane does not branch on
+# hostname, so /api/* and /health behave the same on either host. /mcp* and
+# anything link-emitting do NOT yet — MCP_ALLOWED_ORIGINS and WEB_BASE_URL below
+# still name the old host, and sessions are host-scoped; see the
+# "bbookmarks.com dual-serve" section of docs/operations.md for the caveats.
+# Keep the bbell.dev routes until the old host is formally retired — they are
+# the rollback path. `www.bbookmarks.com` is a Cloudflare redirect rule to the
 # apex, not a Worker route: the redirect happens before the Worker is reached.
 # Deploying these routes needs CLOUDFLARE_API_TOKEN scoped for Workers Routes
 # on the bbookmarks.com zone as well as bbell.dev (see docs/operations.md).
