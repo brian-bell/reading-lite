@@ -252,7 +252,12 @@ max_batch_timeout = 5
 # per deleted account, and a single writer removes the sibling window the
 # progress CAS would otherwise only detect after the fact.
 max_concurrency = 1
-max_retries = 3
+# 4, not 3, and it must stay >= ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS in
+# src/account-wipe.ts: the wipe's ledger-confirmation bound is spent inside one
+# message's own retry budget, so a bound above this number would dead-letter
+# every healthy wipe before the bound ever tripped.
+# test/unit/deploy/account-wipe-wrangler.test.ts pins the relationship.
+max_retries = 4
 dead_letter_queue = "reading-lite-staging-wipe-dlq"
 
 [[env.staging.queues.consumers]]
@@ -420,7 +425,12 @@ max_batch_timeout = 5
 # per deleted account, and a single writer removes the sibling window the
 # progress CAS would otherwise only detect after the fact.
 max_concurrency = 1
-max_retries = 3
+# 4, not 3, and it must stay >= ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS in
+# src/account-wipe.ts: the wipe's ledger-confirmation bound is spent inside one
+# message's own retry budget, so a bound above this number would dead-letter
+# every healthy wipe before the bound ever tripped.
+# test/unit/deploy/account-wipe-wrangler.test.ts pins the relationship.
+max_retries = 4
 dead_letter_queue = "reading-lite-wipe-dlq"
 
 [[env.production.queues.consumers]]

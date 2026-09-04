@@ -16,6 +16,10 @@ import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
+import {
+  NO_OP_VECTOR_LEDGER,
+  type VectorLedger,
+} from "../../../src/control-plane/vector-ledger";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
@@ -30,6 +34,17 @@ const layout = r2KeyLayout();
 export interface WriteDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
+  // The durable vector-id ledger (issue #195 S3). Defaults to the no-op, which
+  // is what `--tenant global` and every fixture-backed test want: the
+  // pre-tenant corpus has no tenant id to key ledger rows by, and no account
+  // wipe addresses it.
+  //
+  // This writer had no `users.status` check and never will — it is an offline
+  // batch tool, and by the time it runs the tenant it is writing for may be
+  // mid-wipe. That was one of the four strandings `src/account-wipe.ts`'s
+  // header listed: an upsert landing after the wipe's vectors phase left a
+  // vector with no derivable id. The ledger closes it by holding the id.
+  ledger?: VectorLedger;
   embedMany(inputs: string[]): Promise<EmbedResult>;
   now(): string;
   log?: (line: string) => void;
@@ -369,7 +384,16 @@ async function writeNormalizedResults(
       metadata: vectorMetadata(manifest),
     });
   }
-  if (vectors.length > 0) await deps.vectorize.upsert(vectors);
+  if (vectors.length > 0) {
+    // Ledger BEFORE the upsert. A row for an upsert that then fails costs one
+    // redundant `deleteByIds`; an upsert with no row is a vector nothing can
+    // address once the reading's R2 objects are gone.
+    await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(
+      vectors.map((vector) => vector.id),
+      Date.now(),
+    );
+    await deps.vectorize.upsert(vectors);
+  }
 
   // 2. Write the success manifests + pointers.
   for (const { target, manifest } of successes) {

@@ -134,6 +134,19 @@ const MAX_TOP_K = 50;
 // or wait as if the delete were synchronous.
 export const VECTORIZE_DELETE_MAX_IDS = 1000;
 
+// Vectorize `getByIds` request size.
+//
+// Measured, not assumed (report rl-195-s6-staging-gate §3.6): the v2 REST API
+// answers `400 {"code":40007,"message":"too many ids in payload; max id count
+// is 20, got 25"}` above 20, and 200 at 20. The Workers BINDING's own limit was
+// not measured — nothing called `getByIds` through it before issue #195 S3 — so
+// this deliberately does NOT assume 1000 by symmetry with `deleteByIds`.
+//
+// Guessing high is the one mistake the vector ledger's confirmation rule cannot
+// absorb: an over-cap request answers 400 with an empty body, which reads
+// exactly like "none of these ids exists".
+export const VECTORIZE_GET_BY_IDS_MAX_IDS = 20;
+
 export function vectorizeMutationRecord(result: unknown): string {
   if (result && typeof result === "object" && "mutationId" in result) {
     const mutationId = (result as { mutationId: unknown }).mutationId;
@@ -238,6 +251,52 @@ export class SimilarityStore {
       mutations.push(vectorizeMutationRecord(await this.index.deleteByIds(chunk)));
     }
     return mutations;
+  }
+
+  // Which of these reading ids the index still holds.
+  //
+  // Absence here is the vector ledger's clearing evidence (issue #195 S3), so
+  // two properties are load-bearing and neither is optional:
+  //
+  //   - It NEVER swallows a failure. A thrown binding error, a non-200, a
+  //     timeout — all propagate, because the caller's rule treats a failed call
+  //     as no information rather than as absence. Returning `[]` on a caught
+  //     error would read as "every id is gone" and clear rows for vectors that
+  //     are still live, which is unrecoverable: the ledger is the only id
+  //     source left once R2 is empty.
+  //   - Requests are capped at VECTOR_GET_BY_IDS_MAX_IDS. S6 measured the v2
+  //     REST cap at 20 (21+ answers 400 with an empty body); the Workers
+  //     binding's own limit is unverified, so it uses the same conservative
+  //     number rather than assuming 1000 by symmetry with deleteByIds.
+  //
+  // Returns BARE reading ids, like `query` does: the `{tenantId}:{readingId}`
+  // composition never escapes this class. An id the index does not hold is
+  // simply missing from the result — that is the whole signal.
+  async getByIds(ids: readonly string[]): Promise<string[]> {
+    const index = this.index as {
+      getByIds?: (ids: string[]) => Promise<Array<{ id: string }>>;
+    };
+    if (typeof index.getByIds !== "function") {
+      // Fail loudly rather than answer "nothing found" from a binding that
+      // cannot answer at all — see the no-swallowing note above.
+      throw new Error("vectorize binding has no getByIds");
+    }
+    const out: string[] = [];
+    for (let offset = 0; offset < ids.length; offset += VECTORIZE_GET_BY_IDS_MAX_IDS) {
+      const chunk = ids
+        .slice(offset, offset + VECTORIZE_GET_BY_IDS_MAX_IDS)
+        .map((id) => tenantVectorId(this.namespace, id));
+      const found = await index.getByIds(chunk);
+      const ownPrefix = this.namespace === undefined ? undefined : `${this.namespace}:`;
+      for (const vector of found) {
+        const id =
+          ownPrefix !== undefined && vector.id.startsWith(ownPrefix)
+            ? vector.id.slice(ownPrefix.length)
+            : vector.id;
+        out.push(id);
+      }
+    }
+    return out;
   }
 
   // Emptiness evidence for a namespace we believe we just wiped. The Vectorize

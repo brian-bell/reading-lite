@@ -67,7 +67,6 @@ export interface WipeProgress {
   phase: WipePhase;
   leaseSeq: number;
   updatedAtMs: number;
-  vectorCursor?: string;
   r2Cursor?: string;
   force: boolean;
   objectsDeleted: number;
@@ -104,7 +103,6 @@ interface WipeProgressRow {
   phase: string;
   lease_seq: number;
   updated_at_ms: number;
-  vector_cursor: string | null;
   r2_cursor: string | null;
   force: number;
   objects_deleted: number;
@@ -120,7 +118,7 @@ interface WipeProgressRow {
   first_residue: number;
 }
 
-const COLUMNS = `phase, lease_seq, updated_at_ms, vector_cursor, r2_cursor, force,
+const COLUMNS = `phase, lease_seq, updated_at_ms, r2_cursor, force,
     objects_deleted, mutation_ids, index_count_sampled, index_count_start,
     probe_attempts, probe_saw_residue, continuations, completed_at_ms, residue,
     first_completed_at_ms, first_residue`;
@@ -145,7 +143,6 @@ function toProgress(row: WipeProgressRow): WipeProgress {
     phase: parsePhase(row.phase),
     leaseSeq: row.lease_seq,
     updatedAtMs: row.updated_at_ms,
-    vectorCursor: row.vector_cursor ?? undefined,
     r2Cursor: row.r2_cursor ?? undefined,
     force: row.force !== 0,
     objectsDeleted: row.objects_deleted,
@@ -224,7 +221,6 @@ export function reopenWipeProgress(progress: WipeProgress, force: boolean): Wipe
   return {
     ...progress,
     phase: "vectors",
-    vectorCursor: undefined,
     r2Cursor: undefined,
     force,
     probeAttempts: 0,
@@ -302,18 +298,17 @@ export class WipeProgressWriter {
   private async insertRow(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `INSERT INTO wipe_progress (
-         tenant_id, phase, lease_seq, updated_at_ms, vector_cursor, r2_cursor,
+         tenant_id, phase, lease_seq, updated_at_ms, r2_cursor,
          force, objects_deleted, mutation_ids, index_count_sampled,
          index_count_start, probe_attempts, probe_saw_residue, continuations,
          completed_at_ms, residue, first_completed_at_ms, first_residue
        )
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)`,
       this.tenantId,
       progress.phase,
       nextSeq,
       progress.updatedAtMs,
-      progress.vectorCursor ?? null,
       progress.r2Cursor ?? null,
       progress.force ? 1 : 0,
       progress.objectsDeleted,
@@ -335,7 +330,7 @@ export class WipeProgressWriter {
   private async update(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `UPDATE wipe_progress
-          SET phase = ?, lease_seq = ?, updated_at_ms = ?, vector_cursor = ?,
+          SET phase = ?, lease_seq = ?, updated_at_ms = ?,
               r2_cursor = ?, force = ?, objects_deleted = ?, mutation_ids = ?,
               index_count_sampled = ?, index_count_start = ?, probe_attempts = ?,
               probe_saw_residue = ?, continuations = ?, completed_at_ms = ?,
@@ -353,7 +348,6 @@ export class WipeProgressWriter {
       progress.phase,
       nextSeq,
       progress.updatedAtMs,
-      progress.vectorCursor ?? null,
       progress.r2Cursor ?? null,
       progress.force ? 1 : 0,
       progress.objectsDeleted,
@@ -376,9 +370,11 @@ export class WipeProgressWriter {
   /**
    * The terminal transition. Writes the completion record and keeps it.
    *
-   * Both cursors are cleared first: `vector_cursor` holds a reading id, and a
-   * record that outlives the account must not. Everything else the record
-   * carries is a count, a flag, or an opaque Vectorize mutation handle.
+   * The R2 cursor is cleared first. Nothing this record carries names a
+   * reading: the vectors phase's `vector_cursor` — the one field that held a
+   * reading id — went with `collectReadingIds` when S3's ledger took R2 out of
+   * the id-source role (migration `0010`). Everything left is a count, a flag,
+   * an opaque R2 continuation token, or a Vectorize mutation handle.
    *
    * Two pairs are written. `completedAtMs`/`residue` describe the current state
    * and a later reopen clears them. `firstCompletedAtMs`/`firstResidue` are set
@@ -395,7 +391,6 @@ export class WipeProgressWriter {
     const done: WipeProgress = {
       ...progress,
       phase: "done",
-      vectorCursor: undefined,
       r2Cursor: undefined,
       updatedAtMs: completedAtMs,
       completedAtMs,

@@ -1,6 +1,7 @@
 import { ZodError } from "zod";
 import type { ReadingStore } from "./modules/stores/reading-store";
 import type { SimilarityStore } from "./modules/stores/similarity-store";
+import type { VectorLedger } from "./control-plane/vector-ledger";
 import { applyStaleness } from "./modules/staleness";
 import { sha256Hex } from "./services";
 import type { Manifest } from "./schemas/manifest";
@@ -56,6 +57,17 @@ export interface PurgeDeps {
   reader: ReadingStore;
   // Null when no Vectorize binding exists (local dev): the purge is R2-only.
   similarity: SimilarityStore | null;
+  // The durable vector-id ledger (issue #195 S3). Null in the same
+  // configurations `similarity` is, plus one with no control plane bound.
+  //
+  // A purge marks the row `delete_submitted` rather than removing it, and that
+  // is deliberate: `deleteByIds` is asynchronous and confirms nothing, so a
+  // purge whose vector delete did not take is precisely the unaddressable-vector
+  // case (review finding F3). Keeping the id is the only thing that leaves it
+  // addressable. The row clears when a wipe's confirmation pass says something
+  // definite about it, or when a later republish of the same reading marks it
+  // live again.
+  ledger?: VectorLedger | null;
 }
 
 export async function purgeReading(
@@ -92,7 +104,12 @@ export async function purgeReading(
   // the by-url slot when the manifest is already gone.
   const row = await deps.reader.findListIndexItem(id);
 
-  if (deps.similarity) await deps.similarity.delete(id);
+  if (deps.similarity) {
+    await deps.similarity.delete(id);
+    // After the delete: `deleted_at_ms` dates the submission, and the ledger's
+    // +120s first-confirmation delay is measured from it.
+    await deps.ledger?.markDeleteSubmitted([id], Date.now());
+  }
 
   // Pointer before list row: when the manifest is corrupt or missing, the row
   // is the ONLY recoverable source of the URL hash, so it must survive until
@@ -122,7 +139,10 @@ export async function purgeReading(
   // nothing, and a stray pointer/row is reclaimed by the next submit's
   // ownership repair or corpus tooling.
   objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
-  if (deps.similarity) await deps.similarity.delete(id);
+  if (deps.similarity) {
+    await deps.similarity.delete(id);
+    await deps.ledger?.markDeleteSubmitted([id], Date.now());
+  }
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
 

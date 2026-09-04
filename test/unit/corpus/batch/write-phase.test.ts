@@ -157,8 +157,36 @@ const embedMany = (vecCount = 1536) =>
     tokensByInput: inputs.map(() => 8),
   }));
 
-function deps(r2: ReturnType<typeof fakeR2>, vectorize: ReturnType<typeof fakeVectorize>, embed = embedMany()) {
-  return { r2: r2 as any, vectorize: vectorize as any, embedMany: embed, now: () => NOW };
+// Records the ledger writes and, in the suffix, how many upserts had already
+// happened when each was made (issue #195 S3). This offline writer checks no
+// `users.status`, so without a row written FIRST an operator running it against
+// a tenant mid-wipe leaves a vector nothing can address.
+function fakeLedger(vectorize: ReturnType<typeof fakeVectorize>) {
+  const events: string[] = [];
+  return {
+    events,
+    ledger: {
+      markLive: async (ids: readonly string[]) => {
+        for (const id of ids) events.push(`live:${id}:${vectorize.upserts.length}`);
+      },
+      markDeleteSubmitted: async () => {},
+    },
+  };
+}
+
+function deps(
+  r2: ReturnType<typeof fakeR2>,
+  vectorize: ReturnType<typeof fakeVectorize>,
+  embed = embedMany(),
+  ledger?: ReturnType<typeof fakeLedger>["ledger"],
+) {
+  return {
+    r2: r2 as any,
+    vectorize: vectorize as any,
+    embedMany: embed,
+    now: () => NOW,
+    ...(ledger ? { ledger } : {}),
+  };
 }
 
 describe("writeResults — success path", () => {
@@ -265,6 +293,44 @@ describe("writeResults — success path", () => {
     expect(vec.upserts[0]!.id).toBe("rd_a");
     expect(vec.upserts[0]!.values).toHaveLength(1536);
     expect(vec.upserts[0]!.metadata).toMatchObject({ url: "https://example.com/a", title: "Resolved Title", tags: ["ai", "infra"] });
+  });
+
+  it("ledgers every reading id BEFORE upserting its vector", async () => {
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    const { ledger, events } = fakeLedger(vec);
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec, embedMany(), ledger));
+    // `:0` — no upsert had landed when the row was written. The reverse order
+    // would leave a vector unaddressable if the process died between them.
+    expect(events).toEqual(["live:rd_a:0"]);
+    expect(vec.upserts).toHaveLength(1);
+  });
+
+  it("writes vectors with no ledger supplied, which is what --tenant global wants", async () => {
+    // The pre-tenant corpus has no tenant id to key ledger rows by, and no
+    // account wipe addresses it, so the default is the no-op rather than a
+    // throw.
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec));
+    expect(vec.upserts).toHaveLength(1);
+  });
+
+  it("does not upsert vectors it could not ledger", async () => {
+    // Fail closed, like the publisher: a vector with no row is the stranding
+    // the ledger exists to make impossible, and the batch pass is resumable.
+    const r2 = fakeR2();
+    const vec = fakeVectorize();
+    const ledger = {
+      markLive: async () => {
+        throw new Error("D1 unavailable");
+      },
+      markDeleteSubmitted: async () => {},
+    };
+    await expect(
+      writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec, embedMany(), ledger)),
+    ).rejects.toThrow(/D1 unavailable/);
+    expect(vec.upserts).toHaveLength(0);
   });
 
   it("adds the reading to index/list.json, preserving unrelated items", async () => {

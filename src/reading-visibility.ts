@@ -3,6 +3,7 @@ import {
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
+import type { VectorLedger } from "./control-plane/vector-ledger";
 import type { Manifest, ProcessingStage } from "./schemas/manifest";
 import { attemptOwnership, type ProcessReadingArgs } from "./attempt-ownership";
 
@@ -39,10 +40,15 @@ const passthrough: Instrument = (_stage, fn) => fn();
 // fence: it drops the vector unconditionally, because a tenant marked `deleting`
 // has no data left worth guarding and because a concurrent account wipe may
 // already have removed the list row and manifest those gates read.
+// `ledger` is the durable vector-id ledger (issue #195 S3,
+// `src/control-plane/vector-ledger.ts`). It is null in exactly the situations
+// `similarity` is — no Vectorize binding, so no vector to account for — and a
+// write to it always accompanies a write to the vector, never replaces one.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,
     private readonly similarity: SimilarityStore | null,
+    private readonly ledger: VectorLedger | null = null,
   ) {}
 
   // Append (or replace) the list row, then upsert the vector. With a null
@@ -59,9 +65,16 @@ export class ReadingVisibility {
       this.reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
     );
     if (vector && this.similarity) {
-      await run("upsert_vector", () =>
-        this.similarity!.upsert(args.id, vector.embedding, vector.meta),
-      );
+      await run("upsert_vector", async () => {
+        // Ledger BEFORE the upsert, never after. A row written first and then
+        // followed by a crashed upsert costs one redundant `deleteByIds` for a
+        // vector Vectorize does not hold; the reverse — an upsert whose ledger
+        // write never lands — is a vector with no id source, which is the
+        // stranding the ledger exists to prevent and which nothing can repair
+        // once the reading's R2 objects are gone.
+        await this.ledger?.markLive([args.id], Date.now());
+        await this.similarity!.upsert(args.id, vector.embedding, vector.meta);
+      });
     }
   }
 
@@ -76,6 +89,11 @@ export class ReadingVisibility {
     if (!(await this.removeListRow(args))) return;
     if (!(await this.canRemoveVector(args))) return;
     await this.similarity.delete(args.id);
+    // AFTER the delete: `deleted_at_ms` is what the +120s first-confirmation
+    // delay is measured from, so it must record when the delete was actually
+    // asked for. The row is marked, not removed — an unconfirmed delete still
+    // needs its id kept, which is the whole point of the ledger.
+    await this.ledger?.markDeleteSubmitted([args.id], Date.now());
   }
 
   // Deletion-fence compensation: the tenant was confirmed `deleting` around this
@@ -114,7 +132,10 @@ export class ReadingVisibility {
   // id stays derivable, so the wipe can still finish the job) and it is confined
   // to a tenant being deleted, but it is a real intermediate state, not none.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
-    if (this.similarity) await this.similarity.delete(args.id);
+    if (this.similarity) {
+      await this.similarity.delete(args.id);
+      await this.ledger?.markDeleteSubmitted([args.id], Date.now());
+    }
     await this.removeListRow(args);
   }
 

@@ -60,6 +60,7 @@ import {
 } from "./control-plane/processing-leases";
 import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
+import { vectorLedgerFor, type VectorLedger } from "./control-plane/vector-ledger";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -80,6 +81,11 @@ export async function processReading(
 ): Promise<void> {
   const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
   const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
+  // The vector ledger travels with the vector store, and for the same reason:
+  // an id recorded before every upsert is what keeps the vector addressable
+  // once the reading's R2 objects are gone (issue #195 S3). Null without a
+  // control plane, which is also the only configuration with no wipe to feed.
+  const ledger = vectorLedgerFor(env, tenant);
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
   const tenantId = String(tenant.tenantId);
@@ -308,6 +314,7 @@ export async function processReading(
       {
         claimMissingPointer: true,
         defensive: false,
+        ledger,
         tenantAllowsVisibility: () => tenantConfirmedAllowsVisibility(env, tenantId),
         tenantConfirmedDeleting: () => tenantConfirmedDeleting(env, tenantId),
         vector: {
@@ -800,6 +807,10 @@ interface TerminalWriteState {
 
 export interface CommitTerminalOpts {
   claimMissingPointer: boolean;
+  // The durable vector-id ledger (issue #195 S3). Passed wherever a vector may
+  // be written or deleted; omitted on the pure-failure paths, which pass a null
+  // similarity store and touch no vector at all.
+  ledger?: VectorLedger | null;
   allowLastAttempt?: boolean;
   // false: write throws propagate (success path → outer catch marks failed).
   // true: throws are swallowed + logged (failure path has nowhere to bubble).
@@ -850,7 +861,7 @@ export async function commitTerminalManifest(
 ): Promise<{ committed: boolean; published: boolean }> {
   const run =
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
-  const visibility = new ReadingVisibility(reader, similarity);
+  const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
 
   const state = await terminalWriteState(reader, args, {
     claimMissingPointer: opts.claimMissingPointer,

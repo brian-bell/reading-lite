@@ -435,6 +435,10 @@ describe("ops corpus backfill-vectors", () => {
       upserts: 0,
       writersMade: 0,
       markerWrites: [] as unknown[],
+      // `live:{readingId}:{upserts at the time}` — issue #195 S3. The suffix is
+      // what makes "before the upsert, not after" assertable.
+      ledgered: [] as string[],
+      ledgersMade: [] as Array<{ tenant: string; bucket: string; execute: boolean }>,
     };
     const deps: CorpusBackfillVectorsDeps = {
       io: cio,
@@ -468,6 +472,19 @@ describe("ops corpus backfill-vectors", () => {
           },
         };
       },
+      makeLedger: (opts) => {
+        calls.ledgersMade.push({
+          tenant: opts.tenant.kind === "tenant" ? opts.tenant.tenantId : "global",
+          bucket: opts.bucket,
+          execute: opts.execute,
+        });
+        return {
+          markLive: async (ids) => {
+            for (const id of ids) calls.ledgered.push(`live:${id}:${calls.upserts}`);
+          },
+          markDeleteSubmitted: async () => {},
+        };
+      },
     };
     return { deps, lines, calls };
   }
@@ -491,6 +508,21 @@ describe("ops corpus backfill-vectors", () => {
     expect(calls.writersMade).toBe(1);
     expect(calls.embeds).toBe(1);
     expect(calls.upserts).toBe(1);
+    // The vector-ledger row is written BEFORE the upsert it describes (the `:0`
+    // suffix is the upsert count at the time). A row for an upsert that then
+    // fails costs one no-op deleteByIds; an upsert with no row is a vector
+    // nothing can address once the reading's R2 objects are gone.
+    expect(calls.ledgered).toEqual(["live:rd_v:0"]);
+  });
+
+  it("resolves the ledger for the run's own tenant, bucket and mode", async () => {
+    const { deps, calls } = makeDeps();
+    await corpusBackfillVectorsCommand.run(["--tenant", "global"], deps);
+    // Plan mode still resolves it — and asks for the no-op by passing
+    // execute:false — so an unrecognised --bucket is refused before any write.
+    expect(calls.ledgersMade).toEqual([
+      { tenant: "global", bucket: "reading-lite", execute: false },
+    ]);
   });
 
   it("tenant mode probes and upserts the ADR-0002 prefixed id with its audit stamp", async () => {

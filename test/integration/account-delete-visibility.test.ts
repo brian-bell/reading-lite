@@ -106,6 +106,10 @@ function statusLookupPlane(
 ): D1Database {
   let remaining = succeed;
   return {
+    // Delegated, not stubbed away: the publisher writes its vector-ledger row
+    // through `batch` (issue #195 S3), and a double that omitted it would make
+    // every publish throw for a reason the test is not about.
+    batch: (statements: unknown[]) => (inner as D1Database).batch(statements as never),
     prepare(sql: string) {
       const stmt = inner.prepare(sql);
       if (!/SELECT\s+status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\?/i.test(sql)) return stmt;

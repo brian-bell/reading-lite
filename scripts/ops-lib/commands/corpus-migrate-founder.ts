@@ -53,6 +53,9 @@ import type {
 } from "../../lib/cf-clients";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { operatorVectorLedger } from "../../account-lib/operator-ledger";
+import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
 
 const GET_BY_IDS_CHUNK = 20; // Vectorize get_by_ids max; 50 trips 40007
 const CHECKPOINT_EVERY = 25;
@@ -86,6 +89,14 @@ export interface CorpusMigrateFounderDeps extends BaseDeps {
   saveState: (path: string, state: MigrationState) => Promise<void>;
   now: () => string;
   sleep: (ms: number) => Promise<void>;
+  /**
+   * The durable vector-id ledger (issue #195 S3). Every migrated reading id is
+   * recorded before its vector is upserted, so this offline writer can no
+   * longer leave a vector stranded in a tenant whose wipe is already past its
+   * vectors phase. Resolved per run because the control plane it writes to is a
+   * function of `--bucket`, and because plan mode gets the no-op.
+   */
+  makeLedger: (opts: { tenant: OperatorTenant; bucket: string; execute: boolean }) => VectorLedger;
 }
 
 interface Args {
@@ -512,6 +523,10 @@ async function runCorpusMigrateFounder(
   }
   const tenantId = tenant.tenantId;
   const { io } = deps;
+  // Resolved up front so an unrecognised --bucket (no known control plane)
+  // stops the run before it copies or upserts anything. Plan mode gets the
+  // no-op: plan mode writes nothing to Vectorize either.
+  const ledger = deps.makeLedger({ tenant, bucket: args.bucket, execute: args.execute });
 
   io.stderr(`Bucket: ${args.bucket}`);
   io.stderr(`Vectorize: ${args.vectorize} (namespace ${tenantId})`);
@@ -719,6 +734,12 @@ async function runCorpusMigrateFounder(
       });
       written.push(v.reading_id);
     }
+    // Ledger BEFORE the upsert, on the BARE reading ids (issue #195 S3). This
+    // command has never checked `users.status` and does not start now: it is an
+    // offline migration and the tenant it writes for may be mid-wipe. Recording
+    // the id first is what keeps a vector it upserts after the wipe's vectors
+    // phase addressable instead of stranded.
+    await ledger.markLive(written, Date.parse(deps.now()) || Date.now());
     await clients.vectorize.upsert(upserts);
     for (const readingId of written) {
       state.vectors[readingId] = {
@@ -856,6 +877,7 @@ function defaultDeps(io: CommandIo): CorpusMigrateFounderDeps {
     saveState: saveMigrationState,
     now: () => new Date().toISOString(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    makeLedger: (opts) => operatorVectorLedger(opts),
   };
 }
 

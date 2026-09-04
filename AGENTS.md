@@ -27,8 +27,14 @@ comments of the modules themselves — read those before changing a module.
   (preserving `force` from the wipe record). Two phases: Vectorize `deleteByIds`
   then paged R2. Does not hard-delete the users row. The header comment is the
   invariant list — read it first.
+- `src/control-plane/vector-ledger.ts` — the durable per-tenant vector-id
+  ledger (`vector_ledger`, migration `0010`) and its confirmation rule. Every
+  vector writer records the reading id here before upserting, which takes R2 out
+  of the id-source role and makes "no rows for this tenant" the account wipe's
+  terminal condition. The confirmation constants and the reasons for each are
+  measured, not chosen — read the module header before touching them.
 - `src/control-plane/wipe-progress.ts` — the wipe's whole durable state in D1
-  (`wipe_progress`, migration `0009`): phase, both cursors, the `lease_seq`
+  (`wipe_progress`, migration `0009`): phase, the R2 cursor, the `lease_seq`
   compare-and-set that decides ownership, and the completion record that
   outlives the wipe and gates the later control-plane teardown. Completion is
   two pairs: `completed_at_ms`/`residue` are current state and a reopen clears
@@ -252,20 +258,20 @@ Pointers only — the details live in the named files' comments.
   new wipes for `status=deleting` tenants past the 7-day `deleting_at_ms`
   grace; a job `{ force: true }` skips grace to start. Cron resumes
   in-progress or leftover wipes during grace and preserves `force` from the
-  wipe record. Leftover recovery restarts at Vectorize (`phase=vectors`,
-  cursor cleared) and re-derives reading ids from an R2 re-list — ids are never
-  persisted on the progress record; `vector_cursor` resumes by id value, never
-  by index. There is no post-empty re-submit: a consumer publishing against a
-  tenant confirmed `deleting` deletes its own vector directly
-  (`ReadingVisibility.removeForDeletedTenant`) instead of routing through an
-  `index/list.json` row the wipe may already have removed. That narrows the
-  late-publish race rather than closing it — the recheck fails open on a lookup
-  error — and the residual is the same #261 gap.
-  An unbound `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2,
-  and that check runs before the "no ids to delete" short-circuit, so a wipe
-  cannot report success without having addressed the index.
+  wipe record. Leftover recovery restarts at Vectorize (`phase=vectors`).
+  **Reading ids come from D1 `vector_ledger`, never from R2** (issue #195 S3,
+  migration `0010`, `src/control-plane/vector-ledger.ts`): every vector writer
+  records the id there BEFORE it upserts, the vectors phase submits the
+  tenant's `live` rows and flips each batch to `delete_submitted`, and that
+  self-advancing query is the resume point — there is no `vector_cursor` any
+  more. The publisher fence
+  (`ReadingVisibility.removeForDeletedTenant`) still runs and still deletes
+  promptly, but the wipe no longer depends on it. An unbound `READINGS_INDEX`
+  throws (`index_unbound`) rather than emptying R2, and that check runs before
+  the ledger is read, so a wipe cannot report success without having addressed
+  the index.
   Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
-  time to disappear). All wipe state — phase, both cursors, lease, probe and
+  time to disappear). All wipe state — phase, the R2 cursor, lease, probe and
   continuation counters, completion — lives in D1 `wipe_progress`
   (`src/control-plane/wipe-progress.ts`, migration `0009`), never in R2. Writes
   are `UPDATE … WHERE lease_seq = ?`; a delivery that changes zero rows skips
@@ -274,23 +280,39 @@ Pointers only — the details live in the named files' comments.
   `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS`, while anything a later delivery needs is
   written unconditionally — which is why a frozen job clock and a 12-hour
   `Retry-After` no longer need special-casing. The completion record is
-  **kept**, with both cursors cleared, and is what the later users-row
+  **kept**, with the R2 cursor cleared, and is what the later users-row
   hard-delete gates on — never infer a wipe's outcome from R2 state. Gate on
   `completed_at_ms` (a reopen clears it); report history from
   `first_completed_at_ms`/`first_residue`, which no reopen can move. `residue`
   plus `probe_saw_residue` carry the terminal verdict.
-  Before success the wipe probes the tenant namespace, retrying a hit on a
-  minutes-scale delay bounded at the queue's `max_retries`, then emits a
-  high-severity `account_wipe_namespace_residue` (tenant id only, never reading
-  ids), records `residue`, and completes rather than looping forever. A
+  A wipe terminates on **an empty ledger for the tenant**, not on an empty R2
+  prefix. Clearing a row follows the rule S6 measured on staging, which
+  supersedes the design sketch: a namespaced `query` fast path clears the whole
+  tenant at once when it returns nothing; otherwise per-id `getByIds` (≤20 ids,
+  the measured REST cap — the Workers binding limit is unverified and
+  deliberately not assumed higher) needs **two consecutive absences from
+  *successful* responses, ≥60s apart**, with the first attempt no earlier than
+  **+120s** after `deleteByIds` returned and a **120/240/480s** backoff
+  thereafter, bounded at 4 attempts (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`, which
+  must stay ≤ the wipe consumers' `max_retries` in `wrangler.toml`). A
+  **non-200 is no information**: it resets the streak and never counts as
+  absence — the 20-id cap makes that concrete, since a 21-id chunk answers 400
+  with an empty body. `describe()`/`vectorCount`/`processedUpToMutation` are
+  never used in that logic, at all: S6 measured them going backwards between
+  replicas. Past the bound the wipe emits a high-severity
+  `account_wipe_namespace_residue` (tenant id only, never reading ids), records
+  `residue`, **keeps the ledger rows** (they are the only remaining handle on
+  the vectors), and completes rather than looping forever. A
   `status='deleting'` row with a NULL `deleting_at_ms` logs
   `account_wipe_missing_deleting_at` instead of stalling silently, and
   `continuations` bounds the `continue` self-send so a wipe that cannot finish
-  dead-letters instead of resetting its retry budget forever. Re-sweeping an
-  empty-prefix tenant with stranded vectors still needs the durable vector
-  ledger, issue #261 (`rl-wipe-vector-ledger`) — the record now says the wipe
-  ran, but there is still no id to delete by. The wipe DLQ logs and acks; it
-  must not call `markDeadLettered`.
+  dead-letters instead of resetting its retry budget forever. **An existing
+  corpus must be seeded first** — `ops corpus seed-vector-ledger --tenant
+  "$TENANT" --execute` — or its wipe finds an empty ledger and reports a clean
+  completion with every embedding intact and unaddressable. Readings already
+  purged from R2 with a failed vector delete are unseedable by construction;
+  that is the honest residual of #261. The wipe DLQ logs and acks; it must not
+  call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

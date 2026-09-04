@@ -171,3 +171,58 @@ describe("purgeReading error classification", () => {
     expect(row).toBeNull();
   });
 });
+
+// Issue #195 S3. A single-reading purge is a vector writer too, and it is the
+// one that most obviously produces the failure the ledger exists to prevent:
+// it deletes the reading's R2 objects in the same call, so a vector delete that
+// did not take leaves a vector with no id source anywhere (review finding F3).
+describe("purgeReading vector ledger", () => {
+  const events: string[] = [];
+  let deletes = 0;
+  const similarity = {
+    delete: async () => {
+      deletes += 1;
+    },
+  } as unknown as NonNullable<Parameters<typeof purgeReading>[0]["similarity"]>;
+  const ledger = {
+    markLive: async () => {
+      throw new Error("a purge never marks a vector live");
+    },
+    markDeleteSubmitted: async (ids: readonly string[]) => {
+      for (const id of ids) events.push(`submitted:${id}:${deletes}`);
+    },
+  };
+
+  it("marks the row delete_submitted after each vector delete, and never clears it", async () => {
+    events.length = 0;
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity, ledger }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    // Twice, once per vector delete: the purge issues a second, idempotent
+    // delete in its final sweep. Each is `:n` — after the delete it describes,
+    // because `deleted_at_ms` dates the submission and the confirmation rule's
+    // +120s first-attempt delay is measured from it.
+    expect(events).toEqual([`submitted:${ID}:1`, `submitted:${ID}:2`]);
+  });
+
+  it("touches no ledger when there is no similarity store to delete through", async () => {
+    // Local dev has no Vectorize binding, so the purge is R2-only and no vector
+    // delete was submitted. A `delete_submitted` row would date one that never
+    // happened.
+    events.length = 0;
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity: null, ledger }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    expect(events).toEqual([]);
+  });
+
+  it("purges without a ledger, so a control-plane-less environment still works", async () => {
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    expect(deletes).toBe(2);
+  });
+});
