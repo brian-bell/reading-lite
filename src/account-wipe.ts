@@ -20,11 +20,15 @@
  * embeddings permanently.
  *
  * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
- * (`index_unbound`) before it reads or writes anything, so no R2 object is
- * deleted while nothing can delete the matching vectors. The vectors phase
- * repeats the check *before* its "no ids to delete" short-circuit — an empty id
- * set means "R2 yielded no ids", which is also what an already-emptied prefix
- * looks like — and the terminal probe repeats it again.
+ * (`index_unbound`) before either phase runs, so no R2 object is deleted while
+ * nothing can delete the matching vectors — including on a delivery that resumes
+ * straight into `objects` and would otherwise never reach a vector call. The
+ * vectors phase repeats the check *before* its "no ids to delete" short-circuit
+ * — an empty id set means "R2 yielded no ids", which is also what an
+ * already-emptied prefix looks like — and the terminal probe repeats it again.
+ * Cron fan-out has no such check, so with the binding gone it still writes a
+ * progress record and enqueues; every delivery then throws. That is loud rather
+ * than destructive, which is the side to err on.
  *
  * **A wipe never reports success without addressing the index.** Before the
  * terminal transition it probes the tenant namespace and refuses to finish
@@ -510,17 +514,6 @@ export async function processAccountWipeJob(
   const keyRoot = tenantKeyRoot({ tenantId }, true);
   if (keyRoot === "") return { kind: "skipped", reason: "no_tenant_prefix" };
 
-  // Fail closed on an unbound index, before this job reads or writes anything.
-  // The vectors phase and the terminal probe each enforce this on their own, but
-  // neither covers a delivery that resumes straight into `objects`: that path
-  // would empty the tenant prefix and only then discover it has no way to delete
-  // the vectors — having just destroyed the only source of their ids. Hoisting
-  // the check is what makes "fail closed on an unbound index" true for every
-  // entry point rather than for the two that happen to look.
-  if (!env.READINGS_INDEX) {
-    throw new Error("account_wipe index_unbound");
-  }
-
   const layout = r2KeyLayout(keyRoot);
   const maxObjectPages = deps.maxObjectPages ?? ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES;
   const maxVectorBatches = deps.maxVectorBatches ?? ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES;
@@ -563,6 +556,20 @@ export async function processAccountWipeJob(
     // this pass has not yet submitted with no source to derive them from.
     progress = reopenLeftoverProgress(progress);
   }
+
+  // Fail closed on an unbound index, before either phase runs. The vectors phase
+  // and the terminal probe each enforce this on their own, but neither covers a
+  // delivery that resumes straight into `objects`: that path would empty the
+  // tenant prefix and only then discover it has no way to delete the vectors —
+  // having just destroyed the only source of their ids. Deliberately placed
+  // BELOW the grace gate and the stored-`done` cleanup above: those two touch
+  // neither R2 objects nor Vectorize, and the cleanup's whole job is to remove a
+  // progress object naming a deleted tenant. Throwing over either would trade a
+  // safe skip, or that object's removal, for a dead-lettered job.
+  if (!env.READINGS_INDEX) {
+    throw new Error("account_wipe index_unbound");
+  }
+
   const writer = new WipeProgressWriter(env.READINGS_BUCKET, tenantId, record.etag);
   const heartbeat = async () => {
     progress.updated_at_ms = now();

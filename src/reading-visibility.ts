@@ -103,11 +103,16 @@ export class ReadingVisibility {
   // Vector first, list row second — the same ordering `reading-purge.ts` uses,
   // and here it is load-bearing. `removeListIndexItemIf` throws when its CAS
   // retries are exhausted, which is exactly what a concurrent wipe rewriting or
-  // deleting `index/list.json` provokes, and every caller runs this inside the
-  // defensive log-and-continue wrapper. Sequencing the vector delete behind that
+  // deleting `index/list.json` provokes. Sequencing the vector delete behind that
   // write would let the one outcome this method exists to prevent — a vector
   // outliving the only source of its id — fall out of the failure it is most
   // likely to meet.
+  //
+  // Not free: when the list write is what fails, the vector is already gone
+  // while the row and manifest survive, so the reading stays listed and readable
+  // but missing from semantic search. That is the better half of the trade (the
+  // id stays derivable, so the wipe can still finish the job) and it is confined
+  // to a tenant being deleted, but it is a real intermediate state, not none.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
     if (this.similarity) await this.similarity.delete(args.id);
     await this.removeListRow(args);
