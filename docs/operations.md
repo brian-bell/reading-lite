@@ -306,9 +306,12 @@ Production serves two hosts during the domain migration. `[env.production.routes
 in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
 `/health`, `/mcp*`) **and** the same trio on `bbookmarks.com` (`zone_name =
 "bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
-Vectorize index, and nothing in the data plane depends on the hostname, so
-`/api/*` and `/health` are interchangeable between the two hosts. `/mcp*` is
-not yet: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
+Vectorize index, and nothing in the data plane depends on the hostname, so the
+`/api/*` read and write paths and `/health` are interchangeable between the two
+hosts. The exceptions are anything that *emits a link* — `/api/auth/*` magic-link
+mail is built from `WEB_BASE_URL`, still the old host, so a sign-in started on
+the new host is mailed back to the old one. `/mcp*` is not interchangeable
+either: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
 still lists only the old host, so browser-origin MCP calls to the new host are
 rejected until that allowlist follow-up lands (non-browser clients send no
 `Origin` and work on either host). Browser sessions are host-scoped too — the
@@ -316,9 +319,11 @@ session cookie carries no `Domain` attribute — so signing in on one host does
 not sign you in on the other. The old routes stay until the old host is
 formally retired; they are the rollback path.
 
-`www.bbookmarks.com` is **not** a Worker route. It is a Cloudflare Redirect Rule
-(301 to the apex) configured in the dashboard, which fires before a request ever
-reaches the Worker.
+`www.bbookmarks.com` is **not** a Worker route, and must not become one. `www` →
+apex is a Cloudflare Redirect Rule (301) to be created in the dashboard
+alongside the Pages custom domain; it fires before a request ever reaches the
+Worker. Until that rule exists, `www` falls through to whatever the zone serves
+— which, once the apex is proxied, is Pages rather than a redirect.
 
 Two prerequisites, both dashboard work, both outside this repo:
 
@@ -331,7 +336,9 @@ Two prerequisites, both dashboard work, both outside this repo:
   authentication error 10000 on `/zones/.../workers/routes`; with no grant on
   the zone at all (the likely state for a newly added zone) the zone lookup
   returns nothing and wrangler fails with `Could not find zone for
-  bbookmarks.com`. A third variant has nothing to do with the token: if one of
+  bbookmarks.com`. That lookup is filtered by `CLOUDFLARE_ACCOUNT_ID`, so a zone
+  registered under a *different* Cloudflare account fails with the same message
+  even on a correctly scoped token — check the account before chasing scopes. A third variant has nothing to do with the token: if one of
   these patterns is already bound to a different Worker in that zone, the
   publish fails with `Can't deploy routes that are assigned to another worker`.
   Mind what any of them leaves behind: the migrations and the new
