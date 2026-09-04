@@ -184,11 +184,17 @@ there" from "we never got an answer".
 ### Seed the vector ledger before the first ledger-based wipe
 
 **This is a rollout prerequisite, not a tidy-up.** From slice S3 the wipe
-terminates on "no `vector_ledger` rows remain for this tenant" and submits
-`deleteByIds` only for ids the ledger names. An environment whose corpus
-predates the ledger has vectors and no rows, so its first wipe would submit
-nothing, empty R2, and report a clean completion with the whole embedding
-corpus intact — and, R2 now being gone, unaddressable.
+submits `deleteByIds` only for ids the ledger names. An environment whose corpus
+predates the ledger has vectors and no rows, so its first wipe submits nothing,
+empties R2, and leaves every embedding behind.
+
+It does **not** report that as success. The wipe's terminal gate is a clean
+namespace probe *as well as* an empty ledger, and the probe is made
+unconditionally — precisely because an empty ledger is also what an unseeded
+tenant looks like. Such a wipe therefore spends its confirmation attempts,
+raises a high-severity `account_wipe_namespace_residue` alert, and records
+`residue = 1`. That is a loud failure rather than a silent one, and there is
+still nothing to delete by afterwards. Seed first.
 
 ```sh
 # Plan first. It lists every reading id it would ledger and writes nothing.
@@ -734,8 +740,9 @@ nothing if you get them wrong:
   synthetic reproduction of the issue #261 gap rather than a wipe bug.
 - **Seed the ledger for the drill tenant after writing its objects and vectors,
   and before marking it `deleting`.** The wipe's ids come from
-  `vector_ledger`, so a drill that skips this step wipes R2, finds nothing to
-  delete in Vectorize, and passes every residue check while proving nothing:
+  `vector_ledger`, so a drill that skips this step wipes R2, submits no vector
+  delete at all, and then fails its terminal probe on the vectors it left
+  behind — a real finding about the drill's setup rather than about the wipe:
   `npm run ops -- corpus seed-vector-ledger --tenant "$DRILL" --bucket
   reading-lite-staging --execute`.
 - **Expect two wipe passes for a healthy tenant.** The first submits the

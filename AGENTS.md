@@ -317,8 +317,9 @@ Pointers only — the details live in the named files' comments.
   `continuations` bounds the `continue` self-send so a wipe that cannot finish
   dead-letters instead of resetting its retry budget forever. **An existing
   corpus must be seeded first** — `ops corpus seed-vector-ledger --tenant
-  "$TENANT" --execute` — or its wipe finds an empty ledger and reports a clean
-  completion with every embedding intact and unaddressable. Readings already
+  "$TENANT" --execute` — or its wipe submits no vector delete at all and then
+  fails its terminal probe on everything it left behind (loud, not silent: the
+  probe is unconditional for exactly this reason). Readings already
   purged from R2 with a failed vector delete are unseedable by construction;
   that is the honest residual of #261. The wipe DLQ logs and acks; it must not
   call `markDeadLettered`.
