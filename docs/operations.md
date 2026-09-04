@@ -161,8 +161,8 @@ that moment is a permanent orphan: a bucket key naming a deleted tenant, with a
 body carrying that tenant's `vector_cursor` (a reading id). Clear it with
 
 ```sh
-npm run ops -- account sweep-wipe-prefix                 # plan: list only
-npm run ops -- account sweep-wipe-prefix --execute       # delete, then verify
+npm run ops -- account sweep-wipe-prefix    # plan: list only
+npm run ops -- account sweep-wipe-prefix --execute --acknowledge-no-active-wipe
 ```
 
 Rollout sequence, in order:
@@ -179,8 +179,12 @@ Rollout sequence, in order:
      --command "select count(*) from users where status='deleting'"
    ```
 
-   That count must be 0. A tenant still `deleting` may hold a live cursor, and
-   deleting it would restart that wipe from the beginning.
+   That count must be 0. A tenant still `deleting` may hold a live cursor: its
+   next progress write is a compare-and-set on the etag it read, so deleting the
+   record costs that tenant its cursor and restarts its wipe from a full id
+   re-collect. Nothing in R2 tells a live record from an orphaned one, which is
+   why `--execute` refuses to run without `--acknowledge-no-active-wipe` — the
+   flag is your assertion that you ran this query and saw 0.
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
    evidence the prefix is empty, not just that the deletes were submitted.

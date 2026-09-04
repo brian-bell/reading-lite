@@ -17,10 +17,12 @@ import {
   type WipeSweepStorage,
 } from "../../../scripts/ops-lib/commands/account-sweep-wipe-prefix";
 import type { R2ObjectMeta } from "../../../scripts/lib/cf-clients";
+import { runCli } from "../../../scripts/ops-lib/cli";
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 
 const TENANT_ID = "usr_11111111-1111-4111-8111-111111111111";
 const PROGRESS_KEY = accountWipeProgressKey(TENANT_ID);
+const ACK = "--acknowledge-no-active-wipe";
 
 function object(key: string, extra: Partial<R2ObjectMeta> = {}): R2ObjectMeta {
   return { key, size: 128, etag: "etag", lastModified: "2026-09-01T00:00:00.000Z", ...extra };
@@ -173,7 +175,7 @@ describe("ops account sweep-wipe-prefix", () => {
 
   it("succeeds with nothing to do on an already-empty prefix", async () => {
     const storage = fakeStorage({ listings: [[]] });
-    const { code, out } = await run(["--execute"], storage);
+    const { code, out } = await run(["--execute", ACK], storage);
     expect(code).toBe(0);
     expect(storage.deletes).toEqual([]);
     expect(out).toContain("already empty");
@@ -182,7 +184,7 @@ describe("ops account sweep-wipe-prefix", () => {
   it("deletes under --execute and exits 0 when the re-list comes back clean", async () => {
     const second = `${WIPE_PREFIX}${TENANT_ID.replace("1111-1111", "2222-2222")}/progress.json`;
     const storage = fakeStorage({ listings: [[object(second), object(PROGRESS_KEY)], []] });
-    const { code, out } = await run(["--execute"], storage);
+    const { code, out } = await run(["--execute", ACK], storage);
 
     expect(code).toBe(0);
     expect(storage.deletes).toEqual([PROGRESS_KEY, second].sort());
@@ -193,7 +195,7 @@ describe("ops account sweep-wipe-prefix", () => {
 
   it("exits non-zero when the post-delete re-list still shows objects", async () => {
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)], [object(PROGRESS_KEY)]] });
-    const { code, out, err } = await run(["--execute"], storage);
+    const { code, out, err } = await run(["--execute", ACK], storage);
 
     expect(code).toBe(1);
     expect(storage.deletes).toEqual([PROGRESS_KEY]);
@@ -207,7 +209,7 @@ describe("ops account sweep-wipe-prefix", () => {
       listings: [[object(PROGRESS_KEY)], []],
       deleteFails: new Set([PROGRESS_KEY]),
     });
-    const { code, err } = await run(["--execute"], storage);
+    const { code, err } = await run(["--execute", ACK], storage);
 
     expect(code).toBe(1);
     expect(err).toContain("unverified");
@@ -218,7 +220,7 @@ describe("ops account sweep-wipe-prefix", () => {
     const legacyKeys = ["readings/2026/04/26T200000Z-rd_abc123/manifest.json", "index/list.json"];
     for (const stray of [tenantKey, ...legacyKeys]) {
       const storage = fakeStorage({ listings: [[object(PROGRESS_KEY), object(stray)], []] });
-      const { code, err } = await run(["--execute"], storage);
+      const { code, err } = await run(["--execute", ACK], storage);
 
       expect(code, stray).toBe(1);
       // Not "everything but the stray key" — nothing at all.
@@ -232,5 +234,37 @@ describe("ops account sweep-wipe-prefix", () => {
     const storage = fakeStorage({ listings: [[]] });
     await expect(run(["--tenant", TENANT_ID], storage)).rejects.toThrow();
     expect(storage.deletes).toEqual([]);
+  });
+
+  it("refuses --execute without the no-active-wipe acknowledgement, before touching R2", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    await expect(run(["--execute"], storage)).rejects.toThrow(
+      /--execute requires --acknowledge-no-active-wipe/,
+    );
+    // Refused at parse time: no listing, no deletes.
+    expect(storage.prefixes).toEqual([]);
+    expect(storage.deletes).toEqual([]);
+  });
+
+  it("does not require the acknowledgement in plan mode", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    const { code } = await run([], storage);
+    expect(code).toBe(0);
+    expect(storage.deletes).toEqual([]);
+  });
+
+  it("maps the missing acknowledgement onto the CLI's usage exit code", async () => {
+    const { io, err } = captureIo();
+    const code = await runCli(["account", "sweep-wipe-prefix", "--execute"], {
+      io,
+      depsFor: () => ({
+        io,
+        createStorage: async () => {
+          throw new Error("storage must not be reached for a usage refusal");
+        },
+      }),
+    });
+    expect(code).toBe(2);
+    expect(err.join("\n")).toContain("--acknowledge-no-active-wipe");
   });
 });

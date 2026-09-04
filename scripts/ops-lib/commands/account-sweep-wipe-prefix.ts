@@ -40,7 +40,20 @@ export interface AccountSweepWipePrefixDeps extends BaseDeps {
 interface Args {
   bucket: string;
   execute: boolean;
+  acknowledgedNoActiveWipe: boolean;
 }
+
+// Deleting a LIVE wipe's record is the one way this command can do damage: the
+// running job's next progress write is a CAS on the etag it read, so the delete
+// costs that tenant its cursor and restarts the wipe from a full id re-collect.
+// Nothing in R2 distinguishes a live record from an orphaned one, and the
+// distinction lives in D1 (`users.status`), which this command deliberately does
+// not reach for — so the operator asserts it, the same shape as --sole-writer on
+// `corpus purge-connections`.
+const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
+const NO_ACTIVE_WIPE_CHECK =
+  'npx wrangler d1 execute reading-lite-control --env production --remote ' +
+  `--command "select count(*) from users where status='deleting'"`;
 
 function parseSweepArgs(argv: string[]): Args {
   let values;
@@ -50,15 +63,26 @@ function parseSweepArgs(argv: string[]): Args {
       options: {
         bucket: { type: "string" },
         execute: { type: "boolean", default: false },
+        "acknowledge-no-active-wipe": { type: "boolean", default: false },
       },
     }));
   } catch (err) {
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
-  return {
+  const args = {
     bucket: resolveBucket(values.bucket),
     execute: values.execute === true,
+    acknowledgedNoActiveWipe: values["acknowledge-no-active-wipe"] === true,
   };
+  // Refused at parse time, before a single R2 request: the acknowledgement is
+  // about the state of the system, not about what the listing happens to show.
+  if (args.execute && !args.acknowledgedNoActiveWipe) {
+    throw new UsageError(
+      `--execute requires ${NO_ACTIVE_WIPE_FLAG}: confirm no tenant is mid-wipe first, with\n  ${NO_ACTIVE_WIPE_CHECK}\n` +
+        "The count must be 0. Deleting a live wipe's progress record costs that tenant its cursor and restarts its wipe.",
+    );
+  }
+  return args;
 }
 
 function describe(object: R2ObjectMeta): string {
@@ -173,12 +197,19 @@ There is no --tenant flag: these keys sit outside every tenant key root and the
 sweep clears the prefix as a whole.
 
 Run it in plan mode before merging S2, and with --execute after S2's deploy has
-landed and no tenant is 'status=deleting'. See docs/operations.md, "Sweeping the
-wipe/ prefix".
+landed. Nothing in R2 tells a live record from an orphaned one, so --execute
+requires ${NO_ACTIVE_WIPE_FLAG}: check first with
+
+  ${NO_ACTIVE_WIPE_CHECK}
+
+and expect 0. See docs/operations.md, "Sweeping the wipe/ prefix".
 
 Options:
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --execute        Delete the listed objects, then verify the prefix is empty.
+  ${NO_ACTIVE_WIPE_FLAG}
+                   Assert that no tenant is mid-wipe (users.status='deleting').
+                   Required with --execute.
   --help           Show this message.`,
   defaultDeps: (io: CommandIo): AccountSweepWipePrefixDeps => ({
     io,
