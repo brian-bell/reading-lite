@@ -347,7 +347,16 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 # EMAIL_TO is unused; send-time recipient is users.email_display.
 EMAIL_FROM = "reading-lite@bbell.dev"
 EMAIL_TO = "bellbm@gmail.com"
-WEB_BASE_URL = "https://reading-lite.bbell.dev/"
+# Domain cutover (issue #265, S4): emitted links point at the new host. Every
+# queue-side link — digest, notification, MCP public_url — follows this base,
+# and so does magic-link mail for a request whose host is not a recognised
+# public origin. It is also one of the origins `isSameOriginRequest` accepts for
+# cookie auth (src/middleware.ts), so this flip moves that allowance to the new
+# host too — harmless while both hosts are ours, and writes still need the CSRF
+# HMAC. EMAIL_FROM deliberately stays on bbell.dev (its own later step).
+# Rollback is putting the old host back and deploying; the old host's routes are
+# still here, so it keeps serving either way.
+WEB_BASE_URL = "https://bbookmarks.com/"
 # Public Turnstile site key. Returned by GET /api/auth/login-options only when
 # signup_mode is open. Production bootstrap stays closed — leave unset until an
 # explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
@@ -497,10 +506,11 @@ class_name = "GlobalUsageGuard"
 # Production is dual-serving two hosts during the bbookmarks.com migration: the
 # original reading-lite.bbell.dev and the new bbookmarks.com, on the same Worker
 # script, bucket, D1 and Vectorize index. The data plane does not branch on
-# hostname, so /api/* and /health behave the same on either host. /mcp* and
-# anything link-emitting do NOT yet — MCP_ALLOWED_ORIGINS and WEB_BASE_URL in
-# [env.production.vars] above still name the old host, and sessions are
-# host-scoped (the session cookie carries no Domain attribute); see the
+# hostname, so /api/* and /health behave the same on either host. /mcp* now
+# accepts both hosts too (MCP_ALLOWED_ORIGINS above lists them), and since the
+# S4 cutover WEB_BASE_URL names bbookmarks.com, so emitted links point there.
+# Sessions remain host-scoped (the session cookie carries no Domain attribute),
+# so signing in on one host does not sign you in on the other; see the
 # "bbookmarks.com dual-serve" section of docs/operations.md for the caveats.
 # Keep the bbell.dev routes until the old host is formally retired — they are
 # the rollback path. `www.bbookmarks.com` gets no Worker route: `www` -> apex

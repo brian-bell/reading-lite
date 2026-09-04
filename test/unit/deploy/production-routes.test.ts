@@ -43,6 +43,26 @@ function routesFor(toml: string, table: string): (Route | null)[] {
   return routes;
 }
 
+/**
+ * Read a single `key = "value"` var out of one `[table]` section. Same reason
+ * as the route parser above: no TOML dependency, and the assertion that matters
+ * is the exact string a deploy would publish.
+ */
+function varFor(toml: string, table: string, key: string): string | null {
+  let inTable = false;
+  for (const raw of toml.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("[")) {
+      inTable = new RegExp(`^\\[\\s*${table.replace(/\./g, "\\.")}\\s*\\]\\s*(?:#.*)?$`).test(line);
+      continue;
+    }
+    if (!inTable) continue;
+    const match = new RegExp(`^${key}\\s*=\\s*(?:"([^"]*)"|'([^']*)')\\s*(?:#.*)?$`).exec(line);
+    if (match) return match[1] ?? match[2] ?? null;
+  }
+  return null;
+}
+
 const wrangler = readFileSync("wrangler.toml", "utf8");
 
 describe("production worker routes", () => {
@@ -106,6 +126,33 @@ describe("production worker routes", () => {
     // quietly weaken the exact-set assertions.
     expect(wrangler).not.toMatch(/^\s*routes\s*=\s*\[/m);
     expect(wrangler).not.toMatch(/^\s*route\s*=/m);
+  });
+});
+
+describe("production link-emitting config", () => {
+  it("emits links on bbookmarks.com", () => {
+    // Every queue-side link — digest, notification, MCP public_url — and the
+    // magic-link fallback for a request whose host is not a known public origin
+    // is built from this base. The trailing slash is the convention the other
+    // environments use; publicWebBase/buildMagicLinkVerifyUrl strip it.
+    expect(varFor(wrangler, "env.production.vars", "WEB_BASE_URL")).toBe("https://bbookmarks.com/");
+  });
+
+  it("keeps the mail sender on bbell.dev", () => {
+    // The sender move is a deliberately separate step: a host cutover and a
+    // mail-deliverability change must not land together.
+    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  });
+
+  it("keeps both hosts on the MCP origin allowlist", () => {
+    // The old host stays allowed for as long as it serves — it is the rollback path.
+    expect(varFor(wrangler, "env.production.vars", "MCP_ALLOWED_ORIGINS")).toBe(
+      "https://reading-lite.bbell.dev,https://bbookmarks.com",
+    );
+  });
+
+  it("leaves staging's base URL alone", () => {
+    expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://reading-lite-staging.bbell.dev/");
   });
 });
 

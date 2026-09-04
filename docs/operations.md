@@ -821,9 +821,12 @@ bootstrap of `dev-local-token`).
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
-production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
-`WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
+does not 404. Staging uses `https://reading-lite-staging.bbell.dev`; production
+serves both `https://bbookmarks.com` and `https://reading-lite.bbell.dev` (see
+"bbookmarks.com dual-serve" below). Magic-link mail prefers the host the sign-in
+request actually arrived on, and falls back to `WEB_BASE_URL`
+(`https://reading-lite-staging.bbell.dev/` on staging,
+`https://bbookmarks.com/` on production).
 
 ### bbookmarks.com dual-serve
 
@@ -833,28 +836,37 @@ in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
 "bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
 Vectorize index, and nothing in the data plane depends on the hostname, so the
 `/api/*` read and write paths and `/health` are interchangeable between the two
-hosts. The exceptions are anything that *emits a link* — `/api/auth/*` magic-link
-mail is built from `WEB_BASE_URL`, still the old host, so a sign-in started on
-the new host is mailed back to the old one. `/mcp*` is not interchangeable
-either — nor is the `/api/mcp` alias the section below offers as a fallback,
-which sits behind the same guard: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
-still lists only the old host, so browser-origin MCP calls to the new host are
-rejected until that allowlist follow-up lands (non-browser clients send no
-`Origin` and work on either host). Browser sessions are host-scoped too — the
-session cookie carries no `Domain` attribute — so signing in on one host does
-not sign you in on the other. The old routes stay until the old host is
-formally retired; they are the rollback path.
+hosts. `/mcp*` is too — `mcpOriginGuard` 403s any `Origin` outside
+`MCP_ALLOWED_ORIGINS`, and that var (like the `/api/mcp` alias behind the same
+guard) lists both hosts; non-browser clients send no `Origin` and work on either
+host regardless.
+
+Emitted links are the one place a host is *chosen* rather than observed, and
+since the cutover they choose the new host. `WEB_BASE_URL` is
+`https://bbookmarks.com/`, so every queue-side link — digest mail, reading
+notification mail, MCP `public_url` — points at `bbookmarks.com`. Magic-link
+mail is the exception to the exception: `publicWebBase` prefers the origin the
+sign-in request actually arrived on when that origin is a known public host, so
+a login started on the old host is still mailed back to the old host, and only
+an unrecognised or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM`
+stays `reading-lite@bbell.dev`; moving the sender is a separate later step, kept
+apart so a host move and a mail-deliverability change never land together.
+
+Browser sessions are host-scoped — the session cookie is `__Host-`-prefixed and
+so carries no `Domain` attribute — so signing in on one host does not sign you
+in on the other. A one-time re-login on the new host is expected and intended,
+not a bug. The old routes stay until the old host is formally retired; they are
+the rollback path, and reverting the `WEB_BASE_URL` line plus one deploy is the
+whole rollback for the cutover.
 
 `www.bbookmarks.com` is **not** a Worker route, and must not become one. `www` →
 apex belongs to a Cloudflare Redirect Rule (301), which fires before a request
-ever reaches the Worker. As of 2026-09-04 `www` has no record at all and returns
-NXDOMAIN; proxying the apex does not change that, since a Pages custom domain
-creates a record only for the hostname it is bound to. So `www` stays
-unreachable — not wrongly served — until it is given its own proxied record and
-the redirect rule.
+ever reaches the Worker. It has its own proxied record and the redirect rule, and
+301s to the apex; nothing in this repo configures either.
 
-Three things to settle outside this repo — the first two before the routes can
-deploy, the third only if `www` is to resolve:
+Three things to settle outside this repo. All three are done — kept here because
+each is a live failure mode if the token, the custom domain, or the `www` record
+is ever changed:
 
 - `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
@@ -889,20 +901,49 @@ deploy, the third only if `www` is to resolve:
   to the `main` branch, with an Active certificate. This is an ordering
   prerequisite, not a cosmetic one: a Worker route only receives traffic for a
   hostname that has a proxied DNS record in the zone, and the Pages custom-domain
-  binding is what creates that record at the apex. While the apex has no proxied
-  record — its state as of 2026-09-04, when it resolved to no A, AAAA or CNAME —
-  the routes are simply inert and the new host serves neither SPA nor API. Note
+  binding is what creates that record at the apex. Without a proxied record the
+  routes are simply inert and the new host serves neither SPA nor API. Note
   the flip side: if the apex is ever proxied to something else first (a parked
   page, another site or Worker), these routes take `/api/*`, `/health` and
   `/mcp*` on that hostname from the next production deploy, before any
   deliberate cutover. Check the apex before deploying if that may have changed.
 - `www.bbookmarks.com` needs a proxied record plus the `www` → apex Redirect
-  Rule, if `www` is to resolve at all. Nothing in this repo configures it, and
+  Rule for `www` to resolve at all. Nothing in this repo configures it, and
   no Worker route should: the 301 is meant to happen ahead of the Worker.
 
-`WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
-addition: emitted links and the MCP Origin allowlist still name
-`reading-lite.bbell.dev` until their own cutover steps land.
+#### Migration status
+
+Issue [#265](https://github.com/brian-bell/reading-lite/issues/265) tracks the
+move; this is the same ordering, as it stands in the repo.
+
+Done:
+
+- **C0/C1/C2** — zone confirmed, `CLOUDFLARE_API_TOKEN` re-scoped for Workers
+  Routes on both zones, `bbookmarks.com` added as a Pages custom domain with an
+  active certificate, `www` → apex redirect in place.
+- **S1** — production Worker routes for both hosts (`[env.production.routes]`).
+- **S2** — `MCP_ALLOWED_ORIGINS` accepts both hosts.
+- **S3** — magic-link mail prefers the request's own public host.
+- **S4** — cutover: `WEB_BASE_URL` is `https://bbookmarks.com/`.
+
+Immediately after the S4 deploy, check three things:
+
+1. `GET /api/whoami` returns the same `tenant_id` on both hosts — the data
+   plane does not branch on hostname and must not start to.
+2. A sign-in request resolves its base to the host it arrived on: from
+   `bbookmarks.com` the mailed link is `https://bbookmarks.com/auth/verify#…`,
+   from `reading-lite.bbell.dev` it is that host's own `/auth/verify`
+   (`publicWebBase`, `src/control-plane/magic-link-mail.ts`). Verify from code
+   and config, not by mailing a live user.
+3. The old host still serves the SPA and `/api/*` unchanged — it is the
+   rollback path and nothing in the cutover removes it.
+
+Still open, in order: **C3** re-register the MCP connectors (Cursor, Grok Bot)
+at the new host; **C4** add the old host's SPA-path redirect rule and `noindex`
+header; **S5** operator script and skill defaults; **S6** the wider docs sweep
+(README, AGENTS.md, OpenAPI, deploy workflow URLs); **S7** staging's own
+`bbookmarks.com` subdomain; **S8** the `EMAIL_FROM` move; **S9** retiring the
+old host.
 
 ### MCP connector
 
