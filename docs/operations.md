@@ -633,11 +633,12 @@ the legacy `readings/` and `index/` objects are all still in the bucket.
 Removing the pin is a **complete rollback only before post-pin writes resume**.
 After the pin, every new staging reading is written only under its tenant R2
 root and Vectorize namespace. Rolling the gate back then makes the Worker read
-the retained global snapshot, so post-migration reads and writes disappear from
-the app even though their bytes still exist under `u/{tenantId}/`. After writes
-have landed, rollback requires a freeze plus reverse reconciliation (copy
-tenant-rooted objects and namespaced vectors back to the global layout) or an
-explicit captain-accepted loss of the post-pin corpus.
+the retained global snapshot: the copy-not-move pre-tenant corpus is visible
+again, and only post-pin writes are hidden (their bytes still exist under
+`u/{tenantId}/`). After writes have landed, rollback requires a freeze plus
+reverse reconciliation (copy tenant-rooted objects and namespaced vectors back
+to the global layout) or an explicit captain-accepted loss of the post-pin
+corpus.
 
 One consequence of that to keep in view if the drill is ever pointed at the
 staging *founder* rather than a throwaway tenant: the wipe never touches the
@@ -805,9 +806,13 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
              WHERE user_id='$DRILL' AND revoked_at_ms IS NULL"
 ```
 
-**Check that the fence UPDATE reported `changes: 1`.** Zero means the row is
-missing or not in the expected status, and everything downstream will look like
-a clean, successful wipe of nothing.
+**Check that the users-row fence UPDATE reported `changes: 1`.** That is the
+status/backdate write (`SET status='deleting'` on the direct-insert path, or
+`SET deleting_at_ms=…` after `DELETE /api/account`). Zero there means the row
+is missing or not in the expected status, and everything downstream will look
+like a clean, successful wipe of nothing. The sessions and `api_tokens`
+revokes may report `changes: 0` (direct-insert, no credentials) or `N`
+(signed-up); that is not the fence check.
 
 Backdating `deleting_at_ms` past the 7-day grace is what lets the ordinary
 `*/15` cron fan-out start the wipe, so the drill exercises the real entry point
@@ -908,10 +913,13 @@ Signup challenges are issued before the user row exists, so `user_id` stays
 NULL and redemption stamps `completed_user_id` — delete on either column.
 Migration `0009` notes that `REFERENCES` is not enforced (`PRAGMA foreign_keys`
 is never on), so `DELETE FROM users` succeeds while orphaning those rows — do
-not stop at `wipe_progress` + `users`. Order is the operator's: scopes before
-tokens, then the user-keyed tables, `wipe_progress` (its FK deliberately does
-not cascade), then `users`. Direct-insert drills have no dependents; the extra
-`DELETE`s are no-ops there.
+not stop at `wipe_progress` + `users`. The script below deletes
+`user_settings`, `tenant_limits`, `sessions`, then scopes before tokens, then
+`auth_challenges` and `digest_deliveries`, then `wipe_progress` (its FK
+deliberately does not cascade), then `users`. Order among the user-keyed
+tables is free while foreign keys are off; scopes-before-tokens is the one
+constraint that still matches the documented FK. Direct-insert drills have no
+dependents; the extra `DELETE`s are no-ops there.
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
