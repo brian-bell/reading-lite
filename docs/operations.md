@@ -435,7 +435,7 @@ GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on `bbell.dev` so migrations apply and the `/mcp*` route update succeeds. Scope the token to this account and zone. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **both** `bbell.dev` and `bbookmarks.com` so migrations apply and the route updates succeed (see "bbookmarks.com dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 
 The imported founder token expires after 90 days; re-running the same
@@ -460,6 +460,85 @@ path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify
 does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
 production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
 `WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
+
+### bbookmarks.com dual-serve
+
+Production serves two hosts during the domain migration. `[env.production.routes]`
+in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
+`/health`, `/mcp*`) **and** the same trio on `bbookmarks.com` (`zone_name =
+"bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
+Vectorize index, and nothing in the data plane depends on the hostname, so the
+`/api/*` read and write paths and `/health` are interchangeable between the two
+hosts. The exceptions are anything that *emits a link* — `/api/auth/*` magic-link
+mail is built from `WEB_BASE_URL`, still the old host, so a sign-in started on
+the new host is mailed back to the old one. `/mcp*` is not interchangeable
+either — nor is the `/api/mcp` alias the section below offers as a fallback,
+which sits behind the same guard: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
+still lists only the old host, so browser-origin MCP calls to the new host are
+rejected until that allowlist follow-up lands (non-browser clients send no
+`Origin` and work on either host). Browser sessions are host-scoped too — the
+session cookie carries no `Domain` attribute — so signing in on one host does
+not sign you in on the other. The old routes stay until the old host is
+formally retired; they are the rollback path.
+
+`www.bbookmarks.com` is **not** a Worker route, and must not become one. `www` →
+apex belongs to a Cloudflare Redirect Rule (301), which fires before a request
+ever reaches the Worker. As of 2026-09-04 `www` has no record at all and returns
+NXDOMAIN; proxying the apex does not change that, since a Pages custom domain
+creates a record only for the hostname it is bound to. So `www` stays
+unreachable — not wrongly served — until it is given its own proxied record and
+the redirect rule.
+
+Three things to settle outside this repo — the first two before the routes can
+deploy, the third only if `www` is to resolve:
+
+- `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
+  zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
+  `ops deploy worker --env production` applies the remote D1 migrations, uploads
+  the script, and then fails on the route publish** — the same footgun described
+  under "MCP connector" below, now on a second zone. It surfaces two ways
+  depending on what the token holds: with Zone Read but no Workers Routes edit,
+  authentication error 10000 on `/zones/.../workers/routes`; with no grant on
+  the zone at all (the likely state for a newly added zone) the zone lookup
+  returns nothing and wrangler fails with `Could not find zone for
+  bbookmarks.com`. That lookup is filtered by `CLOUDFLARE_ACCOUNT_ID`, so a zone
+  registered under a *different* Cloudflare account fails with the same message
+  even on a correctly scoped token — check the account before chasing scopes. A third variant has nothing to do with the token: if one of
+  these patterns is already bound to a different Worker in that zone, the
+  publish fails with `Can't deploy routes that are assigned to another worker`.
+  Mind what any of them leaves behind: the migrations and the new
+  Worker script **have** landed and are live on the existing
+  `reading-lite.bbell.dev` routes; only the route addition fails. And because
+  `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only on
+  a successful Worker run — never deploys, so production Worker code sits ahead
+  of the production SPA until someone notices. Re-scope the token before merging
+  anything that adds these routes. Recovering by re-running the failed workflow
+  works only while `main` is still at that commit: both deploy workflows
+  re-check `origin/main` against the run's `head_sha` and refuse a stale
+  release, so once another merge lands, let the newer commit's chain deploy
+  instead. Note the same token scoping bites at retirement, in the other
+  direction: on a zone-scoped token wrangler uses the per-zone route API, which
+  only adds routes and never deletes stale ones, so **removing the `bbell.dev`
+  routes from this file will not remove them from Cloudflare** — delete them in
+  the dashboard when the old host is retired.
+- `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
+  to the `main` branch, with an Active certificate. This is an ordering
+  prerequisite, not a cosmetic one: a Worker route only receives traffic for a
+  hostname that has a proxied DNS record in the zone, and the Pages custom-domain
+  binding is what creates that record at the apex. While the apex has no proxied
+  record — its state as of 2026-09-04, when it resolved to no A, AAAA or CNAME —
+  the routes are simply inert and the new host serves neither SPA nor API. Note
+  the flip side: if the apex is ever proxied to something else first (a parked
+  page, another site or Worker), these routes take `/api/*`, `/health` and
+  `/mcp*` on that hostname from the next production deploy, before any
+  deliberate cutover. Check the apex before deploying if that may have changed.
+- `www.bbookmarks.com` needs a proxied record plus the `www` → apex Redirect
+  Rule, if `www` is to resolve at all. Nothing in this repo configures it, and
+  no Worker route should: the 301 is meant to happen ahead of the Worker.
+
+`WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
+addition: emitted links and the MCP Origin allowlist still name
+`reading-lite.bbell.dev` until their own cutover steps land.
 
 ### MCP connector
 
