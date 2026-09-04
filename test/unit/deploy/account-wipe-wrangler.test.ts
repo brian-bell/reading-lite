@@ -79,6 +79,7 @@ describe("account wipe wrangler wiring", () => {
     expect(section).toMatch(/reverse reconcili/i);
     expect(section).toMatch(/deleting_at_ms=NULL/);
     expect(section).toMatch(/COALESCE\(deleting_at_ms/);
+    expect(section).toMatch(/DELETE FROM wipe_progress WHERE tenant_id='<tenant>' AND completed_at_ms IS NULL/);
     expect(section).toMatch(/DELETE \/api\/account/);
     expect(section).toMatch(/revocation_reason='account_delete'/);
     expect(section).toMatch(/DELETE FROM user_settings/);
@@ -87,6 +88,7 @@ describe("account wipe wrangler wiring", () => {
     expect(section).toMatch(/DELETE FROM api_token_scopes/);
     expect(section).toMatch(/DELETE FROM api_tokens/);
     expect(section).toMatch(/DELETE FROM auth_challenges/);
+    expect(section).toMatch(/completed_user_id='\$DRILL'/);
     expect(section).toMatch(/DELETE FROM digest_deliveries/);
     expect(section).toMatch(/DELETE FROM wipe_progress/);
     expect(section).toMatch(/DELETE FROM users/);

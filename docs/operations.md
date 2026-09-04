@@ -671,13 +671,29 @@ Anything left in that result and not meant to be destroyed — the staging found
 above all — must be rescued before the deploy. Restoring `status='active'` alone
 is not enough: leave `deleting_at_ms` set and a later `DELETE /api/account`
 reuses it via `COALESCE(deleting_at_ms, ?)` in `beginAccountDeletion`, so the
-next cron can wipe immediately and skip the 7-day grace. Clear the timestamp
-in the same write:
+next cron can wipe immediately and skip the 7-day grace. An unfinished or
+reopened `wipe_progress` row (`completed_at_ms` NULL) is worse: fan-out treats
+it as a **resume**, and resume ignores grace. After a later delete the next
+`*/15` tick enqueues immediately.
+
+A delivery that has already passed the `status !== 'deleting'` check will keep
+wiping even after you flip the row. Confirm no delivery is active first:
+`wipe_progress.updated_at_ms` within `ACCOUNT_WIPE_IN_FLIGHT_MS` (15 minutes)
+means cron still considers the lease live. Wait that window out (or drain
+`reading-lite-staging-wipe`) before touching the row. Then flip the user, then
+delete only an **unfinished** progress record — a completed row is S4 history
+and is not in this preflight; leave it.
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT tenant_id, phase, lease_seq, updated_at_ms, completed_at_ms \
+             FROM wipe_progress WHERE tenant_id='<tenant>'"
+# If updated_at_ms is within 15 minutes, wait. Then:
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "UPDATE users SET status='active', deleting_at_ms=NULL, updated_at_ms=<now> \
              WHERE id='<tenant>' AND status='deleting'"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "DELETE FROM wipe_progress WHERE tenant_id='<tenant>' AND completed_at_ms IS NULL"
 ```
 
 That still is **not** a full rescue: `beginAccountDeletion` stamped
@@ -888,6 +904,8 @@ correctly. Delete every dependent control-plane row, then `users`. Signup
 always creates `user_settings` and `tenant_limits`
 (`src/control-plane/sessions.ts`); a tenant that signed up for real may also
 have sessions, API tokens/scopes, auth challenges, and digest deliveries.
+Signup challenges are issued before the user row exists, so `user_id` stays
+NULL and redemption stamps `completed_user_id` — delete on either column.
 Migration `0009` notes that `REFERENCES` is not enforced (`PRAGMA foreign_keys`
 is never on), so `DELETE FROM users` succeeds while orphaning those rows — do
 not stop at `wipe_progress` + `users`. Order is the operator's: scopes before
@@ -908,7 +926,7 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "DELETE FROM api_tokens WHERE user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM auth_challenges WHERE user_id='$DRILL'"
+  --command "DELETE FROM auth_challenges WHERE user_id='$DRILL' OR completed_user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "DELETE FROM digest_deliveries WHERE user_id='$DRILL'"
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
