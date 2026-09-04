@@ -22,8 +22,10 @@ function routesFor(toml: string, table: string): Route[] {
       continue;
     }
     if (!current) continue;
-    const match = /^(pattern|zone_name)\s*=\s*"([^"]*)"$/.exec(line);
-    if (match) current[match[1] as keyof Route] = match[2];
+    // Tolerate single quotes and a trailing comment, so a route written in
+    // either form still counts against the exact-set assertions below.
+    const match = /^(pattern|zone_name)\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/.exec(line);
+    if (match) current[match[1] as keyof Route] = match[2] ?? match[3];
   }
   if (current?.pattern && current.zone_name) {
     routes.push({ pattern: current.pattern, zone_name: current.zone_name });
@@ -60,6 +62,12 @@ describe("production worker routes", () => {
     // `www` is handled by a Cloudflare redirect rule, not by a worker route.
     expect(routes).toHaveLength(6);
     expect(routes.some((route) => route.pattern.startsWith("www."))).toBe(false);
+  });
+
+  it("declares every route as a block this file can see", () => {
+    // The inline `routes = [...]` array is the one form the block parser above
+    // cannot count, which would quietly weaken the exact-set assertions.
+    expect(wrangler).not.toMatch(/^\s*routes\s*=\s*\[/m);
   });
 });
 

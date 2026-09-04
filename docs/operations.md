@@ -306,10 +306,15 @@ Production serves two hosts during the domain migration. `[env.production.routes
 in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
 `/health`, `/mcp*`) **and** the same trio on `bbookmarks.com` (`zone_name =
 "bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
-Vectorize index — nothing in the data plane or the request path depends on the
-hostname — so the two hosts are interchangeable for the API, health check and
-MCP endpoint. The old routes stay until the old host is formally retired; they
-are the rollback path.
+Vectorize index, and nothing in the data plane depends on the hostname, so
+`/api/*` and `/health` are interchangeable between the two hosts. `/mcp*` is
+not yet: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
+still lists only the old host, so browser-origin MCP calls to the new host are
+rejected until that allowlist follow-up lands (non-browser clients send no
+`Origin` and work on either host). Browser sessions are host-scoped too — the
+session cookie carries no `Domain` attribute — so signing in on one host does
+not sign you in on the other. The old routes stay until the old host is
+formally retired; they are the rollback path.
 
 `www.bbookmarks.com` is **not** a Worker route. It is a Cloudflare Redirect Rule
 (301 to the apex) configured in the dashboard, which fires before a request ever
@@ -320,16 +325,23 @@ Two prerequisites, both dashboard work, both outside this repo:
 - `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
   zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
   `ops deploy worker --env production` applies the remote D1 migrations, uploads
-  the script, and then fails with authentication error 10000 on
-  `/zones/.../workers/routes`** — the same footgun described under "MCP
-  connector" below, now on a second zone. Mind what that leaves behind: the
-  migrations and the new Worker script **have** landed and are live on the
-  existing `reading-lite.bbell.dev` routes; only the route addition fails. And
-  because `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs
-  only on a successful Worker run — never deploys, so production Worker code
-  sits ahead of the production SPA until someone notices. Re-scope the token
-  before merging anything that adds these routes, then re-run the failed
-  workflow.
+  the script, and then fails on the route publish** — the same footgun described
+  under "MCP connector" below, now on a second zone. It surfaces two ways
+  depending on what the token holds: with Zone Read but no Workers Routes edit,
+  authentication error 10000 on `/zones/.../workers/routes`; with no grant on
+  the zone at all (the likely state for a newly added zone) the zone lookup
+  returns nothing and wrangler fails with `Could not find zone for
+  bbookmarks.com`. Mind what either leaves behind: the migrations and the new
+  Worker script **have** landed and are live on the existing
+  `reading-lite.bbell.dev` routes; only the route addition fails. And because
+  `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only on
+  a successful Worker run — never deploys, so production Worker code sits ahead
+  of the production SPA until someone notices. Re-scope the token before merging
+  anything that adds these routes. Recovering by re-running the failed workflow
+  works only while `main` is still at that commit: both deploy workflows
+  re-check `origin/main` against the run's `head_sha` and refuse a stale
+  release, so once another merge lands, let the newer commit's chain deploy
+  instead.
 - `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
   to the `main` branch, with an Active certificate. This is an ordering
   prerequisite, not a cosmetic one: a Worker route only receives traffic for a
