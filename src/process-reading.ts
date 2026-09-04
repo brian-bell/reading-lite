@@ -870,7 +870,9 @@ export async function commitTerminalManifest(
       // Deletion can land between the pre-restore check and the list write.
       // Compensate in this same consumer; do not wait on DELETE /api/account.
       if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(opts.defensive, () => visibility.remove(args));
+        await reconcileVisibility(opts.defensive, () =>
+          visibility.removeForDeletedTenant(args),
+        );
       }
     }
     return { committed: false, published: false };
@@ -889,14 +891,18 @@ export async function commitTerminalManifest(
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
       );
       // Check-then-publish is still a race; recheck after the writes and
-      // compensate in this same consumer if the tenant is now deleting.
+      // compensate in this same consumer if the tenant is now deleting. The
+      // compensation deletes the vector directly (removeForDeletedTenant)
+      // rather than routing through the list row: an account wipe may already
+      // have deleted `index/list.json`, and a vector left behind after that is
+      // unaddressable, because R2 is the only source of reading ids.
       if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () => visibility.remove(args));
+        await reconcileVisibility(true, () => visibility.removeForDeletedTenant(args));
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
-    await reconcileVisibility(true, () => visibility.remove(args));
+    await reconcileVisibility(true, () => visibility.removeForDeletedTenant(args));
     return { committed: true, published: false };
   }
 

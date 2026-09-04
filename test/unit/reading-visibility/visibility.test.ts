@@ -224,6 +224,68 @@ describe("ReadingVisibility.remove", () => {
   });
 });
 
+describe("ReadingVisibility.removeForDeletedTenant", () => {
+  it("deletes the vector even though there is no list row to remove", async () => {
+    const reader = newReader();
+    // The account wipe has already deleted index/list.json and the manifest;
+    // this consumer published a vector after the wipe collected its ids.
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const vis = new ReadingVisibility(reader, similarity);
+
+    await vis.removeForDeletedTenant(args());
+
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("deletes the vector even when the manifest ownership gate would refuse", async () => {
+    const reader = newReader();
+    await reader.writeManifest(
+      PREFIX,
+      manifest({ status: "failed", last_attempt: attempt("at_FOREIGN", "failed") }),
+    );
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest(), PREFIX));
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const vis = new ReadingVisibility(reader, similarity);
+
+    await vis.removeForDeletedTenant(args());
+
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("removes an owned list row alongside the vector", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(manifest({ active_attempt: attempt(ATTEMPT) }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const vis = new ReadingVisibility(reader, similarity);
+
+    await vis.removeForDeletedTenant(args());
+
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("is list-only when similarity is null (failure-path asymmetry)", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(manifest({ active_attempt: attempt(ATTEMPT) }), PREFIX),
+    );
+    const vis = new ReadingVisibility(reader, null);
+
+    await vis.removeForDeletedTenant(args());
+
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+  });
+});
+
 describe("ReadingVisibility.restoreIfOwner", () => {
   it("re-appends the current row when the by-url pointer still points here", async () => {
     const reader = newReader();

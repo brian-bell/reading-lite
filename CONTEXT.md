@@ -122,13 +122,16 @@ submit, a markdown import, or a lookup. It lives in
   throws after that CAS log-and-continue so a deleting-tenant hide failure
   cannot `markFailed` over the ready object. `commitTerminalManifest`
   rechecks status immediately before visibility publish and again immediately
-  after (compensate with `visibility.remove` if the tenant flipped deleting in
-  between). Wipe of tenant R2 + Vectorize (195b PR1) is a deferred shared-queue
+  after (compensate with `visibility.removeForDeletedTenant` if the tenant
+  flipped deleting in between — the deletion fence deletes the vector directly
+  rather than gating on the `index/list.json` row, which a concurrent wipe may
+  already have removed). Wipe of tenant R2 + Vectorize is a deferred shared-queue
   job plus the */15 cron sweep, honoring a 7-day `deleting_at_ms` grace unless
   the job payload sets `force` (grace gates *new* wipes; cron resumes
   in-progress/leftover and preserves `force` on progress.json). The wipe job
   heartbeats `progress.updated_at_ms` from current time during collect and
-  pages; retry lease is failure time plus delay. Vectorize
+  pages; retry lease is failure time plus delay. It re-derives reading ids from
+  R2 on every pass and never persists them. Vectorize
   `deleteByIds` is async — embeddings may take a short time to disappear.
   Residue scan, users-row hard-delete, and
   email reuse are later 195b slices. This is not

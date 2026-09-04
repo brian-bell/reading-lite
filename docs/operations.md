@@ -62,10 +62,19 @@ Wipe is not inline in `DELETE /api/account`.
 
 The resume record at `wipe/{tenantId}/progress.json` is **deleted** when the
 wipe finishes, not left behind as `phase:"done"` — its key names the deleted
-tenant and its body lists every reading id they had. Progress writes are
-compare-and-set on the R2 etag, so with `max_concurrency = 3` a duplicate
-delivery fails loudly (`progress_conflict`) and retries instead of silently
-overwriting the live job's cursor.
+tenant. Progress writes are compare-and-set on the R2 etag, so an
+at-least-once duplicate delivery fails loudly (`progress_conflict`) and retries
+instead of silently overwriting the live job's cursor; the consumer also runs at
+`max_concurrency = 1`, so that CAS is a backstop rather than the only guard.
+
+The wipe has two phases, vectors then objects. It does **not** re-submit
+`deleteByIds` after the prefix is empty, and does not persist reading ids on the
+progress record. The late-publish race that re-submit covered — a
+`processReading` that passed its tenant check before the wipe collected ids and
+upserts a vector afterwards — is closed at the publisher instead: a consumer
+publishing against a tenant confirmed `deleting` deletes its own vector directly
+(`ReadingVisibility.removeForDeletedTenant`) rather than waiting on an
+`index/list.json` row the wipe has already removed.
 
 That record is also the only "already wiped" marker, and `users.status` stays
 `deleting` until the PR2 hard-delete. So cron **skips a tenant that has no

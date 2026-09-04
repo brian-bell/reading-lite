@@ -226,7 +226,10 @@ queue = "reading-lite-staging-wipe"
 queue = "reading-lite-staging-wipe"
 max_batch_size = 1
 max_batch_timeout = 5
-max_concurrency = 3
+# One wipe job at a time, matching the digest consumer: throughput is one job
+# per deleted account, and a single writer removes the sibling window the
+# progress CAS would otherwise only detect after the fact.
+max_concurrency = 1
 max_retries = 3
 dead_letter_queue = "reading-lite-staging-wipe-dlq"
 
@@ -391,7 +394,10 @@ queue = "reading-lite-wipe"
 queue = "reading-lite-wipe"
 max_batch_size = 1
 max_batch_timeout = 5
-max_concurrency = 3
+# One wipe job at a time, matching the digest consumer: throughput is one job
+# per deleted account, and a single writer removes the sibling window the
+# progress CAS would otherwise only detect after the fact.
+max_concurrency = 1
 max_retries = 3
 dead_letter_queue = "reading-lite-wipe-dlq"
 
