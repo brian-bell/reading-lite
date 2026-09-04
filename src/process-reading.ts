@@ -1224,6 +1224,12 @@ export function retryableError(e: unknown): boolean {
     return typeof status === "number" && (status === 429 || status >= 500);
   }
   if (e.name === "FetchTimeoutError") return true;
+  // The resolver returned nothing this time. That is a report about the
+  // resolver, not a verdict about the destination (BlockedHostError and
+  // TooManyRedirectsError are the verdicts, and stay terminal below), so a
+  // blip outlasting fetchWithRetry's attempt budget must still leave the row
+  // recoverable for corpus triage.
+  if (e.name === "DestinationResolutionError") return true;
   if (e.name === "QueueRetriesExhaustedError") return true;
   if (e.name === "ProcessingDeferExpiredError") return true;
   return false;

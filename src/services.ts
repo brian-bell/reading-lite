@@ -16,17 +16,26 @@ export interface DnsResolvers {
 }
 
 // Cloudflare's node:dns is DoH to 1.1.1.1 and throws on lookup / lookupService /
-// resolve. resolve4 + resolve6 are the implemented surface. NODATA on one
-// family is normal for single-stack names, and workerd reports it as ENOTFOUND,
-// so that whole set is tolerated as "this family has no records".
+// resolve. resolve4 + resolve6 are the implemented surface.
 //
-// Any other failure means a family went UNVETTED while `fetch` will still
+// The tolerated set is load-bearing, because this runs on every hop of every
+// reading: get it wrong and single-stack hosts stop resolving corpus-wide.
+// Measured against the workerd this repo pins, a family with no records
+// rejects with `code === "ENOTFOUND"` and message `queryAaaa ENOTFOUND
+// <host>` — the same code an entirely nonexistent name gives on both
+// families. So ENOTFOUND (and node's ENODATA/ENOENT spellings, for the
+// operator paths that inject node's own resolver) means "this family has no
+// records", which is normal and not a reason to refuse the fetch.
+//
+// Anything else means a family went UNVETTED while `fetch` will still
 // re-resolve and may connect over it — so it fails closed even when the other
 // family answered. Returning the survivors would let an attacker whose
-// nameserver fails A queries hide a private A record behind a public AAAA
-// answer, which is a deterministic bypass, not the DNS-rebinding race
-// safe-fetch.ts documents as an accepted residual. The thrown error is an
-// ordinary transport failure, so fetchWithRetry still retries it.
+// nameserver faults A queries hide a private A record behind a public AAAA
+// answer: deterministic and attacker-chosen, unlike the DNS-rebinding race
+// safe-fetch.ts documents as an accepted residual. The cost is that a host
+// whose nameserver genuinely faults one family becomes unfetchable; it
+// surfaces as an ordinary transport error, so fetchWithRetry retries it and
+// the manifest stays retryable rather than terminal.
 export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
   return async (hostname) => {
     const [v4, v6] = await Promise.allSettled([

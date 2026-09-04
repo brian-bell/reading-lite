@@ -51,6 +51,15 @@ describe("retryableError", () => {
     expect(retryableError(new TestError("OversizedResponseError"))).toBe(false);
   });
 
+  // A rejected destination is a verdict; an unresolvable one is a resolver
+  // report that can differ on the next attempt, like FetchTimeoutError. The
+  // in-process retry only covers a blip shorter than the attempt budget, so
+  // the manifest flag is what keeps a longer one recoverable for triage.
+  it("DestinationResolutionError is retryable; TooManyRedirectsError is terminal", () => {
+    expect(retryableError(new TestError("DestinationResolutionError"))).toBe(true);
+    expect(retryableError(new TestError("TooManyRedirectsError"))).toBe(false);
+  });
+
   it("LLM-shape errors are terminal (not retryable)", () => {
     expect(retryableError(new TestError("BadToolInputError"))).toBe(false);
     expect(retryableError(new TestError("NoToolUseError"))).toBe(false);
