@@ -77,6 +77,15 @@ export interface WipeProgress {
   indexCountStart: number | null;
   probeAttempts: number;
   probeSawResidue: boolean;
+  /**
+   * When this wipe confirmed the ledger covers the tenant's corpus.
+   *
+   * Stamped once, before the vectors phase, and honoured by every later
+   * delivery — the check has to happen while rows are still `live` to mean
+   * anything, and it is too expensive to repeat. Null until it passes; cleared
+   * by a reopen, which is looking at a corpus that has moved on.
+   */
+  coverageVerifiedAtMs: number | null;
   continuations: number;
   /** Current state: nothing left to do. Cleared by a reopen. */
   completedAtMs: number | null;
@@ -111,6 +120,7 @@ interface WipeProgressRow {
   index_count_start: number | null;
   probe_attempts: number;
   probe_saw_residue: number;
+  coverage_verified_at_ms: number | null;
   continuations: number;
   completed_at_ms: number | null;
   residue: number;
@@ -121,7 +131,7 @@ interface WipeProgressRow {
 const COLUMNS = `phase, lease_seq, updated_at_ms, r2_cursor, force,
     objects_deleted, mutation_ids, index_count_sampled, index_count_start,
     probe_attempts, probe_saw_residue, continuations, completed_at_ms, residue,
-    first_completed_at_ms, first_residue`;
+    first_completed_at_ms, first_residue, coverage_verified_at_ms`;
 
 function parsePhase(value: string): WipePhase {
   return value === "objects" || value === "done" ? value : "vectors";
@@ -151,6 +161,7 @@ function toProgress(row: WipeProgressRow): WipeProgress {
     indexCountStart: row.index_count_start,
     probeAttempts: row.probe_attempts,
     probeSawResidue: row.probe_saw_residue !== 0,
+    coverageVerifiedAtMs: row.coverage_verified_at_ms,
     continuations: row.continuations,
     completedAtMs: row.completed_at_ms,
     residue: row.residue !== 0,
@@ -193,6 +204,7 @@ export function emptyWipeProgress(nowMs: number, force = false): WipeProgress {
     indexCountStart: null,
     probeAttempts: 0,
     probeSawResidue: false,
+    coverageVerifiedAtMs: null,
     continuations: 0,
     completedAtMs: null,
     residue: false,
@@ -225,6 +237,10 @@ export function reopenWipeProgress(progress: WipeProgress, force: boolean): Wipe
     force,
     probeAttempts: 0,
     probeSawResidue: false,
+    // A reopened wipe re-verifies: leftover objects mean the corpus has changed
+    // since the earlier pass proved coverage, and the readings behind them may
+    // never have been ledgered.
+    coverageVerifiedAtMs: null,
     indexCountSampled: false,
     indexCountStart: null,
     continuations: 0,
@@ -301,9 +317,10 @@ export class WipeProgressWriter {
          tenant_id, phase, lease_seq, updated_at_ms, r2_cursor,
          force, objects_deleted, mutation_ids, index_count_sampled,
          index_count_start, probe_attempts, probe_saw_residue, continuations,
-         completed_at_ms, residue, first_completed_at_ms, first_residue
+         completed_at_ms, residue, first_completed_at_ms, first_residue,
+         coverage_verified_at_ms
        )
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)`,
       this.tenantId,
       progress.phase,
@@ -322,6 +339,7 @@ export class WipeProgressWriter {
       progress.residue ? 1 : 0,
       progress.firstCompletedAtMs,
       progress.firstResidue ? 1 : 0,
+      progress.coverageVerifiedAtMs,
       this.tenantId,
     );
     return result.changes;
@@ -334,7 +352,7 @@ export class WipeProgressWriter {
               r2_cursor = ?, force = ?, objects_deleted = ?, mutation_ids = ?,
               index_count_sampled = ?, index_count_start = ?, probe_attempts = ?,
               probe_saw_residue = ?, continuations = ?, completed_at_ms = ?,
-              residue = ?,
+              residue = ?, coverage_verified_at_ms = ?,
               -- Write-once, enforced here rather than only in the caller: every
               -- SET expression reads the pre-UPDATE row, so once
               -- first_completed_at_ms is set these two are pinned for the life
@@ -359,6 +377,7 @@ export class WipeProgressWriter {
       progress.continuations,
       progress.completedAtMs,
       progress.residue ? 1 : 0,
+      progress.coverageVerifiedAtMs,
       progress.firstCompletedAtMs,
       progress.firstResidue ? 1 : 0,
       this.tenantId,

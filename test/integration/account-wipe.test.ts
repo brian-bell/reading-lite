@@ -6,6 +6,7 @@ import {
   ACCOUNT_WIPE_MAX_CONTINUATIONS,
   ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT,
   ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
+  LEDGER_COVERAGE_MAX_SCAN,
   AccountWipeNamespaceNotEmptyError,
   R2_LIST_LIMIT,
   consumeAccountWipeMessage,
@@ -28,6 +29,7 @@ import {
   AccountWipeProgressConflictError,
   emptyWipeProgress,
   readWipeProgress,
+  reopenWipeProgress,
   WipeProgressWriter,
   type WipeProgress,
 } from "../../src/control-plane/wipe-progress";
@@ -2193,6 +2195,93 @@ describe("account wipe (195b PR1)", () => {
       // Whatever it does next, it must not be the unseeded refusal.
       expect(String(outcome)).not.toMatch(/unseeded_tenant/);
       expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
+    it("runs the coverage check before the vectors phase, once, and records it", async () => {
+      // Placement is the whole design. The vectors phase flips rows from `live`
+      // to `delete_submitted`, so a live-row count stops measuring coverage the
+      // moment it runs — the check has to precede it. And it is stamped, so a
+      // later delivery honours a verdict reached while the rows still meant
+      // something rather than re-deciding against a half-submitted ledger.
+      await seedTenantObjects([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const clock = { t: NOW_MS };
+      await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps({ clock }),
+      ).catch(() => {});
+      const progress = await readProgress();
+      expect(progress!.coverageVerifiedAtMs).toBe(NOW_MS);
+      // And a reopen re-verifies: leftover objects mean the corpus moved on.
+      expect(reopenWipeProgress(progress!, false).coverageVerifiedAtMs).toBeNull();
+    });
+
+    it("does not wave a large corpus through just because one row exists", async () => {
+      // The hole the previous placement left. Above the id-by-id scan limit the
+      // guard compares counts — and with the check running after the vectors
+      // phase, a single ledger row was enough to make that phase submit one
+      // delete, which short-circuited the comparison entirely. The guard became
+      // "does the ledger have any rows", the very test it rejects, on exactly
+      // the corpora too big to check precisely.
+      const many = Array.from({ length: LEDGER_COVERAGE_MAX_SCAN + 5 }, (_, i) =>
+        `rd_${String(i).padStart(10, "0")}`,
+      );
+      const reader = testReadingStore(env, otherTenant());
+      await reader.writeListIndex({ version: 1, items: many.map((id) => indexItem(id, "ready")) });
+      await env.READINGS_BUCKET.put(`${PREFIX}readings/keep/manifest.json`, "{}");
+      // One row only — a single publish since the deploy, or a partial seed.
+      await seedLedger([many[0]!]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const before = await listPrefixKeys(PREFIX);
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+      // Nothing was submitted either: the check precedes the vectors phase.
+      expect(deleteByIds).not.toHaveBeenCalled();
+    });
+
+    it("accepts a large corpus whose live rows cover every ready reading", async () => {
+      const many = Array.from({ length: LEDGER_COVERAGE_MAX_SCAN + 5 }, (_, i) =>
+        `rd_${String(i).padStart(10, "0")}`,
+      );
+      const reader = testReadingStore(env, otherTenant());
+      await reader.writeListIndex({ version: 1, items: many.map((id) => indexItem(id, "ready")) });
+      await env.READINGS_BUCKET.put(`${PREFIX}readings/keep/manifest.json`, "{}");
+      await seedLedger(many);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      expect(result.kind).toBe("complete");
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
+    it("accepts a wipe already in flight when the check landed", async () => {
+      // The deploy window, and only it. Such a wipe has submitted deletes for
+      // rows that were `live` when it read them — the evidence the check looks
+      // for — and its ledger cannot be re-measured now they have flipped.
+      await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
+      await seedLedgerSubmitted([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      await seedProgress({ phase: "objects", mutationIds: ["mut_from_before_the_deploy"] });
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      const outcome = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      ).catch((error: unknown) => error);
+      consoleErr.mockRestore();
+      expect(String(outcome)).not.toMatch(/unseeded_tenant/);
+      expect((await readProgress())!.coverageVerifiedAtMs).not.toBeNull();
     });
 
     it("proceeds once every reading in the corpus has a ledger row", async () => {

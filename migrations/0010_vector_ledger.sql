@@ -103,3 +103,17 @@ CREATE INDEX vector_ledger_tenant_state ON vector_ledger (tenant_id, state);
 -- Drop it in a later migration once rolling back past this slice is no longer
 -- a consideration.
 UPDATE wipe_progress SET vector_cursor = NULL;
+
+-- Ledger-coverage verification, recorded once per wipe.
+--
+-- `src/account-wipe.ts` refuses to delete a tenant's R2 objects while a reading
+-- that should own a vector has no ledger row, because R2 is the only source
+-- `ops corpus seed-vector-ledger` can derive those ids from. That check has to
+-- run BEFORE the vectors phase — once deletes are submitted the rows flip to
+-- `delete_submitted` and a live-row count no longer measures coverage — and it
+-- must not re-run on every delivery, because the walk is not free.
+--
+-- So the verdict is stamped here the first time it passes, and every later
+-- delivery of the same wipe honours it. A reopen clears it, because a reopened
+-- wipe is looking at a corpus that has changed since.
+ALTER TABLE wipe_progress ADD COLUMN coverage_verified_at_ms INTEGER;

@@ -819,6 +819,47 @@ async function runAccountWipeJob(
   // written: this is the claim itself, not a beat.
   await persist();
 
+  // Coverage first, before ANY phase runs.
+  //
+  // It has to be before the vectors phase, not merely before the objects phase,
+  // because the vectors phase flips rows from `live` to `delete_submitted` as
+  // it submits — after which no count of live rows measures coverage any more.
+  // The earlier placement at the objects phase forced a short-circuit for
+  // wipes already in flight, and that short-circuit was itself the hole: on a
+  // corpus too large to check id by id it fired before the count comparison,
+  // reducing the whole guard to "does the ledger have any rows at all", which
+  // is the test its own doc-comment rejects.
+  //
+  // Recorded when it passes, so it costs one walk per wipe rather than one per
+  // delivery, and so a resumed delivery honours a verdict reached while the
+  // rows still meant something.
+  if (progress.coverageVerifiedAtMs === null) {
+    if (progress.mutationIds.length > 0) {
+      // A wipe that was already in flight when this check landed — the deploy
+      // window, and only that. It has submitted deletes for rows that were
+      // `live` when it read them, which is the evidence the check looks for,
+      // and its ledger cannot be re-measured now that those rows have flipped.
+      // Accept it rather than refuse a wipe that is demonstrably working.
+      //
+      // Not a hole in the general case: on any wipe that starts after this
+      // deploys, the check runs before the vectors phase, so `mutationIds` is
+      // empty here and the full comparison is what decides.
+      console.info(
+        JSON.stringify({
+          event: "account_wipe_coverage_assumed",
+          tenant_id: tenantId,
+          note:
+            "wipe was already in flight when the ledger-coverage check was introduced; " +
+            "its submitted deletes are taken as evidence of coverage",
+        }),
+      );
+    } else {
+      await assertLedgerCoversCorpus(env, db, tenantId, keyRoot);
+    }
+    progress.coverageVerifiedAtMs = now();
+    await persist();
+  }
+
   if (progress.phase === "vectors") {
     // Ids come from the ledger, never from R2. Each batch flips to
     // `delete_submitted` as it is submitted, so the "still live" query advances
@@ -841,26 +882,6 @@ async function runAccountWipeJob(
   }
 
   if (progress.phase === "objects") {
-    // FAIL CLOSED ON AN UNSEEDED TENANT, before a single R2 object is deleted.
-    //
-    // The vectors phase submits deletes only for ledger rows. A tenant whose
-    // corpus predates this slice has vectors and no rows, so it submits nothing
-    // — and if the objects phase then ran, it would delete the very R2 objects
-    // `ops corpus seed-vector-ledger` derives ids from. The terminal probe
-    // would notice the leftover vectors a moment later and alert, but by then
-    // their ids would be gone for good: review finding F3, reproduced by the
-    // machinery meant to close it.
-    //
-    // So the check moves ahead of the deletes, and it measures the ledger
-    // against the READY rows of the list index — the readings that actually own
-    // a vector. Neither cruder test works: "any rows at all" is satisfied by one
-    // reading published since the deploy, and "every id derivable from R2"
-    // fires on healthy tenants, because failed and pending readings have
-    // pointers but no vector and so no row. This is deliberately the one place
-    // the wipe refuses to make progress rather than retrying into it: R2 is the
-    // last copy of the ids, and the fix is an operator running the seeding
-    // command, not another delivery.
-    await assertLedgerCoversCorpus(progress, env, db, tenantId, keyRoot);
     let pages = 0;
     let cursor = progress.r2Cursor;
     objects: for (;;) {
@@ -1067,11 +1088,19 @@ async function tenantPrefixHasObjects(
  * than at the terminal gate — so the comparison is exact, and it costs one
  * object read rather than two full prefix listings.
  *
+ * **It runs before the vectors phase, once per wipe.** Both halves matter. Before
+ * the vectors phase, because that phase flips rows from `live` to
+ * `delete_submitted` and a live-row count stops measuring coverage the moment
+ * it does — which is why the counts below can be `live` counts and mean
+ * something. Once per wipe, because the verdict is stamped on the progress
+ * record (`coverage_verified_at_ms`) and honoured by later deliveries: the walk
+ * is not free, and re-deciding it against a half-submitted ledger is how the
+ * earlier version of this check ended up waving large corpora through.
+ *
  * The namespace probe is the second half only in the fallback below, where the
  * list index cannot be read at all.
  */
 async function assertLedgerCoversCorpus(
-  progress: WipeProgress,
   env: AccountWipeEnv,
   db: ControlPlaneDb,
   tenantId: TenantId,
@@ -1107,14 +1136,6 @@ async function assertLedgerCoversCorpus(
     // corpus nobody ever seeded. A `live` row is the thing that actually says a
     // vector was ledgered.
     //
-    // A wipe that has already submitted deletes acted on ledger rows that were
-    // `live` when it read them, which is the same evidence by a different
-    // route — and by now those rows are `delete_submitted`, so without this a
-    // legitimately-seeded tenant whose index the objects phase already deleted
-    // would be refused mid-wipe. Deliberately scoped to this branch: the exact
-    // check above must run on every delivery, because it is what catches a
-    // ready reading that no pass has ever covered.
-    if (progress.mutationIds.length > 0) return;
     if ((await countLedgerRows(db, tenantId)).live > 0) return;
     const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
     if ((await store.probeNamespace()).length === 0) return;
@@ -1136,11 +1157,6 @@ async function assertLedgerCoversCorpus(
     // a PARTIAL hole in a very large corpus: enough rows to match the count,
     // with the wrong ids. That is a real gap, named here rather than hidden,
     // and it is bounded to tenants above the scan limit.
-    // A wipe that has already submitted deletes has flipped its rows to
-    // `delete_submitted`, so the live count would understate coverage. It has
-    // also already proved the ledger was populated. Same short-circuit, same
-    // reason, as the fallback branch below.
-    if (progress.mutationIds.length > 0) return;
     // LIVE rows, not the total. `delete_submitted` rows accumulate from
     // ordinary `DELETE /api/readings/:id` purges and nothing prunes them
     // outside a wipe, so counting them would let a tenant's purge history

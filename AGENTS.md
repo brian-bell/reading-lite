@@ -318,12 +318,20 @@ Pointers only — the details live in the named files' comments.
   `continuations` bounds the `continue` self-send so a wipe that cannot finish
   dead-letters instead of resetting its retry budget forever. **An existing
   corpus must be seeded first** — `ops corpus seed-vector-ledger --tenant
-  "$TENANT" --execute`. An unseeded tenant is REFUSED rather than half-wiped:
-  before the objects phase deletes anything, an empty ledger plus a namespace
-  that still answers raises `account_wipe_unseeded_tenant` and throws, leaving
-  R2 intact — because R2 is where the seeding command derives those ids from,
-  and emptying it first is exactly what would make them unrecoverable. The job
-  dead-letters; the fix is an operator seeding, not another delivery. Two residuals survive
+  "$TENANT" --execute`. An unseeded tenant is REFUSED rather than half-wiped.
+  Before ANY phase runs — the vectors phase included, because that phase flips
+  ledger rows from `live` to `delete_submitted` and a live-row count stops
+  measuring coverage the moment it does — the wipe checks that every `ready`
+  row in `index/list.json` has a ledger row, and refuses with
+  `account_wipe_unseeded_tenant` if one does not while the namespace still
+  answers. Nothing is deleted: R2 is where the seeding command derives those
+  ids from, and emptying it first is what would make them unrecoverable. The
+  verdict is stamped on `wipe_progress.coverage_verified_at_ms` so it costs one
+  walk per wipe, and a reopen re-verifies. Above `LEDGER_COVERAGE_MAX_SCAN`
+  ready readings the check compares live-row counts instead of going id by id
+  — coarser, and it cannot see a partial hole, which the code says plainly. The
+  refusal dead-letters and cron re-enqueues every 15 minutes, so the alert
+  recurs until an operator seeds; self-healing, not self-silencing. Two residuals survive
   this slice and they are NOT equally benign. A reading purged from R2 with a
   failed vector delete is unseedable by construction — the honest residual of
   #261. But any tenant that ever ran `corpus ingest`/`recover --batch` under
