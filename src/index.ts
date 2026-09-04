@@ -145,13 +145,17 @@ export async function dispatchQueueMessage(
       return;
     }
     if (e instanceof VectorLedgerWriteError) {
-      // The publish path fails closed on a ledger write (issue #195 S3), and
+      // The terminal commit fails closed on a ledger write (issue #195 S3), and
       // unlike the application errors below it did NOT write a failed manifest
-      // before throwing — deliberately, because the reading is committed
-      // `ready` and its summarization is paid for. Acking here would leave a
-      // published reading with no ledger row and nothing to notice it. Retry:
-      // the processing checkpoint means the retry re-uses the cached summary,
-      // so it costs a D1 write and nothing else.
+      // before throwing — deliberately, because the summarization is paid for
+      // and checkpointed. Acking here would leave the reading pending with no
+      // vector and nothing to notice it. Retry instead: the ledger row is
+      // written ahead of the terminal manifest, so `active_attempt` is still
+      // live and the redelivery re-runs the whole terminal commit for real (the
+      // acceptance test in `test/integration/account-delete-visibility.test.ts`
+      // proves the republish, not just the throw). The processing checkpoint
+      // means it re-uses the cached summary, so it costs a D1 write and
+      // nothing else.
       msg.retry({ delaySeconds: LEDGER_WRITE_RETRY_DELAY_SECONDS });
       return;
     }

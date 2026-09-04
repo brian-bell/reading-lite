@@ -143,19 +143,25 @@ async function clearBucket() {
 beforeEach(clearBucket);
 
 describe("processReading — vector ledger at publish", () => {
-  it("fails closed and requeues when the ledger write throws, without marking the reading failed", async () => {
+  it("fails closed on a D1 outage and the retry actually republishes", async () => {
     // Every other visibility write on this path is reconciled defensively —
     // a list row or a vector that did not land is visible and self-heals. A
     // LEDGER row that did not land is neither: nothing repairs it and nothing
     // reports it, and what survives is a published reading missing from the one
     // record that says which vectors this tenant owns. So it must propagate.
     //
-    // And it must propagate WITHOUT destroying anything: the manifest is
-    // already committed `ready` and the summarization is paid for, so the
-    // delivery requeues rather than marking the reading failed. Safe to retry
-    // because the ledger row is written BEFORE the upsert — a failure here
-    // means no vector was written either, so there is no stranded vector, only
-    // a reading not yet in search.
+    // And it must propagate WITHOUT destroying anything and WITHOUT stranding
+    // the reading. That is why the ledger write sits in `commitTerminalManifest`
+    // ahead of the terminal manifest write rather than inside
+    // `ReadingVisibility.publish`: the terminal `ready` manifest clears
+    // `active_attempt`, and once it is cleared no redelivery can republish, so
+    // a ledger throw from inside publish would requeue into a no-op and leave a
+    // ready, listed reading with no vector and no ledger row forever.
+    //
+    // So this test does not settle for "an error was thrown". It fails the real
+    // D1 INSERT, asserts nothing terminal happened, then heals D1 and re-runs
+    // the very same job the queue would redeliver — and requires that second
+    // pass to end with BOTH a live vector upserted AND a ledger row present.
     const vector = installVectorizeStub();
     const fetchFn = makeStubFetch();
     const reader = testReadingStore(env);
@@ -186,11 +192,23 @@ describe("processReading — vector ledger at publish", () => {
       content_sha256: "0".repeat(64),
       created_at: createdAt,
       updated_at: createdAt,
+      // The shape intake actually writes: a live `active_attempt` this job owns.
+      // It is what lets a redelivery write attempt artifacts, and what the
+      // terminal `ready` manifest clears — so the fixture must carry it for the
+      // retry half of this test to mean anything.
+      active_attempt: {
+        id: "at_LEDGERX",
+        trigger: "submit",
+        status: "running",
+        started_at: createdAt,
+      },
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
 
     // Fail only the ledger INSERT, leaving every other control-plane read and
     // write alone, so this test is about the ledger and not about D1 generally.
+    // `d1Down` is flipped between the two passes: a real outage, then recovery.
+    let d1Down = true;
     const workerEnv = env as unknown as Env;
     const inner = workerEnv.CONTROL_PLANE;
     const wrapped: Env = {
@@ -198,7 +216,7 @@ describe("processReading — vector ledger at publish", () => {
       CONTROL_PLANE: {
         batch: (statements: unknown[]) => inner.batch(statements as never),
         prepare(sql: string) {
-          if (/INSERT INTO vector_ledger/i.test(sql)) {
+          if (d1Down && /INSERT INTO vector_ledger/i.test(sql)) {
             const boom = () => {
               throw new Error("D1 unavailable");
             };
@@ -208,25 +226,50 @@ describe("processReading — vector ledger at publish", () => {
         },
       } as unknown as D1Database,
     };
+    const ledgerRow = async () =>
+      await inner
+        .prepare("SELECT reading_id, state FROM vector_ledger WHERE reading_id = ?")
+        .bind(id)
+        .first<{ reading_id: string; state: string }>();
+
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(
       processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
     ).rejects.toThrow(VectorLedgerWriteError);
-
     consoleErr.mockRestore();
-    // The reading keeps everything it paid for: still ready, no error stamped.
-    const manifest = await reader.readManifest(keyPrefix);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.error).toBeUndefined();
-    // And no vector was written, so nothing is stranded.
+
+    // Nothing terminal happened: the manifest is untouched and — the part that
+    // makes the retry work at all — `active_attempt` is still this attempt's,
+    // so the redelivery can still write attempt artifacts.
+    const afterFailure = await reader.readManifest(keyPrefix);
+    expect(afterFailure?.status).toBe("pending");
+    expect(afterFailure?.error).toBeUndefined();
+    expect(afterFailure?.active_attempt?.id).toBe(job.attemptId);
+    // No vector, and no ledger row: row-before-upsert means a failure here
+    // strands nothing on either side.
     expect(vector.upsert).not.toHaveBeenCalled();
+    expect(await ledgerRow()).toBeNull();
+
+    // The retry the queue performs: same message body, D1 healthy again.
+    d1Down = false;
+    await processReading(job, wrapped, makeServices(fetchFn), founderTenant());
+
+    const republished = await reader.readManifest(keyPrefix);
+    expect(republished?.status).toBe("ready");
+    expect(republished?.error).toBeUndefined();
+    // Both halves landed on the retry — this is the claim the placement exists
+    // to make true, not merely that an error propagated.
+    expect(vector.upsert).toHaveBeenCalledTimes(1);
+    expect([...vector.vectors.keys()].some((key) => key.endsWith(id))).toBe(true);
+    expect(await ledgerRow()).toMatchObject({ reading_id: id, state: "live" });
   });
 
   it("retries the delivery rather than acking it", async () => {
     // The consumer's default branch acks, because processReading normally
-    // writes a failed manifest before throwing. It does not here, so acking
-    // would leave the published reading un-ledgered with nothing to notice.
+    // writes a failed manifest before throwing. It does not here — nothing
+    // terminal was written at all — so acking would abandon a paid-for reading
+    // as pending with nothing to notice.
     const ack = vi.fn();
     const retry = vi.fn();
     await dispatchQueueMessage(

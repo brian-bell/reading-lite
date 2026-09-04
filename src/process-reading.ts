@@ -379,23 +379,27 @@ export async function processReading(
     }
     if (e instanceof VectorLedgerWriteError) {
       // Fail closed on a ledger write, but do not destroy anything to do it.
-      // The manifest is already committed `ready` and the summarization is paid
-      // for; marking the reading failed would throw both away over a control-
-      // plane blip. Requeue on the same terms as a 429 instead: the processing
-      // checkpoint means the retry re-uses the cached summary rather than
-      // re-spending, and it re-attempts the one write that did not land.
+      // The summarization is paid for and checkpointed; marking the reading
+      // failed would throw that away over a control-plane blip. Requeue on the
+      // same terms as a 429 instead: the retry re-uses the cached summary
+      // rather than re-spending.
       //
-      // The ordering in `ReadingVisibility.publish` is what makes this safe to
-      // retry: the ledger row is written BEFORE the upsert, so a failure here
-      // means no vector was written either. There is no stranded vector to
-      // clean up — only a reading that is not yet in search.
+      // The retry genuinely republishes because of WHERE the throw comes from.
+      // `commitTerminalManifest` writes the ledger row ahead of the terminal
+      // manifest, so at this point nothing terminal has landed: the manifest is
+      // still pending, `active_attempt` is still this attempt's, and no vector
+      // was upserted. The redelivery re-runs the whole terminal commit. (From
+      // inside `ReadingVisibility.publish` it could not: `readyManifest` clears
+      // `active_attempt`, so the retry would find `canWriteManifest === false`
+      // and do nothing. Covered by the acceptance test in
+      // `test/integration/account-delete-visibility.test.ts`.)
       console.error(
         JSON.stringify({
           event: "reading_ledger_write_failed",
           reading_id: args.id,
           tenant_id: tenantId,
           message: e.message,
-          note: "publish failed closed on the vector ledger; requeuing without marking the reading failed",
+          note: "terminal commit failed closed on the vector ledger; requeuing without marking the reading failed",
         }),
       );
       if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
@@ -905,6 +909,33 @@ export async function commitTerminalManifest(
   // skipping it is intentional (plan 005, case 2).
   if (!state.canWriteManifest) return { committed: false, published: false };
 
+  // Ledger the reading BEFORE the terminal manifest write, not inside the
+  // visibility publish that follows it.
+  //
+  // The ordering the ledger needs is only "row before upsert", and doing it
+  // here satisfies that a fortiori: row, then manifest, then upsert. What the
+  // earlier placement could not do was FAIL usefully. `readyManifest` clears
+  // `active_attempt`, so once the terminal manifest is committed no retry can
+  // republish — `readingCanWriteAttemptArtifacts` returns early and
+  // `terminalWriteState` computes `canWriteManifest === false`. A ledger error
+  // thrown after that point left a reading permanently `ready` and listed with
+  // no vector and no ledger row, while the retry it triggered quietly did
+  // nothing. Thrown from here, `active_attempt` is still live, so the ordinary
+  // retry re-runs the whole terminal commit and republishes for real.
+  //
+  // The cost is a row for a reading whose manifest CAS then loses to a foreign
+  // attempt: an id recorded for a vector this attempt never wrote. That is the
+  // documented safe direction — one no-op `deleteByIds` that clears on the
+  // first confirmation — and the same trade the wipe's own seed step makes.
+  //
+  // Deliberately NOT wrapped in `run`: the stage instrument writes one attempt
+  // object per call, and this write has no stage of its own — the `upsert_vector`
+  // event still comes from the upsert it precedes. Wrapping it would add a
+  // second event for a stage that then runs anyway.
+  if (opts.vector && similarity && opts.ledger) {
+    await opts.ledger.markLive([args.id], Date.now());
+  }
+
   const written = await run("write_manifest", () =>
     opts.defensive
       ? writeTerminalManifestDefensively(reader, args, manifest, state)
@@ -994,12 +1025,18 @@ async function reconcileVisibility(
     // manifest is already committed and failing the reading over them would
     // throw away paid work for a repairable gap.
     //
-    // A LEDGER write is not in that class. Nothing repairs it on its own, and
-    // nothing reports it: what survives is a published reading with no row in
-    // the one record that says which vectors this tenant owns. So it fails
-    // closed, and the delivery retries (see the outer catch, which requeues
-    // without marking the reading failed — the cached summarization means the
-    // retry costs nothing).
+    // A LEDGER write is not in that class. Nothing repairs it on its own and
+    // nothing reports it, so it fails closed and the delivery retries (see the
+    // outer catch, which requeues without marking the reading failed — the
+    // cached summarization means the retry costs nothing).
+    //
+    // The publish half no longer reaches here: `commitTerminalManifest` writes
+    // the `live` row before the terminal manifest, outside this wrapper and
+    // outside the defensive policy, precisely so its failure is retryable. What
+    // still arrives here is the removal verbs' `delete_submitted` stamp. Losing
+    // that stamp leaves the row `live` for a vector already deleted, which the
+    // wipe re-submits harmlessly — but it is still an unreported divergence in
+    // the tenant's vector record, so it takes the same fail-closed treatment.
     if (e instanceof VectorLedgerWriteError) throw e;
     console.error(e);
     return false;

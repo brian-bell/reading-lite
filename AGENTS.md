@@ -34,13 +34,19 @@ comments of the modules themselves — read those before changing a module.
   terminal condition. The confirmation constants and the reasons for each are
   measured, not chosen — read the module header before touching them.
   **Blast radius, stated once:** this makes D1 a hard dependency of two paths
-  that previously had none. `ReadingVisibility.publish` writes the row before
-  the upsert and lets the failure through (`VectorLedgerWriteError`), so the
-  reading requeues rather than publishing un-ledgered; `purgeReading` inherits
-  the same for `DELETE /api/readings/:id`. Both are retry-recoverable and the
-  ordering means no vector is ever stranded — but a sustained control-plane
-  outage now blocks publishes and purges instead of only degrading bookkeeping,
-  and the symptom will look like a Vectorize fault when it is not.
+  that previously had none. `commitTerminalManifest` writes the `live` row
+  **before the terminal manifest** — not inside `ReadingVisibility.publish`,
+  which is deliberate: the terminal `ready` manifest clears `active_attempt`,
+  so a throw from inside publish would requeue into a no-op
+  (`readingCanWriteAttemptArtifacts` returns early) and strand a ready, listed
+  reading with no vector and no ledger row. Thrown from the earlier position the
+  failure (`VectorLedgerWriteError`) reaches the consumer with nothing terminal
+  written, and the redelivery re-runs the whole terminal commit and republishes
+  for real. `purgeReading` inherits the same fail-closed rule for `DELETE
+  /api/readings/:id`. Both are retry-recoverable and row-before-upsert means no
+  vector is ever stranded — but a sustained control-plane outage now blocks
+  publishes and purges instead of only degrading bookkeeping, and the symptom
+  will look like a Vectorize fault when it is not.
 - `src/control-plane/wipe-progress.ts` — the wipe's whole durable state in D1
   (`wipe_progress`, migration `0009`): phase, the R2 cursor, the `lease_seq`
   compare-and-set that decides ownership, and the completion record that

@@ -152,7 +152,18 @@ describe("ReadingVisibility.publish", () => {
     expect(vectors.has(ID)).toBe(true);
   });
 
-  it("ledgers the reading id BEFORE upserting its vector", async () => {
+  it("does not write the live ledger row itself", async () => {
+    // The `live` row is written by `commitTerminalManifest`, ahead of the
+    // terminal manifest, not here. Row-before-upsert holds either way; what
+    // only the earlier position gets is a failure that can be retried, because
+    // the terminal `ready` manifest clears `active_attempt` and nothing can
+    // republish after it. The ordering and the fail-closed retry are covered
+    // where they now live, in
+    // `test/integration/account-delete-visibility.test.ts`.
+    //
+    // Publishing must therefore not double-write the row: a second INSERT is
+    // one more thing that can throw on a path whose throw is no longer
+    // usefully retryable.
     const reader = newReader();
     const { similarity, vectors, index } = fakeVectorize();
     const { ledger, events } = recordingLedger(
@@ -162,29 +173,8 @@ describe("ReadingVisibility.publish", () => {
 
     await vis.publish(readyManifest(), args(), vectorOpt());
 
-    // `:0` — no upsert had happened yet when the row was written.
-    expect(events).toEqual([`live:${ID}:0`]);
+    expect(events).toEqual([]);
     expect(vectors.has(ID)).toBe(true);
-  });
-
-  it("does not upsert a vector it could not ledger", async () => {
-    // Fail closed. A vector with no ledger row is unaddressable once the
-    // reading's R2 objects are gone, which is the one outcome the ledger
-    // exists to make impossible; a publish that fails is retried.
-    const reader = newReader();
-    const { similarity, vectors } = fakeVectorize();
-    const ledger: VectorLedger = {
-      markLive: async () => {
-        throw new Error("D1 unavailable");
-      },
-      markDeleteSubmitted: async () => {},
-    };
-    const vis = new ReadingVisibility(reader, similarity, ledger);
-
-    await expect(vis.publish(readyManifest(), args(), vectorOpt())).rejects.toThrow(
-      /D1 unavailable/,
-    );
-    expect(vectors.has(ID)).toBe(false);
   });
 
   it("publishes without a ledger, so a control-plane-less environment still works", async () => {

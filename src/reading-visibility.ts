@@ -45,26 +45,13 @@ const passthrough: Instrument = (_stage, fn) => fn();
 // `similarity` is — no Vectorize binding, so no vector to account for — and a
 // write to it always accompanies a write to the vector, never replaces one.
 //
-// One consequence worth naming where it will be read, because the symptom points
-// somewhere else: `publish` awaits the ledger write BEFORE the upsert and lets
-// it throw, so the reading-publish path now depends on D1 being reachable.
-//
-// That throw is NOT swallowed, unlike every other visibility write. The publish
-// path reconciles defensively (`reconcileVisibility(true, …)` in
-// process-reading.ts) because a list row or a vector that did not land is
-// visible and self-heals — the next terminal write re-appends the row, `ops
-// corpus backfill-vectors` restores the vector. A ledger row that did not land
-// is neither: nothing repairs it and nothing reports it, and what survives is a
-// published reading missing from the one record that says which vectors this
-// tenant owns. So `VectorLedgerWriteError` is re-thrown and the delivery
-// retries.
-//
-// Retrying is safe and cheap precisely because of the ordering below: the row
-// is written BEFORE the upsert, so a failure here means no vector was written
-// either — there is no stranded vector to clean up, only a reading not yet in
-// search. The manifest stays `ready`, the processing checkpoint means the retry
-// re-uses the cached summary rather than re-spending, and the queue re-attempts
-// the one write that did not land.
+// `publish` does NOT write the ledger row for the reading it is publishing —
+// `commitTerminalManifest` does, before the terminal manifest. The ordering the
+// ledger needs (row before upsert) holds either way; what only the earlier
+// placement gets is a failure that can be retried, because `readyManifest`
+// clears `active_attempt` and nothing can republish after the terminal write.
+// The removal verbs below still stamp `delete_submitted` themselves, since
+// there is no manifest CAS in front of them to be stranded by.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,
@@ -86,16 +73,16 @@ export class ReadingVisibility {
       this.reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
     );
     if (vector && this.similarity) {
-      await run("upsert_vector", async () => {
-        // Ledger BEFORE the upsert, never after. A row written first and then
-        // followed by a crashed upsert costs one redundant `deleteByIds` for a
-        // vector Vectorize does not hold; the reverse — an upsert whose ledger
-        // write never lands — is a vector with no id source, which is the
-        // stranding the ledger exists to prevent and which nothing can repair
-        // once the reading's R2 objects are gone.
-        await this.ledger?.markLive([args.id], Date.now());
-        await this.similarity!.upsert(args.id, vector.embedding, vector.meta);
-      });
+      // The ledger row for this reading is written by `commitTerminalManifest`
+      // BEFORE the terminal manifest, not here. The ordering the ledger needs —
+      // row before upsert — holds either way, but only the earlier placement
+      // can fail usefully: once the terminal manifest is committed,
+      // `active_attempt` is cleared and no retry can republish, so a ledger
+      // error thrown at this point would strand the reading rather than being
+      // retried. See the comment at that call site.
+      await run("upsert_vector", () =>
+        this.similarity!.upsert(args.id, vector.embedding, vector.meta),
+      );
     }
   }
 
