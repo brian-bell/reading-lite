@@ -211,6 +211,27 @@ describe("ops corpus refresh-neighbours", () => {
       await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--bucket", "reading-lite-staging", "--vectorize", "staging-vectors"], deps);
       expect(warning(lines)[0]).toContain("--bucket reading-lite-staging --vectorize staging-vectors");
     });
+
+    it("pins the resolved --via backend in the recovery command when --via was omitted", async () => {
+      const { deps, lines } = makeDeps({ state: marker });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+      expect(warning(lines)[0]).toContain("--via wrangler");
+    });
+
+    it("pins --via direct when credentials auto-selected that path and --via was omitted", async () => {
+      const { deps, lines } = makeDeps({ state: marker });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global"], {
+        ...deps,
+        directR2: () => deps.r2,
+        storageVars: () => ({
+          CORPUS_R2_ACCOUNT_ID: "acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+          CORPUS_CF_API_TOKEN: "tok",
+        }),
+      });
+      expect(warning(lines)[0]).toContain("--via direct");
+    });
   });
 
   it.each([{ flags: [] }, { flags: ["--execute", "--sole-writer"] }])("warns about an old full sweep with the same age with $flags", async ({ flags }) => {

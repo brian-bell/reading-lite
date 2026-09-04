@@ -479,13 +479,16 @@ async function refreshNeighbours(
   const marker = await readMarker(r2, r2Deps, io.stderr);
   const sweepWarning = fullSweepWarning(marker, now);
   if (!opts.full && sweepWarning !== null) {
+    // Pin the already-resolved backend. The default follows credentials, so a
+    // pasted command that omits --via can otherwise switch path — and
+    // Cloudflare account, despite identical bucket/index names.
     io.stderr(
       `  ! Full sweep overdue: ${sweepWarning}. ` +
       `Run npm run ops -- corpus refresh-neighbours --tenant "${tenantSelector}" ` +
       "--full --execute --sole-writer --out ./refresh-report-full.json " +
       `--bucket ${shellArg(opts.bucket)} --vectorize ${shellArg(vectorizeIndex)}` +
       (opts.remote ? "" : " --local") +
-      (opts.via === undefined ? "" : ` --via ${opts.via}`),
+      ` --via ${choice.backend}`,
     );
   }
   const { items, etag: listEtag } = await r2.readListIndex(r2Deps);

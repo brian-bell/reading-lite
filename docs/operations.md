@@ -1263,7 +1263,8 @@ Scoped refreshes (invocations without `--full`) print a stderr warning when
 `last_full_run_at` is missing, unusable, or **older than seven days**. Exactly
 seven days is still within the threshold. The warning shows the timestamp and
 age (or `age unknown`) and a full-sweep command for the selected tenant,
-bucket, and Vectorize index. Check the external weekly schedule and run that
+bucket, Vectorize index, and storage path (`--via`). Check the external
+weekly schedule and run that
 command after pausing/draining concurrent writers for `--sole-writer`.
 
 Plan and execute evaluate the same stored timestamp before resolving scope,
