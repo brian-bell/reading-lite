@@ -10,6 +10,7 @@ import {
   isSweepableWipeKey,
   PROTECTED_KEY_ROOTS,
   sweepableWipeKeyVerdict,
+  wipeKeyTenantId,
   WIPE_PREFIX,
 } from "../../../scripts/account-lib/wipe-prefix";
 import {
@@ -143,6 +144,19 @@ describe("wipe/ prefix guard", () => {
     }
   });
 
+  it("reads the tenant out of a progress key, and only out of that shape", () => {
+    expect(wipeKeyTenantId(PROGRESS_KEY)).toBe(TENANT_ID);
+    for (const key of [
+      `${WIPE_PREFIX}stray.json`,
+      `${WIPE_PREFIX}${TENANT_ID}/other.json`,
+      `${WIPE_PREFIX}${TENANT_ID}/nested/progress.json`,
+      `${WIPE_PREFIX}not-a-tenant/progress.json`,
+      `u/${TENANT_ID}/index/list.json`,
+    ]) {
+      expect(wipeKeyTenantId(key), key).toBeNull();
+    }
+  });
+
   it("accepts other objects genuinely under wipe/", () => {
     expect(isSweepableWipeKey(`${WIPE_PREFIX}${TENANT_ID}/progress.json`)).toBe(true);
     expect(isSweepableWipeKey(`${WIPE_PREFIX}stray.json`)).toBe(true);
@@ -164,6 +178,30 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(out).toContain("128 bytes");
     expect(out).toContain("2026-09-01T00:00:00.000Z");
     expect(out).toContain("PLAN");
+  });
+
+  it("names the tenants at risk and prints a D1 query scoped to exactly them", async () => {
+    const other = TENANT_ID.replace("1111-1111", "4444-4444");
+    const storage = fakeStorage({
+      listings: [[object(PROGRESS_KEY), object(accountWipeProgressKey(other))]],
+    });
+    const { code, out } = await run([], storage);
+
+    expect(code).toBe(0);
+    expect(out).toContain("Tenants named by these records (2)");
+    expect(out).toContain(`where id in ('${TENANT_ID}', '${other}')`);
+    // The bucket-wide count is unsatisfiable — status stays 'deleting' after a
+    // completed wipe — so the runbook must not send the operator to it.
+    expect(out).not.toContain("count(*)");
+    expect(out).toContain("status stays 'deleting' after a wipe COMPLETES");
+  });
+
+  it("says so when nothing listed is a tenant-named progress record", async () => {
+    const storage = fakeStorage({ listings: [[object(`${WIPE_PREFIX}stray.json`)]] });
+    const { code, out } = await run([], storage);
+    expect(code).toBe(0);
+    expect(out).toContain("none names a tenant");
+    expect(out).not.toContain("Tenants named by these records");
   });
 
   it("reports an object with no last-modified rather than inventing one", async () => {

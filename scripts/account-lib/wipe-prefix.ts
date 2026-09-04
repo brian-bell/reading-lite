@@ -76,6 +76,24 @@ if (PROTECTED_KEY_ROOTS.some((root) => WIPE_PREFIX.startsWith(root) || root.star
   );
 }
 
+/**
+ * The tenant a `wipe/{tenantId}/progress.json` key names, or null for any key
+ * that is not that shape. Used to scope the operator's "is a wipe in flight"
+ * check to the tenants actually at risk: `users.status` stays `deleting` after
+ * a wipe completes (until the 195b PR2 hard-delete), so a bucket-wide count of
+ * `deleting` users answers a different question than the one that matters here.
+ *
+ * Never a gate on deletion — a key under `wipe/` is sweepable whether or not it
+ * parses as a progress record.
+ */
+export function wipeKeyTenantId(key: string): string | null {
+  if (!isSweepableWipeKey(key)) return null;
+  const parts = key.slice(WIPE_PREFIX.length).split("/");
+  if (parts.length !== 2 || parts[1] !== "progress.json") return null;
+  const tenantId = parseTenantId(parts[0]!);
+  return tenantId === null ? null : String(tenantId);
+}
+
 export type WipeKeyVerdict = { ok: true } | { ok: false; reason: string };
 
 /**

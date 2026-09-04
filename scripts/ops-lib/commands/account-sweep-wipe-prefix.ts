@@ -24,6 +24,7 @@ import { resolveBucket } from "../../corpus-lib/config";
 import {
   assertSweepableWipeKey,
   sweepableWipeKeyVerdict,
+  wipeKeyTenantId,
   WIPE_PREFIX,
 } from "../../account-lib/wipe-prefix";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
@@ -46,14 +47,32 @@ interface Args {
 // Deleting a LIVE wipe's record is the one way this command can do damage: the
 // running job's next progress write is a CAS on the etag it read, so the delete
 // costs that tenant its cursor and restarts the wipe from a full id re-collect.
-// Nothing in R2 distinguishes a live record from an orphaned one, and the
-// distinction lives in D1 (`users.status`), which this command deliberately does
-// not reach for — so the operator asserts it, the same shape as --sole-writer on
-// `corpus purge-connections`.
+// Nothing in R2 says which is which, so the operator asserts it — the same shape
+// as --sole-writer on `corpus purge-connections`.
+//
+// What the operator must NOT be told to check is a bucket-wide
+// `count(*) where status='deleting'`. `users.status` stays `deleting` after a
+// wipe finishes, until the 195b PR2 hard-delete (see docs/operations.md and the
+// src/account-wipe.ts header), so that count is non-zero forever once any
+// account has ever been deleted, and a precondition nobody can satisfy is a
+// guard in name only. The two checks that do discriminate:
+//
+//   - the records' own age. The wipe heartbeats `updated_at_ms` on every page,
+//     and the in-flight lease is ACCOUNT_WIPE_IN_FLIGHT_MS (15 minutes, one
+//     cron interval), so a record whose last-modified — printed for every
+//     listed object — is older than that is not being written right now.
+//   - a D1 lookup scoped to the tenants these keys actually name, which the
+//     command prints as a ready-to-run query.
 const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
-const NO_ACTIVE_WIPE_CHECK =
-  'npx wrangler d1 execute reading-lite-control --env production --remote ' +
-  `--command "select count(*) from users where status='deleting'"`;
+const WIPE_IN_FLIGHT_MINUTES = 15;
+
+function scopedStatusQuery(tenantIds: string[]): string {
+  const list = tenantIds.map((id) => `'${id}'`).join(", ");
+  return (
+    "npx wrangler d1 execute reading-lite-control --env production --remote \\\n" +
+    `  --command "select id, status, deleting_at_ms from users where id in (${list})"`
+  );
+}
 
 function parseSweepArgs(argv: string[]): Args {
   let values;
@@ -78,8 +97,10 @@ function parseSweepArgs(argv: string[]): Args {
   // about the state of the system, not about what the listing happens to show.
   if (args.execute && !args.acknowledgedNoActiveWipe) {
     throw new UsageError(
-      `--execute requires ${NO_ACTIVE_WIPE_FLAG}: confirm no tenant is mid-wipe first, with\n  ${NO_ACTIVE_WIPE_CHECK}\n` +
-        "The count must be 0. Deleting a live wipe's progress record costs that tenant its cursor and restarts its wipe.",
+      `--execute requires ${NO_ACTIVE_WIPE_FLAG}: confirm no wipe is in flight for the tenants these\n` +
+        "records name. Run this command without --execute first — it lists each record's tenant, its\n" +
+        `last-modified time, and the D1 query scoped to exactly those tenants. Deleting a live wipe's\n` +
+        "progress record costs that tenant its cursor and restarts its wipe from a full id re-collect.",
     );
   }
   return args;
@@ -87,6 +108,32 @@ function parseSweepArgs(argv: string[]): Args {
 
 function describe(object: R2ObjectMeta): string {
   return `  ${object.key}  ${object.size} bytes  ${object.lastModified ?? "(no last-modified reported)"}`;
+}
+
+// The pre-delete briefing: which tenants these records name, and the exact
+// scoped D1 query that answers "is any of them mid-wipe right now".
+function reportTenantsAtRisk(io: CommandIo, listed: R2ObjectMeta[]): void {
+  const tenantIds = [
+    ...new Set(
+      listed.map((object) => wipeKeyTenantId(object.key)).filter((id): id is string => id !== null),
+    ),
+  ].sort();
+  if (tenantIds.length === 0) {
+    io.stdout(
+      `\nNone of these keys is a ${WIPE_PREFIX}{tenantId}/progress.json record, so none names a tenant.`,
+    );
+    return;
+  }
+  io.stdout(`\nTenants named by these records (${tenantIds.length}):`);
+  for (const id of tenantIds) io.stdout(`  ${id}`);
+  io.stdout(
+    `\nBefore ${NO_ACTIVE_WIPE_FLAG}, confirm none of them has a wipe in flight.\n` +
+      `A record last modified more than ${WIPE_IN_FLIGHT_MINUTES} minutes ago is not being written\n` +
+      "(the wipe heartbeats its progress on every page). To check D1 as well:\n\n" +
+      scopedStatusQuery(tenantIds) +
+      "\n\nNote: status stays 'deleting' after a wipe COMPLETES, until the 195b PR2 hard-delete —\n" +
+      "so 'deleting' here is expected and is not by itself a reason to stop.",
+  );
 }
 
 async function runAccountSweepWipePrefix(
@@ -136,7 +183,11 @@ async function runAccountSweepWipePrefix(
   }
 
   if (!args.execute) {
-    io.stdout(`\nPLAN — nothing changed. Re-run with --execute to delete these ${listed.length} object(s).`);
+    reportTenantsAtRisk(io, listed);
+    io.stdout(
+      `\nPLAN — nothing changed. Re-run with --execute ${NO_ACTIVE_WIPE_FLAG} to delete these ` +
+        `${listed.length} object(s).`,
+    );
     return 0;
   }
 
@@ -222,18 +273,22 @@ sweep clears the prefix as a whole.
 
 Run it in plan mode before merging S2, and with --execute after S2's deploy has
 landed. Nothing in R2 tells a live record from an orphaned one, so --execute
-requires ${NO_ACTIVE_WIPE_FLAG}: check first with
+requires ${NO_ACTIVE_WIPE_FLAG}. Plan mode gives you what you need to
+give that assertion honestly: each record's last-modified time (the wipe
+heartbeats its progress every page, and the in-flight lease is
+${WIPE_IN_FLIGHT_MINUTES} minutes), the tenants the records name, and a D1 query scoped to
+exactly those tenants. Do NOT gate on a bucket-wide count of users with
+status='deleting': that status survives a COMPLETED wipe until the 195b PR2
+hard-delete, so the count never returns to 0.
 
-  ${NO_ACTIVE_WIPE_CHECK}
-
-and expect 0. See docs/operations.md, "Sweeping the wipe/ prefix".
+See docs/operations.md, "Sweeping the wipe/ prefix".
 
 Options:
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --execute        Delete the listed objects, then verify the prefix is empty.
   ${NO_ACTIVE_WIPE_FLAG}
-                   Assert that no tenant is mid-wipe (users.status='deleting').
-                   Required with --execute.
+                   Assert that no wipe is in flight for the tenants these
+                   records name. Required with --execute.
   --help           Show this message.`,
   defaultDeps: (io: CommandIo): AccountSweepWipePrefixDeps => ({
     io,

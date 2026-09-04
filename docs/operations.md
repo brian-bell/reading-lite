@@ -171,29 +171,36 @@ Rollout sequence, in order:
    `wipe/` with size and last-modified time and writes nothing. Empty is the
    easy case; anything listed is a wipe you want finished, not interrupted.
 2. **After S2's deploy has landed** — the new Worker is live, so nothing writes
-   the R2 record any more — confirm no tenant is mid-wipe, the same check S1's
-   merge used:
+   the R2 record any more — confirm no wipe is still in flight for the tenants
+   those records name. Deleting a live wipe's record costs that tenant its
+   cursor (its next progress write is a compare-and-set on the etag it read) and
+   restarts the wipe from a full id re-collect, and nothing in R2 tells a live
+   record from an orphaned one. Two checks that do discriminate, both handed to
+   you by the plan run:
 
-   ```sh
-   npx wrangler d1 execute reading-lite-control --env production --remote \
-     --command "select count(*) from users where status='deleting'"
-   ```
+   - **The record's age.** The wipe heartbeats `updated_at_ms` on every page,
+     and `ACCOUNT_WIPE_IN_FLIGHT_MS` is 15 minutes (one cron interval), so a
+     record whose last-modified is older than that is not being written.
+   - **D1, scoped to the tenants those keys name.** Plan mode prints the tenant
+     ids and the exact query. Do **not** gate on a bucket-wide
+     `select count(*) from users where status='deleting'`: `status` stays
+     `deleting` after a wipe *completes*, until the 195b PR2 hard-delete, so
+     that count never returns to 0 once any account has been deleted and a
+     `deleting` row is expected rather than a stop signal. What you are looking
+     for is a tenant whose wipe is actually running now — a fresh record
+     heartbeat, or a wipe job you know is in flight.
 
-   That count must be 0. A tenant still `deleting` may hold a live cursor: its
-   next progress write is a compare-and-set on the etag it read, so deleting the
-   record costs that tenant its cursor and restarts its wipe from a full id
-   re-collect. Nothing in R2 tells a live record from an orphaned one, which is
-   why `--execute` refuses to run without `--acknowledge-no-active-wipe` — the
-   flag is your assertion that you ran this query and saw 0.
+   `--execute` refuses to run without `--acknowledge-no-active-wipe`, which is
+   your assertion that you made that determination.
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
    evidence the prefix is empty, not just that the deletes were submitted.
    On a non-zero exit read which half of the report it is. Keys that *survived
    the delete* are safe to re-run against. Keys marked *NEW since the plan
-   listing* appeared after your `status='deleting'` check — re-run the query in
-   step 2 before touching them, because a live wipe's record must not be
-   deleted. A key the guard refuses outright has no override: inspect it and
-   remove it by hand (`npx wrangler r2 object delete <bucket>/<key> --remote`).
+   listing* appeared after your step-2 determination — redo it before touching
+   them, because a live wipe's record must not be deleted. A key the guard
+   refuses outright has no override: inspect it and remove it by hand
+   (`npx wrangler r2 object delete <bucket>/<key> --remote`).
 
 Deletes are hard-restricted to keys literally under `wipe/`. A tenant-rooted key
 (`u/{tenantId}/…`) or a legacy pre-cutover corpus key (`readings/`, `index/`)
