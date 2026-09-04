@@ -50,26 +50,46 @@ interface Args {
 // Nothing in R2 says which is which, so the operator asserts it — the same shape
 // as --sole-writer on `corpus purge-connections`.
 //
-// What the operator must NOT be told to check is a bucket-wide
-// `count(*) where status='deleting'`. `users.status` stays `deleting` after a
-// wipe finishes, until the 195b PR2 hard-delete (see docs/operations.md and the
-// src/account-wipe.ts header), so that count is non-zero forever once any
-// account has ever been deleted, and a precondition nobody can satisfy is a
-// guard in name only. The two checks that do discriminate:
+// THE precondition is S2's deploy. Once the new Worker is live, no code reads
+// or writes `wipe/{tenantId}/progress.json` at all, so no record under this
+// prefix can belong to a running wipe and every one of them is by definition
+// orphaned. Before that deploy, every record is dangerous regardless of how it
+// looks, and this is not the tool to reach for.
 //
-//   - the records' own age. The wipe heartbeats `updated_at_ms` on every page,
-//     and the in-flight lease is ACCOUNT_WIPE_IN_FLIGHT_MS (15 minutes, one
-//     cron interval), so a record whose last-modified — printed for every
-//     listed object — is older than that is not being written right now.
-//   - a D1 lookup scoped to the tenants these keys actually name, which the
-//     command prints as a ready-to-run query.
+// Two things the operator must NOT be told, because both invite an --execute
+// before the deploy:
+//
+//   - "check that `count(*) from users where status='deleting'` is 0".
+//     `users.status` stays `deleting` after a wipe FINISHES, until the 195b PR2
+//     hard-delete (docs/operations.md; the src/account-wipe.ts header), so that
+//     count never returns to 0 once any account has been deleted. A
+//     precondition nobody can satisfy is a guard in name only.
+//   - "an old record is inert". It is the opposite: `wipeLeaseHeld` in
+//     src/account-wipe.ts is false once `updated_at_ms` is older than
+//     ACCOUNT_WIPE_IN_FLIGHT_MS, which is exactly when the cron fan-out is free
+//     to enqueue a RESUME for that tenant. Pre-deploy, a stale record is due to
+//     be picked up, not finished with.
+//
+// So age and D1 status are reported as evidence of a wipe that is running or
+// due — reasons to stop — never as a green light. The green light is the deploy.
 const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
 const WIPE_IN_FLIGHT_MINUTES = 15;
 
-function scopedStatusQuery(tenantIds: string[]): string {
+// The control-plane database and wrangler env that go with a data bucket. A
+// query pointed at the wrong control plane answers a question about the wrong
+// environment, and that answer is the input to the acknowledgement — so an
+// unrecognised bucket gets no query rather than a production-shaped guess.
+const CONTROL_PLANE_BY_BUCKET: Record<string, { database: string; env: string }> = {
+  "reading-lite": { database: "reading-lite-control", env: "production" },
+  "reading-lite-staging": { database: "reading-lite-control-staging", env: "staging" },
+};
+
+function scopedStatusQuery(bucket: string, tenantIds: string[]): string | null {
+  const target = CONTROL_PLANE_BY_BUCKET[bucket];
+  if (target === undefined) return null;
   const list = tenantIds.map((id) => `'${id}'`).join(", ");
   return (
-    "npx wrangler d1 execute reading-lite-control --env production --remote \\\n" +
+    `npx wrangler d1 execute ${target.database} --env ${target.env} --remote \\\n` +
     `  --command "select id, status, deleting_at_ms from users where id in (${list})"`
   );
 }
@@ -97,10 +117,11 @@ function parseSweepArgs(argv: string[]): Args {
   // about the state of the system, not about what the listing happens to show.
   if (args.execute && !args.acknowledgedNoActiveWipe) {
     throw new UsageError(
-      `--execute requires ${NO_ACTIVE_WIPE_FLAG}: confirm no wipe is in flight for the tenants these\n` +
-        "records name. Run this command without --execute first — it lists each record's tenant, its\n" +
-        `last-modified time, and the D1 query scoped to exactly those tenants. Deleting a live wipe's\n` +
-        "progress record costs that tenant its cursor and restarts its wipe from a full id re-collect.",
+      `--execute requires ${NO_ACTIVE_WIPE_FLAG}: assert that S2's deploy has landed, so nothing\n` +
+        "reads or writes this prefix any more and every record under it is orphaned. Run this command\n" +
+        "without --execute first — it names each record's tenant and prints what to check. Before that\n" +
+        "deploy, deleting a record costs its wipe the cursor and restarts it from a full id re-collect;\n" +
+        "a stale record is due for cron resumption, not finished with.",
     );
   }
   return args;
@@ -110,9 +131,10 @@ function describe(object: R2ObjectMeta): string {
   return `  ${object.key}  ${object.size} bytes  ${object.lastModified ?? "(no last-modified reported)"}`;
 }
 
-// The pre-delete briefing: which tenants these records name, and the exact
-// scoped D1 query that answers "is any of them mid-wipe right now".
-function reportTenantsAtRisk(io: CommandIo, listed: R2ObjectMeta[]): void {
+// The pre-delete briefing: which tenants these records name, and the scoped D1
+// query for spotting a wipe that is running or due to resume. Neither is a
+// green light — see the NO_ACTIVE_WIPE_FLAG comment above.
+function reportTenantsAtRisk(io: CommandIo, bucket: string, listed: R2ObjectMeta[]): void {
   const tenantIds = [
     ...new Set(
       listed.map((object) => wipeKeyTenantId(object.key)).filter((id): id is string => id !== null),
@@ -127,10 +149,26 @@ function reportTenantsAtRisk(io: CommandIo, listed: R2ObjectMeta[]): void {
   io.stdout(`\nTenants named by these records (${tenantIds.length}):`);
   for (const id of tenantIds) io.stdout(`  ${id}`);
   io.stdout(
-    `\nBefore ${NO_ACTIVE_WIPE_FLAG}, confirm none of them has a wipe in flight.\n` +
-      `A record last modified more than ${WIPE_IN_FLIGHT_MINUTES} minutes ago is not being written\n` +
-      "(the wipe heartbeats its progress on every page). To check D1 as well:\n\n" +
-      scopedStatusQuery(tenantIds) +
+    `\nWhat makes these records safe to delete is S2's DEPLOY, not how they look:\n` +
+      "once the new Worker is live nothing reads or writes this prefix, so every record\n" +
+      `under it is orphaned. ${NO_ACTIVE_WIPE_FLAG} asserts that deploy has landed.\n` +
+      "\nBefore it has, do not sweep. In particular an OLD record is not inert — once its\n" +
+      `last-modified is more than ${WIPE_IN_FLIGHT_MINUTES} minutes stale the wipe lease has lapsed and the cron\n` +
+      "fan-out is free to enqueue a RESUME for that tenant, so deleting it costs the\n" +
+      "resumed wipe its cursor. A fresh record means a wipe is writing right now.\n" +
+      "Either way: let it finish, then sweep after the deploy.",
+  );
+  const query = scopedStatusQuery(bucket, tenantIds);
+  if (query === null) {
+    io.stdout(
+      `\nNo control-plane database is mapped to bucket '${bucket}', so no D1 query is offered —\n` +
+        "check the control plane for THAT bucket's environment yourself, not production's.",
+    );
+    return;
+  }
+  io.stdout(
+    "\nTo see what D1 says about exactly these tenants:\n\n" +
+      query +
       "\n\nNote: status stays 'deleting' after a wipe COMPLETES, until the 195b PR2 hard-delete —\n" +
       "so 'deleting' here is expected and is not by itself a reason to stop.",
   );
@@ -183,7 +221,7 @@ async function runAccountSweepWipePrefix(
   }
 
   if (!args.execute) {
-    reportTenantsAtRisk(io, listed);
+    reportTenantsAtRisk(io, args.bucket, listed);
     io.stdout(
       `\nPLAN — nothing changed. Re-run with --execute ${NO_ACTIVE_WIPE_FLAG} to delete these ` +
         `${listed.length} object(s).`,
@@ -271,15 +309,18 @@ delete.
 There is no --tenant flag: these keys sit outside every tenant key root and the
 sweep clears the prefix as a whole.
 
-Run it in plan mode before merging S2, and with --execute after S2's deploy has
-landed. Nothing in R2 tells a live record from an orphaned one, so --execute
-requires ${NO_ACTIVE_WIPE_FLAG}. Plan mode gives you what you need to
-give that assertion honestly: each record's last-modified time (the wipe
-heartbeats its progress every page, and the in-flight lease is
-${WIPE_IN_FLIGHT_MINUTES} minutes), the tenants the records name, and a D1 query scoped to
-exactly those tenants. Do NOT gate on a bucket-wide count of users with
-status='deleting': that status survives a COMPLETED wipe until the 195b PR2
-hard-delete, so the count never returns to 0.
+Run it in plan mode before merging S2, and with --execute only after S2's deploy
+has landed — that deploy is the precondition, because after it nothing reads or
+writes this prefix and every record under it is orphaned by construction.
+--execute therefore requires ${NO_ACTIVE_WIPE_FLAG}.
+
+Before that deploy, do not sweep, and do not read the listing as reassurance. A
+record older than the ${WIPE_IN_FLIGHT_MINUTES}-minute wipe lease is not inert: that is precisely when
+cron is free to enqueue a RESUME for its tenant. Nor is a bucket-wide count of
+users with status='deleting' a gate — that status survives a COMPLETED wipe
+until the 195b PR2 hard-delete, so the count never returns to 0. Plan mode names
+the tenants the records belong to and prints a D1 query scoped to them, for
+spotting a wipe that is running or due.
 
 See docs/operations.md, "Sweeping the wipe/ prefix".
 
@@ -287,8 +328,8 @@ Options:
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --execute        Delete the listed objects, then verify the prefix is empty.
   ${NO_ACTIVE_WIPE_FLAG}
-                   Assert that no wipe is in flight for the tenants these
-                   records name. Required with --execute.
+                   Assert that S2's deploy has landed, so no wipe can be using
+                   these records. Required with --execute.
   --help           Show this message.`,
   defaultDeps: (io: CommandIo): AccountSweepWipePrefixDeps => ({
     io,

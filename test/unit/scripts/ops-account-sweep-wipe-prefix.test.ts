@@ -196,6 +196,33 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(out).toContain("status stays 'deleting' after a wipe COMPLETES");
   });
 
+  it("names the deploy, not the record's age, as what makes a record safe to delete", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    const { out } = await run([], storage);
+
+    expect(out).toContain("S2's DEPLOY");
+    // An old record is DUE FOR RESUMPTION, not inert — the briefing must not
+    // read as a green light (src/account-wipe.ts wipeLeaseHeld).
+    expect(out).toContain("an OLD record is not inert");
+    expect(out).toContain("RESUME");
+  });
+
+  it("points the D1 query at the control plane matching the bucket", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    const { out } = await run(["--bucket", "reading-lite-staging"], storage);
+
+    expect(out).toContain("reading-lite-control-staging --env staging");
+    expect(out).not.toContain("--env production");
+  });
+
+  it("offers no query at all for a bucket with no mapped control plane", async () => {
+    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
+    const { out } = await run(["--bucket", "some-scratch-bucket"], storage);
+
+    expect(out).toContain("No control-plane database is mapped");
+    expect(out).not.toContain("wrangler d1 execute");
+  });
+
   it("says so when nothing listed is a tenant-named progress record", async () => {
     const storage = fakeStorage({ listings: [[object(`${WIPE_PREFIX}stray.json`)]] });
     const { code, out } = await run([], storage);

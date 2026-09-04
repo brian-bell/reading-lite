@@ -170,28 +170,31 @@ Rollout sequence, in order:
 1. **Before merging S2**, run it in plan mode. It lists every object under
    `wipe/` with size and last-modified time and writes nothing. Empty is the
    easy case; anything listed is a wipe you want finished, not interrupted.
-2. **After S2's deploy has landed** — the new Worker is live, so nothing writes
-   the R2 record any more — confirm no wipe is still in flight for the tenants
-   those records name. Deleting a live wipe's record costs that tenant its
-   cursor (its next progress write is a compare-and-set on the etag it read) and
-   restarts the wipe from a full id re-collect, and nothing in R2 tells a live
-   record from an orphaned one. Two checks that do discriminate, both handed to
-   you by the plan run:
+2. **Wait for S2's deploy. That is the precondition**, and the only thing that
+   makes these records safe to delete: once the new Worker is live, nothing
+   reads or writes `wipe/` at all, so every record under it is orphaned by
+   construction. `--execute` refuses to run without
+   `--acknowledge-no-active-wipe`, which is your assertion that the deploy has
+   landed.
 
-   - **The record's age.** The wipe heartbeats `updated_at_ms` on every page,
-     and `ACCOUNT_WIPE_IN_FLIGHT_MS` is 15 minutes (one cron interval), so a
-     record whose last-modified is older than that is not being written.
-   - **D1, scoped to the tenants those keys name.** Plan mode prints the tenant
-     ids and the exact query. Do **not** gate on a bucket-wide
-     `select count(*) from users where status='deleting'`: `status` stays
-     `deleting` after a wipe *completes*, until the 195b PR2 hard-delete, so
-     that count never returns to 0 once any account has been deleted and a
-     `deleting` row is expected rather than a stop signal. What you are looking
-     for is a tenant whose wipe is actually running now — a fresh record
-     heartbeat, or a wipe job you know is in flight.
+   Before that deploy, deleting a record costs its wipe the cursor (the next
+   progress write is a compare-and-set on the etag it read) and restarts it from
+   a full id re-collect. Two things that look like reassurance and are not:
 
-   `--execute` refuses to run without `--acknowledge-no-active-wipe`, which is
-   your assertion that you made that determination.
+   - **An old record is not inert.** `wipeLeaseHeld` in `src/account-wipe.ts`
+     goes false once `updated_at_ms` is more than `ACCOUNT_WIPE_IN_FLIGHT_MS`
+     (15 minutes, one cron interval) old — which is exactly when the cron
+     fan-out is free to enqueue a *resume* for that tenant. Stale means due to
+     be picked up, not finished with. A fresh record means a wipe is writing it
+     right now. Either way, let it finish.
+   - **A bucket-wide `select count(*) from users where status='deleting'` is
+     not a gate.** `status` stays `deleting` after a wipe *completes*, until the
+     195b PR2 hard-delete, so that count never returns to 0 once any account has
+     been deleted; a `deleting` row is expected, not a stop signal.
+
+   Plan mode names the tenants its records belong to and prints a D1 query
+   scoped to exactly them (against the control plane matching `--bucket`) — use
+   it to spot a wipe that is running or due, i.e. a reason to wait.
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
    evidence the prefix is empty, not just that the deletes were submitted.
