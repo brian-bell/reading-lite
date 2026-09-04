@@ -279,7 +279,14 @@ dragging a finished wipe back through the queue. In order:
    **fails closed**: a bound namespace that errors aborts teardown before any
    D1 delete, so the `users` row is never removed while guard state keyed to
    that tenant survives.
-3. Every tenant-keyed D1 row goes in one batch, children before parents:
+3. **The R2 prefix is rechecked** after those Durable Object purges and the
+   address-history lookup, immediately before `db.batch`. A late publisher in
+   that window would otherwise leave an orphan the next tick can no longer
+   enumerate, because the hard delete removes the tenant from
+   `listDeletingUsers`. A `not_empty` verdict refuses the batch; fan-out then
+   reopens the wipe and enqueues on **the same tick** rather than waiting
+   fifteen minutes.
+4. Every tenant-keyed D1 row goes in one batch, children before parents:
    `api_token_scopes`, `api_tokens`, `sessions`, `auth_challenges`,
    `digest_deliveries`, `user_settings`, `tenant_limits`, the account's
    `signup_invites` rows (see below), `wipe_progress`, and finally `users`.
@@ -288,14 +295,13 @@ dragging a finished wipe back through the queue. In order:
    turns on `PRAGMA foreign_keys` — so the ordering is teardown's job, and
    `wipe_progress` is deleted explicitly, after its gate has been read.
 
-**Teardown cannot run outside production today.** Fan-out returns early when
-`TENANT_DATA_PLANE` is unset, which is the case for local and staging — the gate
-is pinned only under `[env.production.vars]`. So a staging account marked
-`deleting` never completes deletion, and neither the teardown path nor the
-prefix verdict's "could not look" branch can be exercised there. Fixing that is
-the staging deletion gate (issue #203 / slice S6), which flips the gate for a
-throwaway staging tenant and runs a full create → delete → wipe → teardown →
-residue-scan cycle.
+**Teardown runs wherever the tenant data plane is on.** Fan-out still returns
+early when `TENANT_DATA_PLANE` is unset (local), because there is no tenant
+prefix to confirm empty. Staging pins the gate in `[env.staging.vars]` (issue
+#203 / slice S6), so a staging account whose wipe has completed is torn down
+on the next `*/15` tick — the same path production uses. The S6 completed-wipe
+fixture is the exception: see "Rehearsing account deletion on staging". Residue
+scan remains slice S5.
 
 Teardown runs on a `residue = 1` wipe too. A wipe that finished without
 confirming the namespace clean is still finished; the flag is copied onto the
@@ -474,8 +480,9 @@ command takes no `--tenant`: these keys sit outside every tenant key root, and
 the sweep clears the prefix as a whole. Default `--bucket` is production
 `reading-lite`.
 
-Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
-are later 195b slices. `DELETE /api/readings/:id` remains one-reading
+Users-row hard-delete, Durable Object teardown, and email reuse live in
+`src/control-plane/account-teardown.ts` (issue 195 S4). Residue scan is the
+remaining later slice (S5). `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
@@ -844,11 +851,22 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 ```
 
 The join is what makes this list *actionable* rather than just true. A tenant
-whose `wipe_progress` row carries a `completed_at_ms` has already been wiped and
-fan-out skips it, so it can never be what the deploy arms — it would only be
-recurring noise in the one check the next operator is told to trust. The
-`IS NULL` also covers a *reopened* wipe (a reopen clears `completed_at_ms`),
-which is still live and does belong in the list.
+whose `wipe_progress` row carries a `completed_at_ms` has already been wiped.
+Before S4 that meant fan-out skipped it; **after S4 it means the next tick
+will hard-delete the account** unless it is the held fixture below. The
+`IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at_ms`),
+which is still live and does belong in the list. Completed empty-prefix tenants
+are a separate question:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT u.id, u.email_canonical, w.completed_at_ms, w.force \
+             FROM users u JOIN wipe_progress w ON w.tenant_id = u.id \
+             WHERE u.status = 'deleting' AND w.completed_at_ms IS NOT NULL"
+```
+
+`usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list and is
+held from automatic teardown until `force = 1`.
 
 Anything left in that result and not meant to be destroyed — the staging founder
 above all — must be back to `status='active'` first. Flipping the status back is **not** a full
@@ -1003,15 +1021,14 @@ npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
    and `processedUpToMutation` both flap between values while the underlying
    per-id reads are correct.
 
-4. **D1** — this is the one to read carefully, because almost nothing here is
-   supposed to be gone. The wipe removes the **data plane only**. The `users`
-   row, the `wipe_progress` completion record, and the tenant's `sessions`,
-   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive by
-   design: `beginAccountDeletion` *revokes* sessions and tokens by stamping
-   `revoked_at_ms` in place rather than deleting them, `user_settings` is never
-   touched, and the completion record is precisely what the later control-plane
-   teardown gates its hard delete of the `users` row on. So check that
-   credentials are **revoked**, not that rows are absent:
+4. **D1 after the wipe, before teardown** — the wipe still removes the
+   **data plane only**. Until control-plane teardown runs, the `users` row,
+   the `wipe_progress` completion record, and the tenant's `sessions`,
+   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive:
+   `beginAccountDeletion` *revokes* sessions and tokens by stamping
+   `revoked_at_ms` in place rather than deleting them, and `user_settings` is
+   never touched by the wipe. Check that credentials are **revoked**, not
+   that rows are absent:
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
@@ -1025,28 +1042,41 @@ Expect `live_sessions = 0`, `live_tokens = 0`, a non-NULL `completed_at_ms`, and
 `residue = 0`. A tenant seeded directly (rather than signed up for) will simply
 have no rows in those tables at all, which is not evidence either way.
 
-**Tear the drill tenant down when you are finished.** Left in place it is not
-inert: fan-out re-reads the row on every `*/15` tick and, with `completed_at_ms`
-set, runs an R2 prefix list per tick, and anything that ever lands under
-`u/$DRILL/` reopens the wipe — which also puts it back into the preflight above,
-correctly. Order matters — the `wipe_progress` foreign key deliberately does not
-cascade (migration `0009`), so delete the child row first:
+**Control-plane teardown is automatic (S4).** Once the wipe has completed and
+the prefix is empty, the next `*/15` cron tick runs
+`src/control-plane/account-teardown.ts`: audit row first, Durable Object guards
+fail-closed, address-history lookup, R2 prefix recheck immediately before the
+batch, then one ordered D1 delete ending at `users`. Do **not** manually
+`DELETE FROM wipe_progress` / `DELETE FROM users` — that bypasses the audit
+row, the guard purge, and the prefix recheck, and it is exactly the sequence
+teardown already performs. After teardown the same queries should show the
+`users` and `wipe_progress` rows gone and a single `account_deletions` row for
+the tenant. The address is then free; under `invite_only` it still needs a
+fresh invite.
+
+A new throwaway drill tenant is torn down on the tick after its wipe
+completes. Watch `account_teardown_complete` for it, then confirm the audit
+row and the absent `users` row rather than deleting them by hand.
+
+**The S6 completed-wipe fixture is held from that automatic path.**
+`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
+clean on 2026-09-04, is excluded from automatic teardown so the next `*/15`
+tick after S4 deploys cannot silently destroy it. Fan-out logs
+`account_teardown_held` each tick it skips. The S6 drill backdated
+`deleting_at_ms` rather than setting `force`, so the fixture's `force` is 0.
+To tear it down **intentionally** (the S4 rehearsal), set `force` on its wipe
+record and wait for the next tick:
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM wipe_progress WHERE tenant_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM users WHERE id='$DRILL'"
+  --command "UPDATE wipe_progress SET force = 1 \
+             WHERE tenant_id='usr_5e6d0000-0000-4000-8000-000000000006' \
+             AND completed_at_ms IS NOT NULL"
 ```
 
-Keep the tenant only if you are deliberately handing it to the control-plane
-teardown slice as a fixture — a completed wipe awaiting its hard delete is
-exactly what that work needs — and say so where the next operator will see it.
-**Staging currently carries one such fixture on purpose**:
-`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
-clean on 2026-09-04 and held for the control-plane teardown slice. It is
-excluded from the preflight above by its completion record; do not delete it
-without checking with that slice first.
+That is the explicit path. Leftover objects under the fixture prefix still
+reopen the wipe — the hold is against teardown, not against wiping data that
+landed.
 
 ## Diagnosing a single reading
 

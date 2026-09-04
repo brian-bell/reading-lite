@@ -61,11 +61,13 @@ comments of the modules themselves — read those before changing a module.
   completed and the prefix is confirmed empty. Writes the `account_deletions`
   audit row FIRST (migration `0011`, deliberately no foreign key — it outlives
   the `users` row it describes), purges the tenant's `TenantUsageGuard` and its
-  `GlobalUsageGuard` leases fail-closed, then deletes every tenant-keyed row and
-  the `users` row in one ordered batch. Gates on
-  `wipe_progress.completed_at_ms`, never `first_completed_at_ms`. Nothing in
-  this schema cascades, so `wipe_progress` is deleted explicitly, after the gate
-  has been read.
+  `GlobalUsageGuard` leases fail-closed, looks up address history, then
+  **rechecks the R2 prefix immediately before `db.batch`** (after those
+  round-trips — a late publisher in that window must not orphan an object).
+  Then deletes every tenant-keyed row and the `users` row in one ordered batch.
+  Gates on `wipe_progress.completed_at_ms`, never `first_completed_at_ms`.
+  Nothing in this schema cascades, so `wipe_progress` is deleted explicitly,
+  after the gate has been read.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -309,13 +311,16 @@ Pointers only — the details live in the named files' comments.
   **kept**, with the R2 cursor cleared, and is what the users-row hard-delete in
   `account-teardown.ts` gates on — never infer a wipe's outcome from R2 state.
   Teardown runs from cron fan-out, not from the wipe delivery: audit row first,
-  guards fail-closed, then one ordered D1 batch ending at `users`. Under
-  `invite_only`, the freed address needs a **fresh** invite, because teardown
-  deletes the account's consumed `signup_invites` row. It frees every address
-  the account ever used, collected from its own challenges — but only where
-  ownership is proven (redeemed, or a login challenge), and it never deletes an
-  *unconsumed* invite except on the current address, since that is somebody
-  else's pending grant (`docs/operations.md`). Gate on
+  guards fail-closed, address-history lookup, then the load-bearing R2 prefix
+  recheck immediately before the ordered D1 batch ending at `users`. A recheck
+  of `not_empty` reopens the wipe and enqueues on the same tick. The staging S6
+  fixture is held from automatic teardown until `wipe_progress.force` is set.
+  Under `invite_only`, the freed address needs a **fresh** invite, because
+  teardown deletes the account's consumed `signup_invites` row. It frees every
+  address the account ever used, collected from its own challenges — but only
+  where ownership is proven (redeemed, or a login challenge), and it never
+  deletes an *unconsumed* invite except on the current address, since that is
+  somebody else's pending grant (`docs/operations.md`). Gate on
   `completed_at_ms` (a reopen clears it); report history from
   `first_completed_at_ms`/`first_residue`, which no reopen can move. `residue`
   plus `probe_saw_residue` carry the terminal verdict.
