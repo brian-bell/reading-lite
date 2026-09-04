@@ -15,6 +15,7 @@ const ALL_SCOPES = ["readings:delete", "readings:import", "readings:read", "read
 function services(now = NOW) {
   return {
     fetch: globalThis.fetch,
+    lookup: async () => [{ address: "93.184.216.34" }],
     now: () => now,
     newId: () => "rd_AUTH01",
   };

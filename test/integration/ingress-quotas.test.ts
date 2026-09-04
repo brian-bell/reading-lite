@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { mintReadingId, type Services } from "../../src/services";
-import { insertQuotaTenant } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
 
 function services(): Services {
@@ -11,6 +11,7 @@ function services(): Services {
     fetch: (() => {
       throw new Error("no upstream fetch on the intake path");
     }) as unknown as typeof fetch,
+    lookup: PUBLIC_LOOKUP,
     now: () => new Date().toISOString(),
     newId: mintReadingId,
   };

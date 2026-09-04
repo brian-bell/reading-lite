@@ -94,8 +94,9 @@ export function timedtextJson3Url(baseUrl: string): string {
 }
 
 // Best-effort transcript fetches follow a baseUrl that came from page JSON; keep
-// the fetch on YouTube hosts so a tampered player response can't redirect egress
-// to an arbitrary origin (the original watch URL still passes assertSafeUrl).
+// the fetch on YouTube hosts so a tampered player response can't point egress
+// at an arbitrary origin. Redirects from that host are still revalidated by
+// safeFetch (private/DNS/scheme) before the next hop connects.
 export function isYoutubeFetchableHost(rawUrl: string): boolean {
   try {
     return isYoutubeHost(new URL(rawUrl).hostname.toLowerCase());

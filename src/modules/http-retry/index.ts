@@ -57,6 +57,19 @@ export async function fetchWithRetry(
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
       // tripping). Retrying would mask the cancellation intent, so surface it.
       if (isAbortError(e)) throw e;
+      // A rejected destination is a verdict about attacker-controlled egress:
+      // the guard already decided this URL (or its redirect chain) must not be
+      // reached, so retrying would only re-hit the attacker's first hop.
+      //
+      // DestinationResolutionError is deliberately NOT in that set. workerd's
+      // DoH collapses SERVFAIL, NXDOMAIN and no-records onto one code (see
+      // lookupFromResolvers), so an unresolvable destination may be a blip, and
+      // refusing to retry it turns one into a terminal `failed` manifest. The
+      // cost is that when the failure lands on a redirect hop the whole chain
+      // replays from the original URL — bounded by maxAttempts and by the
+      // caller's extraction timeout, and paid only on chains that were already
+      // failing.
+      if (isRejectedDestinationError(e)) throw e;
       lastError = e;
       if (attempt === deps.maxAttempts - 1) throw e;
       const wait = jitteredBackoff(attempt, deps.baseDelayMs, deps.maxDelayMs, random);
@@ -84,12 +97,22 @@ function urlToString(input: URL | string): string {
 }
 
 function isAbortError(e: unknown): boolean {
-  return (
-    typeof e === "object" &&
-    e !== null &&
-    "name" in e &&
-    (e as { name: unknown }).name === "AbortError"
-  );
+  return errorName(e) === "AbortError";
+}
+
+const REJECTED_DESTINATION_ERROR_NAMES = new Set([
+  "BlockedHostError",
+  "TooManyRedirectsError",
+]);
+
+function isRejectedDestinationError(e: unknown): boolean {
+  const name = errorName(e);
+  return name !== undefined && REJECTED_DESTINATION_ERROR_NAMES.has(name);
+}
+
+function errorName(e: unknown): string | undefined {
+  if (typeof e !== "object" || e === null || !("name" in e)) return undefined;
+  return typeof (e as { name: unknown }).name === "string" ? (e as { name: string }).name : undefined;
 }
 
 async function sleepWithAbort(

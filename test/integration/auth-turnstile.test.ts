@@ -14,6 +14,7 @@ const NOW = "2026-08-16T12:00:00.000Z";
 function services() {
   return {
     fetch: globalThis.fetch,
+    lookup: async () => [{ address: "93.184.216.34" }],
     now: () => NOW,
     newId: () => "rd_AUTH01",
   };

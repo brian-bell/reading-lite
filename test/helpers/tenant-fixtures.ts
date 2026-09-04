@@ -14,6 +14,9 @@ export const OTHER_TENANT_ID = "usr_11111111-1111-4111-8111-111111111111";
 export const OTHER_TOKEN_SECRET = "other-test-token";
 export const OTHER_TOKEN_ID = "tok_11111111-1111-4111-8111-111111111111";
 
+// Public A record for extractor SSRF tests that never actually connect.
+export const PUBLIC_LOOKUP = async () => [{ address: "93.184.216.34" }];
+
 export function founderTenant(): TenantContext {
   return { tenantId: parseTenantId(FOUNDER_TENANT_ID)! };
 }

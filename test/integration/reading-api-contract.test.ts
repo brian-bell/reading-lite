@@ -10,8 +10,7 @@ import {
   decodeWhoamiResponse,
   readingApiFor,
 } from "../../scripts/lib/reading-api";
-import { testReadingStore } from "../helpers/tenant-fixtures";
-import { insertQuotaTenant } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
 
 // Contract test for the operator-side Reading API client: the pure
 // decodeIntakeResponse must round-trip the REAL router's responses (toHttp's
@@ -27,6 +26,7 @@ function services(): Services {
     fetch: (() => {
       throw new Error("no upstream fetch on the intake path");
     }) as unknown as typeof fetch,
+    lookup: PUBLIC_LOOKUP,
     now: () => new Date().toISOString(),
     newId: mintReadingId,
   };

@@ -16,6 +16,7 @@ const NOW = "2026-04-26T20:00:00.000Z";
 function fakeServices(now = NOW): Services {
   return {
     fetch: globalThis.fetch.bind(globalThis),
+    lookup: async () => [{ address: "93.184.216.34" }],
     now: () => now,
     newId: () => "rd_NEW",
   };

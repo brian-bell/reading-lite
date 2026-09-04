@@ -36,4 +36,14 @@ describe("makeBrowserFetch", () => {
     // A default the caller omitted is still filled.
     expect(seen()?.get("accept-language")).toBe("en-US,en;q=0.9");
   });
+
+  it("does not force redirect: follow, so safeFetch can keep redirect: manual", async () => {
+    let seen: RequestInit | undefined;
+    const base: typeof fetch = async (_url, init) => {
+      seen = init;
+      return new Response("ok");
+    };
+    await makeBrowserFetch(base)("https://example.com", { redirect: "manual" });
+    expect(seen?.redirect).toBe("manual");
+  });
 });

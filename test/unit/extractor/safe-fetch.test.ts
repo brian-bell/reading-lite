@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { BlockedHostError } from "../../../src/modules/extractor/errors";
 import {
   resolveSafeDestination,
   safeFetch,
   TooManyRedirectsError,
   type LookupFn,
-} from "../../../scripts/extract-agent-lib/safe-fetch";
+} from "../../../src/modules/extractor/safe-fetch";
 
 const publicLookup: LookupFn = async () => [{ address: "93.184.216.34" }];
 
@@ -305,5 +306,55 @@ describe("safeFetch", () => {
 
     await expect(wrapped("https://public.example/0")).rejects.toThrow(TooManyRedirectsError);
     expect(cancelled).toEqual([0, 1, 2]); // including the hop that tripped the ceiling
+  });
+
+  it("redacts userinfo from BlockedHostError so passwords do not land in manifests", async () => {
+    const err = new BlockedHostError("https://alice:s3cret@example.com/article", "userinfo is not allowed");
+    expect(err.url).toBe("https://example.com/article");
+    expect(err.message).toContain("https://example.com/article");
+    expect(err.message).not.toContain("s3cret");
+    expect(err.message).not.toContain("alice");
+    expect(JSON.stringify({ url: err.url, message: err.message })).not.toContain("s3cret");
+  });
+
+  it("redacts userinfo from an unparseable URL in BlockedHostError", () => {
+    const err = new BlockedHostError("https://alice:s3cret@%%%", "invalid url");
+    expect(err.url).not.toContain("s3cret");
+    expect(err.message).not.toContain("s3cret");
+    expect(err.url).toContain("[redacted]@");
+  });
+
+  it("rejects a start URL with userinfo without connecting, and omits the password from the error", async () => {
+    const base = vi.fn();
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    const err = await wrapped("https://alice:s3cret@public.example/start").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlockedHostError);
+    expect((err as BlockedHostError).url).toBe("https://public.example/start");
+    expect(String(err)).not.toContain("s3cret");
+    expect(String(err)).not.toContain("alice:");
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("rejects a redirect Location with userinfo without issuing the second fetch, and omits the password", async () => {
+    const base = vi.fn().mockResolvedValue(redirect("https://alice:s3cret@public.example/admin"));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    const err = await wrapped("https://public.example/start").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlockedHostError);
+    expect(String(err)).not.toContain("s3cret");
+    expect((err as BlockedHostError).url).toBe("https://public.example/admin");
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an invalid redirect Location as BlockedHostError instead of TypeError", async () => {
+    const base = vi.fn().mockResolvedValue(redirect("http://["));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup: publicLookup });
+
+    const err = await wrapped("https://public.example/start").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlockedHostError);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as BlockedHostError).reason).toMatch(/invalid redirect location/i);
+    expect(base).toHaveBeenCalledTimes(1);
   });
 });

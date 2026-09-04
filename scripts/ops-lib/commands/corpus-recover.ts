@@ -453,8 +453,10 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
     extract: async (url) => {
       const { extractFromUrl } = await import("../../../src/modules/extractor/index");
       const { makeBrowserFetch } = await import("../../corpus-lib/browser-fetch");
+      const { lookup: dnsLookup } = await import("node:dns/promises");
       return extractFromUrl(url, {
         fetch: makeBrowserFetch(globalThis.fetch),
+        lookup: (hostname) => dnsLookup(hostname, { all: true }),
         timeoutMs: 30_000,
         maxBytes: 30_000_000,
       });
@@ -485,8 +487,10 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           await import("../../corpus-lib/batch/sidecar");
         const { extractFromUrl } = await import("../../../src/modules/extractor/index");
         const { makeBrowserFetch } = await import("../../corpus-lib/browser-fetch");
+        const { lookup: dnsLookup } = await import("node:dns/promises");
         const fetchFn = globalThis.fetch;
         const browserFetch = makeBrowserFetch(fetchFn);
+        const lookup = (hostname: string) => dnsLookup(hostname, { all: true });
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
         return runBatch(rows, {
           r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
@@ -497,7 +501,12 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           openaiBatch: makeOpenAIBatchClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
           embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
           extract: (url: string) =>
-            extractFromUrl(url, { fetch: browserFetch, timeoutMs: 30_000, maxBytes: 30_000_000 }),
+            extractFromUrl(url, {
+              fetch: browserFetch,
+              lookup,
+              timeoutMs: 30_000,
+              maxBytes: 30_000_000,
+            }),
           configuredProvider: cfg.summarizerProvider,
           model: cfg.summarizerProvider === "openai" ? cfg.openaiModel : cfg.anthropicModel,
           reasoningEffort: cfg.openaiReasoningEffort,

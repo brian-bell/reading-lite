@@ -13,7 +13,7 @@ import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
-import { insertQuotaTenant, testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -111,6 +111,7 @@ function makeFetch(opts: {
 function services(fetchFn: typeof fetch): Services {
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => "2026-09-03T00:00:01.000Z",
     newId: mintReadingId,
   };

@@ -63,7 +63,7 @@ The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 
 | Module | Responsibility |
 |---|---|
-| `extractor` | fetch source URL, sniff content type, HTML→Markdown via linkedom + readability + turndown; special-cases X author threads and YouTube watch pages |
+| `extractor` | fetch source URL behind per-hop SSRF checks (scheme, DNS vs private/link-local, redirect revalidation, 10 MiB / 20s); HTML→Markdown via linkedom + readability + turndown; special-cases X author threads and YouTube watch pages |
 | `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
 | `summarizer` | provider selection and normalized result/usage contract; defaults to OpenAI and never silently falls back |
 | `openai-summarizer` | one-shot OpenAI Responses request with strict JSON-schema output |
@@ -286,12 +286,12 @@ src/
   reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
   attempt-ownership.ts          # shared ownership verdict + attempt arg shapes
   control-plane/                # D1 auth: HMAC crypto, principal, founder bootstrap
-  services.ts                   # Services interface (DI for fetch / now / id)
+  services.ts                   # Services interface (DI for fetch / lookup / now / id)
   schemas/                      # zod: manifest, tool input, API request/response
   modules/
     reading-claim.ts            # by-url ownership resolution
     staleness.ts                # read-time stale-annotation rule
-    extractor/                  # HTML→Markdown pipeline + bounded fetch; x.ts threads + youtube.ts in-worker path
+    extractor/                  # HTML→Markdown pipeline + SSRF-guarded fetch; x.ts threads + youtube.ts in-worker path
     embeddings/                 # OpenAI client
     summarizer/                 # provider selection + normalized usage/result contract
     openai-summarizer/          # Responses API + strict structured output

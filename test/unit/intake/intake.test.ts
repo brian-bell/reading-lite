@@ -31,6 +31,7 @@ function seqServices(): Services {
   let n = 0;
   return {
     fetch: vi.fn() as unknown as typeof fetch,
+    lookup: async () => [{ address: "93.184.216.34" }],
     now: () => NOW,
     newId: () => `rd_TEST${(n++).toString().padStart(2, "0")}`,
   };

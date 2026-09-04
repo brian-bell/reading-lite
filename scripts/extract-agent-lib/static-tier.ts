@@ -10,7 +10,7 @@ import {
   classifyChallengeContent,
 } from "./challenge-content";
 import { mapExtractorError, type ExtractOutcome } from "./outcome";
-import { safeFetch, type LookupFn } from "./safe-fetch";
+import type { LookupFn } from "./safe-fetch";
 
 export interface StaticTierDeps {
   fetch: typeof fetch;
@@ -22,20 +22,18 @@ export interface StaticTierDeps {
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 export async function extractStatic(url: string, deps: StaticTierDeps): Promise<ExtractOutcome> {
-  // makeBrowserFetch hardcodes redirect: "follow"; safeFetch owns redirect
-  // handling regardless of caller init (override, don't trust) — so the
-  // wrapping order matters: browser headers outside, safety innermost.
+  // Browser headers outside, extractor-owned safeFetch innermost: extractFromUrl
+  // wraps deps.fetch with redirect: "manual". makeBrowserFetch must not force
+  // "follow" or it would clobber that.
   let resolvedUrl = url;
   const trackingFetch: typeof fetch = async (input, init) => {
     resolvedUrl = input instanceof Request ? input.url : String(input);
     return deps.fetch(input, init);
   };
-  const guardedFetch = makeBrowserFetch(
-    safeFetch(trackingFetch, { lookup: deps.lookup }),
-  );
   try {
     const extracted = await extractFromUrl(url, {
-      fetch: guardedFetch,
+      fetch: makeBrowserFetch(trackingFetch),
+      lookup: deps.lookup,
       timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBytes: deps.maxBytes,
     });

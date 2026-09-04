@@ -27,6 +27,7 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
+  PUBLIC_LOOKUP,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -266,6 +267,7 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
   const start = Date.parse(baseTime);
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => new Date(start + idCounter.n * 1000).toISOString(),
     newId: () => {
       idCounter.n++;
@@ -838,7 +840,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.startsWith("https://api.x.com/2/tweets/100?")) {
-        expect(init?.headers).toMatchObject({ Authorization: "Bearer test-x-token" });
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-x-token");
         return new Response(JSON.stringify({ data: root, includes: { users: [author] } }), {
           headers: { "content-type": "application/json" },
         });

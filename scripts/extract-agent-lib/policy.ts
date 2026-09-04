@@ -38,7 +38,7 @@ export function classify(row: ListIndexItem): Decision {
   }
 
   const { code, message } = row.error;
-  if (code === "BlockedHostError") {
+  if (code === "BlockedHostError" || code === "TooManyRedirectsError") {
     return { decision: "never", why: "SSRF guard fired — do not retry from inside the LAN" };
   }
   if (isExplicitNonArticleReason(message)) {

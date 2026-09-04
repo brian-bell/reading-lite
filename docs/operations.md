@@ -1147,13 +1147,16 @@ until post-observation sign-off (ADR 0001).
 
 ### The extract-agent
 
-Some sites hard-block Cloudflare datacenter egress, so the Worker's
-`fetch_source` fails where a residential IP succeeds. `ops extract agent`
-polls the reading API for `fetch_source`-failed readings and re-extracts them
-locally: an SSRF-guarded static tier with browser headers, falling back to a
-headless Playwright render when the static tier is challenged or finds no real
-article, plus an anonymous Reddit thread-JSON path. Successful markdown re-enters
-through `POST /api/readings/import-markdown`.
+The Worker enforces per-hop scheme, DNS-vs-private, redirect, size, and time
+limits on every extraction fetch. Cloudflare private-egress blocking is not
+that contract. Some sites still hard-block datacenter egress, so
+`fetch_source` fails where a residential IP succeeds. `ops extract agent` is
+operator-local recovery: it polls the reading API for `fetch_source`-failed
+readings and re-extracts them locally — an SSRF-guarded static tier with
+browser headers, falling back to a headless Playwright render when the static
+tier is challenged or finds no real article, plus an anonymous Reddit
+thread-JSON path. Playwright is not in the hosted product path. Successful
+markdown re-enters through `POST /api/readings/import-markdown`.
 
 ```sh
 npm run ops -- extract agent [--execute] [--limit N] [--only <id|url>] [--verbose]

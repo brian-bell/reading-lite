@@ -13,6 +13,7 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
+  PUBLIC_LOOKUP,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 
@@ -28,6 +29,7 @@ const HTML = `<!doctype html><html><head><title>Test Article</title></head><body
 function services(now = NOW) {
   return {
     fetch: globalThis.fetch,
+    lookup: PUBLIC_LOOKUP,
     now: () => now,
     newId: () => "rd_AUTH01",
   };
@@ -254,6 +256,7 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }): Services {
   const start = Date.parse("2026-04-26T20:00:00.000Z");
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => new Date(start + idCounter.n * 1000).toISOString(),
     newId: () => {
       idCounter.n++;
