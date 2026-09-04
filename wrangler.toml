@@ -28,6 +28,8 @@
 #   `npx wrangler queues create reading-lite-staging-dlq`  (dead-letter queue; not auto-created)
 #   `npx wrangler queues create reading-lite-staging-digest`
 #   `npx wrangler queues create reading-lite-staging-digest-dlq`
+#   `npx wrangler queues create reading-lite-staging-wipe`
+#   `npx wrangler queues create reading-lite-staging-wipe-dlq`
 #   `wrangler secret put READER_API_TOKEN --env staging`
 #   `wrangler secret put OPENAI_API_KEY --env staging`
 #   `wrangler secret put X_API_BEARER_TOKEN --env staging`  (for X status URLs)
@@ -41,6 +43,8 @@
 #   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
 #   `npx wrangler queues create reading-lite-digest`
 #   `npx wrangler queues create reading-lite-digest-dlq`
+#   `npx wrangler queues create reading-lite-wipe`
+#   `npx wrangler queues create reading-lite-wipe-dlq`
 #   `wrangler secret put READER_API_TOKEN --env production`
 #   `wrangler secret put OPENAI_API_KEY --env production`
 #   `wrangler secret put X_API_BEARER_TOKEN --env production`  (for X status URLs)
@@ -212,6 +216,27 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
+# Shared tenant wipe (issue 195b PR1). One queue for every tenant — not a
+# per-tenant Worker or queue. Continuation cursors live in R2, not the payload.
+[[env.staging.queues.producers]]
+binding = "ACCOUNT_WIPE_JOBS"
+queue = "reading-lite-staging-wipe"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-wipe"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 3
+max_retries = 3
+dead_letter_queue = "reading-lite-staging-wipe-dlq"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-wipe-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
 [env.staging.triggers]
 crons = ["*/15 * * * *"]
 
@@ -351,6 +376,27 @@ dead_letter_queue = "reading-lite-digest-dlq"
 
 [[env.production.queues.consumers]]
 queue = "reading-lite-digest-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
+# Shared tenant wipe (issue 195b PR1). One queue for every tenant — not a
+# per-tenant Worker or queue. DELETE /api/account does not enqueue; cron does.
+[[env.production.queues.producers]]
+binding = "ACCOUNT_WIPE_JOBS"
+queue = "reading-lite-wipe"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-wipe"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 3
+max_retries = 3
+dead_letter_queue = "reading-lite-wipe-dlq"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-wipe-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_concurrency = 1

@@ -94,9 +94,11 @@ paths:
         (revoked cookies/tokens 401). Queue, DLQ, digest, and notification
         paths refuse to resurrect data for a deleting tenant.
 
-        This is not `DELETE /api/readings/{id}` (one-reading purge). Wipe of
-        tenant R2, Vectorize, Durable Objects, and D1 rows is a later slice
-        (195b). Production `TENANT_DATA_PLANE=1`: the founder is a normal
+        This is not `DELETE /api/readings/{id}` (one-reading purge). Tenant
+        R2 prefix and Vectorize `deleteByIds` wipe is a deferred 195b job
+        after a 7-day grace (embeddings may take a short time to disappear).
+        Durable Objects, D1 cascade, and users-row hard-delete are later
+        slices. Production `TENANT_DATA_PLANE=1`: the founder is a normal
         tenant — deleting that account suppresses the founder corpus the same
         way as any other. GlobalUsageGuard teardown is out of scope.
       parameters:

@@ -67,6 +67,17 @@ describe("SimilarityStore.delete", () => {
     await store.delete("rd_X");
     expect(binding.deleteByIds).toHaveBeenCalledWith(["rd_X"]);
   });
+
+  it("submits deleteByIds in 1000-id batches and returns mutationIds", async () => {
+    const binding = makeBinding();
+    const store = new SimilarityStore(binding);
+    const ids = Array.from({ length: 1001 }, (_, i) => `rd_${String(i).padStart(10, "0")}`);
+    const mutations = await store.deleteMany(ids);
+    expect(binding.deleteByIds).toHaveBeenCalledTimes(2);
+    expect((binding.deleteByIds.mock.calls[0]![0] as string[]).length).toBe(1000);
+    expect((binding.deleteByIds.mock.calls[1]![0] as string[]).length).toBe(1);
+    expect(mutations).toEqual(["m_1", "m_1"]);
+  });
 });
 
 describe("SimilarityStore.query", () => {

@@ -20,7 +20,14 @@ comments of the modules themselves — read those before changing a module.
 
 - `src/index.ts` — Worker fetch + queue + scheduled handlers (READING_JOBS →
   `processReading`, reading DLQ → `markDeadLettered`, DIGEST_JOBS → digest
-  send, digest DLQ → ledger `failed` only).
+  send, digest DLQ → ledger `failed` only, ACCOUNT_WIPE_JOBS → tenant
+  R2+Vectorize wipe, wipe DLQ → log/ack).
+- `src/account-wipe.ts` — deferred tenant prefix wipe (issue 195b PR1): 7-day
+  grace on `deleting_at_ms` gates *new* wipes; cron resumes in-progress/leftover
+  (preserving `force` on progress.json). Heartbeats `updated_at_ms` from current
+  time during collect and R2/vector pages; retry lease is failure time plus
+  delay. Vectorize `deleteByIds` then paged R2. Does not hard-delete the users
+  row.
 - `src/router.ts` — HTTP API: auth, zod parsing, read paths, and the single
   `toHttp` mapping from `IntakeOutcome` onto statuses — a thin adapter over
   Reading intake. Also mounts `POST /mcp`.
@@ -210,7 +217,15 @@ Pointers only — the details live in the named files' comments.
   vectors are still in the bucket/index pending a separate signed-off
   deletion — `--tenant global` operator commands still see them; live
   production corpus ops use `--tenant "$TENANT"` from whoami (see
-  `docs/operations.md`). Default
+  `docs/operations.md`). With the gate on, tenant-scoped operations do not
+  reach that legacy data and are not meant to: a tenant-rooted read, write, or
+  delete addresses `u/{tenantId}/` and the tenant's Vectorize namespace, so
+  pre-tenant `readings/`/`index/` objects and un-namespaced `rd_…` vectors
+  survive it — account wipe (`src/account-wipe.ts`) included. With the gate
+  off the stores fall back to the pre-tenant layout (`tenantKeyRoot` is `""`,
+  the namespace unset), but wipe does not follow them there: gate off or an
+  empty key root each skip with `no_tenant_prefix` rather than empty the
+  bucket. The signed-off deletion is what clears the legacy data. Default
   `--bucket` is production `reading-lite`. Copy, never move; restore missing
   vectors with `corpus backfill-vectors`, not reprocess.
 - `processReading` runs in the queue consumer. `RateLimitedError` → retry with
@@ -224,6 +239,39 @@ Pointers only — the details live in the named files' comments.
   Fan-out re-enqueues leftover pending only after `DIGEST_PENDING_STALE_MS`
   (15 minutes / one cron interval). Digest Resend POSTs set `Idempotency-Key`
   to `digestDeliveryKeyId`.
+  Account wipe uses `ACCOUNT_WIPE_JOBS` (never `READING_JOBS`): cron starts
+  new wipes for `status=deleting` tenants past the 7-day `deleting_at_ms`
+  grace; a job `{ force: true }` skips grace to start. Cron resumes
+  in-progress or leftover wipes during grace and preserves `force` from
+  `progress.json`. Leftover recovery restarts at Vectorize (`phase=vectors`,
+  offset 0) before R2 and unions stored `reading_ids` with an R2 re-list.
+  After the prefix is empty, wipe re-submits `deleteByIds` for those stored
+  ids so a late upsert of a known id cannot outlive the list row. Objects-phase
+  pages union IDs from listed keys into `reading_ids` before delete. Wipe
+  heartbeats `progress.updated_at_ms` from current time during collect and
+  R2/vector pages; a delayed `msg.retry` advances the wipe lease from
+  failure time by `delaySeconds` so cron does not enqueue a sibling. An unbound
+  `READINGS_INDEX` throws (`index_unbound`) rather than emptying R2, and that
+  check runs before the "no ids to delete" short-circuit, so a wipe cannot
+  report success without having addressed the index.
+  Vectorize `deleteByIds` is async (mutationId; embeddings may take a short
+  time to disappear). Continuation cursors live at
+  `wipe/{tenantId}/progress.json`, written compare-and-set on the R2 etag (a
+  losing sibling fails with `progress_conflict` instead of clobbering the
+  cursor) and **deleted** at the terminal transition — that key names a deleted
+  tenant and its body lists their reading ids, so it must not outlive the wipe.
+  Because that record is the only "already wiped" marker, fan-out skips a
+  tenant with no record and an empty prefix, and CAS-clears any object left at
+  a finished tenant's key. Before success the wipe probes the tenant namespace,
+  retrying a hit on a minutes-scale delay bounded at the queue's `max_retries`,
+  then emits a high-severity `account_wipe_namespace_residue` (tenant id only,
+  never reading ids) and completes rather than looping forever. Two gaps are
+  deliberate and written down in `docs/operations.md`: an empty-prefix tenant
+  with stranded vectors is never swept again, and there is no durable record of
+  a wipe's outcome — do not gate the PR2 hard-delete on inferring one from R2
+  state. Both close with the durable vector ledger, issue #261
+  (`rl-wipe-vector-ledger`). The wipe DLQ logs and acks; it must not call
+  `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their
   preserved manifest. After a successful flip, later source-less reprocesses

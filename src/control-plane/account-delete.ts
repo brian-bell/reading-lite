@@ -5,9 +5,10 @@ import { revokeAllSessionsForUser } from "./sessions";
 
 // Account-deletion suppress (issue 195a / s1k.10.1). Marks the user `deleting`
 // and revokes credentials so queued, retry, digest, and notification paths
-// cannot resurrect data. Wipe, residue scan, and email reuse are 195b — this
-// module does not delete R2, Vectorize, Durable Objects, or D1 rows, and does
-// not invent GlobalUsageGuard teardown (s1k.9.2).
+// cannot resurrect data. R2+Vectorize wipe is 195b via a shared queue + cron,
+// never inline here. Residue scan, users-row hard-delete, Durable Objects,
+// and email reuse are later slices. This module does not invent
+// GlobalUsageGuard teardown (s1k.9.2).
 //
 // `DELETE /api/account` is not `DELETE /api/readings/:id`. The latter purges
 // one reading inside a live tenant; this path fences the whole tenant.
