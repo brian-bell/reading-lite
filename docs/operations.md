@@ -136,7 +136,9 @@ interrupted pass had already deleted contributes fewer ids on the retry and can
 raise a `account_wipe_namespace_residue` that reflects the deploy rather than a
 real finding. Confirm `reading-lite-wipe` and `reading-lite-wipe-dlq` are empty
 and no tenant is `status='deleting'` before merging, exactly as the S1 deploy
-did, and treat one residue alert in that window as suspect.
+did, and treat one residue alert in that window as suspect. That precondition is
+a human step — nothing in the deploy workflow enforces it. Making the workflow
+refuse to deploy while a wipe is in flight is issue #269.
 
 The stale R2 objects left behind by an interrupted wipe are inert but not
 self-clearing: nothing reads or deletes `wipe/{tenantId}/progress.json` any
