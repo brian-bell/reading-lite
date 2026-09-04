@@ -1,11 +1,21 @@
 name: Claude Code Review
 
+# On demand only. This review used to run automatically on every opened,
+# reopened, or ready-for-review pull request; that trigger is gone. Start a
+# review by hand from the Actions tab or with
+# `gh workflow run claude-code-review.yml -f pr_number=<N>`, which runs the
+# copy of this file on the default branch. Drafts are reviewable now too: the
+# old draft skip belonged to the automatic trigger.
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
 
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  group: claude-review-${{ inputs.pr_number }}
   cancel-in-progress: true
 
 permissions:
@@ -13,11 +23,6 @@ permissions:
 
 jobs:
   claude-review:
-    # Skip drafts, and skip forks: pull_request from a fork has no access to
-    # repository secrets, so the run could only ever fail its auth exchange.
-    if: >-
-      !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -28,9 +33,35 @@ jobs:
       id-token: write # required: used to fetch the GitHub OIDC token
 
     steps:
+      # Keeps the protection the removed automatic trigger's `if:` guard gave:
+      # this job holds CLAUDE_CODE_OAUTH_TOKEN and `pull-requests: write`, so
+      # it must not read pull request text from a fork.
+      - name: Validate pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "pr_number must be a pull request number, got: $PR_NUMBER" >&2
+            exit 1
+          fi
+          head_repo=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json headRepository,headRepositoryOwner \
+            --jq '"\(.headRepositoryOwner.login)/\(.headRepository.name)"')
+          if [[ "$head_repo" != "$REPO" ]]; then
+            echo "PR #$PR_NUMBER is from $head_repo, not $REPO; refusing to review a fork." >&2
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          # Whatever ref the run was dispatched on (`main` by default). The
+          # review reads the pull request itself through `gh pr diff`, so this
+          # checkout is only the repository's own agent configuration; only a
+          # user with write access can dispatch, and the step above refuses
+          # fork pull requests.
           fetch-depth: 1
 
       - name: Run Claude Code Review
@@ -40,7 +71,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ inputs.pr_number }}"
           additional_permissions: |
             actions: read
           # The code-review plugin drives GitHub through the gh CLI; allowlisting
