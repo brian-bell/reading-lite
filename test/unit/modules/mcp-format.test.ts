@@ -75,9 +75,28 @@ describe("mcp format helpers", () => {
 });
 
 describe("mcp origin allowlist", () => {
-  it("defaults to the production origin when the var is empty", () => {
-    expect(parseMcpAllowedOrigins("")).toEqual(["https://reading-lite.bbell.dev"]);
-    expect(parseMcpAllowedOrigins(undefined)).toEqual(["https://reading-lite.bbell.dev"]);
+  it("defaults to both production origins when the var is empty", () => {
+    expect(parseMcpAllowedOrigins("")).toEqual([
+      "https://reading-lite.bbell.dev",
+      "https://bbookmarks.com",
+    ]);
+    expect(parseMcpAllowedOrigins(undefined)).toEqual([
+      "https://reading-lite.bbell.dev",
+      "https://bbookmarks.com",
+    ]);
+  });
+
+  it("accepts either production host by default", () => {
+    const allowed = parseMcpAllowedOrigins(undefined);
+    expect(mcpOriginAllowed("https://reading-lite.bbell.dev", allowed)).toBe(true);
+    expect(mcpOriginAllowed("https://bbookmarks.com", allowed)).toBe(true);
+  });
+
+  it("matches origins exactly, so neighbouring hosts do not slip through", () => {
+    const allowed = parseMcpAllowedOrigins(undefined);
+    expect(mcpOriginAllowed("https://www.bbookmarks.com", allowed)).toBe(false);
+    expect(mcpOriginAllowed("https://evil-bbookmarks.com", allowed)).toBe(false);
+    expect(mcpOriginAllowed("http://bbookmarks.com", allowed)).toBe(false);
   });
 
   it("allows a missing Origin (non-browser MCP clients) and rejects unknown origins", () => {
@@ -85,5 +104,12 @@ describe("mcp origin allowlist", () => {
     expect(mcpOriginAllowed(undefined, allowed)).toBe(true);
     expect(mcpOriginAllowed("https://reading.test.example", allowed)).toBe(true);
     expect(mcpOriginAllowed("https://attacker.example", allowed)).toBe(false);
+  });
+
+  it("still honours an explicit comma-separated var over the defaults", () => {
+    expect(parseMcpAllowedOrigins("https://reading-lite.bbell.dev, https://bbookmarks.com")).toEqual([
+      "https://reading-lite.bbell.dev",
+      "https://bbookmarks.com",
+    ]);
   });
 });
