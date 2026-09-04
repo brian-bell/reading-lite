@@ -60,6 +60,15 @@ export interface PurgeDeps {
   // The durable vector-id ledger (issue #195 S3). Null in the same
   // configurations `similarity` is, plus one with no control plane bound.
   //
+  // FOR S5's RESIDUE SCAN: on a tenant that is never wiped, the row this writes
+  // is permanent — nothing clears a `delete_submitted` row except an account
+  // wipe's confirmation pass or a republish of the same reading. So a live
+  // tenant accumulates one row per purged reading, forever. Harmless (it is a
+  // reading id the tenant owned, in their own control-plane row) and bounded by
+  // purge count, but it is unbounded in time and it lengthens the eventual
+  // wipe's confirmation work. The residue scan is the natural place to report
+  // and retire rows whose vector it can confirm gone.
+  //
   // A purge marks the row `delete_submitted` rather than removing it, and that
   // is deliberate: `deleteByIds` is asynchronous and confirms nothing, so a
   // purge whose vector delete did not take is precisely the unaddressable-vector

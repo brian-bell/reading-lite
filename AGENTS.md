@@ -323,9 +323,18 @@ Pointers only — the details live in the named files' comments.
   that still answers raises `account_wipe_unseeded_tenant` and throws, leaving
   R2 intact — because R2 is where the seeding command derives those ids from,
   and emptying it first is exactly what would make them unrecoverable. The job
-  dead-letters; the fix is an operator seeding, not another delivery. Readings already
-  purged from R2 with a failed vector delete are unseedable by construction;
-  that is the honest residual of #261. The wipe DLQ logs and acks; it must not
+  dead-letters; the fix is an operator seeding, not another delivery. Two residuals survive
+  this slice and they are NOT equally benign. A reading purged from R2 with a
+  failed vector delete is unseedable by construction — the honest residual of
+  #261. But any tenant that ever ran `corpus ingest`/`recover --batch` under
+  `--tenant` has vectors written under BARE reading ids (fixed going forward in
+  this slice; `makeVectorizeClient.upsert` never composed `tenantVectorId`),
+  which a composed-id `deleteByIds` cannot address — so every wipe for that
+  tenant completes with `residue = 1` while those embeddings survive account
+  deletion. **Do not read `residue = 1` on such a tenant as healthy.** Repairing
+  it in production is a gate on #195 acceptance bullet 3 ("a repeatable residue
+  scan reports zero tenant-owned data"), not optional cleanup; slice S5 owns the
+  audit and repair. The wipe DLQ logs and acks; it must not
   call `markDeadLettered`.
 - Reprocess with a Markdown source flips `source_type` only after success;
   failures retain the prior source type, and ready readings also restore their

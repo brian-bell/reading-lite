@@ -2127,6 +2127,74 @@ describe("account wipe (195b PR1)", () => {
       expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
     });
 
+    it("does not let an old purge row vouch for an unseeded corpus in the fallback", async () => {
+      // A `delete_submitted` row is what a single-reading purge leaves, and on
+      // a tenant that is never wiped it is permanent — so counting it as
+      // evidence of seeding would let one ordinary DELETE, months earlier,
+      // speak for a corpus nobody ever seeded. Only a `live` row says a vector
+      // was actually ledgered.
+      await env.READINGS_BUCKET.put(`${PREFIX}index/list.json`, "{not json");
+      await env.READINGS_BUCKET.put(`${PREFIX}readings/x/manifest.json`, "{}");
+      await seedLedgerSubmitted([ID_B]); // the old purge
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(
+        processAccountWipeJob(
+          accountWipeEnvelopeV1({ tenantId: TENANT }),
+          await wipeEnv(),
+          wipeJobDeps(),
+        ),
+      ).rejects.toThrow(/unseeded_tenant/);
+      consoleErr.mockRestore();
+      expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
+    });
+
+    it("accepts a live row as evidence of seeding in the fallback", async () => {
+      // The other half: a `live` row is a vector someone ledgered, which is the
+      // evidence the fallback is looking for when the index cannot be read.
+      await env.READINGS_BUCKET.put(`${PREFIX}index/list.json`, "{not json");
+      await env.READINGS_BUCKET.put(`${PREFIX}readings/x/manifest.json`, "{}");
+      await seedLedger([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const result = await runWipeToCompletion(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        { t: NOW_MS },
+      );
+      expect(result.kind).toBe("complete");
+      expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
+    });
+
+    it("does not refuse a seeded wipe mid-flight once its index has been deleted", async () => {
+      // The objects phase deletes `index/list.json` like everything else, so a
+      // continuation or confirmation retry re-enters with no readable index and
+      // its rows already flipped to `delete_submitted`. Having submitted deletes
+      // is the same evidence by a different route, so the fallback must not
+      // refuse the very wipe that produced it.
+      await seedTenantObjects([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      await seedProgress({ phase: "objects", mutationIds: ["mut_earlier"] });
+      await seedLedgerSubmitted([ID_A]);
+      await env.READINGS_BUCKET.delete(`${PREFIX}index/list.json`);
+      queryIndex.mockImplementation(async () => ({
+        count: 1,
+        matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
+      }));
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      const outcome = await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      ).catch((error: unknown) => error);
+      consoleErr.mockRestore();
+      // Whatever it does next, it must not be the unseeded refusal.
+      expect(String(outcome)).not.toMatch(/unseeded_tenant/);
+      expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    });
+
     it("proceeds once every reading in the corpus has a ledger row", async () => {
       // The same corpus, fully seeded. Coverage is what the guard measures, so
       // completing it is what unblocks the wipe.
@@ -2195,6 +2263,31 @@ describe("account wipe (195b PR1)", () => {
       // deliberately left behind.
       expect(await clearTenantLedger(controlPlane(), TENANT, NOW_MS)).toBe(1);
       expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_B, "live"]]);
+    });
+
+    it("the fast path respects the same propagation floor as the per-id rule", async () => {
+      // The fast path is the weakest evidence in the module and it clears the
+      // most rows at once, so it must not clear a row whose delete was
+      // submitted seconds ago. S6 measured deleteByIds taking 30-90s to become
+      // visible; an empty namespace query is subject to exactly that lag, so a
+      // probe cannot speak to a delete younger than the +120s floor either way.
+      //
+      // The mixed case is the one that matters: one old row (confirmable) and
+      // one young row means the pass is NOT deferred, so the fast path runs
+      // with a young row present.
+      await seedLedgerSubmitted([ID_A]); // old: well past the floor
+      await seedLedgerSubmitted([ID_B], NOW_MS - 5_000); // young: seconds ago
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await processAccountWipeJob(
+        accountWipeEnvelopeV1({ tenantId: TENANT }),
+        await wipeEnv(),
+        wipeJobDeps(),
+      ).catch(() => {});
+      consoleErr.mockRestore();
+      // The old row cleared on the empty probe; the young one survives to be
+      // judged on a pass where it is old enough.
+      expect((await ledgerRows()).map((r) => r.reading_id)).toEqual([ID_B]);
     });
 
     it("does not clear a delete submitted while the probe was in flight", async () => {

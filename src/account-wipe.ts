@@ -39,8 +39,9 @@
  * where `ops corpus seed-vector-ledger` derives those ids from, and emptying it
  * first is what would make them unrecoverable. That is review finding F3, and
  * the guard is what keeps the ledger from reproducing it. The fix is an
- * operator seeding the environment, not another delivery, so the job
- * dead-letters rather than spinning.
+ * operator seeding the environment, not another delivery: the job dead-letters
+ * and cron re-enqueues it every 15 minutes, so the alert recurs until someone
+ * seeds. Self-healing, but not self-silencing.
  *
  * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
  * (`index_unbound`) before either phase runs, so no R2 object is deleted while
@@ -141,13 +142,33 @@
  * D1 recheck that fails open, an isolate that dies between the upsert and the
  * recheck) no longer strand anything: the row is already written.
  *
- * **What the ledger does not fix is the past.** A reading purged from R2 before
- * this slice, whose vector delete failed, has no ledger row and never will —
- * there is nothing left to derive one from. `ops corpus seed-vector-ledger`
- * covers every reading an existing corpus still *has*; a vector already
- * orphaned when the ledger arrived is unseedable by construction. That is the
- * honest residual of review finding F3, and it is why the completion record
- * keeps `residue` rather than pretending to a proof.
+ * **What the ledger does not fix is the past, and one piece of that is a gate
+ * on #195 rather than a footnote.**
+ *
+ * Two shapes survive this slice, and they are not equally benign.
+ *
+ * The first is unrecoverable: a reading purged from R2 before this slice whose
+ * vector delete failed has no ledger row and never will, because there is
+ * nothing left to derive one from. `ops corpus seed-vector-ledger` covers every
+ * reading an existing corpus still *has*; a vector already orphaned when the
+ * ledger arrived is unseedable by construction. That is the honest residual of
+ * review finding F3.
+ *
+ * The second IS recoverable and must be recovered. Until the fix in this same
+ * change, `batch/write-phase` wrote tenant vectors under BARE reading ids
+ * (`makeVectorizeClient.upsert` attaches a namespace but never composed
+ * `tenantVectorId`). Any tenant that ever ran `ops corpus ingest` or
+ * `corpus recover --batch` under `--tenant` therefore has vectors this wipe
+ * cannot address: `deleteByIds` submits the composed id and misses them. Every
+ * wipe for such a tenant will spend its attempts, alert, and complete with
+ * `residue = 1` while those embeddings survive account deletion — indefinitely,
+ * until they are repaired.
+ *
+ * **So `residue = 1` on such a tenant is not a healthy outcome to be filed
+ * away.** It is that known gap, and repairing it in production is a gate on
+ * #195's acceptance bullet 3 ("a repeatable residue scan reports zero
+ * tenant-owned data"), not optional cleanup. Slice S5 owns the audit and
+ * repair; this header is the warning not to read the flag as noise before then.
  *
  * The other thing the ledger cannot do is prove absence. Vectorize has no scan;
  * the confirmation rule is per-id evidence plus a namespace sample, and both
@@ -430,9 +451,17 @@ export class AccountWipeNamespaceNotEmptyError extends Error {
  * The tenant has vectors and an empty ledger: it was never seeded.
  *
  * Thrown BEFORE the objects phase deletes anything, so the R2 objects the ids
- * can still be derived from survive. It retries and eventually dead-letters,
- * which is the right shape: no delivery can fix this, only an operator running
- * `ops corpus seed-vector-ledger`, and a dead letter is how they find out.
+ * can still be derived from survive.
+ *
+ * What it does next, said accurately rather than optimistically: the delivery
+ * retries on the ordinary exponential and dead-letters, and because the
+ * progress record is left in-progress, cron re-enqueues the tenant on the next
+ * 15-minute tick and the cycle repeats. So this is a recurring alert, not a
+ * one-shot one — it will keep firing every 15 minutes until an operator runs
+ * `ops corpus seed-vector-ledger`, at which point the next tick simply
+ * proceeds. That is the intended shape (the loop is self-healing and costs one
+ * listing plus a probe per cycle), but nobody should be told it stops on its
+ * own.
  */
 export class AccountWipeUnseededError extends Error {
   constructor(public readonly tenantId: string) {
@@ -831,7 +860,7 @@ async function runAccountWipeJob(
     // the wipe refuses to make progress rather than retrying into it: R2 is the
     // last copy of the ids, and the fix is an operator running the seeding
     // command, not another delivery.
-    await assertLedgerCoversCorpus(env, db, tenantId, keyRoot);
+    await assertLedgerCoversCorpus(progress, env, db, tenantId, keyRoot);
     let pages = 0;
     let cursor = progress.r2Cursor;
     objects: for (;;) {
@@ -1042,6 +1071,7 @@ async function tenantPrefixHasObjects(
  * list index cannot be read at all.
  */
 async function assertLedgerCoversCorpus(
+  progress: WipeProgress,
   env: AccountWipeEnv,
   db: ControlPlaneDb,
   tenantId: TenantId,
@@ -1067,15 +1097,31 @@ async function assertLedgerCoversCorpus(
 
   if (readyIds === null) {
     // No readable list index. Coverage cannot be measured, so fall back to the
-    // one shape that is unambiguous without it: nothing in the ledger at all,
-    // and a namespace that still answers. That is an unseeded corpus however
-    // the index reads. A ledger with rows is evidence that SOMETHING seeded or
-    // published this tenant, and without the index there is no honest way to
-    // ask for more than that.
-    if ((await countLedgerRows(db, tenantId)).total > 0) return;
+    // one shape that is unambiguous without it: no LIVE ledger row, and a
+    // namespace that still answers.
+    //
+    // `live` specifically, not "any row". A `delete_submitted` row is what a
+    // single-reading purge leaves behind (`reading-purge.ts`), and those rows
+    // are permanent on a tenant that is never wiped — so counting them would
+    // let one ordinary `DELETE /api/readings/:id`, months earlier, vouch for a
+    // corpus nobody ever seeded. A `live` row is the thing that actually says a
+    // vector was ledgered.
+    //
+    // A wipe that has already submitted deletes acted on ledger rows that were
+    // `live` when it read them, which is the same evidence by a different
+    // route — and by now those rows are `delete_submitted`, so without this a
+    // legitimately-seeded tenant whose index the objects phase already deleted
+    // would be refused mid-wipe. Deliberately scoped to this branch: the exact
+    // check above must run on every delivery, because it is what catches a
+    // ready reading that no pass has ever covered.
+    if (progress.mutationIds.length > 0) return;
+    if ((await countLedgerRows(db, tenantId)).live > 0) return;
     const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
     if ((await store.probeNamespace()).length === 0) return;
-    refuseUnseeded(tenantId, "no readable index/list.json, empty ledger, namespace answers");
+    refuseUnseeded(
+      tenantId,
+      "no readable index/list.json, no live vector_ledger row, namespace answers",
+    );
   }
 
   if (readyIds.length > LEDGER_COVERAGE_MAX_SCAN) {
@@ -1090,11 +1136,21 @@ async function assertLedgerCoversCorpus(
     // a PARTIAL hole in a very large corpus: enough rows to match the count,
     // with the wrong ids. That is a real gap, named here rather than hidden,
     // and it is bounded to tenants above the scan limit.
-    const rows = (await countLedgerRows(db, tenantId)).total;
-    if (rows < readyIds.length) {
+    // A wipe that has already submitted deletes has flipped its rows to
+    // `delete_submitted`, so the live count would understate coverage. It has
+    // also already proved the ledger was populated. Same short-circuit, same
+    // reason, as the fallback branch below.
+    if (progress.mutationIds.length > 0) return;
+    // LIVE rows, not the total. `delete_submitted` rows accumulate from
+    // ordinary `DELETE /api/readings/:id` purges and nothing prunes them
+    // outside a wipe, so counting them would let a tenant's purge history
+    // offset exactly as many unseeded ready readings and wave the corpus
+    // through. On a fresh wipe a seeded corpus's rows are all `live`.
+    const live = (await countLedgerRows(db, tenantId)).live;
+    if (live < readyIds.length) {
       refuseUnseeded(
         tenantId,
-        "fewer vector_ledger rows than ready readings (corpus too large to check id by id)",
+        "fewer live vector_ledger rows than ready readings (corpus too large to check id by id)",
       );
     }
     return;
@@ -1465,9 +1521,12 @@ async function assertLedgerEmptied(
       ledger_rows_remaining: after.total,
       outcome: sawResidue ? "residue" : "unconfirmed",
       note: sawResidue
-        ? "vectors still answered after the confirmation bound. Their ids are retained in " +
-          "vector_ledger for this tenant, so they stay addressable: re-run the wipe with force, " +
-          "or scan the ledger. Wipe completed."
+        ? "vectors still answered after the confirmation bound. Ids this wipe could not confirm " +
+          "are retained in vector_ledger and stay addressable — but a vector the ledger cannot " +
+          "NAME is not among them: a pre-S3 stranding, or a bare-id vector from an older " +
+          "`corpus ingest`/`recover --batch` run under --tenant, is invisible to deleteByIds " +
+          "and its row (if any) will have been cleared as absent. Do not read this as healthy: " +
+          "see the residual list in src/account-wipe.ts, and slice S5's audit. Wipe completed."
         : "no confirmation call ever came back clean, so the wipe could not be confirmed; " +
           "check Vectorize health. The ledger rows are retained. Wipe completed.",
     }),

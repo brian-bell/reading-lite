@@ -392,12 +392,28 @@ export async function clearTenantLedger(
    */
   probedAtMs: number,
 ): Promise<number> {
+  // Two floors, and they answer different questions.
+  //
+  // `<= probedAtMs` is about EVIDENCE: a delete submitted after the probe was
+  // taken is not something the probe saw.
+  //
+  // `<= probedAtMs - VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS` is about
+  // PROPAGATION, and it is the one that was missing. S6 measured
+  // `deleteByIds` taking 30-90s to become visible, which is why no per-id
+  // absence counts inside 120s — and an empty namespace query is subject to
+  // exactly the same lag. Without this floor the fast path would clear a row
+  // whose delete was submitted seconds earlier on a probe that could not yet
+  // have seen it either way, which is the weakest evidence in the module
+  // clearing the most rows at once.
+  //
+  // A row younger than the floor simply survives to the next pass, where it is
+  // old enough to be judged.
   const result = await db.run(
     `DELETE FROM vector_ledger
       WHERE tenant_id = ? AND state = 'delete_submitted'
         AND deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?`,
     tenantId,
-    probedAtMs,
+    probedAtMs - VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS,
   );
   return result.changes;
 }

@@ -172,14 +172,29 @@ again. That retires the old "no record AND an empty prefix" probe, which could
 not tell an already-wiped tenant from one whose prefix was emptied while vectors
 stranded, and so had to skip both forever.
 
-**What remains a gap is the past, not the future.** A reading purged from R2
-before slice S3, whose vector delete failed, has no ledger row and cannot be
-given one — there is nothing left to derive an id from. `ops corpus
-seed-vector-ledger` covers every reading an existing corpus still *has*; a
-vector already orphaned when the ledger arrived is unseedable by construction.
-Such a tenant completes with `residue = 1`, which says the namespace never came
-back clean, and `probe_saw_residue` beside it separates "vectors were still
-there" from "we never got an answer".
+**What remains a gap is the past, not the future — and one half of it is a
+gate on #195, not a footnote.**
+
+A reading purged from R2 before slice S3, whose vector delete failed, has no
+ledger row and cannot be given one: there is nothing left to derive an id from.
+`ops corpus seed-vector-ledger` covers every reading an existing corpus still
+*has*; a vector already orphaned when the ledger arrived is unseedable by
+construction.
+
+The other half is recoverable and must be recovered. Until S3, the offline batch
+pipeline wrote tenant vectors under **bare** reading ids — `makeVectorizeClient`
+attaches a namespace but never composed the tenant-scoped id. Any tenant that
+has ever run `ops corpus ingest` or `ops corpus recover --batch` under
+`--tenant` therefore holds vectors this wipe cannot address, because
+`deleteByIds` submits the composed id and misses them. Every wipe for such a
+tenant spends its attempts, alerts, and completes with `residue = 1` while those
+embeddings survive account deletion indefinitely.
+
+**So `residue = 1` on such a tenant is not a clean-enough outcome to file away.**
+It is that known gap. Repairing it in production is a gate on #195's acceptance
+bullet 3 ("a repeatable residue scan reports zero tenant-owned data"), and slice
+S5 owns the audit and the repair. `probe_saw_residue` beside `residue` still
+separates "vectors were still there" from "we never got an answer".
 
 ### Seed the vector ledger before the first ledger-based wipe
 
