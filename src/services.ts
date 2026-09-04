@@ -32,15 +32,24 @@ export interface DnsResolvers {
 // a good reading permanently failed.
 //
 // A code outside that set therefore means something other than a DNS answer
-// went wrong, and the family it covers went UNVETTED while `fetch` will still
-// re-resolve and may connect over it — so it fails closed even when the other
-// family answered. Returning the survivors would let an attacker whose
-// nameserver faults A queries hide a private A record behind a public AAAA
-// answer: deterministic and attacker-chosen, unlike the DNS-rebinding race
-// safe-fetch.ts documents as an accepted residual. It is wrapped rather than
-// rethrown because the raw error is named "Error", which `retryableError` does
-// not whitelist — an unwrapped throw would commit a terminal, non-retryable
-// manifest for a fault that may well clear.
+// went wrong — the DoH request itself failed, say — and the family it covers
+// went UNVETTED while `fetch` will still re-resolve and may connect over it. So
+// it fails closed rather than proceeding on whichever family did answer.
+//
+// Be precise about what that does and does not buy, because the obvious
+// stronger claim is wrong on this runtime. It does NOT stop an attacker whose
+// nameserver faults one family: that fault arrives as ENOTFOUND, tolerated
+// above, so the other family's addresses are still used and a private record on
+// the unvetted family is still reachable. Closing THAT would mean treating a
+// partial ENOTFOUND as unvetted, which is exactly what a single-stack host
+// looks like — it would make every v4-only host unfetchable. The split-family
+// gap is therefore not closeable at this layer while ENOTFOUND stays
+// overloaded; it belongs with the DNS-rebinding residual safe-fetch.ts
+// documents, and wants a resolver that reports rcodes distinctly.
+//
+// The error is wrapped rather than rethrown because the raw one is named
+// "Error", which `retryableError` does not whitelist — an unwrapped throw would
+// commit a terminal, non-retryable manifest for a fault that may well clear.
 export function lookupFromResolvers(resolvers: DnsResolvers): LookupFn {
   return async (hostname) => {
     const [v4, v6] = await Promise.allSettled([

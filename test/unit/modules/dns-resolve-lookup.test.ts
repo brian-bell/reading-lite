@@ -79,9 +79,12 @@ describe("lookupFromResolvers", () => {
   });
 
   // A hard error means one family was never vetted, while `fetch` re-resolves
-  // and may still connect over it. Returning the other family's addresses would
-  // let an attacker whose nameserver fails A queries hide a private A record
-  // behind a public AAAA answer, so the guard fails closed instead.
+  // and may still connect over it, so the guard fails closed rather than
+  // proceeding on the family that answered. Note what this does NOT cover: on
+  // the pinned workerd every DNS-level failure is ENOTFOUND, tolerated above,
+  // so a nameserver that faults one family still yields the other's addresses.
+  // These cases pin the contract for codes that mean "no answer at all"; see
+  // lookupFromResolvers on why the split-family gap is not closeable here.
   it("fails closed when one family hard-fails, even if the other resolved", async () => {
     const hard = new Error("timeout");
     const resolve4 = vi.fn(async () => ["8.8.8.8"]);
