@@ -4,7 +4,7 @@ import { processReading, type ProcessReadingArgs } from "../../src/process-readi
 import type { Env } from "../../src/index";
 import { sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix, ReadingStore } from "../../src/modules/stores/reading-store";
-import { founderTenant, testReadingStore } from "../helpers/tenant-fixtures";
+import { founderTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -93,6 +93,7 @@ function makeStubFetch() {
 function makeServices(fetchFn: typeof fetch): Services {
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => "2026-04-26T20:00:00.000Z",
     newId: () => "rd_VIS",
   };

@@ -3,7 +3,7 @@ import { processReading } from "../../../src/process-reading";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
-import { founderTenant } from "../../helpers/tenant-fixtures";
+import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
 
 function args() {
   return {
@@ -89,6 +89,7 @@ function envWith(bucket: R2Bucket, controlPlane?: D1Database): Env {
 function services(fetchFn: typeof fetch): Services {
   return {
     fetch: fetchFn,
+    lookup: PUBLIC_LOOKUP,
     now: () => "2026-04-26T20:00:01.000Z",
     newId: () => "rd_TEST",
   };

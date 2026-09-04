@@ -10,7 +10,7 @@ import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { consumeProcessReadingMessage } from "../../src/control-plane/envelope";
 import { fromD1 } from "../../src/control-plane/db";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
-import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
+import { FOUNDER_TENANT_ID, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const TOKEN_ID = "tok_550e8400-e29b-41d4-a716-446655440000";
@@ -18,6 +18,7 @@ const TOKEN_ID = "tok_550e8400-e29b-41d4-a716-446655440000";
 function services(now = NOW) {
   return {
     fetch: globalThis.fetch,
+    lookup: PUBLIC_LOOKUP,
     now: () => now,
     newId: () => "rd_AUTH01",
   };
