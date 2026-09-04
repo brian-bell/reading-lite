@@ -324,12 +324,18 @@ export const ACCOUNT_WIPE_CONFIRM_BATCH = 500;
  * fails resets that budget on every self-send and never dead-letters — it just
  * cycles, forever, invisibly.
  *
- * The bound is sized off a delivery's own limits rather than picked round: a
- * delivery moves up to `ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES` × `R2_LIST_LIMIT`
- * objects (20,000) or `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES` ×
- * `VECTORIZE_DELETE_MAX_IDS` ids (20,000), so 200 continuations covers roughly
- * four million of either. No real tenant reaches that; a stuck one reaches it in
- * a bounded number of cycles and then dead-letters where it can be seen. The
+ * The bound is sized off a delivery's own limits rather than picked round, and
+ * three phases now share the counter:
+ *
+ *   seed     `ACCOUNT_WIPE_DEFAULT_SEED_PAGES` × `R2_LIST_LIMIT`        =  5,000 objects
+ *   vectors  `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES` × `VECTORIZE_DELETE_MAX_IDS` = 5,000 ids
+ *   objects  `ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES` × `R2_LIST_LIMIT`      = 20,000 objects
+ *
+ * So a pass spends roughly N/5,000 continuations seeding plus N/20,000 deleting,
+ * and 200 of them carries a tenant of order 800,000 objects. Far above any
+ * plausible one — but the figure is derived from the constants above rather
+ * than asserted, so it moves when they do. A stuck wipe reaches the bound in a
+ * bounded number of cycles and then dead-letters where it can be seen. The
  * counter is per pass — reopening a leftover wipe resets it.
  */
 export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;

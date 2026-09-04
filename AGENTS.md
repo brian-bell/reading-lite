@@ -33,6 +33,14 @@ comments of the modules themselves — read those before changing a module.
   of the id-source role and makes "no rows for this tenant" the account wipe's
   terminal condition. The confirmation constants and the reasons for each are
   measured, not chosen — read the module header before touching them.
+  **Blast radius, stated once:** this makes D1 a hard dependency of two paths
+  that previously had none. `ReadingVisibility.publish` writes the row before
+  the upsert and lets the failure through (`VectorLedgerWriteError`), so the
+  reading requeues rather than publishing un-ledgered; `purgeReading` inherits
+  the same for `DELETE /api/readings/:id`. Both are retry-recoverable and the
+  ordering means no vector is ever stranded — but a sustained control-plane
+  outage now blocks publishes and purges instead of only degrading bookkeeping,
+  and the symptom will look like a Vectorize fault when it is not.
 - `src/control-plane/wipe-progress.ts` — the wipe's whole durable state in D1
   (`wipe_progress`, migration `0009`): phase, the R2 cursor, the `lease_seq`
   compare-and-set that decides ownership, and the completion record that

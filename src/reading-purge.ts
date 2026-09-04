@@ -149,10 +149,14 @@ export async function purgeReading(
   // nothing, and a stray pointer/row is reclaimed by the next submit's
   // ownership repair or corpus tooling.
   objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
-  if (deps.similarity) {
-    await deps.similarity.delete(id);
-    await deps.ledger?.markDeleteSubmitted([id], ledgerStamp(opts.now));
-  }
+  // The sweep re-issues the vector delete but NOT the ledger write. The row was
+  // recorded before the first delete and carries this same stamp, so a second
+  // write would change nothing — while adding a failure point after the objects
+  // are already gone, where a D1 blip would throw out of
+  // `DELETE /api/readings/:id` with the by-id pointer still present. The
+  // invariant that matters is already satisfied: the id was in the ledger
+  // before anything was deleted.
+  if (deps.similarity) await deps.similarity.delete(id);
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
 

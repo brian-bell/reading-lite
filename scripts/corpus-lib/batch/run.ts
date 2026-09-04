@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
-import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
+import type { R2Client, VectorizeClient, VectorizeMatch } from "../../lib/cf-clients";
 import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
 import type {
   AnthropicBatchClient,
@@ -256,7 +256,10 @@ export async function runBatchPipeline(
 
   let summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
-    query: (vector, opts) => deps.vectorize.query(vector, opts),
+    query: async (vector, opts) => stripNamespace(
+      await deps.vectorize.query(vector, opts),
+      deps.vectorNamespace,
+    ),
     now: () => deps.now(),
   });
 
@@ -371,6 +374,34 @@ export async function runBatchPipeline(
 // Eager by-url claim parity with fresh ingest: activateRecoverTargets flips each
 // owner's slot to pending before batch submit (a failed→pending flip for an
 // already-held slot), closing the in-flight race window (#71).
+/**
+ * Return neighbour matches under BARE reading ids.
+ *
+ * `SimilarityStore.query` in the Worker strips its own `{tenant}:` prefix so
+ * callers only ever see reading ids; `makeVectorizeClient.query` does not, and
+ * the batch pipeline consumes matches directly. That divergence was invisible
+ * while this pipeline wrote bare ids — and it stopped being invisible the
+ * moment `write-phase` started composing them, because the pipeline then reads
+ * back its own prefixed writes.
+ *
+ * Two things go wrong without this, and neither is loud. `excludeSelf` compares
+ * the bare reading id against a prefixed match, so a re-ingested reading no
+ * longer excludes itself and spends a neighbour slot on itself at score ~1.0.
+ * And the ids flow onward into `similarity` and `connections` on the manifest
+ * this pipeline writes, where the read path and the SPA expect bare reading
+ * ids.
+ */
+function stripNamespace(
+  matches: VectorizeMatch[],
+  namespace: string | undefined,
+): VectorizeMatch[] {
+  if (namespace === undefined) return matches;
+  const prefix = `${namespace}:`;
+  return matches.map((m) =>
+    m.id.startsWith(prefix) ? { ...m, id: m.id.slice(prefix.length) } : m,
+  );
+}
+
 export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
   return runBatchPipeline(
     async () => {

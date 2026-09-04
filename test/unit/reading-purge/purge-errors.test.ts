@@ -193,17 +193,23 @@ describe("purgeReading vector ledger", () => {
     },
   };
 
-  it("marks the row delete_submitted after each vector delete, and never clears it", async () => {
+  it("records the id once, before anything is deleted, and never clears it", async () => {
     events.length = 0;
     deletes = 0;
     const reader = fakeReader({});
     const out = await purgeReading({ reader, similarity, ledger }, ID, OPTS);
     expect(out.kind).toBe("purged");
-    // Twice, once per vector delete: the purge issues a second, idempotent
-    // delete in its final sweep. Each is `:n` — after the delete it describes,
-    // because `deleted_at_ms` dates the submission and the confirmation rule's
-    // +120s first-attempt delay is measured from it.
-    expect(events).toEqual([`submitted:${ID}:1`, `submitted:${ID}:2`]);
+    // ONCE, after the first vector delete (`:1`) — `deleted_at_ms` dates the
+    // submission and the confirmation rule's +120s delay is measured from it.
+    //
+    // Not again in the final sweep, though that sweep does re-issue the vector
+    // delete. A second write would re-stamp the identical value while adding a
+    // failure point AFTER the objects are gone, where a D1 blip would throw out
+    // of DELETE /api/readings/:id with the by-id pointer still present. The
+    // invariant is already satisfied: the id was recorded before anything was
+    // deleted.
+    expect(events).toEqual([`submitted:${ID}:1`]);
+    expect(deletes).toBe(2);
   });
 
   it("touches no ledger when there is no similarity store to delete through", async () => {
