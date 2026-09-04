@@ -1,7 +1,15 @@
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "../index";
 
-export const DEFAULT_MCP_ALLOWED_ORIGINS = ["https://reading-lite.bbell.dev"];
+/**
+ * Origins a browser-based MCP client may present. Both production hosts are
+ * listed during the `bbookmarks.com` dual-serve window; the match below is a
+ * whole-string comparison, so `www.` and look-alike hosts are not covered by
+ * either entry and are rejected. Apex is canonical, and `www` is expected to be
+ * redirected to it at the edge; if `www` is ever routed to the Worker directly
+ * it needs its own entry here rather than any loosening of the match.
+ */
+export const DEFAULT_MCP_ALLOWED_ORIGINS = ["https://reading-lite.bbell.dev", "https://bbookmarks.com"];
 
 export function parseMcpAllowedOrigins(raw: string | undefined): string[] {
   if (!raw || raw.trim().length === 0) return [...DEFAULT_MCP_ALLOWED_ORIGINS];
