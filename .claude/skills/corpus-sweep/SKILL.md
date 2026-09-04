@@ -106,7 +106,7 @@ npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 --execute
 npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only, migrate-founder source, and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
 `READING_LITE_BUCKET` env, then `reading-lite`), `--vectorize <index>` (defaults
 to the bucket name — they match in every environment), `--local`, `--execute`,

@@ -10,9 +10,10 @@
 // tenantKeyRoot (the same function readingStoreFor uses when
 // TENANT_DATA_PLANE=1), and the Vectorize namespace is the tenant id, matching
 // similarityStoreFor. `global` maps to the empty key root and no namespace —
-// the pre-tenant layout: local and staging (TENANT_DATA_PLANE still unset),
-// migrate-founder source, and leftover production global objects after the
-// founder cutover. Production live corpus is a usr_… selector from whoami.
+// the pre-tenant layout: local (TENANT_DATA_PLANE still unset),
+// migrate-founder source, and the leftover global objects both deployed
+// environments retain after their cutovers. Production and staging live corpus
+// is a usr_… selector from whoami.
 
 import { parseTenantId } from "../../src/control-plane/ids";
 import { tenantKeyRoot } from "../../src/modules/stores/reading-store";

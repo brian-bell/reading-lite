@@ -452,7 +452,12 @@ still exist (it should: this procedure never deletes it).
 
 ```sh
 npx wrangler deploy --env production
-# no --var; toml staging/production vars do not set TENANT_DATA_PLANE
+# no --var. NOTE: both deployed environments now pin TENANT_DATA_PLANE = "1"
+# in their own [vars] — production since this cutover, staging since the
+# deletion staging gate (issue #203). Rolling the gate off is therefore a
+# wrangler.toml edit plus a deploy, not a bare deploy; removing the pin also
+# means relaxing the assertion in
+# test/unit/deploy/account-wipe-wrangler.test.ts in the same commit.
 ```
 
 Record the new version id. Confirm:
