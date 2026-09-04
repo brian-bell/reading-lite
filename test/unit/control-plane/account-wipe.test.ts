@@ -32,34 +32,28 @@ describe("wipeGraceElapsed", () => {
 });
 
 describe("wipeNeedsResume", () => {
+  // The resume question is now asked of the completion record rather than of a
+  // phase: a row with no `completed_at_ms` is a wipe still owed work, and a
+  // completed one only reopens when objects turned up under the prefix again.
   it("treats missing progress as a new wipe and incomplete/leftover as resume", () => {
     expect(wipeNeedsResume(null, false)).toBe(false);
     expect(wipeNeedsResume(null, true)).toBe(false);
-    expect(wipeNeedsResume({ phase: "done" }, false)).toBe(false);
-    expect(wipeNeedsResume({ phase: "done" }, true)).toBe(true);
-    expect(wipeNeedsResume({ phase: "vectors" }, false)).toBe(true);
-    expect(wipeNeedsResume({ phase: "objects" }, false)).toBe(true);
+    expect(wipeNeedsResume({ completedAtMs: NOW_MS }, false)).toBe(false);
+    expect(wipeNeedsResume({ completedAtMs: NOW_MS }, true)).toBe(true);
+    expect(wipeNeedsResume({ completedAtMs: null }, false)).toBe(true);
+    expect(wipeNeedsResume({ completedAtMs: null }, true)).toBe(true);
   });
 });
 
 describe("wipeLeaseHeld", () => {
-  it("holds through a future retry lease and expires after the in-flight window", () => {
+  it("expires after the in-flight window", () => {
     expect(wipeLeaseHeld(NOW_MS, NOW_MS)).toBe(true);
     expect(wipeLeaseHeld(NOW_MS, NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS - 1)).toBe(true);
     expect(wipeLeaseHeld(NOW_MS, NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS)).toBe(false);
+    // A future timestamp still reads as held. Nothing writes one any more — the
+    // retry-time lease advance is gone with the etag CAS — but the predicate is
+    // advisory now, so an out-of-order clock costs a skipped tick, not a cursor.
     expect(wipeLeaseHeld(NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000, NOW_MS)).toBe(true);
-    expect(
-      wipeLeaseHeld(
-        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000,
-        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000 + ACCOUNT_WIPE_IN_FLIGHT_MS - 1,
-      ),
-    ).toBe(true);
-    expect(
-      wipeLeaseHeld(
-        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000,
-        NOW_MS + ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS * 1000 + ACCOUNT_WIPE_IN_FLIGHT_MS,
-      ),
-    ).toBe(false);
   });
 });
 

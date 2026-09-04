@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_WIPE_GRACE_MS,
   ACCOUNT_WIPE_IN_FLIGHT_MS,
+  ACCOUNT_WIPE_MAX_CONTINUATIONS,
+  ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT,
   ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
   ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS,
-  accountWipeProgressKey,
+  R2_LIST_LIMIT,
   consumeAccountWipeMessage,
   fanOutDueAccountWipes,
   handleAccountWipeDeadLetter,
@@ -13,7 +15,15 @@ import {
   type AccountWipeJobDeps,
 } from "../../src/account-wipe";
 import { accountWipeEnvelopeV1, type AccountWipeEnvelopeV1 } from "../../src/control-plane/wipe-envelope";
+import { fromD1 } from "../../src/control-plane/db";
 import { parseTenantId } from "../../src/control-plane/ids";
+import {
+  AccountWipeProgressConflictError,
+  emptyWipeProgress,
+  readWipeProgress,
+  WipeProgressWriter,
+  type WipeProgress,
+} from "../../src/control-plane/wipe-progress";
 import worker, { type Env } from "../../src/index";
 import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
 import { tenantVectorId } from "../../src/modules/stores/similarity-store";
@@ -68,6 +78,31 @@ async function markDeleting(userId: string, deletingAtMs: number): Promise<void>
   )
     .bind(deletingAtMs, deletingAtMs, userId)
     .run();
+}
+
+/** Wipe state lives in D1 now, so the tests read and seed it there. */
+function controlPlane() {
+  return fromD1(env.CONTROL_PLANE);
+}
+
+async function readProgress(): Promise<WipeProgress | null> {
+  return readWipeProgress(controlPlane(), TENANT);
+}
+
+async function clearProgress(): Promise<void> {
+  await env.CONTROL_PLANE.prepare("DELETE FROM wipe_progress WHERE tenant_id = ?")
+    .bind(OTHER_TENANT_ID)
+    .run();
+}
+
+/** Seed a wipe record the way a previous delivery would have left it. */
+async function seedProgress(partial: Partial<WipeProgress>): Promise<void> {
+  const db = controlPlane();
+  const stored = await readWipeProgress(db, TENANT);
+  await new WipeProgressWriter(db, TENANT, stored).write({
+    ...emptyWipeProgress(NOW_MS),
+    ...partial,
+  });
 }
 
 async function markActive(userId: string): Promise<void> {
@@ -135,10 +170,9 @@ function memoryBucket(initial: Iterable<string> = []): {
     etags.set(key, `etag-${++etagSeq}`);
   }
   const bucket = {
-    // Models R2's conditional put, so the wipe's compare-and-set is actually
-    // exercised through this double instead of silently bypassed: a mismatched
-    // etag, or If-None-Match:* against a key that exists, returns null as R2
-    // does, and every successful put returns a fresh etag to chain from.
+    // Models R2's conditional put. The wipe's own compare-and-set moved to D1,
+    // but keeping the double honest about `onlyIf` means a future R2 CAS is
+    // exercised here rather than silently bypassed.
     async put(
       key: string,
       value: string | ArrayBuffer | ReadableStream | Blob,
@@ -201,40 +235,26 @@ function wipeJobDeps(extra: Partial<AccountWipeJobDeps> & { clock?: { t: number 
   };
 }
 
-type WipeProgressSnap = {
-  updated_at_ms: number;
-  phase: string;
-  objects_deleted?: number;
-};
-
+/**
+ * Advance a test clock on every R2 `list`, and run a hook after each one — the
+ * observation point for what the wipe record looks like part-way through a job
+ * now that it lives in D1 rather than in an R2 object we could intercept.
+ */
 function wrapBucketClock(
   bucket: R2Bucket,
-  tenantId: string,
   clock: { t: number },
   opts: {
     advanceListMs?: number;
-    onProgress?: (progress: WipeProgressSnap) => void | Promise<void>;
+    afterList?: () => void | Promise<void>;
   } = {},
 ): R2Bucket {
-  const progressKey = accountWipeProgressKey(tenantId);
   return new Proxy(bucket, {
     get(target, prop, receiver) {
       if (prop === "list") {
         return async (listOpts?: R2ListOptions) => {
           if (opts.advanceListMs) clock.t += opts.advanceListMs;
-          return target.list(listOpts as R2ListOptions);
-        };
-      }
-      if (prop === "put") {
-        return async (
-          key: string,
-          value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null,
-          putOpts?: R2PutOptions,
-        ) => {
-          const result = await target.put(key, value, putOpts);
-          if (key === progressKey && typeof value === "string" && opts.onProgress) {
-            await opts.onProgress(JSON.parse(value) as WipeProgressSnap);
-          }
+          const result = await target.list(listOpts as R2ListOptions);
+          await opts.afterList?.();
           return result;
         };
       }
@@ -249,7 +269,7 @@ describe("account wipe (195b PR1)", () => {
     await insertSecondTenant(env as unknown as Env);
     await markActive(OTHER_TENANT_ID);
     await emptyPrefix(PREFIX);
-    await env.READINGS_BUCKET.delete(accountWipeProgressKey(OTHER_TENANT_ID));
+    await clearProgress();
     installWipeQueue();
     installVectorizeStub();
   });
@@ -329,11 +349,13 @@ describe("account wipe (195b PR1)", () => {
     );
     expect(first.kind).toBe("continue");
     expect(memory.keysUnder(PREFIX).length).toBeGreaterThan(0);
-    const progressObj = await memory.bucket.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { r2_cursor?: string; phase: string };
-    expect(progress.phase).toBe("objects");
-    expect(progress.r2_cursor).toBeTruthy();
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.phase).toBe("objects");
+    expect(progress!.r2Cursor).toBeTruthy();
+    // The self-send is counted, so a wipe that never finishes cannot reset its
+    // queue retry budget forever (F7).
+    expect(progress!.continuations).toBe(1);
 
     const second = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
@@ -351,7 +373,12 @@ describe("account wipe (195b PR1)", () => {
       await wipeEnv(),
       wipeJobDeps(),
     );
-    expect(result).toEqual({ kind: "complete", objects_deleted: 0, mutation_ids: [] });
+    expect(result).toEqual({
+      kind: "complete",
+      objects_deleted: 0,
+      mutation_ids: [],
+      residue: false,
+    });
     expect(deleteByIds).not.toHaveBeenCalled();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
@@ -445,16 +472,7 @@ describe("account wipe (195b PR1)", () => {
   it("does not wipe the tenant prefix when the index is unbound and the job resumes at objects", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        mutation_ids: [],
-        objects_deleted: 0,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({ phase: "objects" });
     const before = await listPrefixKeys(PREFIX);
     expect(before).not.toEqual([]);
 
@@ -513,14 +531,11 @@ describe("account wipe (195b PR1)", () => {
   });
 
   it("cron fan-out enqueues past-grace deleting tenants and skips the grace window", async () => {
-    // A tenant with something to wipe: fan-out now skips a no-progress tenant
-    // whose prefix is already empty, since that is what an already-wiped one
-    // looks like once the terminal transition removes the record.
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect(await readProgress()).toBeNull();
 
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
@@ -541,11 +556,10 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps({ maxObjectPages: 1, maxVectorBatches: 20 }),
     );
     expect(started.kind).toBe("continue");
-    const progressObj = await memory.bucket.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { force?: boolean; phase: string };
-    expect(progress.force).toBe(true);
-    expect(progress.phase).not.toBe("done");
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.force).toBe(true);
+    expect(progress!.completedAtMs).toBeNull();
 
     expect(await fanOutDueAccountWipes(jobEnv, { nowMs: NOW_MS })).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
@@ -559,29 +573,21 @@ describe("account wipe (195b PR1)", () => {
   it("cron resumes leftover objects on a force wipe during grace with force:true", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        mutation_ids: [],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-        force: true,
-      }),
-    );
+    await seedProgress({
+      phase: "done",
+      objectsDeleted: 1,
+      force: true,
+      completedAtMs: NOW_MS,
+    });
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT, force: true })]);
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as {
-      phase: string;
-      force?: boolean;
-      vector_cursor?: string;
-    };
-    expect(progress.phase).toBe("vectors");
-    expect(progress.vector_cursor).toBeUndefined();
-    expect(progress.force).toBe(true);
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.phase).toBe("vectors");
+    expect(progress!.vectorCursor).toBeUndefined();
+    expect(progress!.force).toBe(true);
+    // Reopened, so the completion record is cleared until this pass finishes.
+    expect(progress!.completedAtMs).toBeNull();
 
     const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
     expect(result.kind).toBe("complete");
@@ -602,8 +608,7 @@ describe("account wipe (195b PR1)", () => {
     expect(warn).toHaveBeenCalledWith(
       JSON.stringify({ event: "account_wipe_fanout_skipped", reason: "no_tenant_prefix" }),
     );
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).toBeNull();
+    expect(await readProgress()).toBeNull();
     warn.mockRestore();
   });
 
@@ -611,17 +616,7 @@ describe("account wipe (195b PR1)", () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const keys = [`${PREFIX}keep-a`, `${PREFIX}keep-z`];
     const memory = memoryBucket(keys);
-    await memory.bucket.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        r2_cursor: `${PREFIX}keep-z`,
-        mutation_ids: [],
-        objects_deleted: 0,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({ phase: "objects", r2Cursor: `${PREFIX}keep-z` });
     const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
@@ -635,42 +630,25 @@ describe("account wipe (195b PR1)", () => {
   it("cron re-enqueues a done tenant that still has prefix objects", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        mutation_ids: [],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({ phase: "done", objectsDeleted: 1, completedAtMs: NOW_MS });
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as {
-      phase: string;
-      vector_cursor?: string;
-    };
-    expect(progress.phase).toBe("vectors");
-    expect(progress.vector_cursor).toBeUndefined();
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.phase).toBe("vectors");
+    expect(progress!.vectorCursor).toBeUndefined();
   });
 
   it("leftover recovery re-runs Vectorize deletes before emptying R2", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        vector_cursor: "rd_9999999999",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({
+      phase: "done",
+      vectorCursor: "rd_9999999999",
+      mutationIds: ["mut_old"],
+      objectsDeleted: 1,
+      completedAtMs: NOW_MS,
+    });
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
@@ -704,8 +682,11 @@ describe("account wipe (195b PR1)", () => {
       tenantVectorId(OTHER_TENANT_ID, ID_B),
     ]);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    // Gone at the terminal transition (F4): the key names a deleted tenant.
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    // The record is KEPT now, unlike the R2 object it replaces (F4): it carries
+    // no reading id, and it is the evidence a later slice gates on.
+    const progress = await readProgress();
+    expect(progress!.completedAtMs).not.toBeNull();
+    expect(progress!.vectorCursor).toBeUndefined();
   });
 
   // No post-empty re-submit any more: a job resuming at the objects phase had
@@ -715,16 +696,7 @@ describe("account wipe (195b PR1)", () => {
   it("resuming at the objects phase empties the prefix without re-collecting ids", async () => {
     await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 0,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({ phase: "objects", mutationIds: ["mut_old"] });
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
@@ -733,7 +705,7 @@ describe("account wipe (195b PR1)", () => {
     expect(result.kind).toBe("complete");
     expect(deleteByIds).not.toHaveBeenCalled();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect((await readProgress())!.completedAtMs).not.toBeNull();
   });
 
   // Leftover recovery re-derives its ids from R2 rather than from anything the
@@ -741,16 +713,7 @@ describe("account wipe (195b PR1)", () => {
   it("leftover recovery re-derives reading ids from an R2 re-list", async () => {
     await seedTenantObjects([ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        mutation_ids: [],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({ phase: "done", objectsDeleted: 1, completedAtMs: NOW_MS });
     const result = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       await wipeEnv(),
@@ -845,57 +808,87 @@ describe("account wipe (195b PR1)", () => {
     expect(ack).not.toHaveBeenCalled();
     expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
     expect(consoleErr).toHaveBeenCalled();
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { updated_at_ms: number };
-    expect(progress.updated_at_ms).toBe(NOW_MS + 13_000);
+    // The record survives the failure so the retry resumes from it. What it no
+    // longer does is push `updated_at_ms` into the future to fence off cron:
+    // that trick belonged to the R2 etag CAS, and the lease is a version now.
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.completedAtMs).toBeNull();
+    expect(progress!.updatedAtMs).toBe(NOW_MS);
     consoleErr.mockRestore();
   });
 
-  it("does not fan out a sibling while a delayed retry still holds the lease", async () => {
+  // Previously special-cased: a Retry-After of hours used to require pushing the
+  // lease timestamp forward by `delaySeconds`, or cron would enqueue a sibling
+  // that last-write-wins the record the delayed retry still owned. With the CAS
+  // on `lease_seq`, that sibling is simply the new owner and the late retry is
+  // told so — no fence needed, and nothing lost either way.
+  it("lets cron take over a wipe owed a long delayed retry, and the retry backs off", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const retryAfterMs = 2 * 60 * 60 * 1000;
-    deleteByIds.mockImplementation(async () => {
-      throw new RateLimitedError(429, retryAfterMs, "https://vectorize.example/delete");
+    let failing = true;
+    deleteByIds.mockImplementation(async (ids: string[]) => {
+      if (failing) throw new RateLimitedError(429, retryAfterMs, "https://vectorize.example/delete");
+      return { mutationId: `mut_${ids.length}` };
     });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // The delivery fails and asks for a 2-hour retry. Its record is left as it
+    // was, with the lease version it wrote.
     await consumeAccountWipeMessage(
-      {
-        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
-        ack: vi.fn(),
-        retry: vi.fn(),
-        attempts: 1,
-      },
+      { body: accountWipeEnvelopeV1({ tenantId: TENANT }), ack: vi.fn(), retry: vi.fn(), attempts: 1 },
       await wipeEnv(),
       wipeJobDeps(),
     );
+    const stranded = await readProgress();
+    expect(stranded).not.toBeNull();
+    const strandedSeq = stranded!.leaseSeq;
+
+    // Cron picks the tenant back up once the advisory window lapses — far
+    // sooner than the retry is due — and a healthy delivery finishes the wipe.
+    const cronAt = NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS;
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: cronAt })).toEqual({ enqueued: 1 });
+    failing = false;
+    const taken = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps({ nowMs: cronAt }));
+    expect(taken.kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    expect((await readProgress())!.leaseSeq).toBeGreaterThan(strandedSeq);
+
+    // The original message finally redelivers two hours later. It holds a stale
+    // lease version, so it reports that someone else owns the wipe rather than
+    // rewinding the finished record.
+    const lateAck = vi.fn();
+    const lateRetry = vi.fn();
+    await consumeAccountWipeMessage(
+      {
+        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+        ack: lateAck,
+        retry: lateRetry,
+        attempts: 2,
+      },
+      await wipeEnv(),
+      wipeJobDeps({ nowMs: NOW_MS + retryAfterMs }),
+    );
+    expect(lateAck).toHaveBeenCalledOnce();
+    expect(lateRetry).not.toHaveBeenCalled();
+    expect((await readProgress())!.completedAtMs).not.toBeNull();
     consoleErr.mockRestore();
-    const delaySeconds = retryAfterMs / 1000;
-    const heldUntil = NOW_MS + delaySeconds * 1000;
-    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
-      enqueued: 0,
-    });
-    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: heldUntil + ACCOUNT_WIPE_IN_FLIGHT_MS - 1 })).toEqual({
-      enqueued: 0,
-    });
-    expect(queued).toEqual([]);
-    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: heldUntil + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
-      enqueued: 1,
-    });
+    warn.mockRestore();
   });
 
   it("heartbeats the wipe lease during collectReadingIds and R2 pages", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const clock = { t: NOW_MS };
-    const heartbeats: WipeProgressSnap[] = [];
+    const seen: Array<{ phase: string; updatedAtMs: number }> = [];
     const jobEnv = {
       ...(await wipeEnv()),
-      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, OTHER_TENANT_ID, clock, {
+      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, clock, {
         advanceListMs: ACCOUNT_WIPE_IN_FLIGHT_MS,
-        onProgress: (progress) => {
-          heartbeats.push(progress);
+        afterList: async () => {
+          const progress = await readProgress();
+          if (progress) seen.push({ phase: progress.phase, updatedAtMs: progress.updatedAtMs });
         },
       }),
     };
@@ -905,80 +898,62 @@ describe("account wipe (195b PR1)", () => {
       wipeJobDeps({ clock }),
     );
     expect(result.kind).toBe("complete");
-    const midCollect = heartbeats.find(
-      (progress) =>
-        progress.phase === "vectors" &&
-        progress.updated_at_ms >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
-    );
-    expect(midCollect).toBeDefined();
-    const midPages = heartbeats.find(
-      (progress) =>
-        (progress.phase === "objects" || (progress.objects_deleted ?? 0) > 0) &&
-        progress.updated_at_ms >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
-    );
-    expect(midPages).toBeDefined();
+    // Still heartbeats, so cron does not produce duplicates it would only have
+    // to turn away — advisory now rather than load-bearing.
+    expect(
+      seen.some(
+        (snap) => snap.phase === "vectors" && snap.updatedAtMs >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+      ),
+    ).toBe(true);
+    expect(
+      seen.some(
+        (snap) => snap.phase === "objects" && snap.updatedAtMs >= NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
+      ),
+    ).toBe(true);
   });
 
-  it("computes the retry lease from failure time, not consume-start", async () => {
-    await seedTenantObjects([ID_A]);
+  // Previously special-cased: with the R2 etag CAS the job had to heartbeat off
+  // a LIVE clock, because a job running on a frozen consume-start clock let a
+  // cron tick at the 15-minute boundary last-write-wins its cursor. Frozen is
+  // ordinary now — cron may well enqueue, but the CAS decides ownership, and
+  // exactly one of the two writers proceeds.
+  it("survives a frozen job clock: cron may enqueue, but only one writer wins", async () => {
+    await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    const clock = { t: NOW_MS };
-    deleteByIds.mockImplementation(async () => {
-      clock.t = NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS;
-      throw new RateLimitedError(429, 12_500, "https://vectorize.example/delete");
-    });
-    const ack = vi.fn();
-    const retry = vi.fn();
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await consumeAccountWipeMessage(
-      {
-        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
-        ack,
-        retry,
-        attempts: 1,
-      },
-      await wipeEnv(),
-      wipeJobDeps({ clock }),
-    );
-    expect(ack).not.toHaveBeenCalled();
-    expect(retry).toHaveBeenCalledWith({ delaySeconds: 13 });
-    const progressObj = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
-    expect(progressObj).not.toBeNull();
-    const progress = JSON.parse(await progressObj!.text()) as { updated_at_ms: number };
-    expect(progress.updated_at_ms).toBe(NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS + 13_000);
-    expect(progress.updated_at_ms).not.toBe(NOW_MS + 13_000);
-    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS })).toEqual({
-      enqueued: 0,
-    });
-    consoleErr.mockRestore();
-  });
-
-  it("cron at the 15-minute boundary still sees the lease while a job heartbeats", async () => {
-    await seedTenantObjects([ID_A]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    const clock = { t: NOW_MS };
-    let cronDuringHeartbeat: { enqueued: number } | null = null;
+    const frozen = { t: NOW_MS };
+    let cronRun: { enqueued: number } | null = null;
     const jobEnv = {
       ...(await wipeEnv()),
-      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, OTHER_TENANT_ID, clock, {
-        advanceListMs: ACCOUNT_WIPE_IN_FLIGHT_MS,
-        onProgress: async (progress) => {
-          if (cronDuringHeartbeat !== null) return;
-          if (progress.updated_at_ms < NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS) return;
-          cronDuringHeartbeat = { enqueued: -1 };
-          cronDuringHeartbeat = await fanOutDueAccountWipes(jobEnv, {
+      READINGS_BUCKET: wrapBucketClock(env.READINGS_BUCKET, frozen, {
+        // The clock never moves, so the lease looks expired at the boundary.
+        afterList: async () => {
+          if (cronRun !== null) return;
+          cronRun = { enqueued: -1 };
+          cronRun = await fanOutDueAccountWipes(await wipeEnv(), {
             nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS,
           });
         },
       }),
     };
-    await processAccountWipeJob(
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await processAccountWipeJob(
       accountWipeEnvelopeV1({ tenantId: TENANT }),
       jobEnv,
-      wipeJobDeps({ clock }),
+      wipeJobDeps({ clock: frozen }),
     );
-    expect(cronDuringHeartbeat).toEqual({ enqueued: 0 });
-    expect(queued).toEqual([]);
+    warn.mockRestore();
+    // Cron did enqueue against the apparently-expired lease and claimed it, so
+    // the running job's next write lost and it stood down. No exception, no
+    // clobbered cursor: the record is exactly what the winner wrote.
+    expect(cronRun).toEqual({ enqueued: 1 });
+    expect(outcome).toEqual({ kind: "skipped", reason: "lease_held" });
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.completedAtMs).toBeNull();
+    // The queued sibling can finish the wipe from that record.
+    const finished = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
+    expect(finished.kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
   it("wipe DLQ acks without touching the tenant prefix", async () => {
@@ -992,9 +967,11 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
   });
 
-  // Move 1 / F4: the progress object carries the deleted tenant id in its key and
-  // their full reading-id list in its body. It must not outlive the wipe.
-  it("deletes the wipe progress object at the terminal transition", async () => {
+  // What F4 was really about: the record must not carry a deleted account's
+  // reading ids. The D1 row is KEPT instead of deleted — it is the durable
+  // completion evidence — and the terminal write clears both cursors so nothing
+  // reading-shaped survives in it.
+  it("keeps a cursor-free completion record at the terminal transition", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     const result = await processAccountWipeJob(
@@ -1002,34 +979,88 @@ describe("account wipe (195b PR1)", () => {
       await wipeEnv(),
       wipeJobDeps(),
     );
-    expect(result.kind).toBe("complete");
+    expect(result).toMatchObject({ kind: "complete", residue: false });
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.phase).toBe("done");
+    expect(progress!.completedAtMs).toBe(NOW_MS);
+    expect(progress!.residue).toBe(false);
+    expect(progress!.objectsDeleted).toBeGreaterThan(0);
+    // No reading id anywhere on the surviving record.
+    expect(progress!.vectorCursor).toBeUndefined();
+    expect(progress!.r2Cursor).toBeUndefined();
+    expect(JSON.stringify(progress)).not.toContain(ID_A);
   });
 
-  // Move 1 / F8: max_concurrency = 3 plus at-least-once delivery means two live
-  // siblings. The loser must fail loudly instead of last-write-wins clobbering
-  // the winner's cursor.
-  it("refuses a progress write when a sibling wrote the object underneath it", async () => {
+  // F8, restated for D1: at-least-once delivery plus cron overlap means two
+  // deliveries can be live on one tenant. The lease is a version, so the loser's
+  // conditional UPDATE changes zero rows — it stands down and says so instead of
+  // last-write-wins clobbering the winner's cursor.
+  it("lets one of two concurrent writers win the lease and tells the other", async () => {
+    const db = controlPlane();
+    await seedProgress({ phase: "vectors" });
+    const stored = await readWipeProgress(db, TENANT);
+    expect(stored).not.toBeNull();
+
+    // Both deliveries read the same row, so both hold the same lease version.
+    const winner = new WipeProgressWriter(db, TENANT, stored);
+    const loser = new WipeProgressWriter(db, TENANT, stored);
+
+    await winner.write({ ...stored!, phase: "objects", objectsDeleted: 7 });
+    await expect(
+      loser.write({ ...stored!, phase: "vectors", objectsDeleted: 0 }),
+    ).rejects.toBeInstanceOf(AccountWipeProgressConflictError);
+
+    // The winner's state stands, untouched by the loser's attempt.
+    const after = await readWipeProgress(db, TENANT);
+    expect(after!.phase).toBe("objects");
+    expect(after!.objectsDeleted).toBe(7);
+    expect(after!.leaseSeq).toBe(stored!.leaseSeq + 1);
+
+    // And the winner can keep writing: losing did not disturb its chain.
+    await winner.write({ ...stored!, phase: "objects", objectsDeleted: 9 });
+    expect((await readWipeProgress(db, TENANT))!.objectsDeleted).toBe(9);
+  });
+
+  // The first write for a tenant is an INSERT, not an UPDATE, so it has its own
+  // way to lose: `INSERT … WHERE NOT EXISTS` only yields `changes = 0` when the
+  // two writers are serialized. If both evaluate NOT EXISTS before either
+  // commits, the loser hits the primary key. That must surface as the same
+  // conflict, or it escapes the lease path and burns queue retry budget.
+  it("turns a losing first insert into a conflict rather than a raw constraint error", async () => {
+    const db = controlPlane();
+    expect(await readWipeProgress(db, TENANT)).toBeNull();
+    // Both deliveries believe the row is absent, which is what makes them both
+    // take the insert path.
+    const winner = new WipeProgressWriter(db, TENANT, null);
+    const loser = new WipeProgressWriter(db, TENANT, null);
+
+    await winner.write(emptyWipeProgress(NOW_MS));
+    await expect(loser.write(emptyWipeProgress(NOW_MS))).rejects.toBeInstanceOf(
+      AccountWipeProgressConflictError,
+    );
+    expect((await readWipeProgress(db, TENANT))!.leaseSeq).toBe(1);
+  });
+
+  // The same contention seen through the job: a delivery whose record moved
+  // under it reports `lease_held` and is acked, not retried into the DLQ.
+  it("reports lease_held and acks when another delivery owns the wipe", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    const progressKey = accountWipeProgressKey(OTHER_TENANT_ID);
-    const real = env.READINGS_BUCKET;
-    let siblingWrote = false;
-    const raced = new Proxy(real, {
+    await seedProgress({ phase: "vectors" });
+    // A sibling advances the lease after this delivery has read the row but
+    // before its first write — modelled by bumping the row out from under it.
+    const bucket = new Proxy(env.READINGS_BUCKET, {
       get(target, prop, receiver) {
-        if (prop === "put") {
-          return async (key: string, value: unknown, putOpts?: R2PutOptions) => {
-            if (key === progressKey && !siblingWrote) {
-              siblingWrote = true;
-              // A sibling job commits its own progress between our read and our put.
-              await target.put(key, JSON.stringify({ version: 1, phase: "objects" }));
-            }
-            return target.put(
-              key,
-              value as string,
-              putOpts as R2PutOptions,
-            );
+        if (prop === "get") {
+          return async (key: string) => {
+            await env.CONTROL_PLANE.prepare(
+              "UPDATE wipe_progress SET lease_seq = lease_seq + 1 WHERE tenant_id = ?",
+            )
+              .bind(OTHER_TENANT_ID)
+              .run();
+            return target.get(key);
           };
         }
         const value = Reflect.get(target, prop, receiver);
@@ -1038,14 +1069,19 @@ describe("account wipe (195b PR1)", () => {
           : value;
       },
     });
-    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: raced } as Env;
-    await expect(
-      processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), jobEnv, wipeJobDeps()),
-    ).rejects.toThrow(/progress_conflict/);
-    // The sibling's record survives; the loser did not overwrite it.
-    const obj = await real.get(progressKey);
-    expect(obj).not.toBeNull();
-    expect(JSON.parse(await obj!.text())).toMatchObject({ phase: "objects" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await consumeAccountWipeMessage(
+      { body: accountWipeEnvelopeV1({ tenantId: TENANT }), ack, retry, attempts: 1 },
+      { ...(await wipeEnv()), READINGS_BUCKET: bucket } as Env,
+      wipeJobDeps(),
+    );
+    warn.mockRestore();
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    // Nothing was deleted by the delivery that lost.
+    expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
   });
 
   // Move 1 / F3: an empty id list must not let an unbound index short-circuit to
@@ -1075,28 +1111,41 @@ describe("account wipe (195b PR1)", () => {
         wipeJobDeps(),
       ),
     ).rejects.toThrow(/namespace_not_empty/);
-    // Not a success, so the resume record must survive for the retry. Read the
-    // body: an unconsumed R2 stream breaks the pool's isolated-storage teardown.
-    const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    // Not a success, so the resume record must survive for the retry — and it
+    // must not have been stamped complete.
+    const surviving = await readProgress();
     expect(surviving).not.toBeNull();
-    expect(JSON.parse(await surviving!.text())).toMatchObject({ phase: "objects" });
+    expect(surviving!.phase).toBe("objects");
+    expect(surviving!.completedAtMs).toBeNull();
   });
 
-  // Ruling 1: deleting the progress record at the terminal transition removes
-  // the only "already wiped" marker, and users.status stays 'deleting' until
-  // PR2. Without this skip cron restarts a full wipe every 15 minutes forever
-  // and re-creates the tenant-named object the delete exists to remove.
-  it("cron fan-out does not restart a wipe for a tenant with no progress and an empty prefix", async () => {
+  // The gap the persisted record closes. While progress lived in R2 and was
+  // deleted on completion, "no record + empty prefix" was the only way to
+  // recognize an already-wiped tenant — a shape that also fits a tenant whose
+  // prefix was emptied but whose vectors were stranded, so fan-out had to skip
+  // it forever. Now the completion record answers the question directly: an
+  // empty-prefix tenant with no record is wiped once, and a finished one is
+  // recognized by its record rather than by an absence.
+  it("wipes an empty-prefix tenant once and then recognizes it from the record", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect(await readProgress()).toBeNull();
 
-    const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
+    // First tick: nothing says this tenant was ever wiped, so it is.
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    const result = await processAccountWipeJob(queued[0]!, await wipeEnv(), wipeJobDeps());
+    expect(result.kind).toBe("complete");
+    const completed = await readProgress();
+    expect(completed!.completedAtMs).not.toBeNull();
 
-    expect(result).toEqual({ enqueued: 0 });
+    // Every later tick: the record says it is done, so nothing is re-enqueued —
+    // and, unlike the R2 version, nothing is deleted to make that true.
+    queued.length = 0;
+    expect(
+      await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS }),
+    ).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
-    // Nothing re-created: the whole point of the skip.
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect((await readProgress())!.completedAtMs).toBe(completed!.completedAtMs);
   });
 
   // Ruling 2: Vectorize deletes propagate asynchronously, so a probe hit right
@@ -1128,18 +1177,13 @@ describe("account wipe (195b PR1)", () => {
   it("alerts and completes once the probe attempt bound is exhausted", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        vector_cursor: "rd_0123456780",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
-      }),
-    );
+    await seedProgress({
+      phase: "objects",
+      vectorCursor: "rd_0123456780",
+      mutationIds: ["mut_old"],
+      objectsDeleted: 1,
+      probeAttempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+    });
     queryIndex.mockImplementation(async () => ({
       count: 1,
       matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
@@ -1166,32 +1210,35 @@ describe("account wipe (195b PR1)", () => {
     // Tenant id only: an operator alert about a deleted account must not carry
     // that account's reading ids.
     expect(alert).not.toContain(ID_A);
-    // Completed, so the record is gone like any other successful wipe.
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
     expect(payload.outcome).toBe("residue");
+    // The finding is durable now, not just a log line: the completion record
+    // says the namespace was never confirmed clean, which is what the residue
+    // scan and the later teardown gate read.
+    const progress = await readProgress();
+    expect(progress!.completedAtMs).not.toBeNull();
+    expect(progress!.residue).toBe(true);
+    expect(progress!.probeSawResidue).toBe(true);
+    // Still no reading id on the record that outlives the account.
+    expect(progress!.vectorCursor).toBeUndefined();
   });
 
-  // If a terminal delete never landed, cron is the only thing that looks at that
-  // tenant again — and it used to skip it, so once redelivery stopped the
-  // tenant-naming record was permanent.
-  it("cron fan-out clears a stranded done record whose terminal delete never landed", async () => {
+  // A completed record is left exactly as it is: it is evidence, and rewriting
+  // it would move `completed_at_ms` a later slice gates on.
+  it("cron fan-out leaves a completed record alone on an empty prefix", async () => {
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        vector_cursor: "rd_0123456780",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 3,
-        updated_at_ms: NOW_MS,
-      }),
-    );
+    await seedProgress({
+      phase: "done",
+      mutationIds: ["mut_old"],
+      objectsDeleted: 3,
+      completedAtMs: NOW_MS,
+      residue: true,
+    });
+    const before = await readProgress();
     const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
     expect(result).toEqual({ enqueued: 0 });
     expect(queued).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    expect(await readProgress()).toEqual(before);
   });
 
   // A probe that errors is "we could not check", not "vectors are still there".
@@ -1200,18 +1247,13 @@ describe("account wipe (195b PR1)", () => {
   it("treats a failing probe as unconfirmed, not as residue", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        vector_cursor: "rd_0123456780",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
-      }),
-    );
+    await seedProgress({
+      phase: "objects",
+      vectorCursor: "rd_0123456780",
+      mutationIds: ["mut_old"],
+      objectsDeleted: 1,
+      probeAttempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+    });
     queryIndex.mockImplementation(async () => {
       throw new Error("vectorize unavailable");
     });
@@ -1237,21 +1279,11 @@ describe("account wipe (195b PR1)", () => {
     expect(payload.outcome).toBe("unconfirmed");
     expect(payload.tenant_id).toBe(OTHER_TENANT_ID);
     expect(alert).not.toContain(ID_A);
-  });
-
-  // An unparseable body is still an object sitting at the tenant's progress key.
-  // It has no resume value, and fan-out is the only thing that ever sees it.
-  it("cron fan-out clears an unparseable progress record on a wiped tenant", async () => {
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({ version: 1, phase: "not-a-phase", junk: true }),
-    );
-    const result = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
-    expect(result).toEqual({ enqueued: 0 });
-    expect(queued).toEqual([]);
-    expect(await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID))).toBeNull();
+    // Recorded as residue for gating purposes; `probe_saw_residue` beside it is
+    // what separates "vectors were still there" from "we never got an answer".
+    const progress = await readProgress();
+    expect(progress!.residue).toBe(true);
+    expect(progress!.probeSawResidue).toBe(false);
   });
 
   // Observed residue must not be downgraded by a later transient probe error:
@@ -1259,20 +1291,15 @@ describe("account wipe (195b PR1)", () => {
   it("keeps the residue verdict when a later probe errors", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "objects",
-        vector_cursor: "rd_0123456780",
-        mutation_ids: ["mut_old"],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
-        // Earlier attempts in this wipe saw actual vectors.
-        probe_saw_residue: true,
-      }),
-    );
+    await seedProgress({
+      phase: "objects",
+      vectorCursor: "rd_0123456780",
+      mutationIds: ["mut_old"],
+      objectsDeleted: 1,
+      probeAttempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS - 1,
+      // Earlier attempts in this wipe saw actual vectors.
+      probeSawResidue: true,
+    });
     queryIndex.mockImplementation(async () => {
       throw new Error("vectorize unavailable");
     });
@@ -1305,17 +1332,12 @@ describe("account wipe (195b PR1)", () => {
   it("resets the probe budget when reopening a leftover wipe", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await env.READINGS_BUCKET.put(
-      accountWipeProgressKey(OTHER_TENANT_ID),
-      JSON.stringify({
-        version: 1,
-        phase: "done",
-        mutation_ids: [],
-        objects_deleted: 1,
-        updated_at_ms: NOW_MS,
-        probe_attempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
-      }),
-    );
+    await seedProgress({
+      phase: "done",
+      objectsDeleted: 1,
+      completedAtMs: NOW_MS,
+      probeAttempts: ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS,
+    });
     queryIndex.mockImplementation(async () => ({
       count: 1,
       matches: [{ id: tenantVectorId(OTHER_TENANT_ID, ID_A), score: 1, metadata: {} }],
@@ -1337,8 +1359,231 @@ describe("account wipe (195b PR1)", () => {
       spy.mockRestore();
     }
     expect(errors.find((l) => l.includes("account_wipe_namespace_residue"))).toBeUndefined();
-    const surviving = await env.READINGS_BUCKET.get(accountWipeProgressKey(OTHER_TENANT_ID));
+    const surviving = await readProgress();
     expect(surviving).not.toBeNull();
-    expect(JSON.parse(await surviving!.text())).toMatchObject({ probe_attempts: 1 });
+    expect(surviving!.probeAttempts).toBe(1);
+    expect(surviving!.completedAtMs).toBeNull();
+  });
+
+  // F6: `deleting_at_ms` is what grace is measured from, so a NULL one can never
+  // elapse and the tenant is never wiped. That is worth saying out loud rather
+  // than stalling in silence — and it must not throw, or one bad row would stop
+  // every other tenant on the tick.
+  it("warns, without failing, when a deleting tenant has no deleting_at_ms", async () => {
+    await seedTenantObjects([ID_A]);
+    await env.CONTROL_PLANE.prepare(
+      `UPDATE users SET status = 'deleting', deleting_at_ms = NULL, updated_at_ms = ? WHERE id = ?`,
+    )
+      .bind(NOW_MS, OTHER_TENANT_ID)
+      .run();
+
+    const warned: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((line: unknown) => {
+      warned.push(String(line));
+    });
+    const fanned = await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS });
+    const skipped = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    warn.mockRestore();
+
+    const alert = warned.find((line) => line.includes(ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT));
+    expect(alert).toBeDefined();
+    expect(JSON.parse(alert!)).toMatchObject({ tenant_id: OTHER_TENANT_ID });
+    // Warned, not acted on: grace still gates, so nothing was enqueued or wiped.
+    expect(fanned).toEqual({ enqueued: 0 });
+    expect(skipped).toEqual({ kind: "skipped", reason: "grace_period" });
+    expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
+  });
+
+  // F7: a `continue` acks the current message and sends a fresh one, which
+  // starts a fresh queue retry budget. Without a bound, a wipe that deletes a
+  // page and then fails cycles forever and never dead-letters. Past the bound
+  // the job throws instead of self-sending, so the delivery retries and its
+  // budget can actually run out.
+  it("stops self-sending once the continuation budget is spent, so the job can dead-letter", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    // More than two full R2 pages, so one page a delivery cannot finish inside
+    // the two deliveries this test drives.
+    const keys = Array.from({ length: 2001 }, (_, i) => `${PREFIX}pad/${String(i).padStart(5, "0")}`);
+    const memory = memoryBucket(keys);
+    const jobEnv = { ...(await wipeEnv()), READINGS_BUCKET: memory.bucket };
+    // The budget is already all but spent.
+    await seedProgress({ phase: "objects", continuations: ACCOUNT_WIPE_MAX_CONTINUATIONS - 1 });
+
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Last permitted self-send: acked and re-queued as usual.
+    await consumeAccountWipeMessage(
+      { body: accountWipeEnvelopeV1({ tenantId: TENANT }), ack, retry, attempts: 1 },
+      jobEnv,
+      wipeJobDeps({ maxObjectPages: 1 }),
+    );
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(queued.length).toBe(1);
+    expect((await readProgress())!.continuations).toBe(ACCOUNT_WIPE_MAX_CONTINUATIONS);
+
+    // The next one is over the bound: no self-send, and the delivery retries so
+    // that `max_retries` eventually carries it to the DLQ.
+    const ack2 = vi.fn();
+    const retry2 = vi.fn();
+    await consumeAccountWipeMessage(
+      { body: accountWipeEnvelopeV1({ tenantId: TENANT }), ack: ack2, retry: retry2, attempts: 3 },
+      jobEnv,
+      wipeJobDeps({ maxObjectPages: 1 }),
+    );
+    consoleErr.mockRestore();
+    expect(ack2).not.toHaveBeenCalled();
+    expect(retry2).toHaveBeenCalled();
+    // Nothing new enqueued: the cycle that used to reset the retry budget is
+    // broken, and the objects still there are what makes it visible.
+    expect(queued.length).toBe(1);
+    expect(memory.keysUnder(PREFIX).length).toBeGreaterThan(0);
+  });
+
+  // Ruling 1. Reopening clears `completed_at_ms` — correct, the reopened wipe
+  // really does have work left and the teardown gate must not fire — but that
+  // used to erase the only evidence the earlier wipe ever finished. If the
+  // reopen's enqueue fails or its pass dead-letters, the row would be left
+  // saying nothing had ever been wiped. The first-completion pair is write-once
+  // and survives.
+  it("keeps the first-completion record when a wipe is reopened and never finishes", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    // A clean first wipe.
+    await seedTenantObjects([ID_A]);
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    expect(first.kind).toBe("complete");
+    const completed = await readProgress();
+    expect(completed!.completedAtMs).toBe(NOW_MS);
+    expect(completed!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(completed!.firstResidue).toBe(false);
+
+    // Objects turn up again, so cron reopens the wipe.
+    await seedTenantObjects([ID_B]);
+    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+    const reopened = await readProgress();
+    // Current state says work is owed, so a teardown gate on completedAtMs
+    // correctly refuses to fire...
+    expect(reopened!.completedAtMs).toBeNull();
+    expect(reopened!.phase).toBe("vectors");
+    // ...but the history that the earlier wipe completed is intact, which is
+    // what the residue scan and support read.
+    expect(reopened!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(reopened!.firstResidue).toBe(false);
+  });
+
+  // Write-once is enforced in SQL, not only by the caller, so a second
+  // completion cannot move the history even if a caller passes a fresh pair.
+  it("pins the first-completion pair against a later completion", async () => {
+    const db = controlPlane();
+    await seedProgress({ phase: "objects" });
+    const stored = await readWipeProgress(db, TENANT);
+    const writer = new WipeProgressWriter(db, TENANT, stored);
+
+    await writer.complete(stored!, NOW_MS, false);
+    const afterFirst = await readWipeProgress(db, TENANT);
+    expect(afterFirst!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(afterFirst!.firstResidue).toBe(false);
+
+    // A later pass completes again, this time leaving residue.
+    const later = NOW_MS + 60_000;
+    await writer.complete(
+      { ...afterFirst!, firstCompletedAtMs: later, firstResidue: true },
+      later,
+      true,
+    );
+    const afterSecond = await readWipeProgress(db, TENANT);
+    // Current pair moves; the history does not.
+    expect(afterSecond!.completedAtMs).toBe(later);
+    expect(afterSecond!.residue).toBe(true);
+    expect(afterSecond!.firstCompletedAtMs).toBe(NOW_MS);
+    expect(afterSecond!.firstResidue).toBe(false);
+  });
+
+  // Ruling 3. A heartbeat is a full-row D1 UPDATE, and beating on every page put
+  // hundreds of them inside one delivery. The lease is a version now, so the
+  // beat only has to keep cron from thinking the job died.
+  it("heartbeats on an interval rather than once per page", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const pages = 6;
+    const keys = Array.from(
+      { length: R2_LIST_LIMIT * pages },
+      (_, i) => `${PREFIX}pad/${String(i).padStart(6, "0")}`,
+    );
+    const memory = memoryBucket(keys);
+    // A clock that barely moves, so nothing reaches the beat interval.
+    const clock = { t: NOW_MS };
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(memory.bucket, clock, { advanceListMs: 10 }),
+    };
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock }),
+    );
+    expect(result.kind).toBe("complete");
+    expect(memory.keysUnder(PREFIX)).toEqual([]);
+
+    // Every write bumps lease_seq, so it counts the D1 writes this job made.
+    // The claim and the terminal record are unconditional; the per-page beats
+    // are not, and six pages must not cost six-plus writes each.
+    const progress = await readProgress();
+    expect(progress!.leaseSeq).toBeLessThan(pages);
+  });
+
+  // Throttling must never swallow a write a later delivery depends on.
+  it("still persists the cursor and continuation count across a self-send", async () => {
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const keys = Array.from(
+      { length: R2_LIST_LIMIT * 3 },
+      (_, i) => `${PREFIX}pad/${String(i).padStart(6, "0")}`,
+    );
+    const memory = memoryBucket(keys);
+    const clock = { t: NOW_MS };
+    const jobEnv = {
+      ...(await wipeEnv()),
+      READINGS_BUCKET: wrapBucketClock(memory.bucket, clock, { advanceListMs: 10 }),
+    };
+    const first = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      jobEnv,
+      wipeJobDeps({ clock, maxObjectPages: 1 }),
+    );
+    expect(first.kind).toBe("continue");
+    // Persisted despite the clock never reaching the beat interval.
+    const progress = await readProgress();
+    expect(progress!.phase).toBe("objects");
+    expect(progress!.r2Cursor).toBeTruthy();
+    expect(progress!.continuations).toBe(1);
+  });
+
+  // Reopening a leftover wipe is a fresh pass, so it gets a fresh continuation
+  // budget as well as a fresh probe budget — a long-running large tenant must
+  // not inherit a spent one.
+  it("resets the continuation budget when reopening a leftover wipe", async () => {
+    await seedTenantObjects([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await seedProgress({
+      phase: "done",
+      objectsDeleted: 1,
+      completedAtMs: NOW_MS,
+      continuations: ACCOUNT_WIPE_MAX_CONTINUATIONS,
+    });
+    const result = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps(),
+    );
+    expect(result.kind).toBe("complete");
+    expect((await readProgress())!.continuations).toBe(0);
   });
 });
