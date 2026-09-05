@@ -12,7 +12,7 @@
 
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
-import { resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
+import { DEFAULT_API_BASE, resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
@@ -567,7 +567,7 @@ Options:
                        selector via GET /api/whoami and refuses on mismatch (a
                        usr_… selector also requires the worker's tenant data-plane
                        gate to be on; 'global' requires it off).
-  --url <url>       Reading API base. Default: READER_URL, then production.
+  --url <url>       Reading API base. Default: READER_URL, then ${DEFAULT_API_BASE}.
   --token <token>   Bearer token. Default: READER_API_TOKEN, then .prd/.dev.vars.
   --monitor         After executing, poll until the touched readings finish.
   --wave <n>        Pause between every n submissions so the queue can drain

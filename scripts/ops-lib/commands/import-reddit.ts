@@ -12,7 +12,7 @@
 import { parseArgs } from "node:util";
 import { buildRedditImport } from "../../reddit-import-lib/parse";
 import { isRedditThreadUrl } from "../../../src/modules/extractor/reddit";
-import { resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
+import { DEFAULT_API_BASE, resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
 import { classifyOutcome, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
@@ -125,7 +125,7 @@ POST /api/readings/import-markdown, keyed by the canonical thread URL.
 
 Options:
   --json <file>     Path to the saved Reddit .json listing (required).
-  --api-url <base>  Reading API base. Default: https://reading-lite.bbell.dev
+  --api-url <base>  Reading API base. Default: READER_URL env, then ${DEFAULT_API_BASE}
   --token <token>   Bearer token (execute only). Default: READER_API_TOKEN
                     env, then .prd.vars. Never printed.
   --execute         Import the thread.

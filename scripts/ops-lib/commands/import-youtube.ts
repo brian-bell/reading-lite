@@ -26,7 +26,7 @@ import {
   youtubeWatchUrlVariants,
 } from "../../../src/modules/extractor/youtube";
 import { buildYoutubeImport } from "../../youtube-import-lib/parse";
-import { resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
+import { DEFAULT_API_BASE, resolveApiTarget, type ApiTarget } from "../../corpus-lib/config";
 import { classifyOutcome, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
@@ -212,7 +212,7 @@ under the canonical watch URL and warns about noncanonical-URL owners.
 
 Options:
   --no-transcript   Skip the yt-dlp transcript step (title + author + description only).
-  --api-url <base>  Reading API base. Default: https://reading-lite.bbell.dev
+  --api-url <base>  Reading API base. Default: READER_URL env, then ${DEFAULT_API_BASE}
   --token <token>   Bearer token (execute only). Default: READER_API_TOKEN
                     env, then .prd.vars. Never printed.
   --execute         Import the video.

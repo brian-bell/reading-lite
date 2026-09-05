@@ -49,7 +49,7 @@ npm run ops -- reading-list process --file in.json --url http://127.0.0.1:8787/a
 ```
 
 Flags: `--file` (required, rewritten in place), `--out` (write elsewhere),
-`--url` (default `READER_URL` env, then `https://reading-lite.bbell.dev/api/readings`),
+`--url` (default `READER_URL` env, then `https://readinglite.ai/api/readings`),
 `--token`, `--resubmit`, `--execute` (submit and write back; omit it to plan),
 `--quick`.
 
