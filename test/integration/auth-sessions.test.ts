@@ -7,6 +7,7 @@ import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
+import { insertSecondTenant } from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -80,10 +81,10 @@ function credentialFrom(verifyUrl: string): string {
   return hash;
 }
 
-async function redeemSession(redemptionId: string, cookie?: string) {
+async function redeemSession(redemptionId: string, cookie?: string, email = "founder@test.example") {
   const challenge = await request("/api/auth/challenge", {
     method: "POST",
-    body: { email: "founder@test.example" },
+    body: { email },
   });
   const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
   const redeemed = await request("/api/auth/redeem", {
@@ -100,6 +101,59 @@ async function redeemSession(redemptionId: string, cookie?: string) {
 }
 
 describe("session inspect and revoke", () => {
+  it("does not list or revoke another tenant's session, while retaining owner control", async () => {
+    const workerEnv = env as unknown as Env;
+    await insertSecondTenant(workerEnv);
+    const owner = await redeemSession("clm_session_owner");
+    const other = await redeemSession("clm_session_other", undefined, "other@test.example");
+
+    const ownerList = await request("/api/auth/sessions", { cookie: owner.cookie });
+    expect(ownerList.res.status).toBe(200);
+    const ownerBody = (await ownerList.res.json()) as { sessions: { id: string }[] };
+    const otherList = await request("/api/auth/sessions", { cookie: other.cookie });
+    expect(otherList.res.status).toBe(200);
+    const otherBody = (await otherList.res.json()) as { sessions: { id: string }[] };
+    const otherSessionId = otherBody.sessions.find((row) => !ownerBody.sessions.some((ownerRow) => ownerRow.id === row.id))
+      ?.id;
+    expect(otherSessionId).toBeTruthy();
+    expect(ownerBody.sessions).not.toContainEqual(expect.objectContaining({ id: otherSessionId }));
+
+    const foreign = await request(`/api/auth/sessions/${otherSessionId}`, {
+      method: "DELETE",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+    });
+    expect(foreign.res.status).toBe(404);
+    expect(await foreign.res.json()).toEqual({ error: "not found" });
+
+    const unknown = await request("/api/auth/sessions/ses_22222222-2222-4222-8222-222222222222", {
+      method: "DELETE",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+    });
+    expect(unknown.res.status).toBe(foreign.res.status);
+    expect(await unknown.res.json()).toEqual({ error: "not found" });
+    const retained = await workerEnv.CONTROL_PLANE.prepare(
+      "SELECT revoked_at_ms FROM sessions WHERE id = ?",
+    )
+      .bind(otherSessionId)
+      .first<{ revoked_at_ms: number | null }>();
+    expect(retained?.revoked_at_ms).toBeNull();
+
+    const ownerDelete = await request(`/api/auth/sessions/${otherSessionId}`, {
+      method: "DELETE",
+      cookie: other.cookie,
+      csrf: other.csrf,
+    });
+    expect(ownerDelete.res.status).toBe(200);
+    const revoked = await workerEnv.CONTROL_PLANE.prepare(
+      "SELECT revoked_at_ms FROM sessions WHERE id = ?",
+    )
+      .bind(otherSessionId)
+      .first<{ revoked_at_ms: number | null }>();
+    expect(revoked?.revoked_at_ms).toBe(Date.parse(NOW));
+  });
+
   it("lists sessions, marks current, and requires CSRF on cookie mutations", async () => {
     const first = await redeemSession("clm_list_a");
     const listed = await request("/api/auth/sessions", { cookie: first.cookie });

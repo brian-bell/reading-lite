@@ -7,6 +7,7 @@ import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
+import { insertSecondTenant } from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -82,10 +83,10 @@ function credentialFrom(verifyUrl: string): string {
   return hash;
 }
 
-async function redeemSession(redemptionId: string) {
+async function redeemSession(redemptionId: string, email = "founder@test.example") {
   const challenge = await request("/api/auth/challenge", {
     method: "POST",
-    body: { email: "founder@test.example" },
+    body: { email },
   });
   const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
   const redeemed = await request("/api/auth/redeem", {
@@ -110,6 +111,54 @@ type CreatedToken = {
 };
 
 describe("API token lifecycle", () => {
+  it("hides another tenant's tokens and rejects a foreign revoke without side effects", async () => {
+    const workerEnv = env as unknown as Env;
+    await insertSecondTenant(workerEnv);
+    const owner = await redeemSession("clm_token_owner");
+    const other = await redeemSession("clm_token_other", "other@test.example");
+    const created = await request("/api/auth/tokens", {
+      method: "POST",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { name: "other-ops", scopes: ["readings:read"] },
+    });
+    expect(created.res.status).toBe(201);
+    const foreignToken = (await created.res.json()) as CreatedToken;
+
+    const ownerList = await request("/api/auth/tokens", { cookie: owner.cookie });
+    expect(ownerList.res.status).toBe(200);
+    const ownerBody = (await ownerList.res.json()) as { tokens: { id: string }[] };
+    expect(ownerBody.tokens).not.toContainEqual(expect.objectContaining({ id: foreignToken.id }));
+
+    const foreign = await request(`/api/auth/tokens/${foreignToken.id}`, {
+      method: "DELETE",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+    });
+    expect(foreign.res.status).toBe(404);
+    expect(await foreign.res.json()).toEqual({ error: "not found" });
+    const unknown = await request("/api/auth/tokens/tok_22222222-2222-4222-8222-222222222222", {
+      method: "DELETE",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+    });
+    expect(unknown.res.status).toBe(foreign.res.status);
+    expect(await unknown.res.json()).toEqual({ error: "not found" });
+    const retained = await workerEnv.CONTROL_PLANE.prepare(
+      "SELECT revoked_at_ms FROM api_tokens WHERE id = ?",
+    )
+      .bind(foreignToken.id)
+      .first<{ revoked_at_ms: number | null }>();
+    expect(retained?.revoked_at_ms).toBeNull();
+
+    const ownerDelete = await request(`/api/auth/tokens/${foreignToken.id}`, {
+      method: "DELETE",
+      cookie: other.cookie,
+      csrf: other.csrf,
+    });
+    expect(ownerDelete.res.status).toBe(200);
+  });
+
   it("creates, lists, and revokes a token from a recent session", async () => {
     const session = await redeemSession("clm_token_create");
     const missingCsrf = await request("/api/auth/tokens", {
