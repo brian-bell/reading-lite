@@ -65,7 +65,9 @@ describe("legal copy", () => {
   it("does not promise self-serve export or a complete corpus wipe", () => {
     expect(all).toMatch(/no self-serve export/i);
     expect(all).toMatch(/does not claim that wipe is complete/i);
-    expect(all).toMatch(/does not claim that wipe leaves zero residue|residue is zero/i);
+    expect(all).toMatch(
+      /does not claim[^.!?]*(?:that residue is zero|zero residue|leaves zero residue)/i
+    );
     expect(all).not.toMatch(/self-serve account deletion is not available/i);
     expect(all).not.toMatch(/ADR 0001/);
     expect(all).not.toMatch(/not implemented in the hosted product/i);
