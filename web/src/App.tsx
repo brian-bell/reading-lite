@@ -64,6 +64,7 @@ import {
   type WhoamiResponse
 } from "./types";
 import { listIanaTimeZones } from "./time-zone";
+import { DmcaPage, LegalFooter, LoginLegalLinks, PrivacyPage, TermsPage } from "./LegalPages";
 import "./styles.css";
 
 type AppProps = {
@@ -128,6 +129,9 @@ function AppRoutes() {
         <Route path="/login" element={<LoginPage identity={identity} identityQuery={identityQuery} />} />
         <Route path="/login/verify" element={<VerifyPage />} />
         <Route path="/auth/verify" element={<VerifyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/dmca" element={<DmcaPage />} />
         <Route
           path="/account/security"
           element={<AccountSecurityRoute identity={identity} identityQuery={identityQuery} />}
@@ -237,6 +241,7 @@ function Shell({
           {identity ? <IdentityBar identity={identity} onSignedOut={onSignedOut} /> : null}
         </header>
         <main>{children}</main>
+        <LegalFooter />
       </div>
     </div>
   );
@@ -1139,6 +1144,7 @@ function LoginPage({
           {error}
         </p>
       ) : null}
+      <LoginLegalLinks />
     </section>
   );
 }
