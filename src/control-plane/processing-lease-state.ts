@@ -54,7 +54,7 @@ export async function sweepExpiredLeases(
   storage: DurableObjectStorage,
   nowMs: number,
 ): Promise<number | null> {
-  const entries = await storage.list();
+  const entries = await storage.list({ prefix: LEASE_KEY_PREFIX });
   let nextAlarm: number | null = null;
   for (const [key, value] of entries) {
     if (!isLeaseKey(key)) continue;
@@ -79,7 +79,7 @@ export async function sweepExpiredLeases(
 }
 
 async function liveLeaseCount(storage: DurableObjectStorage, nowMs: number): Promise<number> {
-  const entries = await storage.list();
+  const entries = await storage.list({ prefix: LEASE_KEY_PREFIX });
   let count = 0;
   for (const [key, value] of entries) {
     if (!isLeaseKey(key)) continue;

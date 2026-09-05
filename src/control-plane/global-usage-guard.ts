@@ -1,5 +1,6 @@
 import type { Env } from "../index";
-import { GLOBAL_USAGE_GUARD_NAME } from "./constants";
+import { GLOBAL_USAGE_GUARD_NAME, SPEND_RESERVATION_TTL_MS } from "./constants";
+import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
 import {
   acquireLease as acquireStoredLease,
@@ -11,11 +12,23 @@ import {
   type LeaseDecision,
 } from "./processing-lease-state";
 import type { ProcessingLeaseDecision } from "./tenant-usage-guard";
+import {
+  markSpendDispatched,
+  releaseSpend,
+  reserveSpend,
+  settleSpend,
+  sweepExpiredSpend,
+  purgeGlobalTenantSpend,
+  utcSpendDay,
+  validSpendQuote,
+  type SpendBody,
+  type SpendDecision,
+} from "./spend-ledger";
 
 // GlobalUsageGuard is the singleton SQLite Durable Object that serializes
-// global processing concurrency. Addressed by idFromName(GLOBAL_USAGE_GUARD_NAME).
-// Kill switch and spend stay out of scope (s1k.9.4 / 9.3). D1 system_policy
-// max_concurrent_work is the placeholder cap; callers cannot supply limits.
+// global processing concurrency and daily paid-work spend. Addressed by
+// idFromName(GLOBAL_USAGE_GUARD_NAME). D1 system_policy is the source of both
+// limits; a NULL daily spend budget fails closed rather than inventing one.
 
 type AcquireLeaseBody = { kind: "acquire_lease"; tenantId: string; attemptId: string; nowMs: number };
 type FenceLeaseBody = {
@@ -40,7 +53,7 @@ type FenceLeaseBody = {
  * for an account that no longer exists.
  */
 type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
-type GuardBody = AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody;
+type GuardBody = AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -79,6 +92,43 @@ async function loadGlobalConcurrency(env: Env): Promise<number | null> {
   }
 }
 
+type GlobalSpendPolicy = { dailySpendMicrodollars: number; tenantDailySpendMicrodollars: number; policyVersion: number; catalogVersion: number; paidWorkEnabled: boolean };
+
+async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<GlobalSpendPolicy | "deleted" | null> {
+  try {
+    const row = await env.CONTROL_PLANE.prepare(
+      `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
+              tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
+       FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
+       WHERE u.id = ?`,
+    )
+      .bind(tenantId)
+      .first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: number }>();
+    if (!row) return null;
+    if (row.status !== "active") return "deleted";
+    const dailySpendMicrodollars = positiveInt(row.daily_spend_microdollars);
+    const tenantDailySpendMicrodollars = positiveInt(row.tenant_daily_spend_microdollars);
+    const policyVersion = positiveInt(row.policy_version);
+    const catalogVersion = Number(row.catalog_version);
+    if (dailySpendMicrodollars === null || tenantDailySpendMicrodollars === null || policyVersion === null || !Number.isSafeInteger(catalogVersion) || catalogVersion < 0) return null;
+    return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === 1 };
+  } catch {
+    return null;
+  }
+}
+
+/** Account deletion fences mutations; pausing paid work still permits refunds. */
+async function tenantCanHoldSpend(env: Env, tenantId: string): Promise<boolean> {
+  try {
+    const row = await env.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
+      .bind(tenantId)
+      .first<{ status: string }>();
+    return row?.status === "active";
+  } catch {
+    return false;
+  }
+}
+
 function leaseId(tenantId: string, attemptId: string): string {
   return `${tenantId}:${attemptId}`;
 }
@@ -94,6 +144,25 @@ function parseGuardBody(value: unknown): GuardBody | null {
   // before the shared field checks, which would reject it for the missing ones.
   if (kind === "purge_tenant") {
     return parseTenantId(tenantId) ? { kind, tenantId } : null;
+  }
+  if (kind === "reserve_spend") {
+    if (!tenantId || !Number.isFinite(nowMs) || nowMs < 0 || !validSpendQuote(body.quote)) return null;
+    // Spend operation ids are deliberately independent of processing attempts;
+    // use opId rather than the shared lease parser's attemptId.
+    const opId = typeof body.opId === "string" ? body.opId : "";
+    if (!opId) return null;
+    return { kind, tenantId, opId, quote: body.quote, nowMs };
+  }
+  if (kind === "mark_spend_dispatched" || kind === "release_spend") {
+    const opId = typeof body.opId === "string" ? body.opId : "";
+    if (!tenantId || !opId || !validSpendQuote(body.quote)) return null;
+    return { kind, tenantId, opId, quote: body.quote };
+  }
+  if (kind === "settle_spend") {
+    const opId = typeof body.opId === "string" ? body.opId : "";
+    const actualMicrodollars = Number(body.actualMicrodollars);
+    if (!tenantId || !opId || !validSpendQuote(body.quote) || !Number.isSafeInteger(actualMicrodollars) || actualMicrodollars < 0) return null;
+    return { kind, tenantId, opId, quote: body.quote, actualMicrodollars };
   }
   if (!tenantId || !attemptId || !Number.isFinite(nowMs) || nowMs < 0) return null;
   if (kind === "acquire_lease") return { kind, tenantId, attemptId, nowMs };
@@ -133,6 +202,10 @@ export class GlobalUsageGuard implements DurableObject {
     return this.state.blockConcurrencyWhile(async () => {
       if (body.kind === "acquire_lease") return this.acquireLease(body);
       if (body.kind === "purge_tenant") return this.purgeTenant(body);
+      if (body.kind === "reserve_spend") return this.reserveSpend(body);
+      if (body.kind === "mark_spend_dispatched") return this.markSpendDispatched(body);
+      if (body.kind === "release_spend") return this.releaseSpend(body);
+      if (body.kind === "settle_spend") return json(await settleSpend(this.state.storage, { opKey: this.spendOpKey(body.tenantId, body.opId), quote: body.quote, actualMicrodollars: body.actualMicrodollars }));
       if (body.kind === "renew_lease") {
         return jsonLease(
           await renewStoredLease(this.state.storage, {
@@ -165,7 +238,9 @@ export class GlobalUsageGuard implements DurableObject {
   async alarm(): Promise<void> {
     await this.state.blockConcurrencyWhile(async () => {
       const now = Date.now();
-      const nextAlarm = await sweepExpiredLeases(this.state.storage, now);
+      const leaseNext = await sweepExpiredLeases(this.state.storage, now);
+      const spendNext = await sweepExpiredSpend(this.state.storage, now);
+      const nextAlarm = spendNext === null ? leaseNext : leaseNext === null ? spendNext : Math.min(spendNext, leaseNext);
       if (nextAlarm != null && nextAlarm > now) {
         await this.state.storage.setAlarm(nextAlarm);
       } else {
@@ -186,7 +261,11 @@ export class GlobalUsageGuard implements DurableObject {
     for (const key of entries.keys()) {
       await this.state.storage.delete(key);
     }
-    return json({ ok: true, purged: entries.size });
+    // Spend records contain tenant identity. Purge refunds only reservations
+    // that never received dispatch authorization; dispatched and settled
+    // charges remain in the shared aggregate after account deletion.
+    const purgedSpend = await purgeGlobalTenantSpend(this.state.storage, body.tenantId);
+    return json({ ok: true, purged: entries.size + purgedSpend });
   }
 
   private async acquireLease(body: AcquireLeaseBody): Promise<Response> {
@@ -200,6 +279,55 @@ export class GlobalUsageGuard implements DurableObject {
         nowMs: body.nowMs,
       }),
     );
+  }
+
+  private spendOpKey(tenantId: string, opId: string): string {
+    return `spend:op:${tenantId}:${opId}`;
+  }
+
+  private async reserveSpend(body: Extract<SpendBody, { kind: "reserve_spend" }>): Promise<Response> {
+    if (!parseTenantId(body.tenantId)) return json({ ok: false, reason: "missing_limits" } satisfies SpendDecision);
+    // The admission day comes from the authority's wall clock, not caller
+    // supplied time; a terminal record that has aged out cannot be recreated
+    // by replaying an old quote day.
+    if (body.quote.dayKey !== utcSpendDay(Date.now())) return json({ ok: false, reason: "operation_conflict" } satisfies SpendDecision);
+    const policy = await loadGlobalSpendPolicy(this.env, body.tenantId);
+    if (policy === "deleted") return json({ ok: false, reason: "deleted_tenant" } satisfies SpendDecision);
+    if (!policy) return json({ ok: false, reason: "missing_limits" } satisfies SpendDecision);
+    if (!policy.paidWorkEnabled) return json({ ok: false, reason: "paid_work_disabled" } satisfies SpendDecision);
+    if (body.quote.catalogVersion !== policy.catalogVersion) return json({ ok: false, reason: "catalog_version" } satisfies SpendDecision);
+    const expiresAtMs = Date.now() + SPEND_RESERVATION_TTL_MS;
+    await scheduleCleanupAlarm(this.state.storage, expiresAtMs);
+    return json(await reserveSpend(this.state.storage, {
+      opKey: this.spendOpKey(body.tenantId, body.opId),
+      quote: body.quote,
+      policyVersion: policy.policyVersion,
+      limitMicrodollars: policy.dailySpendMicrodollars,
+      tenantId: body.tenantId,
+      tenantLimitMicrodollars: policy.tenantDailySpendMicrodollars,
+      expiresAtMs,
+    }));
+  }
+
+  private async releaseSpend(body: Extract<SpendBody, { kind: "release_spend" }>): Promise<Response> {
+    if (!(await tenantCanHoldSpend(this.env, body.tenantId))) {
+      return json({ ok: false, reason: "deleted_tenant" } satisfies SpendDecision);
+    }
+    return json(
+      await releaseSpend(this.state.storage, {
+        opKey: this.spendOpKey(body.tenantId, body.opId),
+        quote: body.quote,
+      }),
+    );
+  }
+
+  private async markSpendDispatched(body: Extract<SpendBody, { kind: "mark_spend_dispatched" }>): Promise<Response> {
+    const policy = await loadGlobalSpendPolicy(this.env, body.tenantId);
+    if (policy === "deleted") return json({ok:false, reason:"deleted_tenant"} satisfies SpendDecision);
+    if (!policy) return json({ok:false, reason:"missing_limits"} satisfies SpendDecision);
+    if (!policy.paidWorkEnabled) return json({ok:false, reason:"paid_work_disabled"} satisfies SpendDecision);
+    if (body.quote.catalogVersion !== policy.catalogVersion) return json({ok:false, reason:"catalog_version"} satisfies SpendDecision);
+    return json(await markSpendDispatched(this.state.storage, { opKey: this.spendOpKey(body.tenantId, body.opId), quote: body.quote, nowMs: Date.now() }));
   }
 }
 
