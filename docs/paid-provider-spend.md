@@ -64,13 +64,81 @@ The global guard checks the existing `paid_work_enabled` switch at reservation
 and dispatch authorization. Denial defers the same reading attempt through
 `SpendAdmissionError` / `DeferPaidWorkError`, without an in-process provider retry.
 
-#201 owns the small plan-first operator interface to inspect policy, set budgets,
-and disable/re-enable paid work. Preserve the existing policy command contract in
-`scripts/ops-lib/policy-contract.ts`. Policy changes must never release uncertain
-charges. Operator-tool enforcement and broader recovery workflows are deferred.
+The plan-first `system policy` and read-only `system status` operator commands
+inspect policy/accounting, set budgets, and disable/re-enable paid work (see below).
+`scripts/ops-lib/policy-contract.ts` enforces the command safety contract. Policy
+changes never release uncertain charges. Operator-tool enforcement and broader
+recovery workflows are deferred.
 
 The single-authority RPC verbs are `reserve_spend`, `mark_spend_dispatched`,
 `release_spend`, and `settle_spend`. Requests carry tenant id, operation id, and
 an immutable quote `{dayKey, catalogVersion, requestFingerprint,
 maxMicrodollars}`. Reserve also carries admission time; settlement carries
 `actualMicrodollars`. No tenant-side spend RPC or two-phase compensation remains.
+
+## Operator policy and accounting
+
+Use `npm run ops -- system status --env staging` (or explicit `production`) to
+inspect global policy and current UTC-day accounting. Add `--tenant usr_…` for
+one tenant's policy and charged total. Charged means **charged against budget**:
+known usage, unused holds, and unresolved maximum charges can all contribute.
+It is not a provider invoice. The command reports the guard's observation time
+and UTC reset time; D1 policy and accounting are separate observations, not an
+atomic snapshot. An unavailable guard yields exit 1 and no accounting total.
+
+The status command uses Wrangler's authenticated remote service binding to the
+existing Worker's named `OperatorStatus` entrypoint. This entrypoint exposes only
+the status read and is not mounted on the public HTTP router. Deploy the Worker
+containing that entrypoint before using status; older deployments report
+unavailable. Use the same Cloudflare account credentials/login used by Wrangler
+for that environment. No new secret or public admin token is introduced.
+The dedicated `scripts/system-lib/wrangler-status.toml` pins the two Worker
+names and enables only the remote status service; local persistence is disabled.
+This follows Cloudflare's [service-binding pattern for remote Durable Objects](https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows).
+
+Policy changes use the existing D1 operator adapter. For example, after inspecting
+staging and observing global policy version 3:
+
+```sh
+# Plan only; shows the target, before/after fields, and dollar equivalent.
+npm run ops -- system policy --env staging --paid-work disabled
+
+# Apply the same desired state only if version 3 is still current.
+npm run ops -- system policy --env staging --paid-work disabled \
+  --execute --acknowledge-guard-version 3
+
+# Inspect the resulting version and retained charges.
+npm run ops -- system status --env staging
+```
+
+Production writes additionally require `--confirm-production`. Both commands
+require `--env staging|production`; neither defaults to production.
+`--acknowledge-guard-version` names the selected row's **policy_version**, not
+the pricing catalog version. A changed row increments its version atomically;
+a concurrent edit makes execute fail. Unchanged values with the current
+acknowledgement succeed without a write or version bump. Replaying an execute
+with its old version refuses even if values already match; inspect and use the
+current version. This converges without allowing stale automation to undo a
+newer decision. An uncertain write response also requires inspection, not a
+blind retry.
+
+`system policy` accepts these desired-state changes:
+
+- `--paid-work enabled|disabled`: global hosted paid-work permission.
+- `--daily-spend-microdollars <positive integer>`: global daily budget; one
+  dollar is 1,000,000 microdollars. Zero is invalid; use the switch to disable.
+- `--catalog-version <n>`: this checkout's supported catalog version (currently 1).
+- `--tenant usr_… --daily-spend-microdollars <positive integer>`: one existing
+  tenant's budget, acknowledged against that tenant_limits row's version.
+
+Global and tenant changes require separate invocations. Global fields may be
+combined in one update, including setting a budget/catalog and enabling paid
+work. Explicit enabling refuses an unset global budget or unsupported catalog.
+Disabling still works on an unconfigured policy. Budget values and staging
+sign-off belong to #193; these commands do not choose production defaults.
+
+Disabling stops subsequent dispatch authorization, not already authorized or
+in-flight provider calls. Re-enabling allows normal retries of deferred attempts;
+it does not enqueue recovery jobs. Neither action releases leases, refunds
+uncertain charges, changes reading attempts, nor resets daily accounting.
+Operator batch/eval/comparison enforcement remains separate (#319).

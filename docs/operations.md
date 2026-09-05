@@ -2676,3 +2676,12 @@ A minimal `ready` reading needs:
   `/content/raw`
 
 `/lookup` requires the by-url pointer and does not discover pointerless readings.
+
+## Paid-work policy and accounting
+
+Use `npm run ops -- system status --env staging|production [--tenant usr_…]`
+to inspect policy and charged spend. `system policy` plans changes by default;
+writes require `--execute --acknowledge-guard-version <current row version>`
+and production also requires `--confirm-production`. See
+[the paid-work operator runbook](paid-provider-spend.md#operator-policy-and-accounting)
+for setup, exact commands, version/retry semantics, and accounting limitations.

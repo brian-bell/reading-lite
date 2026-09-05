@@ -128,8 +128,9 @@ comments of the modules themselves — read those before changing a module.
 - `scripts/ops.ts` + `scripts/ops-lib/` — the unified plan-first operator CLI:
   typed registry, dispatcher with shared exit semantics (0 ok / 2 usage / 1
   operational), native `run(argv, deps)` command modules under
-  `ops-lib/commands/`, and `ops-lib/policy-contract.ts` (the tested extension
-  contract for the future system-policy command, reading-lite-s1k.9.4).
+  `ops-lib/commands/`, and `ops-lib/policy-contract.ts` (the tested safety contract for
+  `system policy`). `system status` reads accounting through the private
+  `OperatorStatus` service entrypoint; see `docs/paid-provider-spend.md`.
   `test/unit/scripts/ops-registry-coverage.test.ts` fails when a supported
   workflow lacks a native command, safety classification, or help path.
 - `scripts/*-lib/` — shared logic behind the CLI commands.

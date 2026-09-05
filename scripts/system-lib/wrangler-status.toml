@@ -1,0 +1,15 @@
+# Used only by getPlatformProxy: no local data bindings or deploy entrypoint.
+name = "reading-lite-operator-status-client"
+compatibility_date = "2025-01-24"
+
+[[env.staging.services]]
+binding = "STATUS"
+service = "reading-lite-staging"
+entrypoint = "OperatorStatus"
+remote = true
+
+[[env.production.services]]
+binding = "STATUS"
+service = "reading-lite"
+entrypoint = "OperatorStatus"
+remote = true

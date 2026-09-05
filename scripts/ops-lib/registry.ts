@@ -1,3 +1,5 @@
+import { systemPolicyCommand } from "./commands/system-policy";
+import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
 import { accountResidueScanCommand } from "./commands/account-residue-scan";
 import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-vectors";
@@ -49,6 +51,7 @@ export interface Registry {
 
 export const defaultRegistry: Registry = {
   groups: [
+    { name: "system", summary: "Paid-work policy and accounting" },
     { name: "corpus", summary: "Corpus maintenance and repair" },
     { name: "reading", summary: "Single-reading operations against the reading API" },
     { name: "import", summary: "Imports into the reading API" },
@@ -64,6 +67,8 @@ export const defaultRegistry: Registry = {
     { name: "account", summary: "Account-deletion housekeeping and wipe residue" },
   ],
   commands: [
+    systemPolicyCommand,
+    systemStatusCommand,
     corpusAuditCommand,
     corpusRecoverCommand,
     corpusIngestCommand,
