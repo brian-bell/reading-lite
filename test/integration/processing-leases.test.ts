@@ -329,6 +329,31 @@ function fakeMessage(body: unknown): Message<unknown> {
 }
 
 describe("processing leases (Workers pool)", () => {
+  it("releases unused summary spend and defers when the real reading-slot commit RPC fails", async () => {
+    const {tenantId} = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour:20,monthly_readings:20,max_concurrent_work:1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant,{id:"rd_COMMIT_FAILURE",url:"https://lease.test/commit-failure",attemptId:"at_commit_failure"});
+    const fetchFn = makeFetch();
+    const spendCalls: string[] = [];
+    const restoreGlobal = interceptGlobalLeaseFetch(async (body,next) => {
+      if (String(body.opId).includes(":summarize:")) spendCalls.push(String(body.kind));
+      return next();
+    });
+    const restoreTenant = interceptTenantUsageFetch(async (body,next) =>
+      body.kind === "commit_reading" ? Response.json({ok:false,reason:"unavailable"}) : next());
+    try {
+      await expect(processReading(job,env as unknown as Env,services(fetchFn),tenant)).rejects.toBeInstanceOf(DeferPaidWorkError);
+      expect(summaryCalls(fetchFn)).toBe(0);
+      expect(spendCalls).toEqual(["reserve_spend","mark_spend_dispatched","settle_spend"]);
+    } finally {
+      restoreTenant(); restoreGlobal();
+    }
+    await processReading(job,env as unknown as Env,services(fetchFn),tenant);
+    expect(summaryCalls(fetchFn)).toBe(1);
+  });
+
   it("defers a second attempt when the tenant cap is 1 without draining pending", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
@@ -893,11 +918,9 @@ describe("processing leases (Workers pool)", () => {
     });
     const fetchFn = makeFetch();
     const svc = services(fetchFn);
-    let globalRenews = 0;
     const restore = interceptGlobalLeaseFetch(async (body, next) => {
       if (body.kind === "renew_lease") {
-        globalRenews += 1;
-        if (globalRenews === 3) {
+        if (summaryCalls(fetchFn) === 1) {
           return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -928,7 +951,7 @@ describe("processing leases (Workers pool)", () => {
     });
   });
 
-  it("retries commit_reading on the cached summarize path after a swallowed first commit", async () => {
+  it("defers summarize until commit_reading succeeds and preserves the monthly charge", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 1,
@@ -951,20 +974,7 @@ describe("processing leases (Workers pool)", () => {
     });
     const fetchFn = makeFetch();
     const svc = services(fetchFn);
-    let globalRenews = 0;
     let commitAttempts = 0;
-    const restoreGlobal = interceptGlobalLeaseFetch(async (body, next) => {
-      if (body.kind === "renew_lease") {
-        globalRenews += 1;
-        if (globalRenews === 3) {
-          return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-      }
-      return next();
-    });
     const restoreTenant = interceptTenantUsageFetch(async (body, next) => {
       if (body.kind === "commit_reading") {
         commitAttempts += 1;
@@ -983,10 +993,9 @@ describe("processing leases (Workers pool)", () => {
         { sendDelayed },
       );
       expect(sendDelayed).toHaveBeenCalledOnce();
-      expect(summaryCalls(fetchFn)).toBe(1);
+      expect(summaryCalls(fetchFn)).toBe(0);
       expect(commitAttempts).toBe(1);
     } finally {
-      restoreGlobal();
       restoreTenant();
     }
     await processReading(job, env as unknown as Env, svc, tenant);
@@ -1030,11 +1039,9 @@ describe("processing leases (Workers pool)", () => {
     });
     const fetchFn = makeFetch();
     const svc = services(fetchFn);
-    let globalRenews = 0;
     const restore = interceptGlobalLeaseFetch(async (body, next) => {
       if (body.kind === "renew_lease") {
-        globalRenews += 1;
-        if (globalRenews === 3) {
+        if (summaryCalls(fetchFn) === 1) {
           return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), {
             status: 200,
             headers: { "content-type": "application/json" },
