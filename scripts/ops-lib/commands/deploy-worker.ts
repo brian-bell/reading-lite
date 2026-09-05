@@ -2,11 +2,12 @@
 // Plan-first: a mode-less run prints the remote D1 migrate command and passes
 // wrangler --dry-run (config validation + in-place build check, no upload)
 // plus the control-plane readiness preflight; --execute applies pending remote
-// D1 migrations then uploads. The preflight refuses an execute against
-// placeholder CONTROL_PLANE D1 database ids; plan mode warns instead of failing.
+// D1 migrations then uploads. Before either write, require established tenant
+// activation or an explicit manual acknowledgement, and a non-placeholder D1.
 
 import { parseArgs } from "node:util";
 import { validateControlPlaneDeployReadiness } from "../../control-plane-env";
+import { validateTenantActivation } from "../tenant-activation-preflight";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export type DeployEnv = "production" | "staging";
@@ -14,6 +15,7 @@ export type DeployEnv = "production" | "staging";
 export interface DeployWorkerDeps extends BaseDeps {
   runWrangler: (args: string[]) => Promise<number>;
   validateReadiness: typeof validateControlPlaneDeployReadiness;
+  validateTenantActivation: typeof validateTenantActivation;
 }
 
 export function parseDeployEnv(value: unknown): DeployEnv | null {
@@ -38,6 +40,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       options: {
         execute: { type: "boolean", default: false },
         env: { type: "string", default: "production" },
+        "acknowledge-tenant-migration": { type: "boolean", default: false },
       },
     }));
   } catch (err) {
@@ -65,6 +68,19 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
     if (execute) return 2;
   }
   deps.io.stderr("");
+  if (execute) {
+    const activation = await deps.validateTenantActivation(env);
+    deps.io.stderr(`[DEPLOY] tenant activation preflight: ${activation.message}`);
+    if (!activation.ok) {
+      if (!values["acknowledge-tenant-migration"]) {
+        deps.io.stderr("Refusing before migrations or upload. Verify the target tenant R2 corpus, namespaced vectors, and deletion eligibility, then re-run with --acknowledge-tenant-migration. See docs/operations.md (Tenant-mode activation guard).");
+        return 2;
+      }
+      deps.io.stderr("[DEPLOY] OVERRIDE: operator acknowledges target tenant migration and deletion eligibility were verified manually for this deployment.");
+    }
+  } else {
+    deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and R2/Vectorize resource creation metadata before migrations or upload; no remote readiness check has run.");
+  }
   if (execute && migrationArgs) {
     const migrateCode = await deps.runWrangler(migrationArgs);
     if (migrateCode !== 0) return migrateCode;
@@ -86,8 +102,17 @@ migrations, then uploads. Idempotent: re-running with the same source and
 schema produces the same Worker version; already-applied migrations are a
 no-op. Does not create the database or import the founder token.
 
+Before either remote write, tenant mode must already be active with matching
+R2/Vectorize/D1 bindings and resource creation metadata, or the operator must
+acknowledge manual migration verification. Unverified activation prints deletion
+eligibility when available and exits 2 without the override. Plan mode does not
+inspect remote readiness. See docs/operations.md: Tenant-mode activation guard.
+
 Options:
   --env <name>   Worker environment to deploy (default: production).
+  --acknowledge-tenant-migration
+                 Override unverified activation only after manually verifying
+                 target tenant R2 data, namespaced vectors, and deletion eligibility.
   --execute      Apply remote D1 migrations and upload (otherwise wrangler
                  --dry-run is passed and migrations are not applied).
   --help         Show this message.
@@ -115,6 +140,7 @@ warns instead of failing.`,
       });
     },
     validateReadiness: validateControlPlaneDeployReadiness,
+    validateTenantActivation,
   }),
   run: runDeployWorker,
 };
