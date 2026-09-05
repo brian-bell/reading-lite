@@ -10,6 +10,9 @@ export interface AuditVectors {
   list(cursor?: string): Promise<{
     vectors: { id: string }[];
     isTruncated: boolean;
+    // Required and validated on the REST wire; optional for in-memory clients.
+    count?: number;
+    totalCount?: number;
     nextCursor?: string | null;
   }>;
   get(ids: string[]): Promise<StoredVector[]>;
@@ -18,10 +21,18 @@ export interface AuditVectors {
 }
 export async function enumerateNamespace(client: AuditVectors, tenant: string) {
   const ids = new Set<string>();
+  const pageCounts: { count?: number; totalCount?: number }[] = [];
   const cursors = new Set<string>();
   let cursor: string | undefined;
   do {
     const page = await client.list(cursor);
+    if (page.count !== undefined && page.count !== page.vectors.length)
+      throw new Error("vector list page count does not match returned IDs");
+    // https://developers.cloudflare.com/vectorize/best-practices/list-vectors/
+    // documents count per page and snapshot IDs, but does not pin totalCount
+    // under concurrent mutations. Retain totals as evidence without asserting
+    // cross-page equality or equating later hydration with that snapshot.
+    pageCounts.push({ count: page.count, totalCount: page.totalCount });
     for (const { id } of page.vectors) ids.add(id);
     if (!page.isTruncated) break;
     if (!page.nextCursor || cursors.has(page.nextCursor))
@@ -41,7 +52,7 @@ export async function enumerateNamespace(client: AuditVectors, tenant: string) {
       if (!found.some((v) => v.id === id)) unknown.push(id);
     vectors.push(...found.filter((v) => v.namespace === tenant));
   }
-  return { vectors, unknown, enumerated: ids.size };
+  return { vectors, unknown, enumerated: ids.size, pageCounts };
 }
 function payload(v: StoredVector) {
   return { values: v.values, metadata: v.metadata ?? {} };

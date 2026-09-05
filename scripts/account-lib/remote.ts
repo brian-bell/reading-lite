@@ -68,7 +68,9 @@ export function accountRemote(
     list: async (cursor) =>
       z
         .object({
-          vectors: z.array(z.object({ id: z.string() })),
+          vectors: z.array(z.object({ id: z.string().min(1) })),
+          count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+          totalCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
           isTruncated: z.boolean(),
           nextCursor: z.string().nullish(),
         })
@@ -101,7 +103,7 @@ export function accountRemote(
   };
   return {
     db: controlPlaneDbForBucket(bucket),
-    storage: r2InventoryClientFromVars(vars, bucket),
+    storage: r2InventoryClientFromVars(vars, bucket, fetchFn),
     vectors,
     probe: async (namespace: string) =>
       z

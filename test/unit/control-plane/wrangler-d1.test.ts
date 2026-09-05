@@ -59,9 +59,22 @@ describe("makeWranglerD1", () => {
       const db = adapter(wrap({ success: true, results: [{ n: 1 }, { n: 2 }] }));
       await expect(db.first("SELECT n FROM example")).resolves.toEqual({ n: 1 });
       await expect(db.all("SELECT n FROM example")).resolves.toEqual([{ n: 1 }, { n: 2 }]);
-      await expect(adapter(wrap(block(0))).first("SELECT n FROM example")).resolves.toBeNull();
-      await expect(adapter(wrap(block(0))).all("SELECT n FROM example")).resolves.toEqual([]);
+      await expect(adapter(wrap({ success: true, results: [] })).first("SELECT n FROM example")).resolves.toBeNull();
+      await expect(adapter(wrap({ success: true, results: [] })).all("SELECT n FROM example")).resolves.toEqual([]);
     }
+  });
+
+  it.each([null, [], {}, { results: [] }, { success: false, results: [] },
+    { success: "true", results: [] }, { success: true }, { success: true, results: {} },
+    { success: true, results: null }, [block(0), block(0)],
+  ])("rejects malformed first/all responses %j", async (body) => {
+    await expect(adapter(body).first("SELECT n FROM example")).rejects.toThrow(/wrangler d1/i);
+    await expect(adapter(body).all("SELECT n FROM example")).rejects.toThrow(/wrangler d1/i);
+  });
+  it("rejects invalid JSON in first/all", async () => {
+    const db = makeWranglerD1({ database: "test", local: false, run: async () => ({ stdout: "not json", stderr: "", code: 0 }) });
+    await expect(db.first("SELECT n FROM example")).rejects.toThrow(/wrangler d1/i);
+    await expect(db.all("SELECT n FROM example")).rejects.toThrow(/wrangler d1/i);
   });
 
   it("does not execute an empty batch", async () => {

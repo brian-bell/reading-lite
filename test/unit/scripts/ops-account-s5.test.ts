@@ -545,3 +545,71 @@ it("refuses active unlisted readings and pending purge ledger entries before rep
     expect(r.db.run).not.toHaveBeenCalled();
   }
 });
+
+import { makeR2Client, makeR2RestClient } from "../../../scripts/lib/cf-clients";
+
+
+describe("S5 real listing adapter failure propagation", () => {
+  it.each(["S3", "REST"])("%s malformed second page reports unknown/incomplete and blocks repair", async (provider) => {
+    const cfg = { accountId: "test", bucket: "test", accessKeyId: "test", secretAccessKey: "test", apiToken: "test" };
+    const send = vi.fn().mockImplementation(async () => {
+      const first = send.mock.calls.length % 2 === 1;
+      return provider === "S3"
+        ? new Response(`<ListBucketResult><IsTruncated>true</IsTruncated>${first ? '<NextContinuationToken>next</NextContinuationToken>' : ''}</ListBucketResult>`)
+        : Response.json({ success: true, result: [], result_info: { is_truncated: true, ...(first ? { cursor: "next" } : {}) } });
+    });
+    const r = { ...remoteFixture(), storage: provider === "S3" ? makeR2Client(cfg, send) : makeR2RestClient(cfg, send) };
+    r.storage.get = vi.fn().mockResolvedValue(null);
+    const io = { stdout: vi.fn(), stderr: vi.fn() };
+    expect(await accountResidueScanCommand.run(["--tenant", tenant], { io, connect: () => r })).toBe(1);
+    const report = JSON.parse(io.stdout.mock.calls[0]![0]);
+    expect(report.incomplete).toBe(true);
+    expect(report.findings.find((f: { source: string }) => f.source === "r2").state).toBe("unknown");
+    // Only listing is real: ordinary object reads stay injected and local.
+    r.storage.get = vi.fn().mockResolvedValue(null);
+    await expect(accountAuditBareVectorsCommand.run([
+      "--namespace", tenant, "--execute", "--confirm", tenant, "--sole-writer",
+    ], { io, connect: () => r, now: () => 1 })).rejects.toThrow(/R2 LIST/);
+    expect(r.vectors.delete).not.toHaveBeenCalled();
+    expect(r.vectors.upsert).not.toHaveBeenCalled();
+    expect(r.db.run).not.toHaveBeenCalled();
+    expect(r.db.batch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Vectorize listing counts", () => {
+  const vars = { CORPUS_R2_ACCOUNT_ID: "test", CORPUS_CF_API_TOKEN: "test" };
+  it.each([undefined, null, -1, 0.5, "1", 2])("rejects invalid or mismatched page count %j before hydration", async (count) => {
+    const send = vi.fn().mockResolvedValue(Response.json({ success: true, result: {
+      vectors: [{ id }], isTruncated: false, count, totalCount: 1,
+    } }));
+    const remote = accountRemote("reading-lite-staging", send, vars);
+    await expect(enumerateNamespace(remote.vectors, tenant)).rejects.toThrow();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("retains per-page totals without equating hydration or changing totals to the snapshot", async () => {
+    const send = vi.fn()
+      .mockResolvedValueOnce(Response.json({ success: true, result: { vectors: [{ id }], count: 1, totalCount: 2, isTruncated: true, nextCursor: "next" } }))
+      .mockResolvedValueOnce(Response.json({ success: true, result: { vectors: [{ id: "later" }], count: 1, totalCount: 3, isTruncated: false, nextCursor: null } }))
+      .mockResolvedValueOnce(Response.json({ success: true, result: [bare] }));
+    const inventory = await enumerateNamespace(accountRemote("reading-lite-staging", send, vars).vectors, tenant);
+    expect(inventory.pageCounts).toEqual([{ count: 1, totalCount: 2 }, { count: 1, totalCount: 3 }]);
+    expect(inventory.unknown).toEqual(["later"]);
+    expect(inventory.enumerated).toBe(2);
+  });
+  it("preserves legitimate empty vector snapshots", async () => {
+    const send = vi.fn().mockResolvedValue(Response.json({ success: true, result: { vectors: [], count: 0, totalCount: 0, isTruncated: false } }));
+    await expect(enumerateNamespace(accountRemote("reading-lite-staging", send, vars).vectors, tenant)).resolves.toMatchObject({ enumerated: 0, unknown: [], pageCounts: [{ count: 0, totalCount: 0 }] });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("rejects cyclic vector cursors and unexpected hydration IDs", async () => {
+    const c = client();
+    c.list.mockResolvedValueOnce({ vectors: [], isTruncated: true, nextCursor: "a" })
+      .mockResolvedValueOnce({ vectors: [], isTruncated: true, nextCursor: "b" })
+      .mockResolvedValueOnce({ vectors: [], isTruncated: true, nextCursor: "a" });
+    await expect(enumerateNamespace(c, tenant)).rejects.toThrow("cursor");
+    expect(c.get).not.toHaveBeenCalled();
+    c.get.mockResolvedValue([{ ...bare, id: "unexpected" }]);
+    await expect(enumerateNamespace(c, tenant)).rejects.toThrow("unexpected vector id");
+  });
+});
