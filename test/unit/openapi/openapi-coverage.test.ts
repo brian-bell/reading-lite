@@ -123,6 +123,7 @@ const REQUIRED_SCHEMAS = [
 
 type OpenApiDoc = {
   openapi: string;
+  servers?: Array<{ url?: string; description?: string }>;
   paths?: Record<string, Record<string, unknown>>;
   components?: { schemas?: Record<string, unknown>; parameters?: Record<string, unknown> };
 };
@@ -152,6 +153,20 @@ describe("docs/openapi.yaml", () => {
     // MCP stays out of this document.
     expect(paths["/mcp"]).toBeUndefined();
     expect(paths["/api/mcp"]).toBeUndefined();
+  });
+
+  it("lists readinglite.ai as the canonical production server, then the dual-serve hosts", () => {
+    const servers = loadSpec().servers ?? [];
+    expect(servers.map((server) => server.url)).toEqual([
+      "https://readinglite.ai",
+      "https://readinglite.app",
+      "https://reading-lite.bbell.dev",
+      "http://127.0.0.1:8787",
+    ]);
+    expect(servers[0]?.description).toMatch(/canonical/i);
+    expect(servers[1]?.description).toMatch(/additional public host/i);
+    expect(servers[2]?.description).toMatch(/compatibility|rollback/i);
+    expect(servers.map((server) => server.url)).not.toContain("https://bbookmarks.com");
   });
 
   it("documents the request/response schemas that mirror src/schemas/api.ts", () => {

@@ -180,8 +180,11 @@ matrix, not a substitute for real readings.
   Vectorize binding: submit/reprocess return 503 and similarity search returns
   nothing.
 - Staging (`[env.staging]`, `reading-lite-staging`) and production
-  (`[env.production]`, `reading-lite`, routed at `reading-lite.bbell.dev/api/*`)
-  are fully isolated; `ops staging setup`/`ops staging teardown` are idempotent and
+  (`[env.production]`, `reading-lite`) are fully isolated. Production Worker
+  routes `/api/*`, `/health`, and `/mcp*` on the canonical host
+  `readinglite.ai`, the additional public host `readinglite.app`, and the
+  retained compatibility/rollback host `reading-lite.bbell.dev`.
+  `ops staging setup`/`ops staging teardown` are idempotent and
   hard-coded to staging names. Staging same-origin host is
   `reading-lite-staging.bbell.dev` (Pages + Worker `/api/*`, `/health`, `/mcp*`).
 - Merges to `main` run CI, then deploy that exact commit's production Worker via
