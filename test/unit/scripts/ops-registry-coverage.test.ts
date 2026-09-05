@@ -32,7 +32,6 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "refresh-connections",
     "refresh-tensions",
     "backfill-vectors",
-    "migrate-founder",
     "normalize-tags",
     "purge-connections",
     "rebuild-list",
@@ -114,6 +113,12 @@ describe("ops registry completeness", () => {
     const DEV_SCRIPTS = new Set(["dev", "dev:setup", "typecheck", "test", "test:quiet", "test:watch"]);
     const operatorScripts = Object.keys(pkg.scripts).filter((s) => !DEV_SCRIPTS.has(s));
     expect(operatorScripts).toEqual(["ops"]);
+  });
+
+  it("refuses the retired founder migration command, including its old help path", async () => {
+    const { io, err } = captureIo();
+    expect(await runCli(["corpus", "migrate-founder", "--help"], { io })).toBe(2);
+    expect(err.join("\n")).toContain("Unknown command");
   });
 
   it("leaves no retired top-level operator entry point or Make wrapper behind", async () => {

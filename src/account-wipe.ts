@@ -149,8 +149,8 @@
  * only from R2, and R2 was emptied by this very job. All four are closed by the
  * ledger writing the id BEFORE the upsert, at every writer site — the publisher
  * (`reading-visibility.ts`), the single-reading purge (`reading-purge.ts`), and
- * the three offline writers (`corpus backfill-vectors`, `corpus
- * migrate-founder`, `batch/write-phase`) that check no `users.status` and could
+ * the offline writers (`corpus backfill-vectors`, `batch/write-phase`) that
+ * check no `users.status` and could
  * upsert into a tenant whose wipe was already past its vectors phase. The
  * publisher fence (`ReadingVisibility.removeForDeletedTenant`) still runs and
  * is still worth having — it deletes promptly rather than waiting for a later

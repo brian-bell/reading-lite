@@ -1,8 +1,8 @@
 // The vector ledger as the offline operator commands see it (issue #195 S3).
 //
-// Three commands upsert vectors outside the Worker — `corpus backfill-vectors`,
-// `corpus migrate-founder`, and the batch pipeline's `write-phase` — and none of
-// them checks `users.status`. That was one of the four strandings
+// Two operator paths upsert vectors outside the Worker — `corpus backfill-vectors`
+// and the batch pipeline's `write-phase` — and neither checks `users.status`.
+// That was one of the four strandings
 // `src/account-wipe.ts`'s header enumerated: an operator running one of them
 // with `--execute` against an account mid-wipe could upsert a vector after the
 // wipe's vectors phase had passed, leaving it with no derivable id. Recording

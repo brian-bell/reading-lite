@@ -905,7 +905,7 @@ describe("makeR2Client request timeout and transient retry", () => {
   });
 
   it("leaves every other caller on one attempt and no deadline", async () => {
-    // corpus-ingest, corpus-recover, corpus-migrate-founder, purge-connections
+    // corpus-ingest, corpus-recover, purge-connections
     // and staging-teardown build the client without the refresh policy; a
     // deadline they were never written against must not appear under them.
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(

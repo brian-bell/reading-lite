@@ -31,9 +31,9 @@ never act on the wrong corpus by omission.
 A `usr_…` tenant id addresses that tenant's `u/{tenantId}/` key namespace plus
 its Vectorize namespace (the same roots the worker derives from a validated
 `TenantContext`). `global` is the pre-tenant layout selector: local (where
-`TENANT_DATA_PLANE` is still unset), migrate-founder source and rollback, and
-the leftover global objects both deployed environments retain — production's
-pending signed-off deletion, staging's kept by its own copy-only migration.
+`TENANT_DATA_PLANE` is still unset), and the leftover global objects both
+deployed environments retain — production's pending signed-off deletion,
+staging's kept by its own copy-only migration.
 On a gate-on environment `global` is a direct-R2 selector only: realtime write
 paths reject it (`verifyRealtimeTenant`, `scripts/corpus-lib/realtime-tenant.ts`).
 
@@ -784,10 +784,11 @@ eligibility as unavailable, not zero. This is an activation warning; ongoing
 active-wipe deployment policy belongs to #269.
 
 To proceed after a refusal, verify the intended corpus in the target tenant R2
-root and Vectorize namespace using the cutover runbook, and review deletion
-eligibility in the target D1 database. For a fresh pre-tenant migration, run
-`ops corpus migrate-founder` through its clean **fully migrated** re-plan; for
-a rebuilt environment, verify its restored tenant corpus before activation.
+root and Vectorize namespace, and review deletion eligibility in the target D1
+database. For a rebuilt environment, verify its restored tenant corpus before
+activation. The completed founder cutover is historical evidence, not a step to
+repeat: its one-time migration command is retired. Any future conversion from a
+legacy layout requires a separately scoped migration and rehearsal.
 An intentionally empty new environment needs verification that no corpus is
 expected. Record the evidence with the operational work, then explicitly use:
 
@@ -1165,15 +1166,17 @@ Signup-shaped email reuse after teardown is recorded in the
 [2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
 and its [second-run supplement](evidence/286-staging-email-reuse-followup-2026-09-05.md).
 The accepted #286 evidence retains `incomplete:true`; broader deletion coverage
-and acceptance decisions remain #288, with #285 legacy cleanup explicitly deferred.
+and the named limits were subsequently accepted under #288/#195. #285 legacy
+cleanup remains explicitly deferred; this runbook does not require another
+acceptance drill merely because a routine release occurs.
 
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
 is off, so an environment with the gate unset cannot exercise the destructive
 path at all. Staging therefore pins the gate in `[env.staging.vars]`, and its
 pre-tenant corpus was migrated under `u/{founderTenantId}/` by
-`ops corpus migrate-founder` first — that command copies rather than moves, so
-the legacy `readings/` and `index/` objects are all still in the bucket.
+the now-retired founder migration command. It copied rather than moved, so
+the legacy `readings/` and `index/` objects remain in the bucket.
 Removing the pin is a **complete rollback only before post-pin writes resume**.
 After the pin, every new staging reading is written only under its tenant R2
 root and Vectorize namespace. Rolling the gate back then makes the Worker read
@@ -1292,29 +1295,12 @@ the account is `active` but cannot authenticate. Re-run
 `ops founder bootstrap --env staging --execute` for the founder, or issue a
 fresh magic link, before assuming staging works again.
 
-Setting staging up this way once, from a checkout of the commit you want to
-rehearse:
-
-```sh
-npm run ops -- corpus migrate-founder --tenant "$STG_TENANT" \
-  --bucket reading-lite-staging --vectorize reading-lite-staging \
-  --state ./founder-migration.staging.state.json --execute --sole-writer
-# rerun without --execute until it reports fully migrated, then:
-npm run ops -- deploy worker --env staging --execute
-```
-
-Pass an explicit `--state` path. The default `./founder-migration.state.json`
-is stamped with the tenant, bucket and index it was created for, and a leftover
-production or older staging state file in the cwd makes the command exit 1
-("refusing to resume it as tenant …") in the middle of the cutover.
-
-Hold the sole-writer pause across the deploy, and run one final plan pass
-immediately before it. Any staging write that lands between the last migrate
-pass and the gate flipping goes to the global layout and becomes invisible the
-instant the Worker starts reading tenant-rooted. "Fully migrated" has to include
-the **vector** re-upsert, not just the object copies: a namespaced query cannot
-see a bare `rd_…` vector, so a corpus copied in R2 but not migrated in Vectorize
-returns zero neighbours with no error anywhere.
+Staging already has tenant mode enabled and its founder cutover is complete.
+Do not rerun that migration to rehearse deletion. For a rebuilt environment,
+verify restored tenant data (or that the environment is intentionally empty)
+and follow the [tenant-mode activation guard](#tenant-mode-activation-guard).
+The historical migration procedure and evidence remain in
+[the completed cutover record](founder-cutover.md).
 
 The drill itself. Seed a throwaway tenant, fence it, let cron wipe it, then
 prove the residue is gone.
@@ -1590,7 +1576,6 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
 | `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
-| `npm run ops -- corpus migrate-founder` | copy the global layout into the founder tenant namespace and re-upsert vectors (plan doubles as the reconciliation check) |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
 examples below all select the founder tenant. Since the production cutover, new
@@ -1673,7 +1658,7 @@ surfaces as a `RateLimitedError` naming the retry-after the provider asked for
 
 Those limits are these two commands' policy and nothing else's. The other ops
 commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
-`corpus migrate-founder`, `corpus purge-connections`, `staging teardown` — keep
+`corpus purge-connections`, `staging teardown` — keep
 the single attempt and the absent deadline they were written and run against.
 
 `refresh-neighbours` is the one exception, and only in part: it gets the same
@@ -2354,69 +2339,20 @@ npm run ops -- corpus recover --tenant "$TENANT" --index ./index.json --execute
 
 ### Founder corpus migration (s1k.6)
 
-Production cutover (HITL gates, freeze, repair, copy, gate flip, verify,
-rollback, observation) is [`docs/founder-cutover.md`](founder-cutover.md),
-written from the 2026-08-27 staging rehearsal. This section is the command.
+**Completed; tooling retired.** Production cutover finished on 2026-08-31,
+with counts/hashes, tenant paths, vectors and connections reconciled. The
+[cutover report](founder-cutover.md) preserves the procedure and acceptance
+record. The one-time `ops corpus migrate-founder` command, its planner/state
+module and dedicated tests have been removed from the supported CLI. The
+[last pre-retirement implementation](https://github.com/brian-bell/reading-lite/blob/b74a9b69af96b7101300d974e808e91ba34abdf9/scripts/ops-lib/commands/corpus-migrate-founder.ts)
+and its tests remain available in Git history for historical recovery analysis.
 
-`ops corpus migrate-founder` moves the pre-tenant corpus into the founder's
-tenant namespace as a **copy, never a move**: every global-layout object is
-copied byte-identically to `u/{tenantId}/{same key}` (stored `key_prefix`
-values are root-relative, so no object body changes), and every ready
-reading's vector is re-read by id and re-upserted into the tenant namespace
-as `{tenantId}:{readingId}` with `tenant_id` metadata (ADR 0002) — no paid
-re-embedding. Legacy objects and vectors are always retained; the command
-never deletes anything.
-
-```sh
-# Exact dry-run: every copy (size+etag), every vector upsert, every problem.
-# --tenant is the DESTINATION founder id (from whoami); source is always global.
-npm run ops -- corpus migrate-founder --tenant "$TENANT"
-
-# Copy + migrate vectors, resumably (state file records per-object sha256):
-npm run ops -- corpus migrate-founder --tenant "$TENANT" --execute --sole-writer
-
-# Reconcile: plan again — "fully migrated" means every source object exists
-# at its tenant key with equal size/etag, every ready row has its namespaced
-# vector carrying the legacy embedding and metadata, and every row agrees
-# with the manifest and by-id pointer it names.
-npm run ops -- corpus migrate-founder --tenant "$TENANT"
-```
-
-Certification is a content check, not a presence check: the plan parses each
-row's `manifest.json` and by-id pointer and blocks when they disagree with
-the row (`row_manifest_mismatch`, `row_by_id_pointer_invalid`). A stale
-`index/list.json` row is the case that matters — the vector plan follows the
-row's `status`, so a row saying `failed` over a `ready` manifest would migrate
-with no vector planned. Repair those with `corpus rebuild-list --tenant
-global` (the migrate-founder source is the pre-tenant layout, not
-`$TENANT`), then re-plan.
-
-That costs two reads per row the first time. After that the state file caches
-each parse against the object's etag, so passes over an unmoved corpus read
-nothing — every pass prints `Verified N row(s) … (R object reads, C served
-from the state file's etag cache)`, and a high `R` on a corpus you have not
-touched means the cache is not being reused (no state file yet, or a
-different `--state` path). Pass the same `--state` to plan and execute to
-keep it warm. Plan mode reads that file and never writes it. The cache holds
-what the objects *said*, never whether they passed: the row comparison always
-re-runs against the live `index/list.json`, so a row that goes stale while
-its manifest sits untouched is still caught.
-
-Both modes need an account id plus either S3 `CORPUS_R2_*` keys or
-`CLOUDFLARE_API_TOKEN` / `CORPUS_CF_API_TOKEN` (R2 REST). Plan reads live
-listings, per-row manifest/pointer content, and vector state.
-`--limit` caps work per pass for interrupted-run rehearsal; the
-tenant-stamped state file refuses resumes under a different tenant, bucket,
-or index.
-
-Cutover ordering, gate-flip commands, and the staging-rehearsal pitfalls
-(stale `index/list.json`, missing vectors, Vectorize `get_by_ids` cap of 20,
-`--var` vs `ops deploy worker`) are in
-[`docs/founder-cutover.md`](founder-cutover.md). Rollback before the flip is
-"don't flip"; after, unset the gate and redeploy **while the writer is still
-frozen**. Post-pin writes exist only under tenant roots, so a rollback after
-writes resume needs freeze + reverse reconciliation or accepted loss. Legacy
-state survives until post-observation sign-off (ADR 0001).
+New environments start with tenant storage. Rebuilt environments need their
+restored tenant data verified before activation; the [activation guard](#tenant-mode-activation-guard)
+remains. Retiring this command does not delete retained legacy data, remove the
+`TENANT_DATA_PLANE` gate, change D1 schema migrations, or remove general corpus
+repair/vector-backfill tools. A future migration needs its own scoped design,
+tests and rehearsal, not a recurring founder-cutover release check.
 
 ### The extract-agent
 

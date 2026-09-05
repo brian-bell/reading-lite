@@ -51,8 +51,8 @@ export interface WriteDeps {
    *
    * PRE-EXISTING BUG, fixed here (found reviewing issue #195 S3). Every other
    * vector writer composes the ADR 0002 tenant-scoped vector id —
-   * `similarity-store.ts` in the Worker, `corpus backfill-vectors`, and
-   * `corpus migrate-founder` all write `{tenantId}:{readingId}` — but
+   * `similarity-store.ts` in the Worker and `corpus backfill-vectors`
+   * write `{tenantId}:{readingId}` — but
    * `makeVectorizeClient.upsert` only attaches `namespace`, so this pipeline
    * was writing tenant vectors under the BARE reading id.
    *
@@ -430,9 +430,7 @@ async function writeNormalizedResults(
       // namespace, exactly as before, so the pre-tenant layout is unchanged.
       id: tenantVectorId(deps.vectorNamespace, target.id),
       values: embedding,
-      // ...and its audit stamp, matching what the Worker and the founder
-      // migration write. `migrate-founder`'s reconciliation rejects a prefixed
-      // vector without it.
+      // ...and its audit stamp, matching the Worker's tenant ownership metadata.
       metadata:
         deps.vectorNamespace === undefined
           ? vectorMetadata(manifest)

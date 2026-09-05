@@ -50,8 +50,8 @@ export interface R2ObjectText {
   etag: string;
 }
 
-// The inventory-grade superset the founder migration needs (reading-lite-
-// s1k.6.1): size/etag listings for exact copy plans and byte-faithful reads
+// Inventory-grade operations: size/etag listings for exact repair plans and
+// byte-faithful reads
 // for binary-safe copies. A separate interface so the many in-memory R2Client
 // fakes in tests keep compiling; makeR2Client always returns the superset.
 export interface R2InventoryClient extends R2Client {
@@ -88,9 +88,8 @@ export interface StoredVector {
   namespace?: string;
 }
 
-// Superset for the founder migration (reading-lite-s1k.6.1): fetch stored
-// vectors by id so legacy vectors can be re-upserted into the tenant
-// namespace without a paid re-embed. get_by_ids addresses vectors by their
+// Administrative operations: fetch stored vectors by id for auditing and
+// repair without a paid re-embed. get_by_ids addresses vectors by their
 // index-unique id regardless of namespace, which is exactly what lets one
 // call probe legacy (bare-id) and migrated (tenant-prefixed) vectors at once.
 export interface VectorizeAdminClient extends VectorizeClient {
@@ -383,7 +382,7 @@ export interface RateLimitRetryDeps {
 }
 
 // The Cloudflare REST API (R2 objects, Vectorize) throttles bursts with 429s
-// (code 971 / 10000): the founder migration reads ~3 objects per row and probes
+// (code 971 / 10000): the historical founder migration read ~3 objects per row and probed
 // 2 vector ids per ready row, so a 500-row corpus is thousands of back-to-back
 // calls. Unlike the worker's fetchWithRetry (which surfaces 429 to the queue),
 // an operator CLI can simply wait: honor Retry-After when present, otherwise

@@ -263,7 +263,12 @@ matrix, not a substitute for real readings.
 Pointers only — the details live in the named files' comments.
 
 - Production founder cutover ran 2026-08-31 (`docs/founder-cutover.md`,
-  record at the bottom). `TENANT_DATA_PLANE = "1"` is pinned in
+  record at the bottom). The one-time `ops corpus migrate-founder` command,
+  planner/state module, and dedicated tests are retired. Do not rerun the
+  founder migration for releases or deletion drills. Preserve the historical
+  cutover evidence; new migrations need their own scope. Runtime tenant gates,
+  the deploy activation guard, D1 migrations, repair tools, and deferred legacy
+  cleanup are unchanged. `TENANT_DATA_PLANE = "1"` is pinned in
   `[env.production.vars]` and `[env.staging.vars]`, so ordinary deploys
   (incl. merge-to-main) keep the gate on. Removing the pin is a complete
   rollback only before post-pin writes resume: after the pin, new readings

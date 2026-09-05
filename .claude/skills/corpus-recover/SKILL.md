@@ -109,7 +109,7 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --only l
 npm run ops -- corpus recover --tenant global --index .../index.json --url http://127.0.0.1:8787 --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local, staging (gate still off), migrate-founder source, and leftover production global objects. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so live staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 Flags: `--index` (default `./index.json`), `--execute`, `--only reprocess|local-extract`, `--limit <n>`, `--url`, `--token`, `--bucket` (for `--monitor`), `--monitor`, `--batch` (bulk Message Batch path), `--help`.
 
 Outcomes are written back into the `index.json` rows (`result` field). Prints a JSON summary; exits non-zero if any action errored.

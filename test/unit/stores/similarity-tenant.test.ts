@@ -110,7 +110,7 @@ describe("tenantVectorId", () => {
 });
 
 // ADR 0002: inside a tenant namespace the stored VECTOR id is
-// `{tenantId}:{readingId}` — the same contract the founder migration writes —
+// `{tenantId}:{readingId}` — the same contract used by operator vector writers —
 // so the namespace-blind deleteByIds cannot address another tenant's vector.
 // Callers never see the prefix: the store composes it on the way in and strips
 // it from query matches on the way out.
@@ -146,9 +146,7 @@ describe("SimilarityStore vector ids inside a namespace", () => {
   });
 
   it("stamps tenant_id metadata on namespaced upserts (ADR 0002 audit layer)", async () => {
-    // Migration reconciliation rejects a prefixed vector without this stamp
-    // once its legacy source is gone (founder-migration.ts), so a realtime
-    // reprocess must write the same stamp the migration does.
+    // Reprocess and operator writes preserve the same tenant ownership stamp.
     const { index, stored } = namespacedIndex();
     await similarityStoreFor(index, TENANT_A, env).upsert("rd_a", vec(), meta);
     expect(stored[0]!.metadata).toEqual({ ...meta, tenant_id: A });
