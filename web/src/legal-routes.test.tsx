@@ -3,11 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import {
-  CURRENT_BEHAVIOR_NOTICE,
-  OPERATOR_CONTACT_URL,
-  PRIVACY_DELETION_SECTION
-} from "./legal-copy";
+import { OPERATOR_CONTACT_EMAIL, PRIVACY_DELETION_SECTION } from "./legal-copy";
 
 const sessionWhoami = {
   tenant_id: "usr_550e8400-e29b-41d4-a716-446655440000",
@@ -67,8 +63,9 @@ describe("legal routes and links", () => {
     stubWhoami(false);
     render(<App initialPath="/terms" />);
     expect(await screen.findByRole("heading", { name: "Terms of Service" })).toBeInTheDocument();
-    expect(screen.getByRole("note")).toHaveTextContent(CURRENT_BEHAVIOR_NOTICE);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByText(/hosted at bbookmarks\.com/)).toBeInTheDocument();
   });
 
   it("renders public Privacy deletion copy while signed out", async () => {
@@ -77,18 +74,19 @@ describe("legal routes and links", () => {
     expect(await screen.findByRole("heading", { name: "Privacy" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Deletion" })).toBeInTheDocument();
     expect(screen.getByText(deletionLead())).toBeInTheDocument();
+    expect(screen.getByText(/SPA does not currently expose account deletion/)).toBeInTheDocument();
   });
 
-  it("renders public DMCA with the GitHub contact, not a mailbox", async () => {
+  it("renders public DMCA with the operator email, not a GitHub contact", async () => {
     stubWhoami(false);
     render(<App initialPath="/dmca" />);
     expect(await screen.findByRole("heading", { name: "DMCA" })).toBeInTheDocument();
-    const contacts = screen.getAllByRole("link", { name: "github.com/brian-bell/reading-lite" });
+    const contacts = screen.getAllByRole("link", { name: OPERATOR_CONTACT_EMAIL });
     expect(contacts.length).toBeGreaterThan(0);
     for (const link of contacts) {
-      expect(link).toHaveAttribute("href", OPERATOR_CONTACT_URL);
+      expect(link).toHaveAttribute("href", `mailto:${OPERATOR_CONTACT_EMAIL}`);
     }
-    expect(screen.queryByRole("link", { name: /mailto:/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /github\.com/i })).not.toBeInTheDocument();
   });
 
   it("keeps legal pages reachable while signed in instead of replacing them with the library", async () => {
@@ -110,8 +108,8 @@ describe("legal routes and links", () => {
     expect(within(footerNav).getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy");
     expect(within(footerNav).getByRole("link", { name: "DMCA" })).toHaveAttribute("href", "/dmca");
 
-    expect(screen.getByText("Draft pages describing current product behavior:")).toBeInTheDocument();
-    const loginLinks = screen.getByText("Draft pages describing current product behavior:").parentElement;
+    expect(screen.getByText("Legal notices:")).toBeInTheDocument();
+    const loginLinks = screen.getByText("Legal notices:").parentElement;
     expect(loginLinks).not.toBeNull();
     expect(within(loginLinks!).getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms");
 

@@ -3,36 +3,44 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  CURRENT_BEHAVIOR_NOTICE,
   DMCA_DOCUMENT,
   flattenAllLegalText,
   flattenLegalText,
   formatLegalSection,
   LEGAL_DOCUMENTS,
   LEGAL_PATHS,
-  OPERATOR_CONTACT_URL,
+  OPERATOR_CONTACT_EMAIL,
   PRIVACY_DELETION_SECTION,
   PRIVACY_DOCUMENT,
+  PUBLIC_HOST,
   TERMS_DOCUMENT
 } from "./legal-copy";
 
 describe("legal copy", () => {
   const all = flattenAllLegalText();
 
-  it("marks every page as a draft of current product behavior", () => {
-    expect(CURRENT_BEHAVIOR_NOTICE).toMatch(/current product behavior/i);
-    expect(CURRENT_BEHAVIOR_NOTICE).toMatch(/not approved/i);
+  it("publishes live pages without a draft banner", () => {
+    expect(all).not.toMatch(/draft for review/i);
+    expect(all).not.toMatch(/not approved/i);
+    expect(all).not.toMatch(/About this draft/);
+    expect(all).not.toMatch(/current product behavior/i);
     for (const doc of LEGAL_DOCUMENTS) {
-      expect(flattenLegalText(doc)).toContain(CURRENT_BEHAVIOR_NOTICE);
+      expect(flattenLegalText(doc)).not.toMatch(/draft for review/i);
     }
   });
 
-  it("uses the OpenAPI GitHub contact and does not invent a mailbox", () => {
-    expect(OPERATOR_CONTACT_URL).toBe("https://github.com/brian-bell/reading-lite");
-    expect(all).toContain(OPERATOR_CONTACT_URL);
-    expect(all).not.toMatch(/mailto:/i);
-    expect(all).not.toMatch(/\b[\w.+-]+@(?:bbell\.dev|reading-lite\.[a-z]+|example\.com)\b/i);
-    expect(all.toLowerCase()).toMatch(/do not publish a dedicated (?:dmca|privacy|legal) mailbox|does not invent a legal mailbox|do not publish a dedicated dmca mailbox/);
+  it("publishes the operator email as the legal-notice contact", () => {
+    expect(OPERATOR_CONTACT_EMAIL).toBe("operator@bbookmarks.com");
+    expect(all).toContain(OPERATOR_CONTACT_EMAIL);
+    expect(all).not.toMatch(/github\.com\/brian-bell\/reading-lite/);
+    expect(all).toMatch(/do not publish a postal address/i);
+    expect(all).toMatch(/phone number/);
+  });
+
+  it("names bbookmarks.com as the public host", () => {
+    expect(PUBLIC_HOST).toBe("bbookmarks.com");
+    expect(all).toContain(PUBLIC_HOST);
+    expect(all).not.toMatch(/reading-lite\.bbell\.dev/);
   });
 
   it("describes current account, mail, and processor behavior", () => {
@@ -54,24 +62,29 @@ describe("legal copy", () => {
     expect(all).toMatch(/private-by-default/i);
   });
 
-  it("does not promise self-serve export or an ADR 0001 account wipe", () => {
+  it("does not promise self-serve export or a complete corpus wipe", () => {
     expect(all).toMatch(/no self-serve export/i);
-    expect(flattenLegalText(PRIVACY_DOCUMENT)).toMatch(/self-serve account deletion is not available/i);
-    expect(all).toMatch(/does not promise the full account wipe described in ADR 0001/i);
+    expect(all).toMatch(/does not claim that wipe is complete/i);
+    expect(all).toMatch(/does not claim that wipe leaves zero residue|residue is zero/i);
+    expect(all).not.toMatch(/self-serve account deletion is not available/i);
+    expect(all).not.toMatch(/ADR 0001/);
+    expect(all).not.toMatch(/not implemented in the hosted product/i);
     expect(all).not.toMatch(/you can delete your account/i);
-    expect(all).not.toMatch(/we will (?:delete|wipe) your entire account/i);
   });
 
-  it("states reading purge only, including that the SPA may not expose it", () => {
+  it("states account deletion and reading purge, including that the SPA exposes neither", () => {
     const deletion = formatLegalSection(PRIVACY_DELETION_SECTION);
     expect(PRIVACY_DELETION_SECTION.id).toBe("deletion");
-    expect(deletion).toMatch(/Self-serve account deletion is not available/);
+    expect(deletion).toMatch(/DELETE \/api\/account/);
+    expect(deletion).toMatch(/session-only/);
+    expect(deletion).toMatch(/security email/);
+    expect(deletion).toMatch(/asynchronous after that fence/);
+    expect(deletion).toMatch(/SPA does not currently expose account deletion/);
     expect(deletion).toMatch(/DELETE \/api\/readings\/:id/);
     expect(deletion).toMatch(/SPA does not currently expose reading purge/);
     expect(deletion).toMatch(/readings:delete/);
     expect(deletion).toMatch(/Inbound connections on other readings may still name the deleted id/);
-    expect(deletion).toMatch(/ADR 0001/);
-    expect(deletion).toMatch(/not implemented in the hosted product/);
+    expect(flattenLegalText(PRIVACY_DOCUMENT)).toMatch(/DELETE \/api\/account/);
   });
 
   it("publishes the three public paths", () => {

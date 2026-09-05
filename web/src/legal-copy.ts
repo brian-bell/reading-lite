@@ -1,9 +1,5 @@
-// Draft legal copy for the hosted product. These strings describe current
-// behavior; they are not approved Terms, Privacy, or DMCA policy. A human
-// must review them before treating the pages as published legal documents.
-//
-// Contact: the OpenAPI `info.contact` URL (the GitHub repository). Do not
-// invent a DMCA or legal mailbox here.
+// Published Terms, Privacy, and DMCA copy for the hosted product.
+// Contact for legal notices is operator@bbookmarks.com (email only).
 
 export const LEGAL_PATHS = {
   terms: "/terms",
@@ -11,10 +7,8 @@ export const LEGAL_PATHS = {
   dmca: "/dmca"
 } as const;
 
-export const OPERATOR_CONTACT_URL = "https://github.com/brian-bell/reading-lite";
-
-export const CURRENT_BEHAVIOR_NOTICE =
-  "These pages describe current product behavior. They are a draft for review, not approved or published legal terms. Human approval is required before treating this copy as the live Terms, Privacy, or DMCA policy.";
+export const OPERATOR_CONTACT_EMAIL = "operator@bbookmarks.com";
+export const PUBLIC_HOST = "bbookmarks.com";
 
 export type LegalBlock = { type: "p"; text: string } | { type: "ul"; items: string[] };
 
@@ -46,7 +40,7 @@ function ul(items: string[]): LegalBlock {
 }
 
 export function flattenLegalText(doc: LegalDocument): string {
-  const parts = [doc.title, CURRENT_BEHAVIOR_NOTICE];
+  const parts = [doc.title];
   for (const section of doc.sections) {
     parts.push(section.title);
     for (const block of section.blocks) {
@@ -81,13 +75,13 @@ export const TERMS_DOCUMENT: LegalDocument = {
   sections: [
     {
       id: "about",
-      title: "About this draft",
+      title: "About these Terms",
       blocks: [
         p(
-          "reading-lite is a personal reading archive, search, and retrieval service hosted at reading-lite.bbell.dev. These Terms describe how the hosted product works today: you submit URLs or Markdown, the service extracts and stores a private copy, embeds and summarizes it, and lets you search and reread your own corpus."
+          `reading-lite is a personal reading archive, search, and retrieval service hosted at ${PUBLIC_HOST}. These Terms describe how the hosted product works today: you submit URLs or Markdown, the service extracts and stores a private copy, embeds and summarizes it, and lets you search and reread your own corpus.`
         ),
         p(
-          `The operator contact surface published with the API is the project repository: ${OPERATOR_CONTACT_URL}. These pages do not designate a separate legal entity name, postal address, or mailbox.`
+          `The operator contact for legal notices is ${OPERATOR_CONTACT_EMAIL} (email only). These pages do not publish a postal address, phone number, or separate legal entity name.`
         )
       ]
     },
@@ -144,7 +138,7 @@ export const TERMS_DOCUMENT: LegalDocument = {
       title: "Availability and changes",
       blocks: [
         p(
-          "The hosted product is provided as-is for current personal and beta use. Local wrangler dev has no Queue or Vectorize binding: submit and reprocess return 503, and similarity search returns nothing. Staging and production are isolated. The operator may change models, effort, rate limits, quotas, and features. These draft pages will be updated when behavior changes; they are not a guarantee of future behavior."
+          "The hosted product is provided as-is for current personal and beta use. The operator may change models, effort, rate limits, quotas, and features. These pages will be updated when behavior changes; they are not a guarantee of future behavior."
         ),
         p(
           "See Privacy for retention, processors, export, and deletion as they work today, and DMCA for copyright notices. Related pages: Privacy and DMCA."
@@ -159,18 +153,23 @@ export const PRIVACY_DELETION_SECTION: LegalSection = {
   title: "Deletion",
   blocks: [
     p(
-      "Self-serve account deletion is not available. You cannot currently wipe an entire account from the product: sessions, API tokens, control-plane rows, notification settings, queued work, and every tenant-owned reading stay in place until an operator acts."
+      `Self-serve account deletion starts with DELETE /api/account. That request is session-only (a browser session cookie, not a bearer API token), requires cookie CSRF and recent authentication, and must include the body { confirm: "delete" }. Starting deletion immediately marks the account deleting, revokes every session and API token, sends a security email to the current verified address, and clears the browser session cookie. Later sign-in and API use are refused.`
     ),
     p(
-      "This page does not promise the full account wipe described in ADR 0001 (tenant control plane). That workflow is not implemented in the hosted product."
+      "Corpus wipe of tenant R2 objects, Vectorize embeddings, and related indexes is asynchronous after that fence: a new wipe waits about seven days unless an operator starts it sooner. Embeddings may take additional time to disappear after a delete is submitted. This page does not claim that wipe is complete, that residue is zero, or that no R2 or Vectorize data remains."
     ),
-    p("What you can delete today is a single reading, not an account:"),
+    p(
+      "The SPA does not currently expose account deletion. There is no delete-account control in the web app. Account deletion is an API operation."
+    ),
+    p("You can also delete a single reading, not the whole account:"),
     ul([
       "Reading purge exists as an authenticated API: DELETE /api/readings/:id, gated by the readings:delete scope. The purge is visibility-first: it requests deletion of the Vectorize vector (when Vectorize is bound), releases the owned by-url pointer, removes the list-index row, deletes R2 objects under the reading's id-scoped prefix, and removes the by-id pointer last. Inbound connections on other readings may still name the deleted id. A purge is refused with 409 while an attempt is actively running.",
       "The SPA does not currently expose reading purge. There is no delete button in the web app. Purge is an API operation.",
-      "Operators can drop selected readings with operator tooling. That is not a self-serve account wipe."
+      "Operators can drop selected readings with operator tooling."
     ]),
-    p("Account data is otherwise retained until a reading is purged or an operator drops it.")
+    p(
+      "Account data is otherwise retained until a reading is purged, account deletion runs, or an operator drops it."
+    )
   ]
 };
 
@@ -181,10 +180,10 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
   sections: [
     {
       id: "about",
-      title: "About this draft",
+      title: "About this policy",
       blocks: [
         p(
-          "This page describes what the hosted reading-lite product collects, where it stores it, which processors it uses, and what you can and cannot delete or export today. It is a description of current behavior, not an approved privacy policy."
+          `This page describes what the hosted reading-lite product at ${PUBLIC_HOST} collects, where it stores it, which processors it uses, and what you can and cannot delete or export today.`
         )
       ]
     },
@@ -205,7 +204,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       title: "Readings and derived artifacts",
       blocks: [
         p(
-          "For each reading the service may store: the submitted URL, imported Markdown, fetched raw bytes, extracted Markdown, the manifest (title, TL;DR, summary, tags, people, organizations, keywords, novelty verdict, connections, tensions, status, errors), attempt logs, by-url and by-id pointers, a list-index row, and a Vectorize embedding. When TENANT_DATA_PLANE is on, tenant objects live under a tenant-rooted R2 prefix and Vectorize queries use a tenant namespace so one tenant cannot match another tenant's vectors."
+          "For each reading the service may store: the submitted URL, imported Markdown, fetched raw bytes, extracted Markdown, the manifest (title, TL;DR, summary, tags, people, organizations, keywords, novelty verdict, connections, tensions, status, errors), attempt logs, by-url and by-id pointers, a list-index row, and a Vectorize embedding. On the hosted product, tenant objects live under a tenant-rooted R2 prefix and Vectorize queries use a tenant namespace so one tenant cannot match another tenant's vectors."
         ),
         p(
           "Submitting a URL causes the worker to fetch that URL from the origin. Some hosts use extra public APIs (YouTube oEmbed; X/Twitter recent search when an operator token is configured). Reddit threads typically fail in-worker because of a bot challenge. Those fetches send the URL (and sometimes a conversation identifier) to the origin. The stored archive is private-by-default: it is not a public web page and there is no sharing product."
@@ -227,10 +226,10 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       blocks: [
         p("Current processing, as configured in the hosted product:"),
         ul([
-          "Cloudflare: Workers (compute), Pages (SPA), R2 (objects), D1 (control plane and sessions), Vectorize (embeddings), Queues (reading and digest jobs), and Turnstile (when open signup is enabled).",
+          "Cloudflare: Workers (compute), Pages (SPA), R2 (objects), D1 (control plane and sessions), Vectorize (embeddings), Queues (reading, digest, and account-wipe jobs), and Turnstile (when open signup is enabled).",
           "OpenAI: embeddings (text-embedding-3-small, 1536 dimensions) for every processed reading. OpenAI also summarizes when it is the selected summarizer, using structured output. There is no silent fallback to another provider.",
           "Anthropic: summarizes only when SUMMARIZER_PROVIDER is anthropic (tool use). Invalid provider or effort values fail closed; the product does not switch providers on error.",
-          "Resend: magic-link, immediate notification, and digest email.",
+          "Resend: magic-link, immediate notification, digest, and account-deletion security email.",
           "Source sites and platform APIs: the origin of each submitted URL, plus YouTube oEmbed and X recent search when those URL types are processed."
         ]),
         p(
@@ -243,7 +242,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       title: "Retention",
       blocks: [
         p(
-          "Data is retained until a reading is purged or an operator drops it. There is no automatic expiry of ready readings. Pending work that exceeds the pending TTL is annotated stale on read; failed readings remain until reprocess, purge, or operator drop. Queue retries and a dead-letter path can leave retryable failed manifests. Digest delivery ledgers live in D1 until the digest pipeline closes them."
+          "Data is retained until a reading is purged, account deletion runs, or an operator drops it. There is no automatic expiry of ready readings. Pending work that exceeds the pending TTL is annotated stale on read; failed readings remain until reprocess, purge, account deletion, or operator drop. Queue retries and a dead-letter path can leave retryable failed manifests. Digest delivery ledgers live in D1 until the digest pipeline closes them. Account deletion fences access immediately; corpus wipe after that fence is asynchronous, and this page does not claim wipe is complete."
         )
       ]
     },
@@ -271,7 +270,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       title: "Contact",
       blocks: [
         p(
-          `Questions about this draft go to the operator through the published API contact, the GitHub repository ${OPERATOR_CONTACT_URL}. These pages do not publish a dedicated privacy mailbox. See also Terms and DMCA.`
+          `Questions about this policy go to ${OPERATOR_CONTACT_EMAIL}. These pages do not publish a postal address or phone number. See also Terms and DMCA.`
         )
       ]
     }
@@ -285,10 +284,10 @@ export const DMCA_DOCUMENT: LegalDocument = {
   sections: [
     {
       id: "about",
-      title: "About this draft",
+      title: "About this notice",
       blocks: [
         p(
-          "reading-lite stores private copies of third-party pages you submit (raw bytes when captured, extracted Markdown, and derived summaries). That is a copyright-sensitive surface. This page describes how to notify the operator today. It is not a claim that a designated DMCA agent is registered, and it does not invent a legal mailbox."
+          "reading-lite stores private copies of third-party pages you submit (raw bytes when captured, extracted Markdown, and derived summaries). That is a copyright-sensitive surface. This page describes how to notify the operator. It is not a claim that a designated DMCA agent is registered."
         )
       ]
     },
@@ -297,7 +296,7 @@ export const DMCA_DOCUMENT: LegalDocument = {
       title: "Private corpus, not a public host",
       blocks: [
         p(
-          "The hosted product is private-by-default. Readings are not published as public web pages, there is no sharing product, and other tenants cannot browse your archive. A stored copy still exists in R2 (and related indexes) until it is purged or dropped. Copyright owners who believe a stored copy infringes can ask the operator to purge that reading."
+          "The hosted product is private-by-default. Readings are not published as public web pages, there is no sharing product, and other tenants cannot browse your archive. A stored copy still exists in R2 (and related indexes) until it is purged, dropped, or removed by the asynchronous account-deletion wipe. Copyright owners who believe a stored copy infringes can ask the operator to purge that reading."
         )
       ]
     },
@@ -306,11 +305,11 @@ export const DMCA_DOCUMENT: LegalDocument = {
       title: "How to send a notice",
       blocks: [
         p(
-          `Send notices through the published API contact: the GitHub repository ${OPERATOR_CONTACT_URL}. Open an issue on that repository, or otherwise contact the repository operator there. These pages do not publish a dedicated DMCA mailbox, postal address, or phone number because none is listed in the repository contact metadata.`
+          `Send notices to ${OPERATOR_CONTACT_EMAIL}. These pages do not publish a postal address or phone number.`
         ),
         p("A useful notice includes:"),
         ul([
-          "Your contact information as the complainant (you provide this; the product does not invent an address for you to write to).",
+          "Your contact information as the complainant.",
           "The work you claim is infringed, and the exact reading URL or reading id (rd_…) in reading-lite if you have it.",
           "A statement that you have a good-faith belief the use is not authorized, and that the notice is accurate.",
           "If you are requesting removal under U.S. copyright law, a statement under penalty of perjury that you are the owner or authorized to act, plus your signature (physical or electronic)."
@@ -322,10 +321,10 @@ export const DMCA_DOCUMENT: LegalDocument = {
       title: "What the operator can do today",
       blocks: [
         p(
-          "The available product control for stored copies is reading purge: DELETE /api/readings/:id (readings:delete). That removes the reading's vector (when bound), owned by-url pointer, list row, R2 objects, and by-id pointer. The SPA does not currently expose that control. Self-serve account deletion is not available, and this page does not promise an ADR 0001 full account wipe as a DMCA remedy."
+          "The available product control for a stored copy is reading purge: DELETE /api/readings/:id (readings:delete). That removes the reading's vector (when bound), owned by-url pointer, list row, R2 objects, and by-id pointer. The SPA does not currently expose that control."
         ),
         p(
-          "The operator may purge or drop the identified reading after reviewing a notice. Inbound connections on other readings may still name a purged id. Source sites remain under their own operators; this service cannot take down the original URL."
+          "Account deletion (DELETE /api/account) fences the account immediately and starts an asynchronous corpus wipe; this page does not claim that wipe leaves zero residue. The operator may purge or drop the identified reading after reviewing a notice. Inbound connections on other readings may still name a purged id. Source sites remain under their own operators; this service cannot take down the original URL."
         )
       ]
     },
@@ -334,7 +333,7 @@ export const DMCA_DOCUMENT: LegalDocument = {
       title: "Counter-notice",
       blocks: [
         p(
-          `If your reading was purged after a copyright notice and you believe that was a mistake, contact the operator through ${OPERATOR_CONTACT_URL} with the reading id, a description of why the copy should be restored, and your contact information. Restoration is a manual operator action; there is no self-serve restore, and there is no dedicated counter-notice mailbox.`
+          `If your reading was purged after a copyright notice and you believe that was a mistake, email ${OPERATOR_CONTACT_EMAIL} with the reading id, a description of why the copy should be restored, and your contact information. Restoration is a manual operator action; there is no self-serve restore.`
         )
       ]
     }

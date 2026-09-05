@@ -2,10 +2,10 @@ import { Link, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 
 import {
-  CURRENT_BEHAVIOR_NOTICE,
   DMCA_DOCUMENT,
   LEGAL_NAV,
   LEGAL_PATHS,
+  OPERATOR_CONTACT_EMAIL,
   PRIVACY_DOCUMENT,
   TERMS_DOCUMENT,
   type LegalDocument
@@ -24,7 +24,7 @@ export function LegalFooter() {
 export function LoginLegalLinks() {
   return (
     <div className="login-legal-links">
-      <p>Draft pages describing current product behavior:</p>
+      <p>Legal notices:</p>
       <LegalNav />
     </div>
   );
@@ -65,9 +65,6 @@ function LegalDocumentPage({ document }: { document: LegalDocument }) {
       <div className="page-heading">
         <h1>{document.title}</h1>
       </div>
-      <p className="legal-draft-notice" role="note">
-        {CURRENT_BEHAVIOR_NOTICE}
-      </p>
       {document.sections.map((section) => (
         <section key={section.id} id={section.id} className="legal-section" aria-labelledby={`${section.id}-heading`}>
           <h2 id={`${section.id}-heading`}>{section.title}</h2>
@@ -113,34 +110,35 @@ const WORD_TO_PATH: Record<string, string> = {
 
 function LegalInline({ text, selfPath }: { text: string; selfPath: string }) {
   const nodes: ReactNode[] = [];
-  const pattern =
-    /(https:\/\/github\.com\/brian-bell\/reading-lite)|(\/terms)|(\/privacy)|(\/dmca)|(Privacy)|(Terms)|(DMCA)/g;
+  const escapedEmail = OPERATOR_CONTACT_EMAIL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `(${escapedEmail})|(\\/terms)|(\\/privacy)|(\\/dmca)|(Privacy)|(Terms)|(DMCA)`,
+    "g"
+  );
   let last = 0;
   let match: RegExpExecArray | null;
   let key = 0;
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > last) nodes.push(text.slice(last, match.index));
     const token = match[0];
-    const href = token.startsWith("https://")
-      ? token
-      : token.startsWith("/")
-        ? token
-        : WORD_TO_PATH[token];
-    if (!href || href === selfPath) {
-      nodes.push(token);
-    } else if (href.startsWith("https://")) {
+    if (token === OPERATOR_CONTACT_EMAIL) {
       nodes.push(
-        <a key={key++} href={href} rel="noreferrer" target="_blank">
-          {href.replace(/^https:\/\//, "")}
+        <a key={key++} href={`mailto:${OPERATOR_CONTACT_EMAIL}`}>
+          {OPERATOR_CONTACT_EMAIL}
         </a>
       );
     } else {
-      const label = LEGAL_NAV.find((item) => item.path === href)?.label ?? token;
-      nodes.push(
-        <Link key={key++} to={href}>
-          {label}
-        </Link>
-      );
+      const href = token.startsWith("/") ? token : WORD_TO_PATH[token];
+      if (!href || href === selfPath) {
+        nodes.push(token);
+      } else {
+        const label = LEGAL_NAV.find((item) => item.path === href)?.label ?? token;
+        nodes.push(
+          <Link key={key++} to={href}>
+            {label}
+          </Link>
+        );
+      }
     }
     last = match.index + token.length;
   }
