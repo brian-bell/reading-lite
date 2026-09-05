@@ -10,6 +10,7 @@ import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-ve
 import type { AnyCommand, CommandGroup } from "./contract";
 import { accountSweepWipePrefixCommand } from "./commands/account-sweep-wipe-prefix";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { deployWipeCheckCommand } from "./commands/deploy-wipe-check";
 import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
 import { evalSummarizerCommand } from "./commands/eval-summarizer";
@@ -88,6 +89,7 @@ export const defaultRegistry: Registry = {
     readingListCheckCommand,
     readingListProcessCommand,
     deployWorkerCommand,
+    deployWipeCheckCommand,
     deployWebCommand,
     stagingSetupCommand,
     stagingTeardownCommand,

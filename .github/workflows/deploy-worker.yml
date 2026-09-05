@@ -50,12 +50,15 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_WIPE_OVERRIDE_SHA: ${{ vars.DEPLOY_WIPE_OVERRIDE_SHA }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
           test "$(git rev-parse origin/main)" = "${{ github.event.workflow_run.head_sha }}" || {
             echo "refusing stale Worker release: main advanced past ${{ github.event.workflow_run.head_sha }}"
             exit 1
           }
+          npm run ops -- deploy wipe-check --release-sha "$RELEASE_SHA"
           npm run ops -- deploy worker --env production --execute
       - name: Record the released SHA
         run: |

@@ -804,6 +804,43 @@ serializes Worker and SPA production commands. An older run therefore cannot
 overwrite a newer production release. Neither release workflow has a manual
 trigger that can bypass the chain.
 
+Before migrations or upload, the Worker workflow runs `ops deploy wipe-check`
+after its stale-release check, while holding the production release lock. It
+requires zero unfinished D1 records (`wipe_progress.completed_at_ms IS NULL`)
+and zero backlog in both `reading-lite-wipe` and `reading-lite-wipe-dlq`.
+Stale unfinished records also block: cron can resume them. Completed records
+and `users.status = 'deleting'` alone do not block. Failed API calls, missing
+queues, missing schema, or invalid responses fail closed and prevent the Worker
+release artifact from being published, so the SPA cannot follow that release.
+The command can also be run locally with the two Cloudflare environment
+variables below; direct `ops deploy worker` invocations do not automatically
+run this workflow gate.
+
+The queue check uses the [Queues REST metrics endpoint](https://developers.cloudflare.com/api/resources/queues/methods/get_metrics/)
+(`backlog_count`, unacknowledged messages), not aggregated analytics. Cloudflare
+calls these metrics best-effort. The check is a snapshot: the release lock
+serializes deploys but does not stop cron, new wipes, or teardown. A wipe can
+start after the check, including during migrations. This is a rollout speed
+bump, not an atomic drain/maintenance lock.
+
+If blocked, let the wipe and queues drain, then rerun the failed Worker workflow.
+For a reviewed exception, set the GitHub **repository Actions variable**
+`DEPLOY_WIPE_OVERRIDE_SHA` to the exact 40-character lowercase commit SHA from
+the blocked release, then rerun that workflow. Record the reason in the incident
+or issue before overriding. The override skips the wipe reads, including read
+failures, and emits a visible warning in the Actions log. It does not bypass CI,
+the stale-main check, or the shared release lock. Remove the variable after the
+release; even if left set, it cannot bypass the gate for a different commit.
+Do not use a generic `true` value. No manual workflow trigger is needed, so the
+successful Worker rerun still triggers the existing SPA release chain.
+
+The gate requires D1 Read or Write and Queues Read/Write or Workers Scripts
+Read/Write on the production account. The documented deploy token's D1 Edit
+and Workers Scripts Edit should cover these APIs, but its actual scopes must
+be verified by a successful check; HTTP 401/403 is a blocked release, never
+an empty-state result. See [D1 query permissions](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
+and [queue permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/).
+
 GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |

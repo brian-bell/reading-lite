@@ -7,6 +7,8 @@ interface Step {
   uses?: string;
   run?: string;
   with?: Record<string, unknown>;
+  env?: Record<string, string>;
+  "continue-on-error"?: boolean;
 }
 
 interface Workflow {
@@ -77,6 +79,12 @@ describe("coordinated production deployment workflows", () => {
       deploy?.run,
       "npm run ops -- deploy worker --env production --execute",
     );
+    const gateAt = deploy!.run!.indexOf('npm run ops -- deploy wipe-check --release-sha "$RELEASE_SHA"');
+    expect(gateAt).toBeGreaterThan(deploy!.run!.indexOf("git rev-parse origin/main"));
+    expect(gateAt).toBeLessThan(deploy!.run!.indexOf("npm run ops -- deploy worker --env production --execute"));
+    expect(deploy?.env?.DEPLOY_WIPE_OVERRIDE_SHA).toBe("${{ vars.DEPLOY_WIPE_OVERRIDE_SHA }}");
+    expect(deploy?.env?.RELEASE_SHA).toBe("${{ github.event.workflow_run.head_sha }}");
+    expect(deploy?.["continue-on-error"]).not.toBe(true);
     expect(upload?.with?.name).toBe("production-worker-release-sha");
   });
 
