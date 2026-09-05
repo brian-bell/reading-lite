@@ -327,7 +327,9 @@ export class GlobalUsageGuard implements DurableObject {
     if (!policy) return json({ok:false, reason:"missing_limits"} satisfies SpendDecision);
     if (!policy.paidWorkEnabled) return json({ok:false, reason:"paid_work_disabled"} satisfies SpendDecision);
     if (body.quote.catalogVersion !== policy.catalogVersion) return json({ok:false, reason:"catalog_version"} satisfies SpendDecision);
-    return json(await markSpendDispatched(this.state.storage, { opKey: this.spendOpKey(body.tenantId, body.opId), quote: body.quote, nowMs: Date.now() }));
+    return json(await markSpendDispatched(this.state.storage, { opKey: this.spendOpKey(body.tenantId, body.opId), quote: body.quote, nowMs: Date.now(),
+      limits: {globalMicrodollars:policy.dailySpendMicrodollars, tenantMicrodollars:policy.tenantDailySpendMicrodollars},
+    }));
   }
 }
 

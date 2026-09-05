@@ -99,6 +99,49 @@ describe("spend guard RPCs", () => {
     expect(map.size).toBe(0);
   });
 
+  it.each(["daily_spend_microdollars", "tenant_daily_spend_microdollars"])(
+    "denies dispatch when %s is tightened below the reserved aggregate", async (limit) => {
+      const map = new Map<string, unknown>();
+      const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
+        paid_work_enabled:1,policy_version:1,catalog_version:3};
+      const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
+      const identity = {tenantId:TENANT,opId:"held",quote};
+      await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
+      await post(guard,{...identity,opId:"other",quote:{...quote,maxMicrodollars:20},kind:"reserve_spend",nowMs:NOW});
+      policy[limit as "daily_spend_microdollars"] = 60; // This request fits; the aggregate 70 does not.
+      expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:false,reason:"daily_spend"});
+      expect(map.get(`spend:op:${TENANT}:held`)).toMatchObject({state:"reserved"});
+      expect(await post(guard,{...identity,kind:"release_spend"})).toMatchObject({ok:true,state:"released"});
+      expect(map.get(`spend:day:${quote.dayKey}`)).toEqual({microdollars:20});
+      expect(map.get(`spend:tenant:${TENANT}:day:${quote.dayKey}`)).toEqual({microdollars:20});
+    });
+
+  it.each([50, 60])("allows dispatch when both tightened caps still cover usage (%i)", async (limit) => {
+    const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
+      paid_work_enabled:1,policy_version:1,catalog_version:3};
+    const guard = new GlobalUsageGuard(state(storage()),env(policy));
+    const identity = {tenantId:TENANT,opId:"fits",quote};
+    await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
+    policy.daily_spend_microdollars = policy.tenant_daily_spend_microdollars = limit;
+    expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"dispatched",fresh:true});
+  });
+
+  it("keeps dispatched replay and settlement idempotent after both caps are lowered", async () => {
+    const map = new Map<string,unknown>();
+    const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
+      paid_work_enabled:1,policy_version:1,catalog_version:3};
+    const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
+    const identity = {tenantId:TENANT,opId:"sent",quote};
+    await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
+    expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,fresh:true});
+    policy.daily_spend_microdollars = policy.tenant_daily_spend_microdollars = 1;
+    expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"dispatched",fresh:false});
+    expect(map.get(`spend:day:${quote.dayKey}`)).toEqual({microdollars:50});
+    expect(await post(guard,{...identity,kind:"settle_spend",actualMicrodollars:10})).toMatchObject({ok:true,state:"settled"});
+    expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"settled",fresh:false});
+    expect(map.get(`spend:day:${quote.dayKey}`)).toEqual({microdollars:10});
+  });
+
   it("serializes concurrent tenant reserves at the cap", async () => {
     const guard = new GlobalUsageGuard(
       state(storage()),

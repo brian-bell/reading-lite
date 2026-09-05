@@ -147,7 +147,7 @@ export async function reserveSpend(
 
 export async function markSpendDispatched(
   storage: DurableObjectStorage,
-  args: { opKey: string; quote: SpendQuote; nowMs?: number },
+  args: { opKey: string; quote: SpendQuote; nowMs?: number; limits: { globalMicrodollars: number; tenantMicrodollars: number } },
 ): Promise<SpendDecision> {
   const existing = (await storage.get(args.opKey)) as SpendRecord | undefined;
   if (!existing || !validRecord(existing)) return { ok: false, reason: "operation_state" };
@@ -158,6 +158,18 @@ export async function markSpendDispatched(
     if (typeof expiresAtMs !== "number" || !Number.isSafeInteger(expiresAtMs) || nowMs >= expiresAtMs) {
       const expired = await expireReservedSpend(storage, args.opKey, existing);
       return expired ? { ok: false, reason: "operation_state" } : { ok: false, reason: "unavailable" };
+    }
+    // The counters already include this hold. Compare the original admission
+    // day's totals to current policy without charging the reservation again.
+    // Check only reserved work: a replay cannot undo an incurred charge.
+    if (!existing.tenantId) return {ok:false, reason:"unavailable"};
+    const global = await counterOf(storage, counterKey(existing.quote.dayKey));
+    const tenant = await counterOf(storage, tenantCounterKey(existing.tenantId, existing.quote.dayKey));
+    if (global === null || tenant === null || global < existing.quote.maxMicrodollars || tenant < existing.quote.maxMicrodollars) {
+      return {ok:false, reason:"unavailable"};
+    }
+    if (global > args.limits.globalMicrodollars || tenant > args.limits.tenantMicrodollars) {
+      return {ok:false, reason:"daily_spend", resetAtMs: utcSpendDayResetAt(Date.parse(`${existing.quote.dayKey}T00:00:00Z`))};
     }
     await storage.put(args.opKey, { ...existing, state: "dispatched" } satisfies SpendRecord);
     await storage.delete(expiryKey(expiresAtMs, args.opKey));
