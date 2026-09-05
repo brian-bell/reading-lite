@@ -521,6 +521,12 @@ teardown was *attempted*, not that it succeeded. The
 `account_teardown_complete` log is a better signal but is not durable
 evidence. The absence of the `users` row is.
 
+The separately executed
+[2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
+records signup-shaped reuse after automatic teardown (issue #286). The fresh
+invite was inserted after the `users` row was absent; the insert-during-deleting
+failure mode was not exercised.
+
 A *previously released* address is the opposite case and needs no waiting — an
 unconsumed invite there survives teardown, because it belongs to whoever has
 been invited since, not to the account being deleted.
@@ -990,6 +996,8 @@ adds deterministic local tests. The separately executed
 [2026-09-05 staging drill](evidence/195-staging-drill-2026-09-05.md) records
 the live repair, deletion, and automatic teardown evidence, including the
 final `residue:false, incomplete:true` scan and remaining acceptance limits.
+Signup-shaped email reuse after teardown is recorded in the
+[2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md).
 
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
