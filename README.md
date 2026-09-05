@@ -72,6 +72,22 @@ The Worker is composed of deeply isolated modules, each unit-tested with stubbed
 | `http-retry` | `fetchWithRetry`: 5xx + network retry with exponential backoff + jitter; 429 → `RateLimitedError` so the queue reschedules instead of burning a slot |
 | `email` | per-reading notification via Resend |
 
+SSRF regression tests are part of canonical `npm test`: `vitest.workspace.ts`
+includes `test/unit/extractor/` and the DNS adapter tests in
+`test/unit/modules/dns-resolve-lookup.test.ts` in the Workers project, and
+`test/unit/extract-agent/` in the Node project. The CI Worker job runs both
+projects; a failed suite prevents the automatic production deployment.
+
+DNS validation is a preflight check, not connection pinning. Hosted extraction
+and operator static fetches validate each hop, then the underlying fetch resolves
+the hostname again; a changed DNS answer between validation and connection can
+bypass that check. The Workers DNS adapter also cannot distinguish some
+single-family DNS failures from absent records (`ENOTFOUND`). These remain
+documented limitations, not guarantees established by the tests. See
+[`safe-fetch.ts`](src/modules/extractor/safe-fetch.ts) and
+[`services.ts`](src/services.ts). The operator headless browser uses a separate
+validating proxy that connects to vetted IPs directly.
+
 ## Local development
 
 ```sh
