@@ -152,13 +152,13 @@ export function makeWranglerD1(opts: {
   run?: (args: string[]) => Promise<{ stdout: string; code: number; stderr: string }>;
 }): ControlPlaneDb {
   const run = opts.run ?? runWrangler;
-  const exec = async (sql: string, params: readonly unknown[]) => {
+  const exec = async (sql: string, params: readonly unknown[], localWrite = false) => {
     const args = [
       "d1",
       "execute",
       opts.database,
       "--command",
-      renderSql(sql, params),
+      renderSql(sql, params) + (localWrite ? "\n;\nSELECT changes() AS changes;" : ""),
       "--json",
     ];
     if (opts.local) args.push("--local");
@@ -168,26 +168,43 @@ export function makeWranglerD1(opts: {
     if (result.code !== 0) {
       throw new Error(result.stderr || `wrangler d1 execute failed (${result.code})`);
     }
-    return parseWranglerD1Rows(result.stdout);
+    return parseWranglerD1Results(result.stdout, localWrite ? 2 : 1);
+  };
+
+  const write = async (sql: string, params: readonly unknown[]) => {
+    // Wrangler omits local meta.changes. Query the count immediately after the
+    // write on the same connection; a second invocation cannot recover it.
+    const results = await exec(sql, params, opts.local);
+    if (opts.local) {
+      const rows = results[1].results;
+      const row = rows[0];
+      if (rows.length !== 1 || !row || typeof row !== "object" || !("changes" in row)) {
+        throw new Error("wrangler d1 execute returned invalid local changes() result");
+      }
+      return { changes: wranglerChangeCount(row.changes, "local changes()") };
+    }
+    const meta = results[0].meta;
+    const changes = meta && typeof meta === "object" && "changes" in meta ? meta.changes : undefined;
+    return { changes: wranglerChangeCount(changes, "meta.changes") };
   };
 
   return {
     async first<T>(sql: string, ...params: unknown[]) {
-      const rows = await exec(sql, params);
+      const [{ results: rows }] = await exec(sql, params);
       return (rows[0] as T | undefined) ?? null;
     },
     async all<T>(sql: string, ...params: unknown[]) {
-      return (await exec(sql, params)) as T[];
+      return (await exec(sql, params))[0].results as T[];
     },
     async batch(statements: readonly SqlStatement[]) {
+      const results = [];
       for (const statement of statements) {
-        await exec(statement.sql, statement.params);
+        results.push(await write(statement.sql, statement.params));
       }
-      return statements.map(() => ({ changes: 0 }));
+      return results;
     },
     async run(sql, ...params) {
-      await exec(sql, params);
-      return { changes: 0 };
+      return write(sql, params);
     },
   };
 }
@@ -207,12 +224,35 @@ function sqlLiteral(value: unknown): string {
   throw new Error("unsupported sql parameter");
 }
 
-function parseWranglerD1Rows(stdout: string): Record<string, unknown>[] {
-  const parsed = JSON.parse(stdout) as unknown;
-  const block = Array.isArray(parsed) ? parsed[0] : parsed;
-  if (!block || typeof block !== "object" || !("results" in block)) return [];
-  const results = (block as { results?: unknown }).results;
-  return Array.isArray(results) ? (results as Record<string, unknown>[]) : [];
+// A read/remote write has one result; a local write has its result plus the
+// count query. Reject extra blocks rather than silently discarding statements.
+function parseWranglerD1Results(stdout: string, expectedCount: number): { results: unknown[]; meta: unknown }[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("wrangler d1 execute returned invalid JSON");
+  }
+  const blocks: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  if (blocks.length !== expectedCount) {
+    throw new Error(`wrangler d1 execute expected ${expectedCount} statement result(s)`);
+  }
+  return blocks.map((block) => {
+    if (!block || typeof block !== "object" || !("success" in block) || block.success !== true) {
+      throw new Error("wrangler d1 execute returned a failed or missing success result");
+    }
+    if (!("results" in block) || !Array.isArray(block.results)) {
+      throw new Error("wrangler d1 execute returned invalid results");
+    }
+    return { results: block.results, meta: "meta" in block ? block.meta : undefined };
+  });
+}
+
+function wranglerChangeCount(changes: unknown, source: string): number {
+  if (typeof changes !== "number" || !Number.isSafeInteger(changes) || changes < 0) {
+    throw new Error(`wrangler d1 execute returned missing or invalid ${source}`);
+  }
+  return changes;
 }
 
 function runWrangler(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
