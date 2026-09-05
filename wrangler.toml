@@ -189,12 +189,18 @@ WEB_BASE_URL = "https://reading-lite-staging.bbell.dev/"
 # pinned. A namespaced query cannot see a bare rd_… vector, so a corpus copied
 # in R2 but not migrated in Vectorize returns zero neighbours silently.
 # That command copies rather than moves, so the pre-tenant readings/ and index/
-# objects stay in the bucket and removing this line and redeploying is a
-# complete rollback with nothing to restore.
+# objects stay in the bucket. Removing this line and redeploying is a complete
+# rollback ONLY before post-pin writes resume. After the pin, new staging
+# readings exist only under tenant R2 roots and Vectorize namespaces; rolling
+# the gate back without a freeze plus reverse reconciliation (copy those
+# objects/vectors back to the global layout) makes post-pin writes disappear
+# from the app even though their bytes still exist. After writes, require that
+# freeze + reverse reconciliation, or an explicit captain-accepted loss of the
+# post-pin corpus. See docs/operations.md, "Rehearsing account deletion on
+# staging".
 #
 # Turning this on also arms the wipe: fan-out stops short-circuiting, so check
 # for accounts already left in status='deleting' before deploying.
-# See docs/operations.md, "Rehearsing account deletion on staging".
 TENANT_DATA_PLANE = "1"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"
@@ -348,9 +354,11 @@ WEB_BASE_URL = "https://reading-lite.bbell.dev/"
 # TURNSTILE_SITE_KEY = ""
 # Founder corpus cutover completed 2026-08-31 (docs/founder-cutover.md): every
 # production read/write is tenant-rooted (u/{tenantId}/ keys, namespaced
-# vectors). Pinned here so ordinary deploys keep the gate on. Rollback is
-# removing this line and deploying; legacy global objects and bare-id vectors
-# are retained until a separate signed-off deletion.
+# vectors). Pinned here so ordinary deploys keep the gate on. Removing this
+# line and deploying is a complete rollback only before post-pin writes resume;
+# after writes, freeze + reverse reconciliation or captain-accepted loss.
+# Legacy global objects and bare-id vectors are retained until a separate
+# signed-off deletion.
 TENANT_DATA_PLANE = "1"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"

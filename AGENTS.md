@@ -223,7 +223,10 @@ matrix, not a substitute for real readings.
   cut over (2026-08-31) and pins the gate in `[env.production.vars]`; staging
   pins it too so the account-wipe path can be rehearsed there (issue #203),
   with its pre-tenant corpus retained by the copy-only migration. Only local
-  stays unset.
+  stays unset. After either pin, new writes land only under tenant
+  R2/Vectorize — rolling the gate back is a complete rollback only before
+  those writes resume; after them, freeze + reverse reconciliation or
+  explicit acceptance of loss (see `docs/operations.md`).
 - Keep Vectorize scoped the same way: hosted code builds the store via
   `similarityStoreFor`, which maps the tenant onto a Vectorize **namespace**
   (its own segmentation primitive — a namespaced query cannot match another
@@ -261,8 +264,13 @@ Pointers only — the details live in the named files' comments.
 
 - Production founder cutover ran 2026-08-31 (`docs/founder-cutover.md`,
   record at the bottom). `TENANT_DATA_PLANE = "1"` is pinned in
-  `[env.production.vars]`, so ordinary deploys (incl. merge-to-main) keep the
-  gate on; rollback is removing the pin. Legacy global objects and bare-id
+  `[env.production.vars]` and `[env.staging.vars]`, so ordinary deploys
+  (incl. merge-to-main) keep the gate on. Removing the pin is a complete
+  rollback only before post-pin writes resume: after the pin, new readings
+  land only under tenant R2 roots and Vectorize namespaces, and rolling the
+  gate back without a freeze plus reverse reconciliation (or an explicit
+  acceptance of that loss) hides those writes behind the retained global
+  snapshot. Legacy global objects and bare-id
   vectors are still in the bucket/index pending a separate signed-off
   deletion — `--tenant global` operator commands still see them; live
   production corpus ops use `--tenant "$TENANT"` from whoami (see

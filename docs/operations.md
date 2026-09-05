@@ -667,7 +667,10 @@ accidental bare `wrangler deploy` clobbering production.
 pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
 `docs/founder-cutover.md`); staging pins it too, so the destructive
 account-wipe path can be rehearsed there ("Rehearsing account deletion on
-staging"). Only local stays unset. Workers-pool tests
+staging"). Only local stays unset. After either pin, new writes land only
+under tenant R2/Vectorize — rolling the gate back is a complete rollback only
+before those writes resume; after them, freeze + reverse reconciliation or
+explicit acceptance of loss. Workers-pool tests
 turn it on so two tenants can share a URL without colliding. Operator corpus
 scripts address whichever root their required `--tenant` selector names: the
 tenant id from whoami for production and staging (gate on), and `global` for
@@ -985,8 +988,16 @@ is off, so an environment with the gate unset cannot exercise the destructive
 path at all. Staging therefore pins the gate in `[env.staging.vars]`, and its
 pre-tenant corpus was migrated under `u/{founderTenantId}/` by
 `ops corpus migrate-founder` first — that command copies rather than moves, so
-the legacy `readings/` and `index/` objects are all still in the bucket and
-removing the pin is a complete rollback.
+the legacy `readings/` and `index/` objects are all still in the bucket.
+Removing the pin is a **complete rollback only before post-pin writes resume**.
+After the pin, every new staging reading is written only under its tenant R2
+root and Vectorize namespace. Rolling the gate back then makes the Worker read
+the retained global snapshot: the copy-not-move pre-tenant corpus is visible
+again, and only post-pin writes are hidden (their bytes still exist under
+`u/{tenantId}/`). After writes have landed, rollback requires a freeze plus
+reverse reconciliation (copy tenant-rooted objects and namespaced vectors back
+to the global layout) or an explicit captain-accepted loss of the post-pin
+corpus.
 
 One consequence of that to keep in view if the drill is ever pointed at the
 staging *founder* rather than a throwaway tenant: the wipe never touches the
@@ -1027,12 +1038,74 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 `usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list, and it
 is torn down automatically like any other completed wipe — see below.
 
-Anything left in that result and not meant to be destroyed — the staging founder
-above all — must be back to `status='active'` first. Flipping the status back is **not** a full
-rescue: `beginAccountDeletion` stamped `revoked_at_ms` on every session and API
-token and nothing reverses that, so the account is `active` but cannot
-authenticate. Re-run `ops founder bootstrap --env staging --execute` for the
-founder, or issue a fresh magic link, before assuming staging works again.
+Any account in either preflight result that is not meant to be destroyed —
+the staging founder above all — needs an operator recovery decision before
+the deploy. The reset below is only for a deletion that has not destroyed data.
+Restoring `status='active'` alone
+is not enough: leave `deleting_at_ms` set and a later `DELETE /api/account`
+reuses it via `COALESCE(deleting_at_ms, ?)` in `beginAccountDeletion`, so the
+next cron can wipe immediately and skip the 7-day grace. An unfinished or
+reopened `wipe_progress` row (`completed_at_ms` NULL) is worse: fan-out treats
+it as a **resume**, and resume ignores grace. After a later delete the next
+`*/15` tick enqueues immediately.
+
+A delivery that already passed the status check can continue deleting after
+reactivation. **The heartbeat is advisory**: a recent `updated_at_ms` is a
+reason to stop, but an old value or waiting 15 minutes does not prove that no
+job is active. Delayed retries can outlive that window.
+
+Before any reset:
+
+1. Pause cron fan-out and teardown, new wipe submissions, and queue delivery
+   for staging. Confirm previously started wipe/teardown invocations have ended
+   and any submitted Vectorize mutations have settled. Turning the tenant gate
+   off does not cancel an invocation that already passed it.
+2. Account for queued messages, delayed retries, and DLQ redrives for this
+   tenant. They must not survive the reset and a later deletion request: an old
+   `force: true` envelope would bypass the new grace period. Do not drain them
+   by running the destructive consumer against an account being rescued.
+3. Inspect and save the progress record, audit record, ledger, and remaining
+   R2/Vectorize state. If deletion has begun, the account was previously wiped,
+   teardown was attempted, or any of those facts cannot be established, stop
+   this reset and prepare a data-recovery plan. Zero counters alone do not
+   prove nothing was deleted. This SQL cannot restore deleted data or preserve
+   the confirmation state of a partially completed wipe.
+
+There is no atomic cancel-and-rescue command. If the pause and pending-message
+conditions cannot be verified, do not run the writes below. With them verified,
+a never-completed, unintended deletion can be reset as follows. A completed or
+reopened wipe's first-completion history must remain intact; the guards refuse
+that case rather than erasing it.
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT * FROM wipe_progress WHERE tenant_id='<tenant>'"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT * FROM account_deletions WHERE tenant_id='<tenant>'"
+# Only after the pause, pending-message, and data checks above:
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE users SET status='active', deleting_at_ms=NULL, updated_at_ms=<now> \
+             WHERE id='<tenant>' AND status='deleting' \
+             AND NOT EXISTS (SELECT 1 FROM account_deletions WHERE tenant_id='<tenant>') \
+             AND NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id='<tenant>' \
+               AND (completed_at_ms IS NOT NULL OR first_completed_at_ms IS NOT NULL))"
+# Stop unless the UPDATE reports changes: 1. Then remove the stale resume state:
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "DELETE FROM wipe_progress WHERE tenant_id='<tenant>' \
+             AND completed_at_ms IS NULL AND first_completed_at_ms IS NULL \
+             AND EXISTS (SELECT 1 FROM users WHERE id='<tenant>' \
+               AND status='active' AND deleting_at_ms IS NULL)"
+```
+
+Re-read the user and progress rows before resuming: the user must be active,
+`deleting_at_ms` NULL, and the unfinished progress row absent. Keep the ledger;
+this reset does not authorize changing its deletion or confirmation records.
+
+That still is **not** a full rescue: `beginAccountDeletion` stamped
+`revoked_at_ms` on every session and API token and nothing reverses that, so
+the account is `active` but cannot authenticate. Re-run
+`ops founder bootstrap --env staging --execute` for the founder, or issue a
+fresh magic link, before assuming staging works again.
 
 Setting staging up this way once, from a checkout of the commit you want to
 rehearse:
@@ -1110,16 +1183,55 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 #    keeps the shapes real and spends nothing on providers.
 # 3. Confirm the vectors are live in the namespace before deleting anything —
 #    an upsert takes up to ~45s to become visible.
-# 4. Fence the account. The real flow is DELETE /api/account; the equivalent
-#    control-plane write is what 195a's beginAccountDeletion performs:
+# 4. Fence the account so the ordinary */15 cron starts the wipe.
+#
+# Direct-insert path (step 1): this tenant has no sessions or tokens, so the
+# users-row UPDATE is the whole fence:
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "UPDATE users SET status='deleting', deleting_at_ms=<now - 8 days>, \
              updated_at_ms=<now> WHERE id='$DRILL' AND status='active'"
 ```
 
-**Check that UPDATE reported `changes: 1`.** Zero means the row is missing or
-not `active`, and everything downstream will look like a clean, successful wipe
-of nothing.
+**Do not use that users-only UPDATE for a tenant that signed up for real.** It
+is not `beginAccountDeletion`: `src/control-plane/account-delete.ts` also
+revokes every session and API token. Skip the revoke and the later
+`live_sessions = 0` / `live_tokens = 0` check fails, and the drill never
+exercises the credential fence.
+
+Prefer the real API (session cookie, `X-CSRF-Token`, recent-auth window —
+the SPA Security page is the same path), then backdate grace so cron, not a
+hand-injected queue message, starts the wipe:
+
+```sh
+# After DELETE /api/account with body { "confirm": "delete" }:
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE users SET deleting_at_ms=<now - 8 days>, updated_at_ms=<now> \
+             WHERE id='$DRILL' AND status='deleting'"
+```
+
+If you cannot call the API, this is the SQL that mirrors `beginAccountDeletion`
+(status write, then the two revokes — `ACCOUNT_DELETE_REVOCATION_REASON` is
+`account_delete`). Use it **instead of** the users-only UPDATE, not after it:
+
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE users SET status='deleting', deleting_at_ms=<now - 8 days>, \
+             updated_at_ms=<now> WHERE id='$DRILL' AND status='active'"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE sessions SET revoked_at_ms=<now>, revocation_reason='account_delete' \
+             WHERE user_id='$DRILL' AND revoked_at_ms IS NULL"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "UPDATE api_tokens SET revoked_at_ms=<now> \
+             WHERE user_id='$DRILL' AND revoked_at_ms IS NULL"
+```
+
+**Check that the users-row fence UPDATE reported `changes: 1`.** That is the
+status/backdate write (`SET status='deleting'` on the direct-insert path, or
+`SET deleting_at_ms=…` after `DELETE /api/account`). Zero there means the row
+is missing or not in the expected status, and everything downstream will look
+like a clean, successful wipe of nothing. The sessions and `api_tokens`
+revokes may report `changes: 0` (direct-insert, no credentials) or `N`
+(signed-up); that is not the fence check.
 
 Backdating `deleting_at_ms` past the 7-day grace is what lets the ordinary
 `*/15` cron fan-out start the wipe, so the drill exercises the real entry point
@@ -1217,7 +1329,10 @@ row, the guard purge, and the prefix recheck, and it is exactly the sequence
 teardown already performs. After teardown the same queries should show the
 `users` and `wipe_progress` rows gone and a single `account_deletions` row for
 the tenant. The address is then free; under `invite_only` it still needs a
-fresh invite.
+fresh invite. Signup challenges are associated through `completed_user_id`
+when `user_id` is NULL; the automatic teardown handles both ownership columns.
+D1 enforces foreign keys by default, so child-before-parent ordering matters;
+do not restore the old manual SQL based on the opposite assumption.
 
 A new throwaway drill tenant is torn down on the tick after its wipe
 completes. Watch `account_teardown_complete` for it, then confirm the audit
@@ -2090,8 +2205,10 @@ Cutover ordering, gate-flip commands, and the staging-rehearsal pitfalls
 (stale `index/list.json`, missing vectors, Vectorize `get_by_ids` cap of 20,
 `--var` vs `ops deploy worker`) are in
 [`docs/founder-cutover.md`](founder-cutover.md). Rollback before the flip is
-"don't flip"; after, unset the gate and redeploy — legacy state survives
-until post-observation sign-off (ADR 0001).
+"don't flip"; after, unset the gate and redeploy **while the writer is still
+frozen**. Post-pin writes exist only under tenant roots, so a rollback after
+writes resume needs freeze + reverse reconciliation or accepted loss. Legacy
+state survives until post-observation sign-off (ADR 0001).
 
 ### The extract-agent
 
