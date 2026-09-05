@@ -523,8 +523,9 @@ evidence. The absence of the `users` row is.
 
 The separately executed
 [2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
-records signup-shaped reuse after automatic teardown (issue #286), including
-the invite trap while `status=deleting`.
+records signup-shaped reuse after automatic teardown (issue #286). The fresh
+invite was inserted after the `users` row was absent; the insert-during-deleting
+failure mode was not exercised.
 
 A *previously released* address is the opposite case and needs no waiting — an
 unconsumed invite there survives teardown, because it belongs to whoever has

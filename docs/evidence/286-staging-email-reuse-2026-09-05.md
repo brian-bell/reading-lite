@@ -36,9 +36,10 @@ or update their GitHub threads.
   cron `*/15 * * * *`. Signup was not flipped to `open`.
 - Disposable address (captain-authorized staging mail only):
   `gepogot984@liondapt.com`.
-- No production operations, no production account deletion, no allowlist
-  change in this documentation step, and no manual `DELETE` of `users` or
-  `wipe_progress`.
+- No production operations, no production account deletion, and no manual
+  `DELETE` of `users` or `wipe_progress`. Post-drill allowlist restore is
+  recorded as observed ops hygiene (A0), not performed by this documentation
+  change.
 - This report makes no application source change beyond the document itself.
   Raw magic-link URLs, cookie secrets, Resend keys, and machine paths are
   omitted.
@@ -59,7 +60,7 @@ is now satisfied.
 | A4 | `invite_only`: consumed invite does not grant signup; fresh invite after teardown creates a new tenant | Observed |
 | A5 | Old credentials invalid; new tenant cannot see old data | Observed for sessions; corpus N/A |
 | A6 | Document released-address / invite-trap / residue limits | This section |
-| A7 | Sanitized evidence; GitHub issue comments | This file; comments are Quartermaster's |
+| A7 | Sanitized evidence; GitHub issue comments | **Partial** — this file Observed; GitHub comments Pending |
 
 ### A0 — Prepare
 
@@ -69,8 +70,12 @@ stayed `invite_only`. Existing accounts were preserved: founder
 `deleting_at_ms` NULL throughout. No production account was touched.
 
 A live mail allowlist overlay was applied so the disposable address could
-receive magic-link mail. **Restoring the allowlist after the drill is operator
-hygiene and is not proven in this document.**
+receive magic-link mail. **Allowlist restore is observed ops hygiene.** Staging
+Worker version `7e5813be-cabd-4e0a-8d4a-e328465f7d75` at
+**2026-09-05T12:49:49.804Z** redeployed with `AUTH_MAIL_ALLOWLIST=""` (the
+disposable `gepogot984@liondapt.com` removed). The prior live version was
+`7ce379c2-bda5-4ccd-94d9-7af0c43cc31e` with that address only. `FOUNDER_EMAIL`
+remained bound; `TENANT_DATA_PLANE=1`.
 
 ### A1 — Signup (Tenant A)
 
@@ -191,18 +196,19 @@ included here.
   `incomplete:true` limits remain as in #284. Durable Objects were **not**
   inspected. AuthRateGuard is **not** claimed purged.
 - **Allowlist:** set for the disposable address so staging mail could be
-  delivered. Restore is ops hygiene and is **not** proven here.
+  delivered, then restored. Restore is **observed** ops hygiene (A0).
 - **Not claimed:** production email reuse; `signup_mode=open`; a clean DO;
   zero residue across every source; S7 legacy cleanup.
 
 ### A7 — Evidence file; GitHub comments
 
-This file is the sanitized evidence. Quartermaster comments on GitHub
-[#286](https://github.com/brian-bell/reading-lite/issues/286),
+This file is the sanitized evidence (**Observed** in this PR). GitHub
+comments on [#286](https://github.com/brian-bell/reading-lite/issues/286),
 [#195](https://github.com/brian-bell/reading-lite/issues/195), and
-[#263](https://github.com/brian-bell/reading-lite/issues/263)
-separately. This document does not post those comments and does not change
-issue status.
+[#263](https://github.com/brian-bell/reading-lite/issues/263) are
+intentionally separate (Quartermaster after the PR) and remain **Pending**.
+A7 is not fully Observed until those comments land. This document does not
+post them and does not change issue status.
 
 ## Timeline
 
@@ -217,6 +223,7 @@ issue status.
 | 12:15:26.000 | Automatic teardown; `users` + `wipe_progress` gone |
 | 12:23:07.145 | Fresh invite insert (after `users` absent) |
 | 12:28:13.892 | Tenant B created, verified, invite consumed, session B minted |
+| 12:49:49.804 | Staging Worker `7e5813be-…`; `AUTH_MAIL_ALLOWLIST=""` restored |
 
 ## Selectors recorded before attribution was erased
 
