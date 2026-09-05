@@ -5118,7 +5118,7 @@ describe("POST /api/readings/similar", () => {
   it("calls Vectorize and returns mapped items", async () => {
     const stub = installVectorizeStub();
     // Seeded in the founder namespace under the tenant-prefixed id, exactly as
-    // the founder migration writes it: the route queries tenant-scoped
+    // the completed founder migration wrote it: the route queries tenant-scoped
     // (TENANT_DATA_PLANE=1 in wrangler.test.toml), so an unscoped vector
     // would rightly be invisible to it — and the bare `rd_seed` asserted below
     // proves the store strips its own prefix from matches.

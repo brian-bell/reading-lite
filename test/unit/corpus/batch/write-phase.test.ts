@@ -323,8 +323,7 @@ describe("writeResults — success path", () => {
       vectorNamespace: TENANT,
     });
     expect(vec.upserts[0]!.id).toBe(`${TENANT}:rd_a`);
-    // The stamp matters too: migrate-founder's reconciliation rejects a
-    // prefixed vector that lacks it.
+    // The stamp preserves tenant ownership evidence alongside the scoped ID.
     expect(vec.upserts[0]!.metadata).toMatchObject({ tenant_id: TENANT });
   });
 

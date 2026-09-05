@@ -4,7 +4,10 @@
 > `TENANT_DATA_PLANE = "1"` is pinned in `[env.production.vars]`. See
 > "Production cutover — what actually happened" at the bottom for the record,
 > the two tooling fixes it required, and what is still pending (legacy
-> deletion). The procedure below is kept as the reference it was run from.
+> deletion). **Historical procedure, not a current operating checklist:** the
+> one-time migration command and its dedicated code/tests are retired. The
+> procedure below is preserved as executed evidence; do not repeat it for
+> routine releases or staging deletion drills.
 
 Operator runbook and human-approval checklist for copying the pre-tenant
 production corpus into the founder tenant namespace and flipping
@@ -13,8 +16,9 @@ document is the production procedure that rehearsal proved, including the
 repairs and footguns it hit. Do not run production mutate commands until
 Gate 1 is signed.
 
-Command reference for `ops corpus migrate-founder` still lives in
-[`operations.md`](operations.md#founder-corpus-migration-s1k6). ADRs:
+The [retirement note](operations.md#founder-corpus-migration-s1k6) describes the
+current boundary. The [pre-retirement command](https://github.com/brian-bell/reading-lite/blob/b74a9b69af96b7101300d974e808e91ba34abdf9/scripts/ops-lib/commands/corpus-migrate-founder.ts)
+and its tests remain in Git history. ADRs:
 [0001 founder data cutover](decisions/0001-tenant-control-plane.md),
 [0002 Vectorize namespaces](decisions/0002-vectorize-namespace-isolation.md).
 

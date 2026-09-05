@@ -183,13 +183,11 @@ WEB_BASE_URL = "https://reading-lite-staging.bbell.dev/"
 # is off, so a staging environment with this unset cannot rehearse deletion —
 # which is what issue #203 asks it to be able to do.
 #
-# Prerequisite, not an assumption: staging's pre-tenant corpus must be migrated
-# under u/{founderTenantId}/ — objects AND vectors — by `ops corpus
-# migrate-founder`, run to a clean "fully migrated" re-plan, before this is
-# pinned. A namespaced query cannot see a bare rd_… vector, so a corpus copied
-# in R2 but not migrated in Vectorize returns zero neighbours silently.
-# That command copies rather than moves, so the pre-tenant readings/ and index/
-# objects stay in the bucket. Removing this line and redeploying is a complete
+# Staging's one-time pre-tenant migration is complete: objects and vectors
+# were copied under the founder tenant before this was pinned. The migration
+# command is retired; retain this pin and the tenant-activation deploy guard.
+# The retained pre-tenant readings/ and index/ objects stay in the bucket.
+# Removing this line and redeploying is a complete
 # rollback ONLY before post-pin writes resume. After the pin, new staging
 # readings exist only under tenant R2 roots and Vectorize namespaces; rolling
 # the gate back without a freeze plus reverse reconciliation (copy those

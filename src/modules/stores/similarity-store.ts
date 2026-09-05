@@ -181,8 +181,8 @@ export function tenantNamespace(
 // is stored as `{tenantId}:{readingId}` so the namespace-blind deleteByIds
 // cannot address another tenant's vector; without a namespace (the pre-tenant
 // layout) the id is the bare reading id. Single-homed here so the worker store
-// and the founder-migration tooling (scripts/corpus-lib/founder-migration.ts)
-// spell the same contract. The store composes it on upsert/delete and strips
+// and operator vector writers spell the same contract. The store composes it
+// on upsert/delete and strips
 // it from query matches, so callers only ever see bare reading ids; migrated
 // vectors are written with it from the start.
 export function tenantVectorId(namespace: string | undefined, readingId: string): string {
@@ -211,10 +211,7 @@ export class SimilarityStore {
       throw new WrongEmbeddingDimensionError(embedding.length);
     }
     // ADR 0002's audit layer: every namespaced vector carries a tenant_id
-    // stamp, matching what the founder migration writes. Reconciliation
-    // (founder-migration.ts) rejects a prefixed vector without the stamp once
-    // its legacy source is gone, so an unstamped realtime reprocess would
-    // block re-certification of an already-migrated corpus.
+    // stamp so runtime and operator writes retain the same ownership evidence.
     const stamped =
       this.namespace === undefined ? metadata : { ...metadata, tenant_id: this.namespace };
     await this.index.upsert([

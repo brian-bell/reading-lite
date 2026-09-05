@@ -11,7 +11,7 @@
 // TENANT_DATA_PLANE=1), and the Vectorize namespace is the tenant id, matching
 // similarityStoreFor. `global` maps to the empty key root and no namespace —
 // the pre-tenant layout: local (TENANT_DATA_PLANE still unset),
-// migrate-founder source, and the leftover global objects both deployed
+// and the leftover global objects both deployed
 // environments retain after their cutovers. Production and staging live corpus
 // is a usr_… selector from whoami.
 

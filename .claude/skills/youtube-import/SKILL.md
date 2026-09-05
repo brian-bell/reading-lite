@@ -52,7 +52,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
    (ready/pending owners are returned as-is). To replace it with the richer
    import, drop the old one first, then re-import.
 
-   `--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only, migrate-founder source, and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+   `--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
 
    ```sh
    npm run ops -- corpus drop --tenant "$TENANT" "<canonicalWatchUrl>" --execute
