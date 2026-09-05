@@ -345,6 +345,12 @@ Run the production repair only after separate approval, using the same explicit
 execute/confirm/sole-writer controls. Resolve protected legacy candidates under
 S7's separate approval; a refused plan is not a repaired corpus.
 
+The separately executed
+[2026-09-05 production read-only audit](evidence/195-production-audit-2026-09-05.md)
+found no tenant bare-vector repair candidates and all 557 ready readings had
+composed vectors. It records protected legacy pairs, the empty all-deleted
+selection, the live ledger follow-up, and the scanner's certification limits.
+
 ### The wipe seeds its own ledger
 
 **No operator step is required before a wipe.** From issue #195 slice S3 the
