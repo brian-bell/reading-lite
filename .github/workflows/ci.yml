@@ -5,14 +5,67 @@ on:
     branches: [main]
   push:
     branches: [main]
+    # No CI run means no workflow_run production deployment for these pushes.
+    # Keep this list in sync with the PR classifier below. PRs must still emit
+    # the existing job checks so required checks do not remain pending.
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.agents/**/*.md'
+      - '.claude/**/*.md'
+      - '.beads/**'
+      - 'LICENSE'
+      - 'skills-lock.json'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Check for code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          # Pushes already passed paths-ignore. Compare the entire PR, including
+          # deleted paths; disabling rename detection also checks the old path.
+          if [[ "$EVENT_NAME" != pull_request ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+          code=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              docs/*|.agents/*.md|.claude/*.md|.beads/*|LICENSE|skills-lock.json) continue ;;
+            esac
+            # Only root Markdown is ignored here; Markdown test fixtures and
+            # application assets elsewhere still need the normal checks.
+            if [[ "$path" != */* && "$path" == *.md ]]; then
+              continue
+            fi
+            code=true
+            break
+          done < "$RUNNER_TEMP/changed-paths"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   worker:
     name: Worker (typecheck + test)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,6 +80,8 @@ jobs:
 
   ops-node20:
     name: Ops CLI (Node 20)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,6 +99,8 @@ jobs:
 
   web:
     name: Web (test + build)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
