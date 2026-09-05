@@ -217,6 +217,134 @@ the sign-off, not inside an unrelated slice.
 S5's audit therefore owns both halves: the wipe residue and the search
 duplication.
 
+### Account residue scan and bare-vector repair (S5)
+
+These commands implement the local operator surface for [#195](https://github.com/brian-bell/reading-lite/issues/195)
+and design [#263](https://github.com/brian-bell/reading-lite/issues/263).
+Code completion does not close either acceptance gate: staging proof and the
+production audit/repair are separate, approved operator work. No production
+read-only check or repair was performed while implementing these commands.
+
+```sh
+npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
+npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
+```
+
+The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
+records, ledger rows (including `delete_submitted` rows from individual purges),
+a namespace query, a full vector ID inventory, per-reading vector observations,
+and every D1 table touched by teardown. `account_deletions` is expected retained
+audit evidence. Its `first_completed_at_ms` / `first_residue` describe history;
+`residue = 1` in that record is not a measurement of today's namespace. An audit
+row is written *before* teardown and does not itself prove teardown completed.
+Remaining users/child/progress rows mean control-plane cleanup is still pending
+or incomplete; they are reported even during the normal interval before cron.
+On a live tenant the ordinary corpus and D1 rows naturally report as present.
+
+Exit status is **1 for residue or incomplete visibility**, 2 for invalid usage,
+and 0 only when all scanned sources are clear or expected. Currently the CLI
+cannot independently inspect TenantUsageGuard storage/alarms or GlobalUsageGuard
+leases: the bound DOs have purge handlers but no operator read surface. Those
+are explicitly unknown, so a scan can report zero observed data and still exit
+1. Teardown's fail-closed DO purge is useful evidence, not a direct inspection.
+AuthRateGuard's hashed windows are not attributable to one tenant. After address
+history/token ownership is erased, released-address invites, NULL-owner
+challenges and orphan token scopes cannot be fully attributed; S4's documented
+spent-invite residual may be inert. Queues and concurrent work are not inspected.
+These limitations must accompany any closeout report; do not relabel exit 1 as
+an unconditional clean certification.
+
+A ready list entry whose composed vector is absent is reported by reading ID
+under `listed_vectors`, even without a ledger row. This catches the observable
+shape of a purge whose vector delete succeeded and `markDeleteSubmitted` failed.
+The scan cannot distinguish that intent from propagation delay or other vector
+drift. Its single reads are candidate absences, not S3's two spaced successful
+confirmations. It neither retires ledger rows nor repairs listed readings.
+
+Cloudflare now supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/).
+The audit enumerates the **whole index snapshot**, retrieves vectors through
+`get_by_ids` in chunks of at most 20, and selects their actual namespace. There
+is no namespace filter on the list endpoint. Discovery does not depend on ledger
+rows, which a prior wipe may have cleared, or a bounded similarity query.
+Snapshot pagination excludes subsequent inserts; a listed ID missing during
+hydration is unknown and blocks repair. HTTP/schema/cursor errors fail closed.
+A fresh invocation captures a fresh snapshot. This can find previously orphaned
+namespaced vectors even when R2 and the ledger are empty. Unnamespaced ownership
+remains outside the tenant scan and belongs to S7.
+
+The audit reports bare/composed pairs, including a composed tenant vector paired
+with a protected global vector. A bare vector is repairable only when its actual
+namespace matches the requested tenant and its reading ID is absent from the
+retained global R2 list/by-id/reading-key inventory. Any protected candidate
+blocks execution of that plan. Malformed global inventory also blocks execution.
+This conservatively preserves the pre-cutover set, including readings whose bare
+vector was subsequently moved into a tenant namespace. S7 approval is required
+for those; this command has no override for legacy deletion.
+
+For an approved staging repair, first pause and drain **all** realtime and
+offline writers and wipe/teardown jobs. Hold that pause across all passes:
+
+```sh
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging --execute --confirm "$TENANT" --sole-writer
+```
+
+`--sole-writer` asserts that pause; the CLI cannot acquire a distributed lock.
+Vectorize IDs are globally unique, deletion has no namespace argument or CAS,
+and a read-before-delete alone cannot protect against another writer moving an
+ID. Without the pause, do not execute. The command rechecks the payload,
+namespace, tenant status and legacy membership before each mutation.
+
+For an active tenant, repair requires a ready list entry and refuses a
+`delete_submitted` ledger row, so it cannot resurrect a purged reading or reset
+its confirmation state. It writes the ledger before upserting the composed copy. It retains the bare vector and exits 1 with `upsert_submitted`. After
+propagation, re-run the plan and approved execution: only an identical composed
+vector (values and metadata) permits deletion of the bare copy. A conflicting
+copy is refused for review. For deleting tenants, or tenants absent from users
+but present in `account_deletions`, repair deletes only the confirmed tenant bare
+vector and never recreates a composed vector. It does not clear ledger rows.
+`delete_submitted` is an async request, not proof of absence: repeat the audit
+after propagation and record that evidence before resuming writers. A crash is
+recoverable by re-planning; there is no blind delete based on an old plan file.
+
+The forced wipe command queues the existing consumer, preserving its S1 fence,
+S2 completion record and S3 seed/confirmation rules:
+
+```sh
+npm run ops -- account wipe --tenant "$TENANT" --bucket reading-lite-staging --force
+npm run ops -- account wipe --tenant "$TENANT" --bucket reading-lite-staging --force --execute --confirm "$TENANT" --queue-id "$WIPE_QUEUE_ID"
+```
+
+It accepts only a tenant already `deleting`. `--force` skips the seven-day start
+grace only. The queue ID is checked against `reading-lite-staging-wipe` (or
+`reading-lite-wipe` for production) before enqueue. It never marks an active
+user deleting and never changes a progress row. Enqueue success is not wipe
+completion; cron runs teardown after the consumer completes.
+
+After deletion: scan once after the data-plane completion, then scan again after
+cron teardown. Confirm that users/child/progress rows disappeared and that the
+first-completion pair survived in `account_deletions`. Resolve vector residue
+and record DO/visibility limitations separately. For production preparation,
+use the same commands with `--bucket reading-lite`, beginning with these reads:
+
+```sh
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite
+npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite
+npm run ops -- account residue-scan --all-deleted --bucket reading-lite
+```
+
+Use production-scoped credentials supplied by the operator; the checkout's
+`.corpus.vars` may be staging-scoped. R2 uses the existing corpus credential
+resolver; Vectorize/queue REST use `CORPUS_VECTORIZE_ACCOUNT_ID`, then
+`CORPUS_R2_ACCOUNT_ID`, then `CLOUDFLARE_ACCOUNT_ID`, and `CORPUS_CF_API_TOKEN`
+or `CLOUDFLARE_API_TOKEN`. D1 uses the existing Wrangler environment mapping.
+The bucket fixes the Vectorize index and queue name; no index override is
+accepted. Ensure all credentials identify the same account/environment.
+Run the production repair only after separate approval, using the same explicit
+execute/confirm/sole-writer controls. Resolve protected legacy candidates under
+S7's separate approval; a refused plan is not a repaired corpus.
+
 ### The wipe seeds its own ledger
 
 **No operator step is required before a wipe.** From issue #195 slice S3 the
@@ -249,6 +377,10 @@ the walk, and repair a **live** tenant's ledger without waiting for a deletion
 npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
 npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
 ```
+
+The operator seeder now uses the same insert-only helper as the wipe: existing
+state, delete timestamps, absent streaks and last-observation times are preserved,
+even during an in-flight wipe. It reports actual rows inserted.
 
 It over-seeds on purpose, exactly as the wipe's own step does: a row for a
 reading with no vector costs one no-op `deleteByIds` and then clears, while a
@@ -837,6 +969,16 @@ npm run ops -- corpus drop --tenant "$STG_TENANT" "https://example.com/reading-l
 gate makes invisible to the Worker. Use it only when you mean that copy.
 
 ### Rehearsing account deletion on staging
+
+S5 proof step (run only in the separately approved live drill): capture
+`ops account residue-scan --tenant "$DRILL" --bucket reading-lite-staging`
+after wipe completion and again after cron teardown. Check per-source JSON,
+first-completion history, and the explicit unknown section; exit 1 is expected
+while DO/address-history visibility remains incomplete. Before arming the wipe,
+audit/repair synthetic bare/composed pairs using the S5 sequence above, including
+a protected unnamespaced control. Keep that control intact. This implementation
+adds deterministic local tests; it does not claim this live proof has run.
+
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
 is off, so an environment with the gate unset cannot exercise the destructive

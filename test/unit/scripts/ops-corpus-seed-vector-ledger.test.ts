@@ -51,10 +51,10 @@ function harness(objects: Record<string, string>) {
         execute: opts.execute,
       });
       return {
-        markLive: async (ids) => {
+        insertMissing: async (ids) => {
           ledgered.push(...ids);
+          return ids.length;
         },
-        markDeleteSubmitted: async () => {},
       };
     },
     now: () => NOW,
