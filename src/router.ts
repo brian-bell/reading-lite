@@ -25,6 +25,7 @@ import { ReadingClaim } from "./modules/reading-claim";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
+import { vectorLedgerFor } from "./control-plane/vector-ledger";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { applyStaleness } from "./modules/staleness";
 import {
@@ -326,7 +327,8 @@ export function createApp(opts: AppOptions = {}) {
     const similarity = c.env.READINGS_INDEX
       ? similarityStoreFor(c.env.READINGS_INDEX, { tenantId: principal.tenantId }, c.env)
       : null;
-    const out = await purgeReading({ reader, similarity }, id, {
+    const ledger = vectorLedgerFor(c.env, { tenantId: principal.tenantId });
+    const out = await purgeReading({ reader, similarity, ledger }, id, {
       pendingTtlSeconds: pendingTtlSeconds(c.env),
       now: services.now(),
     });

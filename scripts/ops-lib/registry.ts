@@ -1,3 +1,6 @@
+import { accountWipeCommand } from "./commands/account-wipe";
+import { accountResidueScanCommand } from "./commands/account-residue-scan";
+import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-vectors";
 // The single typed registry behind `npm run ops`. Root, group, and command
 // help all render from these definitions, so a command that is not registered
 // here does not exist as far as the operator interface is concerned. New
@@ -28,6 +31,7 @@ import { corpusMigrateFounderCommand } from "./commands/corpus-migrate-founder";
 import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
 import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
+import { corpusSeedVectorLedgerCommand } from "./commands/corpus-seed-vector-ledger";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -75,6 +79,7 @@ export const defaultRegistry: Registry = {
     corpusNormalizeTagsCommand,
     corpusPurgeConnectionsCommand,
     corpusRebuildListCommand,
+    corpusSeedVectorLedgerCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,
@@ -92,5 +97,8 @@ export const defaultRegistry: Registry = {
     extractProbeCommand,
     evalSummarizerCommand,
     accountSweepWipePrefixCommand,
+    accountWipeCommand,
+    accountResidueScanCommand,
+    accountAuditBareVectorsCommand,
   ],
 };

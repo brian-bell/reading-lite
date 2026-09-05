@@ -156,12 +156,13 @@ duplicated work with no shared lease. Roll back with the queue drained, or
 force-complete the tenant afterwards. As always, `TENANT_DATA_PLANE` off is the
 kill switch that short-circuits the whole path.
 
-**That narrows the race rather than closing it.** The publisher's post-publish
-status recheck fails open on a D1 lookup error, and an isolate that dies between
-the vector upsert and the recheck never compensates at all. A vector published
-in either of those windows, whose R2 objects the same wipe pass then deletes, is
-unaddressable — the terminal probe can sample for it but nothing can delete it.
-Same cause, same fix as the gap below: the durable vector ledger (issue #261).
+**That fence is no longer load-bearing.** It still runs, and it still deletes
+promptly rather than leaving the work to a later pass — but its two escape
+hatches (a D1 recheck that fails open, an isolate that dies between the upsert
+and the recheck) no longer strand anything. Since issue #195 slice S3 every
+vector writer records the reading id in D1 `vector_ledger` **before** it
+upserts, so the id survives the deletion of the reading's R2 objects and the
+wipe can still address the vector.
 
 Cron decides what to do from the record rather than from R2 state: no row means
 never wiped (grace gates the start), a row with no `completed_at_ms` means a
@@ -171,19 +172,359 @@ again. That retires the old "no record AND an empty prefix" probe, which could
 not tell an already-wiped tenant from one whose prefix was emptied while vectors
 stranded, and so had to skip both forever.
 
-**What remains a gap** is re-*sweeping* such a tenant, not recognizing it. R2 is
-still the only source of the reading ids `deleteByIds` needs, so a tenant whose
-prefix is empty and whose namespace still answers has nothing left to delete
-by — but its row now says the wipe ran and `residue = 1` says it never came back
-clean, so the finding is durable rather than inferred from an absence. The
-durable per-tenant vector ledger (issue #261, 195b move 2,
-`rl-wipe-vector-ledger`) is what makes it actionable.
+**What remains a gap is the past, not the future — and one half of it is a
+gate on #195, not a footnote.**
 
-The completion record is what the later users-row hard-delete gates on: read
+A reading purged from R2 before slice S3, whose vector delete failed, has no
+ledger row and cannot be given one: there is nothing left to derive an id from.
+`ops corpus seed-vector-ledger` covers every reading an existing corpus still
+*has*; a vector already orphaned when the ledger arrived is unseedable by
+construction.
+
+The other half is recoverable and must be recovered. Until S3, the offline batch
+pipeline wrote tenant vectors under **bare** reading ids — `makeVectorizeClient`
+attaches a namespace but never composed the tenant-scoped id. Any tenant that
+has ever run `ops corpus ingest` or `ops corpus recover --batch` under
+`--tenant` therefore holds vectors this wipe cannot address, because
+`deleteByIds` submits the composed id and misses them. Every wipe for such a
+tenant spends its attempts, alerts, and completes with `residue = 1` while those
+embeddings survive account deletion indefinitely.
+
+**So `residue = 1` on such a tenant is not a clean-enough outcome to file away.**
+It is that known gap. Repairing it in production is a gate on #195's acceptance
+bullet 3 ("a repeatable residue scan reports zero tenant-owned data"), and slice
+S5 owns the audit and the repair. `probe_saw_residue` beside `residue` still
+separates "vectors were still there" from "we never got an answer".
+
+That population costs something on a *live* tenant too, which is worth knowing
+before anyone dismisses it as a deletion-only concern: a bare-id vector and a
+composed one for the same reading are two distinct matches to a namespaced
+query, so the reading appears twice in its own neighbourhood and duplicates land
+in `manifest.similarity` — inflating `count`, skewing `mean`, and spending a
+neighbour slot.
+
+**The batch writer deliberately does not fix this by deleting the bare id.**
+Vectorize ids are index-unique and `delete_by_ids` is namespace-blind, so for a
+reading the pipeline has never touched, deleting `rd_…` removes the *legacy
+pre-cutover* vector — the retained `TENANT_DATA_PLANE` rollback set that a
+tenant-scoped operation is not meant to reach, and whose deletion needs its own
+sign-off. A routine `corpus ingest --tenant "$TENANT" --execute` would have
+eroded it silently. Telling the two apart is possible (a legacy vector is
+un-namespaced; a batch-written duplicate carries the namespace, and `getByIds`
+reports it), but that is a destructive production behaviour that belongs with
+the sign-off, not inside an unrelated slice.
+
+S5's audit therefore owns both halves: the wipe residue and the search
+duplication.
+
+### Account residue scan and bare-vector repair (S5)
+
+These commands implement the local operator surface for [#195](https://github.com/brian-bell/reading-lite/issues/195)
+and design [#263](https://github.com/brian-bell/reading-lite/issues/263).
+Code completion does not close either acceptance gate: staging proof and the
+production audit/repair are separate, approved operator work. No production
+read-only check or repair was performed while implementing these commands.
+
+```sh
+npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
+npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
+```
+
+The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
+records, ledger rows (including `delete_submitted` rows from individual purges),
+a namespace query, a full vector ID inventory, per-reading vector observations,
+and every D1 table touched by teardown. `account_deletions` is expected retained
+audit evidence. Its `first_completed_at_ms` / `first_residue` describe history;
+`residue = 1` in that record is not a measurement of today's namespace. An audit
+row is written *before* teardown and does not itself prove teardown completed.
+Remaining users/child/progress rows mean control-plane cleanup is still pending
+or incomplete; they are reported even during the normal interval before cron.
+On a live tenant the ordinary corpus and D1 rows naturally report as present.
+
+Exit status is **1 for residue or incomplete visibility**, 2 for invalid usage,
+and 0 only when all scanned sources are clear or expected. Currently the CLI
+cannot independently inspect TenantUsageGuard storage/alarms or GlobalUsageGuard
+leases: the bound DOs have purge handlers but no operator read surface. Those
+are explicitly unknown, so a scan can report zero observed data and still exit
+1. Teardown's fail-closed DO purge is useful evidence, not a direct inspection.
+AuthRateGuard's hashed windows are not attributable to one tenant. After address
+history/token ownership is erased, released-address invites, NULL-owner
+challenges and orphan token scopes cannot be fully attributed; S4's documented
+spent-invite residual may be inert. Queues and concurrent work are not inspected.
+These limitations must accompany any closeout report; do not relabel exit 1 as
+an unconditional clean certification.
+
+A ready list entry whose composed vector is absent is reported by reading ID
+under `listed_vectors`, even without a ledger row. This catches the observable
+shape of a purge whose vector delete succeeded and `markDeleteSubmitted` failed.
+The scan cannot distinguish that intent from propagation delay or other vector
+drift. Its single reads are candidate absences, not S3's two spaced successful
+confirmations. It neither retires ledger rows nor repairs listed readings.
+
+Cloudflare now supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/).
+The audit enumerates the **whole index snapshot**, retrieves vectors through
+`get_by_ids` in chunks of at most 20, and selects their actual namespace. There
+is no namespace filter on the list endpoint. Discovery does not depend on ledger
+rows, which a prior wipe may have cleared, or a bounded similarity query.
+Snapshot pagination excludes subsequent inserts; a listed ID missing during
+hydration is unknown and blocks repair. HTTP/schema/cursor errors fail closed.
+A fresh invocation captures a fresh snapshot. This can find previously orphaned
+namespaced vectors even when R2 and the ledger are empty. Unnamespaced ownership
+remains outside the tenant scan and belongs to S7.
+
+The audit reports bare/composed pairs, including a composed tenant vector paired
+with a protected global vector. A bare vector is repairable only when its actual
+namespace matches the requested tenant and its reading ID is absent from the
+retained global R2 list/by-id/reading-key inventory. Any protected candidate
+blocks execution of that plan. Malformed global inventory also blocks execution.
+This conservatively preserves the pre-cutover set, including readings whose bare
+vector was subsequently moved into a tenant namespace. S7 approval is required
+for those; this command has no override for legacy deletion.
+
+For an approved staging repair, first pause and drain **all** realtime and
+offline writers and wipe/teardown jobs. Hold that pause across all passes:
+
+```sh
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging --execute --confirm "$TENANT" --sole-writer
+```
+
+`--sole-writer` asserts that pause; the CLI cannot acquire a distributed lock.
+Vectorize IDs are globally unique, deletion has no namespace argument or CAS,
+and a read-before-delete alone cannot protect against another writer moving an
+ID. Without the pause, do not execute. The command rechecks the payload,
+namespace, tenant status and legacy membership before each mutation.
+
+For an active tenant, repair requires a ready list entry and refuses a
+`delete_submitted` ledger row, so it cannot resurrect a purged reading or reset
+its confirmation state. It writes the ledger before upserting the composed copy. It retains the bare vector and exits 1 with `upsert_submitted`. After
+propagation, re-run the plan and approved execution: only an identical composed
+vector (values and metadata) permits deletion of the bare copy. A conflicting
+copy is refused for review. For deleting tenants, or tenants absent from users
+but present in `account_deletions`, repair deletes only the confirmed tenant bare
+vector and never recreates a composed vector. It does not clear ledger rows.
+`delete_submitted` is an async request, not proof of absence: repeat the audit
+after propagation and record that evidence before resuming writers. A crash is
+recoverable by re-planning; there is no blind delete based on an old plan file.
+
+The forced wipe command queues the existing consumer, preserving its S1 fence,
+S2 completion record and S3 seed/confirmation rules:
+
+```sh
+npm run ops -- account wipe --tenant "$TENANT" --bucket reading-lite-staging --force
+npm run ops -- account wipe --tenant "$TENANT" --bucket reading-lite-staging --force --execute --confirm "$TENANT" --queue-id "$WIPE_QUEUE_ID"
+```
+
+It accepts only a tenant already `deleting`. `--force` skips the seven-day start
+grace only. The queue ID is checked against `reading-lite-staging-wipe` (or
+`reading-lite-wipe` for production) before enqueue. It never marks an active
+user deleting and never changes a progress row. Enqueue success is not wipe
+completion; cron runs teardown after the consumer completes.
+
+After deletion: scan once after the data-plane completion, then scan again after
+cron teardown. Confirm that users/child/progress rows disappeared and that the
+first-completion pair survived in `account_deletions`. Resolve vector residue
+and record DO/visibility limitations separately. For production preparation,
+use the same commands with `--bucket reading-lite`, beginning with these reads:
+
+```sh
+npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite
+npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite
+npm run ops -- account residue-scan --all-deleted --bucket reading-lite
+```
+
+Use production-scoped credentials supplied by the operator; the checkout's
+`.corpus.vars` may be staging-scoped. R2 uses the existing corpus credential
+resolver; Vectorize/queue REST use `CORPUS_VECTORIZE_ACCOUNT_ID`, then
+`CORPUS_R2_ACCOUNT_ID`, then `CLOUDFLARE_ACCOUNT_ID`, and `CORPUS_CF_API_TOKEN`
+or `CLOUDFLARE_API_TOKEN`. D1 uses the existing Wrangler environment mapping.
+The bucket fixes the Vectorize index and queue name; no index override is
+accepted. Ensure all credentials identify the same account/environment.
+Run the production repair only after separate approval, using the same explicit
+execute/confirm/sole-writer controls. Resolve protected legacy candidates under
+S7's separate approval; a refused plan is not a repaired corpus.
+
+### The wipe seeds its own ledger
+
+**No operator step is required before a wipe.** From issue #195 slice S3 the
+wipe submits `deleteByIds` only for ids the ledger names — and a corpus that
+predates the ledger has none — so before any phase runs it pages its own key
+root, derives every reading id from the object keys, and inserts the rows it is
+missing. R2 is intact at that moment (it is what the wipe is about to delete),
+so the job holds exactly the inputs the seeding command would.
+
+The invariant that buys: **no object is deleted before its reading id is in the
+ledger.** Nothing to remember, nothing to enforce.
+
+The seed step is insert-only — a row an earlier pass moved to
+`delete_submitted` keeps its state, delete stamp and absent streak — resumable
+on `wipe_progress.seed_cursor`, and it logs its work:
+
+```
+account_wipe_ledger_seeded  rows_created 0   outcome done
+```
+
+A **nonzero** `rows_created` on a tenant you believe was already seeded means
+the ledger was incomplete. Expected on a corpus predating S3; worth
+investigating on one that should have been covered by the writers.
+
+`ops corpus seed-vector-ledger` is still worth having — it lets you rehearse
+the walk, and repair a **live** tenant's ledger without waiting for a deletion
+— but it is no longer a prerequisite for anything:
+
+```sh
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
+```
+
+The operator seeder now uses the same insert-only helper as the wipe: existing
+state, delete timestamps, absent streaks and last-observation times are preserved,
+even during an in-flight wipe. It reports actual rows inserted.
+
+It over-seeds on purpose, exactly as the wipe's own step does: a row for a
+reading with no vector costs one no-op `deleteByIds` and then clears, while a
+missing row is unrecoverable. `--tenant global` is refused — the pre-tenant
+corpus has no tenant id to key rows by and no account wipe addresses it.
+
+The completion record is what the users-row hard-delete gates on: read
 `completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
 state. Gate on `completed_at_ms` (current state, so a reopened wipe holds the
 gate shut); report history and residue from `first_completed_at_ms` /
 `first_residue`, which no reopen can erase.
+
+**Control-plane teardown (S4).** Once a wipe has completed and the tenant prefix
+is confirmed empty, the same */15 cron fan-out runs
+`src/control-plane/account-teardown.ts` for that tenant. It is its own stage,
+not part of the wipe delivery, so a failure retries on the next tick instead of
+dragging a finished wipe back through the queue. In order:
+
+1. The **audit row** (`account_deletions`, migration `0011`) is written first,
+   before anything destructive, so a crash part-way through still leaves durable
+   evidence the deletion was attempted. It carries the tenant id, four
+   timestamps (`deleting_at_ms`, `completed_at_ms`, `first_completed_at_ms`,
+   `torn_down_at_ms`) and two flags (`residue`, `first_residue`) — no email, no
+   display name, no reading ids — and it has no foreign key, because it has to
+   outlive the `users` row it describes.
+2. The tenant's `TenantUsageGuard` is emptied and its alarm cancelled, and that
+   tenant's leases are cleared from the singleton `GlobalUsageGuard`. This step
+   **fails closed**: a bound namespace that errors aborts teardown before any
+   D1 delete, so the `users` row is never removed while guard state keyed to
+   that tenant survives.
+3. **The R2 prefix is rechecked** after those Durable Object purges and the
+   address-history lookup, immediately before `db.batch`. A late publisher
+   during those round-trips would otherwise leave an orphan no later tick can
+   enumerate, because the hard delete removes the tenant from
+   `listDeletingUsers`. Anything but a confirmed-empty verdict refuses the
+   batch. Reached from fan-out the verdict is only ever `empty` or `not_empty`
+   — the third state, "could not look", needs the data-plane gate off, and
+   fan-out has already returned early in that case — so in practice a refusal
+   means real leftovers, and the next `*/15` tick reopens the wipe for them. An
+   R2 `list` that throws is the genuine could-not-look case: it propagates out
+   of teardown and is logged as `account_teardown_failed`, leaving every row in
+   place for the next tick.
+
+   **This narrows the window; it does not close it.** An object can still land
+   between the verdict resolving and the batch committing, and that one is
+   orphaned by the same argument — the tenant is gone from `listDeletingUsers`
+   and nothing enumerates it again. It is the same residual class as the
+   late-publish race in the wipe itself, and it needs the same fix: the durable
+   per-tenant vector/object provenance that issue #261 tracks. Do not read this
+   step as a guarantee that no orphan can occur.
+4. Every tenant-keyed D1 row goes in one batch, children before parents:
+   `api_token_scopes`, `api_tokens`, `sessions`, `auth_challenges`,
+   `digest_deliveries`, `user_settings`, `tenant_limits`, the account's
+   `signup_invites` rows (see below), `wipe_progress`, and finally `users`.
+   D1 enforces foreign keys by default; no migration declares
+   `ON DELETE CASCADE`. Child rows therefore go first, and `wipe_progress` is
+   deleted explicitly after its gate has been read. Unconfirmed `vector_ledger`
+   rows are retained for residue repair. Migration `0012` removes their users
+   foreign key while preserving all rows, columns, other constraints and the
+   index, so those repair handles can outlive the account. The table rebuild
+   runs transactionally before Worker upload; existing ledger writers remain
+   compatible.
+
+**Teardown runs wherever the tenant data plane is on.** Fan-out still returns
+early when `TENANT_DATA_PLANE` is unset (local), because there is no tenant
+prefix to confirm empty. Staging pins the gate in `[env.staging.vars]` (issue
+#203 / slice S6), so a staging account whose wipe has completed is torn down
+on the next `*/15` tick — the same path production uses, and that includes the
+S6 completed-wipe fixture, which is exempt from nothing: see "Rehearsing
+account deletion on staging". Residue scan remains slice S5.
+
+Teardown runs on a `residue = 1` wipe too. A wipe that finished without
+confirming the namespace clean is still finished; the flag is copied onto the
+audit row for the residue scan and for support, rather than pinning the account
+open forever. `AuthRateGuard` is deliberately untouched — it is a singleton of
+hashed, TTL-windowed email/IP counters with no tenant key to purge by.
+
+**Email reuse, and the invite trap.** Until teardown runs, the address is not
+reusable: the `users` row is still present and not active, so
+`resolveLoginEligibility` answers `ineligible`. After teardown the row is gone
+and the address is free.
+
+Under `signup_mode = 'invite_only'`, though, free means free to be *invited*.
+Teardown deletes the account's own consumed invite along with everything else,
+so **a re-signup at that address needs a fresh invite**. This is deliberate —
+leaving a consumed invite behind would give a deleted account's address a
+standing claim on a closed system — but it will surprise you if you are trying
+to help someone back in.
+
+Teardown frees **every address the account ever used**, not only its last.
+Addresses come from the account's own `auth_challenges` rows, which are the only
+link back once an email change has overwritten `users`. Two rules keep that off
+other people's data, and both matter:
+
+- Only *proven* addresses are collected — one from a redeemed challenge, or from
+  a login challenge (whose `user_id` is set only for a user who already owns the
+  address). Never the address a pending `email_change` merely names: nothing
+  verifies those until redemption, so collecting them would let any account name
+  a stranger's address and have teardown act on it.
+- Of those, only *consumed* invites are deleted, plus any invite on the
+  account's current address. An **unconsumed** invite on a previously released
+  address is left alone: it is a pending grant belonging to whoever has been
+  invited there since. A *consumed* one on a released address is deleted, and
+  that row may in principle be a third party's — someone invited to the address
+  after this account released it, who has since signed up. It is a spent marker
+  with no further effect (`resolveLoginEligibility` finds their `users` row and
+  never reads the invite), so this is recorded as known and inert rather than
+  claimed to be impossible. Making it impossible needs an owner column on
+  `signup_invites`, which no slice has needed yet.
+
+One residue in `auth_challenges` is known and deliberate for the same reason: a
+login challenge issued and then superseded at signup, on an address the account
+later changed away from, has no owner recorded on it at all and is not reached.
+It could only be swept by address, and on a released address such a row may
+equally belong to somebody signing up there now — deleting theirs would be the
+worse error. Closing it needs a durable owner link the schema does not have.
+
+**Timing, if you are re-inviting the account's own address.** Teardown deletes
+an invite row when it is already *consumed*, or when it names the account's
+**current** address — consumed or not. So a fresh invite issued for that address
+while the account is still `deleting` is swept by the teardown tick that
+follows, silently, leaving you believing the address is invited when it is not.
+Wait until the `users` row is actually gone, and check that directly:
+
+```sql
+SELECT 1 FROM users WHERE id = '<tenant>';   -- must return nothing
+```
+
+An `account_deletions` row is **not** the check. It is written before the
+destructive batch and survives a batch that matches nothing, so it proves
+teardown was *attempted*, not that it succeeded. The
+`account_teardown_complete` log is a better signal but is not durable
+evidence. The absence of the `users` row is.
+
+A *previously released* address is the opposite case and needs no waiting — an
+unconsumed invite there survives teardown, because it belongs to whoever has
+been invited since, not to the account being deleted.
+
+Issue a new invite with:
+
+```sql
+INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+VALUES (?, ?, ?);
+```
 
 A future operator row will add a scripted, verified sweep of the `wipe/` prefix
 for the stale R2 objects described in the deploy note above; until it exists,
@@ -217,11 +558,13 @@ know about", and note the same vector ledger is what makes it fixable. An
 unbound `READINGS_INDEX` fails the job even when no ids were collected, so a
 wipe can no longer report success without having addressed the index at all.
 
-**Sweeping the `wipe/` prefix.** Slice S2 of issue #195 moves wipe progress out
-of R2 and into D1, and deletes the only code that ever removed
-`wipe/{tenantId}/progress.json`. Any record an in-flight wipe leaves behind at
-that moment is a permanent orphan: a bucket key naming a deleted tenant, with a
-body carrying that tenant's `vector_cursor` (a reading id). Clear it with
+**Sweeping the `wipe/` prefix.** Slice S2 of issue #195 (#270) moved wipe
+progress out of R2 and into D1, and deleted the only code that ever removed
+`wipe/{tenantId}/progress.json`. Any record a wipe in flight at the moment of
+**that deploy** left behind is a permanent orphan: a bucket key naming a deleted
+tenant, with a body carrying that tenant's `vector_cursor` (a reading id).
+Merged is not deployed — the rollout sequence below turns on that distinction.
+Clear the orphans with
 
 ```sh
 npm run ops -- account sweep-wipe-prefix    # plan: list only
@@ -230,10 +573,12 @@ npm run ops -- account sweep-wipe-prefix --execute --acknowledge-no-active-wipe
 
 Rollout sequence, in order:
 
-1. **Before merging S2**, run it in plan mode. It lists every object under
-   `wipe/` with size and last-modified time and writes nothing. Empty is the
-   easy case; anything listed is a wipe you want finished, not interrupted.
-2. **Wait for S2's deploy. That is the precondition**, and the only thing that
+1. **Start in plan mode.** It lists every object under `wipe/` with size and
+   last-modified time and writes nothing. Empty is the easy case; anything
+   listed is a wipe you want finished, not interrupted. (S2 has merged, so in
+   practice this step and the next collapse into "confirm the deploy landed,
+   then plan" — the ordering below is what matters, not the merge.)
+2. **Confirm S2 is deployed. That is the precondition**, and the only thing that
    makes these records safe to delete: once the new Worker is live, nothing
    reads or writes `wipe/` at all, so every record under it is orphaned by
    construction. `--execute` refuses to run without
@@ -256,8 +601,11 @@ Rollout sequence, in order:
    tenants its records name, against the control plane matching `--bucket`.
 
    **A `users.status` count is not the signal, before or after.** `status` stays
-   `deleting` after a wipe *completes*, until the S4 hard-delete, so a count of
-   `deleting` users never returns to 0 once any account has been deleted.
+   `deleting` after a wipe *completes*, until the S4 teardown hard-deletes the
+   row on a later cron tick. A count of `deleting` users therefore lags the
+   actual state in both directions — it is non-zero for a tenant whose wipe has
+   already finished, and it drops to zero the moment teardown runs, which says
+   nothing about whether a *different* tenant's wipe is in flight.
 3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
    the prefix, and **exits non-zero if anything remains** — so a green exit is
    evidence the prefix is empty, not just that the deletes were submitted. It is
@@ -281,8 +629,9 @@ command takes no `--tenant`: these keys sit outside every tenant key root, and
 the sweep clears the prefix as a whole. Default `--bucket` is production
 `reading-lite`.
 
-Users-row hard-delete, Durable Object teardown, residue scan, and email reuse
-are later 195b slices. `DELETE /api/readings/:id` remains one-reading
+Users-row hard-delete, Durable Object teardown, and email reuse live in
+`src/control-plane/account-teardown.ts` (issue 195 S4). Residue scan is the
+remaining later slice (S5). `DELETE /api/readings/:id` remains one-reading
 purge inside a live tenant.
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
@@ -624,6 +973,16 @@ gate makes invisible to the Worker. Use it only when you mean that copy.
 
 ### Rehearsing account deletion on staging
 
+S5 proof step (run only in the separately approved live drill): capture
+`ops account residue-scan --tenant "$DRILL" --bucket reading-lite-staging`
+after wipe completion and again after cron teardown. Check per-source JSON,
+first-completion history, and the explicit unknown section; exit 1 is expected
+while DO/address-history visibility remains incomplete. Before arming the wipe,
+audit/repair synthetic bare/composed pairs using the S5 sequence above, including
+a protected unnamespaced control. Keep that control intact. This implementation
+adds deterministic local tests; it does not claim this live proof has run.
+
+
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
 is off, so an environment with the gate unset cannot exercise the destructive
 path at all. Staging therefore pins the gate in `[env.staging.vars]`, and its
@@ -662,14 +1021,27 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 ```
 
 The join is what makes this list *actionable* rather than just true. A tenant
-whose `wipe_progress` row carries a `completed_at_ms` has already been wiped and
-fan-out skips it, so it can never be what the deploy arms — it would only be
-recurring noise in the one check the next operator is told to trust. The
-`IS NULL` also covers a *reopened* wipe (a reopen clears `completed_at_ms`),
-which is still live and does belong in the list.
+whose `wipe_progress` row carries a `completed_at_ms` has already been wiped.
+Before S4 that meant fan-out skipped it; **after S4 it means the next tick
+will hard-delete the account** — every such tenant, with no exemption. The
+`IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at_ms`),
+which is still live and does belong in the list. Completed empty-prefix tenants
+are a separate question:
 
-Anything left in that result and not meant to be destroyed — the staging founder
-above all — must be rescued before the deploy. Restoring `status='active'` alone
+```sh
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT u.id, u.email_canonical, w.completed_at_ms, w.force \
+             FROM users u JOIN wipe_progress w ON w.tenant_id = u.id \
+             WHERE u.status = 'deleting' AND w.completed_at_ms IS NOT NULL"
+```
+
+`usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list, and it
+is torn down automatically like any other completed wipe — see below.
+
+Any account in either preflight result that is not meant to be destroyed —
+the staging founder above all — needs an operator recovery decision before
+the deploy. The reset below is only for a deletion that has not destroyed data.
+Restoring `status='active'` alone
 is not enough: leave `deleting_at_ms` set and a later `DELETE /api/account`
 reuses it via `COALESCE(deleting_at_ms, ?)` in `beginAccountDeletion`, so the
 next cron can wipe immediately and skip the 7-day grace. An unfinished or
@@ -677,25 +1049,57 @@ reopened `wipe_progress` row (`completed_at_ms` NULL) is worse: fan-out treats
 it as a **resume**, and resume ignores grace. After a later delete the next
 `*/15` tick enqueues immediately.
 
-A delivery that has already passed the `status !== 'deleting'` check will keep
-wiping even after you flip the row. Confirm no delivery is active first:
-`wipe_progress.updated_at_ms` within `ACCOUNT_WIPE_IN_FLIGHT_MS` (15 minutes)
-means cron still considers the lease live. Wait that window out (or drain
-`reading-lite-staging-wipe`) before touching the row. Then flip the user, then
-delete only an **unfinished** progress record — a completed row is S4 history
-and is not in this preflight; leave it.
+A delivery that already passed the status check can continue deleting after
+reactivation. **The heartbeat is advisory**: a recent `updated_at_ms` is a
+reason to stop, but an old value or waiting 15 minutes does not prove that no
+job is active. Delayed retries can outlive that window.
+
+Before any reset:
+
+1. Pause cron fan-out and teardown, new wipe submissions, and queue delivery
+   for staging. Confirm previously started wipe/teardown invocations have ended
+   and any submitted Vectorize mutations have settled. Turning the tenant gate
+   off does not cancel an invocation that already passed it.
+2. Account for queued messages, delayed retries, and DLQ redrives for this
+   tenant. They must not survive the reset and a later deletion request: an old
+   `force: true` envelope would bypass the new grace period. Do not drain them
+   by running the destructive consumer against an account being rescued.
+3. Inspect and save the progress record, audit record, ledger, and remaining
+   R2/Vectorize state. If deletion has begun, the account was previously wiped,
+   teardown was attempted, or any of those facts cannot be established, stop
+   this reset and prepare a data-recovery plan. Zero counters alone do not
+   prove nothing was deleted. This SQL cannot restore deleted data or preserve
+   the confirmation state of a partially completed wipe.
+
+There is no atomic cancel-and-rescue command. If the pause and pending-message
+conditions cannot be verified, do not run the writes below. With them verified,
+a never-completed, unintended deletion can be reset as follows. A completed or
+reopened wipe's first-completion history must remain intact; the guards refuse
+that case rather than erasing it.
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT tenant_id, phase, lease_seq, updated_at_ms, completed_at_ms \
-             FROM wipe_progress WHERE tenant_id='<tenant>'"
-# If updated_at_ms is within 15 minutes, wait. Then:
+  --command "SELECT * FROM wipe_progress WHERE tenant_id='<tenant>'"
+npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
+  --command "SELECT * FROM account_deletions WHERE tenant_id='<tenant>'"
+# Only after the pause, pending-message, and data checks above:
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "UPDATE users SET status='active', deleting_at_ms=NULL, updated_at_ms=<now> \
-             WHERE id='<tenant>' AND status='deleting'"
+             WHERE id='<tenant>' AND status='deleting' \
+             AND NOT EXISTS (SELECT 1 FROM account_deletions WHERE tenant_id='<tenant>') \
+             AND NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id='<tenant>' \
+               AND (completed_at_ms IS NOT NULL OR first_completed_at_ms IS NOT NULL))"
+# Stop unless the UPDATE reports changes: 1. Then remove the stale resume state:
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM wipe_progress WHERE tenant_id='<tenant>' AND completed_at_ms IS NULL"
+  --command "DELETE FROM wipe_progress WHERE tenant_id='<tenant>' \
+             AND completed_at_ms IS NULL AND first_completed_at_ms IS NULL \
+             AND EXISTS (SELECT 1 FROM users WHERE id='<tenant>' \
+               AND status='active' AND deleting_at_ms IS NULL)"
 ```
+
+Re-read the user and progress rows before resuming: the user must be active,
+`deleting_at_ms` NULL, and the unfinished progress row absent. Keep the ledger;
+this reset does not authorize changing its deletion or confirmation records.
 
 That still is **not** a full rescue: `beginAccountDeletion` stamped
 `revoked_at_ms` on every session and API token and nothing reverses that, so
@@ -741,22 +1145,37 @@ nothing if you get them wrong:
   query below quietly miss.
 - **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
   (`src/services.ts` `ID_ALPHABET` — no `I`, `L`, `O`, `U`). An id outside it is
-  not derivable by `collectReadingIds`, so the objects phase still deletes the
-  reading's R2 objects but no `deleteByIds` is ever submitted for it. The vector
-  is stranded with nothing left to derive its id from, and surfaces at the end
-  as probe residue — a synthetic reproduction of the issue #261 gap rather than
-  a wipe bug.
+  skipped by `ops corpus seed-vector-ledger`'s walk, so the objects phase still
+  deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
+  exist for it. The vector is stranded, and surfaces at the end as residue — a
+  synthetic reproduction of the issue #261 gap rather than a wipe bug.
+- **You do not need to seed the drill tenant.** The wipe seeds its own ledger
+  from the objects you write, before it deletes anything, so a drill that skips
+  seeding is testing the real path rather than a rigged one. Watch for
+  `account_wipe_ledger_seeded` with `rows_created` equal to the number of
+  readings you seeded — that line is the wipe proving it found them.
+- **Expect two wipe passes for a healthy tenant.** The first seeds and submits
+  the deletes; the confirmation is not allowed to count an absence until 120s
+  after `deleteByIds` returned, because propagation was measured at 30-90s and
+  a probe inside that window carries no information. A single-pass completion
+  means nothing was submitted — check `rows_created` before celebrating.
 
 ```sh
 # 1. Create the account. Either sign up on staging for real, or insert the row
 #    directly. The wipe is driven off this row: without it the UPDATE below
 #    matches nothing, listDeletingUsers never returns the tenant, and the whole
 #    drill silently exercises nothing while every residue check passes.
+#
+#    Use a per-run address. `users.email_canonical` is NOT NULL UNIQUE, and the
+#    original S6 fixture below already holds `s6-drill@test.example` until its
+#    teardown removes the row — reusing it fails this INSERT on the constraint,
+#    which is exactly the "creates nothing, passes everything" outcome the
+#    warning above is about.
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "INSERT INTO users (id, email_canonical, email_display, status, \
              email_verified_at_ms, created_at_ms, updated_at_ms) \
-             VALUES ('$DRILL','s6-drill@test.example','s6-drill@test.example', \
-             'active',<now>,<now>,<now>)"
+             VALUES ('$DRILL','s6-drill-$DRILL@test.example', \
+             's6-drill-$DRILL@test.example','active',<now>,<now>,<now>)"
 
 # 2. Seed. Objects under u/$DRILL/ (manifest.json, index/by-id/, index/by-url/,
 #    index/list.json) plus one namespaced vector {$DRILL}:{readingId} per ready
@@ -879,15 +1298,14 @@ npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
    and `processedUpToMutation` both flap between values while the underlying
    per-id reads are correct.
 
-4. **D1** — this is the one to read carefully, because almost nothing here is
-   supposed to be gone. The wipe removes the **data plane only**. The `users`
-   row, the `wipe_progress` completion record, and the tenant's `sessions`,
-   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive by
-   design: `beginAccountDeletion` *revokes* sessions and tokens by stamping
-   `revoked_at_ms` in place rather than deleting them, `user_settings` is never
-   touched, and the completion record is precisely what the later control-plane
-   teardown gates its hard delete of the `users` row on. So check that
-   credentials are **revoked**, not that rows are absent:
+4. **D1 after the wipe, before teardown** — the wipe still removes the
+   **data plane only**. Until control-plane teardown runs, the `users` row,
+   the `wipe_progress` completion record, and the tenant's `sessions`,
+   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive:
+   `beginAccountDeletion` *revokes* sessions and tokens by stamping
+   `revoked_at_ms` in place rather than deleting them, and `user_settings` is
+   never touched by the wipe. Check that credentials are **revoked**, not
+   that rows are absent:
 
 ```sh
 npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
@@ -901,56 +1319,52 @@ Expect `live_sessions = 0`, `live_tokens = 0`, a non-NULL `completed_at_ms`, and
 `residue = 0`. A tenant seeded directly (rather than signed up for) will simply
 have no rows in those tables at all, which is not evidence either way.
 
-**Tear the drill tenant down when you are finished.** Left in place it is not
-inert: fan-out re-reads the row on every `*/15` tick and, with `completed_at_ms`
-set, runs an R2 prefix list per tick, and anything that ever lands under
-`u/$DRILL/` reopens the wipe — which also puts it back into the preflight above,
-correctly. Delete every dependent control-plane row, then `users`. Signup
-always creates `user_settings` and `tenant_limits`
-(`src/control-plane/sessions.ts`); a tenant that signed up for real may also
-have sessions, API tokens/scopes, auth challenges, and digest deliveries.
-Signup challenges are issued before the user row exists, so `user_id` stays
-NULL and redemption stamps `completed_user_id` — delete on either column.
-Migration `0009` notes that `REFERENCES` is not enforced (`PRAGMA foreign_keys`
-is never on), so `DELETE FROM users` succeeds while orphaning those rows — do
-not stop at `wipe_progress` + `users`. The script below deletes
-`user_settings`, `tenant_limits`, `sessions`, then scopes before tokens, then
-`auth_challenges` and `digest_deliveries`, then `wipe_progress` (its FK
-deliberately does not cascade), then `users`. Order among the user-keyed
-tables is free while foreign keys are off; scopes-before-tokens is the one
-constraint that still matches the documented FK. Direct-insert drills have no
-dependents; the extra `DELETE`s are no-ops there.
+**Control-plane teardown is automatic (S4).** Once the wipe has completed and
+the prefix is empty, the next `*/15` cron tick runs
+`src/control-plane/account-teardown.ts`: audit row first, Durable Object guards
+fail-closed, address-history lookup, R2 prefix recheck immediately before the
+batch, then one ordered D1 delete ending at `users`. Do **not** manually
+`DELETE FROM wipe_progress` / `DELETE FROM users` — that bypasses the audit
+row, the guard purge, and the prefix recheck, and it is exactly the sequence
+teardown already performs. After teardown the same queries should show the
+`users` and `wipe_progress` rows gone and a single `account_deletions` row for
+the tenant. The address is then free; under `invite_only` it still needs a
+fresh invite. Signup challenges are associated through `completed_user_id`
+when `user_id` is NULL; the automatic teardown handles both ownership columns.
+D1 enforces foreign keys by default, so child-before-parent ordering matters;
+do not restore the old manual SQL based on the opposite assumption.
 
-```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM user_settings WHERE user_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM tenant_limits WHERE tenant_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM sessions WHERE user_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM api_token_scopes WHERE token_id IN \
-             (SELECT id FROM api_tokens WHERE user_id='$DRILL')"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM api_tokens WHERE user_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM auth_challenges WHERE user_id='$DRILL' OR completed_user_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM digest_deliveries WHERE user_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM wipe_progress WHERE tenant_id='$DRILL'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM users WHERE id='$DRILL'"
-```
+A new throwaway drill tenant is torn down on the tick after its wipe
+completes. Watch `account_teardown_complete` for it, then confirm the audit
+row and the absent `users` row rather than deleting them by hand.
 
-Keep the tenant only if you are deliberately handing it to the control-plane
-teardown slice as a fixture — a completed wipe awaiting its hard delete is
-exactly what that work needs — and say so where the next operator will see it.
-**Staging currently carries one such fixture on purpose**:
-`usr_5e6d0000-0000-4000-8000-000000000006` (`s6-drill@test.example`), wiped
-clean on 2026-09-04 and held for the control-plane teardown slice. It is
-excluded from the preflight above by its completion record; do not delete it
-without checking with that slice first.
+**The S6 completed-wipe fixture goes down the same automatic path**, and that
+is deliberate: `usr_5e6d0000-0000-4000-8000-000000000006`
+(`s6-drill@test.example`), wiped clean on 2026-09-04, is a completed wipe like
+any other, so the first `*/15` tick after S4 deploys tears it down. Letting
+that happen unattended **is** the rehearsal S6 exists for — watch it rather
+than arrange around it.
+
+An earlier revision of S4 special-cased this tenant id in `src/account-wipe.ts`
+to hold it back. That was removed before merge and should not come back. Two
+reasons worth writing down, because the idea is tempting each time a fixture
+needs protecting:
+
+- The exemption was a bare id comparison in Worker source with no environment
+  gate, so it shipped to production. An account with that id there would have
+  been silently excluded from an irreversible deletion path, visible only as a
+  log line — a deletion-compliance failure, not an operational one. It also
+  contradicted the rule in `src/control-plane/account-delete.ts`: the founder
+  is a normal tenant, and no tenant is silently special-cased.
+- Its release was `wipe_progress.force`, which already means "skip the 7-day
+  grace / redrive this wipe". Since `force` on an envelope is persisted onto
+  the record, an operator redriving the fixture's wipe for any reason would
+  have set it and the next tick would have torn the fixture down anyway. The
+  hold did not hold.
+
+To observe the rehearsal, watch for `account_teardown_complete` on that tenant
+id, then confirm the `account_deletions` row exists and the `users` row is
+gone. Do not delete anything by hand.
 
 ## Diagnosing a single reading
 

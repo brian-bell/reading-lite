@@ -23,10 +23,13 @@ describe("account wipe wrangler wiring", () => {
   });
 
   // The terminal probe bound is only consumed inside one message's retry budget
-  // while it stays <= the queue's max_retries. Raise max_retries or the constant
-  // alone and every probe hit starts dead-lettering before the bound trips,
-  // which is the loop the bound exists to avoid.
-  it("keeps the probe attempt bound within the wipe queue's retry budget", () => {
+  // while it stays STRICTLY BELOW the queue's max_retries. Not every retry
+  // spends an attempt: the +120s first-confirmation deferral retries without
+  // counting one (S6 defect D2) and so does any transient D1/R2/Vectorize
+  // error, so an equal budget dead-letters a healthy wipe before the bound
+  // trips — the loop the bound exists to avoid. Raise the constant or
+  // max_retries alone and this fails, which is the point.
+  it("leaves the wipe queue retry headroom above the probe attempt bound", () => {
     const wrangler = read("wrangler.toml");
     const source = read("src/account-wipe.ts");
     const bound = /ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = (\d+)/.exec(source)?.[1];
@@ -34,7 +37,10 @@ describe("account wipe wrangler wiring", () => {
     for (const queue of ["reading-lite-wipe", "reading-lite-staging-wipe"]) {
       const block = new RegExp(`queue = "${queue}"[\\s\\S]*?max_retries = (\\d+)`).exec(wrangler);
       expect(block, `${queue} consumer max_retries`).not.toBeNull();
-      expect(Number(bound)).toBeLessThanOrEqual(Number(block![1]));
+      // One spare for the deferral, one for a blip.
+      expect(Number(block![1]), `${queue} consumer max_retries`).toBeGreaterThanOrEqual(
+        Number(bound) + 2,
+      );
     }
   });
 
@@ -63,7 +69,7 @@ describe("account wipe wrangler wiring", () => {
   // The S6 rehearsal runbook is the operator-facing pin contract: rolling the
   // gate back after writes is not free, rescue must clear deleting_at_ms,
   // fencing a signed-up tenant must revoke credentials, and teardown must
-  // delete dependents.
+  // use the automatic teardown path.
   it("documents the staging pin rollback, rescue, fence, and teardown procedures", () => {
     const wrangler = read("wrangler.toml");
     const stagingVars = /\[env\.staging\.vars\]([\s\S]*?)\n\[/.exec(wrangler);
@@ -79,18 +85,17 @@ describe("account wipe wrangler wiring", () => {
     expect(section).toMatch(/reverse reconcili/i);
     expect(section).toMatch(/deleting_at_ms=NULL/);
     expect(section).toMatch(/COALESCE\(deleting_at_ms/);
-    expect(section).toMatch(/DELETE FROM wipe_progress WHERE tenant_id='<tenant>' AND completed_at_ms IS NULL/);
+    expect(section).toMatch(/heartbeat is advisory/i);
+    expect(section).toMatch(/Pause cron fan-out and teardown/i);
+    expect(section).toMatch(/delayed retries/i);
+    expect(section).toMatch(/first_completed_at_ms IS NULL/);
     expect(section).toMatch(/DELETE \/api\/account/);
     expect(section).toMatch(/revocation_reason='account_delete'/);
-    expect(section).toMatch(/DELETE FROM user_settings/);
-    expect(section).toMatch(/DELETE FROM tenant_limits/);
-    expect(section).toMatch(/DELETE FROM sessions/);
-    expect(section).toMatch(/DELETE FROM api_token_scopes/);
-    expect(section).toMatch(/DELETE FROM api_tokens/);
-    expect(section).toMatch(/DELETE FROM auth_challenges/);
-    expect(section).toMatch(/completed_user_id='\$DRILL'/);
-    expect(section).toMatch(/DELETE FROM digest_deliveries/);
-    expect(section).toMatch(/DELETE FROM wipe_progress/);
-    expect(section).toMatch(/DELETE FROM users/);
+    expect(section).toMatch(/Control-plane teardown is automatic/);
+    expect(section).toMatch(/completed_user_id/);
+    expect(section).toMatch(/account_deletions/);
+    expect(section).toMatch(/account residue-scan/);
+    // Instructions must not restore the pre-S4 manual teardown commands.
+    expect(section).not.toMatch(/--command "DELETE FROM (?:users|sessions|api_tokens|auth_challenges)/);
   });
 });

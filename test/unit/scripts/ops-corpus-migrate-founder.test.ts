@@ -80,6 +80,9 @@ interface Harness {
   // Read traffic, so the certification cost of a pass is observable.
   gets: string[];
   lists: { n: number };
+  // `live:{readingId}:{upserts.length at the time}` — the suffix is what makes
+  // the ordering assertion possible.
+  ledgered: string[];
 }
 
 // In-memory bucket + vector index. Etags are derived from bodies, so a copied
@@ -104,6 +107,8 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
   const sleeps: number[] = [];
   const gets: string[] = [];
   const lists = { n: 0 };
+  // Every reading id this run ledgers before its vector upsert (issue #195 S3).
+  const ledgered: string[] = [];
 
   const clients = (namespace: string): MigrateFounderClients => ({
     r2: {
@@ -160,10 +165,18 @@ function makeHarness(opts: { legacyVector?: boolean } = {}): Harness {
     sleep: async (ms) => {
       sleeps.push(ms);
     },
+    makeLedger: () => ({
+      markLive: async (ids) => {
+        // Records the ORDER as well as the ids: the row must be written before
+        // the upsert it describes, or a crash between them strands the vector.
+        for (const id of ids) ledgered.push(`live:${id}:${upserts.length}`);
+      },
+      markDeleteSubmitted: async () => {},
+    }),
   };
   return {
     deps, out, err, objects, vectors, puts, upserts, savedStates, stateOnDisk,
-    sleeps, gets, lists,
+    sleeps, gets, lists, ledgered,
   };
 }
 
@@ -505,6 +518,12 @@ describe("ops corpus migrate-founder — execute", () => {
     ]);
     // Legacy vector retained alongside the migrated one.
     expect(h.vectors.has("rd_ready")).toBe(true);
+    // The vector-ledger row is written BEFORE the upsert (issue #195 S3): the
+    // `:0` suffix is the upsert count at the moment the row was written. This
+    // writer checks no `users.status`, so without the row a migration run
+    // against a tenant mid-wipe would leave a vector nothing can address. The
+    // id is the BARE reading id, never the `{tenantId}:{readingId}` vector id.
+    expect(h.ledgered).toEqual(["live:rd_ready:0"]);
     const final = h.stateOnDisk.value!;
     expect(Object.keys(final.copies)).toHaveLength(7);
     for (const entry of Object.values(final.copies)) {

@@ -171,3 +171,64 @@ describe("purgeReading error classification", () => {
     expect(row).toBeNull();
   });
 });
+
+// Issue #195 S3. A single-reading purge is a vector writer too, and it is the
+// one that most obviously produces the failure the ledger exists to prevent:
+// it deletes the reading's R2 objects in the same call, so a vector delete that
+// did not take leaves a vector with no id source anywhere (review finding F3).
+describe("purgeReading vector ledger", () => {
+  const events: string[] = [];
+  let deletes = 0;
+  const similarity = {
+    delete: async () => {
+      deletes += 1;
+    },
+  } as unknown as NonNullable<Parameters<typeof purgeReading>[0]["similarity"]>;
+  const ledger = {
+    markLive: async () => {
+      throw new Error("a purge never marks a vector live");
+    },
+    markDeleteSubmitted: async (ids: readonly string[]) => {
+      for (const id of ids) events.push(`submitted:${id}:${deletes}`);
+    },
+  };
+
+  it("records the id once, before anything is deleted, and never clears it", async () => {
+    events.length = 0;
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity, ledger }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    // ONCE, after the first vector delete (`:1`) — `deleted_at_ms` dates the
+    // submission and the confirmation rule's +120s delay is measured from it.
+    //
+    // Not again in the final sweep, though that sweep does re-issue the vector
+    // delete. A second write would re-stamp the identical value while adding a
+    // failure point AFTER the objects are gone, where a D1 blip would throw out
+    // of DELETE /api/readings/:id with the by-id pointer still present. The
+    // invariant is already satisfied: the id was recorded before anything was
+    // deleted.
+    expect(events).toEqual([`submitted:${ID}:1`]);
+    expect(deletes).toBe(2);
+  });
+
+  it("touches no ledger when there is no similarity store to delete through", async () => {
+    // Local dev has no Vectorize binding, so the purge is R2-only and no vector
+    // delete was submitted. A `delete_submitted` row would date one that never
+    // happened.
+    events.length = 0;
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity: null, ledger }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    expect(events).toEqual([]);
+  });
+
+  it("purges without a ledger, so a control-plane-less environment still works", async () => {
+    deletes = 0;
+    const reader = fakeReader({});
+    const out = await purgeReading({ reader, similarity }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    expect(deletes).toBe(2);
+  });
+});

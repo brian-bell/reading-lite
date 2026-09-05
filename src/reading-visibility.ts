@@ -3,6 +3,7 @@ import {
   ReadingStore,
 } from "./modules/stores/reading-store";
 import { SimilarityStore } from "./modules/stores/similarity-store";
+import type { VectorLedger } from "./control-plane/vector-ledger";
 import type { Manifest, ProcessingStage } from "./schemas/manifest";
 import { attemptOwnership, type ProcessReadingArgs } from "./attempt-ownership";
 
@@ -39,10 +40,23 @@ const passthrough: Instrument = (_stage, fn) => fn();
 // fence: it drops the vector unconditionally, because a tenant marked `deleting`
 // has no data left worth guarding and because a concurrent account wipe may
 // already have removed the list row and manifest those gates read.
+// `ledger` is the durable vector-id ledger (issue #195 S3,
+// `src/control-plane/vector-ledger.ts`). It is null in exactly the situations
+// `similarity` is — no Vectorize binding, so no vector to account for — and a
+// write to it always accompanies a write to the vector, never replaces one.
+//
+// `publish` does NOT write the ledger row for the reading it is publishing —
+// `commitTerminalManifest` does, before the terminal manifest. The ordering the
+// ledger needs (row before upsert) holds either way; what only the earlier
+// placement gets is a failure that can be retried, because `readyManifest`
+// clears `active_attempt` and nothing can republish after the terminal write.
+// The removal verbs below still stamp `delete_submitted` themselves, since
+// there is no manifest CAS in front of them to be stranded by.
 export class ReadingVisibility {
   constructor(
     private readonly reader: ReadingStore,
     private readonly similarity: SimilarityStore | null,
+    private readonly ledger: VectorLedger | null = null,
   ) {}
 
   // Append (or replace) the list row, then upsert the vector. With a null
@@ -59,6 +73,13 @@ export class ReadingVisibility {
       this.reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, args.keyPrefix)),
     );
     if (vector && this.similarity) {
+      // The ledger row for this reading is written by `commitTerminalManifest`
+      // BEFORE the terminal manifest, not here. The ordering the ledger needs —
+      // row before upsert — holds either way, but only the earlier placement
+      // can fail usefully: once the terminal manifest is committed,
+      // `active_attempt` is cleared and no retry can republish, so a ledger
+      // error thrown at this point would strand the reading rather than being
+      // retried. See the comment at that call site.
       await run("upsert_vector", () =>
         this.similarity!.upsert(args.id, vector.embedding, vector.meta),
       );
@@ -76,6 +97,11 @@ export class ReadingVisibility {
     if (!(await this.removeListRow(args))) return;
     if (!(await this.canRemoveVector(args))) return;
     await this.similarity.delete(args.id);
+    // AFTER the delete: `deleted_at_ms` is what the +120s first-confirmation
+    // delay is measured from, so it must record when the delete was actually
+    // asked for. The row is marked, not removed — an unconfirmed delete still
+    // needs its id kept, which is the whole point of the ledger.
+    await this.ledger?.markDeleteSubmitted([args.id], Date.now());
   }
 
   // Deletion-fence compensation: the tenant was confirmed `deleting` around this
@@ -86,9 +112,11 @@ export class ReadingVisibility {
   // *live* tenant's data from an attempt that no longer owns the reading; on a
   // tenant being deleted there is nothing left to protect, and the gates are
   // actively harmful — an account wipe running concurrently deletes
-  // `index/list.json` and the manifest out from under this consumer, and a
-  // vector upserted after the wipe collected its ids would then be
-  // unaddressable, because R2 is the only place reading ids come from.
+  // `index/list.json` and the manifest out from under this consumer, and this
+  // is the compensation that keeps the vector from outliving the reading it
+  // belongs to. Since issue #195 S3 the id itself is safe either way (the
+  // ledger holds it), so a missed compensation costs a later wipe pass rather
+  // than a permanent stranding — but deleting promptly is still right.
   //
   // The list row is still removed under the ordinary ownership gate: removing a
   // foreign attempt's row buys nothing here (the wipe deletes the whole index
@@ -104,17 +132,20 @@ export class ReadingVisibility {
   // and here it is load-bearing. `removeListIndexItemIf` throws when its CAS
   // retries are exhausted, which is exactly what a concurrent wipe rewriting or
   // deleting `index/list.json` provokes. Sequencing the vector delete behind that
-  // write would let the one outcome this method exists to prevent — a vector
-  // outliving the only source of its id — fall out of the failure it is most
+  // write would let the outcome this method exists to prevent — a vector
+  // outliving the reading it belongs to — fall out of the failure it is most
   // likely to meet.
   //
   // Not free: when the list write is what fails, the vector is already gone
   // while the row and manifest survive, so the reading stays listed and readable
   // but missing from semantic search. That is the better half of the trade (the
-  // id stays derivable, so the wipe can still finish the job) and it is confined
+  // ledger row survives either way, so the wipe can still finish the job) and it is confined
   // to a tenant being deleted, but it is a real intermediate state, not none.
   async removeForDeletedTenant(args: ProcessReadingArgs): Promise<void> {
-    if (this.similarity) await this.similarity.delete(args.id);
+    if (this.similarity) {
+      await this.similarity.delete(args.id);
+      await this.ledger?.markDeleteSubmitted([args.id], Date.now());
+    }
     await this.removeListRow(args);
   }
 

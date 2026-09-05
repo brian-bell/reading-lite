@@ -1,43 +1,90 @@
 /**
  * Deferred tenant R2 + Vectorize wipe (issue 195b / s1k.10.1).
  *
- * The invariants this module holds, and the one race it still does not close.
+ * The invariants this module holds, what the vector ledger closed, and the one
+ * stranding that survives it.
  *
  * ## Scope
  *
  * It deletes exactly two things for a tenant already marked
  * `users.status='deleting'` by 195a: their Vectorize vectors and everything
- * under their R2 key root. It does not hard-delete the users row, tear down
- * Durable Objects, cascade D1, or decide email reuse — that is control-plane
- * teardown, a later slice. `DELETE /api/account` is the suppress path and never
- * enqueues; the wipe is a shared-queue job plus the existing 15-minute cron.
+ * under their R2 key root. The *job* still touches no D1 row but the wipe
+ * record, no Durable Object, and no email: hard-deleting the `users` row,
+ * clearing the child rows and the guards, and freeing the address are
+ * control-plane teardown (`src/control-plane/account-teardown.ts`, issue 195
+ * S4). Fan-out invokes that as its own stage, for a tenant whose wipe has
+ * already completed and whose prefix is confirmed empty — never inside a
+ * delivery, so a teardown failure retries on the next tick rather than dragging
+ * a finished wipe back through the queue. `DELETE /api/account` is the suppress
+ * path and never enqueues; the wipe is a shared-queue job plus the existing
+ * 15-minute cron.
  *
  * ## Invariants
  *
  * **Vectors before objects.** Every vector delete for a phase is submitted
- * before that phase's first R2 delete. Reading ids come only from R2 (the list
- * index and the key layout), so emptying the prefix first would strand the
- * embeddings permanently.
+ * before that phase's first R2 delete. This no longer protects an id *source* —
+ * the ledger holds the ids and R2 cannot lose them — but it still keeps the
+ * user-visible order right: a reading whose vector is gone while its objects
+ * remain is missing from search, whereas the reverse is a listed reading whose
+ * detail page 404s.
+ *
+ * **The ledger is the id source, and the termination condition.** Every vector
+ * writer records the reading id in D1 `vector_ledger` (migration `0010`,
+ * `src/control-plane/vector-ledger.ts`) BEFORE it upserts. The wipe submits
+ * `deleteByIds` for the tenant's `live` rows, marks them `delete_submitted`,
+ * and finishes only when the namespace probes clean AND no row of either state
+ * remains — cleared under the confirmation rule S6 measured, never on a single
+ * unconfirmed read. "The R2 prefix is empty" is no longer evidence of anything
+ * about the index.
+ *
+ * **The wipe seeds the ledger itself, before anything is deleted.** The ledger
+ * can only name vectors it has rows for, and a corpus that predates it has
+ * none. So the first thing a wipe does is page its own key root, derive every
+ * reading id it finds, and insert the missing rows — R2 is intact at that
+ * moment, being the very thing about to be deleted, so the wipe holds exactly
+ * the inputs an operator's `ops corpus seed-vector-ledger` would.
+ *
+ * The invariant that buys is local and inductive: **no object is deleted before
+ * its reading id is in the ledger.** No global comparison to get right, no
+ * proxy set to be wrong about, no operator in the critical path, and nothing
+ * that can refuse a healthy tenant.
+ *
+ * It replaced a pre-flight coverage CHECK that compared the ledger against the
+ * `ready` rows of `index/list.json` and refused when it fell short. That was
+ * unsound in the direction that mattered: a reading whose vector outlived its
+ * `ready` status — reprocessed to `failed` (the failure path publishes with a
+ * null similarity store and deliberately leaves the vector alone), dropped from
+ * the list index, partially purged — has a live vector and no `ready` row, so
+ * it passed the check and was stranded anyway. The check's own failure mode was
+ * the one it existed to prevent. The key space has no such blind spot: every
+ * reading with any object left carries its id in that object's key.
  *
  * **Fail closed on an unbound index.** With no `READINGS_INDEX` the job throws
  * (`index_unbound`) before either phase runs, so no R2 object is deleted while
  * nothing can delete the matching vectors — including on a delivery that resumes
  * straight into `objects` and would otherwise never reach a vector call. The
- * vectors phase repeats the check *before* its "no ids to delete" short-circuit
- * — an empty id set means "R2 yielded no ids", which is also what an
- * already-emptied prefix looks like — and the terminal probe repeats it again.
+ * vectors phase repeats the check *before* reading the ledger, and the terminal
+ * confirmation repeats it again, so no path reaches R2 without one.
  * Cron fan-out has no such check, so with the binding gone it still claims a
  * lease and enqueues; every delivery then throws. That is loud rather than
  * destructive, which is the side to err on.
  *
- * **A wipe never reports success without addressing the index.** Before the
- * terminal transition it probes the tenant namespace and refuses to finish
- * while anything still answers, retrying on a minutes-scale delay because
- * `deleteByIds` propagates asynchronously. The retries are bounded
- * (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`); past the bound it raises a
- * high-severity `account_wipe_namespace_residue` alert carrying the tenant id
- * and nothing else, records `residue` on the completion record, and completes
- * rather than looping a doomed job through the DLQ every 15 minutes.
+ * **A wipe never reports success while a ledger row survives.** Before the
+ * terminal transition it confirms the deletes actually landed and clears the
+ * rows they covered. The rule is measured, not assumed (report
+ * `rl-195-s6-staging-gate` §5, which supersedes the design's sketch wherever
+ * the two differ): one namespaced `query` as a fast path, per-id `getByIds`
+ * as the fallback, two spaced absences from *successful* responses before any
+ * row clears, and no first attempt until 120s after `deleteByIds` returned —
+ * S6 measured propagation at 30-90s, so an immediate probe was guaranteed to
+ * hit and burned one of the attempts on no information (defect D2). The
+ * attempts are bounded (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`); past the bound it
+ * raises a high-severity `account_wipe_namespace_residue` alert carrying the
+ * tenant id and nothing else, records `residue` on the completion record, and
+ * completes rather than looping a doomed job through the DLQ every 15 minutes.
+ * The ledger rows are deliberately LEFT in place in that case: they are the
+ * only remaining handle on the vectors nobody could confirm gone, and S5's
+ * residue scan reads them.
  *
  * **The gate is a kill switch, not a fallback.** With `TENANT_DATA_PLANE` off
  * (or an empty key root) both fan-out and job skip with `no_tenant_prefix`.
@@ -61,7 +108,7 @@
  * replaces was deleted at the terminal transition (finding F4) because its key
  * named a deleted tenant and its body listed their reading ids. The D1 row is
  * keyed by a tenant whose `users` row is still present until S4's teardown, and
- * the terminal write clears both cursors, so the record that survives holds no
+ * the terminal write clears the R2 cursor, so the record that survives holds no
  * reading id — only counts, flags, `completed_at_ms`, and `residue`. Keeping it
  * is what lets fan-out ask "was this tenant wiped?" instead of inferring it from
  * an empty R2 prefix, and it is the gate S4's hard delete of the `users` row
@@ -89,57 +136,69 @@
  * real tenant reaches it (see the constant) and tightly enough that a stuck one
  * does.
  *
- * **Resumability is stateless beyond two cursors.** Reading ids are re-derived
- * from R2 on every pass rather than persisted; the record carries only phase,
- * the two cursors, and lease/probe/continuation bookkeeping. Both cursors are
- * values, not indices — `vector_cursor` is the last reading id submitted, so an
- * id disappearing between deliveries, or appearing above the cursor, cannot
- * shift a window past an id that was never sent. (An id that first becomes
- * derivable from R2 *below* the cursor is still missed; see the race below.)
+ * **Resumability is stateless beyond one cursor.** The record carries phase,
+ * the R2 list cursor, and lease/probe/continuation bookkeeping — nothing else.
+ * The vectors phase needs no cursor at all: it reads `state = 'live'` ledger
+ * rows and flips each batch to `delete_submitted` as it submits, so the query
+ * advances itself and, unlike the forward-only `vector_cursor` it replaces,
+ * cannot skip an id that appears below where the last pass stopped.
  *
- * ## The race this does not close
+ * ## The races this closes, and the one it does not
  *
- * A vector whose reading id is no longer derivable from R2 is unaddressable:
- * `deleteByIds` needs an id and there is nothing left to compute one from.
+ * Four strandings used to share one cause: `deleteByIds` needs an id, ids came
+ * only from R2, and R2 was emptied by this very job. All four are closed by the
+ * ledger writing the id BEFORE the upsert, at every writer site — the publisher
+ * (`reading-visibility.ts`), the single-reading purge (`reading-purge.ts`), and
+ * the three offline writers (`corpus backfill-vectors`, `corpus
+ * migrate-founder`, `batch/write-phase`) that check no `users.status` and could
+ * upsert into a tenant whose wipe was already past its vectors phase. The
+ * publisher fence (`ReadingVisibility.removeForDeletedTenant`) still runs and
+ * is still worth having — it deletes promptly rather than waiting for a later
+ * pass — but the wipe no longer depends on it, and its two escape hatches (a
+ * D1 recheck that fails open, an isolate that dies between the upsert and the
+ * recheck) no longer strand anything: the row is already written.
  *
- * `processReading` narrows the live half of this at the publisher: a consumer
- * that publishes against a tenant confirmed `deleting` deletes its own vector
- * directly (`ReadingVisibility.removeForDeletedTenant`) instead of waiting for a
- * wipe that has already collected its ids. **Narrows, not closes.** That recheck
- * fails open on a D1 lookup error, and an isolate that dies between the upsert
- * and the recheck never runs the compensation at all; in either case a wipe
- * whose vectors phase is already past will empty the reading's R2 objects and
- * leave the vector with no id source. The terminal probe can sample for such a
- * vector but cannot delete it, and so can a stranding that predates the wipe
- * entirely (review finding F3).
+ * **What the ledger does not fix is the past, and one piece of that is a gate
+ * on #195 rather than a footnote.**
  *
- * A third, narrower instance of the same shape: a reading that first becomes
- * derivable from R2 *between* two vectors-phase deliveries, and whose (random)
- * id sorts below `vector_cursor`, is never submitted by this wipe — the resume
- * window only looks forward. It needs a tenant with more than one delivery's
- * worth of vectors and a publish landing inside that window.
+ * Two shapes survive this slice, and they are not equally benign.
  *
- * And a fourth: the fence lives in `processReading`, so it covers the publisher
- * and nothing else. The offline vector writers — `corpus-backfill-vectors`,
- * `corpus-migrate-founder`, and `batch/write-phase` — check no `users.status`
- * and can upsert into a tenant whose wipe is already past its vectors phase.
- * Nothing catches that today; the terminal probe still *sees* an upsert that
- * lands before it (refusing to finish, then alerting and recording `residue`) —
- * it just cannot delete it. It takes an operator running one of those
- * `--execute` against an account being deleted.
+ * The first is unrecoverable: a reading purged from R2 before this slice whose
+ * vector delete failed has no ledger row and never will, because there is
+ * nothing left to derive one from. `ops corpus seed-vector-ledger` covers every
+ * reading an existing corpus still *has*; a vector already orphaned when the
+ * ledger arrived is unseedable by construction. That is the honest residual of
+ * review finding F3.
  *
- * All four close the same way: a durable per-tenant vector-id ledger, which
- * takes R2 out of the id-source role entirely — issue #261, out of scope here.
+ * The second IS recoverable and must be recovered. Until the fix in this same
+ * change, `batch/write-phase` wrote tenant vectors under BARE reading ids
+ * (`makeVectorizeClient.upsert` attaches a namespace but never composed
+ * `tenantVectorId`). Any tenant that ever ran `ops corpus ingest` or
+ * `corpus recover --batch` under `--tenant` therefore has vectors this wipe
+ * cannot address: `deleteByIds` submits the composed id and misses them. Every
+ * wipe for such a tenant will spend its attempts, alert, and complete with
+ * `residue = 1` while those embeddings survive account deletion — indefinitely,
+ * until they are repaired.
  *
- * What is no longer part of that list is the *evidence*. While progress lived in
- * R2 and was deleted on completion, a tenant with an emptied prefix and stranded
- * vectors was indistinguishable from one that had never been wiped, so fan-out
- * had to skip it forever to avoid restarting a wipe every 15 minutes. The D1
- * record persists instead: the tenant is known-wiped, `residue` says whether the
- * namespace was ever confirmed clean, and the residue scan and S4's teardown gate
- * can both read it. Re-sweeping such a tenant still needs #261's ledger, because
- * there is still no id to delete by — but the finding is now written down rather
- * than inferred from an absence.
+ * That population also has a live-tenant cost that has nothing to do with
+ * deletion: a bare-id vector and a composed one for the same reading are two
+ * distinct matches to a namespaced query, so the reading turns up twice in its
+ * own neighbourhood and duplicates land in `manifest.similarity`. It is NOT
+ * auto-healed here — see `WriteDeps.vectorNamespace` in
+ * `scripts/corpus-lib/batch/write-phase.ts` for why deleting the bare id from
+ * the batch writer would destroy retained legacy vectors instead. S5 owns both
+ * halves: the wipe residue and the search duplication.
+ *
+ * **So `residue = 1` on such a tenant is not a healthy outcome to be filed
+ * away.** It is that known gap, and repairing it in production is a gate on
+ * #195's acceptance bullet 3 ("a repeatable residue scan reports zero
+ * tenant-owned data"), not optional cleanup. Slice S5 owns the audit and
+ * repair; this header is the warning not to read the flag as noise before then.
+ *
+ * The other thing the ledger cannot do is prove absence. Vectorize has no scan;
+ * the confirmation rule is per-id evidence plus a namespace sample, and both
+ * are sampling. What it CAN do is name every id it is responsible for, which is
+ * the difference between residue that can be re-swept and residue that cannot.
  *
  * ## Mechanics worth knowing
  *
@@ -166,6 +225,11 @@
  * reporting figure — but do not read it as an audited count of what was
  * destroyed.
  */
+import {
+  tearDownAccount,
+  type AccountTeardownEnv,
+  type PrefixVerdict,
+} from "./control-plane/account-teardown";
 import { fromD1, type ControlPlaneDb } from "./control-plane/db";
 import { parseTenantId, type TenantId } from "./control-plane/ids";
 import {
@@ -183,6 +247,22 @@ import {
   parseAccountWipeEnvelope,
   type AccountWipeEnvelopeV1,
 } from "./control-plane/wipe-envelope";
+import {
+  applyAbsenceObservation,
+  chunkForGetByIds,
+  clearLedgerRows,
+  clearTenantLedger,
+  confirmBackoffSeconds,
+  countLedgerRows,
+  d1VectorLedger,
+  earliestConfirmableAtMs,
+  insertMissingLedgerRows,
+  listDeleteSubmittedEntries,
+  listLiveLedgerIds,
+  recordAbsences,
+  resetAbsenceStreaks,
+  type GetByIdsObservation,
+} from "./control-plane/vector-ledger";
 import {
   BY_ID_PREFIX,
   READINGS_PREFIX,
@@ -215,32 +295,38 @@ export const ACCOUNT_WIPE_IN_FLIGHT_MS = 15 * 60_000;
 /** Cloudflare Queues cap on `msg.retry({ delaySeconds })`. */
 export const ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS = 43_200;
 /**
- * Retry delay for a terminal probe that still sees vectors. Minutes, not the
- * 30s exponential every other failure uses: `deleteByIds` propagates
- * asynchronously, so a hit immediately after submitting is the expected case
- * rather than a fault. On the fast schedule a real wipe would burn
- * `max_retries = 3` in about three and a half minutes and dead-letter before
- * propagation had any chance to land.
+ * How many terminal confirmation passes may fail before the wipe stops waiting.
+ *
+ * Four, and `max_retries` on both wipe consumers (wrangler.toml) must stay
+ * STRICTLY ABOVE it — currently by two. Not every retry spends an attempt: the
+ * +120s first-confirmation deferral retries without counting one, and so does
+ * any transient D1/R2/Vectorize error, so an equal budget dead-letters a
+ * healthy wipe before the bound ever trips.
+ * `test/unit/deploy/account-wipe-wrangler.test.ts` pins the inequality;
+ * raising this without raising `max_retries` in the same commit fails it.
+ *
+ * Sized off the measured schedule, not picked round (report
+ * `rl-195-s6-staging-gate` §5.2): the first attempt is at +120s and the
+ * backoff runs 120s → 240s → 480s, so four attempts reach ~t+16 minutes of
+ * real patience against a propagation latency measured at 30-90s. Three
+ * attempts on the old flat 300s schedule reached ~10 minutes, one of which was
+ * always spent on a premature first probe (defect D2).
+ *
+ * Past the bound the likely cause is not lag but a vector nobody can confirm —
+ * a pre-ledger stranding, or an index that has stopped answering — which no
+ * amount of retrying fixes, so the wipe alerts an operator, records `residue`,
+ * keeps the ledger rows, and completes rather than failing in a loop.
  */
-export const ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS = 300;
+export const ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = 4;
 /**
- * How many terminal probes may fail before the wipe stops waiting.
+ * How many ledger rows one delivery will confirm.
  *
- * Deliberately equal to the queue's `max_retries = 3` (wrangler.toml, both wipe
- * consumers) so the bound is consumed inside one message's own retry budget:
- * at 5 minutes a go that allows ~10 minutes for propagation and the wipe
- * resolves without ever dead-lettering. A larger bound would not buy more
- * patience — it would just push attempts past `max_retries` into the DLQ and
- * make every healthy wipe raise a dead-letter alarm before cron picked it up
- * again 15 minutes later.
- *
- * Past the bound the likely cause is not lag but a vector whose reading id is
- * no longer derivable from R2, which no amount of retrying can fix (see the
- * header's note on unaddressable vectors), so the wipe alerts an operator,
- * records `residue` on the completion record, and completes rather than failing
- * in a loop.
+ * `getByIds` is capped at 20 ids a request, so this is 25 requests. Bounded
+ * because a confirmation pass is the last thing standing between a wipe and its
+ * terminal write; a tenant with tens of thousands of rows should make partial
+ * progress across deliveries rather than time the isolate out.
  */
-export const ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = 3;
+export const ACCOUNT_WIPE_CONFIRM_BATCH = 500;
 /**
  * How many `continue` self-sends one wipe pass may make (review finding F7).
  *
@@ -249,12 +335,18 @@ export const ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = 3;
  * fails resets that budget on every self-send and never dead-letters — it just
  * cycles, forever, invisibly.
  *
- * The bound is sized off a delivery's own limits rather than picked round: a
- * delivery moves up to `ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES` × `R2_LIST_LIMIT`
- * objects (20,000) or `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES` ×
- * `VECTORIZE_DELETE_MAX_IDS` ids (20,000), so 200 continuations covers roughly
- * four million of either. No real tenant reaches that; a stuck one reaches it in
- * a bounded number of cycles and then dead-letters where it can be seen. The
+ * The bound is sized off a delivery's own limits rather than picked round, and
+ * three phases now share the counter:
+ *
+ *   seed     `ACCOUNT_WIPE_DEFAULT_SEED_PAGES` × `R2_LIST_LIMIT`        =  5,000 objects
+ *   vectors  `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES` × `VECTORIZE_DELETE_MAX_IDS` = 5,000 ids
+ *   objects  `ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES` × `R2_LIST_LIMIT`      = 20,000 objects
+ *
+ * So a pass spends roughly N/5,000 continuations seeding plus N/20,000 deleting,
+ * and 200 of them carries a tenant of order 800,000 objects. Far above any
+ * plausible one — but the figure is derived from the constants above rather
+ * than asserted, so it moves when they do. A stuck wipe reaches the bound in a
+ * bounded number of cycles and then dead-letters where it can be seen. The
  * counter is per pass — reopening a leftover wipe resets it.
  */
 export const ACCOUNT_WIPE_MAX_CONTINUATIONS = 200;
@@ -286,9 +378,48 @@ export const ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS = 60_000;
 export const ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT = "account_wipe_namespace_residue";
 /** Operator alert: `status='deleting'` with no `deleting_at_ms` (finding F6). */
 export const ACCOUNT_WIPE_MISSING_DELETING_AT_EVENT = "account_wipe_missing_deleting_at";
+export const ACCOUNT_TEARDOWN_COMPLETE_EVENT = "account_teardown_complete";
+export const ACCOUNT_TEARDOWN_SKIPPED_EVENT = "account_teardown_skipped";
+export const ACCOUNT_TEARDOWN_FAILED_EVENT = "account_teardown_failed";
 export const R2_LIST_LIMIT = 1000;
 export const ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES = 20;
-export const ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES = 20;
+/**
+ * R2 pages the seed step walks per delivery.
+ *
+ * Five, not the objects phase's twenty, because a seed page costs far more than
+ * a list call.
+ *
+ * READ THIS BEFORE RAISING EITHER THIS OR `ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES`.
+ * The three phases are budgeted against the subrequest ceiling individually,
+ * but they all run in ONE invocation when none of them returns `continue`.
+ * Worst case in a single delivery is roughly 250 seed statements, 250
+ * `markDeleteSubmitted` statements, the per-page persists, the objects phase's
+ * listing and delete calls, and up to ~100 confirmation calls — order 600-700
+ * subrequests, before any headroom. Each constant looks safe to raise on its
+ * own and is not. A page of up to `R2_LIST_LIMIT` keys can yield that many
+ * distinct reading ids — a run of `index/by-id/{id}` keys is exactly one id per
+ * object — and each `VECTOR_LEDGER_WRITE_CHUNK` of them is its own D1
+ * statement. Twenty pages would therefore put ~1000 D1 statements in one
+ * invocation on a large tenant, on top of the vectors and objects phases that
+ * may run in the same delivery: the same Workers subrequest ceiling that cut
+ * ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES to 5. Five pages keeps the step near 250
+ * statements and still covers 5000 objects a delivery, with `continue`
+ * self-sends carrying the rest.
+ */
+export const ACCOUNT_WIPE_DEFAULT_SEED_PAGES = 5;
+/**
+ * Vector batches per delivery.
+ *
+ * Five, not twenty, because each batch is now more than one call. A batch reads
+ * up to `VECTORIZE_DELETE_MAX_IDS` ledger rows, submits one `deleteByIds`, and
+ * marks them `delete_submitted` in `ceil(1000 / VECTOR_LEDGER_WRITE_CHUNK)`
+ * statements — so twenty batches put ~1000 D1 statements in a single
+ * invocation, at or over the Workers subrequest ceiling for a large tenant, and
+ * the failure mode is silent retry churn. Five keeps a delivery near 250
+ * statements and still moves 5000 ids; `continue` self-sends carry the rest,
+ * bounded by ACCOUNT_WIPE_MAX_CONTINUATIONS.
+ */
+export const ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES = 5;
 
 export const ACCOUNT_WIPE_QUEUE_NAMES = [
   "reading-lite-wipe",
@@ -299,7 +430,7 @@ export const ACCOUNT_WIPE_DLQ_NAMES = [
   "reading-lite-staging-wipe-dlq",
 ] as const;
 
-export interface AccountWipeEnv {
+export interface AccountWipeEnv extends AccountTeardownEnv {
   CONTROL_PLANE: D1Database;
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX?: VectorizeIndex;
@@ -318,6 +449,7 @@ export interface AccountWipeJobDeps {
   now?: () => number;
   maxObjectPages?: number;
   maxVectorBatches?: number;
+  maxSeedPages?: number;
 }
 
 function wipeJobNow(deps: AccountWipeJobDeps): number {
@@ -325,28 +457,34 @@ function wipeJobNow(deps: AccountWipeJobDeps): number {
 }
 
 /**
- * The tenant namespace still returned a vector after the wipe emptied R2.
- * Retryable on the propagation-lag schedule, not the fast exponential — see
- * ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS.
+ * Ledger rows survived this delivery's confirmation pass.
+ *
+ * Retryable on the measured propagation schedule rather than the fast
+ * exponential every other failure uses, so it carries its own delay: the
+ * doubling backoff after a real attempt, or simply the wait remaining before
+ * the first attempt is allowed to count.
  */
 export class AccountWipeNamespaceNotEmptyError extends Error {
   constructor(
     public readonly tenantId: string,
     public readonly remaining: number,
     public readonly attempts: number,
-    /** True when the probe threw rather than returning matches. */
+    public readonly retryAfterSeconds: number,
+    /**
+     * True when nothing was actually observed — the confirmation calls failed,
+     * or none of the rows was old enough to count yet. Kept distinct from a
+     * genuine sighting because the two mean different things to whoever reads
+     * the alert at the end: "vectors were still there" versus "we never got an
+     * answer".
+     */
     public readonly unconfirmed = false,
   ) {
-    // Say which of the two this was. "0 still answering" would assert residue
-    // nobody observed, and these intermediate retries are what an operator
-    // actually watches while the wipe is still running — the residue vs
-    // unconfirmed distinction cannot wait for the final alert.
     super(
       unconfirmed
-        ? `account_wipe namespace_unconfirmed for ${tenantId}: probe failed ` +
-            `(attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS})`
-        : `account_wipe namespace_not_empty for ${tenantId}: ${remaining} still answering ` +
-            `(probe attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS})`,
+        ? `account_wipe ledger_unconfirmed for ${tenantId}: ${remaining} row(s) unconfirmed ` +
+            `(attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS}, retry in ${retryAfterSeconds}s)`
+        : `account_wipe ledger_not_empty for ${tenantId}: ${remaining} row(s) remain ` +
+            `(attempt ${attempts}/${ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS}, retry in ${retryAfterSeconds}s)`,
     );
     this.name = "AccountWipeNamespaceNotEmptyError";
   }
@@ -417,6 +555,21 @@ export function wipeLeaseHeld(updatedAtMs: number, nowMs: number): boolean {
   return nowMs - updatedAtMs < ACCOUNT_WIPE_IN_FLIGHT_MS;
 }
 
+/**
+ * The reading id a tenant-relative R2 key belongs to, or null.
+ *
+ * The wipe itself no longer walks R2 for ids — the ledger holds them — but this
+ * is still the corpus-walking rule, and `ops corpus seed-vector-ledger` is the
+ * one thing that must reproduce it exactly when it back-fills the ledger for an
+ * existing corpus. It stays here, single-homed, rather than being re-spelled
+ * there: a seeding walk that disagreed with this by one character would leave a
+ * hole in the ledger, and a ledger with a hole is worse than no ledger because
+ * the wipe would terminate on a false empty.
+ *
+ * `parseReadingId` enforces the Crockford alphabet (no I, L, O, U), which is
+ * why the seeding command reads existing ids rather than generating any — S6's
+ * own drill lost a seeding pass to exactly that (observation O1).
+ */
 export function readingIdFromRelativeKey(relativeKey: string): string | null {
   if (relativeKey.startsWith(BY_ID_PREFIX)) {
     const rest = relativeKey.slice(BY_ID_PREFIX.length);
@@ -456,6 +609,65 @@ function warnMissingDeletingAt(tenantId: string, deletingAtMs: number | null | u
   );
 }
 
+/**
+ * Control-plane teardown for a tenant whose data-plane wipe is finished
+ * (issue 195 S4). Called from fan-out rather than from the wipe delivery, so
+ * that it is an independently resumable stage: a failure logs and the next
+ * tick tries again, instead of dragging a finished wipe back through the queue.
+ *
+ * Never throws. Fan-out's job is to keep every *other* tenant moving. The
+ * per-tenant `account_teardown_complete` log is the observable signal; the
+ * fan-out's return value deliberately stays `{ enqueued }`, since a teardown
+ * is not an enqueue and a second counter nothing reads would only be noise.
+ */
+async function tearDownFinishedAccount(
+  db: ControlPlaneDb,
+  env: AccountWipeEnv,
+  tenantId: TenantId,
+  nowMs: number,
+): Promise<void> {
+  try {
+    const result = await tearDownAccount(db, env, {
+      tenantId,
+      nowMs,
+      // Asked again here, inside teardown, immediately before the batch — not
+      // reused from the check above, which is two Durable Object round-trips
+      // and an address-history lookup older by then.
+      prefixVerdict: () => tenantPrefixVerdict(env.READINGS_BUCKET, tenantId, env),
+    });
+    if (result.kind === "torn_down") {
+      console.log(
+        JSON.stringify({
+          event: ACCOUNT_TEARDOWN_COMPLETE_EVENT,
+          tenant_id: tenantId,
+          rows_deleted: result.rowsDeleted,
+        }),
+      );
+      return;
+    }
+    // Fan-out only calls this for a tenant it has just seen as completed with an
+    // empty prefix, so every other verdict means the row moved underneath us or
+    // is inconsistent. Silence here would repeat forever on every tick with
+    // nothing to show for it.
+    console.warn(
+      JSON.stringify({
+        event: ACCOUNT_TEARDOWN_SKIPPED_EVENT,
+        tenant_id: tenantId,
+        reason: result.kind,
+      }),
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: ACCOUNT_TEARDOWN_FAILED_EVENT,
+        tenant_id: tenantId,
+        message: error instanceof Error ? error.message : String(error),
+        note: "control-plane teardown did not finish; the audit row is written and the next tick retries",
+      }),
+    );
+  }
+}
+
 export async function fanOutDueAccountWipes(
   env: AccountWipeEnv,
   deps: { nowMs: number },
@@ -493,8 +705,16 @@ export async function fanOutDueAccountWipes(
         if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (stored.completedAtMs !== null) {
         // Finished. Reopen only if objects turned up under the prefix after the
-        // fact; otherwise leave the completion record exactly as it is.
-        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) continue;
+        // fact; otherwise leave the completion record exactly as it is and hand
+        // the tenant to control-plane teardown (S4) — the data plane is done,
+        // so the `users` row, its child rows, and its Durable Object state come
+        // down. Once that succeeds this tenant leaves `listDeletingUsers` and
+        // is never enumerated again (finding F10). Teardown is deliberately not
+        // run while leftover objects are reopening the wipe.
+        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) {
+          await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
+          continue;
+        }
       } else if (wipeLeaseHeld(stored.updatedAtMs, deps.nowMs)) {
         continue;
       }
@@ -582,7 +802,6 @@ async function runAccountWipeJob(
   const keyRoot = tenantKeyRoot({ tenantId }, true);
   if (keyRoot === "") return { kind: "skipped", reason: "no_tenant_prefix" };
 
-  const layout = r2KeyLayout(keyRoot);
   const maxObjectPages = deps.maxObjectPages ?? ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES;
   const maxVectorBatches = deps.maxVectorBatches ?? ACCOUNT_WIPE_DEFAULT_VECTOR_BATCHES;
 
@@ -683,15 +902,64 @@ async function runAccountWipeJob(
   // written: this is the claim itself, not a beat.
   await persist();
 
+  // SEED FIRST, before a single delete or a single object is removed.
+  //
+  // The ledger can only name vectors it has rows for, and a corpus that
+  // predates it has none. So the wipe establishes that coverage itself rather
+  // than asserting it: it pages its own key root, derives every reading id it
+  // finds, and inserts the missing rows. R2 is intact at this moment — it is
+  // the very thing about to be deleted — so the wipe holds exactly the inputs
+  // an operator's `ops corpus seed-vector-ledger` would.
+  //
+  // The invariant this buys is local and inductive: NO OBJECT IS DELETED BEFORE
+  // ITS READING ID IS IN THE LEDGER. There is no global comparison to get
+  // right, no proxy set to be wrong about, and no operator in the critical
+  // path.
+  //
+  // It replaced a pre-flight coverage CHECK that compared the ledger against
+  // the `ready` rows of `index/list.json` and refused when it fell short. That
+  // was unsound in the direction that mattered: a reading whose vector outlived
+  // its `ready` status — reprocessed to `failed` (the failure path publishes
+  // with a null similarity store and deliberately leaves the vector alone),
+  // dropped from the list index, partially purged — has a live vector and no
+  // `ready` row, so it passed the check and was stranded anyway. The check's
+  // own failure mode was the one it existed to prevent. The key space has no
+  // such blind spot: every reading with any object left carries its id in that
+  // object's key.
+  if (progress.seedCompletedAtMs === null) {
+    const seed = await seedLedgerFromCorpus(
+      progress,
+      env.READINGS_BUCKET,
+      db,
+      tenantId,
+      keyRoot,
+      deps.maxSeedPages ?? ACCOUNT_WIPE_DEFAULT_SEED_PAGES,
+      persist,
+      now,
+    );
+    if (seed === "continue") return continueResult();
+    progress.seedCompletedAtMs = now();
+    progress.seedCursor = undefined;
+    // Always persisted: a resuming delivery reads this to know it need not
+    // re-page a corpus it has already covered.
+    await persist();
+  }
+
   if (progress.phase === "vectors") {
-    // Re-derived from R2 on every pass rather than persisted. The wipe itself
-    // does not touch R2 until the objects phase, but a consumer still committing
-    // a terminal manifest for this tenant can add or remove an id between
-    // deliveries — which is why `vector_cursor` resumes by value rather than by
-    // index (see submitVectorDeletes).
-    const ids = await collectReadingIds(env.READINGS_BUCKET, layout, heartbeat);
-    await heartbeat();
-    const vec = await submitVectorDeletes(progress, ids, env, tenantId, maxVectorBatches, heartbeat);
+    // Ids come from the ledger, never from R2. Each batch flips to
+    // `delete_submitted` as it is submitted, so the "still live" query advances
+    // itself across deliveries with no cursor to keep — and an id written by a
+    // late publisher lands in the same query rather than below a forward-only
+    // window.
+    const vec = await submitVectorDeletes(
+      progress,
+      db,
+      env,
+      tenantId,
+      maxVectorBatches,
+      heartbeat,
+      now,
+    );
     if (vec === "continue") return continueResult();
     progress.phase = "objects";
     // Always persisted: a phase transition is what a resuming delivery reads.
@@ -739,17 +1007,39 @@ async function runAccountWipeJob(
       }
       if (pages >= maxObjectPages) return continueResult();
     }
+    // Always written, once per pass, before the confirmation gate. The
+    // confirmation now usually throws a retry (the first attempt is not allowed
+    // to count until +120s), and the heartbeat above is throttled, so without
+    // this the pass's `objects_deleted` would be dropped on the floor every
+    // time rather than only on a crash. Still a reporting figure, still capable
+    // of undercounting across a crash — but no longer guaranteed to.
+    await persist();
+  }
+
+  // A `live` row that appeared after the vectors phase passed — a publisher, or
+  // an operator's offline writer, landing inside this pass — has never been
+  // submitted to `deleteByIds`. Go back to the vectors phase for it rather than
+  // confirming around it: this delivery's phase is `objects`, so a plain retry
+  // would re-enter below the vectors block and the row would be confirmed
+  // forever without anything ever asking Vectorize to delete it.
+  //
+  // The self-send is bounded by ACCOUNT_WIPE_MAX_CONTINUATIONS like every other
+  // one, so a tenant that somehow keeps acquiring vectors dead-letters where it
+  // can be seen instead of cycling.
+  if ((await countLedgerRows(db, tenantId)).live > 0) {
+    progress.phase = "vectors";
+    return continueResult();
   }
 
   // Both phases are done — the objects loop only falls through here once the
   // prefix is confirmed empty; every partial pass returned `continue` above.
   //
-  // Terminal assurance before we are allowed to claim success (F3). The probe
-  // throws while the namespace still answers, so an unbound index, a
+  // Terminal assurance before we are allowed to claim success (F3). The ledger
+  // is the gate: it throws while any row survives, so an unbound index, a
   // never-submitted delete, or a delete that did not take leaves the job
   // retrying instead of reporting a wipe that removed nothing. It returns true
-  // only when the bound is spent and the wipe finishes unconfirmed.
-  const residue = await assertNamespaceEmptied(progress, env, tenantId, writer);
+  // only when the attempt bound is spent and the wipe finishes unconfirmed.
+  const residue = await assertLedgerEmptied(progress, env, db, tenantId, writer, now);
   const done = await writer.complete(progress, now(), residue);
   return {
     kind: "complete",
@@ -792,11 +1082,14 @@ export async function consumeAccountWipeMessage(
       }),
     );
     const retryAfterMs = error instanceof RateLimitedError ? error.retryAfterMs : null;
-    // A dirty terminal probe is asynchronous propagation, not a fault, so it
-    // waits minutes rather than the 30s exponential every other failure uses.
+    // An unconfirmed ledger is asynchronous propagation, not a fault, so it
+    // waits on its own measured schedule (the doubling 120/240/480s backoff, or
+    // simply the remainder of the +120s first-attempt delay) rather than the
+    // 30s exponential every other failure uses. The error carries the number:
+    // it is the only thing that knows which of the two cases this is.
     const delaySeconds =
       error instanceof AccountWipeNamespaceNotEmptyError
-        ? ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS
+        ? Math.min(ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS, error.retryAfterSeconds)
         : wipeRetryDelaySeconds(retryAfterMs, msg.attempts ?? 1);
     // No lease extension here any more. The lease is a version in D1, not a
     // timestamp, so a cron tick during a long `Retry-After` costs at most a
@@ -846,43 +1139,192 @@ async function tenantPrefixHasObjects(
   tenantId: TenantId,
   env: { TENANT_DATA_PLANE?: string },
 ): Promise<boolean> {
-  if (!tenantDataPlaneEnabled(env)) return false;
-  const keyRoot = tenantKeyRoot({ tenantId }, true);
-  if (keyRoot === "") return false;
-  return prefixHasObjects(bucket, keyRoot);
+  return (await tenantPrefixVerdict(bucket, tenantId, env)) === "not_empty";
 }
 
+/**
+ * The same question, but keeping "we could not look" apart from "it is empty".
+ *
+ * Fan-out only decides whether to re-enqueue, so collapsing the two into
+ * `false` costs it nothing. Teardown hard-deletes a `users` row on the answer,
+ * and after that the tenant is gone from `listDeletingUsers` and its leftover
+ * objects can never be found through it again — so it needs the distinction.
+ */
+async function tenantPrefixVerdict(
+  bucket: R2Bucket,
+  tenantId: TenantId,
+  env: { TENANT_DATA_PLANE?: string },
+): Promise<PrefixVerdict> {
+  if (!tenantDataPlaneEnabled(env)) return "unknown";
+  const keyRoot = tenantKeyRoot({ tenantId }, true);
+  if (keyRoot === "") return "unknown";
+  return (await prefixHasObjects(bucket, keyRoot)) ? "not_empty" : "empty";
+}
+
+/**
+ * Record every reading id derivable from this tenant's R2 into the ledger.
+ *
+ * Insert-only: it never deletes a row and never resets one. A row an earlier
+ * pass already moved to `delete_submitted` keeps its state, its delete stamp
+ * and its absent streak, so re-seeding on a resume costs nothing and restarts
+ * no confirmation clock.
+ *
+ * Over-records on purpose. A `failed` or `pending` reading has no vector, and a
+ * row for it costs one no-op `deleteByIds` that then clears on the first
+ * confirmation. A MISSING row costs a vector nobody can ever address. The two
+ * errors are not comparable, so the walk takes the widest id source available —
+ * the same three the operator command uses: `index/list.json`, `index/by-id/`,
+ * and the `readings/` key layout.
+ *
+ * Paged on the same budget as the objects phase and resumable on its own
+ * cursor, so a corpus larger than one delivery continues rather than timing
+ * out. `index/list.json` is read on the first delivery only (when there is no
+ * cursor yet): re-reading it on every continuation would re-derive ids the walk
+ * has already covered.
+ */
+async function seedLedgerFromCorpus(
+  progress: WipeProgress,
+  bucket: R2Bucket,
+  db: ControlPlaneDb,
+  tenantId: TenantId,
+  keyRoot: string,
+  maxPages: number,
+  persist: () => Promise<void>,
+  now: () => number,
+): Promise<"continue" | "done"> {
+  const layout = r2KeyLayout(keyRoot);
+  let created = 0;
+  const record = async (ids: string[]): Promise<void> => {
+    if (ids.length === 0) return;
+    created += await insertMissingLedgerRows(db, tenantId, ids, now());
+  };
+
+  if (progress.seedCursor === undefined) {
+    // The list index names readings whose objects may already be partly gone,
+    // so it can carry ids the key walk below will not find. Read once, at the
+    // start of the walk.
+    const listObj = await bucket.get(layout.listIndexKey());
+    if (listObj) {
+      // The READ is outside the catch, deliberately. A transient R2 error is
+      // not a corrupt index, and treating it as one would silently narrow
+      // coverage in exactly the case this read exists for — readings whose
+      // objects are already partly purged, which the key walk below cannot
+      // find. Let it propagate: the delivery retries and seeds properly.
+      const raw = await listObj.text();
+      let ids: string[] = [];
+      try {
+        const parsed = ListIndexSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) {
+          for (const item of parsed.data.items) {
+            const id = parseReadingId(item.id);
+            if (id) ids.push(id);
+          }
+        }
+      } catch {
+        // Genuinely unparseable, which is a different thing and not fatal: the
+        // key walk below is the wider source, and refusing to seed over a
+        // damaged index would strand the corpus it describes.
+        ids = [];
+      }
+      await record(ids);
+    }
+    await persist();
+  }
+
+  let pages = 0;
+  let cursor = progress.seedCursor;
+  for (;;) {
+    const list = await bucket.list({
+      prefix: keyRoot,
+      limit: R2_LIST_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    const ids: string[] = [];
+    for (const obj of list.objects) {
+      const id = readingIdFromRelativeKey(layout.relativeKey(obj.key));
+      if (id) ids.push(id);
+    }
+    await record(ids);
+    cursor = list.truncated ? list.cursor : undefined;
+    progress.seedCursor = cursor;
+    pages += 1;
+    // PERSISTED per page, not heartbeated. The heartbeat is throttled to a
+    // minute, so a delivery that trips the subrequest ceiling part-way through
+    // a large tenant would otherwise write no cursor at all and make zero
+    // forward progress — burning the retry budget and dead-lettering while
+    // repeating the same first pages. One full-row UPDATE per page is a cheap
+    // price for guaranteeing the walk advances.
+    await persist();
+    if (cursor === undefined) break;
+    if (pages >= maxPages) {
+      logSeeded(tenantId, created, "continue");
+      return "continue";
+    }
+  }
+  logSeeded(tenantId, created, "done");
+  return "done";
+}
+
+/**
+ * What the seed step had to create.
+ *
+ * The observability the retired coverage alert was really providing: a nonzero
+ * count on a tenant an operator believes they seeded means the ledger was
+ * incomplete, and that is worth knowing even though the wipe has just fixed it.
+ * Zero is the healthy steady state once every writer ledgers before upserting.
+ */
+function logSeeded(tenantId: TenantId, created: number, outcome: "continue" | "done"): void {
+  console.info(
+    JSON.stringify({
+      event: "account_wipe_ledger_seeded",
+      tenant_id: tenantId,
+      rows_created: created,
+      outcome,
+      note:
+        "reading ids derived from R2 and inserted before any delete. A nonzero count means the " +
+        "ledger did not already cover this corpus — expected on a corpus predating the ledger, " +
+        "worth investigating on one that should have been complete.",
+    }),
+  );
+}
+
+/**
+ * Submit `deleteByIds` for this tenant's `live` ledger rows.
+ *
+ * The ledger is both the id source and the cursor. Each batch is marked
+ * `delete_submitted` immediately after the submission returns, so the next
+ * `state = 'live'` read excludes it and a delivery that dies mid-phase resumes
+ * exactly where it stopped without persisting anything on the progress record.
+ *
+ * The mark happens AFTER the submit, not before, because `deleted_at_ms` is
+ * what the +120s first-confirmation delay is measured from and it must record
+ * when the delete was actually asked for. A crash in that gap leaves the row
+ * `live`, so the next pass re-submits — `deleteByIds` is idempotent and a
+ * re-submit costs one call.
+ */
 async function submitVectorDeletes(
   progress: WipeProgress,
-  ids: string[],
+  db: ControlPlaneDb,
   env: AccountWipeEnv,
   tenantId: TenantId,
   maxVectorBatches: number,
   heartbeat: () => Promise<void>,
+  now: () => number,
 ): Promise<"continue" | "done"> {
-  // Fail closed BEFORE the emptiness test (F3). An empty id list means "R2
-  // yielded no ids", not "this tenant has no vectors" — R2 is the only id
-  // source and it may already be gone. Returning "done" here on an unbound
-  // index let the wipe advance to the objects phase and report success without
-  // ever addressing the index.
+  // Fail closed BEFORE reading the ledger. An empty `live` set is now a real
+  // answer rather than "R2 yielded no ids", but an unbound index still must not
+  // let the wipe advance to the objects phase and report success without ever
+  // addressing Vectorize.
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
-  // Resume by value. `ids` is sorted and re-derived per delivery, so slicing by
-  // a stored index would drop whichever id fell on the boundary when the set
-  // changed in between; "sorted after the last id submitted" cannot. It does
-  // still miss an id that first appears below the cursor — a forward-only window
-  // cannot see backwards — which the header lists with the other strandings
-  // #261's ledger closes.
-  const cursor = progress.vectorCursor;
-  const pending = cursor === undefined ? ids : ids.filter((id) => id > cursor);
-  if (pending.length === 0) return "done";
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-  let batches = 0;
-  let sent = 0;
-  while (sent < pending.length && batches < maxVectorBatches) {
-    const chunk = pending.slice(sent, sent + VECTORIZE_DELETE_MAX_IDS);
-    const mutations = await store.deleteMany(chunk);
+  const ledger = d1VectorLedger(db, tenantId);
+  for (let batches = 0; batches < maxVectorBatches; batches++) {
+    const ids = await listLiveLedgerIds(db, tenantId, VECTORIZE_DELETE_MAX_IDS);
+    if (ids.length === 0) return "done";
+    const mutations = await store.deleteMany(ids);
+    await ledger.markDeleteSubmitted(ids, now());
     for (const mutationId of mutations) {
       progress.mutationIds.push(mutationId);
       console.info(
@@ -890,88 +1332,103 @@ async function submitVectorDeletes(
           event: "account_wipe_vector_delete_submitted",
           tenant_id: tenantId,
           mutation_id: mutationId,
-          note: "Vectorize deletes are async; embeddings may take a short time to disappear",
+          submitted: ids.length,
+          note: "Vectorize deletes are async; the ledger rows clear only once the deletes are confirmed",
         }),
       );
     }
-    sent += chunk.length;
-    progress.vectorCursor = chunk[chunk.length - 1];
-    // Advisory: losing this cursor to a crash re-submits ids to `deleteByIds`,
-    // which is idempotent. A `continue` persists it before the self-send.
     await heartbeat();
-    batches += 1;
   }
-  return sent < pending.length ? "continue" : "done";
+  // Out of batches. Ask once more rather than assume: a final batch that
+  // happened to empty the ledger should finish the phase here instead of
+  // costing a whole continuation.
+  const remaining = await listLiveLedgerIds(db, tenantId, 1);
+  return remaining.length > 0 ? "continue" : "done";
 }
 
 /**
- * The wipe may not report success while its tenant namespace still answers (F3).
+ * The wipe may not report success while a ledger row survives.
  *
- * Vectorize exposes no list/scan, so absence is unprovable: this is nearest-K
- * sampling and a clean probe is evidence, not a guarantee. What it does catch is
- * the failure the review named — a wipe that deleted nothing at all and called
- * it done — plus a delete that was never submitted or did not take.
+ * The confirmation rule is `src/control-plane/vector-ledger.ts`'s, applied here
+ * against the live index. In order:
  *
- * A hit is retried, not failed outright, and on a minutes-scale delay
- * (`ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS`), because `deleteByIds` propagates
- * asynchronously and the first probe after submitting is expected to be dirty.
- * The retries are bounded (`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`): past that the
- * cause is not lag but a vector whose reading id is no longer derivable from
- * R2, which is unaddressable by construction. Retrying that forever would loop
- * the tenant through the DLQ and cron every 15 minutes with no progress
- * possible, so the bound converts the gate into a high-severity operator alert,
- * returns `true`, and lets the wipe finish with `residue` recorded. The alert
- * carries the tenant id and nothing else: an alert about a deleted account must
- * not re-publish that account's reading ids to the log.
+ * 1. **Nothing before +120s.** If no row is old enough for an absence to count
+ *    (`earliestConfirmableAtMs`), the delivery retries after the remaining wait
+ *    WITHOUT spending an attempt. The old code probed immediately, inside the
+ *    30-90s propagation window S6 measured, so the hit was guaranteed and the
+ *    attempt bought nothing (defect D2). This is the fix.
+ * 2. **Fast path: one namespaced `query`.** If the namespace answers nothing,
+ *    no id in it can be live, and the whole tenant's ledger clears in one call
+ *    rather than `ceil(n / 20)` (S6 §5.3). That probe was in lockstep with
+ *    `getByIds` in every sample S6 took, and it is already the wipe's shipped
+ *    terminal gate. A probe that THROWS is not a probe that came back empty: it
+ *    falls through to the per-id path rather than clearing anything.
+ * 3. **Fallback: per-id `getByIds`, 20 at a time.** A chunk that throws is no
+ *    information — it resets the streaks it covered and confirms nothing. A
+ *    chunk that succeeds is per-id evidence: ids returned are live, ids
+ *    requested and not returned are candidate absences, and nothing is inferred
+ *    about an id that was not requested.
  *
- * The `describe()` delta is logged beside it as coarse corroboration. It counts
- * the whole index rather than one namespace and Vectorize deletes are async, so
- * it is never a gate — a zero delta after submitting ids is a signal for an
- * operator, not grounds to fail the job.
+ * `describe()`, `vectorCount` and `processedUpToMutation` appear nowhere in
+ * this path — S6 §3.5 measured all three going backwards between replicas.
  *
- * @returns true when the bound was spent without a clean confirmation.
+ * @returns true when the attempt bound was spent without clearing the ledger.
  */
-async function assertNamespaceEmptied(
+async function assertLedgerEmptied(
   progress: WipeProgress,
   env: AccountWipeEnv,
+  db: ControlPlaneDb,
   tenantId: TenantId,
   writer: WipeProgressWriter,
+  now: () => number,
 ): Promise<boolean> {
   if (!env.READINGS_INDEX) {
     throw new Error("account_wipe index_unbound");
   }
   const store = similarityStoreFor(env.READINGS_INDEX, { tenantId }, env);
-  const countEnd = await store.indexVectorCount();
-  const countStart = progress.indexCountStart;
-  const submitted = progress.mutationIds.length;
-  const delta = countStart !== null && countEnd !== null ? countStart - countEnd : null;
-  // Corroboration only, and weak corroboration at that: this counts the whole
-  // shared index rather than one namespace, both samples come from the same job
-  // run seconds apart, and Vectorize deletes propagate asynchronously while
-  // other tenants keep upserting. A non-positive delta is therefore the normal
-  // reading even for a perfectly clean wipe, which is why it is one field of an
-  // info line and not an alert — a high-severity warning that fires on every
-  // wipe would train an operator to ignore the channel the residue alert below
-  // depends on.
-  console.info(
-    JSON.stringify({
-      event: "account_wipe_vector_count_delta",
-      tenant_id: tenantId,
-      index_count_start: countStart,
-      index_count_end: countEnd,
-      delta,
-      submitted_batches: submitted,
-      note: "whole-index count, not per-namespace, sampled seconds apart; Vectorize deletes are async, so a non-positive delta is not by itself a fault",
-    }),
-  );
-  // A probe that FAILS is not a probe that HIT. A transient Vectorize query
-  // error must not take the fast 30s exponential and dead-letter in ~3.5
-  // minutes a wipe that is otherwise finished, so it takes the same slow,
-  // bounded path as a dirty probe — but it is tracked separately, because the
-  // two mean different things to whoever reads the alert at the end: "vectors
-  // are still there" versus "we never got an answer".
-  let remaining: Awaited<ReturnType<typeof store.probeNamespace>> = [];
+  logVectorCountDelta(progress, tenantId, await store.indexVectorCount());
+  const before = await countLedgerRows(db, tenantId);
+  const counts = before;
+  const pending = await listDeleteSubmittedEntries(db, tenantId, ACCOUNT_WIPE_CONFIRM_BATCH);
+  const nowMs = now();
+  // Rule 1. Deliberately outside the attempt accounting: waiting is not a
+  // failed observation, and charging it as one is exactly defect D2.
+  if (pending.length > 0) {
+    const due = earliestConfirmableAtMs(pending, nowMs);
+    if (due !== null) {
+      const waitSeconds = Math.max(1, Math.ceil((due - nowMs) / 1000));
+      throw new AccountWipeNamespaceNotEmptyError(
+        tenantId,
+        counts.total,
+        progress.probeAttempts,
+        waitSeconds,
+        true,
+      );
+    }
+  }
+
+  // Rule 2, the namespace probe — UNCONDITIONAL, including when the ledger is
+  // empty, and that is the point rather than an oversight.
+  //
+  // An empty ledger is not proof of an empty namespace. It is also exactly what
+  // an UNSEEDED tenant looks like: a corpus that predates this slice has
+  // vectors and no rows, and merging auto-deploys production before anyone can
+  // run `ops corpus seed-vector-ledger`. Short-circuiting to success on
+  // `total === 0` would let such a wipe report clean having asked Vectorize
+  // nothing at all — which is precisely the failure the original terminal probe
+  // (review finding F3) was added to catch, reintroduced by the change that was
+  // supposed to strengthen it. So the probe stays the floor: the ledger says
+  // WHICH vectors to delete, the probe says whether any remain.
+  let sawLiveVector = false;
   let probeErrored = false;
+  let remaining: Awaited<ReturnType<typeof store.probeNamespace>> = [];
+  // Stamped BEFORE the call, not after. `clearTenantLedger` clears every row
+  // whose delete was submitted at or before this instant, on the strength of
+  // this probe — so the instant has to be one the probe's evidence actually
+  // covers. A delete submitted by a concurrent purge WHILE the probe was in
+  // flight would take a stamp below an after-the-fact sample and be cleared on
+  // evidence gathered before that vector's delete was even asked for.
+  const probedAtMs = now();
   try {
     remaining = await store.probeNamespace();
   } catch (error) {
@@ -981,17 +1438,100 @@ async function assertNamespaceEmptied(
         event: "account_wipe_probe_failed",
         tenant_id: tenantId,
         message: error instanceof Error ? error.message : String(error),
-        note: "could not confirm the namespace is empty; retrying on the propagation schedule",
+        note: "namespace probe gave no answer; falling back to per-id getByIds confirmation",
       }),
     );
   }
-  if (!probeErrored && remaining.length === 0) return false;
+  if (!probeErrored && remaining.length === 0) {
+    // Empty namespace, so nothing in it can be live and the fast path clears
+    // the tenant's confirmed rows in one call (S6 §5.3). `live` rows are left
+    // alone by `clearTenantLedger`: a vector nobody has submitted a delete for
+    // is not something an empty probe says anything about, and the caller sends
+    // such a pass back to the vectors phase anyway.
+    const cleared = await clearTenantLedger(db, tenantId, probedAtMs);
+    if (cleared > 0) {
+      console.info(
+        JSON.stringify({
+          event: "account_wipe_ledger_cleared",
+          tenant_id: tenantId,
+          rows_cleared: cleared,
+          via: "namespace_probe",
+          note: "an empty namespaced query cannot coexist with a live vector in that namespace",
+        }),
+      );
+    }
+    // Clear the sticky flag on the way out (defect D1): `probe_saw_residue` set
+    // by an earlier attempt must not survive onto the completion record of a
+    // wipe that came back clean.
+    // Re-read rather than assume the clear emptied the table: a delete
+    // submitted after the probe was taken is deliberately left behind, and a
+    // wipe with a row left is not finished.
+    if ((await countLedgerRows(db, tenantId)).total === 0) {
+      progress.probeSawResidue = false;
+      return false;
+    }
+  }
+  sawLiveVector = !probeErrored && remaining.length > 0;
 
-  const attempts = progress.probeAttempts + 1;
-  // Sticky across attempts: once a probe has actually seen a vector, a later
-  // transient error must not downgrade the verdict to "we could not check".
-  const sawResidue = progress.probeSawResidue || remaining.length > 0;
-  if (attempts < ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS) {
+  // Rule 3, the per-id fallback. It can only clear rows the ledger knows about,
+  // so for an unseeded tenant it finds nothing to do and the pass falls through
+  // to the residue alert below — loudly, which is the right outcome.
+  if (pending.length > 0) {
+    const byId = new Map(pending.map((entry) => [entry.readingId, entry]));
+    for (const chunk of chunkForGetByIds(pending.map((entry) => entry.readingId))) {
+      let observation: GetByIdsObservation;
+      try {
+        observation = { ok: true, requested: chunk, present: await store.getByIds(chunk) };
+      } catch (error) {
+        observation = {
+          ok: false,
+          requested: chunk,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (observation.ok && observation.present.length > 0) sawLiveVector = true;
+      const verdict = applyAbsenceObservation(pending, observation, nowMs);
+      await clearLedgerRows(db, tenantId, verdict.clear);
+      await resetAbsenceStreaks(db, tenantId, verdict.reset);
+      await recordAbsences(db, tenantId, verdict.advanced, nowMs);
+      for (const advanced of verdict.advanced) {
+        // Keep the in-memory view honest for the rest of this pass. Chunks are
+        // disjoint today, so nothing reads it again — but an id observed twice
+        // in one pass must not double-count a single instant into a clear.
+        const entry = byId.get(advanced.readingId);
+        if (entry) {
+          entry.absentStreak = advanced.absentStreak;
+          entry.lastAbsentAtMs = nowMs;
+        }
+      }
+    }
+  }
+
+  // The namespace still answered (or never answered at all), so this pass has
+  // not confirmed the wipe however few ledger rows are left. There is
+  // deliberately no early return on an empty ledger here: a clean namespace is
+  // the only thing that ends a wipe cleanly, and it was checked above.
+  const after = await countLedgerRows(db, tenantId);
+  // The bound exists to stop a STUCK wipe, not to time-limit a slow one, so a
+  // pass that cleared rows does not spend an attempt.
+  //
+  // Honest about what that does and does not buy: this exemption keeps a
+  // progressing wipe off the RESIDUE ALERT, but it does not give it unlimited
+  // deliveries. Every confirmation pass still ends in a throw, and throws are
+  // bounded by the queue's own `max_retries`. A tenant needing many per-id
+  // passes (ACCOUNT_WIPE_CONFIRM_BATCH rows, two spaced absences each) will
+  // dead-letter mid-confirmation and be picked up by the next cron tick — slow
+  // and noisy, but correct, and it resumes exactly where it stopped because the
+  // cleared rows are gone from the ledger. The namespace fast path is what
+  // keeps that off the normal road.
+  const clearedThisPass = before.total - after.total;
+  const attempts = clearedThisPass > 0 ? progress.probeAttempts : progress.probeAttempts + 1;
+  // Sticky, but only within a pass that ends dirty: once a call has actually
+  // seen a vector, a later transient failure must not downgrade the verdict to
+  // "we could not check". Every clean return above clears it (defect D1), so on
+  // the completion record the flag is meaningful only alongside `residue = 1`.
+  const sawResidue = progress.probeSawResidue || sawLiveVector;
+  if (attempts < ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS || clearedThisPass > 0) {
     // Persist before throwing, so both the bound and the verdict survive the
     // retry this throw causes rather than resetting on every redelivery.
     progress.probeAttempts = attempts;
@@ -999,87 +1539,83 @@ async function assertNamespaceEmptied(
     await writer.write(progress);
     throw new AccountWipeNamespaceNotEmptyError(
       tenantId,
-      remaining.length,
+      after.total,
       attempts,
-      probeErrored,
+      confirmBackoffSeconds(attempts),
+      !sawResidue,
     );
   }
   progress.probeAttempts = attempts;
   progress.probeSawResidue = sawResidue;
   // Bound exhausted. Alert and let the wipe finish — R2 is already empty and
-  // every id we could derive has been submitted, so another 15-minute cycle
-  // changes nothing. `outcome` is what the reader acts on: `residue` means some
-  // probe genuinely saw vectors still there; `unconfirmed` means no probe ever
-  // did and we never got a clean answer, which is a Vectorize health question
-  // rather than a finding about this account. Both land as `residue = 1` on the
-  // completion record; `probe_saw_residue` beside it keeps them apart.
+  // every ledgered id has been submitted, so another 15-minute cycle changes
+  // nothing. The ledger rows STAY: they are the only handle left on vectors
+  // nobody could confirm gone, and S5's residue scan reads them. `outcome` is
+  // what the reader acts on: `residue` means a call genuinely saw vectors still
+  // there; `unconfirmed` means no call ever did and we never got a clean
+  // answer, which is a Vectorize health question rather than a finding about
+  // this account. Both land as `residue = 1` on the completion record;
+  // `probe_saw_residue` beside it keeps them apart.
   console.error(
     JSON.stringify({
       severity: "high",
       event: ACCOUNT_WIPE_NAMESPACE_RESIDUE_EVENT,
       tenant_id: tenantId,
       probe_attempts: attempts,
+      ledger_rows_remaining: after.total,
       outcome: sawResidue ? "residue" : "unconfirmed",
       note: sawResidue
-        ? "tenant namespace still answered after the probe bound; vectors whose reading id is " +
-          "no longer derivable from R2 are unaddressable (deleteByIds needs the id). " +
-          "Wipe completed; residue needs the vector ledger (issue #261)."
-        : "the namespace probe never returned a clean answer, so the wipe could not be " +
-          "confirmed; check Vectorize health. Wipe completed.",
+        ? "vectors still answered after the confirmation bound. Ids this wipe could not confirm " +
+          "are retained in vector_ledger and stay addressable — but a vector the ledger cannot " +
+          "NAME is not among them: a pre-S3 stranding, or a bare-id vector from an older " +
+          "`corpus ingest`/`recover --batch` run under --tenant, is invisible to deleteByIds " +
+          "and its row (if any) will have been cleared as absent. Do not read this as healthy: " +
+          "see the residual list in src/account-wipe.ts, and slice S5's audit. Wipe completed."
+        : "no confirmation call ever came back clean, so the wipe could not be confirmed; " +
+          "check Vectorize health. The ledger rows are retained. Wipe completed.",
     }),
   );
   return true;
 }
 
-async function collectReadingIds(
-  bucket: R2Bucket,
-  layout: ReturnType<typeof r2KeyLayout>,
-  heartbeat?: () => Promise<void>,
-): Promise<string[]> {
-  // Still scans both prefixes to completion in this job (large-tenant paging
-  // residual). Heartbeats after list.json and each inner list page so a long
-  // collect keeps cron quiet — no longer a correctness requirement, since a
-  // duplicate cron delivery now loses the lease CAS rather than clobbering.
-  const ids = new Set<string>();
-  const listObj = await bucket.get(layout.listIndexKey());
-  if (listObj) {
-    try {
-      const parsed = ListIndexSchema.safeParse(JSON.parse(await listObj.text()));
-      if (parsed.success) {
-        for (const item of parsed.data.items) {
-          const id = parseReadingId(item.id);
-          if (id) ids.add(id);
-        }
-      }
-    } catch {
-      // Corrupt list index is not a wipe failure; R2 listing still finds ids.
-    }
-  }
-  await heartbeat?.();
-  await scanPrefixForIds(bucket, layout.byIdKey(""), layout, ids, heartbeat);
-  await scanPrefixForIds(bucket, layout.readingsPrefix(), layout, ids, heartbeat);
-  return [...ids].sort();
-}
-
-async function scanPrefixForIds(
-  bucket: R2Bucket,
-  prefix: string,
-  layout: ReturnType<typeof r2KeyLayout>,
-  ids: Set<string>,
-  heartbeat?: () => Promise<void>,
-): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const list = await bucket.list({
-      prefix,
-      limit: R2_LIST_LIMIT,
-      ...(cursor ? { cursor } : {}),
-    });
-    for (const obj of list.objects) {
-      const id = readingIdFromRelativeKey(layout.relativeKey(obj.key));
-      if (id) ids.add(id);
-    }
-    cursor = list.truncated ? list.cursor : undefined;
-    await heartbeat?.();
-  } while (cursor);
+/**
+ * Coarse whole-index delta, logged beside the confirmation and read by nothing.
+ *
+ * Kept, but with its caveat widened (S6 defect D3). The existing note covered
+ * asynchronous propagation, which can only make the delta look too small. S6
+ * §3.5 measured a second cause the note did not admit: `describe()` is served
+ * from replicas at different processing frontiers and its `vectorCount` goes
+ * *backwards* between samples seconds apart, so the delta can also be falsely
+ * positive, or negative, or zero on a wipe that deleted everything — the drill
+ * logged `delta 0` while four vectors were genuinely in flight.
+ *
+ * It survives the rewrite rather than being dropped because it is the only
+ * whole-index signal in the wipe and it costs one call, and because the real
+ * termination signal is now the ledger rather than this number. It is a
+ * breadcrumb for an operator reading a log after the fact, and the note now
+ * says plainly that no reading of it means anything on its own.
+ */
+function logVectorCountDelta(
+  progress: WipeProgress,
+  tenantId: TenantId,
+  countEnd: number | null,
+): void {
+  const countStart = progress.indexCountStart;
+  const delta = countStart !== null && countEnd !== null ? countStart - countEnd : null;
+  console.info(
+    JSON.stringify({
+      event: "account_wipe_vector_count_delta",
+      tenant_id: tenantId,
+      index_count_start: countStart,
+      index_count_end: countEnd,
+      delta,
+      submitted_batches: progress.mutationIds.length,
+      note:
+        "whole-index count, not per-namespace, and NOT a signal. Two independent reasons it can " +
+        "read wrong: Vectorize deletes propagate asynchronously, and describe() is served from " +
+        "replicas at different processing frontiers whose counts move backwards between samples " +
+        "(measured, report rl-195-s6-staging-gate §3.5). Any delta — positive, zero or negative — " +
+        "is consistent with a clean wipe. The termination signal is vector_ledger.",
+    }),
+  );
 }

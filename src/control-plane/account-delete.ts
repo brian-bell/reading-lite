@@ -6,9 +6,13 @@ import { revokeAllSessionsForUser } from "./sessions";
 // Account-deletion suppress (issue 195a / s1k.10.1). Marks the user `deleting`
 // and revokes credentials so queued, retry, digest, and notification paths
 // cannot resurrect data. R2+Vectorize wipe is 195b via a shared queue + cron,
-// never inline here. Residue scan, users-row hard-delete, Durable Objects,
-// and email reuse are later slices. This module does not invent
-// GlobalUsageGuard teardown (s1k.9.2).
+// never inline here, and neither is anything downstream of it. The users-row
+// hard-delete, the Durable Object teardown (this tenant's `TenantUsageGuard`
+// and its `GlobalUsageGuard` leases) and email reuse all live in
+// `src/control-plane/account-teardown.ts` (issue 195 S4), which the wipe cron
+// fan-out runs once the wipe has completed and the tenant prefix is confirmed
+// empty. The residue scan is still a later slice (S5). This module's job stops
+// at the fence.
 //
 // `DELETE /api/account` is not `DELETE /api/readings/:id`. The latter purges
 // one reading inside a live tenant; this path fences the whole tenant.

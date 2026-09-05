@@ -7,6 +7,7 @@ import {
   ReadingStore,
 } from "../../../src/modules/stores/reading-store";
 import { SimilarityStore } from "../../../src/modules/stores/similarity-store";
+import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
 import type {
   Manifest,
@@ -106,6 +107,27 @@ function fakeVectorize() {
   return { index, vectors, similarity: new SimilarityStore(index) };
 }
 
+/**
+ * A recording vector ledger (issue #195 S3).
+ *
+ * Records the ORDER against the vector store's own calls, because that is the
+ * property that matters: the row must exist before the upsert it describes. A
+ * row written after a crashed upsert is the stranding the ledger exists to
+ * prevent, and once the reading's R2 objects are gone nothing can repair it.
+ */
+function recordingLedger(vectorCalls: () => number) {
+  const events: string[] = [];
+  const ledger: VectorLedger = {
+    markLive: async (ids) => {
+      for (const id of ids) events.push(`live:${id}:${vectorCalls()}`);
+    },
+    markDeleteSubmitted: async (ids) => {
+      for (const id of ids) events.push(`submitted:${id}:${vectorCalls()}`);
+    },
+  };
+  return { ledger, events };
+}
+
 async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
   for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
@@ -127,6 +149,41 @@ describe("ReadingVisibility.publish", () => {
     await vis.publish(readyManifest(), args(), vectorOpt());
 
     expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("does not write the live ledger row itself", async () => {
+    // The `live` row is written by `commitTerminalManifest`, ahead of the
+    // terminal manifest, not here. Row-before-upsert holds either way; what
+    // only the earlier position gets is a failure that can be retried, because
+    // the terminal `ready` manifest clears `active_attempt` and nothing can
+    // republish after it. The ordering and the fail-closed retry are covered
+    // where they now live, in
+    // `test/integration/account-delete-visibility.test.ts`.
+    //
+    // Publishing must therefore not double-write the row: a second INSERT is
+    // one more thing that can throw on a path whose throw is no longer
+    // usefully retryable.
+    const reader = newReader();
+    const { similarity, vectors, index } = fakeVectorize();
+    const { ledger, events } = recordingLedger(
+      () => (index.upsert as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+    );
+    const vis = new ReadingVisibility(reader, similarity, ledger);
+
+    await vis.publish(readyManifest(), args(), vectorOpt());
+
+    expect(events).toEqual([]);
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("publishes without a ledger, so a control-plane-less environment still works", async () => {
+    const reader = newReader();
+    const { similarity, vectors } = fakeVectorize();
+    const vis = new ReadingVisibility(reader, similarity, null);
+
+    await vis.publish(readyManifest(), args(), vectorOpt());
+
     expect(vectors.has(ID)).toBe(true);
   });
 
@@ -172,6 +229,46 @@ describe("ReadingVisibility.remove", () => {
 
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("marks the ledger row delete_submitted when it deletes the vector", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(manifest({ active_attempt: attempt(ATTEMPT) }), PREFIX),
+    );
+    const { similarity, vectors, index } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const { ledger, events } = recordingLedger(
+      () => (index.deleteByIds as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+    );
+    const vis = new ReadingVisibility(reader, similarity, ledger);
+
+    await vis.remove(args());
+
+    // After the delete (`:1`), and marked rather than cleared: the delete is
+    // asynchronous and unconfirmed, so the id must stay addressable.
+    expect(events).toEqual([`submitted:${ID}:1`]);
+  });
+
+  it("does not touch the ledger when the ownership gate refuses the vector delete", async () => {
+    // No vector was deleted, so nothing was submitted. A `delete_submitted` row
+    // here would date a submission that never happened, and the confirmation
+    // rule ages every absence from that stamp.
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt("at_OTHER") }));
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest(), PREFIX));
+    const { similarity, vectors, index } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const { ledger, events } = recordingLedger(
+      () => (index.deleteByIds as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+    );
+    const vis = new ReadingVisibility(reader, similarity, ledger);
+
+    await vis.remove(args());
+
+    expect(events).toEqual([]);
+    expect(vectors.has(ID)).toBe(true);
   });
 
   it("is a no-op when a foreign attempt owns the list row", async () => {
@@ -236,6 +333,25 @@ describe("ReadingVisibility.removeForDeletedTenant", () => {
     await vis.removeForDeletedTenant(args());
 
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("marks the ledger row delete_submitted after the delete, rather than clearing it", async () => {
+    // AFTER, because `deleted_at_ms` dates the submission and the confirmation
+    // rule's +120s first-attempt delay is measured from it. And MARKED, not
+    // removed: Vectorize deletes are asynchronous and confirm nothing, so the
+    // id has to stay until something definite is known about it.
+    const reader = newReader();
+    const { similarity, vectors, index } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: {} });
+    const { ledger, events } = recordingLedger(
+      () => (index.deleteByIds as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+    );
+    const vis = new ReadingVisibility(reader, similarity, ledger);
+
+    await vis.removeForDeletedTenant(args());
+
+    expect(events).toEqual([`submitted:${ID}:1`]);
     expect(vectors.has(ID)).toBe(false);
   });
 

@@ -1,6 +1,7 @@
 import { ZodError } from "zod";
 import type { ReadingStore } from "./modules/stores/reading-store";
 import type { SimilarityStore } from "./modules/stores/similarity-store";
+import type { VectorLedger } from "./control-plane/vector-ledger";
 import { applyStaleness } from "./modules/staleness";
 import { sha256Hex } from "./services";
 import type { Manifest } from "./schemas/manifest";
@@ -56,6 +57,26 @@ export interface PurgeDeps {
   reader: ReadingStore;
   // Null when no Vectorize binding exists (local dev): the purge is R2-only.
   similarity: SimilarityStore | null;
+  // The durable vector-id ledger (issue #195 S3). Null in the same
+  // configurations `similarity` is, plus one with no control plane bound.
+  //
+  // FOR S5's RESIDUE SCAN: on a tenant that is never wiped, the row this writes
+  // is permanent — nothing clears a `delete_submitted` row except an account
+  // wipe's confirmation pass or a republish of the same reading. So a live
+  // tenant accumulates one row per purged reading, forever. Harmless (it is a
+  // reading id the tenant owned, in their own control-plane row) and bounded by
+  // purge count, but it is unbounded in time and it lengthens the eventual
+  // wipe's confirmation work. The residue scan is the natural place to report
+  // and retire rows whose vector it can confirm gone.
+  //
+  // A purge marks the row `delete_submitted` rather than removing it, and that
+  // is deliberate: `deleteByIds` is asynchronous and confirms nothing, so a
+  // purge whose vector delete did not take is precisely the unaddressable-vector
+  // case (review finding F3). Keeping the id is the only thing that leaves it
+  // addressable. The row clears when a wipe's confirmation pass says something
+  // definite about it, or when a later republish of the same reading marks it
+  // live again.
+  ledger?: VectorLedger | null;
 }
 
 export async function purgeReading(
@@ -92,7 +113,13 @@ export async function purgeReading(
   // the by-url slot when the manifest is already gone.
   const row = await deps.reader.findListIndexItem(id);
 
-  if (deps.similarity) await deps.similarity.delete(id);
+  if (deps.similarity) {
+    await deps.similarity.delete(id);
+    // After the delete: `deleted_at_ms` dates the submission, and the ledger's
+    // +120s first-confirmation delay is measured from it. Off the injected
+    // clock, like everything else here.
+    await deps.ledger?.markDeleteSubmitted([id], ledgerStamp(opts.now));
+  }
 
   // Pointer before list row: when the manifest is corrupt or missing, the row
   // is the ONLY recoverable source of the URL hash, so it must survive until
@@ -122,6 +149,13 @@ export async function purgeReading(
   // nothing, and a stray pointer/row is reclaimed by the next submit's
   // ownership repair or corpus tooling.
   objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
+  // The sweep re-issues the vector delete but NOT the ledger write. The row was
+  // recorded before the first delete and carries this same stamp, so a second
+  // write would change nothing — while adding a failure point after the objects
+  // are already gone, where a D1 blip would throw out of
+  // `DELETE /api/readings/:id` with the by-id pointer still present. The
+  // invariant that matters is already satisfied: the id was in the ledger
+  // before anything was deleted.
   if (deps.similarity) await deps.similarity.delete(id);
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
@@ -149,6 +183,20 @@ function hasRunningAttempt(
   // TTL reads as failed and must not block the purge forever.
   const effective = applyStaleness(manifest, opts.pendingTtlSeconds, opts.now);
   return effective.active_attempt?.status === "running";
+}
+
+/**
+ * The purge's clock as a ledger stamp.
+ *
+ * Guarded rather than trusted. `deleted_at_ms` is bound straight into D1, and a
+ * `NaN` from an unparseable `opts.now` would be rejected by the binding — after
+ * `similarity.delete` has already been submitted, which is exactly the
+ * unaddressable-vector case the ledger exists to prevent. Every current caller
+ * passes `services.now()`, so this only ever fires on a future one.
+ */
+function ledgerStamp(now: string): number {
+  const parsed = Date.parse(now);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 async function releaseByUrlSlotIfOwned(
