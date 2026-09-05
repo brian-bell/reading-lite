@@ -43,6 +43,8 @@ export const GLOBAL_USAGE_GUARD_NAME = "global-usage-guard";
 export const INGRESS_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 /** Held reading-slot reservations expire if never committed or released. */
 export const READING_RESERVATION_TTL_MS = 60 * 60 * 1000;
+/** Undispatched paid-work holds are released after compensation has had time to run. */
+export const SPEND_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
 /** Crash-timeout for a processing lease; heartbeat/renew must beat this. Stub, not calibrated. */
 export const PROCESSING_LEASE_TTL_MS = 10 * 60 * 1000;

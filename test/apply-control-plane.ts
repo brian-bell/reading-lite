@@ -20,8 +20,13 @@ await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
 // those production placeholders intact and only raise the test tenant.
 await env.CONTROL_PLANE.prepare(
   `UPDATE tenant_limits
-   SET submissions_per_hour = 100000, monthly_readings = 100000, max_concurrent_work = 100000
+   SET submissions_per_hour = 100000, monthly_readings = 100000, max_concurrent_work = 100000, daily_spend_microdollars = 100000000000
    WHERE tenant_id = ?`,
 )
   .bind("usr_550e8400-e29b-41d4-a716-446655440000")
   .run();
+
+// Spend ceilings here are test fixtures, never production policy defaults.
+await env.CONTROL_PLANE.prepare(
+  "UPDATE system_policy SET daily_spend_microdollars = 100000000000, catalog_version = 1 WHERE id = 1",
+).run();
