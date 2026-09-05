@@ -1,3 +1,4 @@
+import { parseRestListPage, parseS3ListPage, nextListToken } from "./r2-list-pages";
 import { AwsClient } from "aws4fetch";
 import { parseRateLimitDelayMs } from "../../src/modules/http-retry";
 
@@ -344,6 +345,7 @@ export function makeR2Client(
 
   async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
     const objects: R2ObjectMeta[] = [];
+    const seen = new Set<string>();
     let continuationToken: string | undefined;
     do {
       const params = new URLSearchParams({
@@ -357,22 +359,13 @@ export function makeR2Client(
         const text = await res.text().catch(() => "");
         throw new Error(`R2 LIST failed: ${res.status} ${text}`);
       }
-      const xml = await res.text();
-      for (const block of extractXmlTags(xml, "Contents")) {
-        const key = extractXmlTags(block, "Key")[0];
-        if (key === undefined) continue;
-        const lastModified = extractXmlTags(block, "LastModified")[0];
-        objects.push({
-          key: decodeXmlEntities(key),
-          size: Number(extractXmlTags(block, "Size")[0] ?? "0"),
-          etag: decodeXmlEntities(extractXmlTags(block, "ETag")[0] ?? "").replace(/"/g, ""),
-          ...(lastModified === undefined ? {} : { lastModified: decodeXmlEntities(lastModified) }),
-        });
+      try {
+        const page = parseS3ListPage(await res.text());
+        objects.push(...page.objects);
+        continuationToken = nextListToken(page.truncated, page.token, seen);
+      } catch (cause) {
+        throw new Error("R2 LIST failed: invalid S3 page or continuation token", { cause });
       }
-      const isTruncated = extractXmlTags(xml, "IsTruncated")[0] === "true";
-      continuationToken = isTruncated
-        ? decodeXmlEntities(extractXmlTags(xml, "NextContinuationToken")[0] ?? "")
-        : undefined;
     } while (continuationToken);
     return objects;
   }
@@ -557,6 +550,7 @@ export function makeR2RestClient(
 
   async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
     const objects: R2ObjectMeta[] = [];
+    const seen = new Set<string>();
     let cursor: string | undefined;
     do {
       const params = new URLSearchParams({ per_page: "1000" });
@@ -565,40 +559,22 @@ export function makeR2RestClient(
       const res = await authedFetch(`${objectsBase}?${params.toString()}`, { method: "GET" });
       if (!res.ok) {
         await throwIfUnsuccessfulJson(res, "LIST");
-        return objects;
+        throw new Error(`R2 LIST failed: ${res.status}`);
       }
-      const json = (await res.json()) as {
-        success?: boolean;
-        errors?: { message?: string }[];
-        result?: Array<{
-          key?: string;
-          size?: number | string;
-          etag?: string;
-          last_modified?: string;
-          uploaded?: string;
-        }>;
-        result_info?: { cursor?: string; is_truncated?: boolean };
-      };
-      if (json.success === false) {
-        const detail = json.errors?.map((e) => e.message).filter(Boolean).join("; ") || "unsuccessful";
-        throw new Error(`R2 LIST failed: ${res.status} ${detail}`);
+      const json: unknown = await res.json().catch((cause) => {
+        throw new Error("R2 LIST failed: invalid JSON", { cause });
+      });
+      // Preserve provider diagnostics for explicitly unsuccessful responses.
+      if (json && typeof json === "object" && "success" in json && json.success === false) {
+        await throwIfUnsuccessfulJson(Response.json(json), "LIST");
       }
-      for (const item of json.result ?? []) {
-        if (!item.key) continue;
-        // The R2 REST listing has spelled this `uploaded`; `last_modified` is
-        // accepted too so the field does not vanish if the API settles on the
-        // S3 spelling. Absent stays absent — an invented timestamp would be
-        // worse than none.
-        const lastModified = item.last_modified ?? item.uploaded;
-        objects.push({
-          key: item.key,
-          size: Number(item.size ?? 0),
-          etag: normalizeEtag(item.etag),
-          ...(lastModified === undefined ? {} : { lastModified }),
-        });
+      try {
+        const page = parseRestListPage(json);
+        objects.push(...page.objects);
+        cursor = nextListToken(page.truncated, page.token, seen);
+      } catch (cause) {
+        throw new Error("R2 LIST failed: invalid REST page or continuation cursor", { cause });
       }
-      const info = json.result_info;
-      cursor = info?.is_truncated ? info.cursor : undefined;
     } while (cursor);
     return objects;
   }
@@ -653,21 +629,6 @@ function firstDefined(vars: Record<string, string | undefined>, names: string[])
     if (value) return value;
   }
   return undefined;
-}
-
-function extractXmlTags(xml: string, tag: string): string[] {
-  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`<${escaped}>([\\s\\S]*?)</${escaped}>`, "g");
-  return [...xml.matchAll(pattern)].map((match) => match[1] ?? "");
-}
-
-function decodeXmlEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
 }
 
 export function makeVectorizeClient(

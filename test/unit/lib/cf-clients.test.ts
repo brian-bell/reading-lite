@@ -120,8 +120,8 @@ describe("makeR2Client", () => {
           <ListBucketResult>
             <IsTruncated>true</IsTruncated>
             <NextContinuationToken>next token</NextContinuationToken>
-            <Contents><Key>index/list.json</Key></Contents>
-            <Contents><Key>readings/a&amp;b/manifest.json</Key></Contents>
+            <Contents><Key>index/list.json</Key><Size>0</Size><ETag>etag</ETag></Contents>
+            <Contents><Key>readings/a&amp;b/manifest.json</Key><Size>0</Size><ETag>etag</ETag></Contents>
           </ListBucketResult>`,
           { status: 200 },
         ),
@@ -131,7 +131,7 @@ describe("makeR2Client", () => {
           `<?xml version="1.0" encoding="UTF-8"?>
           <ListBucketResult>
             <IsTruncated>false</IsTruncated>
-            <Contents><Key>index/by-id/rd_1</Key></Contents>
+            <Contents><Key>index/by-id/rd_1</Key><Size>0</Size><ETag>etag</ETag></Contents>
           </ListBucketResult>`,
           { status: 200 },
         ),

@@ -86,6 +86,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
       detail: {
         ids: inventory.vectors.map((v) => v.id),
         enumerated: inventory.enumerated,
+        pageCounts: inventory.pageCounts,
         unhydrated: inventory.unknown,
       },
     };
@@ -190,7 +191,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     source: "visibility_limits",
     state: "unknown",
     detail:
-      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. A ready listed reading with a missing composed vector is a possible purge markDeleteSubmitted failure or propagation/other drift; scan cannot infer intent or safely repair it.",
+      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. A ready listed reading with a missing composed vector is a possible purge markDeleteSubmitted failure or propagation/other drift; scan cannot infer intent or safely repair it.",
   });
   return {
     tenant,
