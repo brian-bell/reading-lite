@@ -523,7 +523,10 @@ evidence. The absence of the `users` row is.
 
 The separately executed
 [2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
-records signup-shaped reuse after automatic teardown (issue #286). The fresh
+and its [second-run supplement](evidence/286-staging-email-reuse-followup-2026-09-05.md)
+record signup-shaped reuse after automatic teardown (issue #286). The supplement
+adds real credential replay, nonempty corpus isolation, and a spent-invite
+negative check; it preserves the original run’s separate observations. The fresh
 invite was inserted after the `users` row was absent; the insert-during-deleting
 failure mode was not exercised.
 
@@ -997,7 +1000,10 @@ adds deterministic local tests. The separately executed
 the live repair, deletion, and automatic teardown evidence, including the
 final `residue:false, incomplete:true` scan and remaining acceptance limits.
 Signup-shaped email reuse after teardown is recorded in the
-[2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md).
+[2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
+and its [second-run supplement](evidence/286-staging-email-reuse-followup-2026-09-05.md).
+The accepted #286 evidence retains `incomplete:true`; broader deletion coverage
+and acceptance decisions remain #288, with #285 legacy cleanup explicitly deferred.
 
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
