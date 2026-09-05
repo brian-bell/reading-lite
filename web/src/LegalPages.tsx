@@ -105,14 +105,15 @@ function LegalParagraph({ text, selfPath }: { text: string; selfPath: string }) 
 const WORD_TO_PATH: Record<string, string> = {
   Terms: LEGAL_PATHS.terms,
   Privacy: LEGAL_PATHS.privacy,
-  DMCA: LEGAL_PATHS.dmca
+  DMCA: LEGAL_PATHS.dmca,
+  Copyright: LEGAL_PATHS.dmca
 };
 
 function LegalInline({ text, selfPath }: { text: string; selfPath: string }) {
   const nodes: ReactNode[] = [];
   const escapedEmail = OPERATOR_CONTACT_EMAIL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `(${escapedEmail})|(\\/terms)|(\\/privacy)|(\\/dmca)|(Privacy)|(Terms)|(DMCA)`,
+    `(${escapedEmail})|(\\/terms)|(\\/privacy)|(\\/dmca)|\\b(Privacy|Terms|DMCA|Copyright)\\b`,
     "g"
   );
   let last = 0;

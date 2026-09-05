@@ -19,6 +19,7 @@ export const LEGAL_NAV = [
 const p = (text: string): LegalBlock => ({ type: "p", text });
 const ul = (items: string[]): LegalBlock => ({ type: "ul", items });
 const section = (id: string, title: string, ...blocks: LegalBlock[]): LegalSection => ({ id, title, blocks });
+// Update this date when substantive legal copy changes; do not derive it at render time.
 const updated = p("Last updated: September 5, 2026. Effective when published.");
 
 export const TERMS_DOCUMENT: LegalDocument = {
@@ -95,7 +96,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     section("children", "Children",
       p("The service is intended for adults, not children under 18. If you believe a child has provided personal information, contact us so we can investigate and address it.")),
     section("changes", "Policy changes",
-      p("We will update this policy and its date when our practices change. We will provide notice through the service or email before material changes take effect and obtain consent where required. See Terms for the agreement governing use and DMCA for copyright complaints."))
+      p("We will update this policy and its date when our practices change. We will provide notice through the service or email before material changes take effect and obtain consent where required. See Terms for the agreement governing use and Copyright for copyright complaints."))
   ]
 };
 
@@ -119,13 +120,8 @@ export const DMCA_DOCUMENT: LegalDocument = {
       p("We review sufficiently detailed complaints promptly and remove or disable access to material when appropriate. We may ask for missing information. We normally notify the affected user and may share the complaint, including contact details, so they can respond. Avoid including unnecessary sensitive information."),
       p("We terminate accounts of repeat infringers in appropriate circumstances. We consider the available facts, including credible disputes and withdrawn or mistaken complaints. We cannot remove material from a source website operated by someone else.")),
     section("disputes", "If you believe removal was a mistake",
-      p(`Contact ${OPERATOR_CONTACT_EMAIL} with the removed reading's details and an explanation of your permission to use it or why the complaint is mistaken. For a formal U.S. DMCA counter-notification, also provide:`),
-      ul([
-        "Your physical or electronic signature and the location of the material before removal.",
-        "A declaration under penalty of perjury that you genuinely believe the removal resulted from a mistake or incorrect identification.",
-        "Your name, address, and telephone number, consent to the jurisdiction of the U.S. federal district court for your address (or, if outside the U.S., a district where the service provider can be found), and agreement to accept service of process from the original complainant or their agent."
-      ]),
-      p("We may forward your response to the complainant. Where the statutory DMCA counter-notification procedure applies, it provides for restoration 10–14 business days after receipt of a valid counter-notification unless the complainant notifies us of a filed court action seeking to restrain the disputed use. Restoration requires manual assistance; contact us before resubmitting removed material."),
-      p("Knowingly making material false claims in a copyright notice or counter-notification can have legal consequences. See Terms and Privacy for account and data-handling information."))
+      p(`Contact ${OPERATOR_CONTACT_EMAIL} with your contact details, the removed reading's link or identifier, and an explanation of why the complaint is mistaken. Include any permission, license, or other information supporting your request.`),
+      p("We will review your response and may ask either party for more information. We may share your response and contact details with the complainant. If we determine that restoration is appropriate, we will help you restore or resubmit the material. Contact us before resubmitting removed material."),
+      p("This is a manual complaint and review process, not a formal DMCA counter-notification procedure. We do not promise automatic restoration or a fixed restoration deadline. Nothing in this process limits either party's rights under applicable law. See Terms and Privacy for account and data-handling information."))
   ]
 };
