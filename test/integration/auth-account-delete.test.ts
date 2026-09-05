@@ -10,7 +10,12 @@ import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { consumeProcessReadingMessage } from "../../src/control-plane/envelope";
 import { fromD1 } from "../../src/control-plane/db";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
-import { FOUNDER_TENANT_ID, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
+import {
+  FOUNDER_TENANT_ID,
+  OTHER_TENANT_ID,
+  PUBLIC_LOOKUP,
+  insertSecondTenant,
+} from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const TOKEN_ID = "tok_550e8400-e29b-41d4-a716-446655440000";
@@ -85,10 +90,10 @@ function credentialFrom(verifyUrl: string): string {
   return hash;
 }
 
-async function redeemUser(redemptionId: string) {
+async function redeemUser(redemptionId: string, email = "founder@test.example") {
   const challenge = await request("/api/auth/challenge", {
     method: "POST",
-    body: { email: "founder@test.example" },
+    body: { email },
   });
   expect(challenge.sent).toHaveLength(1);
   const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
@@ -116,8 +121,52 @@ async function restoreFounder(): Promise<void> {
     .run();
 }
 
+async function restoreOtherTenant(): Promise<void> {
+  const workerEnv = env as unknown as Env;
+  await workerEnv.CONTROL_PLANE.prepare(
+    "UPDATE users SET status = 'active', deleting_at_ms = NULL WHERE id = ?",
+  )
+    .bind(OTHER_TENANT_ID)
+    .run();
+  await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = NULL WHERE user_id = ?")
+    .bind(OTHER_TENANT_ID)
+    .run();
+}
+
 describe("DELETE /api/account", () => {
-  afterEach(restoreFounder);
+  afterEach(async () => {
+    await restoreFounder();
+    await restoreOtherTenant();
+  });
+
+  it("deletes only the authenticated tenant's account and leaves another active", async () => {
+    const workerEnv = env as unknown as Env;
+    await insertSecondTenant(workerEnv);
+    const founder = await redeemUser("clm_account_owner");
+    const other = await redeemUser("clm_account_other", "other@test.example");
+
+    const deleted = await request("/api/account", {
+      method: "DELETE",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { confirm: "delete" },
+    });
+    expect(deleted.res.status).toBe(200);
+    expect(await deleted.res.json()).toEqual({ ok: true });
+
+    const [founderRow, otherRow] = await Promise.all([
+      workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
+        .bind(founder.userId)
+        .first<{ status: string }>(),
+      workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
+        .bind(other.userId)
+        .first<{ status: string }>(),
+    ]);
+    expect(founderRow?.status).toBe("active");
+    expect(otherRow?.status).toBe("deleting");
+    const founderStillAuthenticated = await request("/api/whoami", { cookie: founder.cookie });
+    expect(founderStillAuthenticated.res.status).toBe(200);
+  });
 
   it("requires recent auth, session principal, and explicit confirm", async () => {
     const session = await redeemUser("clm_acct_gates");

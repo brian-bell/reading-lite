@@ -5088,6 +5088,33 @@ describe("GET /api/readings/lookup", () => {
 });
 
 describe("POST /api/readings/similar", () => {
+  it("returns only the caller's neighbours when two tenants store identical vectors", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const stub = installVectorizeStub();
+    const embedding = new Array(1536).fill(0.1);
+    for (const [tenant, id] of [[FOUNDER_TENANT_ID, "rd_founder"], [OTHER_TENANT_ID, "rd_other"]]) {
+      stub.vectors.set(tenantVectorId(tenant!, id!), {
+        values: embedding, namespace: tenant,
+        metadata: { url: `https://example.com/${id}`, title: id!, created_at: "2026-04-25T00:00:00.000Z" },
+      });
+    }
+    const before = structuredClone([...stub.vectors]);
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    for (const [token, id] of [[TOKEN, "rd_founder"], [OTHER_TOKEN_SECRET, "rd_other"]]) {
+      const response = await apiRequest(app, token!, "/api/readings/similar", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query_embedding: embedding, k: 20 }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { items: { id: string; url: string }[] };
+      expect(body.items.map(item => [item.id, item.url])).toEqual([[id, `https://example.com/${id}`]]);
+    }
+    expect([...stub.vectors]).toEqual(before);
+    expect(stub.upsert).not.toHaveBeenCalled();
+    expect(stub.deleteByIds).not.toHaveBeenCalled();
+    expect(queuedEnvelopes).toEqual([]);
+  });
+
   it("calls Vectorize and returns mapped items", async () => {
     const stub = installVectorizeStub();
     // Seeded in the founder namespace under the tenant-prefixed id, exactly as

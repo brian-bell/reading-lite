@@ -122,13 +122,22 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.batchExecutes).toHaveLength(0);
   });
 
-  it("refuses an audit taken under a different tenant", async () => {
+  it("refuses a foreign audit before any realtime or batch side effect", async () => {
     const r = makeDeps();
     r.deps.readFile = async () =>
-      JSON.stringify({ tenant: "usr_11111111-1111-4111-8111-111111111111", rows: [] });
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--execute", "--token", "tok"], r.deps);
+      JSON.stringify({ tenant: OTHER_TENANT, rows: ROWS });
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", TENANT, "--batch", "--execute", "--sole-writer", "--token", "tok"],
+      r.deps,
+    );
     expect(code).toBe(1);
     expect(r.reprocessed).toHaveLength(0);
+    expect(r.imported).toHaveLength(0);
+    expect(r.indexWrites).toHaveLength(0);
+    expect(r.sidecarLoads).toHaveLength(0);
+    expect(r.configResolves).toHaveLength(0);
+    expect(r.batchExecutes).toHaveLength(0);
+    expect(r.apiOpts).toHaveLength(0);
     expect(r.err.join("\n")).toContain("was taken under tenant");
   });
 

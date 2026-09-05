@@ -29,18 +29,18 @@ function makeDeps(items: ListItem[] = ITEMS): {
   out: string[];
   writes: { path: string; body: string }[];
   mkdirs: string[];
-  listReads: { bucket: string; remote?: boolean }[];
+  listReads: { bucket: string; keyRoot?: string; remote?: boolean }[];
 } {
   const out: string[] = [];
   const writes: { path: string; body: string }[] = [];
   const mkdirs: string[] = [];
-  const listReads: { bucket: string; remote?: boolean }[] = [];
+  const listReads: { bucket: string; keyRoot?: string; remote?: boolean }[] = [];
   const io: CommandIo = { stdout: (t) => out.push(t), stderr: (t) => out.push(t) };
   const deps: CorpusAuditDeps = {
     io,
     r2: {
       readListIndex: async (d) => {
-        listReads.push({ bucket: d.bucket, remote: d.remote });
+        listReads.push({ bucket: d.bucket, keyRoot: d.keyRoot, remote: d.remote });
         return items;
       },
       readExtracted: async () => null,
@@ -110,7 +110,37 @@ describe("ops corpus audit", () => {
   it("targets the requested bucket and honors --local", async () => {
     const { deps, listReads } = makeDeps();
     await corpusAuditCommand.run(["--tenant", "global", "--bucket", "reading-lite-staging", "--local"], deps);
-    expect(listReads).toEqual([{ bucket: "reading-lite-staging", remote: false }]);
+    expect(listReads).toEqual([{ bucket: "reading-lite-staging", keyRoot: "", remote: false }]);
+  });
+
+  it("reads and stamps only the selected tenant's root, never a foreign corpus", async () => {
+    const tenantA = "usr_11111111-1111-4111-8111-111111111111";
+    const tenantB = "usr_22222222-2222-4222-8222-222222222222";
+    const tenantAItems = [{ ...ITEMS[1], id: "rd_a_only" }];
+    const tenantBItems = [{ ...ITEMS[1], id: "rd_b_foreign" }];
+    const { deps, listReads, writes } = makeDeps();
+    deps.r2.readListIndex = async (r2Deps) => {
+      listReads.push({
+        bucket: r2Deps.bucket,
+        keyRoot: r2Deps.keyRoot,
+        remote: r2Deps.remote,
+      });
+      if (r2Deps.keyRoot === `u/${tenantA}/`) return tenantAItems;
+      if (r2Deps.keyRoot === `u/${tenantB}/`) return tenantBItems;
+      throw new Error(`unexpected root ${r2Deps.keyRoot}`);
+    };
+
+    const code = await corpusAuditCommand.run(
+      ["--tenant", tenantA, "--out", "reports", "--execute"],
+      deps,
+    );
+
+    expect(code).toBe(0);
+    expect(listReads).toEqual([{ bucket: "reading-lite", keyRoot: `u/${tenantA}/`, remote: true }]);
+    const report = JSON.parse(writes[0]!.body);
+    expect(report).toMatchObject({ tenant: tenantA });
+    expect(report.rows.map((row: { reading_id: string }) => row.reading_id)).toEqual(["rd_a_only"]);
+    expect(report.rows.map((row: { reading_id: string }) => row.reading_id)).not.toContain("rd_b_foreign");
   });
 
   it("rejects an unknown option before reading anything", async () => {

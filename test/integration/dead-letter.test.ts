@@ -9,7 +9,10 @@ import { tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
 import {
   FOUNDER_TENANT_ID,
   founderTenant,
+  insertSecondTenant,
   insertQuotaTenant,
+  OTHER_TOKEN_ID,
+  otherTenant,
   PUBLIC_LOOKUP,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
@@ -385,5 +388,72 @@ describe("queue() dead-letter routing", () => {
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("failed");
     expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
+  });
+
+  it("marks only the admitted tenant's matching DLQ artifact", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const founder = testReadingStore(env, founderTenant());
+    const other = testReadingStore(env, otherTenant());
+    const founderManifest: Manifest = { ...pendingManifest(), title: "founder pending" };
+    const otherManifest: Manifest = { ...pendingManifest(), title: "other pending" };
+    await founder.writeManifest(KEY_PREFIX, founderManifest);
+    await founder.appendOrReplaceListIndexItem(manifestToIndexItem(founderManifest, KEY_PREFIX));
+    await other.writeManifest(KEY_PREFIX, otherManifest);
+    await other.appendOrReplaceListIndexItem(manifestToIndexItem(otherManifest, KEY_PREFIX));
+
+    const msg = {
+      ...dlqMessage(),
+      body: {
+        version: 1,
+        tenant: otherTenant(),
+        actor: { kind: "api_token" as const, credentialId: OTHER_TOKEN_ID },
+        job: args(),
+      },
+    } as Message<unknown>;
+    await worker.queue({
+      queue: "reading-lite-dlq", messages: [msg],
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+      ackAll: vi.fn(), retryAll: vi.fn(),
+    }, env as Env);
+
+    // Positive control: the admitted owner receives the terminal failure.
+    expect((await other.readManifest(KEY_PREFIX))?.status).toBe("failed");
+    expect((await other.findListIndexItem(READING_ID))?.status).toBe("failed");
+    // A same-id artifact under the other tenant is not a DLQ target.
+    expect((await founder.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect((await founder.readManifest(KEY_PREFIX))?.title).toBe("founder pending");
+    expect((await founder.findListIndexItem(READING_ID))?.status).toBe("pending");
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("acks a cross-tenant actor envelope before processing or mutating its claimed tenant", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const founder = testReadingStore(env, founderTenant());
+    const manifest: Manifest = { ...pendingManifest(), title: "founder pending" };
+    await founder.writeManifest(KEY_PREFIX, manifest);
+    await founder.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+
+    const msg = {
+      ...dlqMessage(),
+      body: {
+        version: 1,
+        tenant: founderTenant(),
+        actor: { kind: "api_token" as const, credentialId: OTHER_TOKEN_ID },
+        job: args(),
+      },
+    } as Message<unknown>;
+    await worker.queue({
+      queue: "reading-lite", messages: [msg],
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+      ackAll: vi.fn(), retryAll: vi.fn(),
+    }, env as Env);
+
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+    expect((await founder.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect((await founder.readManifest(KEY_PREFIX))?.title).toBe("founder pending");
+    expect((await founder.findListIndexItem(READING_ID))?.status).toBe("pending");
+    expect(await testReadingStore(env, otherTenant()).readManifest(KEY_PREFIX)).toBeNull();
   });
 });

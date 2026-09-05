@@ -16,6 +16,7 @@ import type { Manifest } from "../../src/schemas/manifest";
 import { CONTENT_CHUNK_BYTES } from "../../src/mcp/format";
 import {
   founderTenant,
+  otherTenant,
   insertSecondTenant,
   OTHER_TOKEN_SECRET,
   PUBLIC_LOOKUP,
@@ -286,8 +287,9 @@ async function seedReady(opts: {
   tags?: string[];
   markdown: string;
   createdAt?: string;
+  tenant?: ReturnType<typeof founderTenant>;
 }): Promise<void> {
-  const store = testReadingStore(env, founderTenant());
+  const store = testReadingStore(env, opts.tenant ?? founderTenant());
   const created_at = opts.createdAt ?? "2026-04-26T20:00:00.000Z";
   const prefix = buildKeyPrefix(opts.id, created_at);
   const url_hash = await sha256Hex(opts.url);
@@ -669,5 +671,122 @@ describe("POST /mcp", () => {
     const stillOwned = await callTool(app, "get_reading", { id });
     expect(stillOwned.rpc.result?.isError).not.toBe(true);
     expect(stillOwned.payload.status).toBe("ready");
+  });
+});
+
+
+// #198: exercise the MCP dispatch boundary itself, including content/diagnostic
+// tools and polling; HTTP-only coverage cannot catch a lost dispatch principal.
+describe("MCP adversarial tenant matrix", () => {
+  const id = "rd_MCPPRIVATE";
+  const unknownId = "rd_0000000000";
+  const url = "https://example.com/mcp-private";
+
+  async function fixture() {
+    await insertSecondTenant(env as unknown as Env);
+    await seedReady({ id, url, title: "Private founder", tldr: "private needle", markdown: "# Founder secret" });
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services, sleep: async () => { await drainQueue(services); } });
+    return { app, services };
+  }
+
+  async function snapshot() {
+    const listed = await env.READINGS_BUCKET.list();
+    expect(listed.truncated).toBe(false);
+    return Promise.all(listed.objects.map(async ({ key }) => [key, await (await env.READINGS_BUCKET.get(key))!.text()]));
+  }
+
+  it.each(["get_reading", "get_reading_content", "get_diagnostics", "reprocess_reading"])(
+    "%s hides foreign ids and leaves both tenants' artifacts untouched", async (name) => {
+      const { app } = await fixture();
+      const before = await snapshot();
+      const owner = await callTool(app, name === "reprocess_reading" ? "get_reading" : name, { id });
+      expect(owner.rpc.result?.isError).not.toBe(true);
+      expect(owner.payload.id).toBe(id);
+      const args = name === "reprocess_reading"
+        ? { body: { force: true, source: { kind: "markdown", markdown: "# Attacker replacement" } } }
+        : {};
+      const foreign = await callTool(app, name, { id, ...args }, { token: OTHER_TOKEN_SECRET });
+      const unknown = await callTool(app, name, { id: unknownId, ...args }, { token: OTHER_TOKEN_SECRET });
+      expect(unknown.payload.http_status).toBe(404);
+      expect(foreign.rpc.result).toEqual(unknown.rpc.result);
+      expect(await snapshot()).toEqual(before);
+      expect(queuedEnvelopes).toEqual([]);
+      if (name === "reprocess_reading") {
+        const ownWrite = await callTool(app, name, { id, ...args });
+        expect(ownWrite.rpc.result?.isError).not.toBe(true);
+        expect(ownWrite.payload.id).toBe(id);
+        expect(ownWrite.payload.existing).toBe(false);
+        expect(queuedEnvelopes).toHaveLength(1);
+      }
+    },
+  );
+
+  it.each(["list_readings", "search_readings"])("%s searches and pages only the caller's corpus", async (name) => {
+    const { app } = await fixture();
+    const otherId = "rd_MCPOther01";
+    await seedReady({ id: otherId, url: "https://example.com/other", title: "Other private needle", tldr: "other", markdown: "# Other", tenant: otherTenant() });
+    const before = await snapshot();
+    for (const [token, expectedId] of [[TOKEN, id], [OTHER_TOKEN_SECRET, otherId]]) {
+      const result = await callTool(app, name, { q: "private", limit: 1 }, { token });
+      expect(result.rpc.result?.isError).not.toBe(true);
+      expect((result.payload.readings as { id: string }[]).map(r => r.id)).toEqual([expectedId]);
+      expect(result.payload.has_more).toBe(false);
+      const page = await callTool(app, name, { q: "private", limit: 1, offset: 1 }, { token });
+      expect(page.payload.readings).toEqual([]);
+    }
+    const foreign = await callTool(app, name, { q: "founder" }, { token: OTHER_TOKEN_SECRET });
+    const unknown = await callTool(app, name, { q: "never-stored" }, { token: OTHER_TOKEN_SECRET });
+    expect(foreign.payload).toEqual(unknown.payload);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each(["submit_url", "import_markdown"])("%s claims the same URL independently and keeps polling tenant-local", async (name) => {
+    const { app, services } = await fixture();
+    const before = await callTool(app, "get_diagnostics", { id });
+    const args = name === "submit_url" ? { url } : { source_url: url, markdown: "# Other tenant text", poll_until_ready: true };
+    const own = await callTool(app, name, args);
+    expect(own.payload.id).toBe(id);
+    expect(own.payload.existing).toBe(true);
+    const other = await callTool(app, name, args, { token: OTHER_TOKEN_SECRET });
+    expect(other.rpc.result?.isError).not.toBe(true);
+    expect(other.payload.existing).toBe(false);
+    expect(other.payload.id).not.toBe(id);
+    await drainQueue(services);
+    const otherReady = await callTool(app, "get_reading", { id: other.payload.id }, { token: OTHER_TOKEN_SECRET });
+    expect(otherReady.payload.status).toBe("ready");
+    if (name === "import_markdown") {
+      expect(other.payload.polled).toBe(true);
+      expect(other.payload.status).toBe("ready");
+      expect((other.payload.reading as { id: string }).id).toBe(other.payload.id);
+    }
+    expect((await callTool(app, "get_diagnostics", { id })).payload).toEqual(before.payload);
+    const cross = await callTool(app, "get_reading", { id: other.payload.id });
+    expect(cross.payload.http_status).toBe(404);
+  });
+
+  it.each([
+    ["submit_url", { url }],
+    ["import_markdown", { source_url: url, markdown: "# forbidden" }],
+    ["reprocess_reading", { id, body: { force: true } }],
+  ])("read-only scopes deny %s before ownership lookup or mutation", async (name, args) => {
+    const { app } = await fixture();
+    const secret = await insertScopedToken("mcp-matrix-read-only", ["readings:read"]);
+    const before = await snapshot();
+    for (const token of [secret, OTHER_TOKEN_SECRET]) {
+      if (token === OTHER_TOKEN_SECRET) {
+        await env.CONTROL_PLANE.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:read'")
+          .bind("tok_11111111-1111-4111-8111-111111111111").run();
+      }
+      const denied = await callTool(app, name, args, { token });
+      expect(denied.payload.http_status).toBe(403);
+      expect(denied.rpc.result?.isError).toBe(true);
+      const unknownArgs = name === "reprocess_reading" ? { ...args, id: unknownId }
+        : name === "submit_url" ? { url: "https://example.com/unknown" }
+        : { source_url: "https://example.com/unknown", markdown: "# forbidden" };
+      expect((await callTool(app, name, unknownArgs, { token })).rpc.result).toEqual(denied.rpc.result);
+    }
+    expect(await snapshot()).toEqual(before);
+    expect(queuedEnvelopes).toEqual([]);
   });
 });
