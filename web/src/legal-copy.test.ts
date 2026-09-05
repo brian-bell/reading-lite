@@ -87,6 +87,13 @@ describe("legal copy", () => {
     expect(deletion).toMatch(/readings:delete/);
     expect(deletion).toMatch(/Inbound connections on other readings may still name the deleted id/);
     expect(flattenLegalText(PRIVACY_DOCUMENT)).toMatch(/DELETE \/api\/account/);
+
+    const dmca = flattenLegalText(DMCA_DOCUMENT);
+    expect(dmca).toMatch(/DELETE \/api\/account/);
+    expect(dmca).toMatch(/fences the account immediately/);
+    expect(dmca).toMatch(/about seven days unless an operator starts it sooner/);
+    expect(dmca).not.toMatch(/fences the account immediately and starts an asynchronous corpus wipe/);
+    expect(dmca).toMatch(/does not claim[^.!?]*(?:that residue is zero|zero residue|leaves zero residue)/i);
   });
 
   it("publishes the three public paths", () => {

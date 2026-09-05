@@ -324,7 +324,7 @@ export const DMCA_DOCUMENT: LegalDocument = {
           "The available product control for a stored copy is reading purge: DELETE /api/readings/:id (readings:delete). That removes the reading's vector (when bound), owned by-url pointer, list row, R2 objects, and by-id pointer. The SPA does not currently expose that control."
         ),
         p(
-          "Account deletion (DELETE /api/account) fences the account immediately and starts an asynchronous corpus wipe; this page does not claim that wipe leaves zero residue. The operator may purge or drop the identified reading after reviewing a notice. Inbound connections on other readings may still name a purged id. Source sites remain under their own operators; this service cannot take down the original URL."
+          "Account deletion (DELETE /api/account) fences the account immediately: it marks the account deleting, revokes every session and API token, and sends a security email. Corpus wipe of tenant R2 objects, Vectorize embeddings, and related indexes begins after about seven days unless an operator starts it sooner. This page does not claim that wipe leaves zero residue. The operator may purge or drop the identified reading after reviewing a notice. Inbound connections on other readings may still name a purged id. Source sites remain under their own operators; this service cannot take down the original URL."
         )
       ]
     },
