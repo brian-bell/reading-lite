@@ -242,7 +242,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       title: "Retention",
       blocks: [
         p(
-          "Data is retained until a reading is purged, account deletion runs, or an operator drops it. There is no automatic expiry of ready readings. Pending work that exceeds the pending TTL is annotated stale on read; failed readings remain until reprocess, purge, account deletion, or operator drop. Queue retries and a dead-letter path can leave retryable failed manifests. Digest delivery ledgers live in D1 until the digest pipeline closes them. Account deletion fences access immediately; corpus wipe after that fence is asynchronous, and this page does not claim wipe is complete."
+          "Data is retained until a reading is purged, account deletion runs, or an operator drops it. There is no automatic expiry of ready readings. Pending work that exceeds the pending TTL is annotated stale on read; failed readings remain until reprocess, purge, account deletion, or operator drop. Queue retries and a dead-letter path can leave retryable failed manifests. Digest delivery records remain in D1 after a delivery is sent, skipped, or fails, and are removed during account teardown. Account deletion fences access immediately; corpus wipe after that fence is asynchronous, and this page does not claim wipe is complete."
         )
       ]
     },
