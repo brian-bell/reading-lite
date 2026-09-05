@@ -13,6 +13,7 @@ import type { ReadingListEntry } from "../../check-corpus-lib/corpus";
 import type { Prompter } from "../../import-bookmarks-lib/confirm";
 import { createPrompter } from "../../import-bookmarks-lib/confirm";
 import type { SubmitOpts, SubmitResult, SubmitSummary } from "../../import-bookmarks-lib/submit";
+import { DEFAULT_API_BASE } from "../../corpus-lib/config";
 import { apiBaseFromEndpoint, readingApiFor, type ReadingApi } from "../../lib/reading-api";
 import { createResultSink } from "../../process-reading-list-lib/persist";
 import { selectUnprocessed } from "../../process-reading-list-lib/select";
@@ -30,7 +31,7 @@ export interface ReadingListProcessDeps extends BaseDeps {
   now: () => number;
 }
 
-const DEFAULT_DESTINATION_URL = "https://reading-lite.bbell.dev/api/readings";
+const DEFAULT_DESTINATION_URL = `${DEFAULT_API_BASE}/api/readings`;
 
 interface Args {
   file: string;

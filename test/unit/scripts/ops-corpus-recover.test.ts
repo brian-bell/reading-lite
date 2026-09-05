@@ -423,4 +423,11 @@ describe("ops corpus recover — batch routing", () => {
     expect(code).toBe(1);
     expect(r.batchExecutes[0].map((row) => row.reading_id)).toEqual(["rd_a"]);
   });
+
+  it("names readinglite.ai as the default production API base in help", () => {
+    expect(corpusRecoverCommand.helpText).toContain("https://readinglite.ai");
+    expect(corpusRecoverCommand.helpText).toContain("READER_URL");
+    expect(corpusRecoverCommand.helpText).not.toContain("reading-lite.bbell.dev");
+    expect(corpusRecoverCommand.helpText).not.toContain("bbookmarks.com");
+  });
 });

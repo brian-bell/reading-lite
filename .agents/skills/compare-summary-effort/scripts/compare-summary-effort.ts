@@ -23,9 +23,10 @@ import {
   type ReadingSummary,
   type SummarizationUsage,
 } from "../../../../src/schemas/manifest";
+import { DEFAULT_API_BASE } from "../../../../scripts/corpus-lib/config";
 import { loadDotVars } from "../../../../scripts/lib/dotvars";
 
-const DEFAULT_BASE_URL = "https://reading-lite.bbell.dev";
+const DEFAULT_BASE_URL = DEFAULT_API_BASE;
 const DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 const DEFAULT_INPUT_PRICE_PER_MILLION = 2;
 const DEFAULT_OUTPUT_PRICE_PER_MILLION = 12;

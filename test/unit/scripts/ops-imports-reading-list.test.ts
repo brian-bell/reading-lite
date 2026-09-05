@@ -299,13 +299,32 @@ describe("ops reading-list process", () => {
   }
 
   it("plan mode prints selected rows without prompting, POSTing, or writing", async () => {
-    const { deps, err, state } = makeDeps();
-    const code = await readingListProcessCommand.run(["--file", "list.json"], deps);
+    const { deps, err, out, state } = makeDeps();
+    const previousUrl = process.env.READER_URL;
+    delete process.env.READER_URL;
+    try {
+      const code = await readingListProcessCommand.run(["--file", "list.json"], deps);
+      expect(code).toBe(0);
+      expect(state.submits).toHaveLength(0);
+      expect(state.writes).toBe(0);
+      expect(state.prompts).toBe(0);
+      expect(err.join("\n")).toContain("[plan] https://a.example/one");
+      expect(err.join("\n")).toContain("https://readinglite.ai/api/readings");
+      expect(JSON.parse(out.join("\n")).destination).toBe("https://readinglite.ai/api/readings");
+    } finally {
+      if (previousUrl === undefined) delete process.env.READER_URL;
+      else process.env.READER_URL = previousUrl;
+    }
+  });
+
+  it("honors --url over the production default without POSTing in plan mode", async () => {
+    const { deps, out } = makeDeps();
+    const code = await readingListProcessCommand.run(
+      ["--file", "list.json", "--url", "http://127.0.0.1:8787/api/readings"],
+      deps,
+    );
     expect(code).toBe(0);
-    expect(state.submits).toHaveLength(0);
-    expect(state.writes).toBe(0);
-    expect(state.prompts).toBe(0);
-    expect(err.join("\n")).toContain("[plan] https://a.example/one");
+    expect(JSON.parse(out.join("\n")).destination).toBe("http://127.0.0.1:8787/api/readings");
   });
 
   it("--execute --quick submits the unprocessed entries and writes back outcomes", async () => {
@@ -324,5 +343,24 @@ describe("ops reading-list process", () => {
       readingListProcessCommand.run(["--file", "list.json", "--execute"], deps),
     ).rejects.toThrow(UsageError);
     expect(state.submits).toHaveLength(0);
+  });
+});
+
+describe("production API default host in operator help", () => {
+  it("names readinglite.ai and keeps override flags", () => {
+    expect(importRedditCommand.helpText).toContain("https://readinglite.ai");
+    expect(importRedditCommand.helpText).toContain("READER_URL");
+    expect(importYoutubeCommand.helpText).toContain("https://readinglite.ai");
+    expect(importYoutubeCommand.helpText).toContain("READER_URL");
+    expect(readingListProcessCommand.helpText).toContain("https://readinglite.ai/api/readings");
+    expect(readingListProcessCommand.helpText).toContain("READER_URL");
+    for (const help of [
+      importRedditCommand.helpText,
+      importYoutubeCommand.helpText,
+      readingListProcessCommand.helpText,
+    ]) {
+      expect(help).not.toContain("reading-lite.bbell.dev");
+      expect(help).not.toContain("bbookmarks.com");
+    }
   });
 });

@@ -19,7 +19,9 @@ import type {
 } from "../../src/modules/summarizer/types";
 
 export const DEFAULT_BUCKET = "reading-lite";
-export const DEFAULT_API_BASE = "https://reading-lite.bbell.dev";
+// Canonical production API origin (issue #265 S5). Override with --url /
+// --api-url or READER_URL. Staging and local commands keep their own defaults.
+export const DEFAULT_API_BASE = "https://readinglite.ai";
 export { DEFAULT_ANTHROPIC_MODEL };
 
 // R2 bucket to read the corpus from (read path uses wrangler / Cloudflare auth,

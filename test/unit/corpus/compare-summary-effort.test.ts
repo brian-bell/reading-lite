@@ -180,7 +180,7 @@ describe("compare-summary-effort", () => {
   it("defaults to a dry-run OpenAI effort matrix plus Sonnet at pinned low effort", () => {
     expect(parseComparisonArgs(["--target", ARTICLE_URL])).toEqual({
       targets: [ARTICLE_URL],
-      baseUrl: "https://reading-lite.bbell.dev",
+      baseUrl: "https://readinglite.ai",
       execute: false,
       efforts: ["low", "medium", "high", "xhigh"],
       includeAnthropic: true,
@@ -213,6 +213,17 @@ describe("compare-summary-effort", () => {
       model: "claude-sonnet-5",
       anthropicEffort: "low",
     });
+  });
+
+  it("honors an explicit --base-url over the production default", () => {
+    expect(
+      parseComparisonArgs([
+        "--target",
+        ARTICLE_URL,
+        "--base-url",
+        "https://reading-lite.bbell.dev",
+      ]).baseUrl,
+    ).toBe("https://reading-lite.bbell.dev");
   });
 
   it("accepts the full OpenAI effort set including max", () => {
@@ -844,7 +855,7 @@ describe("compare-summary-effort", () => {
             call[0] instanceof Request ? call[0] : new Request(call[0], call[1]);
           return (
             request.method === "GET" &&
-            new URL(request.url).hostname === "reading-lite.bbell.dev"
+            new URL(request.url).hostname === "readinglite.ai"
           );
         }),
       ).toBe(true);
