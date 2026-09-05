@@ -14,6 +14,31 @@ function redirect(location: string): Response {
 }
 
 describe("safeFetch", () => {
+  it("rejects alternate loopback IPv4 spellings before resolving or fetching", async () => {
+    const base = vi.fn();
+    const lookup = vi.fn();
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup });
+
+    for (const host of ["2130706433", "0x7f000001", "0177.0.0.1", "127.1"]) {
+      await expect(wrapped(`http://${host}/admin`)).rejects.toBeInstanceOf(BlockedHostError);
+    }
+    expect(lookup).not.toHaveBeenCalled();
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("rechecks DNS on a same-host redirect and refuses a newly private answer", async () => {
+    const lookup = vi.fn()
+      .mockResolvedValueOnce([{ address: "93.184.216.34" }])
+      .mockResolvedValueOnce([{ address: "10.0.0.5" }]);
+    const base = vi.fn().mockResolvedValue(redirect("/admin"));
+    const wrapped = safeFetch(base as unknown as typeof fetch, { lookup });
+
+    // This proves per-hop revalidation, not pinning between lookup and connect.
+    await expect(wrapped("https://changing.example/start")).rejects.toBeInstanceOf(BlockedHostError);
+    expect(lookup.mock.calls).toEqual([["changing.example"], ["changing.example"]]);
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the vetted DNS addresses so a caller can connect without resolving again", async () => {
     const lookup: LookupFn = async () => [{ address: "93.184.216.34", family: 4 }];
 

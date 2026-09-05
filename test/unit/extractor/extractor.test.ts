@@ -297,6 +297,32 @@ describe("extractFromUrl", () => {
     ).rejects.toBeInstanceOf(FetchTimeoutError);
   });
 
+  it("keeps the timeout active when headers arrive but the response body stalls", async () => {
+    let bodyStarted = false;
+    let aborted = false;
+    const fetchFn: typeof fetch = async (_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyStarted = true;
+          controller.enqueue(new TextEncoder().encode("partial body"));
+          // Model fetch's abortable response stream: headers have already
+          // arrived, but reading the remaining bytes must still time out.
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            controller.error(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/plain" } });
+    };
+
+    await expect(
+      extractFromUrl("https://example.com/stalled-body", extractorDeps(fetchFn, { timeoutMs: 50 })),
+    ).rejects.toBeInstanceOf(FetchTimeoutError);
+    expect(bodyStarted).toBe(true);
+    expect(aborted).toBe(true);
+  });
+
   it("respects an existing <base href> on the page (does not override with the source URL)", async () => {
     // Page declares its own canonical base. Our previous implementation injected
     // a second <base href> with the source URL, which would silently win against
