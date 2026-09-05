@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GlobalUsageGuard } from "../../../src/control-plane/global-usage-guard";
 import { utcSpendDay } from "../../../src/control-plane/spend-ledger";
 import type { Env } from "../../../src/index";
@@ -97,6 +97,51 @@ describe("spend guard RPCs", () => {
     expect(await post(guard,{kind:"reserve_spend",tenantId:TENANT,opId:"old",
       quote:{...quote,dayKey:utcSpendDay(yesterday)},nowMs:yesterday})).toMatchObject({ok:false,reason:"operation_conflict"});
     expect(map.size).toBe(0);
+  });
+
+  it("replays a live reservation across UTC midnight without charging again or extending it", async () => {
+    const before = Date.parse("2026-09-05T23:59:59Z");
+    const clock = vi.spyOn(Date,"now").mockReturnValue(before);
+    try {
+      const map = new Map<string,unknown>();
+      const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
+        tenant_daily_spend_microdollars:50,paid_work_enabled:1,policy_version:1,catalog_version:3}));
+      const originalQuote = {...quote,dayKey:utcSpendDay(before)};
+      const body = {kind:"reserve_spend",tenantId:TENANT,opId:"midnight",quote:originalQuote,nowMs:before};
+      const key = `spend:op:${TENANT}:midnight`;
+      expect(await post(guard,body)).toMatchObject({ok:true,state:"reserved"});
+      const original = structuredClone(map.get(key));
+      clock.mockReturnValue(before+2000);
+      expect(await post(guard,body)).toMatchObject({ok:true,state:"reserved"});
+      expect(map.get(key)).toEqual(original);
+      expect(map.get(`spend:day:${originalQuote.dayKey}`)).toEqual({microdollars:50});
+      expect(map.get(`spend:tenant:${TENANT}:day:${originalQuote.dayKey}`)).toEqual({microdollars:50});
+      expect(map.has(`spend:day:${utcSpendDay(before+2000)}`)).toBe(false);
+      expect(await post(guard,{...body,quote:{...originalQuote,maxMicrodollars:49}})).toMatchObject({ok:false,reason:"operation_conflict"});
+      expect(await post(guard,{...body,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"dispatched",fresh:true});
+      expect(await post(guard,body)).toMatchObject({ok:true,state:"dispatched"});
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not recreate released or removed operations from yesterday's quote", async () => {
+    const before = Date.parse("2026-09-05T23:59:59Z");
+    const clock = vi.spyOn(Date,"now").mockReturnValue(before);
+    try {
+      const map = new Map<string,unknown>();
+      const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
+        tenant_daily_spend_microdollars:50,paid_work_enabled:1,policy_version:1,catalog_version:3}));
+      const originalQuote = {...quote,dayKey:utcSpendDay(before)};
+      const body = {kind:"reserve_spend",tenantId:TENANT,opId:"released",quote:originalQuote,nowMs:before};
+      await post(guard,body);
+      await post(guard,{...body,kind:"release_spend"});
+      clock.mockReturnValue(before+2000);
+      expect(await post(guard,body)).toMatchObject({ok:false,reason:"operation_conflict"});
+      const key = `spend:op:${TENANT}:released`;
+      map.delete(key); // A record removed by retention or teardown must stay absent.
+      expect(await post(guard,body)).toMatchObject({ok:false,reason:"operation_conflict"});
+      expect(map.has(key)).toBe(false);
+      expect(map.get(`spend:day:${originalQuote.dayKey}`)).toEqual({microdollars:0});
+    } finally { clock.mockRestore(); }
   });
 
   it.each(["daily_spend_microdollars", "tenant_daily_spend_microdollars"])(

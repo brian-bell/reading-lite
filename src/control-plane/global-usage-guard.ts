@@ -287,10 +287,14 @@ export class GlobalUsageGuard implements DurableObject {
 
   private async reserveSpend(body: Extract<SpendBody, { kind: "reserve_spend" }>): Promise<Response> {
     if (!parseTenantId(body.tenantId)) return json({ ok: false, reason: "missing_limits" } satisfies SpendDecision);
-    // The admission day comes from the authority's wall clock, not caller
-    // supplied time; a terminal record that has aged out cannot be recreated
-    // by replaying an old quote day.
-    if (body.quote.dayKey !== utcSpendDay(Date.now())) return json({ ok: false, reason: "operation_conflict" } satisfies SpendDecision);
+    const opKey = this.spendOpKey(body.tenantId, body.opId);
+    // An existing operation may be retried across midnight. The ledger still
+    // validates its full quote and state, without recharging or renewing it.
+    // A new/removed operation must use the authority's day, so old quotes
+    // cannot recreate records discarded by retention or account teardown.
+    if (body.quote.dayKey !== utcSpendDay(Date.now()) && await this.state.storage.get(opKey) === undefined) {
+      return json({ ok: false, reason: "operation_conflict" } satisfies SpendDecision);
+    }
     const policy = await loadGlobalSpendPolicy(this.env, body.tenantId);
     if (policy === "deleted") return json({ ok: false, reason: "deleted_tenant" } satisfies SpendDecision);
     if (!policy) return json({ ok: false, reason: "missing_limits" } satisfies SpendDecision);
@@ -299,7 +303,7 @@ export class GlobalUsageGuard implements DurableObject {
     const expiresAtMs = Date.now() + SPEND_RESERVATION_TTL_MS;
     await scheduleCleanupAlarm(this.state.storage, expiresAtMs);
     return json(await reserveSpend(this.state.storage, {
-      opKey: this.spendOpKey(body.tenantId, body.opId),
+      opKey,
       quote: body.quote,
       policyVersion: policy.policyVersion,
       limitMicrodollars: policy.dailySpendMicrodollars,
