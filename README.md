@@ -7,8 +7,11 @@ for the result.
 
 Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single
 Worker plus managed Cloudflare services (R2, Vectorize, Queues) and a
-Pages-hosted SPA. Deployed and in personal use at
-[`reading-lite.bbell.dev`](https://reading-lite.bbell.dev).
+Pages-hosted SPA. Canonical production host is
+[`readinglite.ai`](https://readinglite.ai);
+[`readinglite.app`](https://readinglite.app) also serves the application.
+[`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) is retained as a
+compatibility and rollback host.
 
 - [`docs/operations.md`](docs/operations.md) — deploy, staging lifecycle, bulk
   ingest, corpus repair
@@ -121,7 +124,7 @@ Vars in `wrangler.toml` are non-secret and set per environment:
 | Var | Default | Purpose |
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | `""` | Comma-separated origin allowlist for browser callers. Empty disables CORS preflight. |
-| `MCP_ALLOWED_ORIGINS` | `https://reading-lite.bbell.dev` | Comma-separated Origin allowlist for `POST /mcp`. Requests with no Origin (non-browser MCP clients) pass; unknown Origins are 403. |
+| `MCP_ALLOWED_ORIGINS` | code default: `https://reading-lite.bbell.dev`, `https://readinglite.ai`, `https://readinglite.app` (local `wrangler.toml` currently sets only the first; production `[env.production.vars]` sets all three) | Comma-separated Origin allowlist for `POST /mcp`. Requests with no Origin (non-browser MCP clients) pass; unknown Origins are 403. |
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
@@ -132,7 +135,7 @@ Vars in `wrangler.toml` are non-secret and set per environment:
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty skips send. |
 | `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email (`users.email_display`). |
-| `WEB_BASE_URL` | `""` | Base URL used to build the "view reading" link in notification emails. |
+| `WEB_BASE_URL` | `""` (production `https://readinglite.ai/`) | Canonical base for digest mail, reading-notification mail, and MCP `public_url`. Magic-link mail prefers the request's recognized public host and falls back here. |
 | `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
 | `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
 | `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call retry delay; `Retry-After` is clamped to this value. |
@@ -148,7 +151,9 @@ Machine-readable contract: [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI
 All routes except `/health`, `GET /api/auth/login-options`, and
 `POST /api/auth/challenge` / `POST /api/auth/redeem` require authentication
 (bearer token or the host-only
-session cookie). After cutover the founder legacy bearer is imported by
+session cookie). Sessions are host-scoped: a `__Host-` cookie issued on
+`readinglite.ai` does not authenticate `readinglite.app` or
+`reading-lite.bbell.dev`. Bearer tokens are host-independent. After cutover the founder legacy bearer is imported by
 `founder-bootstrap` from `READER_API_TOKEN`; runtime auth looks it up in D1
 and does not fall back to the secret itself. Magic-link login issues a durable
 host-only `__Host-session` cookie (`Secure; HttpOnly; Path=/; SameSite=Lax;
@@ -212,32 +217,37 @@ see [`docs/operations.md`](docs/operations.md).
 
 `POST /mcp` is a stateless Streamable HTTP MCP server for Cursor and Grok Bot.
 Tools dispatch internally into the authenticated HTTP API with the caller's
-Bearer token — they never re-fetch `reading-lite.bbell.dev` over the network.
+Bearer token — they never re-fetch the public host over the network.
 
 Tools (reads first; writes mutate the corpus): `list_readings`, `search_readings`,
 `get_reading`, `get_reading_content`, `submit_url`, `import_markdown`,
 `reprocess_reading`, `get_diagnostics`. List/search return metadata only; full
 extracted markdown is opt-in by id. After a successful import the tool result
-includes `public_url` / `public_markdown_link` when `WEB_BASE_URL` is set.
+includes `public_url` / `public_markdown_link` when `WEB_BASE_URL` is set
+(production: `https://readinglite.ai/`).
 
-Cursor `mcp.json` / Grok Bot custom connector (same shape). Use the existing
-`reading-lite.bearerToken` value — never commit it:
+Cursor `mcp.json` / Grok Bot custom connector (same shape). Canonical URL is
+`https://readinglite.ai/mcp`. Use the existing `reading-lite.bearerToken` value
+— never commit it. Re-registering connectors that still point at the old host
+is a separate owner step (issue #265 C3), not performed by this documentation.
 
 ```json
 {
   "name": "reading-lite",
-  "url": "https://reading-lite.bbell.dev/mcp",
+  "url": "https://readinglite.ai/mcp",
   "headers": { "Authorization": "Bearer <token>" }
 }
 ```
 
-The same tools are also served at `https://reading-lite.bbell.dev/api/mcp` (already
-inside the `/api/*` Worker route). Use `/mcp` once the dedicated `mcp*` route is
-attached; `/api/mcp` is the fallback when Pages still owns `/mcp`.
+The same tools are also served at `https://readinglite.ai/api/mcp` (already
+inside the `/api/*` Worker route), and during dual-serve at the matching
+`/mcp` and `/api/mcp` paths on `readinglite.app` and `reading-lite.bbell.dev`.
+Use `/mcp` once the dedicated `mcp*` route is attached; `/api/mcp` is the
+fallback when Pages still owns `/mcp`.
 
 Local `wrangler dev` serves the same path at `http://127.0.0.1:8787/mcp`.
-Stdio-only clients can bridge with `npx mcp-remote https://reading-lite.bbell.dev/mcp`.
-Operator notes (origin var, production route) live in
+Stdio-only clients can bridge with `npx mcp-remote https://readinglite.ai/mcp`.
+Operator notes (origin var, production routes) live in
 [`docs/operations.md`](docs/operations.md#mcp-connector).
 
 ## Web SPA
@@ -261,9 +271,11 @@ cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
 ```
 
 Vite proxies `/api` and `/health` to the Worker so requests are same-origin in
-development. In production the SPA is served from Cloudflare Pages on the same
-custom domain as the Worker, with Worker routes scoped to `/api/*`, `/health`,
-and `/mcp*` so Pages handles every other path.
+development. In production the SPA is served from Cloudflare Pages on each
+public hostname (`readinglite.ai`, `readinglite.app`, and the retained
+`reading-lite.bbell.dev`), with Worker routes scoped to `/api/*`, `/health`,
+and `/mcp*` so Pages handles every other path. A session on one host does not
+apply on another.
 
 The SPA carries its own hand-typed `web/src/types.ts` mirroring
 `src/schemas/manifest.ts` — keep them in sync when the Worker schema changes.

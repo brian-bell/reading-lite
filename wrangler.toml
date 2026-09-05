@@ -10,7 +10,8 @@
 #                         used for end-to-end manual smoke tests that need Queue,
 #                         R2, and Vectorize.
 #   * production        — used by `npm run ops -- deploy worker --env production`,
-#                         served at reading-lite.bbell.dev.
+#                         canonical host readinglite.ai; also readinglite.app;
+#                         reading-lite.bbell.dev retained for compatibility/rollback.
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.

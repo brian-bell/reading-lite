@@ -23,8 +23,12 @@ info:
   contact:
     url: https://github.com/brian-bell/reading-lite
 servers:
+  - url: https://readinglite.ai
+    description: Production (canonical)
+  - url: https://readinglite.app
+    description: Production (additional public host)
   - url: https://reading-lite.bbell.dev
-    description: Production
+    description: Production (compatibility / rollback host)
   - url: http://127.0.0.1:8787
     description: Local wrangler dev
 tags:

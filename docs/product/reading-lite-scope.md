@@ -22,7 +22,7 @@ Decisions already made and not relitigated here: hybrid pricing; **straight to m
 
 ## 2. The product today
 
-Deployed at `reading-lite.bbell.dev`, daily personal use, 331 readings ingested (321 ready). Pipeline:
+Deployed at `readinglite.ai` (also `readinglite.app`; `reading-lite.bbell.dev` retained for compatibility/rollback), daily personal use, 331 readings ingested (321 ready). Pipeline:
 
 ```
 POST /api/readings {url}

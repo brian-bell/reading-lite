@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://reading-lite.bbell.dev
+      url: https://readinglite.ai
     steps:
       - uses: actions/checkout@v7
         with:

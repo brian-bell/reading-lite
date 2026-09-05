@@ -727,6 +727,11 @@ reconciled.
 - Separate D1 and Durable Object resources with no staging sharing.
 - `reading-lite.bbell.dev` remains one origin: Pages serves the SPA and Worker
   routes serve `/api/*`.
+- **Update (2026-09-05, issue #265 S4):** production dual-serves
+  `readinglite.ai` (canonical), `readinglite.app` (additional public host), and
+  `reading-lite.bbell.dev` (compatibility/rollback). Same-origin still means
+  Pages plus Worker routes on one hostname; sessions remain host-scoped across
+  that trio. The original single-origin sentence above is left as written.
 - Production begins closed, then moves to invite-only for beta and open at
   launch through audited policy changes.
 - Record a D1 Time Travel bookmark/timestamp before migrations and bulk
