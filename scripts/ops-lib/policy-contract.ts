@@ -1,15 +1,14 @@
-// The extension contract for the future system-policy command
-// (reading-lite-s1k.9.4). This module records the requirements and provides a
-// tested checker; it deliberately implements NO policy or kill-switch
-// behavior — that stays owned by s1k.9.4.
+// The safety contract for the system policy command (issue #201). This
+// module records the requirements and provides a tested checker; policy
+// behavior lives in commands/system-policy.ts.
 //
 // The policy command plugs into the same registry as every other command by
 // exporting a CommandDefinition and registering it. Beyond the shared
 // contract (plan-first, run(argv, deps), shared exit semantics), a policy
 // command must additionally satisfy the requirements below, which
 // assertPolicyCommandContract verifies against its definition. The registry
-// coverage test runs the checker against a conforming fixture so the
-// extension point stays enforced before the real command lands.
+// coverage test runs the checker against both a conforming fixture and the
+// registered command.
 
 import { UsageError, type AnyCommand } from "./contract";
 

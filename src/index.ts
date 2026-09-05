@@ -291,3 +291,5 @@ export { createApp } from "./router";
 export { AuthRateGuard } from "./control-plane/auth-rate-guard";
 export { TenantUsageGuard } from "./control-plane/tenant-usage-guard";
 export { GlobalUsageGuard } from "./control-plane/global-usage-guard";
+
+export { OperatorStatus } from "./control-plane/operator-status";

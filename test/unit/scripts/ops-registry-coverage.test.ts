@@ -20,6 +20,7 @@ import { UsageError } from "../../../scripts/ops-lib/contract";
 
 // group -> commands. The complete supported operator surface.
 const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
+  system: ["policy", "status"],
   corpus: [
     "audit",
     "recover",
@@ -323,7 +324,8 @@ Options:
     const registered = defaultRegistry.commands.find(
       (c) => c.group === "system" && c.name === "policy",
     );
-    if (!registered) return; // s1k.9.4 has not landed yet — nothing to check.
+    expect(registered).toBeDefined();
+    if (!registered) throw new Error("system policy must be registered");
     // The documentation half is dependency-free and checked here directly.
     assertPolicyCommandContract(registered);
     // The behavioral half executes right here, against the registered
