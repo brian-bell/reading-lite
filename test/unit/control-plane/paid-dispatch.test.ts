@@ -35,8 +35,29 @@ describe("paid dispatch", () => {
     const body = buildSummarizeRequestBody({url:"https://example.com",extractedText:"article",similarReadings:[]},"gpt-5.6-terra","low");
     await f.wrapped("https://api.openai.com/v1/responses",{...init,body:JSON.stringify(body)});
     expect(JSON.parse(requests[0]!.body as string).service_tier).toBe("default");
-    expect(requests[0]!.redirect).toBe("error");
+    expect(requests[0]!.redirect).toBe("manual");
     expect(body).not.toHaveProperty("service_tier");
+  });
+  it("asks workerd for manual redirects and refuses 3xx instead of following", async () => {
+    const provider = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 302, headers: { location: "https://evil.example/" } });
+    });
+    const f = fixture({ fetch: provider as typeof fetch });
+    await expect(f.wrapped(url, init)).rejects.toThrow(/refused redirect/);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(f.calls.some(c => c.body.kind === "settle_spend")).toBe(false);
+  });
+  it("refuses opaque redirects the same way as a 3xx", async () => {
+    const opaque = Object.create(Response.prototype, {
+      status: { value: 0 },
+      ok: { value: false },
+      type: { value: "opaqueredirect" },
+      body: { value: null },
+    }) as Response;
+    const f = fixture({ fetch: async () => opaque });
+    await expect(f.wrapped(url, init)).rejects.toThrow(/refused redirect/);
+    expect(f.calls.some(c => c.body.kind === "settle_spend")).toBe(false);
   });
   it("rejects unknown models before guards or provider", async () => {
     const f = fixture();
