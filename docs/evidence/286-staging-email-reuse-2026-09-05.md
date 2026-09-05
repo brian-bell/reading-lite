@@ -1,5 +1,10 @@
 # Issue 286: staging email-reuse evidence, 2026-09-05
 
+> **Later evidence:** This file preserves the original run. The separately
+> executed [second-run supplement](286-staging-email-reuse-followup-2026-09-05.md)
+> resolves its A2/A4/A5 evidence gaps and records subsequent A7 publication.
+> The original observations and timeline below have not been rewritten.
+
 This staging drill exercised **real signup, invite_only address ownership, and
 email reuse after automatic teardown** for a captain-authorized disposable
 address. It fills the signup-shaped gap left by
