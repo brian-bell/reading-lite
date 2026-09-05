@@ -59,6 +59,13 @@ export function spendRpcFor(env: Env): SpendRpc {
   };
 }
 
+// WHATWG `redirect: "error"` is not implemented in workerd. `manual` returns
+// the 3xx (or an opaque redirect with status 0) without following; refuse it
+// so a redirect cannot create an unpriced dispatch.
+function isUnfollowedRedirect(response: Response): boolean {
+  return response.status === 0 || (response.status >= 300 && response.status < 400);
+}
+
 export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
   return async (input, init) => {
     // Provider adapters supply a URL and an explicit JSON body. Do not inherit
@@ -122,7 +129,12 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
     }
     let response: Response;
     try {
-      response = await deps.fetch(input, { ...init, redirect: "error" });
+      // workerd rejects `redirect: "error"`; manual + refuse-3xx is the fail-closed equivalent.
+      response = await deps.fetch(input, { ...init, redirect: "manual" });
+      if (isUnfollowedRedirect(response)) {
+        response.body?.cancel().catch(() => {});
+        throw new TypeError(`paid dispatch refused redirect (${response.status})`);
+      }
     } catch (error) {
       report("unresolved", {reason: "transport_error"});
       throw error;
