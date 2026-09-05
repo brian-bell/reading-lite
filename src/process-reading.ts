@@ -58,6 +58,7 @@ import {
   throwIfDeferred,
   type ProcessingLeaseHold,
 } from "./control-plane/processing-leases";
+import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import {
@@ -169,13 +170,26 @@ export async function processReading(
     stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
     await presentLeaseBeforePaidDispatch(env, acquired, clock);
 
+    const paidFetch = (stage: "embed_source" | "summarize" | "embed_summary") => createPaidFetch({
+      tenantId, attemptId: opId, stage, fetch: services.fetch,
+      // Spend admission uses wall time even when artifact timestamps are injected.
+      rpc: spendRpcFor(env), now: Date.now,
+      beforeDispatch: () => presentLeaseBeforePaidDispatch(env, acquired, clock),
+      onAuthorizedDispatch: async () => {
+        if (stage !== "summarize") return;
+        // Spend denial must not consume a reading slot. Commit only once the
+        // request has dispatch permission and is about to be sent.
+        if (!(await commitReadingSlot(env, tenantId, opId))) throw new DeferPaidWorkError();
+        readingSlotConsumed = true;
+      },
+    });
     let checkpoint = (await reader.readProcessingCheckpoint(args.keyPrefix, opId)) ?? {};
 
     // Embed the extracted text to get top-K similar.
     const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", async () => {
       if (checkpoint.embed_source) return checkpoint.embed_source;
       const result = await embed(truncateForEmbed(promptText), {
-        fetch: services.fetch,
+        fetch: paidFetch("embed_source"),
         apiKey: env.OPENAI_API_KEY,
         retry,
       });
@@ -226,18 +240,12 @@ export async function processReading(
       async () => {
         if (cachedSummary) {
           // commit_reading is idempotent for already-consumed slots. Call it
-          // here too: tenantUsageFor.commitReading swallows non-ok RPC, so the
-          // delivery that wrote this artifact may have left the slot held.
+          // here too so a recovered artifact cannot hide an unavailable guard.
+          if (!(await commitReadingSlot(env, tenantId, opId))) throw new DeferPaidWorkError();
           readingSlotConsumed = true;
-          await commitReadingSlot(env, tenantId, opId);
           return { reading: cachedSummary.reading, usage: cachedSummary.usage };
         }
         await presentLeaseBeforePaidDispatch(env, acquired, clock);
-        // Reading quota stays held through extract/embed; commit immediately
-        // before summarization dispatch so a later failure still consumes the
-        // slot. An undispatched failure releases instead (catch below).
-        readingSlotConsumed = true;
-        await commitReadingSlot(env, tenantId, opId);
         const result = await summarizeReading(
           {
             url: args.url,
@@ -246,7 +254,7 @@ export async function processReading(
             similarReadings: similarContext,
           },
           {
-            fetch: services.fetch,
+            fetch: paidFetch("summarize"),
             provider: env.SUMMARIZER_PROVIDER,
             openaiApiKey: env.OPENAI_API_KEY,
             openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
@@ -272,7 +280,7 @@ export async function processReading(
     await presentLeaseBeforePaidDispatch(env, acquired, clock);
     const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
-        fetch: services.fetch,
+        fetch: paidFetch("embed_summary"),
         apiKey: env.OPENAI_API_KEY,
         retry,
       }),

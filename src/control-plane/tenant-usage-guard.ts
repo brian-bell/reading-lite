@@ -22,8 +22,8 @@ import {
 //
 // Request-rate counts every intake write. Reading slots are reserved only for
 // an activation attempt (idempotent on attempt id) and released when the
-// attempt never reaches summarization dispatch. Spend and the global kill
-// switch stay out of scope (s1k.9.3–9.4). Concurrent-work leases are fenced
+// attempt never reaches summarization dispatch. GlobalUsageGuard owns spend
+// and the paid-work switch. Concurrent-work leases are fenced
 // and expiring; the holder presents the fence before renew, paid dispatch,
 // and release.
 
@@ -111,7 +111,7 @@ export interface TenantUsage {
   reserveReading(opId: string, nowMs: number): Promise<UsageDecision>;
   refreshReading(opId: string, nowMs: number): Promise<void>;
   releaseReading(opId: string): Promise<void>;
-  commitReading(opId: string): Promise<void>;
+  commitReading(opId: string): Promise<UsageDecision>;
   acquireLease(attemptId: string, nowMs: number): Promise<ProcessingLeaseDecision>;
   renewLease(
     attemptId: string,
@@ -507,7 +507,7 @@ export function failClosedUsage(): TenantUsage {
     reserveReading: async () => denyUnavailable(),
     refreshReading: async () => undefined,
     releaseReading: async () => undefined,
-    commitReading: async () => undefined,
+    commitReading: async () => denyUnavailable(),
     acquireLease: async () => denyLeaseUnavailable(),
     renewLease: async () => denyLeaseUnavailable(),
     pauseLease: async () => denyLeaseUnavailable(),
@@ -645,9 +645,7 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
     releaseReading: async (opId) => {
       await call({ kind: "release_reading", opId });
     },
-    commitReading: async (opId) => {
-      await call({ kind: "commit_reading", opId });
-    },
+    commitReading: (opId) => call({ kind: "commit_reading", opId }),
     acquireLease: (attemptId, nowMs) => callLease({ kind: "acquire_lease", tenantId, attemptId, nowMs }),
     renewLease: (attemptId, fence, nowMs, opts) =>
       callLease({
@@ -681,10 +679,12 @@ export async function refreshReadingSlot(env: Env, tenantId: string, opId: strin
   }
 }
 
-export async function commitReadingSlot(env: Env, tenantId: string, opId: string): Promise<void> {
+// Confirms RPC success, preserving commit_reading's existing no-op behavior
+// for missing/released slots. Reservation admission/expiry is a separate policy.
+export async function commitReadingSlot(env: Env, tenantId: string, opId: string): Promise<boolean> {
   try {
-    await tenantUsageFor(env, tenantId).commitReading(opId);
+    return (await tenantUsageFor(env, tenantId).commitReading(opId)).ok;
   } catch {
-    // Conservative: an uncertain commit leaves the slot held (still counted).
+    return false;
   }
 }
