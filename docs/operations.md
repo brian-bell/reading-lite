@@ -900,7 +900,7 @@ GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **both** `bbell.dev` and `bbookmarks.com` so migrations apply and the route updates succeed (see "bbookmarks.com dual-serve" below). Scope the token to this account and those zones. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so migrations apply and the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 
 The imported founder token expires after 90 days; re-running the same
@@ -922,88 +922,158 @@ bootstrap of `dev-local-token`).
 The SPA is served from Cloudflare Pages on the same custom domain as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging uses `https://reading-lite-staging.bbell.dev` the same way
-production uses `https://reading-lite.bbell.dev`. Magic-link mail is built from
-`WEB_BASE_URL` (`https://reading-lite-staging.bbell.dev/` on staging).
+does not 404. Staging uses `https://reading-lite-staging.bbell.dev`; production
+serves `https://readinglite.ai`, `https://readinglite.app`, and
+`https://reading-lite.bbell.dev` (see "readinglite.ai / readinglite.app
+dual-serve" below). Magic-link mail prefers the host the sign-in request
+actually arrived on, and falls back to `WEB_BASE_URL`
+(`https://reading-lite-staging.bbell.dev/` on staging,
+`https://readinglite.ai/` on production).
 
-### bbookmarks.com dual-serve
+### readinglite.ai / readinglite.app dual-serve
 
-Production serves two hosts during the domain migration. `[env.production.routes]`
-in `wrangler.toml` carries the original `reading-lite.bbell.dev` trio (`/api/*`,
-`/health`, `/mcp*`) **and** the same trio on `bbookmarks.com` (`zone_name =
-"bbookmarks.com"`). Both hit the same Worker script, R2 bucket, D1 database and
-Vectorize index, and nothing in the data plane depends on the hostname, so the
-`/api/*` read and write paths and `/health` are interchangeable between the two
-hosts. The exceptions are anything that *emits a link* — `/api/auth/*` magic-link
-mail is built from `WEB_BASE_URL`, still the old host, so a sign-in started on
-the new host is mailed back to the old one. `/mcp*` is not interchangeable
-either — nor is the `/api/mcp` alias the section below offers as a fallback,
-which sits behind the same guard: `mcpOriginGuard` 403s any `Origin` outside `MCP_ALLOWED_ORIGINS`, which
-still lists only the old host, so browser-origin MCP calls to the new host are
-rejected until that allowlist follow-up lands (non-browser clients send no
-`Origin` and work on either host). Browser sessions are host-scoped too — the
-session cookie carries no `Domain` attribute — so signing in on one host does
-not sign you in on the other. The old routes stay until the old host is
-formally retired; they are the rollback path.
+Production dual-serves three hosts during the domain migration.
+`[env.production.routes]` in `wrangler.toml` carries the original
+`reading-lite.bbell.dev` trio (`/api/*`, `/health`, `/mcp*`) **and** the same
+trio on `readinglite.ai` (`zone_name = "readinglite.ai"`) and `readinglite.app`
+(`zone_name = "readinglite.app"`). All three hit the same Worker script, R2
+bucket, D1 database and Vectorize index, and nothing in the data plane depends
+on the hostname, so the `/api/*` read and write paths and `/health` are
+interchangeable between them. `/mcp*` is too — `mcpOriginGuard` 403s any
+`Origin` outside `MCP_ALLOWED_ORIGINS`, and that var (like the `/api/mcp` alias
+behind the same guard) lists all three hosts; non-browser clients send no
+`Origin` and work on any of them regardless.
 
-`www.bbookmarks.com` is **not** a Worker route, and must not become one. `www` →
-apex belongs to a Cloudflare Redirect Rule (301), which fires before a request
-ever reaches the Worker. As of 2026-09-04 `www` has no record at all and returns
-NXDOMAIN; proxying the apex does not change that, since a Pages custom domain
-creates a record only for the hostname it is bound to. So `www` stays
-unreachable — not wrongly served — until it is given its own proxied record and
-the redirect rule.
+Emitted links are the one place a host is *chosen* rather than observed, and
+since the cutover they choose the canonical public host. `WEB_BASE_URL` is
+`https://readinglite.ai/`, so every queue-side link — digest mail, reading
+notification mail, MCP `public_url` — points at `readinglite.ai`. Magic-link
+mail is the exception to the exception: `publicWebBase` prefers the origin the
+sign-in request actually arrived on when that origin is a known public host, so
+a login started on `reading-lite.bbell.dev`, `readinglite.ai`, or
+`readinglite.app` is still mailed back to that host, and only an unrecognised
+or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM` stays
+`reading-lite@bbell.dev`; moving the sender is a separate later step, kept
+apart so a host move and a mail-deliverability change never land together.
 
-Three things to settle outside this repo — the first two before the routes can
-deploy, the third only if `www` is to resolve:
+Browser sessions are host-scoped — the session cookie is `__Host-`-prefixed and
+so carries no `Domain` attribute — so signing in on one host does not sign you
+in on another. A one-time re-login on a public host is expected and intended,
+not a bug. The `reading-lite.bbell.dev` routes stay until that old host is
+formally retired; they are the rollback path, and reverting the `WEB_BASE_URL`
+line plus one deploy is the whole rollback for the cutover.
 
-- `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops token) must include
-  zone Workers Routes on `bbookmarks.com`, keeping `bbell.dev`. **Until it does,
-  `ops deploy worker --env production` applies the remote D1 migrations, uploads
-  the script, and then fails on the route publish** — the same footgun described
-  under "MCP connector" below, now on a second zone. It surfaces two ways
-  depending on what the token holds: with Zone Read but no Workers Routes edit,
-  authentication error 10000 on `/zones/.../workers/routes`; with no grant on
-  the zone at all (the likely state for a newly added zone) the zone lookup
-  returns nothing and wrangler fails with `Could not find zone for
-  bbookmarks.com`. That lookup is filtered by `CLOUDFLARE_ACCOUNT_ID`, so a zone
-  registered under a *different* Cloudflare account fails with the same message
-  even on a correctly scoped token — check the account before chasing scopes. A third variant has nothing to do with the token: if one of
-  these patterns is already bound to a different Worker in that zone, the
-  publish fails with `Can't deploy routes that are assigned to another worker`.
-  Mind what any of them leaves behind: the migrations and the new
-  Worker script **have** landed and are live on the existing
-  `reading-lite.bbell.dev` routes; only the route addition fails. And because
-  `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only on
-  a successful Worker run — never deploys, so production Worker code sits ahead
-  of the production SPA until someone notices. Re-scope the token before merging
-  anything that adds these routes. Recovering by re-running the failed workflow
-  works only while `main` is still at that commit: both deploy workflows
-  re-check `origin/main` against the run's `head_sha` and refuse a stale
-  release, so once another merge lands, let the newer commit's chain deploy
-  instead. Note the same token scoping bites at retirement, in the other
-  direction: on a zone-scoped token wrangler uses the per-zone route API, which
-  only adds routes and never deletes stale ones, so **removing the `bbell.dev`
-  routes from this file will not remove them from Cloudflare** — delete them in
-  the dashboard when the old host is retired.
-- `bbookmarks.com` must be a Pages custom domain on project `reading-lite`, bound
-  to the `main` branch, with an Active certificate. This is an ordering
-  prerequisite, not a cosmetic one: a Worker route only receives traffic for a
-  hostname that has a proxied DNS record in the zone, and the Pages custom-domain
-  binding is what creates that record at the apex. While the apex has no proxied
-  record — its state as of 2026-09-04, when it resolved to no A, AAAA or CNAME —
-  the routes are simply inert and the new host serves neither SPA nor API. Note
-  the flip side: if the apex is ever proxied to something else first (a parked
-  page, another site or Worker), these routes take `/api/*`, `/health` and
-  `/mcp*` on that hostname from the next production deploy, before any
-  deliberate cutover. Check the apex before deploying if that may have changed.
-- `www.bbookmarks.com` needs a proxied record plus the `www` → apex Redirect
-  Rule, if `www` is to resolve at all. Nothing in this repo configures it, and
-  no Worker route should: the 301 is meant to happen ahead of the Worker.
+`www.readinglite.ai` and `www.readinglite.app` are **not** Worker routes, and
+must not become one. `www` → apex belongs to a Cloudflare Redirect Rule (301),
+which fires before a request ever reaches the Worker. Nothing in this repo
+configures the `www` records or redirect rules.
 
-`WEB_BASE_URL`, `EMAIL_FROM` and `MCP_ALLOWED_ORIGINS` are unchanged by the route
-addition: emitted links and the MCP Origin allowlist still name
-`reading-lite.bbell.dev` until their own cutover steps land.
+#### Captain-only DNS / Pages bind checklist
+
+This repo publishes Worker routes and origin allowlists. It does **not** flip
+live DNS, bind Pages custom domains, or re-scope the Cloudflare API token.
+Those steps stay captain-only. Until they are done, the new-host routes in
+`wrangler.toml` are inert (or the production deploy fails on route publish)
+and `reading-lite.bbell.dev` remains the host that actually serves.
+
+Before a production deploy can serve `readinglite.ai` or `readinglite.app`:
+
+1. **Zones on this account.** Confirm the `readinglite.ai` and
+   `readinglite.app` zones exist under the same Cloudflare account as
+   `CLOUDFLARE_ACCOUNT_ID`. A zone registered under a different account fails
+   the same way as a missing zone grant.
+2. **Token scope.** `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops
+   token) must include zone Workers Routes on **both** `readinglite.ai` and
+   `readinglite.app`, keeping `bbell.dev`. **Until it does, `ops deploy worker
+   --env production` applies the remote D1 migrations, uploads the script, and
+   then fails on the route publish** — the same footgun described under "MCP
+   connector" below, now on two additional zones. It surfaces two ways
+   depending on what the token holds: with Zone Read but no Workers Routes
+   edit, authentication error 10000 on `/zones/.../workers/routes`; with no
+   grant on the zone at all (the likely state for a newly added zone) the zone
+   lookup returns nothing and wrangler fails with `Could not find zone for
+   readinglite.ai` (or `readinglite.app`). That lookup is filtered by
+   `CLOUDFLARE_ACCOUNT_ID`, so a zone registered under a *different* Cloudflare
+   account fails with the same message even on a correctly scoped token — check
+   the account before chasing scopes. A third variant has nothing to do with
+   the token: if one of these patterns is already bound to a different Worker
+   in that zone, the publish fails with `Can't deploy routes that are assigned
+   to another worker`. Mind what any of them leaves behind: the migrations and
+   the new Worker script **have** landed and are live on the existing
+   `reading-lite.bbell.dev` routes; only the route addition fails. And because
+   `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only
+   on a successful Worker run — never deploys, so production Worker code sits
+   ahead of the production SPA until someone notices. Re-scope the token before
+   merging anything that adds these routes. Recovering by re-running the failed
+   workflow works only while `main` is still at that commit: both deploy
+   workflows re-check `origin/main` against the run's `head_sha` and refuse a
+   stale release, so once another merge lands, let the newer commit's chain
+   deploy instead. Note the same token scoping bites at retirement, in the
+   other direction: on a zone-scoped token wrangler uses the per-zone route
+   API, which only adds routes and never deletes stale ones, so **removing the
+   `bbell.dev` routes from this file will not remove them from Cloudflare** —
+   delete them in the dashboard when the old host is retired.
+3. **Pages custom domains.** Bind `readinglite.ai` and `readinglite.app` as
+   Pages custom domains on project `reading-lite`, to the `main` branch, with
+   Active certificates. This is an ordering prerequisite, not a cosmetic one:
+   a Worker route only receives traffic for a hostname that has a proxied DNS
+   record in the zone, and the Pages custom-domain binding is what creates that
+   record at the apex. Without a proxied record the routes are simply inert
+   and the new host serves neither SPA nor API. Note the flip side: if an apex
+   is ever proxied to something else first (a parked page, another site or
+   Worker), these routes take `/api/*`, `/health` and `/mcp*` on that hostname
+   from the next production deploy, before any deliberate cutover. Check each
+   apex before deploying if that may have changed.
+4. **`www` → apex (optional).** `www.readinglite.ai` and `www.readinglite.app`
+   each need a proxied record plus a `www` → apex Redirect Rule if `www` is to
+   resolve at all. Nothing in this repo configures either, and no Worker route
+   should: the 301 is meant to happen ahead of the Worker.
+
+Do not treat this checklist as evidence that live DNS already points at either
+new host.
+
+#### Migration status
+
+Issue [#265](https://github.com/brian-bell/reading-lite/issues/265) tracks the
+move; this is the same ordering, as it stands in the repo.
+
+In the repo:
+
+- **S1** — production Worker routes for `reading-lite.bbell.dev`,
+  `readinglite.ai`, and `readinglite.app` (`[env.production.routes]`).
+- **S2** — `MCP_ALLOWED_ORIGINS` and `PUBLIC_WEB_ORIGINS` accept those three
+  hosts.
+- **S3** — magic-link mail prefers the request's own public host.
+- **S4** — cutover: `WEB_BASE_URL` is `https://readinglite.ai/`.
+
+Captain-only, still open — this PR does not claim live DNS was flipped:
+
+- Zone confirmation and `CLOUDFLARE_API_TOKEN` re-scope for Workers Routes on
+  `readinglite.ai` and `readinglite.app`, keeping `bbell.dev`.
+- Pages custom-domain binds for both public hosts on project `reading-lite`
+  (`main`, Active certificate).
+- `www` → apex redirect rules, if `www` should resolve.
+
+Immediately after the S4 deploy (and after the captain DNS/Pages steps), check
+three things:
+
+1. `GET /api/whoami` returns the same `tenant_id` on the hosts that actually
+   serve — the data plane does not branch on hostname and must not start to.
+2. A sign-in request resolves its base to the host it arrived on: from
+   `readinglite.ai` the mailed link is `https://readinglite.ai/auth/verify#…`,
+   from `readinglite.app` it is that host's own `/auth/verify`, and from
+   `reading-lite.bbell.dev` it is that host's own `/auth/verify`
+   (`publicWebBase`, `src/control-plane/magic-link-mail.ts`). Verify from code
+   and config, not by mailing a live user.
+3. The old host still serves the SPA and `/api/*` unchanged — it is the
+   rollback path and nothing in the cutover removes it.
+
+Still open, in order: **C3** re-register the MCP connectors (Cursor, Grok Bot)
+at `readinglite.ai`; **C4** add the old host's SPA-path redirect rule and
+`noindex` header; **S5** operator script and skill defaults; **S6** the wider
+docs sweep (README, AGENTS.md, OpenAPI, deploy workflow URLs); **S7** staging's
+own public-host subdomain; **S8** the `EMAIL_FROM` move; **S9** retiring the
+old host.
 
 ### MCP connector
 

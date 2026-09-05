@@ -1,7 +1,7 @@
 // Public legal notices. Keep operational instructions in the product documentation.
 export const LEGAL_PATHS = { terms: "/terms", privacy: "/privacy", dmca: "/dmca" } as const;
-export const OPERATOR_CONTACT_EMAIL = "operator@bbookmarks.com";
-export const PUBLIC_HOST = "bbookmarks.com";
+export const OPERATOR_CONTACT_EMAIL = "operator@readinglite.app";
+export const PUBLIC_HOST = "readinglite.ai";
 
 export type LegalBlock = { type: "p"; text: string } | { type: "ul"; items: string[] };
 export type LegalSection = { id: string; title: string; blocks: LegalBlock[] };
@@ -28,7 +28,7 @@ export const TERMS_DOCUMENT: LegalDocument = {
   title: "Terms of Service",
   sections: [
     section("about", "About these terms", updated,
-      p(`These terms govern your use of reading-lite at ${PUBLIC_HOST}, a personal reading archive operated by Brian Bell (\"we\", \"us\"). By creating an account or using the service, you agree to these terms. If you do not agree, do not use the service. Contact us at ${OPERATOR_CONTACT_EMAIL}.`)),
+      p(`These terms govern your use of reading-lite at ${PUBLIC_HOST} and readinglite.app, a personal reading archive operated by Brian Bell (\"we\", \"us\"). By creating an account or using the service, you agree to these terms. If you do not agree, do not use the service. Contact us at ${OPERATOR_CONTACT_EMAIL}.`)),
     section("accounts", "Your account",
       p("You must be at least 18 years old and able to enter into this agreement. Use an email address you control, protect your sign-in links and API tokens, and tell us promptly if you believe someone has accessed your account without permission. You are responsible for the activity you authorize through your account."),
       p("You can manage your sessions, API tokens, email address, and notification preferences on the Security page. Access may be subject to invitations, usage limits, or other restrictions shown in the service.")),
@@ -57,7 +57,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
   title: "Privacy Policy",
   sections: [
     section("about", "Who is responsible", updated,
-      p(`Brian Bell operates reading-lite at ${PUBLIC_HOST} and is responsible for the personal information described here. Contact ${OPERATOR_CONTACT_EMAIL} with privacy questions or requests.`)),
+      p(`Brian Bell operates reading-lite at ${PUBLIC_HOST} and readinglite.app and is responsible for the personal information described here. Contact ${OPERATOR_CONTACT_EMAIL} with privacy questions or requests.`)),
     section("collection", "Information we collect",
       ul([
         "Account information: your email address, account settings, authentication records, sessions, API-token records, and device or browser labels used to help you recognize sessions.",

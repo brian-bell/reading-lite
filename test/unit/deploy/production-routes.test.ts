@@ -43,6 +43,26 @@ function routesFor(toml: string, table: string): (Route | null)[] {
   return routes;
 }
 
+/**
+ * Read a single `key = "value"` var out of one `[table]` section. Same reason
+ * as the route parser above: no TOML dependency, and the assertion that matters
+ * is the exact string a deploy would publish.
+ */
+function varFor(toml: string, table: string, key: string): string | null {
+  let inTable = false;
+  for (const raw of toml.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("[")) {
+      inTable = new RegExp(`^\\[\\s*${table.replace(/\./g, "\\.")}\\s*\\]\\s*(?:#.*)?$`).test(line);
+      continue;
+    }
+    if (!inTable) continue;
+    const match = new RegExp(`^${key}\\s*=\\s*(?:"([^"]*)"|'([^']*)')\\s*(?:#.*)?$`).exec(line);
+    if (match) return match[1] ?? match[2] ?? null;
+  }
+  return null;
+}
+
 const wrangler = readFileSync("wrangler.toml", "utf8");
 
 describe("production worker routes", () => {
@@ -58,33 +78,36 @@ describe("production worker routes", () => {
     );
   });
 
-  it("serves the same three path sets on bbookmarks.com", () => {
+  it("serves the same three path sets on readinglite.ai and readinglite.app", () => {
     expect(routes).toEqual(
       expect.arrayContaining([
-        { pattern: "bbookmarks.com/api/*", zone_name: "bbookmarks.com" },
-        { pattern: "bbookmarks.com/health", zone_name: "bbookmarks.com" },
-        { pattern: "bbookmarks.com/mcp*", zone_name: "bbookmarks.com" },
+        { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
+        { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
+        { pattern: "readinglite.ai/mcp*", zone_name: "readinglite.ai" },
+        { pattern: "readinglite.app/api/*", zone_name: "readinglite.app" },
+        { pattern: "readinglite.app/health", zone_name: "readinglite.app" },
+        { pattern: "readinglite.app/mcp*", zone_name: "readinglite.app" },
       ]),
     );
   });
 
-  it("routes exactly those six patterns and nothing else", () => {
+  it("routes exactly those nine patterns and nothing else", () => {
     // `www` belongs to a Cloudflare redirect rule, never to a worker route.
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(9);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
   });
 
   it("counts a route however its block is spelled", () => {
     // The assertions above are only as good as the parser's blind spots, so
-    // prove the shapes that could smuggle a seventh route past them.
+    // prove the shapes that could smuggle a tenth route past them.
     const smuggled = [
       '[[env.production.routes]] # temporarily\npattern = "extra.example/api/*"\nzone_name = "example"',
       '[[ env.production.routes ]]\npattern = "extra.example/api/*"\nzone_name = "example"',
       "[[env.production.routes]]\npattern = 'extra.example/api/*' # note\nzone_name = 'example'",
     ];
     for (const block of smuggled) {
-      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(7);
+      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(10);
     }
 
     // A block that is not a plain (pattern, zone_name) route still has to be
@@ -95,7 +118,7 @@ describe("production worker routes", () => {
     ];
     for (const block of notPlain) {
       const parsed = routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes");
-      expect(parsed).toHaveLength(7);
+      expect(parsed).toHaveLength(10);
       expect(parsed.at(-1)).toBeNull();
     }
   });
@@ -106,6 +129,33 @@ describe("production worker routes", () => {
     // quietly weaken the exact-set assertions.
     expect(wrangler).not.toMatch(/^\s*routes\s*=\s*\[/m);
     expect(wrangler).not.toMatch(/^\s*route\s*=/m);
+  });
+});
+
+describe("production link-emitting config", () => {
+  it("emits links on readinglite.ai", () => {
+    // Every queue-side link — digest, notification, MCP public_url — and the
+    // magic-link fallback for a request whose host is not a known public origin
+    // is built from this base. The trailing slash is the convention the other
+    // environments use; publicWebBase/buildMagicLinkVerifyUrl strip it.
+    expect(varFor(wrangler, "env.production.vars", "WEB_BASE_URL")).toBe("https://readinglite.ai/");
+  });
+
+  it("keeps the mail sender on bbell.dev", () => {
+    // The sender move is a deliberately separate step: a host cutover and a
+    // mail-deliverability change must not land together.
+    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  });
+
+  it("keeps the old host and both public hosts on the MCP origin allowlist", () => {
+    // The old host stays allowed for as long as it serves — it is the rollback path.
+    expect(varFor(wrangler, "env.production.vars", "MCP_ALLOWED_ORIGINS")).toBe(
+      "https://reading-lite.bbell.dev,https://readinglite.ai,https://readinglite.app",
+    );
+  });
+
+  it("leaves staging's base URL alone", () => {
+    expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://reading-lite-staging.bbell.dev/");
   });
 });
 

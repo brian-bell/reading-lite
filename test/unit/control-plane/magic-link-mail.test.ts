@@ -25,21 +25,30 @@ describe("publicWebBase", () => {
     expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite.bbell.dev/api/auth/request")).toBe(
       "https://reading-lite.bbell.dev",
     );
-    expect(publicWebBase(CONFIGURED_BASE, "https://bbookmarks.com/api/auth/request")).toBe(
-      "https://bbookmarks.com",
+    expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request")).toBe(
+      "https://readinglite.ai",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request")).toBe(
+      "https://readinglite.app",
     );
   });
 
   it("produces a verify URL on the host the request arrived at", () => {
-    const base = publicWebBase(CONFIGURED_BASE, "https://bbookmarks.com/api/auth/request");
-    expect(buildMagicLinkVerifyUrl(base, "ml_abc.def")).toBe("https://bbookmarks.com/auth/verify#ml_abc.def");
+    const base = publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request");
+    expect(buildMagicLinkVerifyUrl(base, "ml_abc.def")).toBe("https://readinglite.ai/auth/verify#ml_abc.def");
+    expect(
+      buildMagicLinkVerifyUrl(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request"), "ml_abc.def"),
+    ).toBe("https://readinglite.app/auth/verify#ml_abc.def");
   });
 
   it("falls back to WEB_BASE_URL for an unknown or spoofed request host", () => {
     expect(publicWebBase(CONFIGURED_BASE, "https://attacker.example/api/auth/request")).toBe(
       "https://reading-lite.bbell.dev",
     );
-    expect(publicWebBase(CONFIGURED_BASE, "https://www.bbookmarks.com/api/auth/request")).toBe(
+    expect(publicWebBase(CONFIGURED_BASE, "https://www.readinglite.ai/api/auth/request")).toBe(
+      "https://reading-lite.bbell.dev",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://www.readinglite.app/api/auth/request")).toBe(
       "https://reading-lite.bbell.dev",
     );
     expect(publicWebBase(CONFIGURED_BASE, "not a url")).toBe("https://reading-lite.bbell.dev");
