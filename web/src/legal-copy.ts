@@ -1,347 +1,131 @@
-// Published Terms, Privacy, and DMCA copy for the hosted product.
-// Contact for legal notices is operator@bbookmarks.com (email only).
-
-export const LEGAL_PATHS = {
-  terms: "/terms",
-  privacy: "/privacy",
-  dmca: "/dmca"
-} as const;
-
+// Public legal notices. Keep operational instructions in the product documentation.
+export const LEGAL_PATHS = { terms: "/terms", privacy: "/privacy", dmca: "/dmca" } as const;
 export const OPERATOR_CONTACT_EMAIL = "operator@bbookmarks.com";
 export const PUBLIC_HOST = "bbookmarks.com";
 
 export type LegalBlock = { type: "p"; text: string } | { type: "ul"; items: string[] };
-
-export type LegalSection = {
-  id: string;
-  title: string;
-  blocks: LegalBlock[];
-};
-
+export type LegalSection = { id: string; title: string; blocks: LegalBlock[] };
 export type LegalDocument = {
   path: (typeof LEGAL_PATHS)[keyof typeof LEGAL_PATHS];
   navLabel: string;
   title: string;
   sections: LegalSection[];
 };
-
 export const LEGAL_NAV = [
   { path: LEGAL_PATHS.terms, label: "Terms" },
   { path: LEGAL_PATHS.privacy, label: "Privacy" },
-  { path: LEGAL_PATHS.dmca, label: "DMCA" }
+  { path: LEGAL_PATHS.dmca, label: "Copyright" }
 ] as const;
-
-function p(text: string): LegalBlock {
-  return { type: "p", text };
-}
-
-function ul(items: string[]): LegalBlock {
-  return { type: "ul", items };
-}
-
-export function flattenLegalText(doc: LegalDocument): string {
-  const parts = [doc.title];
-  for (const section of doc.sections) {
-    parts.push(section.title);
-    for (const block of section.blocks) {
-      if (block.type === "p") parts.push(block.text);
-      else parts.push(...block.items);
-    }
-  }
-  return parts.join("\n");
-}
-
-export function flattenAllLegalText(): string {
-  return LEGAL_DOCUMENTS.map(flattenLegalText).join("\n");
-}
-
-export function formatLegalSection(section: LegalSection): string {
-  const lines: string[] = [`## ${section.title}`, ""];
-  for (const block of section.blocks) {
-    if (block.type === "p") {
-      lines.push(block.text, "");
-    } else {
-      for (const item of block.items) lines.push(`- ${item}`);
-      lines.push("");
-    }
-  }
-  return `${lines.join("\n").trim()}\n`;
-}
+const p = (text: string): LegalBlock => ({ type: "p", text });
+const ul = (items: string[]): LegalBlock => ({ type: "ul", items });
+const section = (id: string, title: string, ...blocks: LegalBlock[]): LegalSection => ({ id, title, blocks });
+const updated = p("Last updated: September 5, 2026. Effective when published.");
 
 export const TERMS_DOCUMENT: LegalDocument = {
   path: LEGAL_PATHS.terms,
   navLabel: "Terms",
   title: "Terms of Service",
   sections: [
-    {
-      id: "about",
-      title: "About these Terms",
-      blocks: [
-        p(
-          `reading-lite is a personal reading archive, search, and retrieval service hosted at ${PUBLIC_HOST}. These Terms describe how the hosted product works today: you submit URLs or Markdown, the service extracts and stores a private copy, embeds and summarizes it, and lets you search and reread your own corpus.`
-        ),
-        p(
-          `The operator contact for legal notices is ${OPERATOR_CONTACT_EMAIL} (email only). These pages do not publish a postal address, phone number, or separate legal entity name.`
-        )
-      ]
-    },
-    {
-      id: "accounts",
-      title: "Accounts and access",
-      blocks: [
-        p(
-          "Access is account-based. Sign-in uses a magic link sent to an email address you control. The service stores sessions in Cloudflare D1 and sets a host-only __Host-session cookie for the browser SPA. Programmatic clients authenticate with scoped API tokens (Authorization: Bearer). Cookie-authenticated POST and DELETE requests also require a session-bound CSRF token from GET /api/whoami."
-        ),
-        p(
-          "You are responsible for the email inbox used to receive magic links, for revoking sessions and tokens you no longer want, and for keeping token secrets private. The Security page lets you list and revoke browser sessions, create and revoke scoped API tokens, change the verified email, and choose notification settings. Recent authentication is required for some sensitive changes."
-        ),
-        ul([
-          "Magic-link sign-in (email), not passwords or social OAuth.",
-          "D1-backed browser sessions with a host-only __Host-session cookie.",
-          "Scoped API tokens for MCP and other programmatic clients (readings:read, readings:write, readings:import, readings:delete).",
-          "Cloudflare Turnstile may run on open-mode magic-link challenges; invite-only and closed signup ignore extra tokens."
-        ])
-      ]
-    },
-    {
-      id: "the-service",
-      title: "The hosted service",
-      blocks: [
-        p(
-          "When you submit a URL, the service writes an eager per-tenant by-url ownership claim, stores a pending manifest, and enqueues a reading job. The background pipeline fetches the source (subject to timeouts, size caps, and source-specific limits), extracts Markdown, embeds the text with OpenAI, queries Cloudflare Vectorize for similar readings in your tenant, summarizes through the configured provider, and commits a terminal manifest plus the list index."
-        ),
-        p(
-          "Summarization uses the configured provider: OpenAI structured output by default, or Anthropic tool use when selected. Provider selection never falls back silently. Embeddings always use OpenAI. You may also import Markdown for sources the worker cannot fetch well (for example Reddit bot-challenges). Reprocess can reuse stored Markdown or accept new Markdown; a source-type flip is recorded only after success."
-        ),
-        ul([
-          "Private-by-default: readings are not a public archive or sharing product. Other tenants cannot see your corpus.",
-          "Infrastructure: Cloudflare Workers, Pages, R2, D1, Vectorize, and Queues.",
-          "Email: Resend sends magic-link mail plus optional immediate and digest notification mail to the current verified address.",
-          "MCP tools search the same private corpus through named tools after authentication."
-        ])
-      ]
-    },
-    {
-      id: "your-content",
-      title: "Your submissions",
-      blocks: [
-        p(
-          "You represent that you have a right to submit each URL or Markdown document and to have the service fetch, store, embed, and summarize it for your private use. Submitting a URL causes the worker to request that URL from the origin (and, for some hosts, to call additional public APIs such as YouTube oEmbed or X recent search). The stored corpus includes raw bytes when captured, extracted Markdown, manifests, embeddings, summaries, tags, entities, connections, and attempt logs."
-        ),
-        p(
-          "Do not use the service to attack systems, bypass access controls, submit material you are not allowed to copy, or overload the pipeline. The operator may refuse, fail, or drop readings that violate these Terms, that cannot be fetched, or that operator policy excludes."
-        )
-      ]
-    },
-    {
-      id: "availability",
-      title: "Availability and changes",
-      blocks: [
-        p(
-          "The hosted product is provided as-is for current personal and beta use. The operator may change models, effort, rate limits, quotas, and features. These pages will be updated when behavior changes; they are not a guarantee of future behavior."
-        ),
-        p(
-          "See Privacy for retention, processors, export, and deletion as they work today, and DMCA for copyright notices. Related pages: Privacy and DMCA."
-        )
-      ]
-    }
-  ]
-};
-
-export const PRIVACY_DELETION_SECTION: LegalSection = {
-  id: "deletion",
-  title: "Deletion",
-  blocks: [
-    p(
-      `Self-serve account deletion starts with DELETE /api/account. That request is session-only (a browser session cookie, not a bearer API token), requires cookie CSRF and recent authentication, and must include the body { confirm: "delete" }. Starting deletion immediately marks the account deleting, revokes every session and API token, sends a security email to the current verified address, and clears the browser session cookie. Later sign-in and API use are refused.`
-    ),
-    p(
-      "Corpus wipe of tenant R2 objects, Vectorize embeddings, and related indexes is asynchronous after that fence: a new wipe waits about seven days unless an operator starts it sooner. Embeddings may take additional time to disappear after a delete is submitted. This page does not claim that wipe is complete, that residue is zero, or that no R2 or Vectorize data remains."
-    ),
-    p(
-      "The SPA does not currently expose account deletion. There is no delete-account control in the web app. Account deletion is an API operation."
-    ),
-    p("You can also delete a single reading, not the whole account:"),
-    ul([
-      "Reading purge exists as an authenticated API: DELETE /api/readings/:id, gated by the readings:delete scope. The purge is visibility-first: it requests deletion of the Vectorize vector (when Vectorize is bound), releases the owned by-url pointer, removes the list-index row, deletes R2 objects under the reading's id-scoped prefix, and removes the by-id pointer last. Inbound connections on other readings may still name the deleted id. A purge is refused with 409 while an attempt is actively running.",
-      "The SPA does not currently expose reading purge. There is no delete button in the web app. Purge is an API operation.",
-      "Operators can drop selected readings with operator tooling."
-    ]),
-    p(
-      "Account data is otherwise retained until a reading is purged, account deletion runs, or an operator drops it."
-    )
+    section("about", "About these terms", updated,
+      p(`These terms govern your use of reading-lite at ${PUBLIC_HOST}, a personal reading archive operated by Brian Bell (\"we\", \"us\"). By creating an account or using the service, you agree to these terms. If you do not agree, do not use the service. Contact us at ${OPERATOR_CONTACT_EMAIL}.`)),
+    section("accounts", "Your account",
+      p("You must be at least 18 years old and able to enter into this agreement. Use an email address you control, protect your sign-in links and API tokens, and tell us promptly if you believe someone has accessed your account without permission. You are responsible for the activity you authorize through your account."),
+      p("You can manage your sessions, API tokens, email address, and notification preferences on the Security page. Access may be subject to invitations, usage limits, or other restrictions shown in the service.")),
+    section("service", "What the service does",
+      p("The service saves copies of articles and documents you submit, creates AI-generated summaries and search information, and helps you find related material in your archive. Your archive is not published as a public website. Our Privacy policy explains how we process and share information to provide these features."),
+      p("AI-generated summaries, labels, and connections may be incomplete or wrong. Check important information against the original source. Outputs are not professional advice, and the service is not a substitute for your own backup. Some websites cannot be imported, and access to third-party sources may change.")),
+    section("content", "Your content and permission to process it",
+      p("You retain any rights you hold in the material you submit. Third-party material remains the property of its respective rights holders. Saving or summarizing a work does not give you ownership of it or permission to redistribute it."),
+      p("You grant us a nonexclusive, worldwide, royalty-free permission to retrieve, copy, store, process, and display your submissions, and to create summaries and search representations, solely to operate and maintain the service for you. This permission extends to service providers performing those tasks for us and lasts only as needed for those purposes, including the retention and deletion process described in Privacy."),
+      p("You must have the rights or other lawful authority needed for that processing. Do not submit material that infringes copyright or privacy rights, bypass access restrictions, compromise another account, interfere with the service, or evade usage limits. Private storage does not by itself make copying lawful.")),
+    section("suspension", "Suspension and ending use",
+      p("You may stop using the service at any time and request deletion as described in Privacy. We may restrict access or remove material to address violations of these terms, security risks, unlawful activity, or legal requirements. We terminate accounts of repeat copyright infringers in appropriate circumstances."),
+      p("We may change or discontinue this beta service. Where reasonably practicable, we will give advance notice of a discontinuation or a material restriction on your account; urgent security or legal concerns may require immediate action.")),
+    section("availability", "Availability and responsibility",
+      p("To the extent permitted by law, the service is provided as is and as available, without warranties of merchantability, fitness for a particular purpose, or noninfringement. We do not guarantee uninterrupted operation, accurate outputs, or preservation of every saved item."),
+      p("To the extent permitted by law, we are not liable for indirect, incidental, special, or consequential losses arising from use of the service. Nothing in these terms excludes liability for fraud, willful misconduct, gross negligence, or any liability or consumer right that applicable law does not allow us to exclude or limit.")),
+    section("changes", "Changes and questions",
+      p("We may revise these terms as the service changes. We will update the date above and give notice through the service or email before material changes take effect. Your continued use after the effective date means you accept the revised terms, subject to any consent required by law."),
+      p(`If you have a concern or dispute, contact ${OPERATOR_CONTACT_EMAIL} so we can try to resolve it. These terms do not require arbitration or waive your right to bring a claim in a court with jurisdiction. If a provision cannot be enforced, the remaining provisions continue to apply.`))
   ]
 };
 
 export const PRIVACY_DOCUMENT: LegalDocument = {
   path: LEGAL_PATHS.privacy,
   navLabel: "Privacy",
-  title: "Privacy",
+  title: "Privacy Policy",
   sections: [
-    {
-      id: "about",
-      title: "About this policy",
-      blocks: [
-        p(
-          `This page describes what the hosted reading-lite product at ${PUBLIC_HOST} collects, where it stores it, which processors it uses, and what you can and cannot delete or export today.`
-        )
-      ]
-    },
-    {
-      id: "accounts-identity",
-      title: "Accounts and identity",
-      blocks: [
-        p(
-          "Sign-in is magic-link email authentication. The control plane in Cloudflare D1 stores user and tenant records, hashed credentials, sessions, API tokens, and settings. Browser sessions use a host-only __Host-session cookie. API tokens are scoped (readings:read, readings:write, readings:import, readings:delete) and can be revoked. Runtime authentication does not fall back to a shared legacy bearer secret."
-        ),
-        p(
-          "When signup is open and a Turnstile site key is configured, magic-link challenges verify a Cloudflare Turnstile token. Invite-only and closed modes do not require that widget. Email change sends a confirmation link to the new address and must be completed from the signed-in browser that requested it."
-        )
-      ]
-    },
-    {
-      id: "readings",
-      title: "Readings and derived artifacts",
-      blocks: [
-        p(
-          "For each reading the service may store: the submitted URL, imported Markdown, fetched raw bytes, extracted Markdown, the manifest (title, TL;DR, summary, tags, people, organizations, keywords, novelty verdict, connections, tensions, status, errors), attempt logs, by-url and by-id pointers, a list-index row, and a Vectorize embedding. On the hosted product, tenant objects live under a tenant-rooted R2 prefix and Vectorize queries use a tenant namespace so one tenant cannot match another tenant's vectors."
-        ),
-        p(
-          "Submitting a URL causes the worker to fetch that URL from the origin. Some hosts use extra public APIs (YouTube oEmbed; X/Twitter recent search when an operator token is configured). Reddit threads typically fail in-worker because of a bot challenge. Those fetches send the URL (and sometimes a conversation identifier) to the origin. The stored archive is private-by-default: it is not a public web page and there is no sharing product."
-        )
-      ]
-    },
-    {
-      id: "notifications",
-      title: "Notification email",
-      blocks: [
-        p(
-          "Resend sends email. Magic-link and email-change messages go to the address being verified. Immediate notification mail (optional; default on) is sent when a reading becomes ready, to the current verified email_display — never to a leftover EMAIL_TO operator override. Digest mail (optional daily or weekly cadence, or off) is also Resend to that same verified address. Send-time re-read honors cadence off. Empty digest windows skip sending. You can change these settings on the Security page."
-        )
-      ]
-    },
-    {
-      id: "processors",
-      title: "Processors and subprocessors",
-      blocks: [
-        p("Current processing, as configured in the hosted product:"),
-        ul([
-          "Cloudflare: Workers (compute), Pages (SPA), R2 (objects), D1 (control plane and sessions), Vectorize (embeddings), Queues (reading, digest, and account-wipe jobs), and Turnstile (when open signup is enabled).",
-          "OpenAI: embeddings (text-embedding-3-small, 1536 dimensions) for every processed reading. OpenAI also summarizes when it is the selected summarizer, using structured output. There is no silent fallback to another provider.",
-          "Anthropic: summarizes only when SUMMARIZER_PROVIDER is anthropic (tool use). Invalid provider or effort values fail closed; the product does not switch providers on error.",
-          "Resend: magic-link, immediate notification, digest, and account-deletion security email.",
-          "Source sites and platform APIs: the origin of each submitted URL, plus YouTube oEmbed and X recent search when those URL types are processed."
-        ]),
-        p(
-          "The selected summarizer and the embedding API receive extracted text (and, for summarization, similar prior readings from your tenant as context). Do not submit secrets you do not want those processors to see."
-        )
-      ]
-    },
-    {
-      id: "retention",
-      title: "Retention",
-      blocks: [
-        p(
-          "Data is retained until a reading is purged, account deletion runs, or an operator drops it. There is no automatic expiry of ready readings. Pending work that exceeds the pending TTL is annotated stale on read; failed readings remain until reprocess, purge, account deletion, or operator drop. Queue retries and a dead-letter path can leave retryable failed manifests. Digest delivery records remain in D1 after a delivery is sent, skipped, or fails, and are removed during account teardown. Account deletion fences access immediately; corpus wipe after that fence is asynchronous, and this page does not claim wipe is complete."
-        )
-      ]
-    },
-    {
-      id: "export",
-      title: "Access and export",
-      blocks: [
-        p(
-          "There is no self-serve export of an entire account. Authenticated API and SPA access let you retrieve individual readings you already stored (list, detail, extracted Markdown, raw bytes, diagnostics). That is not a bulk export, portable archive, or guaranteed takeout format."
-        )
-      ]
-    },
-    PRIVACY_DELETION_SECTION,
-    {
-      id: "private-by-default",
-      title: "Private by default",
-      blocks: [
-        p(
-          "Archives are private-by-default. The product does not publish your readings as public pages, does not offer team sharing, and does not serve other tenants' similarity results into your summaries. Authenticated MCP tools read the same tenant corpus. Inbound connection references on other readings in your own corpus may still name a purged id."
-        )
-      ]
-    },
-    {
-      id: "contact",
-      title: "Contact",
-      blocks: [
-        p(
-          `Questions about this policy go to ${OPERATOR_CONTACT_EMAIL}. These pages do not publish a postal address or phone number. See also Terms and DMCA.`
-        )
-      ]
-    }
+    section("about", "Who is responsible", updated,
+      p(`Brian Bell operates reading-lite at ${PUBLIC_HOST} and is responsible for the personal information described here. Contact ${OPERATOR_CONTACT_EMAIL} with privacy questions or requests.`)),
+    section("collection", "Information we collect",
+      ul([
+        "Account information: your email address, account settings, authentication records, sessions, API-token records, and device or browser labels used to help you recognize sessions.",
+        "Saved material: submitted URLs and documents, downloaded source content, extracted text, summaries, tags, search representations, and connections between readings.",
+        "Operational information: processing and error records, usage-limit records, email-delivery records, and information you send us when requesting support. Our infrastructure providers also process connection information, such as IP addresses, to deliver and protect the service."
+      ])),
+    section("uses", "How we use information",
+      p("We use this information to authenticate you, save and search your readings, generate summaries, send requested messages, troubleshoot failures, enforce usage limits, prevent abuse, and respond to support and legal requests. We do not sell your personal information or use your saved readings for targeted advertising."),
+      p("Where applicable law requires a legal basis, we process information to provide the service under our agreement with you, for legitimate interests in securing and maintaining the service, to meet legal obligations, or with consent where required. You can withdraw consent for optional processing without affecting earlier lawful processing.")),
+    section("providers", "Who receives information",
+      ul([
+        "Cloudflare hosts the website, application, account database, saved content, search index, and background processing. Its Turnstile service may help protect sign-in from abuse.",
+        "OpenAI receives text from processed readings to create search representations. The configured summarization provider, OpenAI or Anthropic, receives reading text and relevant material from earlier readings in your archive to generate summaries. The service does not silently switch summarization providers after a failure.",
+        "Resend receives email addresses and message content to deliver sign-in links, security messages, and reading notifications. Reading notifications can contain information from your archive.",
+        "When you submit a URL, the source website receives a request for that page. Some imports also contact platform APIs, including YouTube or X, with the URL or identifiers needed to retrieve the material."
+      ]),
+      p("AI processing takes place outside your device. Provider retention and any use of submitted data are governed by the applicable API agreements and provider policies; this service does not promise zero retention by those providers. Do not submit secrets or other material you are not comfortable sending to these providers."),
+      p("We may access account information and saved material when needed to provide support, investigate abuse or failures, or meet legal obligations. We may disclose information when legally required or reasonably necessary to protect rights and safety. Copyright complaints and responses may be shared with the other party so the claim can be addressed.")),
+    section("cookies", "Cookies and messages",
+      p("We use a necessary session cookie to keep you signed in. Anti-abuse checks may process browser information. Blocking necessary cookies can prevent sign-in from working."),
+      p("Sign-in and security emails are part of operating your account. Notifications when a reading is ready are enabled by default; you can turn them off and choose daily, weekly, or no digest on the Security page.")),
+    section("security", "Security and location",
+      p("Accounts are separated using access controls, and your readings are not made available as public pages or shared with other users through the service. Your archive is not end-to-end encrypted: the application and its providers must process readable content to deliver its features. No online service can guarantee complete security."),
+      p("Our providers may process information in the United States and other countries, which may have different privacy protections from your country. Where applicable law requires safeguards for international transfers, those requirements apply to our processing. Contact us for information about the arrangements relevant to your account.")),
+    section("retention", "How long information stays",
+      p("Saved readings do not expire automatically. We generally retain them while your account remains open unless you delete them or we remove them under the Terms. Failed imports and processing records may also remain with your archive. Email-digest delivery records remain after a message is sent, skipped, or fails, and are removed during account teardown."),
+      p("A limited account-deletion audit record, including the account identifier, deletion dates, and cleanup status, remains after account teardown so we can track deletion attempts and investigate incomplete cleanup. It does not contain your saved article text or email address. That record currently has no automatic expiry.")),
+    section("deletion", "Deleting readings or your account",
+      p(`You can request help deleting a reading or your account at ${OPERATOR_CONTACT_EMAIL}. Deletion is also available through the authenticated API. The web app does not yet have deletion buttons. We may need to verify your identity before acting.`),
+      p("Starting account deletion immediately disables sign-in and revokes sessions and API tokens. Cleanup of saved content and search data normally starts after about seven days, unless we start it sooner. This delay is not a promise that the account can be recovered."),
+      p("Cleanup runs in the background. Search data can take additional time to disappear, and incomplete cleanup can leave stored copies or search data requiring operator attention. We cannot currently give a guaranteed completion date or promise that every residual copy has been removed. Contact us to ask about the status of your request."),
+      p("Deleting an individual reading removes it from your library and initiates removal of its stored content and search data. Deletion may need to wait while that reading is being processed. Earlier summaries or connections in your other readings can still contain references to it; those are not automatically rewritten. Deleting from this service does not remove the original source website.")),
+    section("rights", "Your choices and requests",
+      p("You can view your readings and retrieve individual saved documents through the website or API. There is no built-in bulk account export. Save anything you need before requesting account deletion, because access ends immediately when deletion starts."),
+      p(`Depending on where you live, you may have rights to access, correct, delete, or receive a portable copy of personal information, restrict or object to processing, withdraw consent, or complain to a privacy regulator. Contact ${OPERATOR_CONTACT_EMAIL} to exercise applicable rights, including when the app has no corresponding control. We will verify requests as appropriate and respond within the period required by applicable law. A missing product feature does not limit your statutory rights.`)),
+    section("children", "Children",
+      p("The service is intended for adults, not children under 18. If you believe a child has provided personal information, contact us so we can investigate and address it.")),
+    section("changes", "Policy changes",
+      p("We will update this policy and its date when our practices change. We will provide notice through the service or email before material changes take effect and obtain consent where required. See Terms for the agreement governing use and DMCA for copyright complaints."))
   ]
 };
 
 export const DMCA_DOCUMENT: LegalDocument = {
   path: LEGAL_PATHS.dmca,
-  navLabel: "DMCA",
-  title: "DMCA",
+  navLabel: "Copyright",
+  title: "Copyright Complaints",
   sections: [
-    {
-      id: "about",
-      title: "About this notice",
-      blocks: [
-        p(
-          "reading-lite stores private copies of third-party pages you submit (raw bytes when captured, extracted Markdown, and derived summaries). That is a copyright-sensitive surface. This page describes how to notify the operator. It is not a claim that a designated DMCA agent is registered."
-        )
-      ]
-    },
-    {
-      id: "not-a-public-host",
-      title: "Private corpus, not a public host",
-      blocks: [
-        p(
-          "The hosted product is private-by-default. Readings are not published as public web pages, there is no sharing product, and other tenants cannot browse your archive. A stored copy still exists in R2 (and related indexes) until it is purged, dropped, or removed by the asynchronous account-deletion wipe. Copyright owners who believe a stored copy infringes can ask the operator to purge that reading."
-        )
-      ]
-    },
-    {
-      id: "how-to-notify",
-      title: "How to send a notice",
-      blocks: [
-        p(
-          `Send notices to ${OPERATOR_CONTACT_EMAIL}. These pages do not publish a postal address or phone number.`
-        ),
-        p("A useful notice includes:"),
-        ul([
-          "Your contact information as the complainant.",
-          "The work you claim is infringed, and the exact reading URL or reading id (rd_…) in reading-lite if you have it.",
-          "A statement that you have a good-faith belief the use is not authorized, and that the notice is accurate.",
-          "If you are requesting removal under U.S. copyright law, a statement under penalty of perjury that you are the owner or authorized to act, plus your signature (physical or electronic)."
-        ])
-      ]
-    },
-    {
-      id: "what-we-can-do",
-      title: "What the operator can do today",
-      blocks: [
-        p(
-          "The available product control for a stored copy is reading purge: DELETE /api/readings/:id (readings:delete). That removes the reading's vector (when bound), owned by-url pointer, list row, R2 objects, and by-id pointer. The SPA does not currently expose that control."
-        ),
-        p(
-          "Account deletion (DELETE /api/account) fences the account immediately: it marks the account deleting, revokes every session and API token, and sends a security email. Corpus wipe of tenant R2 objects, Vectorize embeddings, and related indexes begins after about seven days unless an operator starts it sooner. This page does not claim that wipe leaves zero residue. The operator may purge or drop the identified reading after reviewing a notice. Inbound connections on other readings may still name a purged id. Source sites remain under their own operators; this service cannot take down the original URL."
-        )
-      ]
-    },
-    {
-      id: "counter-notice",
-      title: "Counter-notice",
-      blocks: [
-        p(
-          `If your reading was purged after a copyright notice and you believe that was a mistake, email ${OPERATOR_CONTACT_EMAIL} with the reading id, a description of why the copy should be restored, and your contact information. Restoration is a manual operator action; there is no self-serve restore.`
-        )
-      ]
-    }
+    section("about", "Report a copyright concern", updated,
+      p(`We respect copyright and review complaints about material stored through reading-lite. Send complaints to ${OPERATOR_CONTACT_EMAIL}. This is our copyright-complaint contact; it is not represented here as a registered DMCA agent.`),
+      p("An archive being private does not exempt it from copyright law. Please identify the material as precisely as you can; you do not need access to another person's private account to report a concern.")),
+    section("notice", "What to include",
+      ul([
+        "Your name and contact details, including an email address and mailing address, and a telephone number if available.",
+        "Identify the copyrighted work and the material you believe infringes it. Include the source URL and any reading link, identifier, or other information that helps us locate the stored material.",
+        "Confirm your good-faith belief that the disputed use is not authorized by the rights holder, its agent, or applicable law, including any relevant copyright exception.",
+        "Confirm that your notice is accurate and declare, under penalty of perjury, that you hold the relevant rights or have authority to act for the rights holder.",
+        "Provide your physical or electronic signature."
+      ])),
+    section("response", "How we respond",
+      p("We review sufficiently detailed complaints promptly and remove or disable access to material when appropriate. We may ask for missing information. We normally notify the affected user and may share the complaint, including contact details, so they can respond. Avoid including unnecessary sensitive information."),
+      p("We terminate accounts of repeat infringers in appropriate circumstances. We consider the available facts, including credible disputes and withdrawn or mistaken complaints. We cannot remove material from a source website operated by someone else.")),
+    section("disputes", "If you believe removal was a mistake",
+      p(`Contact ${OPERATOR_CONTACT_EMAIL} with the removed reading's details and an explanation of your permission to use it or why the complaint is mistaken. For a formal U.S. DMCA counter-notification, also provide:`),
+      ul([
+        "Your physical or electronic signature and the location of the material before removal.",
+        "A declaration under penalty of perjury that you genuinely believe the removal resulted from a mistake or incorrect identification.",
+        "Your name, address, and telephone number, consent to the jurisdiction of the U.S. federal district court for your address (or, if outside the U.S., a district where the service provider can be found), and agreement to accept service of process from the original complainant or their agent."
+      ]),
+      p("We may forward your response to the complainant. Where the statutory DMCA counter-notification procedure applies, it provides for restoration 10–14 business days after receipt of a valid counter-notification unless the complainant notifies us of a filed court action seeking to restrain the disputed use. Restoration requires manual assistance; contact us before resubmitting removed material."),
+      p("Knowingly making material false claims in a copyright notice or counter-notification can have legal consequences. See Terms and Privacy for account and data-handling information."))
   ]
 };
-
-export const LEGAL_DOCUMENTS: LegalDocument[] = [TERMS_DOCUMENT, PRIVACY_DOCUMENT, DMCA_DOCUMENT];
-
-export function legalDocumentForPath(pathname: string): LegalDocument | undefined {
-  return LEGAL_DOCUMENTS.find((doc) => doc.path === pathname);
-}

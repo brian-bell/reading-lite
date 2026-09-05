@@ -24,7 +24,7 @@ export function LegalFooter() {
 export function LoginLegalLinks() {
   return (
     <div className="login-legal-links">
-      <p>Legal notices:</p>
+      <p>By continuing, you agree to our <Link to={LEGAL_PATHS.terms}>Terms</Link>. See our <Link to={LEGAL_PATHS.privacy}>Privacy Policy</Link> for how we handle your information.</p>
       <LegalNav />
     </div>
   );
