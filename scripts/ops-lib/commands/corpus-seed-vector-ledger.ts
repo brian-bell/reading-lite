@@ -57,12 +57,13 @@ import { readingIdFromRelativeKey } from "../../../src/account-wipe";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { ListIndexSchema } from "../../../src/schemas/api";
 import { parseReadingId } from "../../../src/services";
-import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
+import { insertMissingLedgerRows } from "../../../src/control-plane/vector-ledger";
+import { parseTenantId } from "../../../src/control-plane/ids";
+import { controlPlaneDbForBucket } from "../../account-lib/control-plane";
 import { loadDotVars } from "../../lib/dotvars";
 import { resolveBucket } from "../../corpus-lib/config";
 import { requireOperatorTenant } from "../tenant-flag";
 import type { OperatorTenant } from "../../corpus-lib/tenant";
-import { operatorVectorLedger } from "../../account-lib/operator-ledger";
 import { CONTROL_PLANE_BY_BUCKET, controlPlaneForBucket } from "../../account-lib/control-plane";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
@@ -76,7 +77,7 @@ export interface SeedLedgerStorage {
 
 export interface CorpusSeedVectorLedgerDeps extends BaseDeps {
   createStorage: (bucket: string) => Promise<SeedLedgerStorage>;
-  makeLedger: (opts: { tenant: OperatorTenant; bucket: string; execute: boolean }) => VectorLedger;
+  makeLedger: (opts: { tenant: OperatorTenant; bucket: string; execute: boolean }) => { insertMissing(ids: readonly string[], now: number): Promise<number> };
   now: () => number;
 }
 
@@ -226,7 +227,7 @@ async function runCorpusSeedVectorLedger(
   if (!args.execute) {
     io.stdout(
       `\nPLAN — nothing was written. Re-run with --execute to write ${ids.length} vector_ledger row(s).\n` +
-        "Re-running is safe: each row is an upsert keyed by (tenant_id, reading_id).",
+        "Re-running is safe: existing rows and their confirmation state are preserved.",
     );
     return 0;
   }
@@ -234,12 +235,11 @@ async function runCorpusSeedVectorLedger(
   let written = 0;
   for (let offset = 0; offset < ids.length; offset += SEED_LEDGER_BATCH) {
     const batch = ids.slice(offset, offset + SEED_LEDGER_BATCH);
-    await ledger.markLive(batch, deps.now());
-    written += batch.length;
+    written += await ledger.insertMissing(batch, deps.now());
     io.stdout(`seeded ${written}/${ids.length}`);
   }
   io.stdout(
-    `\nSeeded ${written} vector_ledger row(s) as 'live'.\n` +
+    `\nSeeded ${written} vector_ledger row(s) (existing rows preserved).\n` +
       "Rows for readings that turn out to have no vector are harmless: the wipe submits one\n" +
       "deleteByIds for an id Vectorize does not hold, and the row clears on the first confirmation.",
   );
@@ -268,17 +268,13 @@ deleteByIds and then clears, while a MISSING row is a vector nothing can ever
 address once R2 is empty. Ids are read from the corpus and validated through
 parseReadingId's Crockford alphabet (no I, L, O, U) — never generated.
 
-Idempotent: rows are upserts keyed by (tenant_id, reading_id). Re-running after
+Idempotent: inserts use ON CONFLICT DO NOTHING. Re-running after
 a partial run finishes the job, and re-running after new readings have landed
 adds them (they are also ledgered by the Worker at publish time).
 
-One thing to know before re-seeding a tenant whose wipe is already running.
-Seeding marks every id 'live', so it RESETS rows the wipe had already moved to
-'delete_submitted', clearing their delete stamp and absent streak. Nothing is
-lost and nothing is stranded: the next pass simply re-submits those deletes and
-re-runs the +120s confirmation clock. It costs that wipe one more round trip,
-not correctness. (The wipe's own seed step does not have this effect — it is
-insert-only.)
+Existing live or delete_submitted rows are never updated: delete timestamps,
+absent streaks and confirmation timing survive an operator seed, including
+while a wipe is in flight. The command uses the wipe's insert-only helper.
 
 --tenant global is refused: the pre-tenant corpus has no tenant id to key rows
 by, and no account wipe addresses it.
@@ -307,7 +303,14 @@ Options:
         get: (key) => client.get(key),
       };
     },
-    makeLedger: (opts) => operatorVectorLedger(opts),
+    makeLedger: (opts) => ({
+      insertMissing: async (ids, now) => {
+        if (!opts.execute || opts.tenant.kind !== "tenant") return 0;
+        const tenantId = parseTenantId(opts.tenant.tenantId);
+        if (!tenantId) throw new Error("invalid tenant");
+        return insertMissingLedgerRows(controlPlaneDbForBucket(opts.bucket), tenantId, ids, now);
+      },
+    }),
     now: () => Date.now(),
   }),
   run: runCorpusSeedVectorLedger,

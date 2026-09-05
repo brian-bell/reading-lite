@@ -1,3 +1,6 @@
+import { accountWipeCommand } from "./commands/account-wipe";
+import { accountResidueScanCommand } from "./commands/account-residue-scan";
+import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-vectors";
 // The single typed registry behind `npm run ops`. Root, group, and command
 // help all render from these definitions, so a command that is not registered
 // here does not exist as far as the operator interface is concerned. New
@@ -94,5 +97,8 @@ export const defaultRegistry: Registry = {
     extractProbeCommand,
     evalSummarizerCommand,
     accountSweepWipePrefixCommand,
+    accountWipeCommand,
+    accountResidueScanCommand,
+    accountAuditBareVectorsCommand,
   ],
 };
