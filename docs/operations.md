@@ -980,7 +980,10 @@ first-completion history, and the explicit unknown section; exit 1 is expected
 while DO/address-history visibility remains incomplete. Before arming the wipe,
 audit/repair synthetic bare/composed pairs using the S5 sequence above, including
 a protected unnamespaced control. Keep that control intact. This implementation
-adds deterministic local tests; it does not claim this live proof has run.
+adds deterministic local tests. The separately executed
+[2026-09-05 staging drill](evidence/195-staging-drill-2026-09-05.md) records
+the live repair, deletion, and automatic teardown evidence, including the
+final `residue:false, incomplete:true` scan and remaining acceptance limits.
 
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
