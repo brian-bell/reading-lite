@@ -25,6 +25,7 @@ describe("ops deploy worker", () => {
     const runs: string[][] = [];
     const deps: DeployWorkerDeps = {
       io: cio,
+      validateTenantActivation: async () => ({ ok: true, message: "already enabled" }),
       runWrangler: async (args) => {
         runs.push(args);
         return 0;
@@ -88,6 +89,29 @@ describe("ops deploy worker", () => {
   it("rejects an invalid env", async () => {
     const { deps } = makeDeps();
     await expect(deployWorkerCommand.run(["--env", "dev"], deps)).rejects.toThrow(UsageError);
+  });
+
+  it("refuses unverified activation before any migration or upload", async () => {
+    const { deps, runs, err } = makeDeps();
+    deps.validateTenantActivation = async () => ({ ok: false, message: "off to on; 1 deletion-eligible tenant: usr_due" });
+    expect(await deployWorkerCommand.run(["--execute"], deps)).toBe(2);
+    expect(runs).toHaveLength(0);
+    expect(err.join("\n")).toContain("usr_due");
+    expect(err.join("\n")).toContain("--acknowledge-tenant-migration");
+  });
+
+  it("allows the explicit manual acknowledgement and logs it", async () => {
+    const { deps, runs, err } = makeDeps();
+    deps.validateTenantActivation = async () => ({ ok: false, message: "unknown activation state" });
+    expect(await deployWorkerCommand.run(["--execute", "--acknowledge-tenant-migration"], deps)).toBe(0);
+    expect(runs.map(args => args[0])).toEqual(["d1", "deploy"]);
+    expect(err.join("\n")).toContain("OVERRIDE");
+  });
+
+  it("does not inspect remote activation state in plan mode, even with acknowledgement", async () => {
+    const { deps } = makeDeps();
+    deps.validateTenantActivation = async () => { throw new Error("unexpected remote inspection"); };
+    expect(await deployWorkerCommand.run(["--acknowledge-tenant-migration"], deps)).toBe(0);
   });
 });
 

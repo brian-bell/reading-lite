@@ -764,6 +764,61 @@ founder token. `--execute` applies pending remote D1 migrations, then
 uploads, and refuses placeholder `CONTROL_PLANE` `database_id` values in
 `wrangler.toml`.
 
+#### Tenant-mode activation guard
+
+Before remote migrations or upload, `ops deploy worker --execute` inspects
+the target environment's tenant-mode activation state. A single active version
+serving 100% of traffic with `TENANT_DATA_PLANE=1`, matching `READINGS_BUCKET`,
+`READINGS_INDEX`, and `CONTROL_PLANE` bindings, establishes the baseline for an
+ordinary redeployment. The R2 bucket and Vectorize index must also have creation
+timestamps no later than that version, so recreating either resource under its
+old name requires fresh verification. Existing production and staging cutovers
+use this baseline; no new migration or certification record is needed.
+
+Off→on activation, changed resources, split deployments, missing deployment
+state, and failed/incomplete API reads refuse execution with exit 2. When
+activation is unverified, the preflight queries the target D1 database and
+reports tenant IDs in `status='deleting'` at or past the seven-day grace window.
+If that query fails (including a new database without the schema), it reports
+eligibility as unavailable, not zero. This is an activation warning; ongoing
+active-wipe deployment policy belongs to #269.
+
+To proceed after a refusal, verify the intended corpus in the target tenant R2
+root and Vectorize namespace using the cutover runbook, and review deletion
+eligibility in the target D1 database. For a fresh pre-tenant migration, run
+`ops corpus migrate-founder` through its clean **fully migrated** re-plan; for
+a rebuilt environment, verify its restored tenant corpus before activation.
+An intentionally empty new environment needs verification that no corpus is
+expected. Record the evidence with the operational work, then explicitly use:
+
+```sh
+npm run ops -- deploy worker --env staging --execute --acknowledge-tenant-migration
+```
+
+Use `--env production` for a reviewed production activation. The acknowledgement
+applies to this invocation only and is logged; it also acknowledges any deletion
+eligibility that had to be checked manually. Do not add it to routine CI commands.
+After successful activation the active version becomes the redeployment baseline.
+
+The preflight uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI, or
+Wrangler's current authentication locally. If account selection is ambiguous,
+set `CLOUDFLARE_ACCOUNT_ID`. Credentials need Workers deployment/version read
+access, R2 bucket metadata read access, Vectorize index read access, and D1 query
+access for activation warnings. A permission failure requires correcting access
+or manually verifying readiness before using the explicit acknowledgement.
+Plan mode prints the check it would perform and runs the existing build dry-run;
+it does not inspect remote readiness or require these read permissions.
+
+This guard does not scan or certify corpus contents. Retained global objects
+and un-namespaced vectors are allowed, and ordinary tenant writes/deletions need
+not match the historical global snapshot. Direct Wrangler/API deployments can
+bypass the guard; resource or data changes outside the deployment path are not
+audited. Creation timestamps detect recreation since the active version, not
+in-place data loss or a rebuild already followed by an out-of-band deployment.
+The check is not a lock against concurrent administrative changes. Follow the
+cutover runbook for those operations; never treat this preflight as a corpus
+integrity audit or authorization to remove legacy data.
+
 Staging:
 
 ```sh
