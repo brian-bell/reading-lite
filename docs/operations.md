@@ -345,6 +345,12 @@ Run the production repair only after separate approval, using the same explicit
 execute/confirm/sole-writer controls. Resolve protected legacy candidates under
 S7's separate approval; a refused plan is not a repaired corpus.
 
+The separately executed
+[2026-09-05 production read-only audit](evidence/195-production-audit-2026-09-05.md)
+found no tenant bare-vector repair candidates and all 557 ready readings had
+composed vectors. It records protected legacy pairs, the empty all-deleted
+selection, the live ledger follow-up, and the scanner's certification limits.
+
 ### The wipe seeds its own ledger
 
 **No operator step is required before a wipe.** From issue #195 slice S3 the
@@ -980,7 +986,10 @@ first-completion history, and the explicit unknown section; exit 1 is expected
 while DO/address-history visibility remains incomplete. Before arming the wipe,
 audit/repair synthetic bare/composed pairs using the S5 sequence above, including
 a protected unnamespaced control. Keep that control intact. This implementation
-adds deterministic local tests; it does not claim this live proof has run.
+adds deterministic local tests. The separately executed
+[2026-09-05 staging drill](evidence/195-staging-drill-2026-09-05.md) records
+the live repair, deletion, and automatic teardown evidence, including the
+final `residue:false, incomplete:true` scan and remaining acceptance limits.
 
 
 `src/account-wipe.ts` skips with `no_tenant_prefix` whenever `TENANT_DATA_PLANE`
