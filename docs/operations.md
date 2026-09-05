@@ -1005,8 +1005,8 @@ Still **not** claimed here, and still open on #265:
 - Optional `www` → apex DNS and Redirect Rules (not in this repo).
 - Authenticated `/api/whoami` parity and emitted digest/notification URL
   checks.
-- **S5** operator script and skill defaults (#300); **S7** staging public
-  host; **S8** `EMAIL_FROM` move; **S9** old-host retirement.
+- **S7** staging public host; **S8** `EMAIL_FROM` move; **S9** old-host
+  retirement.
 
 #### Captain-only DNS / Pages / token (re-verify if zones or tokens change)
 
@@ -1075,7 +1075,7 @@ those owner operations.
 Issue [#265](https://github.com/brian-bell/reading-lite/issues/265) tracks the
 move.
 
-In the repo (code and `wrangler.toml`):
+In the repo (code, `wrangler.toml`, and current-facing docs):
 
 - **S1** — production Worker routes for `reading-lite.bbell.dev`,
   `readinglite.ai`, and `readinglite.app` (`[env.production.routes]`).
@@ -1084,6 +1084,10 @@ In the repo (code and `wrangler.toml`):
 - **S3** — magic-link mail prefers the request's own public host (code; mail
   round-trip unverified).
 - **S4** — cutover: `WEB_BASE_URL` is `https://readinglite.ai/`.
+- **S5** — operator script and skill defaults use `https://readinglite.ai`
+  (`DEFAULT_API_BASE`; #300 / [#311](https://github.com/brian-bell/reading-lite/pull/311)).
+- **S6** — current-facing docs and OpenAPI present `readinglite.ai` as
+  canonical (#301).
 
 Recorded live on #265 (2026-09-05), not re-verified by this docs sweep: C0
 zone confirmation, C1 token scope, C2 Pages/DNS, S1 routes, S2 MCP origins,
@@ -1103,9 +1107,8 @@ Host-behavior checks (code-level; do not mail a live user for S3):
 
 Still open, in order: **S3** verification; **C3** re-register the MCP
 connectors (Cursor, Grok Bot) at `readinglite.ai`; **C4** add the old host's
-SPA-path redirect rule and `noindex` header; **S5** operator script and skill
-defaults; **S6** this docs sweep; **S7** staging's own public-host subdomain;
-**S8** the `EMAIL_FROM` move; **S9** retiring the old host.
+SPA-path redirect rule and `noindex` header; **S7** staging's own public-host
+subdomain; **S8** the `EMAIL_FROM` move; **S9** retiring the old host.
 
 #### Intentional old-host references
 
@@ -1122,8 +1125,6 @@ references (that abandoned target was replaced in #276). Remaining
   (annotated, not rewritten).
 - Local/dev `wrangler.toml` `[vars] MCP_ALLOWED_ORIGINS`, tests, and fixtures
   that use the old host as one allowed origin.
-- Operator script and skill **defaults** — owned by S5 (#300 / PR #311), not
-  this sweep. Production examples in this runbook use `readinglite.ai`.
 
 ### MCP connector
 
