@@ -1,19 +1,24 @@
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 /**
- * Public origins production is served on. During the `bbookmarks.com`
- * dual-serve window the same Worker answers on both hosts, and a login started
- * on either one must mail its magic link back to that host — see
- * `publicWebBase`. Deliberately a code constant rather than the operator-set
- * `MCP_ALLOWED_ORIGINS`: widening which browsers may call `/mcp` should not
- * also widen where auth mail can point. Matching is whole-origin, so `www.` and
- * look-alike hosts fall back to `WEB_BASE_URL`; apex is canonical and `www` is
- * expected to be redirected to it at the edge.
+ * Public origins production is served on. During the `readinglite.ai` /
+ * `readinglite.app` dual-serve window the same Worker answers on the old host
+ * and both public hosts, and a login started on any of them must mail its
+ * magic link back to that host — see `publicWebBase`. Deliberately a code
+ * constant rather than the operator-set `MCP_ALLOWED_ORIGINS`: widening which
+ * browsers may call `/mcp` should not also widen where auth mail can point.
+ * Matching is whole-origin, so `www.` and look-alike hosts fall back to
+ * `WEB_BASE_URL`; apex is canonical and `www` is expected to be redirected to
+ * it at the edge.
  *
  * Adding a host here asserts that this project serves it: a login arriving on
  * it will be mailed a single-use credential pointing back at it.
  */
-export const PUBLIC_WEB_ORIGINS = ["https://reading-lite.bbell.dev", "https://bbookmarks.com"];
+export const PUBLIC_WEB_ORIGINS = [
+  "https://reading-lite.bbell.dev",
+  "https://readinglite.ai",
+  "https://readinglite.app",
+];
 
 export function isPublicWebOrigin(origin: string | null | undefined): boolean {
   return !!origin && PUBLIC_WEB_ORIGINS.includes(origin);

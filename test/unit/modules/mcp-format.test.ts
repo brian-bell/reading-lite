@@ -75,28 +75,33 @@ describe("mcp format helpers", () => {
 });
 
 describe("mcp origin allowlist", () => {
-  it("defaults to both production origins when the var is empty", () => {
+  it("defaults to the old host and both public origins when the var is empty", () => {
     expect(parseMcpAllowedOrigins("")).toEqual([
       "https://reading-lite.bbell.dev",
-      "https://bbookmarks.com",
+      "https://readinglite.ai",
+      "https://readinglite.app",
     ]);
     expect(parseMcpAllowedOrigins(undefined)).toEqual([
       "https://reading-lite.bbell.dev",
-      "https://bbookmarks.com",
+      "https://readinglite.ai",
+      "https://readinglite.app",
     ]);
   });
 
-  it("accepts either production host by default", () => {
+  it("accepts the old host and both public hosts by default", () => {
     const allowed = parseMcpAllowedOrigins(undefined);
     expect(mcpOriginAllowed("https://reading-lite.bbell.dev", allowed)).toBe(true);
-    expect(mcpOriginAllowed("https://bbookmarks.com", allowed)).toBe(true);
+    expect(mcpOriginAllowed("https://readinglite.ai", allowed)).toBe(true);
+    expect(mcpOriginAllowed("https://readinglite.app", allowed)).toBe(true);
   });
 
   it("matches origins exactly, so neighbouring hosts do not slip through", () => {
     const allowed = parseMcpAllowedOrigins(undefined);
-    expect(mcpOriginAllowed("https://www.bbookmarks.com", allowed)).toBe(false);
-    expect(mcpOriginAllowed("https://evil-bbookmarks.com", allowed)).toBe(false);
-    expect(mcpOriginAllowed("http://bbookmarks.com", allowed)).toBe(false);
+    expect(mcpOriginAllowed("https://www.readinglite.ai", allowed)).toBe(false);
+    expect(mcpOriginAllowed("https://www.readinglite.app", allowed)).toBe(false);
+    expect(mcpOriginAllowed("https://evil-readinglite.ai", allowed)).toBe(false);
+    expect(mcpOriginAllowed("http://readinglite.ai", allowed)).toBe(false);
+    expect(mcpOriginAllowed("http://readinglite.app", allowed)).toBe(false);
   });
 
   it("allows a missing Origin (non-browser MCP clients) and rejects unknown origins", () => {
@@ -107,9 +112,8 @@ describe("mcp origin allowlist", () => {
   });
 
   it("still honours an explicit comma-separated var over the defaults", () => {
-    expect(parseMcpAllowedOrigins("https://reading-lite.bbell.dev, https://bbookmarks.com")).toEqual([
-      "https://reading-lite.bbell.dev",
-      "https://bbookmarks.com",
-    ]);
+    expect(
+      parseMcpAllowedOrigins("https://reading-lite.bbell.dev, https://readinglite.ai, https://readinglite.app"),
+    ).toEqual(["https://reading-lite.bbell.dev", "https://readinglite.ai", "https://readinglite.app"]);
   });
 });
