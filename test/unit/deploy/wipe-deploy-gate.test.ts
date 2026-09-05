@@ -39,6 +39,16 @@ describe("production wipe deploy gate", () => {
     expect(await run()).toEqual({ unfinished: 0, queues: { "reading-lite-wipe": 0, "reading-lite-wipe-dlq": 0 } });
     expect(fetcher).toHaveBeenCalledTimes(4);
   });
+  it.each([null, []])("accepts successful Cloudflare responses with errors=%j", async (errors) => {
+    const { run, fetcher } = fixture({
+      d1: { ...ok([{ success: true, results: [{ unfinished: 0 }] }]), errors },
+      list: { ...ok(queues), result_info: { page: 1, total_pages: 1 }, errors },
+      wipe: { ...ok({ backlog_count: 0 }), errors },
+      dlq: { ...ok({ backlog_count: 0 }), errors },
+    });
+    await expect(run()).resolves.toEqual({ unfinished: 0, queues: { "reading-lite-wipe": 0, "reading-lite-wipe-dlq": 0 } });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
   it.each([
     { d1: ok([{ success: true, results: [{ unfinished: 1 }] }]) },
     { wipe: ok({ backlog_count: 1 }) },
@@ -47,6 +57,9 @@ describe("production wipe deploy gate", () => {
     await expect(fixture(override).run()).rejects.toThrow(/refusing/i);
   });
   it.each([
+    { d1: { ...ok([{ success: true, results: [{ unfinished: 0 }] }]), errors: [{ message: "failed" }] } },
+    { wipe: { ...ok({ backlog_count: 0 }), errors: "invalid" } },
+    { dlq: { success: false, errors: null, result: { backlog_count: 0 } } },
     { d1: ok([{ success: false, results: [{ unfinished: 0 }] }]) },
     { d1: ok([]) },
     { d1: ok([{ success: true, results: [{ unfinished: "0" }] }]) },

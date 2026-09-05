@@ -9,7 +9,8 @@ const queueNames = ["reading-lite-wipe", "reading-lite-wipe-dlq"] as const;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const envelope = z.object({
   success: z.literal(true),
-  errors: z.array(z.unknown()).max(0).optional(),
+  // Cloudflare can return null instead of an empty errors array on success.
+  errors: z.array(z.unknown()).max(0).nullish(),
   result: z.unknown(),
   result_info: z.object({
     page: z.number().int().positive(),
