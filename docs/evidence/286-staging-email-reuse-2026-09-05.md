@@ -57,7 +57,7 @@ is now satisfied.
 | A1 | Real signup and ownership/challenge associations | Observed |
 | A2 | Optional reading fixture / corpus isolation | **Skipped** (N/A) |
 | A3 | Reuse refused while deleting; automatic wipe and teardown | Observed |
-| A4 | `invite_only`: consumed invite does not grant signup; fresh invite after teardown creates a new tenant | Observed |
+| A4 | `invite_only`: consumed invite does not grant signup; fresh invite after teardown creates a new tenant | **SPLIT** — fresh invite → Tenant B Observed; consumed-invite refusal Inferred / not negatively tested |
 | A5 | Old credentials invalid; new tenant cannot see old data | Observed for sessions; corpus N/A |
 | A6 | Document released-address / invite-trap / residue limits | This section |
 | A7 | Sanitized evidence; GitHub issue comments | **Partial** — this file Observed; GitHub comments Pending |
@@ -146,10 +146,15 @@ claim.
 
 ### A4 — Fresh invite after teardown (Tenant B)
 
-Under `invite_only`, teardown removed Tenant A's consumed invite, so that
-spent row could not grant signup. A **fresh** invite was inserted only after
-the `users` row was confirmed gone, at **12:23:07.145Z** (invite-trap timing
-in the runbook).
+**SPLIT.** Fresh invite after teardown → new tenant B: **Observed.** Consumed
+old invite does not grant signup: **Inferred / not negatively tested**
+(teardown deleted the invite row; there was no failed signup attempt with
+the spent invite).
+
+A **fresh** invite was inserted only after the `users` row was confirmed
+gone, at **12:23:07.145Z**. Under `invite_only`, teardown had already deleted
+Tenant A's consumed invite row. That absence is the inference that the spent
+invite could not grant signup; the drill did not attempt signup against it.
 
 Tenant B signed up at **12:28:13.892Z**:
 
