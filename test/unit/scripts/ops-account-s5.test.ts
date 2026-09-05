@@ -396,6 +396,58 @@ describe("REST wire contract", () => {
     CORPUS_R2_ACCOUNT_ID: "test-account",
     CORPUS_CF_API_TOKEN: "test-token",
   };
+  it.each([
+    { override: "", r2: "r2-account", expected: "r2-account" },
+    { override: "", r2: "", expected: "cloudflare-account" },
+    {
+      override: "vector-account",
+      r2: "r2-account",
+      expected: "vector-account",
+    },
+  ])(
+    "uses the first non-empty account credential: $expected",
+    async ({ override, r2, expected }) => {
+      const send = vi
+        .fn()
+        .mockResolvedValue(Response.json({ success: true, result: [] }));
+      const remote = accountRemote("reading-lite-staging", send, {
+        CORPUS_VECTORIZE_ACCOUNT_ID: override,
+        CORPUS_R2_ACCOUNT_ID: r2,
+        CLOUDFLARE_ACCOUNT_ID: "cloudflare-account",
+        CORPUS_CF_API_TOKEN: "",
+        CLOUDFLARE_API_TOKEN: "fallback-token",
+      });
+      await remote.vectors.get([id]);
+      expect(send.mock.calls[0]![0]).toContain(`/accounts/${expected}/`);
+      expect(send.mock.calls[0]![1].headers.authorization).toBe(
+        "Bearer fallback-token",
+      );
+    },
+  );
+  it("keeps a non-empty corpus token ahead of the Cloudflare fallback", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue(Response.json({ success: true, result: [] }));
+    await accountRemote("reading-lite-staging", send, {
+      ...vars,
+      CLOUDFLARE_API_TOKEN: "fallback-token",
+    }).vectors.get([id]);
+    expect(send.mock.calls[0]![1].headers.authorization).toBe(
+      "Bearer test-token",
+    );
+  });
+  it("still refuses credentials when all account or token choices are empty", () => {
+    for (const missing of [
+      { CORPUS_R2_ACCOUNT_ID: "", CLOUDFLARE_ACCOUNT_ID: "" },
+      { CORPUS_CF_API_TOKEN: "", CLOUDFLARE_API_TOKEN: "" },
+    ]) {
+      const send = vi.fn();
+      expect(() =>
+        accountRemote("reading-lite-staging", send, { ...vars, ...missing }),
+      ).toThrow("require");
+      expect(send).not.toHaveBeenCalled();
+    }
+  });
   it("rejects non-200, unsuccessful envelopes and malformed success instead of claiming absence", async () => {
     for (const response of [
       new Response("{}", { status: 400 }),

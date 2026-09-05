@@ -26,11 +26,13 @@ export function accountRemote(
 ) {
   const target = controlPlaneForBucket(bucket);
   if (!target) throw new Error(`unmapped account bucket: ${bucket}`);
+  // Optional entries in .corpus.vars.example may be empty; skip them just
+  // as the R2 credential resolver does, while preserving non-empty overrides.
   const account =
-    vars.CORPUS_VECTORIZE_ACCOUNT_ID ??
-    vars.CORPUS_R2_ACCOUNT_ID ??
+    vars.CORPUS_VECTORIZE_ACCOUNT_ID ||
+    vars.CORPUS_R2_ACCOUNT_ID ||
     vars.CLOUDFLARE_ACCOUNT_ID;
-  const token = vars.CORPUS_CF_API_TOKEN ?? vars.CLOUDFLARE_API_TOKEN;
+  const token = vars.CORPUS_CF_API_TOKEN || vars.CLOUDFLARE_API_TOKEN;
   if (!account || !token)
     throw new Error(
       "account operations require CORPUS_R2_ACCOUNT_ID/CLOUDFLARE_ACCOUNT_ID and CORPUS_CF_API_TOKEN/CLOUDFLARE_API_TOKEN",
