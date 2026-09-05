@@ -382,6 +382,17 @@ describe("tearDownAccount — the deletes", () => {
     const { sqlite, db } = await seeded();
     wipeRecord(sqlite, { completedAtMs: NOW_MS - 5_000 });
     const { env } = guardEnv();
+    // Save child selectors before their parent rows disappear. A join through
+    // api_tokens after teardown can make an orphaned scope look absent, so the
+    // acceptance fixture asks scopes directly by the captured token id.
+    const savedScopes = sqlite
+      .prepare("SELECT token_id, scope FROM api_token_scopes WHERE token_id = ? ORDER BY scope")
+      .all(TOKEN) as Array<{ token_id: string; scope: string }>;
+    const savedSession = sqlite.prepare("SELECT id, user_id FROM sessions WHERE id = ?").get(SESSION);
+    const savedChallenge = sqlite.prepare("SELECT id, user_id, completed_user_id FROM auth_challenges WHERE id = ?").get(CHALLENGE);
+    expect(savedScopes.length).toBeGreaterThan(0);
+    expect(savedSession).toEqual({ id: SESSION, user_id: USER });
+    expect(savedChallenge).toEqual({ id: CHALLENGE, user_id: USER, completed_user_id: null });
 
     const result = await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
     expect(result.kind).toBe("torn_down");
@@ -391,7 +402,61 @@ describe("tearDownAccount — the deletes", () => {
       expect(count(sqlite, table, column, value), table).toBe(0);
     }
     // Reachable only through api_tokens, so it has to go first or be orphaned.
-    expect(count(sqlite, "api_token_scopes", "token_id", TOKEN)).toBe(0);
+    // Ask by the saved token selector rather than joining through its deleted
+    // parent, which could otherwise hide an orphan.
+    expect(
+      sqlite.prepare("SELECT token_id, scope FROM api_token_scopes WHERE token_id = ? ORDER BY scope").all(TOKEN),
+    ).toEqual([]);
+    expect(sqlite.prepare("SELECT id FROM sessions WHERE id = ?").get(SESSION)).toBeUndefined();
+    expect(sqlite.prepare("SELECT id FROM auth_challenges WHERE id = ?").get(CHALLENGE)).toBeUndefined();
+  });
+
+  it("characterizes the remaining final-prefix-verdict race as a data-plane residual", async () => {
+    const { sqlite, db } = await seeded();
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+    const prefixObjects: string[] = [];
+    let finalVerdictObserved!: () => void;
+    const finalVerdict = new Promise<void>((resolve) => {
+      finalVerdictObserved = resolve;
+    });
+    let releaseBatch!: () => void;
+    const batchReleased = new Promise<void>((resolve) => {
+      releaseBatch = resolve;
+    });
+    const delayedBatch: ControlPlaneDb = {
+      first: (sql, ...params) => db.first(sql, ...params),
+      all: (sql, ...params) => db.all(sql, ...params),
+      run: (sql, ...params) => db.run(sql, ...params),
+      batch: async (statements) => {
+        await batchReleased;
+        return db.batch(statements);
+      },
+    };
+
+    const teardown = tearDownAccount(delayedBatch, {}, {
+      tenantId: USER,
+      nowMs: NOW_MS,
+      prefixVerdict: async () => {
+        finalVerdictObserved();
+        return prefixObjects.length === 0 ? "empty" : "not_empty";
+      },
+    });
+    try {
+      await finalVerdict;
+      expect(prefixObjects).toEqual([]);
+      // This simulates a writer whose data-plane write lands after the final R2
+      // verdict but before the independent D1 batch. It is intentionally a
+      // characterization: current teardown cannot atomically fence this write.
+      prefixObjects.push(`u/${USER}/readings/rd_late/manifest.json`);
+    } finally {
+      // Do not leave the in-process teardown blocked if an assertion above
+      // fails: the test runner must be able to observe the real failure.
+      releaseBatch();
+    }
+
+    await expect(teardown).resolves.toMatchObject({ kind: "torn_down", tenantId: USER });
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+    expect(prefixObjects).toEqual([`u/${USER}/readings/rd_late/manifest.json`]);
   });
 
   it("purges the tenant guard and the tenant's global leases", async () => {
@@ -805,6 +870,62 @@ describe("tearDownAccount — email reuse", () => {
     expect((await resolveLoginEligibility(db, released, NOW_MS)).kind).toBe("provisionable");
     // The account's own consumed invite still goes.
     expect(count(sqlite, "signup_invites", "email_canonical", EMAIL)).toBe(0);
+  });
+
+  it("records the known NULL-owner challenge residue while preserving a stranger's current signup", async () => {
+    const { sqlite, db } = await seeded({ signupMode: "invite_only" });
+    const released = "released-with-history@example.com";
+    const historicalProof = "ml_88888888-8888-4888-8888-888888888888";
+    const superseded = "ml_99999999-9999-4999-8999-999999999999";
+    const strangerCurrent = "ml_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    // This consumed login is the recorded proof that the deleted account once
+    // held the address. The two NULL-owner rows below are intentionally not
+    // attributable from their stored shape: one is the account's superseded
+    // pre-signup challenge and one is a stranger signing up there now.
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'login', ?, ?, NULL, 'hmac', 1, ?, ?, 'revoked')`,
+      )
+      .run(superseded, released, released, NOW_MS - 6000, NOW_MS - 5500);
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'login', ?, ?, ?, 'hmac', 1, ?, ?, 'consumed')`,
+      )
+      .run(historicalProof, released, released, USER, NOW_MS - 5000, NOW_MS - 4000);
+    sqlite
+      .prepare(
+        `INSERT INTO auth_challenges (
+           id, purpose, email_canonical, email_display, user_id, secret_hmac,
+           hash_key_version, issued_at_ms, expires_at_ms, state
+         ) VALUES (?, 'login', ?, ?, NULL, 'hmac', 1, ?, ?, 'issued')`,
+      )
+      .run(strangerCurrent, released, released, NOW_MS - 100, NOW_MS + 900_000);
+    const retainedBefore = sqlite
+      .prepare("SELECT * FROM auth_challenges WHERE id IN (?, ?) ORDER BY id")
+      .all(superseded, strangerCurrent);
+    wipeRecord(sqlite, { completedAtMs: NOW_MS });
+
+    await expect(tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).resolves.toMatchObject({
+      kind: "torn_down",
+      tenantId: USER,
+    });
+
+    expect(count(sqlite, "users", "id", USER)).toBe(0);
+    expect(sqlite.prepare("SELECT id FROM auth_challenges WHERE id = ?").get(historicalProof)).toBeUndefined();
+    // The retained row is the documented permanent/unknown-attribution
+    // residual. It must not be made green by pretending historical provenance
+    // is reconstructible from the row itself.
+    expect(
+      sqlite.prepare("SELECT * FROM auth_challenges WHERE id IN (?, ?) ORDER BY id").all(superseded, strangerCurrent),
+    ).toEqual(retainedBefore);
+    // The same selector shape can be a live stranger's current signup, which
+    // is why teardown cannot sweep all NULL-owner rows at released addresses.
   });
 
   // The exception to the consumed rule. "An account's own invite is always

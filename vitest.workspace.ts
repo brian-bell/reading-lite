@@ -29,6 +29,7 @@ export default [
         "test/unit/reading-visibility/**/*.test.ts",
         "test/unit/reading-purge/**/*.test.ts",
       ],
+      exclude: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
         workers: {
@@ -38,6 +39,38 @@ export default [
             // Pin the secret-shaped bindings to known test values so that any
             // .dev.vars present on the developer's machine cannot leak real
             // credentials into the test process or override the test token.
+            bindings: {
+              READER_API_TOKEN: "test-token",
+              AUTH_ROOT_SECRET,
+              FOUNDER_EMAIL: "founder@test.example",
+              TEST_MIGRATIONS: migrations,
+              ANTHROPIC_API_KEY: "test-anthropic-key",
+              OPENAI_API_KEY: "test-openai-key",
+              X_API_BEARER_TOKEN: "test-x-token",
+              RESEND_API_KEY: "test-resend-key",
+              TENANT_DATA_PLANE: "1",
+            },
+          },
+        },
+      },
+    },
+  }),
+  // Direct `runInDurableObject()` inspection currently leaves a SQLite WAL
+  // sidecar behind when the workers pool tries to pop per-test isolated
+  // storage. Keep the one runtime-storage evidence file in its own serial
+  // storage universe; it owns and clears every fixture object it creates.
+  defineWorkersProject({
+    test: {
+      name: "workers-do-storage",
+      testTimeout: 20_000,
+      include: ["test/integration/account-deletion-guard-storage.test.ts"],
+      setupFiles: ["./test/apply-control-plane.ts"],
+      poolOptions: {
+        workers: {
+          isolatedStorage: false,
+          wrangler: { configPath: "./wrangler.test.toml" },
+          miniflare: {
+            compatibilityFlags: ["nodejs_compat"],
             bindings: {
               READER_API_TOKEN: "test-token",
               AUTH_ROOT_SECRET,
