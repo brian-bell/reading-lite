@@ -288,7 +288,11 @@ function installInterleavedTenantVectorizeStub(initialIds: Array<{ tenantId: str
     deletes,
     reachedBoth,
     release: () => releaseDeletes?.(),
-    removeAll: () => live.clear(),
+    removeTenant: (tenantId: string) => {
+      for (const id of live) {
+        if (id.startsWith(`${tenantId}:`)) live.delete(id);
+      }
+    },
     live,
   };
 }
@@ -760,7 +764,14 @@ describe("account wipe (195b PR1)", () => {
       ]),
     );
     vectors.release();
-    await expect(Promise.all([founderJob, otherJob])).rejects.toBeInstanceOf(AccountWipeNamespaceNotEmptyError);
+    const initialRetries = await Promise.allSettled([founderJob, otherJob]);
+    expect(initialRetries).toHaveLength(2);
+    for (const result of initialRetries) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toBeInstanceOf(AccountWipeNamespaceNotEmptyError);
+      }
+    }
 
     // The first delivery has deleted each tenant's R2 prefix but retries while
     // Vectorize propagation is pending. Its own ledger and progress row are
@@ -778,26 +789,36 @@ describe("account wipe (195b PR1)", () => {
     expect(await readWipeProgress(controlPlane(), founder)).toMatchObject({ completedAtMs: null, phase: "objects" });
     expect(await readProgress()).toMatchObject({ completedAtMs: null, phase: "objects" });
 
-    vectors.removeAll();
     const retryClock = { t: NOW_MS + VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS };
-    const [founderComplete, otherComplete] = await Promise.all([
-      processAccountWipeJob(
-        accountWipeEnvelopeV1({ tenantId: founder }),
-        await wipeEnv(),
-        wipeJobDeps({ clock: retryClock }),
-      ),
-      processAccountWipeJob(
-        accountWipeEnvelopeV1({ tenantId: TENANT }),
-        await wipeEnv(),
-        wipeJobDeps({ clock: retryClock }),
-      ),
-    ]);
+    vectors.removeTenant(FOUNDER_TENANT_ID);
+    const founderComplete = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: founder }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: retryClock }),
+    );
     expect(founderComplete).toMatchObject({ kind: "complete", residue: false });
+    expect(await ledgerRows(FOUNDER_TENANT_ID)).toEqual([]);
+    expect(await readWipeProgress(controlPlane(), founder)).toMatchObject({ completedAtMs: retryClock.t });
+    // A completes while B's namespace still answers, which proves A's clear
+    // cannot consume B's ledger row or complete B's progress record.
+    expect((await ledgerRows(OTHER_TENANT_ID)).map((row) => row.state)).toEqual([
+      "delete_submitted",
+      "delete_submitted",
+    ]);
+    expect(await readProgress()).toMatchObject({ completedAtMs: null, phase: "objects" });
+    expect(vectors.live).toEqual(
+      new Set(sharedIds.map((id) => tenantVectorId(OTHER_TENANT_ID, id))),
+    );
+
+    vectors.removeTenant(OTHER_TENANT_ID);
+    const otherComplete = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: retryClock }),
+    );
     expect(otherComplete).toMatchObject({ kind: "complete", residue: false });
     expect(vectors.live).toEqual(new Set());
-    expect(await ledgerRows(FOUNDER_TENANT_ID)).toEqual([]);
     expect(await ledgerRows(OTHER_TENANT_ID)).toEqual([]);
-    expect(await readWipeProgress(controlPlane(), founder)).toMatchObject({ completedAtMs: retryClock.t });
     expect(await readProgress()).toMatchObject({ completedAtMs: retryClock.t });
   });
 
