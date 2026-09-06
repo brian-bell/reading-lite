@@ -7,7 +7,7 @@ import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
-import { insertSecondTenant } from "../helpers/tenant-fixtures";
+import { OTHER_TOKEN_SECRET, insertSecondTenant } from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -244,6 +244,55 @@ describe("session inspect and revoke", () => {
 
     const after = await request("/api/whoami", { cookie: session.cookie });
     expect(after.res.status).toBe(401);
+  });
+
+  it("revoke-all through cookie and bearer affects only the caller's populated account", async () => {
+    const workerEnv = env as unknown as Env;
+    await insertSecondTenant(workerEnv);
+    const ownerCookie = await redeemSession("clm_revoke_scope_owner_cookie");
+    const ownerSecond = await redeemSession("clm_revoke_scope_owner_second");
+    const other = await redeemSession("clm_revoke_scope_other", undefined, "other@test.example");
+
+    const cookieRevoke = await request("/api/auth/sessions/revoke-all", {
+      method: "POST",
+      cookie: ownerCookie.cookie,
+      csrf: ownerCookie.csrf,
+      body: {},
+    });
+    expect(cookieRevoke.res.status).toBe(200);
+    expect((await request("/api/whoami", { cookie: ownerSecond.cookie })).res.status).toBe(401);
+    expect((await request("/api/whoami", { cookie: other.cookie })).res.status).toBe(200);
+    expect((await request("/api/whoami", { authorization: `Bearer ${OTHER_TOKEN_SECRET}` })).res.status).toBe(200);
+
+    const ownerBearerSession = await redeemSession("clm_revoke_scope_owner_bearer");
+    const bearerRevoke = await request("/api/auth/sessions/revoke-all", {
+      method: "POST",
+      authorization: "Bearer test-token",
+      body: {},
+    });
+    expect(bearerRevoke.res.status).toBe(200);
+    expect((await request("/api/whoami", { cookie: ownerBearerSession.cookie })).res.status).toBe(401);
+    expect((await request("/api/whoami", { cookie: other.cookie })).res.status).toBe(200);
+    expect((await request("/api/whoami", { authorization: `Bearer ${OTHER_TOKEN_SECRET}` })).res.status).toBe(200);
+  });
+
+  it("logout revokes one session while another owner session and another tenant survive", async () => {
+    const workerEnv = env as unknown as Env;
+    await insertSecondTenant(workerEnv);
+    const first = await redeemSession("clm_logout_scope_first");
+    const second = await redeemSession("clm_logout_scope_second");
+    const other = await redeemSession("clm_logout_scope_other", undefined, "other@test.example");
+
+    const logout = await request("/api/auth/logout", {
+      method: "POST",
+      cookie: first.cookie,
+      csrf: first.csrf,
+      body: {},
+    });
+    expect(logout.res.status).toBe(200);
+    expect((await request("/api/whoami", { cookie: first.cookie })).res.status).toBe(401);
+    expect((await request("/api/whoami", { cookie: second.cookie })).res.status).toBe(200);
+    expect((await request("/api/whoami", { cookie: other.cookie })).res.status).toBe(200);
   });
 
   it("lets bearer list and revoke-all without CSRF, and leaves corpus reads ungated by recent-auth", async () => {
