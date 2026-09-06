@@ -30,6 +30,12 @@ function fixture() {
   return deps;
 }
 describe("system status", () => {
+  it("requires complete details and propagates the requested mode",async()=>{
+    const deps=fixture();
+    expect(await systemStatusCommand.run(["--env","staging","--details"],deps)).toBe(1);
+    expect(deps.accounting).toHaveBeenCalledWith("staging",undefined,true);
+    expect(deps.io.stderr).toHaveBeenCalledWith(expect.stringContaining("Inspection incomplete"));
+  });
   it("reads the requested environment and tenant", async () => {
     const deps = fixture();
     expect(

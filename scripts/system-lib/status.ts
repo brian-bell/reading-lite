@@ -12,6 +12,7 @@ import type { PolicyEnvironment } from "./policy";
 export async function remoteSpendStatus(
   env: PolicyEnvironment,
   tenant?: string,
+  details = false,
 ): Promise<SpendStatus> {
   try {
     const { getPlatformProxy } = await import("wrangler");
@@ -25,11 +26,12 @@ export async function remoteSpendStatus(
     });
     try {
       const response = await proxy.env.STATUS.fetch(
-        `https://operator/status${tenant ? `?tenant=${encodeURIComponent(tenant)}` : ""}`,
+        `https://operator/status${tenant ? `?tenant=${encodeURIComponent(tenant)}` : ""}${details ? `${tenant ? "&" : "?"}details=1` : ""}`,
       );
       if (!response.ok) throw new Error("unavailable");
       const status = SpendStatusSchema.parse(await response.json());
       if (
+        (details && (!status.details || (tenant !== undefined && !status.tenantDetails))) ||
         status.tenantId !== tenant ||
         (tenant !== undefined && status.tenantChargedMicrodollars === undefined)
       )

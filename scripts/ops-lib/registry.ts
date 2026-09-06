@@ -1,3 +1,4 @@
+import { stagingPrepareContextCommand } from "./commands/staging-prepare-context";
 import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
@@ -94,6 +95,7 @@ export const defaultRegistry: Registry = {
     deployWorkerCommand,
     deployWipeCheckCommand,
     deployWebCommand,
+    stagingPrepareContextCommand,
     stagingSetupCommand,
     stagingTeardownCommand,
     stagingSmokeCommand,
