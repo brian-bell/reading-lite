@@ -1,7 +1,8 @@
 # Operating reading-lite
 
-Deploying, ingesting in bulk, and repairing the corpus. `README.md` covers the
-architecture and the HTTP API; this document is the operator runbook.
+Deploying, ingesting in bulk, and repairing the corpus. `README.md` covers
+first use; [architecture](architecture.md) and [API](api.md) hold the technical
+references. This document is the operator runbook.
 
 Operator workflows run through the unified plan-first CLI: `npm run ops --
 <group> <command> [options]`. Every command with durable side effects prints a
@@ -11,7 +12,7 @@ plan by default and acts only with `--execute`.
 
 `npm run ops` is supported on **Node 20.19.x** (`/usr/bin/node` on Debian).
 That is the supported operator path. Do not upgrade the operator laptop to
-Node 22 — it will not launch under the security boundary Snipe runs in.
+Node 22. It will not launch under the security boundary Snipe runs in.
 
 Wrangler 4.87+ hard-fails in `bin/wrangler.js` on Node < 22. Ops does not
 spawn that wrapper: it execs `node_modules/wrangler/wrangler-dist/cli.js`
@@ -24,7 +25,7 @@ workerd.
 `package.json` `engines.node` is `>=20.19.0` so npm does not reject Node 20.
 
 Every `corpus` command additionally requires `--tenant <selector>` before it
-plans anything. There is no default — a missing or malformed selector is a
+plans anything. There is no default. A missing or malformed selector is a
 usage error (exit 2) before any R2 or Vectorize traffic, so an operator can
 never act on the wrong corpus by omission.
 
@@ -32,7 +33,7 @@ A `usr_…` tenant id addresses that tenant's `u/{tenantId}/` key namespace plus
 its Vectorize namespace (the same roots the worker derives from a validated
 `TenantContext`). `global` is the pre-tenant layout selector: local (where
 `TENANT_DATA_PLANE` is still unset), and the leftover global objects both
-deployed environments retain — production's pending signed-off deletion,
+deployed environments retain, production's pending signed-off deletion,
 staging's kept by its own copy-only migration.
 On a gate-on environment `global` is a direct-R2 selector only: realtime write
 paths reject it (`verifyRealtimeTenant`, `scripts/corpus-lib/realtime-tenant.ts`).
@@ -52,178 +53,175 @@ curl -sS -A curl/8 -H "Authorization: Bearer $TOKEN" \
 
 Then `--tenant "$TENANT"`.
 
-**Account deletion.** `DELETE /api/account` (195a) marks the caller `deleting`
-and revokes credentials. Production `TENANT_DATA_PLANE=1`: the founder is a
-normal tenant. Deleting that account suppresses the founder corpus the same
-way as any other — there is no silent founder exception. After a 7-day grace
-(`deleting_at_ms`), the shared `ACCOUNT_WIPE_JOBS` queue plus the existing
-*/15 cron sweep delete the tenant R2 prefix and submit Vectorize `deleteByIds`
-(async: embeddings may take a short time to disappear). A job payload
-`{ force: true }` skips grace to start a new wipe. Cron resumes in-progress
-or leftover wipes during grace and preserves `force` from the wipe record.
-Wipe is not inline in `DELETE /api/account`.
+## Account deletion
 
-Wipe state lives in D1, in the `wipe_progress` table (migration `0009`), one row
-per tenant: phase, the two cursors, lease, probe and continuation bookkeeping,
-and the completion record. Every write is a conditional
-`UPDATE … WHERE tenant_id = ? AND lease_seq = ?` that bumps `lease_seq`, so a
-delivery whose row moved under it changes zero rows, logs
-`account_wipe_lease_held`, and **acks** — the winner is already doing the work,
-and a retry would only lose the same CAS again. The consumer runs at
-`max_concurrency = 1`, so this is a backstop against at-least-once redelivery
-and cron overlap rather than the primary serialization.
+`DELETE /api/account` marks the account deleting and revokes its credentials.
+The founder and staging fixtures follow the same path as every other tenant.
+The request does not enqueue a wipe. Every 15 minutes, cron starts eligible
+`ACCOUNT_WIPE_JOBS` work after the seven-day `deleting_at_ms` grace period.
+`{ force: true }` skips grace for a new wipe. Cron resumes unfinished or reopened
+wipes during grace and preserves the record's force flag.
 
-Because the lease is a version rather than a timestamp, `updated_at_ms` is
-advice: cron uses it to avoid enqueuing a duplicate it would have to turn away,
-and nothing is lost if it is wrong in either direction. Two things that used to
-need care therefore no longer do — a job running on a frozen clock, and a wipe
-owed a long `Retry-After` (up to 12h). Cron may take either one over; the
-displaced delivery reports `lease_held` and stands down.
+The wipe refuses an unset tenant gate or empty key root with `no_tenant_prefix`.
+It never falls back to global R2 keys or unnamespaced vectors. A missing
+`READINGS_INDEX` throws `index_unbound` before any object deletion, including
+on a resumed objects phase. A deleting user with no deletion timestamp logs
+`account_wipe_missing_deleting_at`; investigate before repairing the timestamp
+or forcing the wipe.
 
-The completion record is **kept**, not deleted, and it is two pairs.
-`completed_at_ms` / `residue` are the current state: this wipe has nothing left
-to do. A reopen clears them, which is what a teardown gate wants — it must not
-hard-delete the users row while a reopened pass is still running.
-`first_completed_at_ms` / `first_residue` are the durable history, written once
-at the first terminal transition and pinned in SQL so nothing can move them; the
-residue scan reads those. Without the second pair, a reopen whose enqueue failed
-or whose pass dead-lettered would leave the row claiming the tenant had never
-been wiped at all.
+### Progress, seeding, and confirmation
 
-`residue` says whether the namespace was ever confirmed clean — read
-`probe_saw_residue` beside it to tell "vectors were still there" from "we never
-got an answer" — and the terminal write clears both cursors so nothing reading-
-shaped survives on a deleted account's row. The foreign key to `users(id)`
-deliberately does **not** cascade: the later control-plane teardown hard-deletes
-the users row and gates that on reading this record, so a cascade would destroy
-the evidence at the moment it is needed. Teardown removes the row explicitly,
-after the gate has been read.
+D1 `wipe_progress` holds the seed/object cursors, phase, lease sequence,
+heartbeat, probe/continuation counts, force flag, and completion. The old
+`vector_cursor` column is retired and remains NULL. Writes compare and advance
+`lease_seq`; a delivery that loses ownership reports `lease_held` and acks.
+The queue consumer runs at concurrency 1. `updated_at_ms` is advisory for cron,
+not proof that a job has ended, even after a long delayed retry.
 
-Heartbeats are throttled to `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS` (one minute, a
-fifteen-fold margin under the advisory lease window) rather than firing on every
-R2 page and vector batch, which cost hundreds of full-row D1 writes per delivery
-on a large tenant. Anything a later delivery depends on — the lease claim, phase
-transitions, a `continue`'s cursor and continuation count, probe bookkeeping and
-the terminal record — is written unconditionally regardless of the throttle.
+Heartbeats are throttled to one minute. Cursor, phase, lease, continuation,
+probe, and completion updates persist whenever a later delivery needs them.
+`ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds self-sent continuation messages so a
+stalled wipe cannot reset its retry budget forever. Exceeding that bound throws
+and eventually reaches the wipe DLQ, which logs and acks without touching reading
+manifests. Reopening resets the continuation count and repeats seeding.
 
-A wipe that keeps making a little progress and then failing used to cycle
-forever: each `continue` acks and self-sends, which starts a fresh queue retry
-budget. `continuations` on the record counts those self-sends per pass and
-`ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds them (sized at roughly four million
-objects or ids — far past any real tenant). Past the bound the job throws
-instead of self-sending, so the delivery retries normally and dead-letters where
-it can be seen. Reopening a leftover wipe resets the counter.
+Before either deletion phase, the wipe pages its tenant R2 root, derives IDs
+with `readingIdFromRelativeKey`, and inserts missing vector-ledger rows.
+Existing rows, including delete stamps and confirmation streaks, remain intact.
+Seeding resumes from `seed_cursor` and finishes at `seed_completed_at_ms`.
+No reading object is deleted before its ID is in the ledger.
 
-A tenant left `status='deleting'` with a NULL `deleting_at_ms` can never elapse
-grace, so its wipe would never start. Both fan-out and the job log
-`account_wipe_missing_deleting_at` for that row rather than stalling silently;
-recover it by repairing `deleting_at_ms` or by forcing the wipe.
+`account_wipe_ledger_seeded` reports `rows_created`. Nonzero is expected for a
+corpus predating the ledger; investigate it on a corpus whose writers should
+have covered every ID. Operator seeding is a live-tenant repair or rehearsal
+option, never a wipe prerequisite:
 
-The wipe has two phases, vectors then objects. It does **not** re-submit
-`deleteByIds` after the prefix is empty, and does not persist reading ids on the
-progress record. The late-publish race that re-submit covered — a
-`processReading` that passed its tenant check before the wipe collected ids and
-upserts a vector afterwards — is handled at the publisher instead: a consumer
-publishing against a tenant confirmed `deleting` deletes its own vector directly
-(`ReadingVisibility.removeForDeletedTenant`) rather than waiting on an
-`index/list.json` row the wipe has already removed.
+```sh
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
+npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
+```
 
-**Deploy note, one time only:** progress moved from
-`wipe/{tenantId}/progress.json` to D1, and the new code never reads the R2
-object. A wipe in flight when the new Worker rolls out therefore restarts from
-scratch — a fresh row, `phase:"vectors"`, cursors clear. That is safe (every
-phase is idempotent: re-listing the prefix and re-submitting `deleteByIds` for
-ids still derivable from R2 costs work, not correctness), but a restarted pass
-re-derives ids from whatever R2 holds *now*, so a tenant whose objects the
-interrupted pass had already deleted contributes fewer ids on the retry and can
-raise a `account_wipe_namespace_residue` that reflects the deploy rather than a
-real finding. Confirm `reading-lite-wipe` and `reading-lite-wipe-dlq` are empty
-and no tenant is `status='deleting'` before merging, exactly as the S1 deploy
-did, and treat one residue alert in that window as suspect. That precondition is
-a human step — nothing in the deploy workflow enforces it. Making the workflow
-refuse to deploy while a wipe is in flight is issue #269.
+The operator command uses the same insert-only helper and refuses `global`.
+Extra ledger rows cost harmless delete requests; missing rows can leave vectors
+unaddressable by the wipe.
 
-The stale R2 objects left behind by an interrupted wipe are inert but not
-self-clearing: nothing reads or deletes `wipe/{tenantId}/progress.json` any
-more. If any exist after the rollout, delete them by hand — the key names a
-deleted tenant, which is why the old code deleted it on completion.
+The vector phase selects live ledger rows, submits composed-ID `deleteByIds`,
+and marks each batch `delete_submitted`. That query advances itself without a
+vector cursor. Vector deletes precede paged R2 deletion. The publisher also
+removes its vector promptly when it detects account deletion; the durable
+ledger lets later cleanup address a missed publisher compensation.
 
-Rollback is the awkward direction, and worse than S1's: the previous Worker
-reads only R2, so it would see no progress record and start a fresh wipe from
-`vectors` while the D1 row still says otherwise. The D1 table is additive and
-harmless if the code is reverted, but a wipe in flight across a rollback is
-duplicated work with no shared lease. Roll back with the queue drained, or
-force-complete the tenant afterwards. As always, `TENANT_DATA_PLANE` off is the
-kill switch that short-circuits the whole path.
+Clean completion requires both an empty ledger and a clean namespace probe.
+The probe runs even with an empty ledger. Confirmation follows the measured
+constants in `src/control-plane/vector-ledger.ts`:
 
-**That fence is no longer load-bearing.** It still runs, and it still deletes
-promptly rather than leaving the work to a later pass — but its two escape
-hatches (a D1 recheck that fails open, an isolate that dies between the upsert
-and the recheck) no longer strand anything. Since issue #195 slice S3 every
-vector writer records the reading id in D1 `vector_ledger` **before** it
-upserts, so the id survives the deletion of the reading's R2 objects and the
-wipe can still address the vector.
+- Wait at least 120 seconds after delete submission before counting confirmation.
+- An empty namespaced query clears only `delete_submitted` rows, never live rows.
+- Otherwise, `getByIds` requests contain at most 20 IDs. Clearing a row needs two
+  successful absent observations at least 60 seconds apart. Non-200 responses
+  provide no absence evidence and reset the streak.
+- Retry backoff is 120, 240, then 480 seconds, capped at four confirmation
+  attempts. That bound must stay strictly below the wipe queue's `max_retries`,
+  currently six, because first-confirmation deferral and transient retries do
+  not all spend a probe attempt.
 
-Cron decides what to do from the record rather than from R2 state: no row means
-never wiped (grace gates the start), a row with no `completed_at_ms` means a
-wipe still owed work (the advisory lease decides whether to enqueue), and a
-completed row means done — reopened only if objects turn up under the prefix
-again. That retires the old "no record AND an empty prefix" probe, which could
-not tell an already-wiped tenant from one whose prefix was emptied while vectors
-stranded, and so had to skip both forever.
+`describe()`, `vectorCount`, and `processedUpToMutation` are not confirmation
+signals; staging measurements saw them move backwards between replicas.
+At the confirmation bound, the wipe logs `account_wipe_namespace_residue` with
+tenant ID only, completes with `residue=1`, and retains unconfirmed ledger rows
+for repair. `probe_saw_residue` records whether a probe saw vectors rather than
+only errors. Completion with residue requires investigation; it is not a clean
+namespace certification.
 
-**What remains a gap is the past, not the future — and one half of it is a
-gate on #195, not a footnote.**
+`completed_at_ms` and `residue` describe current completion and clear on reopen.
+`first_completed_at_ms` and `first_residue` are written once and pinned in SQL.
+Teardown gates on current completion; reports preserve first-completion history.
+Completion clears cursors and keeps the progress row until teardown.
 
-A reading purged from R2 before slice S3, whose vector delete failed, has no
-ledger row and cannot be given one: there is nothing left to derive an id from.
-`ops corpus seed-vector-ledger` covers every reading an existing corpus still
-*has*; a vector already orphaned when the ledger arrived is unseedable by
-construction.
+### Control-plane teardown and email reuse
 
-The other half is recoverable and must be recovered. Until S3, the offline batch
-pipeline wrote tenant vectors under **bare** reading ids — `makeVectorizeClient`
-attaches a namespace but never composed the tenant-scoped id. Any tenant that
-has ever run `ops corpus ingest` or `ops corpus recover --batch` under
-`--tenant` therefore holds vectors this wipe cannot address, because
-`deleteByIds` submits the composed id and misses them. Every wipe for such a
-tenant spends its attempts, alerts, and completes with `residue = 1` while those
-embeddings survive account deletion indefinitely.
+Cron runs `src/control-plane/account-teardown.ts` after wipe completion and an
+empty-prefix check. A failure retries on the next tick. Teardown also runs for
+a completed `residue=1` wipe; it copies that flag to the audit record and retains
+unconfirmed vector-ledger rows.
 
-**So `residue = 1` on such a tenant is not a clean-enough outcome to file away.**
-It is that known gap. Repairing it in production is a gate on #195's acceptance
-bullet 3 ("a repeatable residue scan reports zero tenant-owned data"), and slice
-S5 owns the audit and the repair. `probe_saw_residue` beside `residue` still
-separates "vectors were still there" from "we never got an answer".
+1. Write `account_deletions` first. It retains tenant ID, deletion/completion/
+   teardown timestamps, and current/first residue flags. It has no foreign key,
+   email, display name, or reading IDs. Its presence proves an attempt, not
+   successful teardown.
+2. Purge the tenant's TenantUsageGuard storage/alarm and its GlobalUsageGuard
+   leases and spend records. Guard errors stop teardown before D1 deletion.
+   Incurred charges remain in the global daily aggregate. AuthRateGuard retains
+   hashed TTL-windowed email/IP counters because it has no tenant key.
+3. Resolve owned address history, then recheck the R2 prefix immediately before
+   `db.batch`. Only confirmed-empty permits the batch. Leftover objects reopen
+   the wipe on a later tick; unknown/error observations leave teardown for retry.
+4. Delete child rows before parents in one D1 batch: token scopes/tokens,
+   sessions, challenges, digest deliveries, settings, limits, eligible invites,
+   wipe progress, then users. D1 enforces foreign keys; none cascade.
+   Migration 0012 lets unconfirmed vector-ledger rows outlive users.
 
-That population costs something on a *live* tenant too, which is worth knowing
-before anyone dismisses it as a deletion-only concern: a bare-id vector and a
-composed one for the same reading are two distinct matches to a namespaced
-query, so the reading appears twice in its own neighbourhood and duplicates land
-in `manifest.similarity` — inflating `count`, skewing `mean`, and spending a
-neighbour slot.
+An object arriving between the final prefix verdict and D1 commit can still be
+orphaned after cron loses the users row it enumerates. The recheck narrows this
+race; it does not close it. Keep that #261 limit in deletion reports.
 
-**The batch writer deliberately does not fix this by deleting the bare id.**
-Vectorize ids are index-unique and `delete_by_ids` is namespace-blind, so for a
-reading the pipeline has never touched, deleting `rd_…` removes the *legacy
-pre-cutover* vector — the retained `TENANT_DATA_PLANE` rollback set that a
-tenant-scoped operation is not meant to reach, and whose deletion needs its own
-sign-off. A routine `corpus ingest --tenant "$TENANT" --execute` would have
-eroded it silently. Telling the two apart is possible (a legacy vector is
-un-namespaced; a batch-written duplicate carries the namespace, and `getByIds`
-reports it), but that is a destructive production behaviour that belongs with
-the sign-off, not inside an unrelated slice.
+The current address remains unavailable until the users row is gone. Under
+`invite_only`, returning users need a fresh invite after teardown. Check directly:
 
-S5's audit therefore owns both halves: the wipe residue and the search
-duplication.
+```sql
+SELECT 1 FROM users WHERE id = '<tenant>';   -- must return no row
+```
+
+Do not rely on the earlier audit row or a non-durable completion log. An invite
+created for the current address while the account is still deleting will be
+removed by teardown, even if unconsumed. After confirming absence, a new invite
+uses the existing schema:
+
+```sql
+INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+VALUES (?, ?, ?);
+```
+
+Teardown also frees proven prior addresses from redeemed or login challenges.
+An unredeemed email-change request does not prove address ownership. It removes
+consumed invites for proven addresses and any invite on the current address;
+unconsumed invites on previously released addresses survive because they may
+belong to a new recipient. A consumed marker on a released address can belong
+to a later registrant, but removing that spent marker does not affect their
+existing users row. Making attribution exact needs invite ownership in the schema.
+
+Some signup-era, superseded challenges have no owner and cannot be attributed
+after an address change. Sweeping them by a released address could remove
+another person's challenge. Preserve this known retention limit in reports.
+The [email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md) and
+[second run](evidence/286-staging-email-reuse-followup-2026-09-05.md) record the
+verified behavior; they did not exercise an invite inserted during deletion.
+
+### Legacy data and bare vectors
+
+Wipe seeding cannot recover an ID from R2 after all its objects are gone.
+The operator audit can discover namespaced orphans through a full vector-ID
+inventory; that capability does not make the wipe's own ledger complete.
+
+Older tenant batch writers used bare IDs. Those vectors can survive a composed-ID
+wipe or duplicate a live reading's match alongside its composed vector. Do not
+fix them by deleting every bare ID: IDs are index-unique, deletion is namespace-
+blind, and an unnamespaced bare vector may be part of the protected legacy copy.
+Use the audit/repair rules below. Legacy global deletion still needs separate
+sign-off under #285; routine tenant operations must not erode that copy.
+
+The [2026-09-05 production audit](evidence/195-production-audit-2026-09-05.md)
+found no tenant bare-vector repair candidates and all 557 then-ready readings
+had composed vectors. That is dated evidence, not a current inventory. Accepted
+[staging evidence and limits](staging-evidence-contract.md) do not require a new
+deletion drill for an unrelated release.
 
 ### Account residue scan and bare-vector repair (S5)
 
 These commands implement the local operator surface for [#195](https://github.com/brian-bell/reading-lite/issues/195)
 and design [#263](https://github.com/brian-bell/reading-lite/issues/263).
-Code completion does not close either acceptance gate: staging proof and the
-production audit/repair are separate, approved operator work. No production
-read-only check or repair was performed while implementing these commands.
+The dated staging and production evidence linked below records the approved
+operator work and its accepted limits. Fresh repairs require a reviewed plan.
 
 ```sh
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
@@ -243,11 +241,12 @@ or incomplete; they are reported even during the normal interval before cron.
 On a live tenant the ordinary corpus and D1 rows naturally report as present.
 
 Exit status is **1 for residue or incomplete visibility**, 2 for invalid usage,
-and 0 only when all scanned sources are clear or expected. Currently the CLI
-cannot independently inspect TenantUsageGuard storage/alarms or GlobalUsageGuard
-leases: the bound DOs have purge handlers but no operator read surface. Those
-are explicitly unknown, so a scan can report zero observed data and still exit
-1. Teardown's fail-closed DO purge is useful evidence, not a direct inspection.
+and 0 only when all scanned sources are clear or expected. The residue-scan command
+does not independently inspect TenantUsageGuard storage/alarms or GlobalUsageGuard
+leases. The separate private `system status --details` command now inspects quotas
+and leases, but is not integrated into this scanner and does not certify alarm
+absence. The scanner leaves those sources unknown, so it can report zero
+observed data and still exit 1. Teardown's fail-closed DO purge is useful evidence, not a direct inspection.
 AuthRateGuard's hashed windows are not attributable to one tenant. After address
 history/token ownership is erased, released-address invites, NULL-owner
 challenges and orphan token scopes cannot be fully attributed; S4's documented
@@ -351,303 +350,43 @@ found no tenant bare-vector repair candidates and all 557 ready readings had
 composed vectors. It records protected legacy pairs, the empty all-deleted
 selection, the live ledger follow-up, and the scanner's certification limits.
 
-### The wipe seeds its own ledger
+### Sweeping old R2 wipe records
 
-**No operator step is required before a wipe.** From issue #195 slice S3 the
-wipe submits `deleteByIds` only for ids the ledger names — and a corpus that
-predates the ledger has none — so before any phase runs it pages its own key
-root, derives every reading id from the object keys, and inserts the rows it is
-missing. R2 is intact at that moment (it is what the wipe is about to delete),
-so the job holds exactly the inputs the seeding command would.
-
-The invariant that buys: **no object is deleted before its reading id is in the
-ledger.** Nothing to remember, nothing to enforce.
-
-The seed step is insert-only — a row an earlier pass moved to
-`delete_submitted` keeps its state, delete stamp and absent streak — resumable
-on `wipe_progress.seed_cursor`, and it logs its work:
-
-```
-account_wipe_ledger_seeded  rows_created 0   outcome done
-```
-
-A **nonzero** `rows_created` on a tenant you believe was already seeded means
-the ledger was incomplete. Expected on a corpus predating S3; worth
-investigating on one that should have been covered by the writers.
-
-`ops corpus seed-vector-ledger` is still worth having — it lets you rehearse
-the walk, and repair a **live** tenant's ledger without waiting for a deletion
-— but it is no longer a prerequisite for anything:
+Wipe progress moved from `wipe/{tenantId}/progress.json` to D1. The current
+Worker neither reads nor writes those R2 records. Before sweeping, confirm that
+version is deployed and no older wipe invocation can still write the prefix.
+Never sweep records used by an older Worker, even if their heartbeat is stale;
+a stale record can be due for resume.
 
 ```sh
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
+npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
+npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging \
+  --execute --acknowledge-no-active-wipe
 ```
 
-The operator seeder now uses the same insert-only helper as the wipe: existing
-state, delete timestamps, absent streaks and last-observation times are preserved,
-even during an in-flight wipe. It reports actual rows inserted.
+Plan lists keys, sizes, modification times, and a matching D1 progress query.
+The acknowledgement asserts the deployment and absence of an active old wipe;
+the command does not establish those facts. A users-status count is insufficient:
+completed wipes can still have deleting users, and queued/delayed work can remain.
+Check unfinished `wipe_progress` rows and queues as well. The
+[production workflow wipe check](#deploying) is a separate deployment snapshot,
+not a maintenance lock, and direct deploy commands do not run it automatically.
 
-It over-seeds on purpose, exactly as the wipe's own step does: a row for a
-reading with no vector costs one no-op `deleteByIds` and then clears, while a
-missing row is unrecoverable. `--tenant global` is refused — the pre-tenant
-corpus has no tenant id to key rows by and no account wipe addresses it.
+Execute deletes the listed keys and re-lists. Remaining keys produce a nonzero
+exit. Same-key/same-ETag survivors can be retried after inspection; new or rewritten
+keys mean a writer was active after planning and must be investigated before
+another delete. R2 has no conditional delete, so an empty verification listing
+proves absence, not that a concurrent write was unharmed.
 
-The completion record is what the users-row hard-delete gates on: read
-`completed_at_ms` and `residue` from `wipe_progress`, never an inference from R2
-state. Gate on `completed_at_ms` (current state, so a reopened wipe holds the
-gate shut); report history and residue from `first_completed_at_ms` /
-`first_residue`, which no reopen can erase.
+Only literal `wipe/` keys are accepted. A tenant key or global corpus key in the
+listing aborts before deletion; there is no override for a refused key. Inspect
+and separately authorize any manual deletion. The command takes no `--tenant`
+and defaults to production bucket `reading-lite`; specify staging for rehearsals.
 
-**Control-plane teardown (S4).** Once a wipe has completed and the tenant prefix
-is confirmed empty, the same */15 cron fan-out runs
-`src/control-plane/account-teardown.ts` for that tenant. It is its own stage,
-not part of the wipe delivery, so a failure retries on the next tick instead of
-dragging a finished wipe back through the queue. In order:
-
-1. The **audit row** (`account_deletions`, migration `0011`) is written first,
-   before anything destructive, so a crash part-way through still leaves durable
-   evidence the deletion was attempted. It carries the tenant id, four
-   timestamps (`deleting_at_ms`, `completed_at_ms`, `first_completed_at_ms`,
-   `torn_down_at_ms`) and two flags (`residue`, `first_residue`) — no email, no
-   display name, no reading ids — and it has no foreign key, because it has to
-   outlive the `users` row it describes.
-2. The tenant's `TenantUsageGuard` is emptied and its alarm cancelled, and that
-   tenant's leases are cleared from the singleton `GlobalUsageGuard`. This step
-   **fails closed**: a bound namespace that errors aborts teardown before any
-   D1 delete, so the `users` row is never removed while guard state keyed to
-   that tenant survives.
-3. **The R2 prefix is rechecked** after those Durable Object purges and the
-   address-history lookup, immediately before `db.batch`. A late publisher
-   during those round-trips would otherwise leave an orphan no later tick can
-   enumerate, because the hard delete removes the tenant from
-   `listDeletingUsers`. Anything but a confirmed-empty verdict refuses the
-   batch. Reached from fan-out the verdict is only ever `empty` or `not_empty`
-   — the third state, "could not look", needs the data-plane gate off, and
-   fan-out has already returned early in that case — so in practice a refusal
-   means real leftovers, and the next `*/15` tick reopens the wipe for them. An
-   R2 `list` that throws is the genuine could-not-look case: it propagates out
-   of teardown and is logged as `account_teardown_failed`, leaving every row in
-   place for the next tick.
-
-   **This narrows the window; it does not close it.** An object can still land
-   between the verdict resolving and the batch committing, and that one is
-   orphaned by the same argument — the tenant is gone from `listDeletingUsers`
-   and nothing enumerates it again. It is the same residual class as the
-   late-publish race in the wipe itself, and it needs the same fix: the durable
-   per-tenant vector/object provenance that issue #261 tracks. Do not read this
-   step as a guarantee that no orphan can occur.
-4. Every tenant-keyed D1 row goes in one batch, children before parents:
-   `api_token_scopes`, `api_tokens`, `sessions`, `auth_challenges`,
-   `digest_deliveries`, `user_settings`, `tenant_limits`, the account's
-   `signup_invites` rows (see below), `wipe_progress`, and finally `users`.
-   D1 enforces foreign keys by default; no migration declares
-   `ON DELETE CASCADE`. Child rows therefore go first, and `wipe_progress` is
-   deleted explicitly after its gate has been read. Unconfirmed `vector_ledger`
-   rows are retained for residue repair. Migration `0012` removes their users
-   foreign key while preserving all rows, columns, other constraints and the
-   index, so those repair handles can outlive the account. The table rebuild
-   runs transactionally before Worker upload; existing ledger writers remain
-   compatible.
-
-**Teardown runs wherever the tenant data plane is on.** Fan-out still returns
-early when `TENANT_DATA_PLANE` is unset (local), because there is no tenant
-prefix to confirm empty. Staging pins the gate in `[env.staging.vars]` (issue
-#203 / slice S6), so a staging account whose wipe has completed is torn down
-on the next `*/15` tick — the same path production uses, and that includes the
-S6 completed-wipe fixture, which is exempt from nothing: see "Rehearsing
-account deletion on staging". Residue scan remains slice S5.
-
-Teardown runs on a `residue = 1` wipe too. A wipe that finished without
-confirming the namespace clean is still finished; the flag is copied onto the
-audit row for the residue scan and for support, rather than pinning the account
-open forever. `AuthRateGuard` is deliberately untouched — it is a singleton of
-hashed, TTL-windowed email/IP counters with no tenant key to purge by.
-
-**Email reuse, and the invite trap.** Until teardown runs, the address is not
-reusable: the `users` row is still present and not active, so
-`resolveLoginEligibility` answers `ineligible`. After teardown the row is gone
-and the address is free.
-
-Under `signup_mode = 'invite_only'`, though, free means free to be *invited*.
-Teardown deletes the account's own consumed invite along with everything else,
-so **a re-signup at that address needs a fresh invite**. This is deliberate —
-leaving a consumed invite behind would give a deleted account's address a
-standing claim on a closed system — but it will surprise you if you are trying
-to help someone back in.
-
-Teardown frees **every address the account ever used**, not only its last.
-Addresses come from the account's own `auth_challenges` rows, which are the only
-link back once an email change has overwritten `users`. Two rules keep that off
-other people's data, and both matter:
-
-- Only *proven* addresses are collected — one from a redeemed challenge, or from
-  a login challenge (whose `user_id` is set only for a user who already owns the
-  address). Never the address a pending `email_change` merely names: nothing
-  verifies those until redemption, so collecting them would let any account name
-  a stranger's address and have teardown act on it.
-- Of those, only *consumed* invites are deleted, plus any invite on the
-  account's current address. An **unconsumed** invite on a previously released
-  address is left alone: it is a pending grant belonging to whoever has been
-  invited there since. A *consumed* one on a released address is deleted, and
-  that row may in principle be a third party's — someone invited to the address
-  after this account released it, who has since signed up. It is a spent marker
-  with no further effect (`resolveLoginEligibility` finds their `users` row and
-  never reads the invite), so this is recorded as known and inert rather than
-  claimed to be impossible. Making it impossible needs an owner column on
-  `signup_invites`, which no slice has needed yet.
-
-One residue in `auth_challenges` is known and deliberate for the same reason: a
-login challenge issued and then superseded at signup, on an address the account
-later changed away from, has no owner recorded on it at all and is not reached.
-It could only be swept by address, and on a released address such a row may
-equally belong to somebody signing up there now — deleting theirs would be the
-worse error. Closing it needs a durable owner link the schema does not have.
-
-**Timing, if you are re-inviting the account's own address.** Teardown deletes
-an invite row when it is already *consumed*, or when it names the account's
-**current** address — consumed or not. So a fresh invite issued for that address
-while the account is still `deleting` is swept by the teardown tick that
-follows, silently, leaving you believing the address is invited when it is not.
-Wait until the `users` row is actually gone, and check that directly:
-
-```sql
-SELECT 1 FROM users WHERE id = '<tenant>';   -- must return nothing
-```
-
-An `account_deletions` row is **not** the check. It is written before the
-destructive batch and survives a batch that matches nothing, so it proves
-teardown was *attempted*, not that it succeeded. The
-`account_teardown_complete` log is a better signal but is not durable
-evidence. The absence of the `users` row is.
-
-The separately executed
-[2026-09-05 staging email-reuse drill](evidence/286-staging-email-reuse-2026-09-05.md)
-and its [second-run supplement](evidence/286-staging-email-reuse-followup-2026-09-05.md)
-record signup-shaped reuse after automatic teardown (issue #286). The supplement
-adds real credential replay, nonempty corpus isolation, and a spent-invite
-negative check; it preserves the original run’s separate observations. The fresh
-invite was inserted after the `users` row was absent; the insert-during-deleting
-failure mode was not exercised.
-
-A *previously released* address is the opposite case and needs no waiting — an
-unconsumed invite there survives teardown, because it belongs to whoever has
-been invited since, not to the account being deleted.
-
-Issue a new invite with:
-
-```sql
-INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
-VALUES (?, ?, ?);
-```
-
-A future operator row will add a scripted, verified sweep of the `wipe/` prefix
-for the stale R2 objects described in the deploy note above; until it exists,
-that cleanup is the manual step named there.
-
-Before reporting success the wipe probes the tenant's Vectorize namespace and
-refuses to finish while anything still answers, logging
-`account_wipe_vector_count_delta` with the `describe()` count either side. Read
-that as evidence, not proof: Vectorize offers no list or scan at any scope, so a
-nearest-K probe samples the namespace and cannot demonstrate absence.
-
-A probe hit retries on a deliberately slow schedule
-(`ACCOUNT_WIPE_PROBE_RETRY_DELAY_SECONDS`, minutes rather than the 30s
-exponential): `deleteByIds` propagates asynchronously, so the first probe after
-submitting is expected to be dirty, and the fast schedule would dead-letter
-every real wipe before propagation landed. A probe that *errors* takes the same
-slow path rather than the fast one, so a transient Vectorize failure cannot
-dead-letter an otherwise finished wipe. Those retries are bounded by
-`ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS`, held equal to the wipe consumer's
-`max_retries` so the whole bound is spent inside one message's own retry budget
-and a probe hit never reaches the dead-letter queue — a unit test pins the two
-together, because raising one without the other makes every healthy wipe DLQ
-before the bound trips. **Known gap:** a vector whose reading id was
-already missing from R2 before the wipe started is not addressable at all —
-`deleteByIds` needs the id and nothing remains to derive one from — so no number
-of retries can clear it. On exhausting the bound the wipe therefore logs a
-high-severity `account_wipe_namespace_residue` alert (tenant id only, never
-reading ids) and **completes** rather than looping through the DLQ and cron
-forever. Treat that alert as "this account's wipe left residue an operator must
-know about", and note the same vector ledger is what makes it fixable. An
-unbound `READINGS_INDEX` fails the job even when no ids were collected, so a
-wipe can no longer report success without having addressed the index at all.
-
-**Sweeping the `wipe/` prefix.** Slice S2 of issue #195 (#270) moved wipe
-progress out of R2 and into D1, and deleted the only code that ever removed
-`wipe/{tenantId}/progress.json`. Any record a wipe in flight at the moment of
-**that deploy** left behind is a permanent orphan: a bucket key naming a deleted
-tenant, with a body carrying that tenant's `vector_cursor` (a reading id).
-Merged is not deployed — the rollout sequence below turns on that distinction.
-Clear the orphans with
-
-```sh
-npm run ops -- account sweep-wipe-prefix    # plan: list only
-npm run ops -- account sweep-wipe-prefix --execute --acknowledge-no-active-wipe
-```
-
-Rollout sequence, in order:
-
-1. **Start in plan mode.** It lists every object under `wipe/` with size and
-   last-modified time and writes nothing. Empty is the easy case; anything
-   listed is a wipe you want finished, not interrupted. (S2 has merged, so in
-   practice this step and the next collapse into "confirm the deploy landed,
-   then plan" — the ordering below is what matters, not the merge.)
-2. **Confirm S2 is deployed. That is the precondition**, and the only thing that
-   makes these records safe to delete: once the new Worker is live, nothing
-   reads or writes `wipe/` at all, so every record under it is orphaned by
-   construction. `--execute` refuses to run without
-   `--acknowledge-no-active-wipe`, which is your assertion that the deploy has
-   landed.
-
-   **Before S2 deploys, any record under `wipe/` means that tenant's wipe is
-   running or due — wait for it, do not sweep around it.** A fresh record is
-   being written right now; one more than 15 minutes stale has a lapsed lease
-   (`wipeLeaseHeld` in `src/account-wipe.ts` goes false at
-   `ACCOUNT_WIPE_IN_FLIGHT_MS`, one cron interval), which is exactly when the
-   fan-out may enqueue a *resume*. Stale means due to be picked up, not finished
-   with. Deleting either costs that wipe its cursor (the next progress write is
-   a compare-and-set on the etag it read) and restarts it from a full id
-   re-collect.
-
-   **After S2 deploys, the in-flight signal lives in D1**, not in R2: a
-   `wipe_progress` row with `completed_at_ms` NULL and a recent `updated_at_ms`
-   heartbeat is a wipe still running. Plan mode prints that query scoped to the
-   tenants its records name, against the control plane matching `--bucket`.
-
-   **A `users.status` count is not the signal, before or after.** `status` stays
-   `deleting` after a wipe *completes*, until the S4 teardown hard-deletes the
-   row on a later cron tick. A count of `deleting` users therefore lags the
-   actual state in both directions — it is non-zero for a tenant whose wipe has
-   already finished, and it drops to zero the moment teardown runs, which says
-   nothing about whether a *different* tenant's wipe is in flight.
-3. Then run the sweep with `--execute`. It deletes the listed objects, re-lists
-   the prefix, and **exits non-zero if anything remains** — so a green exit is
-   evidence the prefix is empty, not just that the deletes were submitted. It is
-   not evidence the run was harmless: R2 has no conditional delete, so a record
-   written between the listing and its delete would be destroyed and then absent
-   from the re-list. That the sweep harmed nothing rests on step 2's deploy, not
-   on the verification.
-   On a non-zero exit read which half of the report it is. Keys that *survived
-   the delete* (same key, same etag) are safe to re-run against. Keys marked
-   *NEW or REWRITTEN since the plan listing* — a new key, or the same key with a
-   different etag — were written after the listing the run planned against,
-   which should be impossible once S2 has deployed. Check `wipe_progress` for an
-   unfinished row before touching them; a live wipe's record must not be
-   deleted. A key the guard refuses outright has no override: inspect it and
-   remove it by hand (`npx wrangler r2 object delete <bucket>/<key> --remote`).
-
-Deletes are hard-restricted to keys literally under `wipe/`. A tenant-rooted key
-(`u/{tenantId}/…`) or a legacy pre-cutover corpus key (`readings/`, `index/`)
-is refused, and a listing containing one aborts the run before any delete. The
-command takes no `--tenant`: these keys sit outside every tenant key root, and
-the sweep clears the prefix as a whole. Default `--bucket` is production
-`reading-lite`.
-
-Users-row hard-delete, Durable Object teardown, and email reuse live in
-`src/control-plane/account-teardown.ts` (issue 195 S4). Residue scan is the
-remaining later slice (S5). `DELETE /api/readings/:id` remains one-reading
-purge inside a live tenant.
+A rollback to the old R2-progress Worker shares no lease with D1 progress.
+Drain queues and stop in-flight work before such a rollback. Switching the tenant
+gate off prevents new wipe entry but cannot cancel an invocation already running;
+it also has the corpus-visibility costs described under [environments](#environments).
 
 One caveat: `corpus recover`'s realtime path writes through the Reading API,
 where the acting tenant is the **bearer token's** principal, not `--tenant`.
@@ -658,10 +397,10 @@ selector requires the gate on and the token's tenant equal to the selector;
 `global` requires the gate off (with it on, every API write lands in the
 token's tenant namespace, never the global layout). The verified layout is
 then pinned onto every write via the `x-expected-tenant` header, which the
-worker checks atomically per request — so a gate flip or rolling deploy
+worker checks atomically per request, so a gate flip or rolling deploy
 mid-run rejects later writes (412) instead of silently re-routing them. (The
 pin protects only once every serving worker version enforces it: never flip
-`TENANT_DATA_PLANE` in the same deploy that ships the pin — automatic under
+`TENANT_DATA_PLANE` in the same deploy that ships the pin, automatic under
 the s1k.6 sequencing, where the flip comes well after.)
 `--batch` is scoped by `--tenant` end to end and needs no verification.
 (reading-lite-1xk)
@@ -674,7 +413,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (Pages + `/api/*` `/health` `/mcp*`) |
 | production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; `reading-lite.bbell.dev` retained for compatibility/rollback |
 
-Environments do **not** inherit top-level `[vars]` or bindings — `wrangler.toml`
+Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
 accidental bare `wrangler deploy` clobbering production.
 
@@ -683,7 +422,7 @@ pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
 `docs/founder-cutover.md`); staging pins it too, so the destructive
 account-wipe path can be rehearsed there ("Rehearsing account deletion on
 staging"). Only local stays unset. After either pin, new writes land only
-under tenant R2/Vectorize — rolling the gate back is a complete rollback only
+under tenant R2/Vectorize, rolling the gate back is a complete rollback only
 before those writes resume; after them, freeze + reverse reconciliation or
 explicit acceptance of loss. Workers-pool tests
 turn it on so two tenants can share a URL without colliding. Operator corpus
@@ -698,13 +437,13 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 
 | Secret | When |
 |---|---|
-| `AUTH_ROOT_SECRET` | always — 256-bit hex HKDF root for credential HMACs |
-| `AUTH_PREVIOUS_ROOT_SECRET` | optional — previous root during a bounded rotation window |
-| `OPENAI_API_KEY` | always — embeddings, and the default OpenAI summarizer |
+| `AUTH_ROOT_SECRET` | always, 256-bit hex HKDF root for credential HMACs |
+| `AUTH_PREVIOUS_ROOT_SECRET` | optional, previous root during a bounded rotation window |
+| `OPENAI_API_KEY` | always, embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
-| `RESEND_API_KEY` | required on staging/production — magic-link auth mail and per-reading notifications (recipient is `users.email_display`, never `EMAIL_TO`) |
-| `TURNSTILE_SECRET_KEY` | required to send open-mode magic-link mail on staging/production — Cloudflare siteverify secret (**never** in `[vars]`). Local skip/fail-open when unset; staging/production fail-closed (missing secret, siteverify errors, or `success ≠ true` → no-send `{ok:true}`) |
+| `RESEND_API_KEY` | required on staging/production, magic-link auth mail and per-reading notifications (recipient is `users.email_display`, never `EMAIL_TO`) |
+| `TURNSTILE_SECRET_KEY` | required to send open-mode magic-link mail on staging/production. Cloudflare siteverify secret (**never** in `[vars]`). Local skip/fail-open when unset; staging/production fail-closed (missing secret, siteverify errors, or `success ≠ true` → no-send `{ok:true}`) |
 
 Public widget key `TURNSTILE_SITE_KEY` is a `[vars]` value, not a secret.
 `GET /api/auth/login-options` returns `{ turnstile_site_key }` only when
@@ -735,7 +474,7 @@ verify. After import, `READER_API_TOKEN` is not a runtime Worker fallback;
 keep it in the dotenv for operator CLIs that still POST that bearer.
 
 `POST /api/readings` requests notification by default (`email: true`). Send-time
-`to` is the current verified `users.email_display` — `EMAIL_TO` is never a
+`to` is the current verified `users.email_display`, `EMAIL_TO` is never a
 fallback. Import is always silent even if the body or `--email` is true.
 `notify_immediate=0`, `email: false`, a missing settings row, an inactive or
 unverified user, an empty `EMAIL_FROM`, or a staging `AUTH_MAIL_ALLOWLIST` miss
@@ -744,7 +483,7 @@ all skip send (no `send_email` event). Resend failures still log a failed
 job is not requeued.
 
 Scheduled digests also go through Resend to the current verified
-`email_display` — never `EMAIL_TO`, independent of `notify_immediate`, and
+`email_display`, never `EMAIL_TO`, independent of `notify_immediate`, and
 never `LOCAL_MAIL_SINK`. An empty window skips without mail and closes the
 period in `digest_deliveries`. Resend 429 retries the digest job and leaves
 the ledger `pending`. Fan-out re-enqueues leftover pending only after 15
@@ -843,7 +582,9 @@ npm run ops -- deploy worker --env production --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
-Merges to `main` start one coordinated production chain. After `.github/workflows/ci.yml`
+Code merges to `main` start one coordinated production chain. Root Markdown,
+`docs/`, and the other non-code paths listed in CI skip runtime checks and
+production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
 and runs `ops deploy worker --env production --execute` (pending remote D1
 migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
@@ -910,7 +651,7 @@ bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 When a release adds an API scope (e.g. `readings:delete`, migration
 `0002_readings_delete_scope.sql`), existing tokens do not pick it up on their
 own: `ops deploy worker --execute` applies the migration, then re-run the
-same founder bootstrap command — its scope grants are idempotent and top up
+same founder bootstrap command, its scope grants are idempotent and top up
 the existing token.
 
 `ops deploy worker` targets only staging and production (`--env`), so a dev
@@ -946,7 +687,7 @@ the compatibility/rollback window tracked by issue
 `"readinglite.ai"`, and `"readinglite.app"`). All three hit the same Worker
 script, R2 bucket, D1 database and Vectorize index. Nothing in the data plane
 depends on the hostname, so the `/api/*` read and write paths and `/health` are
-interchangeable between them. `/mcp*` is too — `mcpOriginGuard` 403s any
+interchangeable between them. `/mcp*` is too, `mcpOriginGuard` 403s any
 `Origin` outside `MCP_ALLOWED_ORIGINS`. The **code default**
 (`DEFAULT_MCP_ALLOWED_ORIGINS` in `src/mcp/origin.ts`, used when the var is
 empty) is those three public origins. Production
@@ -955,8 +696,8 @@ empty) is those three public origins. Production
 no `Origin` and work on any of them regardless.
 
 Emitted links are the one place a host is *chosen* rather than observed.
-`WEB_BASE_URL` is `https://readinglite.ai/`, so every queue-side link — digest
-mail, reading notification mail, MCP `public_url` — points at `readinglite.ai`.
+`WEB_BASE_URL` is `https://readinglite.ai/`, so every queue-side link, digest
+mail, reading notification mail, MCP `public_url`, points at `readinglite.ai`.
 Magic-link mail is the exception: `publicWebBase` prefers the origin the
 sign-in request actually arrived on when that origin is a known public host, so
 a login started on `reading-lite.bbell.dev`, `readinglite.ai`, or
@@ -965,8 +706,8 @@ or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM` stays
 `reading-lite@bbell.dev`; moving the sender is a separate later step (S8), kept
 apart so a host move and a mail-deliverability change never land together.
 
-Browser sessions are host-scoped — the session cookie is `__Host-`-prefixed and
-so carries no `Domain` attribute — so signing in on one host does not sign you
+Browser sessions are host-scoped, the session cookie is `__Host-`-prefixed and
+so carries no `Domain` attribute, so signing in on one host does not sign you
 in on another. A one-time re-login on a public host is expected and intended,
 not a bug. Bearer tokens are host-independent. The `reading-lite.bbell.dev`
 routes stay until that old host is formally retired; they are the rollback
@@ -983,8 +724,8 @@ configures the `www` records or redirect rules.
 
 Repo configuration (S1–S4 in `wrangler.toml` and code) is not the same as live
 DNS, Pages custom-domain binds, token scope, edge redirects, or MCP client
-registrations. This documentation issue does not perform or re-verify those
-owner steps.
+registrations. Verify those settings against the recorded deployment evidence before
+changing domains or credentials.
 
 Recorded on [#265](https://github.com/brian-bell/reading-lite/issues/265) after
 S4 ([#276](https://github.com/brian-bell/reading-lite/pull/276), squash-merged
@@ -1025,7 +766,7 @@ removes routes.
    token) must include zone Workers Routes on **both** `readinglite.ai` and
    `readinglite.app`, keeping `bbell.dev`. **Until it does, `ops deploy worker
    --env production` applies the remote D1 migrations, uploads the script, and
-   then fails on the route publish** — the same footgun described under "MCP
+   then fails on the route publish**, the same route-publication failure described under "MCP
    connector" below, now on two additional zones. It surfaces two ways
    depending on what the token holds: with Zone Read but no Workers Routes
    edit, authentication error 10000 on `/zones/.../workers/routes`; with no
@@ -1033,15 +774,15 @@ removes routes.
    lookup returns nothing and wrangler fails with `Could not find zone for
    readinglite.ai` (or `readinglite.app`). That lookup is filtered by
    `CLOUDFLARE_ACCOUNT_ID`, so a zone registered under a *different* Cloudflare
-   account fails with the same message even on a correctly scoped token — check
+   account fails with the same message even on a correctly scoped token, check
    the account before chasing scopes. A third variant has nothing to do with
    the token: if one of these patterns is already bound to a different Worker
    in that zone, the publish fails with `Can't deploy routes that are assigned
    to another worker`. Mind what any of them leaves behind: the migrations and
    the new Worker script **have** landed and are live on the existing
    `reading-lite.bbell.dev` routes; only the route addition fails. And because
-   `deploy-worker.yml` then exits non-zero, `deploy-spa.yml` — which runs only
-   on a successful Worker run — never deploys, so production Worker code sits
+   `deploy-worker.yml` then exits non-zero, `deploy-spa.yml`, which runs only
+   on a successful Worker run, never deploys, so production Worker code sits
    ahead of the production SPA until someone notices. Recovering by re-running
    the failed workflow works only while `main` is still at that commit: both
    deploy workflows re-check `origin/main` against the run's `head_sha` and
@@ -1049,8 +790,7 @@ removes routes.
    chain deploy instead. Note the same token scoping bites at retirement, in
    the other direction: on a zone-scoped token wrangler uses the per-zone route
    API, which only adds routes and never deletes stale ones, so **removing the
-   `bbell.dev` routes from this file will not remove them from Cloudflare** —
-   delete them in the dashboard when the old host is retired.
+   `bbell.dev` routes from this file will not remove them from Cloudflare**, delete them in the dashboard when the old host is retired.
 3. **Pages custom domains.** Bind `readinglite.ai` and `readinglite.app` as
    Pages custom domains on project `reading-lite`, to the `main` branch, with
    Active certificates. This is an ordering prerequisite, not a cosmetic one:
@@ -1067,9 +807,6 @@ removes routes.
    resolve at all. Nothing in this repo configures either, and no Worker route
    should: the 301 is meant to happen ahead of the Worker.
 
-Do not treat this checklist as a claim that this documentation issue completed
-those owner operations.
-
 #### Migration status
 
 Issue [#265](https://github.com/brian-bell/reading-lite/issues/265) tracks the
@@ -1077,16 +814,16 @@ move.
 
 In the repo (code, `wrangler.toml`, and current-facing docs):
 
-- **S1** — production Worker routes for `reading-lite.bbell.dev`,
+- **S1**, production Worker routes for `reading-lite.bbell.dev`,
   `readinglite.ai`, and `readinglite.app` (`[env.production.routes]`).
-- **S2** — `MCP_ALLOWED_ORIGINS` and `PUBLIC_WEB_ORIGINS` accept those three
+- **S2**, `MCP_ALLOWED_ORIGINS` and `PUBLIC_WEB_ORIGINS` accept those three
   hosts. The code default when the var is empty is the same three.
-- **S3** — magic-link mail prefers the request's own public host (code; mail
+- **S3**, magic-link mail prefers the request's own public host (code; mail
   round-trip unverified).
-- **S4** — cutover: `WEB_BASE_URL` is `https://readinglite.ai/`.
-- **S5** — operator script and skill defaults use `https://readinglite.ai`
+- **S4**, cutover: `WEB_BASE_URL` is `https://readinglite.ai/`.
+- **S5**, operator script and skill defaults use `https://readinglite.ai`
   (`DEFAULT_API_BASE`; #300 / [#311](https://github.com/brian-bell/reading-lite/pull/311)).
-- **S6** — current-facing docs and OpenAPI present `readinglite.ai` as
+- **S6**, current-facing docs and OpenAPI present `readinglite.ai` as
   canonical (#301).
 
 Recorded live on #265 (2026-09-05), not re-verified by this docs sweep: C0
@@ -1096,13 +833,13 @@ S4 canonical `WEB_BASE_URL`.
 Host-behavior checks (code-level; do not mail a live user for S3):
 
 1. `GET /api/whoami` returns the same `tenant_id` on the hosts that actually
-   serve — the data plane does not branch on hostname and must not start to.
+   serve, the data plane does not branch on hostname and must not start to.
 2. A sign-in request resolves its base to the host it arrived on: from
    `readinglite.ai` the mailed link is `https://readinglite.ai/auth/verify#…`,
    from `readinglite.app` it is that host's own `/auth/verify`, and from
    `reading-lite.bbell.dev` it is that host's own `/auth/verify`
    (`publicWebBase`, `src/control-plane/magic-link-mail.ts`).
-3. The old host still serves the SPA and `/api/*` unchanged — it is the
+3. The old host still serves the SPA and `/api/*` unchanged, it is the
    rollback path and nothing in the cutover removes it.
 
 Still open, in order: **S3** verification; **C3** re-register the MCP
@@ -1171,7 +908,7 @@ curl -sS https://reading-lite-staging.bellbm.workers.dev/mcp \
 Staging exists for real end-to-end smoke tests that need Queue, R2, and
 Vectorize without mutating the production corpus. Both lifecycle scripts are
 hard-coded to staging resource names, refuse production-looking names, and are
-idempotent — "already exists" on setup and "already gone" on teardown are
+idempotent, "already exists" on setup and "already gone" on teardown are
 treated as success, while unexpected Wrangler or R2 API failures stop the run.
 
 ```sh
@@ -1180,10 +917,10 @@ npm run ops -- staging teardown --execute
 ```
 
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-reading and digest Queue/DLQ pairs and Vectorize index, empties the bucket via
+reading, digest, and wipe Queue/DLQ pairs and Vectorize index, deletes staging D1, empties the bucket via
 the S3-compatible R2 API, and deletes the bucket. The bucket-empty step needs
-the `CORPUS_R2_*` credentials above. `ops staging setup` also creates
-`reading-lite-staging-digest` and `reading-lite-staging-digest-dlq`.
+the `CORPUS_R2_*` credentials above. Setup creates the same three queue families. See the command help for the
+complete resource plan.
 
 Smoke-test idempotent submits against staging:
 
@@ -1215,8 +952,7 @@ after wipe completion and again after cron teardown. Check per-source JSON,
 first-completion history, and the explicit unknown section; exit 1 is expected
 while DO/address-history visibility remains incomplete. Before arming the wipe,
 audit/repair synthetic bare/composed pairs using the S5 sequence above, including
-a protected unnamespaced control. Keep that control intact. This implementation
-adds deterministic local tests. The separately executed
+a protected unnamespaced control. Keep that control intact. The separately executed
 [2026-09-05 staging drill](evidence/195-staging-drill-2026-09-05.md) records
 the live repair, deletion, and automatic teardown evidence, including the
 final `residue:false, incomplete:true` scan and remaining acceptance limits.
@@ -1269,7 +1005,7 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 The join is what makes this list *actionable* rather than just true. A tenant
 whose `wipe_progress` row carries a `completed_at_ms` has already been wiped.
 Before S4 that meant fan-out skipped it; **after S4 it means the next tick
-will hard-delete the account** — every such tenant, with no exemption. The
+will hard-delete the account**, every such tenant, with no exemption. The
 `IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at_ms`),
 which is still live and does belong in the list. Completed empty-prefix tenants
 are a separate question:
@@ -1281,11 +1017,10 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
              WHERE u.status = 'deleting' AND w.completed_at_ms IS NOT NULL"
 ```
 
-`usr_5e6d0000-0000-4000-8000-000000000006` belongs in that second list, and it
-is torn down automatically like any other completed wipe — see below.
+Completed fixtures follow the same teardown path; do not assume an old
+fixture still exists. The dated evidence below records the original S6 fixture.
 
-Any account in either preflight result that is not meant to be destroyed —
-the staging founder above all — needs an operator recovery decision before
+Any account in either preflight result that is not meant to be destroyed, the staging founder above all, needs an operator recovery decision before
 the deploy. The reset below is only for a deletion that has not destroyed data.
 Restoring `status='active'` alone
 is not enough: leave `deleting_at_ms` set and a later `DELETE /api/account`
@@ -1370,24 +1105,24 @@ nothing if you get them wrong:
   `parseTenantId` canonicalizes to lowercase (`src/control-plane/ids.ts`), but
   macOS `uuidgen` emits uppercase. An uppercase id still fans out, and then the
   wipe addresses `u/{lowercased}/` and writes `wipe_progress.tenant_id`
-  lowercase — so the objects you seeded and every `WHERE tenant_id='$DRILL'`
+  lowercase, so the objects you seeded and every `WHERE tenant_id='$DRILL'`
   query below quietly miss.
 - **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
-  (`src/services.ts` `ID_ALPHABET` — no `I`, `L`, `O`, `U`). An id outside it is
+  (`src/services.ts` `ID_ALPHABET`, no `I`, `L`, `O`, `U`). An id outside it is
   skipped by `ops corpus seed-vector-ledger`'s walk, so the objects phase still
   deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
-  exist for it. The vector is stranded, and surfaces at the end as residue — a
+  exist for it. The vector is stranded, and surfaces at the end as residue, a
   synthetic reproduction of the issue #261 gap rather than a wipe bug.
-- **You do not need to seed the drill tenant.** The wipe seeds its own ledger
+- **You do not need to seed the drill ledger.** The wipe seeds its own ledger
   from the objects you write, before it deletes anything, so a drill that skips
   seeding is testing the real path rather than a rigged one. Watch for
   `account_wipe_ledger_seeded` with `rows_created` equal to the number of
-  readings you seeded — that line is the wipe proving it found them.
+  readings you seeded, that line is the wipe proving it found them.
 - **Expect two wipe passes for a healthy tenant.** The first seeds and submits
   the deletes; the confirmation is not allowed to count an absence until 120s
   after `deleteByIds` returned, because propagation was measured at 30-90s and
-  a probe inside that window carries no information. A single-pass completion
-  means nothing was submitted — check `rows_created` before celebrating.
+  a probe inside that window carries no information. If no delayed confirmation was needed, inspect ledger state and delete
+  submissions before treating that as evidence of a nonempty wipe.
 
 ```sh
 # 1. Create the account. Either sign up on staging for real, or insert the row
@@ -1427,8 +1162,7 @@ revokes every session and API token. Skip the revoke and the later
 `live_sessions = 0` / `live_tokens = 0` check fails, and the drill never
 exercises the credential fence.
 
-Prefer the real API (session cookie, `X-CSRF-Token`, recent-auth window —
-the SPA Security page is the same path), then backdate grace so cron, not a
+Prefer the real API (session cookie, `X-CSRF-Token`, recent-auth window, the SPA Security page is the same path), then backdate grace so cron, not a
 hand-injected queue message, starts the wipe:
 
 ```sh
@@ -1439,7 +1173,7 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
 ```
 
 If you cannot call the API, this is the SQL that mirrors `beginAccountDeletion`
-(status write, then the two revokes — `ACCOUNT_DELETE_REVOCATION_REASON` is
+(status write, then the two revokes, `ACCOUNT_DELETE_REVOCATION_REASON` is
 `account_delete`). Use it **instead of** the users-only UPDATE, not after it:
 
 ```sh
@@ -1471,32 +1205,24 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
 ```
 
-Expect one to three passes. Vectorize `deleteByIds` propagates asynchronously —
-measured at 30–90 s on staging — while the terminal probe runs within seconds of
-submitting it, so the usual first pass empties the R2 prefix, sees the namespace
-still answering, records `probe_attempts = 1` / `probe_saw_residue = 1`, and
-retries on the 300-second schedule; the next pass probes clean and writes
-`completed_at_ms` / `first_completed_at_ms` with `residue = 0`. A fast delete can
-probe clean on the first pass. Reading the result:
+Expect a deferral after new delete submissions. Confirmation cannot count until
+120 seconds after submission, then follows the 120/240/480-second backoff and
+four-attempt bound described under [confirmation](#progress-seeding-and-confirmation).
+A clean probe can complete immediately when there are no submitted rows requiring
+the initial delay. Do not judge a wipe by its number of deliveries alone.
 
-- **`probe_saw_residue = 1` is the normal outcome of a healthy wipe**, not a
-  warning — it just records that some probe ran inside the propagation window,
-  and nothing clears it once the wipe finishes clean.
-- **`residue = 1` is the finding.** It means the wipe completed unconfirmed after
-  `ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS` (3), with a high-severity
-  `account_wipe_namespace_residue` log line. `probe_saw_residue` beside it
-  separates `outcome: "residue"` (a probe genuinely saw vectors) from
-  `outcome: "unconfirmed"` (every probe threw — a Vectorize health question, not
-  a finding about the account).
+`probe_saw_residue=1` can record normal propagation even when the final wipe is
+clean. `residue=1` means the bounded wipe completed without confirmation and
+needs investigation. Read both fields and retain actual probe errors; a failed
+read is not proof that vectors are present or absent.
 
 Residue checks afterwards.
 
-**1. R2 under the tenant root — expect zero objects.** Do **not** use
+**1. R2 under the tenant root, expect zero objects.** Do **not** use
 `corpus audit` for this: it reads `index/list.json` first and hard-errors
 ("could not read index/list.json") when the object is missing, which is exactly
 the state a successful wipe leaves behind. List the prefix directly instead,
-with the repo's own R2 client rather than a hand-rolled `aws` invocation —
-`r2InventoryClientFromVars` (`scripts/lib/cf-clients.ts`) is what
+with the repo's own R2 client rather than a hand-rolled `aws` invocation, `r2InventoryClientFromVars` (`scripts/lib/cf-clients.ts`) is what
 `ops account sweep-wipe-prefix` already uses, and it reads the same
 `CORPUS_R2_*` / `CLOUDFLARE_API_TOKEN` values from the environment or
 `.corpus.vars` that the rest of this runbook assumes:
@@ -1513,21 +1239,21 @@ for (const o of objects) console.log(o.key, o.size);
 console.log("objects:", objects.length);
 ```
 
-**2. Orphaned R2 wipe progress** (superseded by D1 in slice S2) — expect
+**2. Orphaned R2 wipe progress** (superseded by D1 in slice S2), expect
 0 objects:
 
 ```sh
 npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
 ```
 
-3. **Vectorize** — a namespaced query against the tenant namespace must return
+3. **Vectorize**, a namespaced query against the tenant namespace must return
    no matches. That is the same signal `SimilarityStore.probeNamespace()` uses.
    Do not use whole-index `describe()` counts as evidence: they are served from
    replicas at different processing frontiers and go backwards, so `vectorCount`
    and `processedUpToMutation` both flap between values while the underlying
    per-id reads are correct.
 
-4. **D1 after the wipe, before teardown** — the wipe still removes the
+4. **D1 after the wipe, before teardown**, the wipe still removes the
    **data plane only**. Until control-plane teardown runs, the `users` row,
    the `wipe_progress` completion record, and the tenant's `sessions`,
    `api_tokens`, `user_settings` and `digest_deliveries` rows all survive:
@@ -1553,7 +1279,7 @@ the prefix is empty, the next `*/15` cron tick runs
 `src/control-plane/account-teardown.ts`: audit row first, Durable Object guards
 fail-closed, address-history lookup, R2 prefix recheck immediately before the
 batch, then one ordered D1 delete ending at `users`. Do **not** manually
-`DELETE FROM wipe_progress` / `DELETE FROM users` — that bypasses the audit
+`DELETE FROM wipe_progress` / `DELETE FROM users`, that bypasses the audit
 row, the guard purge, and the prefix recheck, and it is exactly the sequence
 teardown already performs. After teardown the same queries should show the
 `users` and `wipe_progress` rows gone and a single `account_deletions` row for
@@ -1567,39 +1293,22 @@ A new throwaway drill tenant is torn down on the tick after its wipe
 completes. Watch `account_teardown_complete` for it, then confirm the audit
 row and the absent `users` row rather than deleting them by hand.
 
-**The S6 completed-wipe fixture goes down the same automatic path**, and that
-is deliberate: `usr_5e6d0000-0000-4000-8000-000000000006`
-(`s6-drill@test.example`), wiped clean on 2026-09-04, is a completed wipe like
-any other, so the first `*/15` tick after S4 deploys tears it down. Letting
-that happen unattended **is** the rehearsal S6 exists for — watch it rather
-than arrange around it.
+The historical S6 fixture, `usr_5e6d0000-0000-4000-8000-000000000006`,
+also followed automatic teardown. The [staging evidence](evidence/195-staging-drill-2026-09-05.md)
+records its removal and preserved first-completion history. Do not reuse it as
+an assumed live fixture; create a fresh throwaway tenant for a new drill.
 
-An earlier revision of S4 special-cased this tenant id in `src/account-wipe.ts`
-to hold it back. That was removed before merge and should not come back. Two
-reasons worth writing down, because the idea is tempting each time a fixture
-needs protecting:
-
-- The exemption was a bare id comparison in Worker source with no environment
-  gate, so it shipped to production. An account with that id there would have
-  been silently excluded from an irreversible deletion path, visible only as a
-  log line — a deletion-compliance failure, not an operational one. It also
-  contradicted the rule in `src/control-plane/account-delete.ts`: the founder
-  is a normal tenant, and no tenant is silently special-cased.
-- Its release was `wipe_progress.force`, which already means "skip the 7-day
-  grace / redrive this wipe". Since `force` on an envelope is persisted onto
-  the record, an operator redriving the fixture's wipe for any reason would
-  have set it and the next tick would have torn the fixture down anyway. The
-  hold did not hold.
-
-To observe the rehearsal, watch for `account_teardown_complete` on that tenant
-id, then confirm the `account_deletions` row exists and the `users` row is
-gone. Do not delete anything by hand.
+Do not restore the former source-level exemption for that ID. It had no
+environment gate, so it also exempted the ID in production, and its release
+condition reused `wipe_progress.force`. An unrelated redrive could therefore
+release the supposed hold. Protect test data through operator coordination,
+never a tenant-ID exception in the deletion code.
 
 ## Diagnosing a single reading
 
 `GET /api/readings/:id/diagnostics` shows whether the by-id and by-url pointers
 line up, which R2 objects exist, the list-index row, and the recent attempt
-records — including which stage failed (`fetch_source`, `embed_source`,
+records, including which stage failed (`fetch_source`, `embed_source`,
 `summarize`, `upsert_vector`, `write_indexes`, …). Each background run stages an
 attempt record under `readings/.../attempts/{attempt_id}.json` with the trigger,
 stage, timings, and sanitized error details, so failures are inspectable without
@@ -1648,7 +1357,7 @@ export TENANT=usr_…   # production whoami.tenant_id
 Take that id from an authenticated `GET /api/whoami` against production. The
 production founder id is also recorded in the cutover log in
 `docs/founder-cutover.md`, but that file lists a **staging** founder id as
-well — do not copy the wrong one.
+well, do not copy the wrong one.
 
 Never run a production refresh with `--tenant global`. That selector still
 resolves to the legacy pre-cutover layout, which no longer receives readings;
@@ -1668,8 +1377,8 @@ actual production run needed.
 storage path automatically: direct when `CORPUS_R2_*` keys or a Cloudflare API
 token are present, wrangler otherwise, and it prints which one it took in the
 header (`Storage: direct (S3/REST) — CORPUS_R2_* keys`). Direct needs both
-halves — an R2 credential for the manifests and a Cloudflare API token for
-Vectorize, which has no S3 access-key path — so R2 keys alone stay on wrangler.
+halves, an R2 credential for the manifests and a Cloudflare API token for
+Vectorize, which has no S3 access-key path, so R2 keys alone stay on wrangler.
 `--via wrangler` forces the old path, `--via direct` forces the new one (and
 fails with the missing credential rather than falling back), and `--local`
 always uses wrangler because nothing else can reach the miniflare bucket. A
@@ -1685,11 +1394,11 @@ Both paths write a byte-identical `refresh-report.json`, and each flushes
 at all.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
-block: one row per phase the pass used (`list read`, `planning reads` — the
-manifests read while planning — `manifest read` for reads outside a planning
-pass, `vectorize query`, `reverse query` — the scoping queries an incremental
+block: one row per phase the pass used (`list read`, `planning reads`, the
+manifests read while planning, `manifest read` for reads outside a planning
+pass, `vectorize query`, `reverse query`, the scoping queries an incremental
 tier-1 pass makes, kept apart from the measurement ones because the scope
-trades one for the other — `run marker`, `provider`, `manifest write`,
+trades one for the other, `run marker`, `provider`, `manifest write`,
 `list write`),
 each with its call count and total wall time, then the run total. The block is
 printed even when the pass ends in an error, and failed calls are counted, since
@@ -1711,29 +1420,27 @@ three attempts on a timeout, a network fault, a 5xx, or a 429 (honouring
 writes are the exception: they get the deadline but are never repeated, because
 a retry can see its own landed write and report a lost race that did not
 happen. Both commands' judgement calls retry 5xx the same way, and a 429
-surfaces as a `RateLimitedError` naming the retry-after the provider asked for
-— that one is what the execute pass's global backoff reacts to (below).
+surfaces as a `RateLimitedError` naming the retry-after the provider asked for, that one is what the execute pass's global backoff reacts to (below).
 
 Those limits are these two commands' policy and nothing else's. The other ops
-commands that talk to R2 over the S3 API — `corpus ingest`, `corpus recover`,
-`corpus purge-connections`, `staging teardown` — keep
+commands that talk to R2 over the S3 API, `corpus ingest`, `corpus recover`,
+`corpus purge-connections`, `staging teardown`, keep
 the single attempt and the absent deadline they were written and run against.
 
 `refresh-neighbours` is the one exception, and only in part: it gets the same
 deadline and retry for its manifest reads and writes whenever it runs direct
-over S3 keys. Everything else is still uncovered. The Cloudflare REST client —
-the R2 fallback used when only `CLOUDFLARE_API_TOKEN` is set, and every
-Vectorize query on the direct path — backs off on 429 but has no deadline and
+over S3 keys. Everything else is still uncovered. The Cloudflare REST client, the R2 fallback used when only `CLOUDFLARE_API_TOKEN` is set, and every
+Vectorize query on the direct path, backs off on 429 but has no deadline and
 no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
 retry but carry no deadline of their own. A stall on any of them still looks
-like a silent pass — the `Timing:` block is what makes it visible.
+like a silent pass, the `Timing:` block is what makes it visible.
 
 `ops corpus refresh-neighbours` re-queries Vectorize by the stored vector id of
-each ready reading in scope — by default the readings that moved since the run
-marker, and under `--full` every one of them, per **Scope** below — with no
+each ready reading in scope, by default the readings that moved since the run
+marker, and under `--full` every one of them, per **Scope** below, with no
 embedding calls and no LLM. It prints the staleness inventory,
 and always writes its report (`--out`, default `./refresh-report.json`; give
-each writer its own path, see below) — the input contract for later
+each writer its own path, see below), the input contract for later
 judgement slices. The report compares stored connection IDs with the current
 floored ready-neighbourhood. It distinguishes missing or non-ready citations
 (`stale_connection`), still-ready citations that fell below the floor
@@ -1780,10 +1487,9 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
 which is now the default and stays accepted as a way of saying so out loud).
-`--full` is the explicit sweep: every ready reading, O(N) whatever changed —
-the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
+`--full` is the explicit sweep: every ready reading, O(N) whatever changed, the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
 of them. (That 16 minutes is the wrangler path; the same sweep on the now-default
-direct path models at ~3.5–4 min — see the staging proof below. The argument for
+direct path models at ~3.5–4 min, see the staging proof below. The argument for
 the narrowed scope does not rest on the slower figure.) The default measures only the
 readings whose neighbourhood could have moved since the run marker stored at
 `index/refresh-state.json` (per tenant): those created or reprocessed since it,
@@ -1798,26 +1504,26 @@ moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, a deleted one, or one written before this check existed — the marker
+first run, a deleted one, or one written before this check existed, the marker
 is version 2 and a version-1 marker is rejected with a message that says so), a
 marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
 that has since left the list (a purge names nothing a timestamp can find), a
 failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
-the real set is unknown — never a narrower pass. A short result is a complete
+the real set is unknown, never a narrower pass. A short result is a complete
 one, so an isolated reading, whose only match is itself, does not escalate. An
 escalation reports how many of the changed readings caused it and names the
 first, because a corpus that saturates most nights is buying nothing from the
-narrowed scope — that rate is the number to watch, and a corpus that escalates
+narrowed scope, that rate is the number to watch, and a corpus that escalates
 every night should be run as `--full` outright rather than paying the reverse
 queries first.
 
 An incremental report is a statement about its scope, not about the corpus: a
-persistent flag on a reading nobody touched — the backfill's 394
-`connection_below_floor` rows, say — stays invisible until that reading enters
+persistent flag on a reading nobody touched, the backfill's 394
+`connection_below_floor` rows, say, stays invisible until that reading enters
 scope. **The weekly `--full` sweep is what makes the default safe, and it is
-scheduled by the operator, outside this repository** — nothing in git schedules
+scheduled by the operator, outside this repository**, nothing in git schedules
 a corpus refresh pass (the `crons` triggers in `wrangler.toml` drive the
 Worker's own scheduled handler, not these commands), so see "Refresh exit codes"
 for the wrapper an operator's cron wants. If
@@ -1825,15 +1531,14 @@ nothing sweeps, those persistent flags never resurface and the served
 `similarity` numbers drift indefinitely.
 
 A reading the scope does bring in is measured like any other target, so its
-`similarity` snapshot and its list row are brought current in the same pass —
-nothing about being in scope defers a measurement to the sweep.
+`similarity` snapshot and its list row are brought current in the same pass, nothing about being in scope defers a measurement to the sweep.
 
 **What an incremental pass keeps exact, and what it only keeps approximate.**
 Flags are exact: the bound is derived so that a reading further away than it
 cannot gain or lose a *floored* neighbour because one vector changed. The
 stored `similarity` snapshot is not, and this is broader than the moved-vector
-case above. That snapshot — and the `index/list.json` row the API and the SPA
-serve — summarises the **raw** topK, sub-floor scores included, so a vector
+case above. That snapshot, and the `index/list.json` row the API and the SPA
+serve, summarises the **raw** topK, sub-floor scores included, so a vector
 merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
 at any score, far below the bound. Between sweeps those numbers are therefore
 approximate on every reading the scope left out. The drift is deterministic and
@@ -1849,8 +1554,8 @@ The marker records the list ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
 (Every id, not just the ready ones: a non-ready row can still own an indexed
 vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
-stamps `invalidated_by` on the marker before its first upsert — and again, with
-a different value, after its last — so the next pass sweeps on its own. That
+stamps `invalidated_by` on the marker before its first upsert, and again, with
+a different value, after its last, so the next pass sweeps on its own. That
 marker is the only R2 object it writes, and it needs an R2 write credential for
 it; a stamp it cannot write before upserting stops the run before it spends
 anything. A refresh pass that finds a stamp it did not start with leaves the
@@ -1858,10 +1563,10 @@ marker alone rather than clearing a sweep it did not perform, which is what the
 second stamp is for: a pass that swept while vectors were still arriving must
 not report the corpus as covered.
 
-**Staging proof, 2026-09-02** — the measurement the default flip rests on
+**Staging proof, 2026-09-02**, the measurement the default flip rests on
 (`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
 global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
-protocol proper — full → incremental (quiet) → ingest 8 URLs → incremental →
+protocol proper, full → incremental (quiet) → ingest 8 URLs → incremental →
 full → full; 6–8 were added to price a second quiet night and to exercise the
 escalation path deliberately. All eight, in order:
 
@@ -1869,13 +1574,13 @@ escalation path deliberately. All eight, in order:
 |---|---|---|---|---|---|
 | 1 | `--full` | full | 29 | 10.75 s | 0 |
 | 2 | `--since-last-run` | incremental (0) | 0 | 1.00 s | 0 |
-| — | *ingest leg, 8 URLs → 4 ready + 4 failed* | — | — | 118 s | — |
+|, | *ingest leg, 8 URLs → 4 ready + 4 failed* |, |, | 118 s |, |
 | 3 | `--since-last-run` | incremental (8) | 4 | 6.72 s | 2 |
 | 4 | `--full` | full | 33 | 14.09 s | 2 |
 | 5 | `--full` (immediate rerun) | full | 33 | 11.80 s | 2 |
 | 6 | `--since-last-run` | incremental (0) | 0 | **0.98 s** | 0 |
-| 7 | `--since-last-run` | **escalated** — 1 reading purged | 33 | 12.75 s | 2 |
-| 8 | `--since-last-run` | **escalated** — 3 readings purged | 33 | 13.54 s | 2 |
+| 7 | `--since-last-run` | **escalated**, 1 reading purged | 33 | 12.75 s | 2 |
+| 8 | `--since-last-run` | **escalated**, 3 readings purged | 33 | 13.54 s | 2 |
 
 Five of the eight were `--since-last-run` (2, 3, 6, 7, 8), which is the
 denominator for the escalation rate below.
@@ -1885,7 +1590,7 @@ denominator for the escalation rate below.
   `current_neighbours`, `novelty_verdict`, `reasons`, `judged_at`. The narrowed
   scope missed no flag.
 - **Snapshot drift elsewhere was not zero, by design.** The sweep after the
-  incremental rewrote two snapshots the incremental never measured — both X
+  incremental rewrote two snapshots the incremental never measured, both X
   readings whose nearest score moved 0.221→0.239 and 0.172→0.268 as the four
   new vectors entered their raw topK. (Eight rows were ingested and entered the
   changed set; four reached `ready` and own a vector, and the other four are
@@ -1896,18 +1601,18 @@ denominator for the escalation rate below.
   exact-versus-approximate paragraph above, measured.
 - **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
   the pass resolves an empty scope and returns before it opens Vectorize or
-  reads a manifest — provided the marker carries no still-ready
+  reads a manifest, provided the marker carries no still-ready
   `unmeasurable_ids`, each of which costs a query and a manifest read on even
   the quietest night, by design. The measured runs took the ETag short-circuit (an unchanged
   `index/list.json` ETag ends the scope immediately), but the win does not
-  depend on it — where no ETag is available, which is every wrangler-path run
+  depend on it, where no ETag is available, which is every wrangler-path run
   and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
   the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
   unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
   4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
   ~10 changed readings ~15 s; at 10x corpus that is ~35–40 min against the same
   ~15 s.
-- **Tier 1 spends no LLM or embedding tokens at all** — 0 across all eight
+- **Tier 1 spends no LLM or embedding tokens at all**, 0 across all eight
   passes. The scope buys wall clock and Cloudflare API calls, not provider
   spend. What it does change is how many readings tiers 2/3 are handed.
 - **Escalation: 2 of 5 incremental passes (40%)**, both from purges deliberately
@@ -1924,7 +1629,7 @@ purge rate. Both change the size of the win, not its sign.
 A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
 unmeasurable rather than unfinished. The pass records its id under
 `unmeasurable_ids` on the marker, measures it again on every later pass until it
-is repaired, and exits 3 so it stays visible — the marker advances past it
+is repaired, and exits 3 so it stays visible, the marker advances past it
 rather than pinning the whole scope on an ever-older timestamp. A failed query,
 an unparseable manifest, a failed manifest write or a failed `index/list.json`
 flush is different: that pass left work undone, so the marker stays where it was
@@ -1947,36 +1652,36 @@ swept the corpus and measured 0 of N ready reading(s)` with the `no vector` /
 
 **Only a sweep reports one**, because only a sweep's scope is large enough to
 say so, and because a sweep's scope comes from `index/list.json` rather than
-from the marker — so it reaches the same verdict on the first pass as on the
+from the marker, so it reaches the same verdict on the first pass as on the
 hundredth, with no marker to bootstrap from. An incremental scope is routinely
 one or two readings, often exactly the ones carried under `unmeasurable_ids` for
 retry; calling that a configuration failure would freeze the marker on a single
 broken reading, grow the scope every night, and page for it forever. On any
-night that a ready reading changed, a misconfiguration surfaces anyway — that
+night that a ready reading changed, a misconfiguration surfaces anyway, that
 reading's vector cannot be found, which escalates the scope to a sweep, and the
 sweep reports it. On a night when nothing changed at all it does not: the scope
-is then whatever an earlier pass carried under `unmeasurable_ids` — those all
-answer "no vector" and the pass exits 3 — or, if no pass ever got far enough to
+is then whatever an earlier pass carried under `unmeasurable_ids`, those all
+answer "no vector" and the pass exits 3, or, if no pass ever got far enough to
 record any, nothing at all, and it exits 0. **The weekly `--full` sweep is the
 only guaranteed detector**, which is one more reason to keep it scheduled. A pass narrowed by `--only` or by a
-`--limit` that truncated it never reports a configuration failure either — it
+`--limit` that truncated it never reports a configuration failure either, it
 measured the subset it was told to, so naming one broken reading with `--only`
 exits 3, not 1. Nor does a pass that threw partway through: the targets after
 the throw were never attempted, so it reports the abort and exits 1 on that.
 
-There is no minimum corpus size, so a small tenant — a staging or dev corpus of
-one or two ready readings, both genuinely vectorless — sweeps, reports a
+There is no minimum corpus size, so a small tenant, a staging or dev corpus of
+one or two ready readings, both vectorless, sweeps, reports a
 configuration failure, and stays there until someone repairs or re-embeds them:
 exit 1 on every sweep, marker frozen. That is the intended
 reading of the evidence (a corpus in which nothing is measurable is not a corpus
 you can refresh), and on a corpus that small a permanent sweep costs nothing.
 The production corpus is in no danger of it by size: a sweep there measures
 hundreds of readings, so the condition cannot fire unless the index really is
-unreachable. It can fire by state, though — a Vectorize namespace cutover that
+unreachable. It can fire by state, though, a Vectorize namespace cutover that
 has migrated R2 but not yet re-upserted the vectors leaves every ready reading
 vectorless, which is what this condition is built to notice. Every sweep will
-exit 1 for the length of such a window — while the nightly `--since-last-run`
-may well go quiet, since a cutover moves no list rows — so pause the schedule or
+exit 1 for the length of such a window, while the nightly `--since-last-run`
+may well go quiet, since a cutover moves no list rows, so pause the schedule or
 finish the re-upsert (`corpus backfill-vectors`) before relying on either.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
@@ -1985,15 +1690,15 @@ than paying for reverse queries it cannot use. The header then reads
 `Scope: full — --only names N reading(s)`. `--limit` is different: it still
 resolves its scope and then measures the first N of it, so the header and the
 report keep saying `incremental`. The report records the narrowing under
-`scope.narrowed_by` — always for `--only`, and for `--limit` only when it
+`scope.narrowed_by`, always for `--only`, and for `--limit` only when it
 actually cut the pass short, so the report and the marker agree about whether
 the pass was partial. `--only` never advances the marker; `--limit` pins it
 only when it actually cut the pass short, so a limit carried in a cron as a
 cost valve and never reached still advances it.
 
-Only a complete `--execute` pass advances the marker — a plan pass writes no
+Only a complete `--execute` pass advances the marker, a plan pass writes no
 snapshots, `--only` names a subset, and a `--limit` that truncated the plan
-measured one — and `last_full_run_at` moves only on a full sweep. A failed
+measured one, and `last_full_run_at` moves only on a full sweep. A failed
 marker write does not fail the run: the cost is the next pass sweeping.
 
 ```sh
@@ -2031,8 +1736,8 @@ passes count as sweeps. Existing marker rules still apply: partial selections
 do not advance it, while a completed sweep that carries unmeasurable readings
 can advance it and exit 3. Those readings still need the reported repairs.
 
-Give every writer of a refresh report its **own `--out` path** — the nightly,
-the weekly sweep, and any ad-hoc run — and point each schedule's tier-2/3 run at
+Give every writer of a refresh report its **own `--out` path**, the nightly,
+the weekly sweep, and any ad-hoc run, and point each schedule's tier-2/3 run at
 its own report:
 
 ```sh
@@ -2044,8 +1749,8 @@ npm run ops -- corpus refresh-tensions \
 ```
 
 Both tiers default to `./refresh-report.json`, and an incremental report is a
-statement about its scope: sharing one path would let a nightly pass — or an
-ad-hoc interactive one — overwrite the sweep's corpus-wide report with a
+statement about its scope: sharing one path would let a nightly pass, or an
+ad-hoc interactive one, overwrite the sweep's corpus-wide report with a
 scope-limited and often empty one, exit 0, and leave tier 2/3 judging a handful
 of readings while believing they had the sweep. The tier-2/3 commands echo the
 report's scope header but neither refuses nor warns about its scope. Consume the
@@ -2061,30 +1766,28 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 | Code | Meaning | Who acts |
 |---|---|---|
 | 0 | Nothing outstanding. | nobody |
-| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator — re-run, or fix the index/credentials first |
-| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself — `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator — fix the invocation |
-| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone — repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator, re-run, or fix the index/credentials first |
+| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator, fix the invocation |
+| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone, repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It
 can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
 eligible to advance the marker, the ids are carried under `unmeasurable_ids` and
 every later pass retries them. The exit line says whether the marker actually
-moved, because the passes that never advance it — a plan pass, `--only`, a
-truncating `--limit`, an invalidation arriving mid-pass — can all exit 3 too.
+moved, because the passes that never advance it, a plan pass, `--only`, a
+truncating `--limit`, an invalidation arriving mid-pass, can all exit 3 too.
 
 The codes apply in plan mode as well as under `--execute`; a dry run reports
 what it found. Two existing behaviours change, in opposite directions, so a
 scheduled run wants the `case` below rather than a bare `if`: a pass that finds
 a reading with no indexed vector used to exit 0 in plan mode and now exits 3
 (or 1 if the sweep measured nothing at all), while a pass whose only complaint
-is an unmeasurable reading — no vector, or a manifest failing `ManifestSchema`
-— used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
+is an unmeasurable reading, no vector, or a manifest failing `ManifestSchema`, used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
 There is no cron wrapper script in this repository, and nothing in git schedules
-a refresh pass — the nightly and weekly invocations above are scheduled by the
-operator, directly —
-so a scheduler wanting this distinction has to make it itself (the same `case`
+a refresh pass, the nightly and weekly invocations above are scheduled by the
+operator, directly, so a scheduler wanting this distinction has to make it itself (the same `case`
 serves the weekly `--full` sweep):
 
 ```sh
@@ -2098,9 +1801,9 @@ esac
 ```
 
 `refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
-non-zero cause they have — a planning read that failed, a judgement that failed,
+non-zero cause they have, a planning read that failed, a judgement that failed,
 a lost manifest CAS, a `--max-backoff` ceiling, and for `refresh-connections`
-the `index/list.json` flush it alone performs — is a re-run-or-fix case, which
+the `index/list.json` flush it alone performs, is a re-run-or-fix case, which
 is code 1 under the same rule. Code 3 stays reserved
 in those two commands rather than mapped onto their nearest analogue (a live
 manifest that is invalid at plan time), because that condition currently shares
@@ -2112,7 +1815,7 @@ flagged readings. Plan mode validates the report tenant and every live target,
 prints the provider/model/effort, each selected judgement, and estimated
 synchronous cost, then exits without a provider call or storage write. Both
 tier-2 and tier-3 passes echo the report's scope header (`Scope: incremental
-(12 reading(s)) — …`, `Scope: full — …`, or `Scope: unstated` when the report
+(12 reading(s)), …`, `Scope: full, …`, or `Scope: unstated` when the report
 carries no header). Missing is not inferred as full: pre-header
 `refresh-neighbours` already accepted positional IDs and `--limit`, so a
 header-less report may be a hand-picked or capped subset.
@@ -2131,12 +1834,12 @@ npm run ops -- corpus refresh-connections \
 Execute mode reads the target's stored summary and judges it only against live,
 ready neighbours carried by the report. It drops provider ids outside that
 set, preserves an existing connection object when the provider reaffirms its
-id, and replaces only `connections`, `novelty_verdict`, and
-`connections_computed_at`. Manifest writes use ETag CAS against the ETag the
-planning read returned — execute re-reads nothing — so a manifest that changed
+id, and replaces `connections`, `novelty_verdict`,
+`connections_computed_at`, and `connections_neighbourhood_ids`. Manifest writes use ETag CAS against the ETag the
+planning read returned, execute re-reads nothing, so a manifest that changed
 between the plan and the write loses that conditional write and is reported as
 a CAS loss. The judgement is made before that write, so a CAS loss is a
-judgement already paid for and thrown away — a run of them is a run of wasted
+judgement already paid for and thrown away, a run of them is a run of wasted
 spend, not just wasted writes. Under `--sole-writer` nothing should change in
 that window. The list index is written after successful manifest updates so its
 verdict matches the manifest: that flush is itself an `If-Match`
@@ -2159,8 +1862,8 @@ column excludes Anthropic cache reads and writes, which are billed on top of
 it.
 
 Execute mode runs several judgements at once. `--concurrency <n>` sets how
-many, defaulting to 4 — the ingest queue runs at 3 against the same provider
-account, so this is deliberately close to it — and refusing anything above 16,
+many, defaulting to 4, the ingest queue runs at 3 against the same provider
+account, so this is deliberately close to it, and refusing anything above 16,
 so a mistyped flag cannot fan a hundred paid calls at that account. Results are
 collected and printed in plan order however the calls complete, and every
 counter (`Judged`, `list rows healed`, `failures`, `Usage:`) is folded in that
@@ -2170,17 +1873,17 @@ and the backoff ceiling below, which print when they happen because that is the
 point of them. The cost of that ordering is that a finished action's line waits
 for the ones planned before it, so a single slow call holds back the lines
 behind it; the `Timing:` block at the end is still what separates a slow pass
-from a hung one. Pass `--concurrency 1` for a strictly sequential pass — the
+from a hung one. Pass `--concurrency 1` for a strictly sequential pass, the
 rate-limit backoff below still applies.
 
 Two things the pass does not do concurrently. It never has two judgements
-holding the same reading at once — in `refresh-tensions`, where a reading sits
+holding the same reading at once, in `refresh-tensions`, where a reading sits
 in several pairs, an action waits until every reading it writes is free, so
 concurrency cannot manufacture a lost CAS or pay for a judgement it then throws
 away. And when a judgement comes back rate limited, the whole pass backs off
-together. The judge's own retry never covers a 429 — it retries 5xx and network
+together. The judge's own retry never covers a 429, it retries 5xx and network
 faults, and turns the first 429 into a typed error immediately rather than
-sleeping inside the provider call — so this backoff is the only thing pacing a
+sleeping inside the provider call, so this backoff is the only thing pacing a
 rate limit: no worker *starts* another judgement until the provider's
 `Retry-After` has passed (defaulting to 8 s, capped at 60 s so a wild header
 cannot park a sole-writer window). Calls already in flight when the window opens
@@ -2207,12 +1910,12 @@ limit it met, since one honoured window already costs up to 60 s; above the
 ceiling the budget has stopped bounding the sole-writer window it exists to
 bound. Both ends catch the same unit confusion: `10` is ten seconds, `600m` is
 ten hours. A cron entry carrying a larger value from before this range existed
-now fails at parse time rather than running unbounded — `2h` was a documented
+now fails at parse time rather than running unbounded, `2h` was a documented
 example here and is no longer accepted.
 
 What counts against it is the
 window each limit opens, not each worker that reports one, so a whole round of
-workers walking into the same wall is a single charge — and a limit landing
+workers walking into the same wall is a single charge, and a limit landing
 inside a window already open costs nothing at all. It is charged when the
 window opens rather than measured as it is served, so a pass whose workers were
 mid-call for part of a window is charged more than the wall time it actually
@@ -2227,9 +1930,9 @@ never touched, so a rerun when the provider is quieter picks them up unchanged.
 
 The budget is cumulative for the whole pass and nothing resets it, so a long
 pass against a provider that limits intermittently can reach the ceiling while
-still making progress between windows. That is deliberate — the bound is on how
+still making progress between windows. That is deliberate, the bound is on how
 much of the sole-writer window a pass may spend waiting, not on how badly it is
-being limited — but it is the case to raise `--max-backoff` for, up to its `30m`
+being limited, but it is the case to raise `--max-backoff` for, up to its `30m`
 ceiling. A pass that still cannot finish inside that is one to split with
 `--limit` and resume when the provider is quieter, not one to park on the
 sole-writer window for hours.
@@ -2241,16 +1944,15 @@ so the pass still runs the free work behind the ceiling before it exits.
 Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
 rerun resumes from the manifests as it always does.
 
-Because the calls overlap, every `Timing:` row a concurrent action produces —
-`provider`, `manifest write`, and for `refresh-tensions` `manifest read` — sums
+Because the calls overlap, every `Timing:` row a concurrent action produces, `provider`, `manifest write`, and for `refresh-tensions` `manifest read`, sums
 the call durations rather than the wall time they occupied, the same way
 `planning reads` already did, so under `--concurrency` a row can exceed the
 run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
-window must cover provider calls, manifest CAS writes, and the final wholesale
-`index/list.json` put. The command also refuses the report if a target or
+window must cover provider calls, manifest CAS writes, and the final conditional
+`index/list.json` merge. The command also refuses the report if a target or
 candidate neighbour was reprocessed after the report was generated.
 
 `ops corpus refresh-tensions` is the pairwise sibling. It reads the same
@@ -2274,9 +1976,9 @@ npm run ops -- corpus refresh-tensions \
 ```
 
 Execute mode makes one pairwise provider call per selected pair and writes
-each side's directional entry — `contradicts` (symmetric), `supersedes` /
+each side's directional entry, `contradicts` (symmetric), `supersedes` /
 `superseded_by`, `qualifies` / `qualified_by`, always from that reading's point
-of view with one shared reason — plus a `tensions_judged` record to BOTH
+of view with one shared reason, plus a `tensions_judged` record to BOTH
 manifests with ETag CAS, against the ETags the planning reads returned; only a
 side an earlier action in the same pass already wrote is read again. A `none`
 verdict removes any prior entry for the pair
@@ -2419,7 +2121,7 @@ limits on every extraction fetch. Cloudflare private-egress blocking is not
 that contract. Some sites still hard-block datacenter egress, so
 `fetch_source` fails where a residential IP succeeds. `ops extract agent` is
 operator-local recovery: it polls the reading API for `fetch_source`-failed
-readings and re-extracts them locally — an SSRF-guarded static tier with
+readings and re-extracts them locally, an SSRF-guarded static tier with
 browser headers, falling back to a headless Playwright render when the static
 tier is challenged or finds no real article, plus an anonymous Reddit
 thread-JSON path. Playwright is not in the hosted product path. Successful
@@ -2464,7 +2166,7 @@ their underlying cause. `new`/`existing` responses are recorded in
 `.import-bookmarks-index.json` (scoped per destination URL) immediately, so an
 interrupted run resumes; errors are *not* recorded, so the next run retries
 them. The Worker also dedupes via the by-url pointer, so deleting the local
-index is safe — it just re-POSTs every URL once to rebuild it.
+index is safe, it just re-POSTs every URL once to rebuild it.
 
 ### Local markdown
 
@@ -2477,7 +2179,7 @@ a source line:
 
 That URL becomes the canonical reading URL and the body is sent to
 `POST /api/readings/import-markdown`. Duplicate files sharing a source URL are
-collapsed before submit — the largest file wins. Imported readings store the
+collapsed before submit, the largest file wins. Imported readings store the
 markdown as both raw content and `extracted.md`, then reuse the normal
 embedding, similarity, summary, Vectorize, manifest, and list-index pipeline.
 
@@ -2492,8 +2194,8 @@ npm run ops -- import markdown --dir ~/Documents/articles --execute \
 Files above the Cloudflare Queues 128 KB message limit are blocked before any
 POST. Successful new/existing responses are recorded in
 `.import-markdown-index.json` (scoped by destination URL) and move every file
-for that source URL into a `processed/` subdirectory. Email is off by default;
-pass `--email` to request notifications.
+for that source URL into a `processed/` subdirectory. The CLI accepts `--email`, but hosted import delivery is always silent;
+the send-time policy ignores notification requests for imports.
 
 ### Provider Batch APIs
 
@@ -2564,7 +2266,7 @@ switch a resume to another provider. New Anthropic batches send
 `output_config.effort` from `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` on the
 same request body as realtime (`low`, `medium`, `high`, `xhigh`, or `max` on
 Claude Sonnet 5; invalid values fail closed before submit). OpenAI's pre-submit upload/create phases are
-persisted — a companion `<sidecar>.input.jsonl` holds the exact JSONL bytes,
+persisted, a companion `<sidecar>.input.jsonl` holds the exact JSONL bytes,
 written before the `uploading` checkpoint. On resume the reconciler adopts what
 already exists: remote files by filename (`reading-lite-${runId}.jsonl`), remote
 batches by `metadata.run_id`. A sidecar-scoped file lock serializes the initial
@@ -2606,7 +2308,7 @@ synchronization.
 ## Comparing summarizers on production readings
 
 To compare OpenAI (including `max`) and Anthropic Sonnet on one or more
-**existing production readings**, use the compare-summary-effort skill — not
+**existing production readings**, use the compare-summary-effort skill, not
 `ops eval summarizer` (that is the fixture-based quality matrix).
 
 ```sh
@@ -2628,7 +2330,7 @@ once with no effort field. See `.agents/skills/compare-summary-effort/SKILL.md`.
 ### Reddit
 
 Reddit serves a bot challenge to datacenter egress, so the Worker cannot fetch
-thread JSON — `POST /api/readings` with a `reddit.com` / `redd.it` URL
+thread JSON, `POST /api/readings` with a `reddit.com` / `redd.it` URL
 deliberately lands `failed`. Use the **`reddit-import`** skill instead: it drives
 a logged-in Chrome session to fetch the public `<thread>.json`, renders the post
 plus top comments to markdown with the same parser the Worker uses, and imports
@@ -2641,13 +2343,13 @@ which plans by default (omit `--execute`) to preview the markdown.
 YouTube watch pages have no server-rendered article body, so the extractor
 handles them in-worker rather than through Readability. Submitting a
 `youtube.com/watch`, `youtu.be`, `shorts`, `live`, or `embed` URL builds markdown
-from the public oEmbed metadata (title + author — the reliable floor), plus a
+from the public oEmbed metadata (title + author, the reliable floor), plus a
 best-effort description (from the page's `ytInitialPlayerResponse`) and
 transcript (the first caption track) when YouTube serves them. Unlike Reddit the
 URL summarizes to `ready` directly, but in practice the Worker is usually blocked
 from the watch page and lands the floor only.
 
-For a full extraction — description plus transcript — run the
+For a full extraction, description plus transcript, run the
 **`youtube-import`** skill locally, which fetches the watch page from your
 residential IP and uses `yt-dlp` for the transcript, then imports the rich
 markdown through the same parsers the Worker uses. Requires `yt-dlp` on PATH.
@@ -2659,20 +2361,21 @@ npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to pre
 ## Seeding local R2
 
 To exercise the read path or the SPA against real data locally, seed the local
-bucket and then restart `wrangler dev` — the running dev server caches R2
+bucket and then restart `wrangler dev`, the running dev server caches R2
 in-process. Seed via **Miniflare** (persist path `.wrangler/state/v3/r2`, bucket
 `reading-lite`), *not* `wrangler r2 object put --local`, which writes to a
 different local store the dev server never reads.
 
+`key_prefix` already begins with `readings/`; do not prepend it again.
 A minimal `ready` reading needs:
 
-- `readings/<key_prefix>/manifest.json` — a valid `ManifestSchema` with
+- `<key_prefix>/manifest.json`, a valid `ManifestSchema` with
   `content_status: "captured"`
 - `index/by-id/<id>`
-- `index/by-url/<url_hash>` — matching the manifest's `url_hash`
+- `index/by-url/<url_hash>`, matching the manifest's `url_hash`
 - a row in `index/list.json`
-- `readings/<key_prefix>/extracted.md` — for `/content`
-- `readings/<key_prefix>/raw.{ext}` matching the manifest's `content_type` — for
+- `<key_prefix>/extracted.md`, for `/content`
+- `<key_prefix>/raw.{ext}` matching the manifest's `content_type`, for
   `/content/raw`
 
 `/lookup` requires the by-url pointer and does not discover pointerless readings.

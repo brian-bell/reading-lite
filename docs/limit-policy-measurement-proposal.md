@@ -1,5 +1,10 @@
 # Issue 193: Terra/high measurement proposal
 
+> Historical 193-v2 proposal. [Revision 193-v2.1](limit-policy-measurement-proposal-193-v2.1.md)
+> changed the context fixture to 90 seeds. Preparation later completed, and paid
+> measurement was deferred. The [handoff](193-v2.1-handoff.md) records the latest
+> decision; the proposal below does not authorize execution.
+
 Proposal version: **`193-v2`**, September 6, 2026 UTC. Status: **read-only inventory complete; paid execution and production policy not approved**. [Issue #193](https://github.com/brian-bell/reading-lite/issues/193) criteria 2 and 3 remain accepted. This proposal addresses the economic evidence for criterion 1 and does not reopen the accepted control drill.
 
 Brian authorized the read-only cohort inventory and this versioned proposal. That authorization does not include paid calls, staging data writes, policy changes, publishing, or production activation. The accompanying [inventory](limit-policy-cohort-inventory.md) records observations, selection, limitations, and private evidence paths. `193-v1` remains the historical staging proposal; this document does not overwrite its approval or results.

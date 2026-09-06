@@ -1,7 +1,7 @@
 /**
  * reading-lite isometric system map
  * Building placement and flows are derived from the Worker/SPA architecture
- * described in README.md and the modules cited on each node.
+ * described in docs/architecture.md and the modules cited on each node.
  */
 
 const TILE_W = 54;
@@ -46,9 +46,9 @@ const BUILDINGS = [
     zone: "client",
     variant: "pavilion",
     blurb:
-      "React/Vite SPA on Cloudflare Pages. Stores the bearer token in localStorage, lists/searches readings, submits URLs, opens content blobs, and can start reprocesses. Invalidates queries after submit/reprocess (no continuous pending poll).",
+      "React/Vite SPA on Cloudflare Pages. Uses a host-only magic-link session cookie and CSRF tokens for writes. Lists/searches readings, submits URLs, opens content, and starts reprocesses. Invalidates queries after writes without polling pending readings.",
     cites: ["web/src/App.tsx", "web/src/api.ts", "web/src/types.ts"],
-    payload: `{ Authorization: "Bearer …" }\nGET /api/readings?q=&tag=\nPOST /api/readings { url, email? }`,
+    payload: `Cookie: __Host-session=…\nX-CSRF-Token: …  // writes\nGET /api/readings?q=&tag=\nPOST /api/readings { url, email? }`,
   },
   {
     id: "worker",
@@ -61,9 +61,9 @@ const BUILDINGS = [
     zone: "control",
     variant: "tower",
     blurb:
-      "fetch handler mounts the Hono app; queue handler branches main READING_JOBS vs DLQ. RateLimitedError → msg.retry({ delaySeconds }); other process errors ack after failed-manifest write.",
+      "The fetch handler mounts Hono. Queue dispatch separates reading, digest, and wipe jobs and their DLQs; cron handles digest and wipe fan-out. Reading rate limits retry with delay; lease/budget denial defers paid work.",
     cites: ["src/index.ts", "src/router.ts", "wrangler.toml"],
-    payload: `Env bindings:\nREADINGS_BUCKET · READINGS_INDEX\nREADING_JOBS? · secrets/vars`,
+    payload: `Env bindings:\nCONTROL_PLANE · usage guards\nREADINGS_BUCKET · READINGS_INDEX\nREADING_JOBS · DIGEST_JOBS\nACCOUNT_WIPE_JOBS · secrets/vars`,
   },
   {
     id: "claim",
@@ -160,7 +160,7 @@ const BUILDINGS = [
       "src/modules/stores/reading-store.ts",
       "src/modules/stores/list-index.ts",
     ],
-    payload: `readings/{id}/manifest.json\nreadings/{id}/extracted.md\nreadings/{id}/raw.*\nindex/by-url/{sha256}\nindex/by-id/{id}\nindex/list.json`,
+    payload: `u/{tenantId}/{key_prefix}/manifest.json\nu/{tenantId}/{key_prefix}/extracted.md\nu/{tenantId}/{key_prefix}/raw.*\nu/{tenantId}/index/by-url/{sha256}\nu/{tenantId}/index/by-id/{id}\nu/{tenantId}/index/list.json`,
   },
   {
     id: "visibility",
@@ -188,7 +188,7 @@ const BUILDINGS = [
     zone: "index",
     variant: "lattice",
     blurb:
-      "SimilarityStore over Vectorize: query top-K for summarizer context; upsert TL;DR embedding (1536-dim text-embedding-3-small) with url/title/tags metadata.",
+      "SimilarityStore queries the tenant namespace for summary context. Upserts use composed tenant/reading IDs and 1536-dimensional TL;DR embeddings. The vector ledger records IDs before upsert.",
     cites: ["src/modules/stores/similarity-store.ts", "src/modules/embeddings"],
     payload: `query(embedding, k=5)\nupsert(id, tldr_embedding, meta)\ndelete(id)`,
   },
@@ -203,7 +203,7 @@ const BUILDINGS = [
     zone: "external",
     variant: "tower",
     blurb:
-      "Always required for embeddings. Default summarizer: Responses structured output (gpt-5.6-terra; prod reasoning medium). Fail-closed provider selection.",
+      "Always required for embeddings. Default summarizer: Responses structured output with gpt-5.6-terra and high effort in staging/production. Fail-closed provider selection.",
     cites: [
       "src/modules/openai-summarizer",
       "src/modules/embeddings",
@@ -397,7 +397,7 @@ const FLOWS = {
   publish: {
     title: "3 · Terminal publish",
     summary:
-      "commitTerminalManifest decides publish vs remove vs restore. ReadingVisibility keeps list.json and the Vectorize vector in lockstep on success; then optional Resend notification.",
+      "commitTerminalManifest records the vector ID in D1 before the terminal R2 manifest. ReadingVisibility then writes the list row and vector under ownership/deletion checks. These writes are not atomic. Eligible Resend mail follows publication.",
     cites: [
       "src/process-reading.ts",
       "src/reading-visibility.ts",
@@ -411,7 +411,7 @@ const FLOWS = {
         from: "pipeline",
         to: "visibility",
         label: "commitTerminalManifest",
-        payload: `Manifest status: ready\n+ PublishVector`,
+        payload: `D1 ledger before terminal manifest\nthen list row → vector\n+ PublishVector`,
       },
       {
         from: "visibility",
@@ -436,7 +436,7 @@ const FLOWS = {
   failure: {
     title: "4 · Retry & DLQ",
     summary:
-      "Upstream 429 becomes RateLimitedError → queue retry with delay; manifest stays pending. Exhausted retries route to DLQ; markDeadLettered writes retryable failed. Non-rate-limit errors write failed and ack.",
+      "Upstream 429 becomes RateLimitedError → queue retry with delay; manifest stays pending. Exhausted retries route to DLQ; markDeadLettered writes retryable failed. Lease/budget denial defers the attempt; vector-ledger failures retry. Other processing errors write failed, preserving a prior ready manifest on reprocess.",
     cites: [
       "src/index.ts",
       "src/modules/http-retry",
@@ -491,13 +491,13 @@ const FLOWS = {
         from: "spa",
         to: "worker",
         label: "GET /api/readings*",
-        payload: `Bearer token\nlist | detail | content`,
+        payload: `Session cookie\nlist | detail | content`,
       },
       {
         from: "worker",
         to: "r2",
         label: "list / manifest / blobs",
-        payload: `index/list.json\nreadings/…/manifest.json`,
+        payload: `u/{tenantId}/index/list.json\nu/{tenantId}/{key_prefix}/manifest.json`,
       },
       {
         from: "worker",
@@ -513,7 +513,7 @@ const OVERVIEW = {
   title: "reading-lite edge district",
   body:
     "A personal reading service on Cloudflare Workers plus a React SPA. Submit a URL → eager by-url claim → pending manifest → queue → extract, embed, similar-context summarize → terminal R2 + Vectorize write. Provider selection never falls back silently.",
-  cites: ["README.md", "src/index.ts", "src/router.ts", "src/process-reading.ts", "wrangler.toml"],
+  cites: ["docs/architecture.md", "src/index.ts", "src/router.ts", "src/process-reading.ts", "wrangler.toml"],
 };
 
 const buildingLayer = document.getElementById("building-layer");

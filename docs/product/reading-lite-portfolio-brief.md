@@ -1,5 +1,11 @@
 # Product Brief: Reading-Lite (flagship) + Portfolio Roadmap
 
+> Historical portfolio proposal from August 2026. Prices, market research,
+> roadmap dates, and margin estimates below are planning assumptions. Hosted
+> queue requests do not receive Batch API discounts merely because they run
+> asynchronously. See [current architecture](../architecture.md) and the
+> [deferred economics handoff](../193-v2.1-handoff.md) before using these estimates.
+
 > Generated: 2026-08-15 | Based on: codebase analysis of ~15 repos + 4-dimension market research (competitors, trends, pain points, distribution) | Decisions incorporated from two interview rounds with Brian | v1.1 same date: capture-reliability ladder, agent-integration pack (P10), and design workstream added after follow-up research on Brian's three challenges
 
 ## Executive Summary

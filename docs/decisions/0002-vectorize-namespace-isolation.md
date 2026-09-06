@@ -1,5 +1,11 @@
 # ADR 0002: Vectorize tenant isolation via namespaces
 
+> This ADR preserves the August 23 decision and its implementation plan.
+> Staging and production now pin tenant mode, and account wipe takes vector IDs
+> from D1 `vector_ledger`, seeded from R2 before deletion. The cutover tooling is
+> retired. See [current architecture](../architecture.md) and
+> [account deletion](../operations.md#account-deletion).
+
 - **Status:** Accepted
 - **Date:** 2026-08-23
 - **Decision owners:** Brian Bell

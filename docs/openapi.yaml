@@ -5,11 +5,12 @@ info:
   summary: Personal reading corpus on Cloudflare Workers
   description: |
     Submit a URL (or import Markdown), get a structured summary, and search the
-    corpus. All routes except `/health`, `GET /api/auth/login-options`, and the
-    magic-link challenge/redeem endpoints require authentication. Browser sessions
-    use a host-only `__Host-session`
-    cookie; programmatic clients use `Authorization: Bearer`. Scopes gate each
-    reading operation (`readings:read`, `readings:write`, `readings:import`,
+    corpus. Health, login options, and magic-link challenge/redeem are public
+    entry points with their own guards. Logout handles its own session checks.
+    The local-only development mailbox is outside this contract. Other
+    application routes require authentication. Browser sessions use a host-only
+    `__Host-session` cookie; programmatic clients use `Authorization: Bearer`.
+    Scopes gate each reading operation (`readings:read`, `readings:write`, `readings:import`,
     `readings:delete`). Cookie-authenticated POST and DELETE requests also
     require header `X-CSRF-Token` (session-bound HMAC from `GET /api/whoami`).
     Bearer requests are exempt. Missing or invalid CSRF returns 403.
@@ -40,6 +41,7 @@ tags:
     description: Corpus read and write paths
 security:
   - bearerAuth: []
+  - sessionCookie: []
 
 paths:
   /health:
@@ -83,6 +85,8 @@ paths:
 
   /api/account:
     delete:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: deleteAccount
       summary: Start account deletion (credential and write suppression)
@@ -98,13 +102,15 @@ paths:
         (revoked cookies/tokens 401). Queue, DLQ, digest, and notification
         paths refuse to resurrect data for a deleting tenant.
 
-        This is not `DELETE /api/readings/{id}` (one-reading purge). Tenant
-        R2 prefix and Vectorize `deleteByIds` wipe is a deferred 195b job
-        after a 7-day grace (embeddings may take a short time to disappear).
-        Durable Objects, D1 cascade, and users-row hard-delete are later
-        slices. Production `TENANT_DATA_PLANE=1`: the founder is a normal
-        tenant — deleting that account suppresses the founder corpus the same
-        way as any other. GlobalUsageGuard teardown is out of scope.
+        Cron starts the tenant R2 and Vectorize wipe after a seven-day grace.
+        Vector deletion propagates asynchronously. Once the wipe completes and
+        the prefix is confirmed empty, cron writes an audit record, purges
+        tenant Durable Object state, rechecks the prefix, and deletes D1 child
+        rows before the user. No D1 relationship cascades. Global incurred
+        spend and unconfirmed vector-ledger rows survive teardown.
+        The founder and staging fixtures have no deletion exemption.
+        Retained global corpus data is outside the tenant wipe. See
+        operations.md for confirmation rules, residue repair, and known limits.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -376,6 +382,8 @@ paths:
 
   /api/auth/tokens:
     get:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: listAuthTokens
       summary: List the caller's API tokens
@@ -398,6 +406,8 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
     post:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: createAuthToken
       summary: Mint a standard API token
@@ -447,6 +457,8 @@ paths:
 
   /api/auth/tokens/{id}:
     delete:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: revokeAuthToken
       summary: Revoke one API token
@@ -481,6 +493,8 @@ paths:
 
   /api/auth/email-change:
     post:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: requestEmailChange
       summary: Request a verified login-email change
@@ -526,6 +540,8 @@ paths:
 
   /api/auth/settings:
     get:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: getAuthSettings
       summary: Return the caller's full settings row
@@ -550,6 +566,8 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
     post:
+      security:
+        - sessionCookie: []
       tags: [identity]
       operationId: updateAuthSettings
       summary: Update notification and digest settings
@@ -599,6 +617,7 @@ paths:
         `tag` is an exact case-insensitive match on tags only.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - name: q
           in: query
@@ -647,6 +666,7 @@ paths:
         owners reprocess the same id (202).
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -693,10 +713,12 @@ paths:
       summary: Import Markdown as a reading
       description: |
         Uses `source_url` for identity/dedupe, skips fetching, and processes the
-        supplied Markdown. Defaults `email` to false. Ready/pending owners
-        return 200; failed owners reprocess the same id (202).
+        supplied Markdown. Imports are always silent at send time, even when
+        `email` is true. Ready/pending owners return 200; failed owners reprocess
+        the same id (202).
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -746,6 +768,7 @@ paths:
         claim cold legacy pointers or repair damaged ones.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - name: url
           in: query
@@ -796,6 +819,7 @@ paths:
         `{ "items": [] }`.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -831,6 +855,7 @@ paths:
       summary: Get a reading manifest
       security:
         - bearerAuth: []
+        - sessionCookie: []
       responses:
         "200":
           description: Manifest (stale pending/attempts may be annotated as failed at read time)
@@ -859,6 +884,7 @@ paths:
         deleted id.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       responses:
@@ -896,6 +922,7 @@ paths:
       summary: Inspect manifest, pointers, objects, and attempts
       security:
         - bearerAuth: []
+        - sessionCookie: []
       responses:
         "200":
           description: Diagnostics bundle
@@ -927,11 +954,13 @@ paths:
         instead of re-fetching the URL (and takes precedence over stored
         Markdown). On success the reading becomes `source_type: "markdown"`;
         on failure prior source type is retained, and a previously ready
-        reading rolls back to its preserved manifest. Markdown must fit the
-        Cloudflare 128 KB queue-message limit or the attempt rolls back with
-        503.
+        reading rolls back to its preserved manifest. Raw/extracted artifacts
+        written before failure are not restored with that manifest. Markdown must
+        fit the Cloudflare 128 KB queue-message limit or the attempt rolls back
+        with 503.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
       requestBody:
@@ -981,6 +1010,7 @@ paths:
       summary: Stream extracted Markdown
       security:
         - bearerAuth: []
+        - sessionCookie: []
       responses:
         "200":
           description: Extracted markdown (`extracted.md`)
@@ -1013,6 +1043,7 @@ paths:
       description: Returns the original bytes with the stored `content_type`.
       security:
         - bearerAuth: []
+        - sessionCookie: []
       responses:
         "200":
           description: Raw source bytes
@@ -1033,6 +1064,11 @@ paths:
 
 components:
   securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-session
+      description: Host-only browser session. Cookie writes also require X-CSRF-Token.
     bearerAuth:
       type: http
       scheme: bearer

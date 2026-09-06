@@ -1,5 +1,10 @@
 # Issue 193: staging measurement preflight
 
+> Historical 193-v2 preflight. Later approval deployed detailed status and
+> applied the revised 90-seed context packet. Paid measurement was then deferred.
+> Read the [current handoff](193-v2.1-handoff.md) before planning further work;
+> the earlier blockers and observations below remain as recorded.
+
 Version `193-v2-preflight-1`, September 6, 2026 UTC. **Read-only preflight complete; paid execution is not ready for approval.** This supplements the [measurement proposal](limit-policy-measurement-proposal.md) and [cohort inventory](limit-policy-cohort-inventory.md). It does not approve paid work or production limits.
 
 ## Verified staging state
