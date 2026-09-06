@@ -47,6 +47,18 @@ describe("ops deploy worker", () => {
     return { deps, err, runs };
   }
 
+  it("tags an explicitly verified candidate and refuses an unverified checkout before writes", async () => {
+    const sha = "a".repeat(40);
+    const { deps, runs } = makeDeps();
+    deps.validateCandidate = async candidate => { expect(candidate).toBe(sha); };
+    expect(await deployWorkerCommand.run(["--env", "staging", "--release-sha", sha, "--execute"], deps)).toBe(0);
+    expect(runs[1]).toEqual(["deploy", "--env", "staging", "--tag", sha]);
+    runs.length = 0;
+    deps.validateCandidate = async () => { throw new Error("dirty or mismatched checkout"); };
+    await expect(deployWorkerCommand.run(["--release-sha", sha, "--execute"], deps)).rejects.toThrow("checkout");
+    expect(runs).toEqual([]);
+  });
+
   it("plan mode prints the remote D1 migrate command and passes wrangler --dry-run", async () => {
     const { deps, err, runs } = makeDeps();
     expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
