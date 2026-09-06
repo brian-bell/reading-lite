@@ -43,6 +43,10 @@ export interface Env {
   // Shared tenant-wipe queue (issue 195b PR1). Not per-tenant. Local wrangler
   // has no wipe queue; tests inject a stub. Wipe is never inline in DELETE /api/account.
   ACCOUNT_WIPE_JOBS?: Queue<AccountWipeEnvelopeV1>;
+  // Plumbing only: no producer or processing path until later #175 slices.
+  RELATIONSHIP_REFRESH_JOBS?: Queue<unknown>;
+  RELATIONSHIP_REFRESH?: string;
+  REFRESH_MAX_JUDGEMENTS?: string;
   // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
@@ -228,6 +232,22 @@ export default {
     }
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    // Refresh deliveries must never fall through to reading processing. Even
+    // an accidentally enabled gate stays inert until scan/judge support lands.
+    if (batch.queue === "reading-lite-refresh-dlq" || batch.queue === "reading-lite-staging-refresh-dlq") {
+      for (const msg of batch.messages) {
+        console.error(JSON.stringify({ event: "relationship_refresh_dead_lettered", queue: batch.queue }));
+        msg.ack();
+      }
+      return;
+    }
+    if (batch.queue === "reading-lite-refresh" || batch.queue === "reading-lite-staging-refresh") {
+      if (env.RELATIONSHIP_REFRESH === "1") {
+        console.warn(JSON.stringify({ event: "relationship_refresh_unavailable", queue: batch.queue }));
+      }
+      for (const msg of batch.messages) msg.ack();
+      return;
+    }
     const services = defaultServices();
     if (isAccountWipeDlq(batch.queue)) {
       for (const msg of batch.messages) {
