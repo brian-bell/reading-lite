@@ -118,6 +118,7 @@ extraction adds description and transcript when available. See
 - [Hosted provider spend](docs/paid-provider-spend.md), budgets and accounting.
 - [Staging context preparation](docs/staging-context-copy.md), local fixture packets.
 - [System map](docs/system-map/README.md), interactive architecture overview.
-- [Product scope](docs/product/reading-lite-scope.md) and
-  [architecture decisions](docs/decisions/0001-tenant-control-plane.md), planning history.
+- [Product brief](docs/product/reading-lite-portfolio-brief.md) and
+  [product scope](docs/product/reading-lite-scope.md), what to build and why.
+- [Architecture decisions](docs/decisions/0001-tenant-control-plane.md), design history.
 - [Founder cutover](docs/founder-cutover.md), completed migration and retained evidence.
