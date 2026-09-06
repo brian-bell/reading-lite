@@ -207,6 +207,31 @@ describe("spend guard RPCs", () => {
     expect(results.filter((result) => result.reason === "daily_spend")).toHaveLength(1);
   });
 
+  it("shares the global cap across tenants without charging denied reservations", async () => {
+    const otherTenant = "usr_660e8400-e29b-41d4-a716-446655440000";
+    const map = new Map<string, unknown>();
+    const guard = new GlobalUsageGuard(state(storage(map)), env({
+      status: "active", daily_spend_microdollars: 75, tenant_daily_spend_microdollars: 200,
+      paid_work_enabled: 1, policy_version: 8, catalog_version: 3,
+    }));
+    const reserve = (tenantId: string, opId: string, amount: number) => post(guard, {
+      kind: "reserve_spend", tenantId, opId,
+      quote: { ...quote, maxMicrodollars: amount }, nowMs: NOW,
+    });
+
+    expect(await reserve(TENANT, "first", 50)).toMatchObject({ ok: true, state: "reserved" });
+    expect(await reserve(otherTenant, "fits", 25)).toMatchObject({ ok: true, state: "reserved" });
+    expect(map.get(`spend:day:${quote.dayKey}`)).toEqual({ microdollars: 75 });
+    expect(map.get(`spend:tenant:${TENANT}:day:${quote.dayKey}`)).toEqual({ microdollars: 50 });
+    expect(map.get(`spend:tenant:${otherTenant}:day:${quote.dayKey}`)).toEqual({ microdollars: 25 });
+    const beforeDenial = structuredClone(map);
+
+    // Both tenants have individual headroom; only the shared global cap is full.
+    expect(await reserve(otherTenant, "denied", 1)).toMatchObject({ ok: false, reason: "daily_spend" });
+    expect(map).toEqual(beforeDenial);
+    expect(map.has(`spend:op:${otherTenant}:denied`)).toBe(false);
+  });
+
   it("purges only one tenant's global operations, retains aggregate spend, and fences a late release", async () => {
     const otherTenant = "usr_660e8400-e29b-41d4-a716-446655440000";
     const storeMap = new Map<string, unknown>([

@@ -5,6 +5,7 @@ import { quotePaidRequest } from "../../src/modules/paid-pricing";
 import { summarizeReading, buildSummarizeRequestBody } from "../../src/modules/openai-summarizer";
 import type { Env } from "../../src/index";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
+import { GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
 
 const url = "https://api.openai.com/v1/embeddings";
 const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({model: "text-embedding-3-small", input: "Hello"}) };
@@ -43,6 +44,49 @@ describe("hosted spend guards", () => {
     const fetch = vi.fn(async () => response());
     await expect(paid(fetch)(url, init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it("retains both charges and never calls the provider when dispatch authorization is lost", async () => {
+    const quote = (await quotePaidRequest(url, init))!;
+    const fetch = vi.fn(async () => response());
+    const realRpc = rpc();
+    const calls: string[] = [];
+    const decisions: unknown[] = [];
+    const wrapped = createPaidFetch({
+      tenantId: FOUNDER_TENANT_ID,
+      attemptId: "lost-dispatch-response",
+      stage: "embed_source",
+      fetch,
+      now: () => now,
+      newDispatchId: () => "dispatch-1",
+      rpc: async (body) => {
+        calls.push(body.kind as string);
+        const result = await realRpc(body);
+        decisions.push(result);
+        if (body.kind === "mark_spend_dispatched") {
+          throw new Error("dispatch recorded, response lost");
+        }
+        return result;
+      },
+    });
+
+    await expect(wrapped(url, init)).rejects.toBeInstanceOf(SpendAdmissionError);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(calls).toEqual(["reserve_spend", "mark_spend_dispatched", "release_spend"]);
+    expect(decisions).toEqual([
+      { ok: true, state: "reserved" },
+      { ok: true, state: "dispatched", fresh: true },
+      { ok: true, state: "dispatched" },
+    ]);
+    const ns = (env as unknown as Env).GLOBAL_USAGE_GUARD!;
+    const status = await ns.get(ns.idFromName(GLOBAL_USAGE_GUARD_NAME)).fetch("https://guard/", {
+      method: "POST",
+      body: JSON.stringify({ kind: "spend_status", tenantId: FOUNDER_TENANT_ID }),
+    });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      globalChargedMicrodollars: quote.maxMicrodollars,
+      tenantChargedMicrodollars: quote.maxMicrodollars,
+    });
   });
   it("reconciles billed usage before rejecting invalid summary output", async () => {
     const input = {url:"https://example.com", extractedText:"A complete article", similarReadings:[]};
