@@ -60,9 +60,28 @@ matrix runs through `/mcp`; alias correctness is a separate dispatch test.
 | Retry and concurrent publication | Admission precedes retry dispatch; concurrent A/B terminal commits preserve separate lists and vectors. | `test/unit/queue/dispatch.test.ts`, `test/integration/readings.test.ts` |
 | Digest send and DLQ | Separate tenant recipients/content; digest DLQ changes its ledger, not reading state. | `test/integration/digest-pipeline.test.ts` |
 | Wipe and teardown replay | Target prefix is removed while foreign prefix survives; old jobs cannot recreate torn-down data. | `test/integration/account-wipe.test.ts`, `account-deletion-queue-limits.test.ts` |
+| Destructive corpus maintenance | With identical ids in populated A/B roots, sweep and orphan deletion alter only the selected root and its composed vector. Rebuild, tag/relationship repair, and connection maintenance use the same selector-aware R2 contract. | `test/unit/scripts/ops-corpus-group.test.ts`, `ops-corpus-refresh-neighbours.test.ts`, `ops-corpus-refresh-connections.test.ts`, `ops-corpus-refresh-tensions.test.ts`, `ops-corpus-purge-connections.test.ts` |
 | Operator audit/recovery | Audit reads only selected root and stamps provenance. Foreign audit refuses before API, annotation, sidecar or batch work. Bearer identity must match selected layout. | `test/unit/scripts/ops-corpus-audit.test.ts`, `ops-corpus-recover.test.ts`, `realtime-tenant.test.ts` |
-| Batch resume | Foreign tenant sidecar refuses before provider/batch work; matching sidecar resumes. | `test/unit/scripts/ops-corpus-recover.test.ts`, `test/unit/corpus/batch/sidecar.test.ts` |
-| Operator stores and vector writes | Selector determines R2 root, namespace and composed vector id; report mismatches refuse. | `test/unit/corpus/tenant.test.ts`, `test/unit/scripts/ops-neighbours-r2.test.ts`, `ops-corpus-group.test.ts`, `ops-corpus-refresh-neighbours.test.ts`, `refresh-scope.test.ts` |
+| Batch ingest/recover and vector repair | Batch configuration carries the selected tenant into its R2 root, namespace, ledger, composed vector writes, and resumable sidecars. Foreign audit/sidecar provenance refuses before provider work. | `test/unit/scripts/ops-corpus-group.test.ts`, `ops-corpus-recover.test.ts`, `test/unit/corpus/batch/sidecar.test.ts`, `test/unit/corpus/tenant.test.ts` |
+| System policy and status | A tenant policy update leaves a second populated tenant unchanged. Status forwards the selected tenant to the private entrypoint, whose tenant details do not include a second tenant's guard reservations. | `test/unit/scripts/system-policy.test.ts`, `system-status.test.ts`, `system-status-remote.test.ts`, `test/integration/operator-status.test.ts` |
+| Staging context preparation | The command keeps explicit, distinct production source and staging destination tenants through its reader seam. The artifact rejects source/vector mismatch and occupied destination state before any remote write. | `test/unit/scripts/context-copy.test.ts` |
+
+### Operator command applicability
+
+The registry has one of the following tenant boundaries for every supported
+command. This is an inventory of the command surface, not a replacement for
+the behavioral tests named above.
+
+| Commands | Boundary and evidence |
+| --- | --- |
+| `system policy`, `system status` | Explicit tenant selector. The selected D1 row and private `OperatorStatus` request are covered by the populated two-tenant cases above. |
+| `corpus audit`, `recover`, `ingest`, `sweep`, `delete-orphans`, `backfill-similarity`, `backfill-vectors`, `refresh-neighbours`, `refresh-connections`, `refresh-tensions`, `normalize-tags`, `rebuild-list`, `purge-connections`, `seed-vector-ledger` | Explicit corpus selector. R2 roots, report/sidecar provenance, Vectorize namespace/composed IDs, and D1 ledger ownership are covered by the command suites above; destructive overlapping-ID cases cover sweep/orphan deletion, seed-ledger, and connection purge. `corpus drop` is covered by its dedicated regression PR. |
+| `reading submit`; `import markdown`, `bookmarks`, `reddit`, `youtube`; `reading-list process` | Thin API clients with no operator tenant selector or direct corpus store. The bearer principal selects the hosted tenant, so their tenant boundary is the authenticated API/MCP matrix and the shared `readingApiFor` contract; `corpus recover` additionally verifies its explicit selector against `/api/whoami` before it invokes the same API. |
+| `reading-list check` | Global legacy `index/list.json` inspection, with no tenant selector; its direct Wrangler read is covered by `test/unit/check-corpus/fetch-index.test.ts`. |
+| `deploy worker`, `deploy wipe-check`, `deploy web`; `staging setup`, `teardown`, `smoke`; `founder bootstrap`; `extract probe`; `eval summarizer` | Global environment, local extraction, or fixture/deployment workflows. They do not accept a live corpus tenant selector or address tenant-rooted reading data. |
+| `extract agent` | Authenticated hosted polling/import client. It has no independent storage selector, so submitted work is scoped by its bearer principal; its poll bearer header is covered in `test/unit/extract-agent/poll.test.ts` and its imports use the hosted API boundary. |
+| `staging prepare-context` | Intentional, explicitly named cross-tenant copy. It treats the source and destination as separate scopes and produces a local artifact only. |
+| `account wipe`, `residue-scan`, `audit-bare-vectors` | Explicit account/namespace selector, with tenant status and audit/ledger queries keyed by that selector. A populated A/B fixture proves enqueue admission, residue scans, and bare-vector repair leave the other account's vector, R2, and D1 state intact (`test/unit/scripts/ops-account-s5.test.ts`). `sweep-wipe-prefix` is global maintenance of the bucket-root `wipe/` prefix; it derives tenants from those keys and has no caller-selected corpus owner. |
 
 ## Remaining limits
 
@@ -70,13 +89,18 @@ This is a bounded improvement to #198, not a claim that its literal “every
 path with two principals” acceptance criterion is complete. Email-change
 credential swapping and revoke-all/logout across two principals are not added
 here. Existing wipe coverage preserves a foreign prefix but does not run two
-simultaneous tenant wipes. Operator root/namespace tests are distributed across
-command suites; not every operator command has a populated two-tenant execution
-test.
+simultaneous tenant wipes. Operator coverage composes each command's selector,
+provenance, or authenticated-client wiring with populated shared R2, Vectorize,
+ledger, and API boundary cases; thin wrappers do not duplicate an end-to-end
+two-tenant corpus fixture when they introduce no additional storage boundary.
 
 The local operator has account-scoped credentials and may explicitly select any
 tenant. Its boundary is selector/provenance consistency, not end-user
-permission checks. Digest and wipe jobs are internally created and have no
+permission checks. Global/deploy/local-extraction commands have no tenant-owned
+corpus selection; `--tenant global` deliberately addresses retained legacy
+data. Context preparation intentionally crosses tenants, and its evidence
+asserts the declared source and destination rather than treating that copy as
+an isolation failure. Digest and wipe jobs are internally created and have no
 end-user actor credential. Public health/login options and authentication
 challenge/redemption are not foreign-resource lookup routes.
 

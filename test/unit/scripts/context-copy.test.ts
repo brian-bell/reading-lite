@@ -75,9 +75,22 @@ describe('context copy artifact', () => {
     });
 });
 describe('context preparation command boundaries', () => {
-    function deps() { const f = fixture(); return { io: { stdout: vi.fn(), stderr: vi.fn() }, now: () => "2026-09-06T00:00:00Z", readInput: async () => ({ ids: [id], targets: [] }), readers: async () => f.readers, save: vi.fn() } satisfies PrepareContextDeps; }
+    function deps() { const f = fixture(); return { io: { stdout: vi.fn(), stderr: vi.fn() }, now: () => "2026-09-06T00:00:00Z", readInput: async () => ({ ids: [id], targets: [] }), readers: async (_source: string, _destination: string, _corpusVars?: string) => f.readers, save: vi.fn() } satisfies PrepareContextDeps; }
     const args = ['--source-tenant', source, '--tenant', destination, '--input', 'selection.json'];
     it('default plan does not write a local packet', async () => { const d = deps(); expect(await stagingPrepareContextCommand.run(args, d)).toBe(0); expect(d.save).not.toHaveBeenCalled(); });
     it('execute materializes only the local artifact through its injected save seam', async () => { const d = deps(); expect(await stagingPrepareContextCommand.run([...args, '--execute', '--output-dir', 'private-packet'], d)).toBe(0); expect(d.save).toHaveBeenCalledOnce(); expect(d.io.stdout).toHaveBeenCalledWith(expect.stringContaining('"remoteWrites": 0')); });
     it('refuses an output directory without explicit local execution', async () => { const d = deps(); await expect(stagingPrepareContextCommand.run([...args, '--output-dir', 'private-packet'], d)).rejects.toThrow(); expect(d.save).not.toHaveBeenCalled(); });
+    it('keeps the declared production source and staging destination distinct through the reader seam', async () => {
+      const d = deps();
+      const calls: Array<[string, string]> = [];
+      const original = d.readers;
+      d.readers = async (from, to, corpusVars) => {
+        calls.push([from, to]);
+        return original(from, to, corpusVars);
+      };
+      expect(await stagingPrepareContextCommand.run(args, d)).toBe(0);
+      expect(calls).toEqual([[source, destination]]);
+      expect(d.io.stdout).toHaveBeenCalledWith(expect.stringContaining(`"tenant": "${source}"`));
+      expect(d.io.stdout).toHaveBeenCalledWith(expect.stringContaining(`"tenant": "${destination}"`));
+    });
 });

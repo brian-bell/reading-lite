@@ -211,6 +211,47 @@ describe("ops corpus sweep", () => {
     expect(deletes).toEqual([`${tenantId}:rd_dup`]);
   });
 
+  it("sweeps only the selected populated tenant when ids overlap", async () => {
+    const tenantA = "usr_11111111-1111-4111-8111-111111111111";
+    const tenantB = "usr_22222222-2222-4222-8222-222222222222";
+    const rootA = `u/${tenantA}/`;
+    const rootB = `u/${tenantB}/`;
+    const lists = new Map([[rootA, structuredClone(DUP_ITEMS)], [rootB, structuredClone(DUP_ITEMS)]]);
+    const objects = new Map([
+      [rootA, new Set(["readings/rd_dup/manifest.json"])],
+      [rootB, new Set(["readings/rd_dup/manifest.json"])],
+    ]);
+    const vectors = new Set([`${tenantA}:rd_dup`, `${tenantB}:rd_dup`]);
+    const { io: cio } = io();
+    const deps: CorpusSweepDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async (d) => lists.get(d.keyRoot)!,
+        readManifest: async () => null,
+        keysForReading: async (_id, prefix) => [`${prefix}/manifest.json`],
+        deleteObject: async (key, d) => {
+          objects.get(d.keyRoot)!.delete(key);
+          return "deleted";
+        },
+        deleteVector: async (_index, id) => {
+          vectors.delete(id);
+          return "deleted";
+        },
+        vectorExists: async (_index, id) => vectors.has(id),
+        writeListIndex: async (items, d) => {
+          lists.set(d.keyRoot, items as typeof DUP_ITEMS);
+        },
+      },
+    };
+    expect(await corpusSweepCommand.run(["--tenant", tenantA, "--execute"], deps)).toBe(0);
+    expect(lists.get(rootA)).toHaveLength(1);
+    expect(objects.get(rootA)!.has("readings/rd_dup/manifest.json")).toBe(false);
+    expect(vectors.has(`${tenantA}:rd_dup`)).toBe(false);
+    expect(lists.get(rootB)).toHaveLength(2);
+    expect(objects.get(rootB)!.has("readings/rd_dup/manifest.json")).toBe(true);
+    expect(vectors.has(`${tenantB}:rd_dup`)).toBe(true);
+  });
+
   it("--drop requires exactly one --keep and no other selectors", async () => {
     const { deps } = makeDeps(DUP_ITEMS);
     await expect(corpusSweepCommand.run(["--tenant", "global", "--drop", "rd_dup"], deps)).rejects.toThrow(UsageError);
@@ -291,6 +332,44 @@ describe("ops corpus delete-orphans", () => {
     const code = await corpusDeleteOrphansCommand.run(["--tenant", "global", "--ids", "rd_ready", "--execute"], deps);
     expect(code).toBe(1);
     expect(calls.deletes).toHaveLength(0);
+  });
+
+  it("deletes an overlapping orphan only under the selected tenant root", async () => {
+    const tenantA = "usr_11111111-1111-4111-8111-111111111111";
+    const tenantB = "usr_22222222-2222-4222-8222-222222222222";
+    const rootA = `u/${tenantA}/`;
+    const rootB = `u/${tenantB}/`;
+    const lists = new Map([
+      [rootA, structuredClone(LIST)],
+      [rootB, structuredClone(LIST)],
+    ]);
+    const objects = new Map([
+      [rootA, new Set(["readings/rd_orphan/manifest.json", "index/by-id/rd_orphan"])],
+      [rootB, new Set(["readings/rd_orphan/manifest.json", "index/by-id/rd_orphan"])],
+    ]);
+    const { io: cio } = io();
+    const deps: CorpusDeleteOrphansDeps = {
+      io: cio,
+      readFile: async () => "unused",
+      r2: {
+        readObject: async (_key, d) => JSON.stringify(lists.get(d.keyRoot)),
+        keysForReading: async (id, prefix) => [`${prefix}/manifest.json`, `index/by-id/${id}`],
+        deleteObject: async (key, d) => {
+          objects.get(d.keyRoot)!.delete(key);
+          return "deleted";
+        },
+        writeListIndex: async (items, d) => {
+          lists.set(d.keyRoot, { items });
+        },
+      },
+    };
+    expect(await corpusDeleteOrphansCommand.run(
+      ["--tenant", tenantA, "--ids", "rd_orphan", "--execute"], deps,
+    )).toBe(0);
+    expect(lists.get(rootA)!.items.map((item) => item.id)).toEqual(["rd_ready"]);
+    expect(objects.get(rootA)!.size).toBe(0);
+    expect(lists.get(rootB)!.items.map((item) => item.id)).toEqual(["rd_ready", "rd_orphan"]);
+    expect(objects.get(rootB)!.size).toBe(2);
   });
 });
 
@@ -739,6 +818,29 @@ describe("ops corpus normalize-tags", () => {
     expect(calls.puts).toEqual([{ id: "rd_t", tags: ["developer-tools"] }]);
     expect(calls.indexWrites).toBe(1);
   });
+
+  it("normalizes only the selected populated tenant when ids overlap", async () => {
+    const tenant = "usr_11111111-1111-4111-8111-111111111111";
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const roots = [`u/${tenant}/`, `u/${other}/`];
+    const lists = new Map<string, ListItem[]>(roots.map((root) => [root, [structuredClone(TAGGED)]]));
+    const manifests = new Map<string, Map<string, { id: string; tags: string[] }>>(roots.map((root) => [root, new Map([[TAGGED.key_prefix, { id: "rd_t", tags: ["developer tools"] }]])]));
+    const { io: cio } = io();
+    const deps: CorpusNormalizeTagsDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async (d) => lists.get(d.keyRoot)!,
+        readManifest: async (prefix, d) => manifests.get(d.keyRoot)!.get(prefix) ?? null,
+        putManifest: async (prefix, body, d) => { manifests.get(d.keyRoot)!.set(prefix, body as { id: string; tags: string[] }); },
+        writeListIndex: async (items, d) => { lists.set(d.keyRoot, items); },
+      },
+    };
+    expect(await corpusNormalizeTagsCommand.run(["--tenant", tenant, "--execute"], deps)).toBe(0);
+    expect(manifests.get(roots[0])!.get(TAGGED.key_prefix)?.tags).toEqual(["developer-tools"]);
+    expect((lists.get(roots[0])?.[0] as { tags?: string[] } | undefined)?.tags).toEqual(["developer-tools"]);
+    expect(manifests.get(roots[1])!.get(TAGGED.key_prefix)?.tags).toEqual(["developer tools"]);
+    expect((lists.get(roots[1])?.[0] as { tags?: string[] } | undefined)?.tags).toEqual(["developer tools"]);
+  });
 });
 
 describe("ops corpus rebuild-list", () => {
@@ -783,6 +885,29 @@ describe("ops corpus rebuild-list", () => {
     const { deps, calls } = makeDeps();
     expect(await corpusRebuildListCommand.run(["--tenant", "global", "--execute", "--sole-writer"], deps)).toBe(0);
     expect(calls.indexWrites).toBe(1);
+  });
+
+  it("rebuilds only the selected populated tenant list and manifest projection", async () => {
+    const tenant = "usr_11111111-1111-4111-8111-111111111111";
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const roots = [`u/${tenant}/`, `u/${other}/`];
+    const source = { id: "rd_a", key_prefix: "readings/2026/01/01T000000Z-rd_a", url: "https://example.com/a", status: "ready" as const, created_at: "2026-01-01T00:00:00.000Z" };
+    const manifest = { ...source, url_hash: "a".repeat(64), title: "A", tldr: "Summary", content_type: "text/html", content_status: "captured", content_bytes: 1, content_sha256: "b".repeat(64), updated_at: "2026-01-01T00:00:00.000Z", keywords: ["selected"] };
+    const lists = new Map<string, ListItem[]>(roots.map((root) => [root, [structuredClone(source)]]));
+    const { io: cio } = io();
+    const deps: CorpusRebuildListDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async (d) => lists.get(d.keyRoot)!,
+        readManifest: async (_prefix, d) => d.keyRoot === roots[0] ? manifest : { ...manifest, keywords: ["other"] },
+        writeListIndex: async (items, d) => { lists.set(d.keyRoot, items as ListItem[]); },
+      },
+    };
+    expect(await corpusRebuildListCommand.run(
+      ["--tenant", tenant, "--execute", "--sole-writer"], deps,
+    )).toBe(0);
+    expect(lists.get(roots[0])?.[0]).toMatchObject({ id: "rd_a", keywords: ["selected"] });
+    expect(lists.get(roots[1])?.[0]).not.toHaveProperty("keywords");
   });
 });
 

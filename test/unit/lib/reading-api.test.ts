@@ -4,6 +4,7 @@ import {
   decodeIntakeResponse,
   readingApiFor,
 } from "../../../scripts/lib/reading-api";
+import { EXPECTED_TENANT_HEADER } from "../../../src/schemas/api";
 
 describe("apiBaseFromEndpoint", () => {
   it("strips a trailing /api/readings endpoint path down to the API base", () => {
@@ -167,6 +168,31 @@ describe("decodeIntakeResponse", () => {
 });
 
 describe("readingApiFor", () => {
+  it("keeps concurrent clients' bearer credentials and tenant pins separate for the same URL and id", async () => {
+    const principals = [
+      { tenant: "usr_11111111-1111-4111-8111-111111111111", token: "token-A", title: "A's reading" },
+      { tenant: "usr_22222222-2222-4222-8222-222222222222", token: "token-B", title: "B's reading" },
+    ];
+    const submissions = new Map(principals.map((p) => [p.token, 0]));
+    const server = vi.fn<typeof fetch>(async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      const principal = principals.find((p) => headers.get("authorization") === `Bearer ${p.token}`);
+      if (!principal || headers.get(EXPECTED_TENANT_HEADER) !== principal.tenant) return jsonResponse(403, { error: "forbidden" });
+      if (init?.method === "POST") submissions.set(principal.token, submissions.get(principal.token)! + 1);
+      return jsonResponse(200, { ...MANIFEST, title: principal.title });
+    });
+    const clients = principals.map((p) => readingApiFor({
+      base: "https://api.example", token: p.token, expectedTenant: p.tenant, fetch: server,
+    }));
+    const writes = await Promise.all(clients.map((api) => api.submit(MANIFEST.url)));
+    const reads = await Promise.all(clients.map((api) => api.getReading(MANIFEST.id)));
+    for (const [i, principal] of principals.entries()) {
+      expect(writes[i]).toMatchObject({ kind: "existing", manifest: { id: MANIFEST.id, title: principal.title } });
+      expect(reads[i]).toMatchObject({ kind: "manifest", manifest: { id: MANIFEST.id, title: principal.title } });
+      expect(submissions.get(principal.token)).toBe(1);
+    }
+  });
+
   it("submit POSTs the url with bearer auth and returns the decoded outcome", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse(202, { id: "rd_1", status: "pending", attempt_id: "at_1" }),
