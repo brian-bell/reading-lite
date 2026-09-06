@@ -15,6 +15,8 @@ export interface StagingResources {
   digestDlq: string;
   wipeQueue: string;
   wipeDlq: string;
+  refreshQueue: string;
+  refreshDlq: string;
   d1: string;
 }
 
@@ -48,6 +50,8 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   digestDlq: "reading-lite-staging-digest-dlq",
   wipeQueue: "reading-lite-staging-wipe",
   wipeDlq: "reading-lite-staging-wipe-dlq",
+  refreshQueue: "reading-lite-staging-refresh",
+  refreshDlq: "reading-lite-staging-refresh-dlq",
   d1: "reading-lite-control-staging",
 };
 
@@ -138,6 +142,16 @@ export function buildStagingSetupCommands(
       idempotentOk: ALREADY_EXISTS,
     },
     {
+      label: "Create staging refresh queue",
+      args: ["queues", "create", resources.refreshQueue],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
+      label: "Create staging refresh dead-letter queue",
+      args: ["queues", "create", resources.refreshDlq],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
       label: "Create staging D1 control plane",
       args: ["d1", "create", resources.d1],
       idempotentOk: ALREADY_EXISTS,
@@ -181,6 +195,16 @@ export function buildStagingTeardownCommands(
       idempotentOk: MISSING_CONSUMER,
     },
     {
+      label: "Remove staging refresh queue consumer",
+      args: ["queues", "consumer", "remove", resources.refreshQueue, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
+      label: "Remove staging refresh dead-letter queue consumer",
+      args: ["queues", "consumer", "remove", resources.refreshDlq, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
       label: "Delete staging Worker",
       args: ["delete", resources.worker, "--env", resources.env, "--force"],
       idempotentOk: MISSING_RESOURCE,
@@ -213,6 +237,16 @@ export function buildStagingTeardownCommands(
     {
       label: "Delete staging wipe dead-letter queue",
       args: ["queues", "delete", resources.wipeDlq],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging refresh queue",
+      args: ["queues", "delete", resources.refreshQueue],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging refresh dead-letter queue",
+      args: ["queues", "delete", resources.refreshDlq],
       idempotentOk: MISSING_RESOURCE,
     },
     {

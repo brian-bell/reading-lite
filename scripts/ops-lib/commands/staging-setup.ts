@@ -82,7 +82,7 @@ export const stagingSetupCommand: CommandDefinition<StagingSetupDeps> = {
   helpText: `Usage: npm run ops -- staging setup [--provider openai|anthropic] [--execute]
 
 Creates the one-time Cloudflare staging resources for reading-lite:
-R2 bucket, Vectorize index, reading Queue + DLQ, and digest Queue + DLQ.
+R2 bucket, Vectorize index, D1, and reading, digest, wipe, and refresh Queue + DLQ pairs.
 Plans by default; --execute creates resources. Idempotent — "already exists"
 is treated as success.
 

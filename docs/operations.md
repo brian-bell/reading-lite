@@ -2395,3 +2395,24 @@ writes require `--execute --acknowledge-guard-version <current row version>`
 and production also requires `--confirm-production`. See
 [the paid-work operator runbook](paid-provider-spend.md#operator-policy-and-accounting)
 for setup, exact commands, version/retry semantics, and accounting limitations.
+
+
+## Relationship refresh queue plumbing
+
+Issue #175 slice 1 adds `RELATIONSHIP_REFRESH_JOBS` with dedicated queues
+`reading-lite-staging-refresh` / `reading-lite-staging-refresh-dlq` and
+`reading-lite-refresh` / `reading-lite-refresh-dlq`. `ops staging setup` and
+`ops staging teardown` manage the staging pair. Provision the queue pairs before
+Worker deployment; the production DLQ must be created separately, like the other
+production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
+
+`RELATIONSHIP_REFRESH` is intentionally unset in staging and production.
+Primary-queue deliveries are acknowledged and discarded without storage or
+provider access. Setting the gate to `1` currently only logs that processing is
+unavailable; it does not run refresh. DLQ deliveries log and acknowledge without
+changing manifests. Disabling the gate discards queued refresh work.
+
+`REFRESH_MAX_JUDGEMENTS` defaults to `100` in both deployed environments. This
+reserves the configuration only; per-run enforcement arrives with scan fan-out.
+There is no new cron, scan, cursor, or judge consumer in this slice. Enablement
+and staging evidence remain later work; production stays disabled.

@@ -81,7 +81,7 @@ export const stagingTeardownCommand: CommandDefinition<StagingTeardownDeps> = {
   helpText: `Usage: npm run ops -- staging teardown [--execute]
 
 Deletes the Cloudflare staging Worker and isolated staging resources for
-reading-lite: Queue, DLQ, Vectorize index, and R2 bucket. Plans by default;
+reading-lite: reading, digest, wipe, and refresh Queue + DLQ pairs, D1, Vectorize index, and R2 bucket. Plans by default;
 --execute deletes. Idempotent — "already gone" is treated as success.
 
 This command is intentionally hard-coded to staging resource names and refuses
