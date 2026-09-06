@@ -80,7 +80,9 @@ the behavioral tests named above.
 | `corpus audit`, `recover`, `ingest`, `sweep`, `delete-orphans`, `backfill-similarity`, `backfill-vectors`, `refresh-neighbours`, `refresh-connections`, `refresh-tensions`, `normalize-tags`, `rebuild-list`, `purge-connections`, `seed-vector-ledger` | Explicit corpus selector. R2 roots, report/sidecar provenance, Vectorize namespace/composed IDs, and D1 ledger ownership are covered by the command suites above; destructive overlapping-ID cases cover sweep/orphan deletion, seed-ledger, and connection purge. `corpus drop` is covered by its dedicated regression PR. |
 | `reading submit`; `import markdown`, `bookmarks`, `reddit`, `youtube`; `reading-list process` | Thin API clients with no operator tenant selector or direct corpus store. The bearer principal selects the hosted tenant, so their tenant boundary is the authenticated API/MCP matrix and the shared `readingApiFor` contract; `corpus recover` additionally verifies its explicit selector against `/api/whoami` before it invokes the same API. |
 | `reading-list check` | Global legacy `index/list.json` inspection, with no tenant selector; its direct Wrangler read is covered by `test/unit/check-corpus/fetch-index.test.ts`. |
-| `deploy worker`, `deploy wipe-check`, `deploy web`; `staging setup`, `teardown`, `smoke`; `founder bootstrap`; `extract probe`; `eval summarizer` | Global environment, local extraction, or fixture/deployment workflows. They do not accept a live corpus tenant selector or address tenant-rooted reading data. |
+| `deploy worker`, `deploy wipe-check`, `deploy web`; `staging setup`; `founder bootstrap`; `extract probe`; `eval summarizer` | Environment configuration, deployment, bootstrap, local extraction, or fixture evaluation. These commands have no caller-selected live corpus tenant. |
+| `staging teardown` | Intentional environment-wide deletion: empties the entire staging R2 bucket, including every tenant's `u/{tenant}/…` objects, and deletes the staging Worker, queues, Vectorize index, D1 database, and bucket. The boundary is the isolated staging environment; resource-name guards, plan-first execution, and credential preflight are covered by `test/unit/deploy/staging-env.test.ts` and `test/unit/scripts/ops-deploy-staging.test.ts`. |
+| `staging smoke` | Authenticated API workflow that submits, imports, and reprocesses readings in the bearer principal's tenant. It performs staging writes with `--execute`; target validation and workflow behavior are covered by `test/unit/scripts/ops-deploy-staging.test.ts`. |
 | `extract agent` | Authenticated hosted polling/import client. It has no independent storage selector, so submitted work is scoped by its bearer principal; its poll bearer header is covered in `test/unit/extract-agent/poll.test.ts` and its imports use the hosted API boundary. |
 | `staging prepare-context` | Intentional, explicitly named cross-tenant copy. It treats the source and destination as separate scopes and produces a local artifact only. |
 | `account wipe`, `residue-scan`, `audit-bare-vectors` | Explicit account/namespace selector, with tenant status and audit/ledger queries keyed by that selector. A populated A/B fixture proves enqueue admission, residue scans, and bare-vector repair leave the other account's vector, R2, and D1 state intact (`test/unit/scripts/ops-account-s5.test.ts`). `sweep-wipe-prefix` is global maintenance of the bucket-root `wipe/` prefix; it derives tenants from those keys and has no caller-selected corpus owner. |
@@ -95,9 +97,10 @@ two-tenant corpus fixture when they introduce no additional storage boundary.
 
 The local operator has account-scoped credentials and may explicitly select any
 tenant. Its boundary is selector/provenance consistency, not end-user
-permission checks. Global/deploy/local-extraction commands have no tenant-owned
-corpus selection; `--tenant global` deliberately addresses retained legacy
-data. Context preparation intentionally crosses tenants, and its evidence
+permission checks. Environment-wide operations use the environment boundary:
+staging teardown intentionally deletes data for every staging tenant.
+`--tenant global` deliberately addresses retained legacy data.
+Context preparation intentionally crosses tenants, and its evidence
 asserts the declared source and destination rather than treating that copy as
 an isolation failure. Digest and wipe jobs are internally created and have no
 end-user actor credential. Public health/login options and authentication
