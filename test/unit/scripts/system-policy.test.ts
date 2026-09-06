@@ -12,7 +12,8 @@ function fixture() {
   sql.exec(`CREATE TABLE system_policy (id INTEGER PRIMARY KEY, policy_version INTEGER, paid_work_enabled INTEGER, daily_spend_microdollars INTEGER, catalog_version INTEGER, updated_at_ms INTEGER, signup_mode TEXT);
     INSERT INTO system_policy VALUES (1, 3, 1, 1000000, 1, 0, 'closed');
     CREATE TABLE tenant_limits (tenant_id TEXT PRIMARY KEY, policy_version INTEGER, daily_spend_microdollars INTEGER, updated_at_ms INTEGER);
-    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, 0);`);
+    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, 0);
+    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440001', 11, 300000, 0);`);
   const db: ControlPlaneDb = {
     first: async <T>(query: string, ...args: unknown[]) =>
       (sql.prepare(query).get(...args) as T) ?? null,
@@ -98,6 +99,23 @@ describe("system policy", () => {
       daily_spend_microdollars: 200000,
     });
     expect(row().policy_version).toBe(3);
+  });
+  it("changes only the selected tenant policy when two tenants are populated", async () => {
+    const { deps, sql } = fixture();
+    await systemPolicyCommand.run(
+      [
+        "--env", "staging", "--tenant", "usr_550e8400-e29b-41d4-a716-446655440000",
+        "--daily-spend-microdollars", "200000", "--execute",
+        "--acknowledge-guard-version", "7",
+      ],
+      deps,
+    );
+    expect(sql.prepare("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?")
+      .get("usr_550e8400-e29b-41d4-a716-446655440000"))
+      .toEqual({ policy_version: 8, daily_spend_microdollars: 200000 });
+    expect(sql.prepare("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?")
+      .get("usr_550e8400-e29b-41d4-a716-446655440001"))
+      .toEqual({ policy_version: 11, daily_spend_microdollars: 300000 });
   });
   it.each(["0", "-1", "1.5", "1e6", "9007199254740992", "nope"])(
     "refuses budget %s before connecting",

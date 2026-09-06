@@ -427,6 +427,27 @@ describe("ops corpus purge-connections", () => {
     expect(storage.listObjects).toHaveBeenLastCalledWith("readings/");
   });
 
+  it.each([TENANT, OTHER_TENANT])("purges connections only in selected tenant %s when reading ids overlap", async (selected) => {
+    const initial = Object.fromEntries([TENANT, OTHER_TENANT, undefined].map((tenant) => [
+      canonicalKey(READING_A, tenant),
+      {
+        body: JSON.stringify(manifest(READING_A, [{ id: TARGET, reason: "remove" }, { id: KEEP_1, reason: "keep" }])),
+        etag: tenant ?? "legacy",
+      },
+    ]));
+    const { storage, objects } = memoryStorage(initial);
+    const result = await run(["--tenant", selected, "--id", TARGET, "--execute", "--sole-writer"], storage);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out[0]!)).toMatchObject({ manifests_scanned: 1, manifests_written: 1 });
+    expect(JSON.parse(objects.get(canonicalKey(READING_A, selected))!.body).connections).toEqual([
+      { id: KEEP_1, reason: "keep" },
+    ]);
+    for (const tenant of [TENANT, OTHER_TENANT, undefined].filter((t) => t !== selected)) {
+      const key = canonicalKey(READING_A, tenant);
+      expect(objects.get(key)).toEqual(initial[key]);
+    }
+  });
+
   it("removes duplicate matches across manifests while preserving order and unrelated fields", async () => {
     const keyA = canonicalKey(READING_A);
     const keyB = canonicalKey(READING_B);

@@ -144,6 +144,43 @@ describe("ops corpus seed-vector-ledger — plan and execute", () => {
     expect(h.ledgersMade).toEqual([{ tenant: TENANT, bucket: "reading-lite", execute: true }]);
   });
 
+  it("seeds only the selected tenant's ledger from a populated two-tenant bucket", async () => {
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const sharedId = "rd_0123456789";
+    const onlyOtherId = "rd_ABCDEFGHJK";
+    const objects = {
+      [`${ROOT}index/list.json`]: listIndex([sharedId]),
+      [`u/${other}/index/list.json`]: listIndex([sharedId, onlyOtherId]),
+    };
+    const h = harness(objects);
+    const ledgers = new Map([
+      [TENANT, new Map<string, string>()],
+      [other, new Map([[sharedId, "delete_submitted:confirmation-preserved"]])],
+    ]);
+    h.deps.makeLedger = ({ tenant }) => ({
+      insertMissing: async (ids) => {
+        const rows = ledgers.get(tenant.kind === "tenant" ? tenant.tenantId : "global")!;
+        const missing = ids.filter((id) => !rows.has(id));
+        for (const id of missing) rows.set(id, "live");
+        return missing.length;
+      },
+    });
+    const beforeOther = structuredClone(ledgers.get(other));
+    const beforeObjects = structuredClone(objects);
+
+    expect(await run(["--tenant", TENANT, "--execute"], h.deps)).toBe(0);
+    expect(ledgers.get(TENANT)).toEqual(new Map([[sharedId, "live"]]));
+    expect(ledgers.get(other)).toEqual(beforeOther);
+    expect(objects).toEqual(beforeObjects);
+
+    expect(await run(["--tenant", other, "--execute"], h.deps)).toBe(0);
+    expect(ledgers.get(other)).toEqual(new Map([
+      [sharedId, "delete_submitted:confirmation-preserved"],
+      [onlyOtherId, "live"],
+    ]));
+    expect(ledgers.get(TENANT)).toEqual(new Map([[sharedId, "live"]]));
+  });
+
   it("is idempotent: a second execute writes the same rows again, harmlessly", async () => {
     const h = harness(CORPUS);
     await run(["--tenant", TENANT, "--execute"], h.deps);

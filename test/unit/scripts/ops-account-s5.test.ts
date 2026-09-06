@@ -234,6 +234,84 @@ import { accountResidueScanCommand } from "../../../scripts/ops-lib/commands/acc
 import { accountAuditBareVectorsCommand } from "../../../scripts/ops-lib/commands/account-audit-bare-vectors";
 
 describe("S5 migrated database behavior", () => {
+  it("keeps wipe enqueue, residue reports and bare-vector repair scoped across populated tenants", async () => {
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const { db, sqlite } = openMigratedControlPlane();
+    try {
+      for (const [selected, status] of [[tenant, "deleting"], [other, "active"]] as const) {
+        await db.run(
+          "INSERT INTO users (id, email_canonical, email_display, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, 1, 1)",
+          selected, `${selected}@example.com`, `${selected}@example.com`, status,
+        );
+        await insertMissingLedgerRows(db, parseTenantId(selected)!, [id], 1);
+      }
+      const r = remoteFixture();
+      const objects = new Map([
+        [`u/${tenant}/index/by-id/${id}`, "owner pointer"],
+        [`u/${other}/index/by-id/${id}`, "other pointer"],
+      ]);
+      const vectors = new Map([
+        [id, structuredClone(bare)],
+        [`${tenant}:${id}`, { ...bare, id: `${tenant}:${id}` }],
+        [`${other}:${id}`, { ...bare, id: `${other}:${id}`, namespace: other }],
+      ]);
+      r.storage.listObjects.mockImplementation(async (prefix: string) =>
+        [...objects.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
+      );
+      r.storage.get.mockImplementation(async (key: string) => objects.get(key) ?? null);
+      r.vectors.list.mockImplementation(async () => ({ vectors: [...vectors.keys()].map((id) => ({ id })), isTruncated: false }));
+      r.vectors.get.mockImplementation(async (ids: string[]) => ids.flatMap((id) => vectors.has(id) ? [vectors.get(id)!] : []));
+      r.vectors.delete.mockImplementation(async (ids: string[]) => { for (const id of ids) vectors.delete(id); });
+      r.probe.mockImplementation(async (namespace: string) => [...vectors.values()].filter((v) => v.namespace === namespace).map((v) => ({ id: v.id })));
+      const remote = { ...r, db };
+      const io = { stdout: vi.fn(), stderr: vi.fn() };
+      const beforeDb = sqlite.serialize();
+      const beforeObjects = structuredClone(objects);
+
+      expect(await accountWipeCommand.run(
+        ["--tenant", tenant, "--execute", "--confirm", tenant, "--queue-id", "fixture-queue"],
+        { io, connect: () => remote },
+      )).toBe(0);
+      expect(r.enqueue).toHaveBeenCalledWith(tenant, false, "fixture-queue");
+      await expect(accountWipeCommand.run(
+        ["--tenant", other, "--execute", "--confirm", other, "--queue-id", "fixture-queue"],
+        { io, connect: () => remote },
+      )).rejects.toThrow("deleting");
+      expect(r.enqueue).toHaveBeenCalledTimes(1);
+
+      for (const selected of [tenant, other]) {
+        io.stdout.mockClear();
+        expect(await accountResidueScanCommand.run(["--tenant", selected], { io, connect: () => remote })).toBe(1);
+        const report = JSON.parse(io.stdout.mock.calls[0]![0]);
+        expect(report.tenant).toBe(selected);
+        expect(report.findings.find((f: { source: string }) => f.source === "vector_ledger").detail).toEqual([
+          expect.objectContaining({ tenant_id: selected, reading_id: id }),
+        ]);
+        expect(report.findings.find((f: { source: string }) => f.source === "r2").detail).toEqual([{ key: `u/${selected}/index/by-id/${id}` }]);
+        expect(report.findings.find((f: { source: string }) => f.source === "d1.users").detail).toEqual({ count: 1 });
+        expect(report.findings.find((f: { source: string }) => f.source === "namespace_inventory").detail.ids).toEqual(
+          selected === tenant ? [id, `${tenant}:${id}`] : [`${other}:${id}`],
+        );
+      }
+      expect(sqlite.serialize()).toEqual(beforeDb);
+      expect(objects).toEqual(beforeObjects);
+
+      const beforeOtherVector = structuredClone(vectors.get(`${other}:${id}`));
+      expect(await accountAuditBareVectorsCommand.run(
+        ["--namespace", tenant, "--execute", "--confirm", tenant, "--sole-writer"],
+        { io, connect: () => remote, now: () => 2 },
+      )).toBe(1); // Mutation submitted; a later scan confirms it.
+      expect(vectors.has(id)).toBe(false);
+      expect(vectors.get(`${other}:${id}`)).toEqual(beforeOtherVector);
+      expect(vectors.get(`${tenant}:${id}`)).toEqual({ ...bare, id: `${tenant}:${id}` });
+      expect(r.vectors.upsert).not.toHaveBeenCalled();
+      expect(sqlite.serialize()).toEqual(beforeDb);
+      expect(objects).toEqual(beforeObjects);
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("queries every teardown table and retains submitted purge rows without changing history", async () => {
     const { db, sqlite } = openMigratedControlPlane();
     try {

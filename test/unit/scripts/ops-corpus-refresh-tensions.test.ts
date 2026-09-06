@@ -167,6 +167,18 @@ function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
 }
 
 describe("ops corpus refresh-tensions", () => {
+  it("executes a tenant-stamped report through that tenant's storage root", async () => {
+    const tenant = "usr_11111111-1111-4111-8111-111111111111";
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify({ ...report(), tenant }));
+    expect(await corpusRefreshTensionsCommand.run(
+      ["--tenant", tenant, "--execute", "--sole-writer"], h.deps,
+    )).toBe(0);
+    expect(h.createStorage).toHaveBeenCalledWith("reading-lite", `u/${tenant}/`);
+    expect(h.writes.map((write) => write.keyPrefix)).toEqual([
+      "readings/2026/rd_a", "readings/2026/rd_b",
+    ]);
+  });
   it("prints a Timing block for a plan pass with no provider phase", async () => {
     const h = harness();
     expect(
