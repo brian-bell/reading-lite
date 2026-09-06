@@ -1,9 +1,9 @@
 # Staging evidence checklist and release-gate scope (#203)
 
 Canonical CI runs on every code release. Staging checks are selected for the
-behavior a change affects, with an explicit operator release gate as the intended
-first implementation. **No new staging runner or release enforcement is shipped
-by this document.** Ordinary production deployment remains unchanged.
+behavior a change affects, with an explicit operator release gate for token revocation. `ops staging
+token-revocation` retains evidence and `ops deploy release` validates it before
+production writes. Ordinary production deployment remains unchanged.
 
 ## Evidence already accepted
 
@@ -60,22 +60,114 @@ or missing evidence. No new inspection API or unconditional zero-residue promise
 is required. D1 migrations, runtime tenant isolation, the activation preflight,
 production wipe check and general repair/deletion tools remain in service.
 
-## Small operator release-gate design (not implemented)
+## Explicit token-revocation gate
 
-The next slice should make **one selected, still-relevant drill** repeatable and
-retain its result with the intended commit/configuration. A separate explicit
-operator release entry point should read that evidence and refuse before
-production migrations or upload if the selected check failed, is incomplete
-outside accepted limits, or does not match the intended release.
+This first implementation covers token creation, positive bearer authentication,
+revocation, rejection of the revoked token, and continued session access. Select
+it when token behavior is affected. It does not certify signup, email delivery,
+all session behavior, provider policy, or account deletion.
 
-A successful result would still run existing production deployment checks. Test
-both failure and missing-evidence paths with deployment effects trapped, then
-run a separately scoped live drill when the affected behavior warrants it. A
-successful local test is evidence for the gate, not a live staging result.
+Use a controlled staging account with a recent authenticated browser session.
+Token creation can send a security notification to that account's email address;
+use a controlled recipient. The runner creates one `readings:read` token with a
+15-minute expiry, then revokes it. It never submits paid work or wipes an account.
+It leaves the operator session and revoked token record in place. Those are
+explicitly retained fixtures, not evidence of zero auth residue.
 
-Use ordinary workflow/operator coordination. No shared release database, atomic
-seals, generic exception engine, arbitrary freshness cutoff, full paid drill on
-every release, or automatic bypass is required for this stage. Automatic CI
-release enforcement and SPA coordination are future scope, not implied by an
-operator-only gate. The founder-migration-dependent prototype was discarded
-before any live staging or production operation.
+Commit the candidate first and use a clean checkout. Stage it through the
+existing deploy command with its commit tag:
+
+```sh
+CANDIDATE_SHA=$(git rev-parse HEAD)
+npm run ops -- deploy worker --env staging --release-sha "$CANDIDATE_SHA"
+# After reviewing the plan, add --execute to deploy the staging candidate.
+```
+
+`--release-sha` verifies the clean checkout matches and supplies Wrangler's
+version tag. Existing readiness and activation guards still apply. The drill
+reads the active Cloudflare version and requires that tag; local HEAD alone is
+not evidence that staging serves the candidate. Split deployments are refused.
+Keep staging deployment/configuration and the candidate checkout unchanged for
+the drill and selected release.
+
+Provide the recent session through `STAGING_SESSION_COOKIE` in the process
+environment, in `__Host-session=<value>` format. Never put it in command-line
+arguments, retained evidence, or shell history. The CSRF token is obtained in
+memory from `/api/whoami`. No login automation or secret bootstrap is added.
+
+Choose a new evidence directory **outside the checkout**, under an existing
+parent directory. Plan first:
+
+```sh
+npm run ops -- staging token-revocation \
+  --tenant "$STAGING_TEST_TENANT" --release-sha "$CANDIDATE_SHA" \
+  --output "$EVIDENCE_PARENT/token-run-01"
+# Add --execute for the separately approved staging drill.
+```
+
+The runner verifies the session's tenant before creating anything. It observes
+one token authenticate with HTTP 200, revokes that token, observes HTTP 401 for
+the same bearer, and confirms the session still authenticates. Cleanup queries
+the exact run-generated token name and confirms a revoked timestamp and unusable
+state. A lost POST response is not retried: cleanup tries to recover the created
+token by that name. Missing/ambiguous selectors or failed cleanup reads block
+success and require operator investigation. An expired token alone does not
+prove revocation.
+
+Each run creates `start.json` and then `result.json`, both without overwriting an
+existing file. `start.json` contains the command and fixture selector. A crash
+may leave only the start record; it cannot authorize release. Inspect that exact
+token name for cleanup, and use a fresh directory for the next attempt. Failed
+results are retained and cannot be converted to success by rerunning over them.
+A successful run has actual command exit 0; a completed failed run has exit 1.
+HTTP status codes remain observations (the expected HTTP 401 is not rewritten).
+Evidence-write failure makes the command fail; never use a partial result.
+
+The result contains commit, local `wrangler.toml` hash, active version ID, a hash
+of selected effective staging auth configuration (APP_ENV, WEB_BASE_URL,
+TENANT_DATA_PLANE and D1 binding), observation interval, token selectors, statuses,
+exit code and cleanup/restoration outcomes. It compares provenance before and
+after the drill. HTTP bodies, cookies, bearer values, CSRF tokens, email addresses,
+login links and arbitrary exception text are not retained. This does not attest
+secret values, dynamically changed D1 policy, or continuous deployment stability
+between observations; coordinate changes during the run. Version tags and JSON
+are operator audit evidence, not tamper-proof authorization seals.
+
+Review the retained evidence, then select the gated production Worker release:
+
+```sh
+npm run ops -- deploy release --check token-revocation \
+  --evidence "$EVIDENCE_PARENT/token-run-01/result.json" \
+  --release-sha "$CANDIDATE_SHA"
+# Add --execute only for the reviewed production release.
+```
+
+Plan mode reads and validates evidence and provenance without production writes.
+Execute refuses missing, malformed, failed, incomplete or mismatched evidence
+before invoking the production wipe check. On success it runs `deploy wipe-check`
+with the candidate SHA, then the existing production Worker deploy command,
+including readiness, activation, migrations-before-upload and child exit codes.
+The existing reviewed SHA-specific wipe override remains available; this wrapper
+does not introduce an activation override or evidence exception mechanism.
+No accepted deletion limit is silently converted into a successful token drill.
+
+The wrapper is explicitly selected. It does not intercept `deploy worker`, direct
+Wrangler, or the automatic CI/SPA deployment chain. Coordinate a selected manual
+release with existing release activity; this local command does not acquire the
+GitHub Actions release lock. Wipe/provenance checks are snapshots, not concurrency
+locks. There is no automatic path classification, arbitrary freshness deadline,
+shared release database, generic drill registry, or new production dependency.
+
+## Verification and live acceptance
+
+The Node command tests exercise positive/negative token observations, cleanup,
+provenance and failed evidence with injected HTTP/storage/deployment dependencies.
+Missing and failed evidence invoke neither production wipe nor deploy callbacks;
+a wipe refusal prevents deploy, and a deployment failure preserves its exit code.
+Existing deployment tests retain activation refusal and migration failure coverage.
+These are local tests with production effects trapped, not deployed observations.
+
+Run a separately scoped live drill when the affected auth behavior warrants it.
+Retain its sanitized directory with the operator release record and record any
+cleanup follow-up. Local test success does not claim live staging acceptance or
+close the remaining live portion of #203.

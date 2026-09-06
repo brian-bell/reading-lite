@@ -6,6 +6,7 @@
 // activation or an explicit manual acknowledgement, and a non-placeholder D1.
 
 import { parseArgs } from "node:util";
+import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { validateControlPlaneDeployReadiness } from "../../control-plane-env";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
@@ -14,6 +15,7 @@ export type DeployEnv = "production" | "staging";
 
 export interface DeployWorkerDeps extends BaseDeps {
   runWrangler: (args: string[]) => Promise<number>;
+  validateCandidate?: (sha: string) => Promise<void>;
   validateReadiness: typeof validateControlPlaneDeployReadiness;
   validateTenantActivation: typeof validateTenantActivation;
 }
@@ -38,6 +40,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
     ({ values } = parseArgs({
       args: argv,
       options: {
+        "release-sha": { type: "string" },
         execute: { type: "boolean", default: false },
         env: { type: "string", default: "production" },
         "acknowledge-tenant-migration": { type: "boolean", default: false },
@@ -50,7 +53,11 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   if (!env) throw new UsageError(`invalid --env: ${values.env}. Expected production or staging.`);
   const execute = values.execute === true;
 
+  const releaseSha = values["release-sha"];
+  if (releaseSha !== undefined && !ShaSchema.safeParse(releaseSha).success) throw new UsageError("--release-sha must be a full lowercase commit SHA");
+  if (releaseSha) await (deps.validateCandidate ?? assertCleanCandidate)(releaseSha);
   const wranglerArgs = buildWranglerArgs({ env, execute });
+  if (releaseSha) wranglerArgs.push("--tag", releaseSha);
   const mode = execute ? "DEPLOY" : "PLAN";
   const readiness = deps.validateReadiness(env);
   const migrationArgs = readiness.ok
@@ -113,6 +120,9 @@ Options:
   --acknowledge-tenant-migration
                  Override unverified activation only after manually verifying
                  target tenant R2 data, namespaced vectors, and deletion eligibility.
+  --release-sha <full SHA>
+                 Tag the deployed version after verifying a clean exact checkout.
+                 Required when preparing staging evidence for deploy release.
   --execute      Apply remote D1 migrations and upload (otherwise wrangler
                  --dry-run is passed and migrations are not applied).
   --help         Show this message.

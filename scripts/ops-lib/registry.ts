@@ -1,3 +1,5 @@
+import { stagingTokenRevocationCommand } from "./commands/staging-token-revocation";
+import { deployReleaseCommand } from "./commands/deploy-release";
 import { stagingPrepareContextCommand } from "./commands/staging-prepare-context";
 import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
@@ -92,6 +94,8 @@ export const defaultRegistry: Registry = {
     importYoutubeCommand,
     readingListCheckCommand,
     readingListProcessCommand,
+    deployReleaseCommand,
+    stagingTokenRevocationCommand,
     deployWorkerCommand,
     deployWipeCheckCommand,
     deployWebCommand,

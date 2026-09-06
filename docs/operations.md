@@ -613,6 +613,13 @@ The command can also be run locally with the two Cloudflare environment
 variables below; direct `ops deploy worker` invocations do not automatically
 run this workflow gate.
 
+For an explicitly selected token-revocation release check, use `ops staging
+token-revocation` and `ops deploy release`; see the [operator evidence
+workflow](staging-evidence-contract.md#explicit-token-revocation-gate). The wrapper
+validates the retained drill before invoking the production wipe check and
+existing Worker deploy. It does not change the automatic CI/SPA chain or gate
+ordinary `deploy worker` calls.
+
 The queue check uses the [Queues REST metrics endpoint](https://developers.cloudflare.com/api/resources/queues/methods/get_metrics/)
 (`backlog_count`, unacknowledged messages), not aggregated analytics. Cloudflare
 calls these metrics best-effort. The check is a snapshot: the release lock
