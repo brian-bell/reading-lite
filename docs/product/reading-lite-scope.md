@@ -1,5 +1,11 @@
 # reading-lite — Product Scope Document
 
+> Historical planning document from August 15, 2026. The architecture, counts,
+> roadmap, and economics below describe that planning baseline, not the shipped
+> service. Hosted queue processing uses synchronous provider requests; queueing
+> alone does not qualify for Batch API discounts. See [current architecture](../architecture.md)
+> and the [deferred economics handoff](../193-v2.1-handoff.md).
+
 > v1.0 · 2026-08-15 · Companion to the [portfolio strategy](https://claude.ai/code/artifact/cf7e942c-9a9a-4880-897e-c89c25e361c6) and the [reading-lite product brief](https://claude.ai/code/artifact/a1af4c2c-63fe-4ab5-8168-f05552ea5643). The brief argues *why*; this document defines *what*, *in what order*, and *what "done" means*.
 
 ---

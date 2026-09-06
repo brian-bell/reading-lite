@@ -1,29 +1,23 @@
-# reading-lite isometric system map
+# Reading Lite system map
 
-Interactive architecture map of the Cloudflare edge district: SPA, Worker
-control plane, queues, R2, Vectorize, and provider towers.
+Interactive overview of the reading pipeline, from the Pages SPA through
+Worker intake, R2, Vectorize, and provider calls. It shows five flows: submit,
+process, publish, retry/DLQ, and read. Select a building or flow for its payload
+and source references.
 
-## Open
+The diagram omits separate D1/Durable Object buildings, budget admission,
+digest delivery, and account teardown. Read [architecture](../architecture.md)
+for those paths and the full write-order constraints. The drawn connections
+show selected steps, not an atomic transaction across services.
+
+## Open locally
 
 ```sh
-# from repo root
-python3 -m http.server 8765 --directory docs/system-map
-# then visit http://127.0.0.1:8765/
+# From the repository root
+python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/system-map
 ```
 
-Or open `docs/system-map/index.html` directly in a browser.
-
-## What it shows
-
-- **Buildings** — infrastructure modules with zone colors (client, control,
-  store, index, queue, pipeline, external). Click for explainer + file cites.
-- **Flow tabs** — five real control/data paths with animated payload traces:
-  1. Submit & claim
-  2. Process pipeline
-  3. Terminal publish
-  4. Retry & DLQ
-  5. Read path
-- **Legend + explainer panel** — hop payloads and source file cites update
-  with selection.
-
-Mapped against `main` modules cited in each building and flow.
+Visit `http://127.0.0.1:8765/`. Flow tabs animate payloads; building selection
+updates the explanation and source references. Drag the map to pan and
+double-click to reset. Zone colors distinguish clients, processing, storage,
+queues, and providers. Heights are illustrative, not measured capacity.

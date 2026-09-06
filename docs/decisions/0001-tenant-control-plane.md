@@ -1,5 +1,11 @@
 # ADR 0001: Tenant control plane
 
+> This ADR preserves the August 16 design baseline. For shipped behavior, read
+> [architecture](../architecture.md), [account deletion](../operations.md#account-deletion),
+> and [paid spend](../paid-provider-spend.md). Spend accounting now reserves tenant
+> and global budgets in one GlobalUsageGuard ledger; vector isolation follows
+> [ADR 0002](0002-vectorize-namespace-isolation.md).
+
 - **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23)
 - **Date:** 2026-08-16
 - **Decision owners:** Brian Bell
