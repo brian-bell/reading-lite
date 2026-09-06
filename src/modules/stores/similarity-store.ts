@@ -351,8 +351,27 @@ export class SimilarityStore {
       returnMetadata: true,
       ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
     });
+    return this.mapMatches(result.matches);
+  }
+
+  // Query an existing vector without embedding text. Confirm absence separately:
+  // binding/query failures propagate and must not be mistaken for no neighbours.
+  async queryByVectorId(id: string, topK: number): Promise<SimilarityMatch[] | null> {
+    if (!(await this.getByIds([id])).includes(id)) return null;
+    const index = this.index as unknown as {
+      queryById(id: string, options: VectorizeQueryOptions): Promise<VectorizeMatches>;
+    };
+    const result = await index.queryById(tenantVectorId(this.namespace, id), {
+      topK: Math.min(MAX_TOP_K, Math.max(MIN_TOP_K, Math.trunc(topK))),
+      returnMetadata: "all",
+      ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
+    });
+    return this.mapMatches(result.matches);
+  }
+
+  private mapMatches(matches: VectorizeMatch[]): SimilarityMatch[] {
     const ownPrefix = this.namespace === undefined ? undefined : `${this.namespace}:`;
-    return result.matches.map((m) => {
+    return matches.map((m) => {
       const md = (m.metadata ?? {}) as Partial<SimilarityMetadata>;
       const out: SimilarityMatch = {
         id:

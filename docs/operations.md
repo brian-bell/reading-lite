@@ -2399,20 +2399,44 @@ for setup, exact commands, version/retry semantics, and accounting limitations.
 
 ## Relationship refresh queue plumbing
 
-Issue #175 slice 1 adds `RELATIONSHIP_REFRESH_JOBS` with dedicated queues
+`RELATIONSHIP_REFRESH_JOBS` uses dedicated queues
 `reading-lite-staging-refresh` / `reading-lite-staging-refresh-dlq` and
 `reading-lite-refresh` / `reading-lite-refresh-dlq`. `ops staging setup` and
 `ops staging teardown` manage the staging pair. Provision the queue pairs before
 Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
-`RELATIONSHIP_REFRESH` is intentionally unset in staging and production.
-Primary-queue deliveries are acknowledged and discarded without storage or
-provider access. Setting the gate to `1` currently only logs that processing is
-unavailable; it does not run refresh. DLQ deliveries log and acknowledge without
-changing manifests. Disabling the gate discards queued refresh work.
+`RELATIONSHIP_REFRESH` remains unset in staging and production. Gate-off queue
+deliveries acknowledge and discard without storage/provider access; the refresh
+cron also does nothing. DLQ deliveries log and acknowledge without changing
+manifests. Keep both gates off until the judge consumer is implemented.
 
-`REFRESH_MAX_JUDGEMENTS` defaults to `100` in both deployed environments. This
-reserves the configuration only; per-run enforcement arrives with scan fan-out.
-There is no new cron, scan, cursor, or judge consumer in this slice. Enablement
-and staging evidence remain later work; production stays disabled.
+With the gate set to `1`, the separate `7 3 * * *` cron (03:07 UTC nightly)
+starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
+`TENANT_DATA_PLANE=1` is required. The existing */15 digest/wipe cron is separate.
+Each queue shard reads at most 25 manifests and queries their stored vector IDs;
+no embedding calls are made. Missing, non-ready, reprocessing and purged readings
+are skipped. The existing offline neighbourhood-drift rules select judge targets.
+All scan shards finish before any judge jobs are enqueued.
+
+Progress lives at `u/{tenantId}/index/refresh-cursor.json`: the scan's fixed target
+list, scan offset, flagged candidates, dispatch offset and nightly allowance.
+Cursor writes use CAS. `REFRESH_MAX_JUDGEMENTS` defaults to `100` and accepts
+integers 1–1000. The cap counts distinct reserved judge jobs per nightly budget,
+not delivery attempts. Remaining candidates carry into later nights without
+rescanning; a fresh full scan begins on a later night after dispatch completes.
+The Worker does not read or update the offline `index/refresh-state.json` marker,
+or rewrite similarity snapshots, manifests, list rows or vectors.
+
+A pending batch reserves allowance before sending. Failed/uncertain sends retain
+that reservation; the next scheduled invocation recovers a lost continuation.
+Retries can deliver the same `(runAt, readingId)` judge identity more than once.
+The future judge consumer must deduplicate that identity before paid work and
+revalidate the tenant and reading. Pending batches keep their original allowance
+until their send is confirmed; a recorded new-night allowance then takes effect
+immediately so recovery does not skip that night. Invalid cursor data fails closed and is retained
+for diagnosis rather than silently restarting a run.
+
+Issue #175 slice 2 only produces judge jobs: judge deliveries currently log and
+acknowledge without provider or storage access. Slice 3 adds actual processing;
+staging enablement and evidence remain later work. Production stays disabled.

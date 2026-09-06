@@ -18,7 +18,7 @@ describe("relationship refresh deployment", () => {
       const vars = sections.find(s => s.startsWith(`[env.${env}.vars]`));
       expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "100"');
       expect(vars).not.toMatch(/^RELATIONSHIP_REFRESH\s*=/m);
-      expect(sections.find(s => s.startsWith(`[env.${env}.triggers]`))).toContain('crons = ["*/15 * * * *"]');
+      expect(sections.find(s => s.startsWith(`[env.${env}.triggers]`))).toContain('crons = ["*/15 * * * *", "7 3 * * *"]');
     });
   }
   it("does not bind refresh queues locally or in tests", () => {

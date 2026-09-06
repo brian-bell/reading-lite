@@ -9,8 +9,8 @@ describe("digest wrangler wiring", () => {
   it("schedules */15 cron on staging and production only", () => {
     const wrangler = read("wrangler.toml");
     const testToml = read("wrangler.test.toml");
-    expect(wrangler).toMatch(/\[env\.staging\.triggers\]\s*crons = \["\*\/15 \* \* \* \*"\]/);
-    expect(wrangler).toMatch(/\[env\.production\.triggers\]\s*crons = \["\*\/15 \* \* \* \*"\]/);
+    expect(wrangler).toMatch(/\[env\.staging\.triggers\]\s*crons = \["\*\/15 \* \* \* \*", "7 3 \* \* \*"\]/);
+    expect(wrangler).toMatch(/\[env\.production\.triggers\]\s*crons = \["\*\/15 \* \* \* \*", "7 3 \* \* \*"\]/);
     expect(wrangler).not.toMatch(/^\[triggers\]/m);
     expect(testToml).not.toContain("crons");
     expect(testToml).not.toMatch(/binding = "DIGEST_JOBS"/);

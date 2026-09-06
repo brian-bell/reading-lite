@@ -30,6 +30,8 @@ export const ATTEMPTS_PREFIX = "attempts/";
 // corpus object under the tenant root, so its spelling belongs here with the
 // rest of them.
 export const REFRESH_STATE_KEY = "index/refresh-state.json";
+// Hosted scan/dispatch cursor; independent of the operator run marker.
+export const REFRESH_CURSOR_KEY = "index/refresh-cursor.json";
 export const BY_URL_PREFIX = "index/by-url/";
 export const BY_ID_PREFIX = "index/by-id/";
 
@@ -56,6 +58,8 @@ export interface R2KeyLayout {
   listIndexKey(): string;
   // index/refresh-state.json — the nightly-refresh run marker.
   refreshStateKey(): string;
+  // Hosted refresh scan and dispatch progress, independent of the ops marker.
+  refreshCursorKey(): string;
   // The scan prefix covering every reading's objects (manifest rebuild).
   readingsPrefix(): string;
   // The prefix covering one reading's objects (diagnostics listing).
@@ -79,6 +83,7 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
     keyRoot,
     listIndexKey: () => abs(LIST_INDEX_KEY),
     refreshStateKey: () => abs(REFRESH_STATE_KEY),
+    refreshCursorKey: () => abs(REFRESH_CURSOR_KEY),
     readingsPrefix: () => abs(READINGS_PREFIX),
     readingObjectsPrefix: (keyPrefix) => abs(`${keyPrefix}/`),
     manifestKey: (keyPrefix) => abs(`${keyPrefix}/${MANIFEST_FILE}`),
