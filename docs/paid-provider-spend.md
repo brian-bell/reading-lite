@@ -142,3 +142,30 @@ in-flight provider calls. Re-enabling allows normal retries of deferred attempts
 it does not enqueue recovery jobs. Neither action releases leases, refunds
 uncertain charges, changes reading attempts, nor resets daily accounting.
 Operator batch/eval/comparison enforcement remains separate (#319).
+
+### Detailed private preflight inspection
+
+`npm run ops -- system status --env staging --tenant usr_… --details` requests
+retained spend-operation state, global leases, and the selected tenant's request,
+hourly-reading, monthly-reading, reservation, and lease state. This requires the
+Worker with the detailed `OperatorStatus` implementation; a counter-only response
+from an older deployment is unavailable, not a clean inspection. There is no
+public HTTP route and no generic guard-RPC forwarding.
+
+The command reads without cleanup, refunds, lease renewals, or quota changes.
+`reserved` spend remains a charged maximum even when its unused-hold expiry has
+passed; `dispatched` means authorized but not settled and may be in flight or
+uncertain. Neither state is proof of a completed provider charge. Operation rows
+span the retained admission days; daily aggregates outlive those rows, so this
+is not a lifetime ledger or provider invoice. Fingerprints and lease fences are
+omitted. Tenant quota headroom uses the actual stored counters, conservatively
+including expired reading holds until normal cleanup releases them. Request
+headroom applies to the current rolling request window; hourly readings reset
+on UTC hour boundaries and monthly readings on UTC month boundaries.
+
+Each scan reads at most 1,000 records. A full page is marked `complete: false`
+(even if it happens to contain exactly the final 1,000 records), and the CLI exits
+1. Never infer an empty outstanding-work set from a partial scan. Malformed or
+unavailable state also fails closed. The global and tenant objects have separate
+observation timestamps; this is not a cross-object atomic snapshot. Even a
+complete inspection does not reserve the reported headroom for a later run.

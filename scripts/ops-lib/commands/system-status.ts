@@ -13,18 +13,20 @@ import { remoteSpendStatus } from "../../system-lib/status";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 export interface StatusDeps extends BaseDeps {
   connect(env: PolicyEnvironment): ControlPlaneDb;
-  accounting(env: PolicyEnvironment, tenant?: string): Promise<SpendStatus>;
+  accounting(env: PolicyEnvironment, tenant?: string, details?: boolean): Promise<SpendStatus>;
 }
 export const systemStatusCommand: CommandDefinition<StatusDeps> = {
   group: "system",
   name: "status",
   safety: "read-only",
   summary: "Inspect policy and authoritative current UTC-day spend",
-  helpText: `Usage: npm run ops -- system status --env staging|production [--tenant <usr_…>]
+  helpText: `Usage: npm run ops -- system status --env staging|production [--tenant <usr_…>] [--details]
 Requires an explicit environment and Cloudflare operator credentials.
 Reports charged against budget (including holds and uncertain maxima), not invoices.
 Accounting unavailable is an error, never a zero. Policy and accounting are separate
 observations, not an atomic snapshot. Tokens and secrets are never printed.
+  --details  Inspect bounded retained spend operations, leases, and tenant quota headroom.
+             Read-only; incomplete scans return exit 1. Requires updated Worker.
   --help  Show help.`,
   defaultDeps: (io) => ({
     io,
@@ -36,7 +38,7 @@ observations, not an atomic snapshot. Tokens and secrets are never printed.
     try {
       ({ values: v } = parseArgs({
         args: argv,
-        options: { env: { type: "string" }, tenant: { type: "string" } },
+        options: { env: { type: "string" }, tenant: { type: "string" }, details: { type: "boolean" } },
       }));
     } catch {
       throw new UsageError("Invalid status arguments");
@@ -65,7 +67,7 @@ observations, not an atomic snapshot. Tokens and secrets are never printed.
       ),
     );
     try {
-      const accounting = await deps.accounting(env, tenant);
+      const accounting = await (v.details ? deps.accounting(env, tenant, true) : deps.accounting(env, tenant));
       deps.io.stdout(
         JSON.stringify(
           {
@@ -78,6 +80,10 @@ observations, not an atomic snapshot. Tokens and secrets are never printed.
           2,
         ),
       );
+      if (v.details && (!accounting.details || !accounting.details.spend.complete || !accounting.details.leases.complete || (tenant && (!accounting.tenantDetails || !accounting.tenantDetails.leases.complete || !accounting.tenantDetails.reservations.complete)))) {
+        deps.io.stderr("Inspection incomplete or unavailable; do not infer readiness from partial records.");
+        return 1;
+      }
       return 0;
     } catch {
       deps.io.stderr(

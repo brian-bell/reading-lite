@@ -1,3 +1,4 @@
+import { inspectGlobal } from "./operator-inspection";
 import { readSpendStatus } from "./spend-status";
 import type { Env } from "../index";
 import { GLOBAL_USAGE_GUARD_NAME, SPEND_RESERVATION_TTL_MS } from "./constants";
@@ -54,7 +55,7 @@ type FenceLeaseBody = {
  * for an account that no longer exists.
  */
 type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
-type GuardBody = { kind: "spend_status"; tenantId?: string } | AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
+type GuardBody = { kind: "spend_status"; tenantId?: string; details?: boolean } | AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -146,7 +147,8 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (kind === "spend_status") {
     const canonicalTenant = body.tenantId === undefined ? undefined : parseTenantId(tenantId);
     if (canonicalTenant === null) return null;
-    return { kind, ...(canonicalTenant ? { tenantId: canonicalTenant } : {}) };
+    if (body.details !== undefined && typeof body.details !== "boolean") return null;
+    return { kind, ...(canonicalTenant ? { tenantId: canonicalTenant } : {}), ...(body.details === true ? { details: true } : {}) };
   }
   if (kind === "purge_tenant") {
     return parseTenantId(tenantId) ? { kind, tenantId } : null;
@@ -206,7 +208,10 @@ export class GlobalUsageGuard implements DurableObject {
     if (!parsed) return json({ error: "invalid_body" }, 400);
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
-      if (body.kind === "spend_status") return json(await readSpendStatus(this.state.storage, Date.now(), body.tenantId));
+      if (body.kind === "spend_status") {
+        const now = Date.now();
+        return json({ ...await readSpendStatus(this.state.storage, now, body.tenantId), ...(body.details ? { details: await inspectGlobal(this.state.storage, now) } : {}) });
+      }
       if (body.kind === "acquire_lease") return this.acquireLease(body);
       if (body.kind === "purge_tenant") return this.purgeTenant(body);
       if (body.kind === "reserve_spend") return this.reserveSpend(body);

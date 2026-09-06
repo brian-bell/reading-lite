@@ -37,6 +37,12 @@ describe("remote accounting transport", () => {
       expect(mocks.dispose).toHaveBeenCalledOnce();
     },
   );
+  it("does not accept an old Worker's counter-only response as detailed readiness",async()=>{
+    mocks.fetch.mockResolvedValue(Response.json(status));
+    await expect(remoteSpendStatus("staging",undefined,true)).rejects.toThrow("Accounting unavailable");
+    expect(mocks.fetch).toHaveBeenCalledWith("https://operator/status?details=1");
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+  });
   it("validates tenant attribution", async () => {
     mocks.fetch.mockResolvedValue(Response.json(status));
     await expect(remoteSpendStatus("staging", tenant)).rejects.toThrow(

@@ -1,9 +1,12 @@
 // Diagnostics read the same counters as admission. Charged includes unsettled
 // maxima and holds; it is deliberately not described as a provider invoice.
+import { OperatorDetailsSchema, TenantInspectionSchema } from "./operator-inspection";
 import { z } from "zod";
 import { utcSpendDay, utcSpendDayResetAt } from "./spend-ledger";
 const Amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const SpendStatusSchema = z.object({
+  details: OperatorDetailsSchema.optional(),
+  tenantDetails: TenantInspectionSchema.optional(),
   dayKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   observedAtMs: Amount,
   resetAtMs: Amount,
