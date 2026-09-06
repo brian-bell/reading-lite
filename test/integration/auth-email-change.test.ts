@@ -247,6 +247,44 @@ describe("verified email change", () => {
     expect(tokenAfter.res.status).toBe(401);
   });
 
+  it("does not let another user redeem an email-change credential, then preserves that user's sessions and tokens", async () => {
+    const owner = await redeemUser("swap-owner@test.example", "clm_swap_owner");
+    const other = await redeemUser("swap-other@test.example", "clm_swap_other_user");
+    const { bearer: otherBearer } = await insertReadToken(other.userId);
+
+    const requested = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { email: "swap-owner-fresh@test.example" },
+    });
+    const credential = credentialFrom(requested.sent[0]!.verifyUrl);
+
+    const swapped = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: other.cookie,
+      csrf: other.csrf,
+      body: { credential, redemption_id: "clm_swap_foreign_redeem" },
+    });
+    expect(swapped.res.status).toBe(403);
+    expect(await swapped.res.json()).toEqual({ error: "forbidden" });
+    expect((await (await request("/api/whoami", { cookie: owner.cookie })).res.json() as { email: string }).email).toBe(
+      "swap-owner@test.example",
+    );
+
+    const confirmed = await request("/api/auth/redeem", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { credential, redemption_id: "clm_swap_owner_redeem" },
+    });
+    expect(confirmed.res.status).toBe(200);
+    expect((await (await request("/api/whoami", { cookie: other.cookie })).res.json() as { email: string }).email).toBe(
+      "swap-other@test.example",
+    );
+    expect((await request("/api/whoami", { authorization: otherBearer })).res.status).toBe(200);
+  });
+
   it("requires recent authentication to request an email change", async () => {
     const session = await redeemUser("stale-changer@test.example", "clm_stale_req");
     const staleEnv = env as unknown as Env;
