@@ -77,6 +77,54 @@ describe("ops corpus drop", () => {
     expect(calls.indexWrites).toBe(1);
   });
 
+  it.each([
+    "usr_11111111-1111-4111-8111-111111111111",
+    "usr_22222222-2222-4222-8222-222222222222",
+    "global",
+  ])("ready drop under %s preserves the other tenant and legacy copies", async (selected) => {
+    const selectors = [
+      "usr_11111111-1111-4111-8111-111111111111",
+      "usr_22222222-2222-4222-8222-222222222222",
+      "global",
+    ];
+    const root = (selector: string) => selector === "global" ? "" : `u/${selector}/`;
+    const vectorId = (selector: string) => selector === "global" ? "rd_shared" : `${selector}:rd_shared`;
+    const item: ListItem = {
+      ...FAILED_ITEM, id: "rd_shared", key_prefix: "readings/rd_shared", status: "ready",
+    };
+    const keys = ["readings/rd_shared/manifest.json", "readings/rd_shared/extracted.md", "index/by-id/rd_shared"];
+    const lists = new Map(selectors.map((s) => [root(s), [structuredClone(item)]]));
+    const objects = new Map(selectors.flatMap((s) => keys.map((key) => [root(s) + key, `${s}:${key}`] as const)));
+    const vectors = new Map(selectors.map((s) => [vectorId(s), { namespace: s, title: `${s} copy` }]));
+    const before = structuredClone({ lists, objects, vectors });
+    const { io: cio, lines } = io();
+    const deps: CorpusDropDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async (d) => structuredClone(lists.get(d.keyRoot)!),
+        keysForReading: async () => keys,
+        deleteObject: async (key, d) => objects.delete(d.keyRoot + key) ? "deleted" : "absent",
+        deleteVector: async (_index, id) => { vectors.delete(id); return "deleted"; },
+        writeListIndex: async (items, d) => { lists.set(d.keyRoot, structuredClone(items)); },
+      },
+    };
+    const args = ["--tenant", selected, item.id, "--allow-ready", "--bucket", "reading-lite-staging", "--vectorize", "staging-index"];
+
+    expect(await corpusDropCommand.run(args, deps)).toBe(0);
+    expect({ lists, objects, vectors }).toEqual(before);
+    expect(lines.join("\n")).toContain(`would delete vector  staging-index/${vectorId(selected)}`);
+
+    expect(await corpusDropCommand.run([...args, "--execute"], deps)).toBe(0);
+    expect(lists.get(root(selected))).toEqual([]);
+    expect(vectors.has(vectorId(selected))).toBe(false);
+    for (const key of keys) expect(objects.has(root(selected) + key)).toBe(false);
+    for (const other of selectors.filter((s) => s !== selected)) {
+      expect(lists.get(root(other))).toEqual(before.lists.get(root(other)));
+      expect(vectors.get(vectorId(other))).toEqual(before.vectors.get(vectorId(other)));
+      for (const key of keys) expect(objects.get(root(other) + key)).toBe(before.objects.get(root(other) + key));
+    }
+  });
+
   it("keeps the index intact when an object delete fails", async () => {
     const { deps, calls } = makeDeps([FAILED_ITEM]);
     deps.r2.deleteObject = async () => "error";

@@ -53,13 +53,15 @@ matrix runs through `/mcp`; alias correctness is a separate dispatch test.
 | Surface | Evidence and boundary | Canonical tests |
 | --- | --- | --- |
 | Session/token list and revoke | Two authenticated sessions; foreign ids match unknown responses and remain usable until their owner revokes them. Lists omit the foreign resource. | `test/integration/auth-sessions.test.ts`, `auth-tokens.test.ts` |
+| Email-change redemption | A user cannot redeem another user's email-change credential; the owner can still redeem it, while the other user's session and API token remain usable. | `test/integration/auth-email-change.test.ts` |
+| Revoke-all and logout | Cookie and bearer revoke-all clear every session only for their caller; another tenant's session and token survive. Logout clears one session while another session for that user and another tenant remain usable. | `test/integration/auth-sessions.test.ts` |
 | Settings and identity | Each principal sees its own identity/settings; changing A leaves B unchanged. | `test/integration/auth-settings.test.ts` |
 | Account deletion | B enters deleting; A stays active with a working session. | `test/integration/auth-account-delete.test.ts` |
 | Reading queue admission | An envelope claiming A with B's credential is acknowledged before processing or mutation. | `test/integration/dead-letter.test.ts`, `test/unit/control-plane/envelope.test.ts` |
 | Reading DLQ | Identical id/key in A and B: only the admitted tenant's manifest/list becomes failed. | `test/integration/dead-letter.test.ts` |
 | Retry and concurrent publication | Admission precedes retry dispatch; concurrent A/B terminal commits preserve separate lists and vectors. | `test/unit/queue/dispatch.test.ts`, `test/integration/readings.test.ts` |
 | Digest send and DLQ | Separate tenant recipients/content; digest DLQ changes its ledger, not reading state. | `test/integration/digest-pipeline.test.ts` |
-| Wipe and teardown replay | Target prefix is removed while foreign prefix survives; old jobs cannot recreate torn-down data. | `test/integration/account-wipe.test.ts`, `account-deletion-queue-limits.test.ts` |
+| Wipe and teardown replay | Target prefix is removed while foreign prefix survives; old jobs cannot recreate torn-down data. A deterministic interleave runs populated A/B wipes with the same reading ids through independent D1 progress/ledger rows, R2 roots, delayed vector confirmation, retries, and completion. | `test/integration/account-wipe.test.ts`, `account-deletion-queue-limits.test.ts` |
 | Destructive corpus maintenance | With identical ids in populated A/B roots, sweep and orphan deletion alter only the selected root and its composed vector. Rebuild, tag/relationship repair, and connection maintenance use the same selector-aware R2 contract. | `test/unit/scripts/ops-corpus-group.test.ts`, `ops-corpus-refresh-neighbours.test.ts`, `ops-corpus-refresh-connections.test.ts`, `ops-corpus-refresh-tensions.test.ts`, `ops-corpus-purge-connections.test.ts` |
 | Operator audit/recovery | Audit reads only selected root and stamps provenance. Foreign audit refuses before API, annotation, sidecar or batch work. Bearer identity must match selected layout. | `test/unit/scripts/ops-corpus-audit.test.ts`, `ops-corpus-recover.test.ts`, `realtime-tenant.test.ts` |
 | Batch ingest/recover and vector repair | Batch configuration carries the selected tenant into its R2 root, namespace, ledger, composed vector writes, and resumable sidecars. Foreign audit/sidecar provenance refuses before provider work. | `test/unit/scripts/ops-corpus-group.test.ts`, `ops-corpus-recover.test.ts`, `test/unit/corpus/batch/sidecar.test.ts`, `test/unit/corpus/tenant.test.ts` |
@@ -86,10 +88,7 @@ the behavioral tests named above.
 ## Remaining limits
 
 This is a bounded improvement to #198, not a claim that its literal “every
-path with two principals” acceptance criterion is complete. Email-change
-credential swapping and revoke-all/logout across two principals are not added
-here. Existing wipe coverage preserves a foreign prefix but does not run two
-simultaneous tenant wipes. Operator coverage composes each command's selector,
+path with two principals” acceptance criterion is complete. Operator coverage composes each command's selector,
 provenance, or authenticated-client wiring with populated shared R2, Vectorize,
 ledger, and API boundary cases; thin wrappers do not duplicate an end-to-end
 two-tenant corpus fixture when they introduce no additional storage boundary.

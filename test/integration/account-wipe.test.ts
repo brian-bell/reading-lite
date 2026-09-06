@@ -38,8 +38,10 @@ import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
 import { tenantVectorId } from "../../src/modules/stores/similarity-store";
 import type { ListIndexItem } from "../../src/schemas/api";
 import {
+  FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
   OTHER_TOKEN_ID,
+  founderTenant,
   insertSecondTenant,
   otherTenant,
   testReadingStore,
@@ -237,6 +239,64 @@ async function seedTenantObjects(
   if (opts.ledger !== false) await seedLedger(ids);
 }
 
+/** A two-tenant fixture intentionally reuses ids: R2 roots, D1 rows, and composed vector ids must separate them. */
+async function seedObjectsForTenant(tenantId: string, ids: string[]): Promise<void> {
+  const tenant = parseTenantId(tenantId)!;
+  const context = tenantId === FOUNDER_TENANT_ID ? founderTenant() : otherTenant();
+  const prefix = tenantKeyRoot(context, true);
+  const reader = testReadingStore(env, context);
+  await reader.writeListIndex({ version: 1, items: ids.map((id) => indexItem(id)) });
+  for (const id of ids) {
+    await reader.writeByIdPointer(id, { id, key_prefix: `readings/2026/04/26T200000Z-${id}` });
+    await env.READINGS_BUCKET.put(
+      `${prefix}readings/2026/04/26T200000Z-${id}/manifest.json`,
+      JSON.stringify({ id }),
+    );
+  }
+  await d1VectorLedger(controlPlane(), tenant).markLive(ids, NOW_MS);
+}
+
+function installInterleavedTenantVectorizeStub(initialIds: Array<{ tenantId: string; id: string }>) {
+  const live = new Set(initialIds.map(({ tenantId, id }) => tenantVectorId(tenantId, id)));
+  const deletes: string[][] = [];
+  let releaseDeletes: (() => void) | undefined;
+  let bothDeletes: (() => void) | undefined;
+  const release = new Promise<void>((resolve) => {
+    releaseDeletes = resolve;
+  });
+  const reachedBoth = new Promise<void>((resolve) => {
+    bothDeletes = resolve;
+  });
+  const index = {
+    upsert: vi.fn(async () => ({ mutationId: "up" })),
+    deleteByIds: vi.fn(async (ids: string[]) => {
+      deletes.push(ids);
+      if (deletes.length === 2) bothDeletes?.();
+      await release;
+      return { mutationId: `mut_${deletes.length}` };
+    }),
+    getByIds: vi.fn(async (ids: string[]) => ids.filter((id) => live.has(id)).map((id) => ({ id }))),
+    query: vi.fn(async (_vector: number[], opts: { namespace?: string }) => ({
+      count: 0,
+      matches: [...live]
+        .filter((id) => opts.namespace === undefined || id.startsWith(`${opts.namespace}:`))
+        .map((id) => ({ id, score: 1, metadata: {} })),
+    })),
+  } as unknown as VectorizeIndex;
+  (env as unknown as Env).READINGS_INDEX = index;
+  return {
+    deletes,
+    reachedBoth,
+    release: () => releaseDeletes?.(),
+    removeTenant: (tenantId: string) => {
+      for (const id of live) {
+        if (id.startsWith(`${tenantId}:`)) live.delete(id);
+      }
+    },
+    live,
+  };
+}
+
 /**
  * Ledger rows as a previous delivery's vectors phase would have left them:
  * `delete_submitted`, stamped far enough in the past that the +120s
@@ -424,6 +484,7 @@ describe("account wipe (195b PR1)", () => {
 
   afterEach(async () => {
     await markActive(OTHER_TENANT_ID);
+    await markActive(FOUNDER_TENANT_ID);
   });
 
   it("skips tenants still inside the 7-day grace window", async () => {
@@ -666,6 +727,99 @@ describe("account wipe (195b PR1)", () => {
     const foreign = await env.READINGS_BUCKET.get(foreignKey);
     expect(foreign).not.toBeNull();
     await foreign?.text();
+  });
+
+  it("interleaves populated wipes for two tenants with the same reading ids without crossing progress, ledger, R2, or vectors", async () => {
+    const founder = parseTenantId(FOUNDER_TENANT_ID)!;
+    const sharedIds = [ID_A, ID_B];
+    const founderPrefix = tenantKeyRoot(founderTenant(), true);
+    await seedObjectsForTenant(FOUNDER_TENANT_ID, sharedIds);
+    await seedObjectsForTenant(OTHER_TENANT_ID, sharedIds);
+    await markDeleting(FOUNDER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+    const vectors = installInterleavedTenantVectorizeStub([
+      ...sharedIds.map((id) => ({ tenantId: FOUNDER_TENANT_ID, id })),
+      ...sharedIds.map((id) => ({ tenantId: OTHER_TENANT_ID, id })),
+    ]);
+    const initialClock = { t: NOW_MS };
+    const founderJob = processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: founder }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: initialClock }),
+    );
+    const otherJob = processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: initialClock }),
+    );
+
+    // Both jobs have independently claimed their D1 leases and reached their
+    // namespace-scoped delete. Hold both deletes until that is true so this is
+    // a reproducible interleave, not a timing-sensitive Promise.all test.
+    await vectors.reachedBoth;
+    expect(vectors.deletes).toEqual(
+      expect.arrayContaining([
+        [tenantVectorId(FOUNDER_TENANT_ID, ID_A), tenantVectorId(FOUNDER_TENANT_ID, ID_B)],
+        [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)],
+      ]),
+    );
+    vectors.release();
+    const initialRetries = await Promise.allSettled([founderJob, otherJob]);
+    expect(initialRetries).toHaveLength(2);
+    for (const result of initialRetries) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toBeInstanceOf(AccountWipeNamespaceNotEmptyError);
+      }
+    }
+
+    // The first delivery has deleted each tenant's R2 prefix but retries while
+    // Vectorize propagation is pending. Its own ledger and progress row are
+    // the resume state; neither contains or blocks the other tenant.
+    expect(await listPrefixKeys(founderPrefix)).toEqual([]);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+    expect((await ledgerRows(FOUNDER_TENANT_ID)).map((row) => row.state)).toEqual([
+      "delete_submitted",
+      "delete_submitted",
+    ]);
+    expect((await ledgerRows(OTHER_TENANT_ID)).map((row) => row.state)).toEqual([
+      "delete_submitted",
+      "delete_submitted",
+    ]);
+    expect(await readWipeProgress(controlPlane(), founder)).toMatchObject({ completedAtMs: null, phase: "objects" });
+    expect(await readProgress()).toMatchObject({ completedAtMs: null, phase: "objects" });
+
+    const retryClock = { t: NOW_MS + VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS };
+    vectors.removeTenant(FOUNDER_TENANT_ID);
+    const founderComplete = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: founder }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: retryClock }),
+    );
+    expect(founderComplete).toMatchObject({ kind: "complete", residue: false });
+    expect(await ledgerRows(FOUNDER_TENANT_ID)).toEqual([]);
+    expect(await readWipeProgress(controlPlane(), founder)).toMatchObject({ completedAtMs: retryClock.t });
+    // A completes while B's namespace still answers, which proves A's clear
+    // cannot consume B's ledger row or complete B's progress record.
+    expect((await ledgerRows(OTHER_TENANT_ID)).map((row) => row.state)).toEqual([
+      "delete_submitted",
+      "delete_submitted",
+    ]);
+    expect(await readProgress()).toMatchObject({ completedAtMs: null, phase: "objects" });
+    expect(vectors.live).toEqual(
+      new Set(sharedIds.map((id) => tenantVectorId(OTHER_TENANT_ID, id))),
+    );
+
+    vectors.removeTenant(OTHER_TENANT_ID);
+    const otherComplete = await processAccountWipeJob(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      await wipeEnv(),
+      wipeJobDeps({ clock: retryClock }),
+    );
+    expect(otherComplete).toMatchObject({ kind: "complete", residue: false });
+    expect(vectors.live).toEqual(new Set());
+    expect(await ledgerRows(OTHER_TENANT_ID)).toEqual([]);
+    expect(await readProgress()).toMatchObject({ completedAtMs: retryClock.t });
   });
 
   it("cron fan-out enqueues past-grace deleting tenants and skips the grace window", async () => {
