@@ -1,235 +1,88 @@
 # reading-lite
 
-Personal reading service on Cloudflare Workers. Submit a URL → the configured
-provider summarizes it once (OpenAI by default, Anthropic optional) → R2 stores
-the manifest + raw + extracted markdown → Vectorize indexes the embedding → poll
-for the result.
+Save a URL and get a summary, connections to earlier readings, and a verdict
+on whether it adds something new to your library. Reading Lite stores captured
+content and summaries in Cloudflare R2, with a Worker for processing and a React
+app for reading, searching, and managing your account.
 
-Replaces a heavier Docker + SQLite + agent-orchestrator pipeline with a single
-Worker plus managed Cloudflare services (R2, Vectorize, Queues) and a
-Pages-hosted SPA. Canonical production host is
-[`readinglite.ai`](https://readinglite.ai);
-[`readinglite.app`](https://readinglite.app) also serves the application.
-[`reading-lite.bbell.dev`](https://reading-lite.bbell.dev) is retained as a
-compatibility and rollback host.
+The canonical host is [readinglite.ai](https://readinglite.ai).
+[readinglite.app](https://readinglite.app) also serves the app;
+[reading-lite.bbell.dev](https://reading-lite.bbell.dev) remains available for
+compatibility and rollback. Browser sessions are separate on each host.
 
-- [`docs/operations.md`](docs/operations.md) — deploy, staging lifecycle, bulk
-  ingest, corpus repair
-- [`docs/founder-cutover.md`](docs/founder-cutover.md) — production founder
-  cutover evidence (completed; one-time migration tooling retired)
-- [`docs/system-map/`](docs/system-map/README.md) — interactive architecture map
-- [`docs/product/`](docs/product/reading-lite-scope.md) — product brief and scope
-- [`docs/decisions/`](docs/decisions/0001-tenant-control-plane.md) — architecture
-  decision records
-- [`CONTEXT.md`](CONTEXT.md) — the domain language the code is named after
-- [`AGENTS.md`](AGENTS.md) — quick reference for AI coding agents
+## Using the app
 
-## Architecture at a glance
+Sign in with an emailed magic link, then submit a URL. Processing runs in the
+background. The detail page shows the TL;DR, summary, tags, entities, connections,
+and captured content. Search matches titles, TL;DRs, URLs, and keywords; tag
+chips filter the list. The app refreshes queries after submit and reprocess but
+does not poll pending readings. Refresh to see a later result.
 
-```
-POST /api/readings { url }
-  ├─ dedup via per-tenant index/by-url/{sha256(url)} → existing manifest? return 200
-  └─ else: claim the by-url owner, write a "pending" manifest, enqueue a
-           job on the READING_JOBS queue, return 202. Poll GET
-           /api/readings/:id until ready/failed. Re-submitting a pending URL
-           returns the owned reading; re-submitting a failed URL reprocesses
-           that same id.
+The Security page manages sessions, API tokens, account deletion, immediate
+notification mail, and daily or weekly digests. Digest cadence `off` disables
+digests independently of immediate notifications.
 
-READING_JOBS consumer (max_concurrency = 3) runs processReading per message:
-        fetch URL (timeout + size cap)
-      → linkedom + readability + turndown → markdown
-      → OpenAI text-embedding-3-small over the extracted text
-      → Vectorize.query(top-K) for similar context
-      → selected summarizer with structured output (OpenAI Responses by
-        default; Anthropic tool use when configured; no fallback)
-      → OpenAI embed the final TL;DR
-      → Vectorize.upsert(id, tldr_embedding, metadata)
-      → R2 write final manifest + confirm by-url pointer
-      (on any error → write status="failed" manifest; the eager by-url
-       owner stays in place so a later submit can reprocess the same id)
-      (upstream 429 → RateLimitedError → msg.retry({delaySeconds}); the
-       manifest stays pending until a later delivery completes. A message
-       that exhausts max_retries routes to the reading-lite-dlq queue,
-       where markDeadLettered flips the strand to a retryable "failed")
-```
-
-Each background run also stages an attempt record under
-`readings/.../attempts/{attempt_id}.json` capturing the trigger, stage, timings,
-and sanitized error details, so failed readings can be inspected without
-`wrangler tail`. When `TENANT_DATA_PLANE=1` (production since the
-2026-08-31 founder cutover, and the Workers-pool tests), those objects live
-under `u/{tenantId}/`. Stored `key_prefix` remains the relative `readings/…`
-path.
-
-The Worker is composed of deeply isolated modules, each unit-tested with stubbed
-`fetch` and bindings:
-
-| Module | Responsibility |
-|---|---|
-| `extractor` | fetch source URL behind per-hop SSRF checks (scheme, DNS vs private/link-local, redirect revalidation, 10 MiB / 20s); HTML→Markdown via linkedom + readability + turndown; special-cases X author threads and YouTube watch pages |
-| `embeddings` | OpenAI `text-embedding-3-small` (1536-dim) |
-| `summarizer` | provider selection and normalized result/usage contract; defaults to OpenAI and never silently falls back |
-| `openai-summarizer` | one-shot OpenAI Responses request with strict JSON-schema output |
-| `anthropic` | one-shot `messages.create` with `tool_choice: any` (`emit_reading` or `reject_source`); system + tool defs cached via `cache_control` |
-| `stores` | `ReadingStore` over R2 (manifest, raw, extracted, by-url + by-id pointers) and `SimilarityStore` over Vectorize |
-| `http-retry` | `fetchWithRetry`: 5xx + network retry with exponential backoff + jitter; 429 → `RateLimitedError` so the queue reschedules instead of burning a slot |
-| `email` | per-reading notification via Resend |
-
-SSRF regression tests are part of canonical `npm test`: `vitest.workspace.ts`
-includes `test/unit/extractor/` and the DNS adapter tests in
-`test/unit/modules/dns-resolve-lookup.test.ts` in the Workers project, and
-`test/unit/extract-agent/` in the Node project. The CI Worker job runs both
-projects; a failed suite prevents the automatic production deployment.
-
-DNS validation is a preflight check, not connection pinning. Hosted extraction
-and operator static fetches validate each hop, then the underlying fetch resolves
-the hostname again; a changed DNS answer between validation and connection can
-bypass that check. The Workers DNS adapter also cannot distinguish some
-single-family DNS failures from absent records (`ENOTFOUND`). These remain
-documented limitations, not guarantees established by the tests. See
-[`safe-fetch.ts`](src/modules/extractor/safe-fetch.ts) and
-[`services.ts`](src/services.ts). The operator headless browser uses a separate
-validating proxy that connects to vetted IPs directly.
+OpenAI is the default summarizer; Anthropic is optional. Both use OpenAI
+embeddings. The selected provider must be configured correctly; there is no
+automatic fallback. See [configuration](docs/configuration.md).
 
 ## Local development
 
+Use Node 22.12 or newer for the current development toolchain. The operator's
+Node 20.19.x setup has a separate [supported ops path](docs/operations.md#operator-node);
+do not upgrade that machine just to run the CLI.
+
+In the repository root:
+
 ```sh
-npm install
-cp .dev.vars.example .dev.vars   # fill in API keys
-npm run dev                      # D1 migrations + founder bootstrap, then wrangler dev on :8787
-npm test
-npm run typecheck
+npm ci
+cp .dev.vars.example .dev.vars   # first setup only; preserve an existing file
+npm run dev
 ```
 
-`wrangler dev` (top-level `wrangler.toml`, Worker name `reading-lite-dev`) runs
-against a Miniflare-emulated R2 bucket — initially empty, never the deployed one
-— so no remote resources are needed or touched.
+This applies local D1 migrations, imports `dev-local-token` as the founder
+bearer, and starts the Worker at `http://127.0.0.1:8787`. The example provider
+keys are placeholders. In a second terminal:
 
-> **`wrangler dev` has no Vectorize binding and no Queue binding by design.**
-> Vectorize has no local emulator and a remote binding would point dev at
-> production data, so search returns nothing locally; without `READING_JOBS`,
-> `POST /api/readings` and `/api/readings/:id/reprocess` return 503. Read-only
-> list/detail routes work against whatever is in the local bucket — see
-> [seeding local R2](docs/operations.md#seeding-local-r2). Submission and search
-> behavior is covered by the integration tests instead, which inject queue and
-> Vectorize stubs.
+```sh
+cd web
+npm ci
+npm run dev
+```
 
-For deployed environments, secrets, and the staging lifecycle, see
-[`docs/operations.md`](docs/operations.md).
+Open `http://127.0.0.1:5173`. Vite proxies `/api` and `/health` to the Worker.
+Request a magic link in the app, then retrieve it from
+`http://127.0.0.1:8787/api/dev/mailbox?email=<your-email>` on loopback.
+`LOCAL_MAIL_SINK=1` keeps local login mail in that outbox.
 
-### Configuration
+Local R2 starts empty. Local development has no Queue or Vectorize binding, so
+submit, import, and reprocess return 503, and vector similarity returns no
+matches. List, detail, content, lookup, and `q` text search work with
+[seeded local data](docs/operations.md#seeding-local-r2). Integration tests cover
+the processing pipeline with queue, Vectorize, and provider fakes.
 
-Vars in `wrangler.toml` are non-secret and set per environment:
+## Verification
 
-| Var | Default | Purpose |
-|---|---|---|
-| `CORS_ALLOWED_ORIGINS` | `""` | Comma-separated origin allowlist for browser callers. Empty disables CORS preflight. |
-| `MCP_ALLOWED_ORIGINS` | code default: `https://reading-lite.bbell.dev`, `https://readinglite.ai`, `https://readinglite.app` (local `wrangler.toml` currently sets only the first; production `[env.production.vars]` sets all three) | Comma-separated Origin allowlist for `POST /mcp`. Requests with no Origin (non-browser MCP clients) pass; unknown Origins are 403. |
-| `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale (surfaced as `failed` on read; a new attempt may supersede it). |
-| `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
-| `FETCH_MAX_BYTES` | `10485760` | Hard cap (10 MiB) on source response size. |
-| `SUMMARIZER_PROVIDER` | `openai` | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
-| `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
-| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` (`high` in staging and production) | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` (`high` in staging and production) | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5 accepts `low`, `medium`, `high`, `xhigh`, or `max`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with thinking disabled, fail closed. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
-| `EMAIL_FROM` | `""` | Sender for notification emails (a verified Resend domain). Empty skips send. |
-| `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email (`users.email_display`). |
-| `WEB_BASE_URL` | `""` (production `https://readinglite.ai/`) | Canonical base for digest mail, reading-notification mail, and MCP `public_url`. Magic-link mail prefers the request's recognized public host and falls back here. |
-| `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
-| `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
-| `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call retry delay; `Retry-After` is clamped to this value. |
+```sh
+npm run test:quiet
+npm run typecheck
+cd web
+npm test
+npm run build
+```
 
-Secrets are set with `wrangler secret put` — see
-[required secrets](docs/operations.md#secrets).
+`test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
+Workers-pool log noise filtered. CI uses `npm test`. There is no lint script.
+The SPA build includes its TypeScript check.
 
-## API
+## API and MCP
 
-Machine-readable contract: [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI
-3.1). Keep it in lockstep with `src/router.ts` and `src/schemas/`.
+Use scoped bearer tokens for scripts and MCP clients. The
+[API guide](docs/api.md) covers authentication, submit/poll behavior, Markdown
+imports, and reprocessing. [OpenAPI](docs/openapi.yaml) defines request and
+response schemas.
 
-All routes except `/health`, `GET /api/auth/login-options`, and
-`POST /api/auth/challenge` / `POST /api/auth/redeem` require authentication
-(bearer token or the host-only
-session cookie). Sessions are host-scoped: a `__Host-` cookie issued on
-`readinglite.ai` does not authenticate `readinglite.app` or
-`reading-lite.bbell.dev`. Bearer tokens are host-independent. After cutover the founder legacy bearer is imported by
-`founder-bootstrap` from `READER_API_TOKEN`; runtime auth looks it up in D1
-and does not fall back to the secret itself. Magic-link login issues a durable
-host-only `__Host-session` cookie (`Secure; HttpOnly; Path=/; SameSite=Lax;
-Max-Age=7776000`) so login survives browser restart. D1 still enforces a
-30-day inactivity timeout and 90-day absolute session expiry. Cookie-authenticated
-POST and DELETE requests require header `X-CSRF-Token` (HMAC of the session id,
-issued on `GET /api/whoami` for session principals). Bearer requests are exempt.
-A missing or invalid CSRF token returns 403 without treating the caller as logged
-out. Origin checks still apply to cookie writes.
-
-| Method + path | Behavior |
-|---|---|
-| `GET /health` | 200 `ok`. No auth. |
-| `GET /api/whoami` | Authenticated principal identity (`tenant_id`, `user_id`, `principal`, `tenant_data_plane`, `email`). Session principals also receive `csrf_token`. No scope beyond auth. |
-| `DELETE /api/account` | Session-only, cookie CSRF, recent-auth. Body `{ confirm: "delete" }`. Marks `users.status=deleting` first, then revokes every session and API token, sends deletion-start security mail, and clears the cookie. Subsequent auth 403 (revoked credentials 401). Queue/DLQ/digest/notification do not resurrect. Not `DELETE /api/readings/:id` (one-reading purge). Tenant R2+Vectorize wipe is a deferred shared-queue job after a 7-day grace (`force` payload skips grace); embeddings may take a short time to disappear. After the wipe completes and the prefix is empty, cron tears down the control plane (users row, child rows, Durable Object state) and frees the address. Residue scan is later (S5). Production and staging `TENANT_DATA_PLANE=1`: the founder is a normal tenant — do not special-case. |
-| `GET /api/auth/login-options` | Unauthenticated, same-origin, `no-store`. Chrome omits `Origin` on same-origin GET; allowed when `Sec-Fetch-Site: same-origin` (same as `GET /api/whoami`). Cross-site Origin is 403. `{ turnstile_site_key }` is the site key when `signup_mode` is `open` and `TURNSTILE_SITE_KEY` is configured, otherwise `null`. Does not disclose whether any email exists. |
-| `POST /api/auth/challenge` | Same-origin. Body `{ email, turnstile_token? }`. Always `{ ok: true }`. Sends a 15-minute newest-only magic link when eligible. Open mode that would send mail requires a successful Turnstile verify (local fail-open if the secret is unset; staging/production fail-closed). Invalid/missing token still `{ ok: true }` and skips send. invite_only/closed ignore extra tokens. |
-| `POST /api/auth/redeem` | Same-origin. Body `{ credential, redemption_id }`. Sets `__Host-session` (`Max-Age=7776000`). A live same-user session cookie refreshes `authenticated_at_ms` instead of minting another row. |
-| `POST /api/auth/logout` | Same-origin. Cookie CSRF (`X-CSRF-Token`). Revokes the D1 session and clears the cookie. |
-| `GET /api/auth/sessions` | Caller's sessions (current marked). `usable` is false for revoked or idle/absolute-expired rows; expired rows stay in the list. `session_cap_warning` when at the 10-session cap. |
-| `DELETE /api/auth/sessions/:id` | Cookie CSRF. Revokes one session; current also clears the cookie. No security mail. |
-| `POST /api/auth/sessions/revoke-all` | Cookie CSRF, no recent-auth. Revokes every session, logs the caller out, sends security mail. |
-| `POST /api/auth/tokens` | Session-only, cookie CSRF, recent-auth. Body `{ name, scopes, expires_at_ms? }`. 201 `{ token, id, name, scopes, created_at_ms, expires_at_ms }` with `tok_….hex` once. Default 90d; 409 at 10 active (including founder legacy). Security mail on create. |
-| `GET /api/auth/tokens` | Session-only. Lists metadata without secrets; `usable` is false for revoked or expired rows. |
-| `DELETE /api/auth/tokens/:id` | Session-only, cookie CSRF, no recent-auth. Soft-revokes; 404 if not owned. No security mail. |
-| `GET /api/auth/settings` | Session-only. Full `user_settings` row (`notify_immediate`, digest fields, timestamps). 404 if missing. |
-| `POST /api/auth/settings` | Session-only, cookie CSRF, no recent-auth. Body `{ notify_immediate }` plus optional digest fields (`digest_cadence`, `time_zone`, `digest_hour_local`, `digest_weekday`). Digest opt-out is `digest_cadence: off`. Returns the full row. 404 if missing. |
-| `POST /mcp` | Streamable HTTP MCP endpoint (tools). Bearer auth. See [MCP connector](#mcp-connector). |
-| `POST /api/readings` | Body `{ url, email? }`. Defaults `email` to true. Send-time `to` is the current verified account email. Returns 202 `{ id, status: "pending", poll }` for new URLs; 200 with the existing manifest for owned `ready`/`pending` URLs; 202 reprocesses the same id for owned `failed` URLs. Background work fills the manifest. Tenant request-rate and reading-quota denials return 429 with `Retry-After` and `reset_at`. |
-| `POST /api/readings/import-markdown` | Body `{ source_url, markdown, title?, email? }`. Uses `source_url` for identity/dedupe, skips source fetching, and processes the supplied Markdown as the captured article. Defaults `email` to false. Send-time import is always silent. Ready/pending owners return 200 with the existing manifest; failed owners reprocess the same id with the new Markdown. |
-| `GET /api/readings` | Newest-first list. Query: `q` (substring across title/tldr/url/keywords, case-insensitive), `tag` (exact, case-insensitive, tags only), `offset` (default 0), `limit` (1–100, default 20). Response: `{ readings, limit, offset, has_more }`. |
-| `GET /api/readings/:id` | Returns the manifest (status `pending` / `ready` / `failed`). |
-| `GET /api/readings/:id/diagnostics` | Returns the manifest, pointer health, list-index item, R2 object inventory, and recent processing attempts. |
-| `POST /api/readings/:id/reprocess` | Starts a fresh processing attempt for the existing reading id. Optional body `{ "force": true }` bypasses an active-attempt conflict. Optional body `{ "source": { "kind": "markdown", "markdown": "…", "title"?: "…" } }` reprocesses the supplied Markdown instead of re-fetching the URL, taking precedence over a markdown reading's stored text. A successful attempt makes the reading `source_type: "markdown"`, so later no-source reprocesses reuse that Markdown; on failure the reading keeps its previous `source_type`, and a reading that was already `ready` rolls back to its preserved manifest. The Markdown must fit Cloudflare's 128 KB queue-message limit; a larger body rolls the attempt back and returns 503. |
-| `GET /api/readings/:id/content` | Streams `extracted.md`. 404 when `content_status != "captured"`. |
-| `GET /api/readings/:id/content/raw` | Streams the raw bytes with the original `content_type`. |
-| `GET /api/readings/lookup?url=` | 200 `{ id }` for URLs with an owner, including `pending` and `failed` readings, 404 otherwise. |
-| `DELETE /api/readings/:id` | Purges the reading everywhere: Vectorize vector, `index/list.json` row, by-url ownership pointer (only when this reading owns it — an orphan-duplicate's slot belongs to its surviving copy and is left alone), every R2 object under the reading's prefix, and the by-id pointer last, so a partially-failed purge can be re-issued to completion. Requires the `readings:delete` scope. 409 while an attempt is running (stale attempts past the pending TTL don't block); 404 for unknown ids. Returns a purge report `{ id, vector_delete_requested, list_row_removed, by_url_released, objects_deleted }`. Other readings' `connections` may still name the deleted id; those links 404 until swept. |
-| `POST /api/readings/similar` | Body `{ query_embedding: number[1536], k?: number }`. Top-K via Vectorize. |
-
-List filtering is server-side against a denormalized `index/list.json` in R2,
-maintained on every `POST /api/readings` (pending) and every terminal write in
-`processReading` (ready/failed). When the index is missing — a freshly
-provisioned bucket, say — the list endpoint falls back to scan-and-rebuild.
-
-The full manifest schema lives in `src/schemas/manifest.ts`. Notable fields:
-`status`, `source_type?` (`url` | `markdown`), `error?`, `active_attempt?`,
-`last_attempt?`, `title?`, `tldr?`, `tags?`, `keywords?`, `people?`, `orgs?`,
-`novelty_verdict?` (`novel` | `familiar` | `duplicate`), `connections?`,
-`connections_computed_at?`, `tensions?` (directional `contradicts` |
-`supersedes` | `superseded_by` | `qualifies` | `qualified_by` entries written
-only by the offline tension refresh), `tensions_judged?`,
-`summary_markdown?`, `content_type`, `content_status`, `content_bytes`,
-`extracted_bytes?`, `content_sha256`, and `usage?`, which records embedding
-tokens plus a provider-discriminated summarization usage object.
-
-To diagnose a failed or stuck reading, retry one, or repair the corpus in bulk,
-see [`docs/operations.md`](docs/operations.md).
-
-## MCP connector
-
-`POST /mcp` is a stateless Streamable HTTP MCP server for Cursor and Grok Bot.
-Tools dispatch internally into the authenticated HTTP API with the caller's
-Bearer token — they never re-fetch the public host over the network.
-
-Tools (reads first; writes mutate the corpus): `list_readings`, `search_readings`,
-`get_reading`, `get_reading_content`, `submit_url`, `import_markdown`,
-`reprocess_reading`, `get_diagnostics`. List/search return metadata only; full
-extracted markdown is opt-in by id. After a successful import the tool result
-includes `public_url` / `public_markdown_link` when `WEB_BASE_URL` is set
-(production: `https://readinglite.ai/`).
-
-Cursor `mcp.json` / Grok Bot custom connector (same shape). Canonical URL is
-`https://readinglite.ai/mcp`. Use the existing `reading-lite.bearerToken` value
-— never commit it. Re-registering connectors that still point at the old host
-is a separate owner step (issue #265 C3), not performed by this documentation.
+For a remote MCP client:
 
 ```json
 {
@@ -239,129 +92,32 @@ is a separate owner step (issue #265 C3), not performed by this documentation.
 }
 ```
 
-The same tools are also served at `https://readinglite.ai/api/mcp` (already
-inside the `/api/*` Worker route), and during dual-serve at the matching
-`/mcp` and `/api/mcp` paths on `readinglite.app` and `reading-lite.bbell.dev`.
-Use `/mcp` once the dedicated `mcp*` route is attached; `/api/mcp` is the
-fallback when Pages still owns `/mcp`.
+Keep the token out of git. The connector has eight tools for listing, searching,
+reading content, submitting URLs, importing Markdown, reprocessing, and
+diagnostics. See [MCP setup and routes](docs/api.md#mcp-connector).
 
-Local `wrangler dev` serves the same path at `http://127.0.0.1:8787/mcp`.
-Stdio-only clients can bridge with `npx mcp-remote https://readinglite.ai/mcp`.
-Operator notes (origin var, production routes) live in
-[`docs/operations.md`](docs/operations.md#mcp-connector).
+## Imports and operations
 
-## Web SPA
+The operator CLI plans durable changes by default and applies them only with
+`--execute`. Start with `npm run ops -- --help`.
 
-A small React SPA in `web/` renders the list (with search + tag chips),
-submission form, and detail page (TL;DR, summary markdown, entities,
-connections, content links). Browser login uses a magic-link cookie session
-(identity + logout in the top bar). The Security page lists sessions and API
-tokens, toggles immediate-notification mail (`notify_immediate`; uncheck to
-opt out), and sets digest cadence (`off` | `daily` | `weekly`) with IANA time
-zone, local hour, and ISO weekday (Monday=1). Digest opt-out is cadence `off`
-and is independent of immediate mail. It does not store bearer material in
-`localStorage` or `sessionStorage`.
+[The operations runbook](docs/operations.md) covers deployment, staging, bookmark
+and Markdown imports, provider batches, and corpus repair. Every `corpus` command
+requires `--tenant`; live production uses the tenant ID from `/api/whoami`.
 
-```sh
-# In one terminal — Worker:
-npm run dev
+X threads use the recent-search API and need `X_API_BEARER_TOKEN`. Reddit needs
+local recovery. YouTube imports can use basic metadata in the Worker; local
+extraction adds description and transcript when available. See
+[source-specific imports](docs/operations.md#sources-that-need-a-local-skill).
 
-# In another terminal — SPA:
-cd web && npm install && npm run dev   # vite dev on http://127.0.0.1:5173
-```
+## Project documentation
 
-Vite proxies `/api` and `/health` to the Worker so requests are same-origin in
-development. In production the SPA is served from Cloudflare Pages on each
-public hostname (`readinglite.ai`, `readinglite.app`, and the retained
-`reading-lite.bbell.dev`), with Worker routes scoped to `/api/*`, `/health`,
-and `/mcp*` so Pages handles every other path. A session on one host does not
-apply on another.
-
-The SPA carries its own hand-typed `web/src/types.ts` mirroring
-`src/schemas/manifest.ts` — keep them in sync when the Worker schema changes.
-
-## Ingesting readings
-
-Beyond the API and the SPA form, several node-side tools ingest in bulk. All are
-documented in [`docs/operations.md`](docs/operations.md#bulk-ingest); all plan
-by default (omit `--execute` to preview) and resume from a local index.
-
-```sh
-npm run ops -- reading submit <url> --execute          # POST a single URL
-npm run ops -- import bookmarks --file ~/Downloads/bookmarks.html --execute
-npm run ops -- import markdown --dir ~/Documents/articles --execute
-npm run ops -- corpus ingest --dir ~/Documents/articles --execute --sole-writer  # provider Batch API
-```
-
-X/Twitter status URLs extract in-worker through the official recent-search
-API (`X_API_BEARER_TOKEN`). Reddit and YouTube need a local extraction step
-— the Worker is blocked from both — via the `reddit-import` and
-`youtube-import` skills. See [X threads](docs/operations.md#x-threads) and
-[sources that need a local skill](docs/operations.md#sources-that-need-a-local-skill).
-
-## Repo layout
-
-```
-src/
-  index.ts                      # worker entry: fetch handler + queue consumer + Env types
-  router.ts                     # Hono app: routes + the IntakeOutcome -> HTTP mapping
-  mcp/                          # Streamable HTTP MCP connector (POST /mcp tools)
-  middleware.ts                 # bearer auth + CORS allowlist
-  intake/                       # Reading intake: submit/importMarkdown/reprocess verbs;
-                                #   activation.ts = eager write-and-enqueue + rollback funnel
-  process-reading.ts            # processReading pipeline (runs in the queue consumer)
-  digest-pipeline.ts            # digest cron fan-out + DIGEST_JOBS Resend send (196 B2)
-  reading-visibility.ts         # list-row + Vectorize-vector lockstep, behind an owner gate
-  attempt-ownership.ts          # shared ownership verdict + attempt arg shapes
-  control-plane/                # D1 auth: HMAC crypto, principal, founder bootstrap
-  services.ts                   # Services interface (DI for fetch / lookup / now / id)
-  schemas/                      # zod: manifest, tool input, API request/response
-  modules/
-    reading-claim.ts            # by-url ownership resolution
-    staleness.ts                # read-time stale-annotation rule
-    extractor/                  # HTML→Markdown pipeline + SSRF-guarded fetch; x.ts threads + youtube.ts in-worker path
-    embeddings/                 # OpenAI client
-    summarizer/                 # provider selection + normalized usage/result contract
-    openai-summarizer/          # Responses API + strict structured output
-    anthropic/                  # emit_reading / reject_source + prompt caching
-    http-retry/                 # fetchWithRetry: backoff + RateLimitedError on 429
-    email.ts                    # Resend per-reading notification
-    digest-email.ts             # multi-reading digest HTML/text + Resend send
-    digest-schedule.ts          # local due math, period_key, digest window
-    stores/
-      reading-store.ts          # R2: manifest, raw, extracted, by-url + by-id
-      list-index.ts             # index/list.json: CAS, search, ownership, rebuild
-      similarity-store.ts       # Vectorize: upsert + query
-scripts/                        # operator tooling — plan-first, --execute to act
-  ops.ts, ops-lib/              # unified operator CLI (npm run ops -- <group> <command>):
-                                #   deploy, staging, founder, corpus, reading,
-                                #   import, and reading-list groups
-  dev-setup.ts                  # local npm run dev bootstrap
-  corpus-lib/, lib/, *-lib/     # shared logic behind the CLIs above;
-                                #   corpus-lib/batch/ is the provider Batch API pipeline
-test/
-  integration/                  # Hono router via Miniflare (R2 + stub Vectorize + stub queue)
-  unit/                         # workers pool: schemas, modules, stores, process-reading, queue
-                                # node pool: script + shared-lib tests
-web/                            # React SPA (separate npm project)
-docs/                           # operations runbook, system map, product, decisions
-wrangler.toml                   # local, staging, and production Worker config
-wrangler.test.toml              # test config (R2 only; Vectorize is stub-injected)
-vitest.workspace.ts             # two projects: "workers" + "node"
-```
-
-## Tests
-
-`npm test` from the repo root runs both Vitest projects:
-
-- **workers** — schemas, deep modules, R2 store, and integration tests against
-  the Hono router using `cloudflare:test`'s Miniflare-backed `env`. Vectorize is
-  not natively emulated, so each test that needs it injects a stub binding into
-  `env.READINGS_INDEX`.
-- **node** — script tests (corpus, import, shared `lib`) that use `node:fs` /
-  `os` / `path` and a real temp dir for fixtures.
-
-Live Anthropic / OpenAI / Vectorize calls are stubbed everywhere. `npm run
-test:quiet` runs the same suite with Workers-pool stderr noise stripped.
-
-`cd web && npm test` runs the SPA tests (jsdom + `window.fetch` stubs).
+- [Architecture](docs/architecture.md), module responsibilities and storage rules.
+- [AGENTS.md](AGENTS.md), commands and constraints for coding agents.
+- [CONTEXT.md](CONTEXT.md), domain terminology.
+- [Hosted provider spend](docs/paid-provider-spend.md), budgets and accounting.
+- [Staging context preparation](docs/staging-context-copy.md), local fixture packets.
+- [System map](docs/system-map/README.md), interactive architecture overview.
+- [Product scope](docs/product/reading-lite-scope.md) and
+  [architecture decisions](docs/decisions/0001-tenant-control-plane.md), planning history.
+- [Founder cutover](docs/founder-cutover.md), completed migration and retained evidence.
