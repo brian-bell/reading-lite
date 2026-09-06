@@ -1,5 +1,5 @@
 import type { Env } from "../index";
-import { PROCESSING_DEFER_DELAY_SECONDS } from "./constants";
+import { PROCESSING_DEFER_DELAY_SECONDS, PROCESSING_LEASE_HEARTBEAT_MS } from "./constants";
 import { globalUsageFor, type GlobalUsage } from "./global-usage-guard";
 import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "./tenant-usage-guard";
 
@@ -219,4 +219,53 @@ export function throwIfDeferred(result: AcquireProcessingLeasesResult): Processi
   if (result.ok && result.alreadyRunning) return "already_running";
   if (result.ok) return result.hold;
   throw new DeferPaidWorkError();
+}
+
+export class StaleProcessingLeaseError extends Error {
+  constructor() {
+    super("processing lease fence is stale");
+    this.name = "StaleProcessingLeaseError";
+  }
+}
+
+export async function presentLeaseBeforePaidDispatch(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): Promise<void> {
+  const renewed = await renewProcessingLeases(env, hold, nowMs());
+  if (renewed.ok) return;
+  if (renewed.reason === "stale_fence") throw new StaleProcessingLeaseError();
+  throw new DeferPaidWorkError();
+}
+
+export function startProcessingLeaseHeartbeat(
+  env: Env,
+  hold: ProcessingLeaseHold,
+  nowMs: () => number,
+): () => Promise<void> {
+  let generation = 0;
+  let inflight: Promise<void> = Promise.resolve();
+  const timer = setInterval(() => {
+    const epoch = generation;
+    const previous = inflight;
+    inflight = (async () => {
+      try {
+        await previous;
+      } catch {
+        // Prior heartbeat is best-effort.
+      }
+      if (epoch !== generation) return;
+      await heartbeatProcessingLeases(env, hold, nowMs());
+    })();
+  }, PROCESSING_LEASE_HEARTBEAT_MS);
+  return async () => {
+    generation += 1;
+    clearInterval(timer);
+    try {
+      await inflight;
+    } catch {
+      // Heartbeat is best-effort; stop must not fail the 429/abort path.
+    }
+  };
 }

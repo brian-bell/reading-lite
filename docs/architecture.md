@@ -137,7 +137,7 @@ scan at 03:07 UTC. The job families have separate queues and DLQs:
 | `READING_JOBS` | `processReading`; reading DLQ marks a reading failed |
 | `DIGEST_JOBS` | `digest-pipeline.ts`; digest DLQ only marks `digest_deliveries` failed |
 | `ACCOUNT_WIPE_JOBS` | `account-wipe.ts`; wipe DLQ logs and acks |
-| `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards and capped judge fan-out; judge consumer remains inert, DLQ logs and acks |
+| `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards and capped judge fan-out; `relationship-judge.ts` publishes relationship-only patches, DLQ logs and acks |
 
 Digest send re-reads cadence and the current verified account address. Empty
 windows close without mail. Resend 429 retains pending state for retry;

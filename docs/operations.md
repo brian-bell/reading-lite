@@ -157,7 +157,8 @@ unconfirmed vector-ledger rows.
    `db.batch`. Only confirmed-empty permits the batch. Leftover objects reopen
    the wipe on a later tick; unknown/error observations leave teardown for retry.
 4. Delete child rows before parents in one D1 batch: token scopes/tokens,
-   sessions, challenges, digest deliveries, settings, limits, eligible invites,
+   sessions, challenges, digest deliveries, relationship refresh checkpoints,
+   settings, limits, eligible invites,
    wipe progress, then users. D1 enforces foreign keys; none cascade.
    Migration 0012 lets unconfirmed vector-ledger rows outlive users.
 
@@ -2409,7 +2410,7 @@ production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 `RELATIONSHIP_REFRESH` remains unset in staging and production. Gate-off queue
 deliveries acknowledge and discard without storage/provider access; the refresh
 cron also does nothing. DLQ deliveries log and acknowledge without changing
-manifests. Keep both gates off until the judge consumer is implemented.
+manifests. Keep both gates off until the staging rollout.
 
 With the gate set to `1`, the separate `7 3 * * *` cron (03:07 UTC nightly)
 starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
@@ -2425,18 +2426,51 @@ Cursor writes use CAS. `REFRESH_MAX_JUDGEMENTS` defaults to `100` and accepts
 integers 1–1000. The cap counts distinct reserved judge jobs per nightly budget,
 not delivery attempts. Remaining candidates carry into later nights without
 rescanning; a fresh full scan begins on a later night after dispatch completes.
-The Worker does not read or update the offline `index/refresh-state.json` marker,
+The scan does not read or update the offline `index/refresh-state.json` marker,
 or rewrite similarity snapshots, manifests, list rows or vectors.
 
 A pending batch reserves allowance before sending. Failed/uncertain sends retain
 that reservation; the next scheduled invocation recovers a lost continuation.
 Retries can deliver the same `(runAt, readingId)` judge identity more than once.
-The future judge consumer must deduplicate that identity before paid work and
-revalidate the tenant and reading. Pending batches keep their original allowance
+The judge consumer deduplicates that identity before paid work and revalidates
+the tenant and reading. Pending batches keep their original allowance
 until their send is confirmed; a recorded new-night allowance then takes effect
 immediately so recovery does not skip that night. Invalid cursor data fails closed and is retained
 for diagnosis rather than silently restarting a run.
 
-Issue #175 slice 2 only produces judge jobs: judge deliveries currently log and
-acknowledge without provider or storage access. Slice 3 adds actual processing;
-staging enablement and evidence remain later work. Production stays disabled.
+Issue #175 slice 3 consumes judge jobs with the configured OpenAI or Anthropic
+relationship adapter. It reads the stored summary and current floored neighbours;
+it does not extract, embed, re-summarize, change status, or refresh tensions.
+Each HTTP attempt presents the shared processing leases and passes tenant/global
+spend admission. Refresh does not consume a new-reading quota slot.
+
+Migration `0014_relationship_refresh_jobs.sql` adds one latest checkpoint per
+reading to D1. After admission and immediately before fetch, the delivery marks
+that job dispatched. HTTP retries within that delivery each receive fresh spend
+admission. Confirmed 429 responses record a retry time and remain eligible for
+delayed re-enqueue with fresh admission; early duplicates honor Retry-After.
+Expected lease/spend deferrals also re-enqueue without consuming queue retries,
+falling back to queue retry if enqueue fails. Jobs expire 24 hours after their
+first deferral and leave the ready reading unchanged. Unknown
+charges remain held in the spend authority. A duplicate of an uncertain dispatch
+leaves the ready judgement alone;
+a later scan with a newer run identity may try again. This deliberately favors
+avoiding duplicate charges over retrying a job whose provider outcome is unknown.
+
+Successful results save only a relationship patch, resulting-manifest hash, and
+the neighbour manifest versions used as input. Those versions must still match
+before dispatch, result storage, and manifest publication, including checkpoint
+replay. An already committed manifest may still repair its list verdict after a
+neighbour changes.
+Publication CAS-writes `connections`, `novelty_verdict`,
+`connections_computed_at`, and `connections_neighbourhood_ids`, preserving all
+other manifest fields. The existing list CAS loop updates only the existing
+row's novelty verdict and rechecks ownership after contention. A saved result
+can repair a failed list write without another paid call. Lost manifest CAS,
+reprocessing, purged inputs, and tenant suppression stop publication; errors
+never create a failed reading. The checkpoint contains no article summary and
+is removed by reading purge and the guarded account-teardown D1 batch.
+
+Both gates remain unset. Staging enablement and evidence are slice 4; production
+stays disabled. Apply the migration through the normal Worker release path
+before deploying the new consumer.

@@ -166,8 +166,13 @@ submit, a markdown import, or a lookup. It lives in
 - **Refresh cursor** — tenant `index/refresh-cursor.json`, CAS-written with scan
   targets, flagged candidates and dispatch progress. A nightly judgement cap
   reserves pending batches before send and carries the remainder to later nights.
-  Judge identity is `(runAt, readingId)` across retries; the slice-2 judge consumer
-  remains inert. This cursor is independent of the operator's refresh-state marker.
+  Judge identity is `(runAt, readingId)` across retries. This cursor is independent
+  of the operator's refresh-state marker.
+- **Refresh judgement checkpoint** — D1 `relationship_refresh_jobs` keeps one
+  latest run per tenant/reading. Dispatch is marked only after paid admission;
+  an uncertain dispatch is not repeated by another delivery. A saved relationship
+  patch and resulting-manifest hash allow CAS publication/list repair without
+  another provider call. Reading purge and account teardown remove checkpoints.
 
 ## Operator surface
 

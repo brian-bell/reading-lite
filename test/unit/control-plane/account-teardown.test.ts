@@ -37,6 +37,7 @@ const CHILD_TABLES: ReadonlyArray<{ table: string; column: string; value: string
   { table: "sessions", column: "user_id", value: USER },
   { table: "auth_challenges", column: "email_canonical", value: EMAIL },
   { table: "digest_deliveries", column: "user_id", value: USER },
+  { table: "relationship_refresh_jobs", column: "tenant_id", value: USER },
   { table: "signup_invites", column: "email_canonical", value: EMAIL },
   { table: "wipe_progress", column: "tenant_id", value: USER },
 ];
@@ -136,6 +137,8 @@ async function seeded(options: { signupMode?: "open" | "invite_only" } = {}) {
        VALUES (?, ?, ?, ?)`,
     )
     .run(EMAIL, EMAIL, NOW_MS - 1000, NOW_MS - 500);
+  sqlite.prepare(`INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag, result_json)
+    VALUES (?, 'rd_refresh', '2026-09-03T00:00:00.000Z', 'owner', 'etag', '{}')`).run(USER);
   await beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS });
   return { sqlite, db };
 }

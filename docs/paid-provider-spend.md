@@ -1,8 +1,9 @@
 # Hosted provider spend protection
 
 Issue #200 covers source embedding, OpenAI/Anthropic summarization, and summary
-embedding in the hosted reading consumer. Operator batch, evaluation, comparison,
-and judgement clients remain outside this scope; their estimates are not enforcement.
+embedding in the hosted reading consumer, plus hosted relationship judgements.
+Operator batch, evaluation, comparison, and judgement clients remain outside this
+scope; their estimates are not enforcement.
 
 `src/control-plane/paid-dispatch.ts` wraps each provider adapter's fetch inside
 its HTTP retry loop. It bounds the complete request, then asks the existing

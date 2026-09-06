@@ -157,7 +157,7 @@ name = "reading-lite-staging"
 workers_dev = true
 
 [env.staging.vars]
-# Per-night cap on reserved judge jobs; judge processing remains disabled.
+# Per-night cap on reserved judge jobs; the master gate remains off.
 # RELATIONSHIP_REFRESH intentionally unset: refresh remains disabled.
 REFRESH_MAX_JUDGEMENTS = "100"
 APP_ENV = "staging"
@@ -352,7 +352,7 @@ zone_name = "bbell.dev"
 name = "reading-lite"
 
 [env.production.vars]
-# Per-night cap on reserved judge jobs; judge processing remains disabled.
+# Per-night cap on reserved judge jobs; the master gate remains off.
 # RELATIONSHIP_REFRESH intentionally unset: refresh remains disabled.
 REFRESH_MAX_JUDGEMENTS = "100"
 APP_ENV = "production"

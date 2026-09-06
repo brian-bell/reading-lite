@@ -1,3 +1,4 @@
+import { retryDepsFromEnv } from "./modules/http-retry";
 import {
   buildKeyPrefix,
   PointerExistsError,
@@ -50,16 +51,17 @@ import type {
 import { commitReadingSlot, refreshReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
 import {
   acquireProcessingLeases,
+  StaleProcessingLeaseError,
+  presentLeaseBeforePaidDispatch,
+  startProcessingLeaseHeartbeat,
   DeferPaidWorkError,
-  heartbeatProcessingLeases,
   pauseOrReleaseProcessingLeases,
   releaseProcessingLeases,
-  renewProcessingLeases,
   throwIfDeferred,
   type ProcessingLeaseHold,
 } from "./control-plane/processing-leases";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
-import { PROCESSING_DEFER_MAX_AGE_MS, PROCESSING_LEASE_HEARTBEAT_MS } from "./control-plane/constants";
+import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import {
   vectorLedgerFor,
@@ -450,12 +452,6 @@ async function ackOrDeferIfProcessingIncomplete(
   throw new DeferPaidWorkError();
 }
 
-class StaleProcessingLeaseError extends Error {
-  constructor() {
-    super("processing lease fence is stale");
-    this.name = "StaleProcessingLeaseError";
-  }
-}
 
 export class ProcessingDeferExpiredError extends Error {
   constructor() {
@@ -475,47 +471,6 @@ function deferLoopExceeded(args: ProcessReadingArgs, now: number): boolean {
   return now - origin > PROCESSING_DEFER_MAX_AGE_MS;
 }
 
-async function presentLeaseBeforePaidDispatch(
-  env: Env,
-  hold: ProcessingLeaseHold,
-  nowMs: () => number,
-): Promise<void> {
-  const renewed = await renewProcessingLeases(env, hold, nowMs());
-  if (renewed.ok) return;
-  if (renewed.reason === "stale_fence") throw new StaleProcessingLeaseError();
-  throw new DeferPaidWorkError();
-}
-
-function startProcessingLeaseHeartbeat(
-  env: Env,
-  hold: ProcessingLeaseHold,
-  nowMs: () => number,
-): () => Promise<void> {
-  let generation = 0;
-  let inflight: Promise<void> = Promise.resolve();
-  const timer = setInterval(() => {
-    const epoch = generation;
-    const previous = inflight;
-    inflight = (async () => {
-      try {
-        await previous;
-      } catch {
-        // Prior heartbeat is best-effort.
-      }
-      if (epoch !== generation) return;
-      await heartbeatProcessingLeases(env, hold, nowMs());
-    })();
-  }, PROCESSING_LEASE_HEARTBEAT_MS);
-  return async () => {
-    generation += 1;
-    clearInterval(timer);
-    try {
-      await inflight;
-    } catch {
-      // Heartbeat is best-effort; stop must not fail the 429/abort path.
-    }
-  };
-}
 
 async function sendReadingEmailAndLog(
   reader: ReadingStore,
@@ -1399,14 +1354,6 @@ export function retryableError(e: unknown): boolean {
   return false;
 }
 
-function retryDepsFromEnv(env: Env): RetryDeps {
-  return {
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    maxAttempts: parseIntEnv(env.RETRY_MAX_ATTEMPTS, 3),
-    baseDelayMs: parseIntEnv(env.RETRY_BASE_DELAY_MS, 500),
-    maxDelayMs: parseIntEnv(env.RETRY_MAX_DELAY_MS, 8_000),
-  };
-}
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;

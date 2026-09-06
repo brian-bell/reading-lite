@@ -484,6 +484,10 @@ function teardownStatements(tenantId: TenantId, addresses: string[]): SqlStateme
       params: [tenantId, ...guardParams],
     },
     {
+      sql: `DELETE FROM relationship_refresh_jobs WHERE tenant_id = ? AND ${guard}`,
+      params: [tenantId, ...guardParams],
+    },
+    {
       sql: `DELETE FROM user_settings WHERE user_id = ? AND ${guard}`,
       params: [tenantId, ...guardParams],
     },
