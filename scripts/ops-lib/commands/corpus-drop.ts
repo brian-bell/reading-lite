@@ -16,6 +16,7 @@ import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 export interface CorpusDropR2 {
   readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
@@ -121,12 +122,13 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
     const keys = await r2.keysForReading(t.id, t.prefix, t.url, r2Deps);
     io.stdout(`• ${t.id}  ${t.url}`);
     if (t.status === "ready" && opts.vectorizeIndex) {
+      const vectorId = tenantVectorId(tenant.namespace, t.id);
       if (!opts.execute) {
-        io.stdout(`    would delete vector  ${opts.vectorizeIndex}/${t.id}`);
+        io.stdout(`    would delete vector  ${opts.vectorizeIndex}/${vectorId}`);
       } else {
-        const res = await r2.deleteVector(opts.vectorizeIndex, t.id);
-        if (res === "deleted") { deleted++; io.stdout(`    deleted   vector:${opts.vectorizeIndex}/${t.id}`); }
-        else { errored++; io.stderr(`    ! delete error  vector:${opts.vectorizeIndex}/${t.id}`); continue; }
+        const res = await r2.deleteVector(opts.vectorizeIndex, vectorId);
+        if (res === "deleted") { deleted++; io.stdout(`    deleted   vector:${opts.vectorizeIndex}/${vectorId}`); }
+        else { errored++; io.stderr(`    ! delete error  vector:${opts.vectorizeIndex}/${vectorId}`); continue; }
       }
     }
     for (const key of keys) {
