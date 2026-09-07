@@ -2407,10 +2407,12 @@ for setup, exact commands, version/retry semantics, and accounting limitations.
 Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
-`RELATIONSHIP_REFRESH` remains unset in staging and production. Gate-off queue
-deliveries acknowledge and discard without storage/provider access; the refresh
-cron also does nothing. DLQ deliveries log and acknowledge without changing
-manifests. Keep both gates off until the staging rollout.
+`RELATIONSHIP_REFRESH=1` is enabled in staging with a two-judgement nightly cap.
+Production remains unset pending review of one clean scheduled staging run, as
+authorized for this rollout. See [staging evidence](relationship-refresh-staging.md).
+Gate-off queue deliveries acknowledge and discard without storage/provider
+access; the refresh cron also does nothing. DLQ deliveries log and acknowledge
+without changing manifests.
 
 With the gate set to `1`, the separate `7 3 * * *` cron (03:07 UTC nightly)
 starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
@@ -2471,6 +2473,6 @@ reprocessing, purged inputs, and tenant suppression stop publication; errors
 never create a failed reading. The checkpoint contains no article summary and
 is removed by reading purge and the guarded account-teardown D1 batch.
 
-Both gates remain unset. Staging enablement and evidence are slice 4; production
-stays disabled. Apply the migration through the normal Worker release path
-before deploying the new consumer.
+Staging enablement and evidence are slice 4; production stays disabled until the
+single-night staging acceptance check passes. Apply the migration through the
+normal Worker release path before deploying the new consumer.
