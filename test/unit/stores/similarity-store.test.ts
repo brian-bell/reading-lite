@@ -147,3 +147,31 @@ describe("SimilarityStore.query", () => {
     expect(binding.query.mock.calls[1]![1]).toMatchObject({ topK: 50 });
   });
 });
+
+describe("SimilarityStore.queryByVectorId", () => {
+  it("uses a composed vector id and namespace, returns bare ids and metadata", async () => {
+    const binding = {
+      getByIds: vi.fn(async () => [{ id: "tenant:rd_a" }]),
+      queryById: vi.fn(async () => ({ matches: [
+        { id: "tenant:rd_b", score: 0.8, metadata: { url: "https://example.com", title: "B" } },
+      ] })),
+    };
+    const store = new SimilarityStore(binding as unknown as VectorizeIndex, "tenant");
+    expect(await store.queryByVectorId("rd_a", 6)).toEqual([
+      { id: "rd_b", score: 0.8, url: "https://example.com", title: "B" },
+    ]);
+    expect(binding.getByIds).toHaveBeenCalledWith(["tenant:rd_a"]);
+    expect(binding.queryById).toHaveBeenCalledWith("tenant:rd_a", {
+      topK: 6, namespace: "tenant", returnMetadata: "all",
+    });
+  });
+
+  it("distinguishes absent vectors from binding failures", async () => {
+    const binding = { getByIds: vi.fn(async () => []), queryById: vi.fn() };
+    const store = new SimilarityStore(binding as unknown as VectorizeIndex);
+    expect(await store.queryByVectorId("rd_a", 6)).toBeNull();
+    expect(binding.queryById).not.toHaveBeenCalled();
+    binding.getByIds.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(store.queryByVectorId("rd_a", 6)).rejects.toThrow("unavailable");
+  });
+});

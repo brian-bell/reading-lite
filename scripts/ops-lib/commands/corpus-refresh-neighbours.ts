@@ -30,6 +30,7 @@
 import path from "node:path";
 import { loadDotVars } from "../../lib/dotvars";
 import {
+  REFRESH_CANDIDATE_TOP_K,
   buildRefreshReport,
   buildReportReading,
   diffNeighbourhood,
@@ -53,7 +54,7 @@ import {
   type ReverseMatches,
 } from "../../corpus-lib/refresh-scope";
 import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-similarity";
-import { SIMILAR_TOP_K, tenantVectorId } from "../../../src/modules/stores/similarity-store";
+import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
@@ -558,7 +559,7 @@ async function refreshNeighbours(
         matches = await r2.queryByVectorId(
           vectorizeIndex,
           tenantVectorId(tenant.namespace, t.id),
-          SIMILAR_TOP_K + 1,
+          REFRESH_CANDIDATE_TOP_K,
           tenant.namespace,
         );
       } catch (e) {

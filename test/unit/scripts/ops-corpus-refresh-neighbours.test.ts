@@ -7,7 +7,7 @@ import {
 import { UsageError, type CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshNeighbour, RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
 import type { ListRowPatch } from "../../../scripts/ops-lib/list-index-cas";
-import { SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { REFRESH_CANDIDATE_TOP_K } from "../../../src/modules/refresh-neighbours";
 import {
   REVERSE_SCORE_BOUND,
   REVERSE_TOP_K,
@@ -163,6 +163,20 @@ function fakeClock(stepMs: number, startMs = Date.parse("2026-08-22T12:00:00Z"))
 }
 
 describe("ops corpus refresh-neighbours", () => {
+  it("reports five ready neighbours when a stale vector ranks ahead of them", async () => {
+    const neighbours = Array.from({ length: 5 }, (_, i) => ({ ...NEIGHBOUR, id: `rd_n${i}` }));
+    const { deps, calls } = makeDeps({
+      items: [READY, ...neighbours],
+      matchesFor: (id, topK) => [
+        { id, score: 1 }, { id: "rd_purged", score: 0.99 },
+        ...neighbours.map((n, i) => ({ id: n.id, score: 0.9 - i * 0.01 })),
+      ].slice(0, topK),
+    });
+    expect(await corpusRefreshNeighboursCommand.run(["--tenant", "global", "rd_r"], deps)).toBe(0);
+    const report = JSON.parse(calls.reports[0]!.body);
+    expect(report.readings[0].current_neighbours.map((n: { id: string }) => n.id)).toEqual(neighbours.map(n => n.id));
+  });
+
   describe("full sweep cadence", () => {
     const marker = { version: 2, last_run_at: "2026-08-21T00:00:00.000Z", list_ids: ["rd_r", "rd_n"] };
     const warning = (lines: string[]) => lines.filter((line) => line.includes("Full sweep overdue:"));
@@ -448,7 +462,7 @@ describe("ops corpus refresh-neighbours", () => {
       deps,
     );
     expect(code).toBe(0);
-    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, topK: SIMILAR_TOP_K + 1, namespace: tenantId }]);
+    expect(calls.queries).toEqual([{ id: `${tenantId}:rd_r`, topK: REFRESH_CANDIDATE_TOP_K, namespace: tenantId }]);
     expect(calls.puts[0]!.body.similarity).toEqual({
       count: 1,
       max: 0.6,
@@ -1577,7 +1591,7 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(code).toBe(0);
       expect(calls.queries).toEqual([
-        { id: "rd_r", topK: SIMILAR_TOP_K + 1, namespace: undefined },
+        { id: "rd_r", topK: REFRESH_CANDIDATE_TOP_K, namespace: undefined },
       ]);
       expect(lines.join("\n")).toContain("Scope: full — --only names 1 reading(s)");
     });

@@ -158,6 +158,17 @@ submit, a markdown import, or a lookup. It lives in
   settings immediately before send. B1 stub-sends by marking the ledger `sent`
   without calling Resend.
 
+## Relationship refresh
+
+- **Refresh scan** — a gated nightly, founder-tenant full scan of ready readings,
+  in queue shards of 25. It reuses the offline neighbourhood-drift rules and
+  only reads reading data. All shards finish before judge fan-out starts.
+- **Refresh cursor** — tenant `index/refresh-cursor.json`, CAS-written with scan
+  targets, flagged candidates and dispatch progress. A nightly judgement cap
+  reserves pending batches before send and carries the remainder to later nights.
+  Judge identity is `(runAt, readingId)` across retries; the slice-2 judge consumer
+  remains inert. This cursor is independent of the operator's refresh-state marker.
+
 ## Operator surface
 
 - **Reading API client** — the operator tools' one way of speaking to the

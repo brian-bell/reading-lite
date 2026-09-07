@@ -157,7 +157,7 @@ name = "reading-lite-staging"
 workers_dev = true
 
 [env.staging.vars]
-# Reserved per-run cap; enforced when refresh scan/judge support lands.
+# Per-night cap on reserved judge jobs; judge processing remains disabled.
 # RELATIONSHIP_REFRESH intentionally unset: refresh remains disabled.
 REFRESH_MAX_JUDGEMENTS = "100"
 APP_ENV = "staging"
@@ -282,7 +282,7 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Relationship refresh plumbing (#175). No scheduled producer yet.
+# Nightly relationship refresh (#175), gated off in both environments.
 [[env.staging.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-staging-refresh"
@@ -303,7 +303,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.staging.triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "7 3 * * *"]
 
 [[env.staging.r2_buckets]]
 binding = "READINGS_BUCKET"
@@ -352,7 +352,7 @@ zone_name = "bbell.dev"
 name = "reading-lite"
 
 [env.production.vars]
-# Reserved per-run cap; enforced when refresh scan/judge support lands.
+# Per-night cap on reserved judge jobs; judge processing remains disabled.
 # RELATIONSHIP_REFRESH intentionally unset: refresh remains disabled.
 REFRESH_MAX_JUDGEMENTS = "100"
 APP_ENV = "production"
@@ -497,7 +497,7 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Relationship refresh plumbing (#175). No scheduled producer yet.
+# Nightly relationship refresh (#175), gated off in both environments.
 [[env.production.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-refresh"
@@ -518,7 +518,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.production.triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/15 * * * *", "7 3 * * *"]
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

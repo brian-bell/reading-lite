@@ -7,7 +7,7 @@ const queues = ["reading-lite-refresh", "reading-lite-staging-refresh"];
 
 describe("relationship refresh plumbing", () => {
   for (const queue of queues) {
-    for (const gate of [undefined, "0", "1"]) {
+    for (const gate of [undefined, "0"]) {
       it(`${queue} acknowledges without accessing services with gate ${gate}`, async () => {
         const log = vi.spyOn(console, "warn").mockImplementation(() => {});
         const ack = vi.fn();
@@ -21,7 +21,7 @@ describe("relationship refresh plumbing", () => {
         await worker.queue({ queue, messages: [{ body: null, ack, retry }] } as unknown as MessageBatch<unknown>, env);
         expect(ack).toHaveBeenCalledOnce();
         expect(retry).not.toHaveBeenCalled();
-        expect(log).toHaveBeenCalledTimes(gate === "1" ? 1 : 0);
+        expect(log).not.toHaveBeenCalled();
       });
     }
     it(`${queue}-dlq logs and acknowledges without reading payload or env`, async () => {

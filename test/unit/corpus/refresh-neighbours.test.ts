@@ -398,7 +398,7 @@ describe("diffNeighbourhood", () => {
     expect(flags).toEqual([]);
   });
 
-  it("takes the raw top five before intersecting ready IDs", () => {
+  it("filters non-ready IDs before taking the top five", () => {
     const failedMatches = Array.from({ length: 5 }, (_, index) => ({
       id: `rd_failed_${index}`,
       score: 0.9 - index * 0.01,
@@ -420,7 +420,7 @@ describe("diffNeighbourhood", () => {
       LATER,
     );
 
-    expect(flags).toEqual(["connection_below_floor", "verdict_inconsistent"]);
+    expect(flags).toEqual([]);
   });
 
   it("does not flag new_neighbour when the new neighbour is already cited", () => {

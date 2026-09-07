@@ -129,13 +129,15 @@ Runtime auth looks up the imported founder bearer in D1; it never falls back
 to the `READER_API_TOKEN` secret. See the [API guide](api.md).
 
 `src/index.ts` dispatches fetch, queue, and scheduled events. Cron runs every
-15 minutes. The three job families have separate queues and DLQs:
+15 minutes for digest/wipe work, with a separate gated nightly relationship
+scan at 03:07 UTC. The job families have separate queues and DLQs:
 
 | Job | Consumer and completion |
 |---|---|
 | `READING_JOBS` | `processReading`; reading DLQ marks a reading failed |
 | `DIGEST_JOBS` | `digest-pipeline.ts`; digest DLQ only marks `digest_deliveries` failed |
 | `ACCOUNT_WIPE_JOBS` | `account-wipe.ts`; wipe DLQ logs and acks |
+| `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards and capped judge fan-out; judge consumer remains inert, DLQ logs and acks |
 
 Digest send re-reads cadence and the current verified account address. Empty
 windows close without mail. Resend 429 retains pending state for retry;
