@@ -19,8 +19,8 @@ import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
 import { readingStoreFor, tenantKeyRoot } from "./modules/stores/reading-store";
 import { r2KeyLayout } from "./modules/stores/layout";
-import { similarityStoreFor, SIMILAR_TOP_K } from "./modules/stores/similarity-store";
-import { diffNeighbourhood, resolveJudgedAt } from "./modules/refresh-neighbours";
+import { similarityStoreFor } from "./modules/stores/similarity-store";
+import { diffNeighbourhood, resolveJudgedAt, REFRESH_CANDIDATE_TOP_K } from "./modules/refresh-neighbours";
 
 export const REFRESH_CRON = "7 3 * * *";
 export const REFRESH_SCAN_SIZE = 25;
@@ -147,7 +147,7 @@ async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan
       if (!row || row.status !== "ready" || row.key_prefix !== target.key_prefix) continue;
       const manifest = await store.readManifest(target.key_prefix);
       if (!manifest || manifest.id !== target.id || manifest.status !== "ready" || manifest.active_attempt?.status === "running") continue;
-      const matches = await similarity.queryByVectorId(target.id, SIMILAR_TOP_K + 1);
+      const matches = await similarity.queryByVectorId(target.id, REFRESH_CANDIDATE_TOP_K);
       if (matches === null) continue;
       const judged = resolveJudgedAt({ ...manifest, key_prefix: target.key_prefix });
       if (diffNeighbourhood({ ...manifest, key_prefix: target.key_prefix }, matches, list, judged.judged_at).length > 0) candidates.push(target);
