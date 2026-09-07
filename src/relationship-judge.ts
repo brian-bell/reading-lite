@@ -13,8 +13,8 @@ import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readRefreshJob, markRefreshDispatched, saveRefreshResult, markRefreshRateLimited, type SavedRefreshResult } from "./control-plane/relationship-refresh-jobs";
 import { readingStoreFor } from "./modules/stores/reading-store";
-import { similarityStoreFor, SIMILAR_TOP_K } from "./modules/stores/similarity-store";
-import { buildReportReading, diffNeighbourhood, resolveJudgedAt } from "./modules/refresh-neighbours";
+import { similarityStoreFor } from "./modules/stores/similarity-store";
+import { buildReportReading, diffNeighbourhood, resolveJudgedAt, REFRESH_CANDIDATE_TOP_K } from "./modules/refresh-neighbours";
 import { judgeRelationships } from "./modules/relationship-judgement";
 import { buildRelationshipJudgementInput, mergeRelationshipJudgement } from "./modules/relationship-judgement/refresh";
 import { retryDepsFromEnv, RateLimitedError } from "./modules/http-retry";
@@ -76,7 +76,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   }
   if (Date.parse(original.manifest.connections_computed_at ?? "") >= Date.parse(runAt)) return;
   const list = (await store.readListIndex())?.items ?? [];
-  const matches = await similarityStoreFor(env.READINGS_INDEX, tenant, env).queryByVectorId(job.readingId, SIMILAR_TOP_K + 1);
+  const matches = await similarityStoreFor(env.READINGS_INDEX, tenant, env).queryByVectorId(job.readingId, REFRESH_CANDIDATE_TOP_K);
   if (matches === null) return;
   const row = { ...original.manifest, key_prefix: job.keyPrefix };
   const judgedAt = resolveJudgedAt(row);

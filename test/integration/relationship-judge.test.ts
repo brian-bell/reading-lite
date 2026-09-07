@@ -42,6 +42,31 @@ beforeEach(async () => {
 });
 
 describe("hosted relationship judge", () => {
+  it("judges the fifth ready neighbour behind a stale vector", async () => {
+    const store = testReadingStore(env);
+    const neighbours = Array.from({ length: 5 }, (_, i) => `rd_${String(i + 2).padStart(10, "0")}`);
+    for (const neighbourId of neighbours) {
+      const m = { ...original, id: neighbourId, url: `https://example.com/${neighbourId}` };
+      const prefix = buildKeyPrefix(neighbourId, createdAt);
+      await store.writeManifest(prefix, m);
+      await store.appendOrReplaceListIndexItem(manifestToIndexItem(m, prefix));
+    }
+    const known = neighbours.slice(0, 4);
+    await store.writeManifest(keyPrefix, { ...original, novelty_verdict: "familiar",
+      connections: known.map(id => ({ id, reason: "Known" })), connections_neighbourhood_ids: known,
+    });
+    runtime.READINGS_INDEX = {
+      getByIds: async (ids: string[]) => ids.map(id => ({ id })),
+      queryById: async (self: string, options: { topK: number }) => ({ matches: [
+        { id: self, score: 1 }, { id: `${FOUNDER_TENANT_ID}:rd_9999999999`, score: 0.99 },
+        ...neighbours.map((id, i) => ({ id: `${FOUNDER_TENANT_ID}:${id}`, score: 0.9 - i * 0.01 })),
+      ].slice(0, options.topK) }),
+    } as unknown as VectorizeIndex;
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider).toHaveBeenCalledOnce();
+    expect((await store.readManifest(keyPrefix))!.connections_neighbourhood_ids).toEqual(neighbours);
+  });
+
   it("updates only relationships and the list verdict, and does not rebill a duplicate", async () => {
     await processRelationshipJudge(job, runtime, services);
     const result = (await testReadingStore(env).readManifest(keyPrefix))!;
