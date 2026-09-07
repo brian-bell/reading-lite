@@ -155,6 +155,18 @@ export class ListIndexStore {
     );
   }
 
+  async patchNoveltyIf(
+    id: string,
+    verdict: ListIndexItem["novelty_verdict"],
+    predicate: (item: ListIndexItem) => Promise<boolean>,
+  ): Promise<void> {
+    await this.mutateListIndex(async (items) => {
+      const row = items.find(item => item.id === id);
+      if (!row || row.novelty_verdict === verdict || !await predicate(row)) return null;
+      return items.map(item => item.id === id ? { ...item, novelty_verdict: verdict } : item);
+    });
+  }
+
   // Read-modify-write of index/list.json guarded by an R2 compare-and-set:
   // the put is conditional on the etag we read (If-None-Match:* when the object
   // is absent). A concurrent writer changes the etag, R2 returns null for our
@@ -162,14 +174,16 @@ export class ListIndexStore {
   // what lets the queue consumer run with max_concurrency > 1 without losing
   // index entries to last-writer-wins.
   private async mutateListIndex(
-    mutate: (items: ListIndexItem[]) => ListIndexItem[],
+    mutate: (items: ListIndexItem[]) => ListIndexItem[] | null | Promise<ListIndexItem[] | null>,
   ): Promise<void> {
     for (let attempt = 0; attempt < this.cas.maxAttempts; attempt++) {
       const obj = await this.bucket.get(this.listIndexKey());
       const current = obj
         ? ListIndexSchema.parse(JSON.parse(await obj.text()))
         : { version: 1 as const, items: [] };
-      const next: ListIndex = { version: 1, items: mutate(current.items) };
+      const items = await mutate(current.items);
+      if (items === null) return;
+      const next: ListIndex = { version: 1, items };
 
       const onlyIf: R2PutOptions["onlyIf"] = obj
         ? { etagMatches: obj.etag }

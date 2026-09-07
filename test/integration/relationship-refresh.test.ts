@@ -258,9 +258,9 @@ describe("relationship refresh scan", () => {
     expect(judges()[1]).not.toEqual(firstJudge);
   });
 
-  it("keeps judge deliveries inert even with the gate enabled", async () => {
+  it("keeps judge deliveries inert with the gate disabled", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const inert = new Proxy({ RELATIONSHIP_REFRESH: "1" }, { get(t, k) {
+    const inert = new Proxy({ RELATIONSHIP_REFRESH: "0" }, { get(t, k) {
       if (k === "RELATIONSHIP_REFRESH") return t.RELATIONSHIP_REFRESH;
       throw new Error(`unexpected access ${String(k)}`);
     } }) as Env;

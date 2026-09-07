@@ -8,7 +8,8 @@ import type { Manifest } from "./schemas/manifest";
 
 // The purge counterpart to ReadingVisibility: deletes a reading everywhere it
 // exists — Vectorize vector, index/list.json row, by-url ownership pointer,
-// every R2 object under its id-scoped prefix, and the by-id pointer.
+// every R2 object under its id-scoped prefix, the hosted refresh checkpoint,
+// and the by-id pointer.
 //
 // Two invariants shape the ordering:
 //
@@ -77,6 +78,8 @@ export interface PurgeDeps {
   // definite about it, or when a later republish of the same reading marks it
   // live again.
   ledger?: VectorLedger | null;
+  // Hosted relationship refresh keeps a latest-job checkpoint in D1.
+  deleteRefreshCheckpoint?: (id: string) => Promise<void>;
 }
 
 export async function purgeReading(
@@ -159,6 +162,8 @@ export async function purgeReading(
   if (deps.similarity) await deps.similarity.delete(id);
   await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
   await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
+
+  await deps.deleteRefreshCheckpoint?.(id);
 
   // Last, so every earlier step can be re-driven by re-issuing the DELETE.
   await deps.reader.deleteByIdPointer(id);

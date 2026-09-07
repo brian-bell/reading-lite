@@ -1,10 +1,15 @@
+import { RateLimitedError } from "./modules/http-retry";
+import { DeferPaidWorkError } from "./control-plane/processing-leases";
+import { processRelationshipJudge } from "./relationship-judge";
+import { defaultServices, type Services } from "./services";
+import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 /**
- * Founder-only nightly refresh scan (#175 slice 2). Full read-only scans run in
+ * Founder-only nightly refresh (#175). Full read-only scans run in
  * bounded queue shards, then flagged ids are dispatched under a nightly cap.
- * Only the tenant cursor is written: no manifests, list rows, vectors or LLMs.
+ * Scan shards write only the tenant cursor; judge jobs use relationship-judge.ts.
  * A persisted pending batch reserves allowance before queue send. Uncertain
- * sends may redeliver the same judge identity (runAt + readingId); slice 3 must
- * deduplicate that identity before paid work. The next cron recovers interrupted
+ * sends may redeliver the same judge identity (runAt + readingId); the judge
+ * deduplicates that identity before paid work. The next cron recovers interrupted
  * continuations. Offline refresh-state.json remains owned by the operator.
  */
 import { z } from "zod";
@@ -24,7 +29,7 @@ const TargetSchema = z.object({ id: z.string().min(1), key_prefix: z.string().st
 const BaseEnvelope = z.object({ version: z.literal(1), tenantId: z.string().refine(v => parseTenantId(v) === v) });
 export const RefreshEnvelopeSchema = z.discriminatedUnion("kind", [
   BaseEnvelope.extend({ kind: z.literal("scan"), token: z.string().min(1) }),
-  BaseEnvelope.extend({ kind: z.literal("judge"), runAt: z.string().datetime(), readingId: z.string().min(1), keyPrefix: z.string().startsWith("readings/") }),
+  BaseEnvelope.extend({ kind: z.literal("judge"), deferredAt: z.string().datetime().optional(), runAt: z.string().datetime(), readingId: z.string().min(1), keyPrefix: z.string().startsWith("readings/") }),
 ]);
 export type RefreshEnvelope = z.infer<typeof RefreshEnvelopeSchema>;
 const CursorSchema = z.object({
@@ -48,7 +53,7 @@ function maxJudgements(raw: string | undefined): number {
   return Number(raw);
 }
 
-async function founder(env: Env): Promise<TenantContext | null> {
+export async function activeRefreshFounder(env: Env): Promise<TenantContext | null> {
   if (env.TENANT_DATA_PLANE !== "1" || !env.FOUNDER_EMAIL) return null;
   const row = await fromD1(env.CONTROL_PLANE).first<{ id: string }>(
     "SELECT id FROM users WHERE email_canonical = ? AND status = 'active'",
@@ -67,7 +72,7 @@ async function readCursor(env: Env, tenant: TenantContext): Promise<StoredCursor
 async function saveCursor(env: Env, tenant: TenantContext, previous: StoredCursor | null, cursor: Cursor): Promise<boolean> {
   // Recheck suppression immediately before every write. CAS protects competing
   // cron/queue work; a removed cursor is never recreated by a stale consumer.
-  if ((await founder(env))?.tenantId !== tenant.tenantId) return false;
+  if ((await activeRefreshFounder(env))?.tenantId !== tenant.tenantId) return false;
   return (await env.READINGS_BUCKET.put(cursorKey(tenant), JSON.stringify(CursorSchema.parse(cursor)), {
     httpMetadata: { contentType: "application/json" },
     onlyIf: previous ? { etagMatches: previous.etag } : { etagDoesNotMatch: "*" },
@@ -88,7 +93,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
   if (env.RELATIONSHIP_REFRESH !== "1") return;
   const limit = maxJudgements(env.REFRESH_MAX_JUDGEMENTS);
   if (!env.RELATIONSHIP_REFRESH_JOBS) return;
-  const tenant = await founder(env);
+  const tenant = await activeRefreshFounder(env);
   if (!tenant) return;
   const previous = await readCursor(env, tenant);
   const runAt = new Date(nowMs).toISOString();
@@ -116,7 +121,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
 }
 
 async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan" }>, newId: () => string): Promise<void> {
-  const tenant = await founder(env);
+  const tenant = await activeRefreshFounder(env);
   if (!tenant || tenant.tenantId !== job.tenantId || !env.RELATIONSHIP_REFRESH_JOBS) return;
   const stored = await readCursor(env, tenant);
   if (!stored || stored.cursor.token !== job.token) return;
@@ -161,21 +166,35 @@ async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan
   await enqueueScan(env, tenant, next);
 }
 
-export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env, newId = () => crypto.randomUUID()): Promise<void> {
+export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env, newId = () => crypto.randomUUID(), services: Services = defaultServices()): Promise<void> {
   if (env.RELATIONSHIP_REFRESH !== "1") { msg.ack(); return; }
   const parsed = RefreshEnvelopeSchema.safeParse(msg.body);
   if (!parsed.success) { console.error("relationship_refresh_invalid_envelope"); msg.ack(); return; }
-  if (parsed.data.kind === "judge") {
-    // Slice 3 owns provider admission, revalidation, idempotency and CAS writes.
-    console.warn("relationship_refresh_judge_unavailable");
+  if (parsed.data.kind === "judge" && parsed.data.deferredAt &&
+    Date.now() - Date.parse(parsed.data.deferredAt) >= PROCESSING_DEFER_MAX_AGE_MS) {
+    console.warn("relationship_refresh_deferral_expired");
     msg.ack();
     return;
   }
   try {
-    await processScan(env, parsed.data, newId);
+    if (parsed.data.kind === "judge") await processRelationshipJudge(parsed.data, env, services);
+    else await processScan(env, parsed.data, newId);
     msg.ack();
   } catch (error) {
     console.error(error);
-    msg.retry({ delaySeconds: 30 });
+    const delay = error instanceof RateLimitedError ? Math.ceil((error.retryAfterMs ?? 30_000) / 1000)
+      : error instanceof DeferPaidWorkError ? error.delaySeconds : 30;
+    const delaySeconds = Math.min(43_200, Math.max(1, delay));
+    if (parsed.data.kind === "judge" &&
+      (error instanceof RateLimitedError || error instanceof DeferPaidWorkError) && env.RELATIONSHIP_REFRESH_JOBS) {
+      try {
+        await env.RELATIONSHIP_REFRESH_JOBS.send({ ...parsed.data,
+          deferredAt: parsed.data.deferredAt ?? new Date().toISOString(),
+        }, { delaySeconds });
+        msg.ack();
+        return;
+      } catch (enqueueError) { console.error(enqueueError); }
+    }
+    msg.retry({ delaySeconds });
   }
 }

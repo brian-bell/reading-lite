@@ -166,3 +166,18 @@ export function parseRetryAfterMs(
   if (Number.isNaN(date)) return null;
   return Math.max(0, date - now());
 }
+
+export function retryDepsFromEnv(env: { RETRY_MAX_ATTEMPTS?: string; RETRY_BASE_DELAY_MS?: string; RETRY_MAX_DELAY_MS?: string }): RetryDeps {
+  return {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    maxAttempts: parseRetryInt(env.RETRY_MAX_ATTEMPTS, 3),
+    baseDelayMs: parseRetryInt(env.RETRY_BASE_DELAY_MS, 500),
+    maxDelayMs: parseRetryInt(env.RETRY_MAX_DELAY_MS, 8_000),
+  };
+}
+
+function parseRetryInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && Number.isInteger(n) ? n : fallback;
+}

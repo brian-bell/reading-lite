@@ -415,6 +415,14 @@ export class ReadingStore {
     await this.listIndex.appendOrReplace(item);
   }
 
+  async patchListNoveltyIf(
+    id: string,
+    verdict: ListIndexItem["novelty_verdict"],
+    predicate: (item: ListIndexItem) => Promise<boolean>,
+  ): Promise<void> {
+    await this.listIndex.patchNoveltyIf(id, verdict, predicate);
+  }
+
   async removeListIndexItem(id: string): Promise<void> {
     await this.listIndex.remove(id);
   }

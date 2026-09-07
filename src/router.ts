@@ -1,3 +1,4 @@
+import { deleteRefreshJob } from "./control-plane/relationship-refresh-jobs";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -328,7 +329,9 @@ export function createApp(opts: AppOptions = {}) {
       ? similarityStoreFor(c.env.READINGS_INDEX, { tenantId: principal.tenantId }, c.env)
       : null;
     const ledger = vectorLedgerFor(c.env, { tenantId: principal.tenantId });
-    const out = await purgeReading({ reader, similarity, ledger }, id, {
+    const out = await purgeReading({ reader, similarity, ledger,
+      deleteRefreshCheckpoint: readingId => deleteRefreshJob(fromD1(c.env.CONTROL_PLANE), principal.tenantId, readingId),
+    }, id, {
       pendingTtlSeconds: pendingTtlSeconds(c.env),
       now: services.now(),
     });

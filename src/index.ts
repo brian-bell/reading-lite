@@ -44,7 +44,7 @@ export interface Env {
   // Shared tenant-wipe queue (issue 195b PR1). Not per-tenant. Local wrangler
   // has no wipe queue; tests inject a stub. Wipe is never inline in DELETE /api/account.
   ACCOUNT_WIPE_JOBS?: Queue<AccountWipeEnvelopeV1>;
-  // Dedicated nightly scan/judge queue. Judge processing arrives in slice 3.
+  // Dedicated nightly scan/judge queue, gated off until staging rollout.
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;
