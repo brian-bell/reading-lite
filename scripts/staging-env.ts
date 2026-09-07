@@ -56,6 +56,8 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
 };
 
 const ALREADY_EXISTS = [
+  /vectorize\.index\.duplicate_name/i,
+  /Queue name .+ is already taken/i,
   /already exists/i,
   /exists, and you own it/i,
   /name already exists/i,
