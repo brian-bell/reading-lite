@@ -25,6 +25,7 @@ import {
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
 import { REVERSE_TOP_K, type RefreshState } from "../../../scripts/corpus-lib/refresh-scope";
+import { REFRESH_CANDIDATE_TOP_K } from "../../../src/modules/refresh-neighbours";
 import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
 
 const T0 = "2026-08-01T00:00:00.000Z";
@@ -170,7 +171,7 @@ async function run(corpus: Reading[], argv: string[], state: RefreshState | null
     code,
     report: JSON.parse(reports[reports.length - 1]!),
     measured: new Set(
-      queried.filter((q) => q.topK === SIMILAR_TOP_K + 1).map((q) => q.id),
+      queried.filter((q) => q.topK === REFRESH_CANDIDATE_TOP_K).map((q) => q.id),
     ),
   };
 }
@@ -278,7 +279,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       list_ids: before.map((reading) => reading.id),
     });
     await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
-    const reverse = queried.filter((q) => q.topK !== SIMILAR_TOP_K + 1);
+    const reverse = queried.filter((q) => q.topK !== REFRESH_CANDIDATE_TOP_K);
     expect(reverse.length).toBeGreaterThan(0);
     for (const query of reverse) {
       expect(query.topK).toBe(REVERSE_TOP_K);
