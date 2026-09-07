@@ -21,6 +21,11 @@ import {
   type SimilaritySnapshot,
 } from "./stores/similarity-store";
 
+// Bounded over-fetch leaves room for self and stale vectors before ready filtering.
+// This matches the similarity store query cap; it does not guarantee five live
+// neighbours when stale vectors fill the whole candidate window.
+export const REFRESH_CANDIDATE_TOP_K = 50;
+
 // Material-change gate for rewriting a stored snapshot. Count is exact;
 // max/mean use a 0.02 cosine epsilon so nightly jitter around the same
 // neighbourhood does not churn computed_at. Calibrated as a starting point
@@ -380,7 +385,7 @@ function readyFlooredNeighbours(
   matches: RefreshNeighbour[],
   readyIds: ReadonlySet<string>,
 ): RefreshNeighbour[] {
-  return flooredNeighbours(id, matches).filter((neighbour) => readyIds.has(neighbour.id));
+  return flooredNeighbours(id, matches.filter((neighbour) => readyIds.has(neighbour.id)));
 }
 
 function staleCitationIds(reading: RefreshRow, readyIds: Set<string>): string[] {

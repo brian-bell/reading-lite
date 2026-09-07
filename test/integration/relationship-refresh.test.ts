@@ -93,6 +93,25 @@ describe("relationship refresh scan", () => {
     for (const m of manifests) expect(await store.readManifest(buildKeyPrefix(m.id, m.created_at))).toEqual(m);
   });
 
+  it("finds a fifth ready neighbour behind a stale vector", async () => {
+    const manifests = await seed(6);
+    const target = manifests[0]!;
+    const known = manifests.slice(1, 5).map(m => m.id);
+    const store = testReadingStore(env);
+    await store.writeManifest(buildKeyPrefix(target.id, target.created_at), {
+      ...target, connections: known.map(id => ({ id, reason: "Known" })),
+      connections_neighbourhood_ids: known,
+    });
+    query.mockImplementation(async (id: string, options: { topK: number }) => ({ matches: [
+      { id, score: 1 },
+      { id: `${FOUNDER_TENANT_ID}:rd_9999999999`, score: 0.99 },
+      ...manifests.slice(1).map((m, i) => ({ id: `${FOUNDER_TENANT_ID}:${m.id}`, score: 0.9 - i * 0.01 })),
+    ].slice(0, options.topK) }));
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(judges()).toContainEqual(expect.objectContaining({ readingId: target.id }));
+  });
+
   it("keeps gate-off scheduled work free of any binding access", async () => {
     const disabled = new Proxy({ RELATIONSHIP_REFRESH: "0" }, { get(t, k) {
       if (k === "RELATIONSHIP_REFRESH") return t.RELATIONSHIP_REFRESH;
