@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 describe("relationship refresh deployment", () => {
   const config = readFileSync("wrangler.toml", "utf8");
   for (const [env, queue] of [["staging", "reading-lite-staging-refresh"], ["production", "reading-lite-refresh"]]) {
-    it(`wires an isolated queue pair with the gate unset in ${env}`, () => {
+    it(`wires an isolated queue pair with the rollout gate for ${env}`, () => {
       const sections = config.split(/(?=^\[)/m);
       expect(sections).toContainEqual(expect.stringContaining(
         `[[env.${env}.queues.producers]]\nbinding = "RELATIONSHIP_REFRESH_JOBS"\nqueue = "${queue}"`,
@@ -16,8 +16,13 @@ describe("relationship refresh deployment", () => {
       expect(dlq).toBeDefined();
       expect(dlq).not.toContain("dead_letter_queue =");
       const vars = sections.find(s => s.startsWith(`[env.${env}.vars]`));
-      expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "100"');
-      expect(vars).not.toMatch(/^RELATIONSHIP_REFRESH\s*=/m);
+      if (env === "staging") {
+        expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "2"');
+        expect(vars).toMatch(/^RELATIONSHIP_REFRESH = "1"$/m);
+      } else {
+        expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "100"');
+        expect(vars).not.toMatch(/^RELATIONSHIP_REFRESH\s*=/m);
+      }
       expect(sections.find(s => s.startsWith(`[env.${env}.triggers]`))).toContain('crons = ["*/15 * * * *", "7 3 * * *"]');
     });
   }
