@@ -144,7 +144,10 @@ submit, a markdown import, or a lookup. It lives in
   failed reopen cannot erase. Users-row hard-delete, Durable Object teardown,
   and email reuse live in `account-teardown.ts` (issue 195 S4). Residue scan is
   the remaining later slice (S5). Wipe is not
-  **reading purge** (`DELETE /api/readings/:id`). Production and staging
+  **reading purge** (`DELETE /api/readings/:id`). Purge writes an existence-only
+  tombstone at `index/deleted/{id}` before corpus deletes; the terminal
+  publisher rechecks it the same way it rechecks `users.status=deleting`.
+  Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 
 ## Digest delivery

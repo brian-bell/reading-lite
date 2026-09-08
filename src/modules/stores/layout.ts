@@ -34,6 +34,9 @@ export const REFRESH_STATE_KEY = "index/refresh-state.json";
 export const REFRESH_CURSOR_KEY = "index/refresh-cursor.json";
 export const BY_URL_PREFIX = "index/by-url/";
 export const BY_ID_PREFIX = "index/by-id/";
+// Per-reading purge tombstone (issue #179). Existence-only; not under the
+// reading object prefix, so `deleteReadingObjects` cannot remove it.
+export const DELETED_PREFIX = "index/deleted/";
 
 // The relative key prefix one reading's objects live under. Root-independent by
 // design (see module header): this exact string is persisted in manifests,
@@ -72,6 +75,8 @@ export interface R2KeyLayout {
   processingCheckpointKey(keyPrefix: string, attemptId: string): string;
   byUrlKey(urlHash: string): string;
   byIdKey(id: string): string;
+  // index/deleted/{id} — purge tombstone, existence-only.
+  deletedKey(id: string): string;
   // Inverse of the root application: maps an absolute bucket key back to the
   // relative layout (identity when the key does not carry this root).
   relativeKey(objectKey: string): string;
@@ -96,6 +101,7 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
       abs(`${keyPrefix}/processing/${attemptId}.json`),
     byUrlKey: (urlHash) => abs(`${BY_URL_PREFIX}${urlHash}`),
     byIdKey: (id) => abs(`${BY_ID_PREFIX}${id}`),
+    deletedKey: (id) => abs(`${DELETED_PREFIX}${id}`),
     relativeKey: (objectKey) =>
       keyRoot !== "" && objectKey.startsWith(keyRoot)
         ? objectKey.slice(keyRoot.length)

@@ -27,7 +27,9 @@ import type { Manifest } from "./schemas/manifest";
 //    manifest CAS and its visibility publish can republish a row/vector after
 //    every sweep. Account deletion (DELETE /api/account, issue 195a) closes
 //    that race at tenant scope by rechecking users.status immediately before
-//    publish. A per-reading tombstone for this purge path is still #179.
+//    publish. Per-reading purge writes `index/deleted/{id}` before any corpus
+//    delete and `commitTerminalManifest` rechecks it at the same sites (issue
+//    #179).
 //
 // 2. The by-url pointer records *ownership*, not readiness, and an
 //    orphan-duplicate's URL hashes to the same slot as its surviving copy. The
@@ -111,6 +113,13 @@ export async function purgeReading(
   if (manifest && hasRunningAttempt(manifest, opts)) {
     return { kind: "conflict", reason: "active_attempt" };
   }
+
+  // Fence first: a still-running >TTL attempt can pause between its terminal
+  // CAS and visibility publish. This object must exist before any delete so
+  // that consumer rechecks skip (and compensate) rather than republishing.
+  // Fail closed — a thrown put leaves the corpus untouched. Retry overwrites
+  // the same key.
+  await deps.reader.writePurgeTombstone(id);
 
   // Read the list row before removing it: it is the URL fallback for releasing
   // the by-url slot when the manifest is already gone.
