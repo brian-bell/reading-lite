@@ -880,6 +880,13 @@ export async function commitTerminalManifest(
   const run =
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
   const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
+  // Post-write tombstone vs ordinary visibility. Skip-write / lost-CAS keep
+  // calling compensateVisibility directly — they must not sweep a prefix
+  // they never rewrote.
+  const compensateAfterSuccessfulWrite = (tombstone: boolean) =>
+    tombstone
+      ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
+      : compensateVisibility(visibility, reader, args, opts, { tombstone: false });
 
   // Purge-tombstone checks share one latch for this call. A confirmed HEAD
   // must not be undone by a later throw: fail-open after skip-markLive would
@@ -984,9 +991,7 @@ export async function commitTerminalManifest(
   // objects, and by-id is usually already gone, so DELETE /api/readings/:id
   // returns not_found. Defensive: a throw must not reach markFailed.
   if (!(await tombstoneAllows())) {
-    await reconcileVisibility(true, () =>
-      compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts),
-    );
+    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(true));
     return { committed: true, published: false };
   }
 
@@ -1014,20 +1019,12 @@ export async function commitTerminalManifest(
       // `removeForDeletedTenant` does not.
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () =>
-          tombstoneAfter
-            ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
-            : compensateVisibility(visibility, reader, args, opts, { tombstone: false }),
-        );
+        await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstoneAfter));
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
-    await reconcileVisibility(true, () =>
-      tombstone
-        ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
-        : compensateVisibility(visibility, reader, args, opts, { tombstone: false }),
-    );
+    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstone));
     return { committed: true, published: false };
   }
 
@@ -1039,11 +1036,7 @@ export async function commitTerminalManifest(
   // `index/list.json`, and `remove` gives up when there is no row to remove.
   if (state.canRemoveVisibility) {
     const tombstone = !(await tombstoneAllows());
-    await reconcileVisibility(true, () =>
-      tombstone
-        ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
-        : compensateVisibility(visibility, reader, args, opts, { tombstone }),
-    );
+    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstone));
   }
   return { committed: true, published: false };
 }
@@ -1131,8 +1124,14 @@ async function compensateTombstoneAfterTerminalWrite(
   args: ProcessReadingArgs,
   opts: CommitTerminalOpts,
 ): Promise<void> {
-  await reader.deleteReadingObjects(args.keyPrefix);
-  await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
+  // Objects first (unreapable residue), but a prefix-delete throw must not
+  // skip by-url / list / vector / ledger compensate. The caller still wraps
+  // this in defensive reconcileVisibility.
+  try {
+    await reader.deleteReadingObjects(args.keyPrefix);
+  } finally {
+    await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
+  }
 }
 
 // Drop the by-url pointer only while it still names this reading. A slot

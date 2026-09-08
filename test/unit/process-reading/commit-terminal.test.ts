@@ -822,4 +822,35 @@ describe("commitTerminalManifest", () => {
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
+
+  it("30: prefix-delete throw still compensates list, vector, and by-url", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteReadingObjects").mockRejectedValue(new Error("R2 prefix delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+      }),
+    ).resolves.toEqual({ committed: true, published: false });
+
+    consoleErr.mockRestore();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
 });
