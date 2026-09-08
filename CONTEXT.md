@@ -149,7 +149,8 @@ submit, a markdown import, or a lookup. It lives in
   publisher rechecks it the same way it rechecks `users.status=deleting`,
   and does not reclaim by-url or write a new terminal manifest under a
   confirmed tombstone. A confirmed tombstone on skip-write, lost-CAS,
-  `canWriteManifest=false`, markFailed/DLQ, or after a terminal CAS also
+  `canWriteManifest=false`, markFailed/DLQ (including confirmed-absent after
+  purge), processReading early-returns, or after a terminal CAS also
   deletes prefix objects.
   Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.

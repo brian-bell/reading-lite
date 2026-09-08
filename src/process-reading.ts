@@ -105,8 +105,10 @@ export async function processReading(
     // A purged reading must not get ANY object recreated — not even this
     // attempt log — so a stale queued message for it is dropped whole, before
     // any write or upstream spend. Conflict/takeover cases below still log
-    // their attempt for diagnostics.
+    // their attempt for diagnostics. A confirmed tombstone still sweeps
+    // leftover attempt/checkpoint objects from a prior crashed delivery.
     if (await readingWasPurged(reader, args)) {
+      await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -123,6 +125,7 @@ export async function processReading(
     }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -158,6 +161,7 @@ export async function processReading(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -600,20 +604,18 @@ export async function markDeadLettered(
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
 
-  // Confirmed-absent: this attempt will never commit. Release a still-held
-  // reservation (idempotent if already consumed/released).
-  if (confirmedAbsent) {
+  // Purge tombstone before confirmed-absent: after purge deletes the
+  // manifest, a DLQ still has to reap attempt/checkpoint residue. Checking
+  // absence first would skip the sweep once by-id is gone.
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
 
-  // Purge tombstone: do not recreate a failed attempt/manifest under a
-  // prefix purge is sweeping. Sweep attempt residue already written (by-id
-  // is usually gone, so DELETE cannot reap it). Fail-open on a throwing HEAD
-  // (same as readingWasPurged) so a transient R2 error still marks rather
-  // than stranding a pending reading.
-  if (await confirmedPurgeTombstone(reader, args.id)) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+  // Confirmed-absent: this attempt will never commit. Release a still-held
+  // reservation (idempotent if already consumed/released).
+  if (confirmedAbsent) {
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
@@ -1163,6 +1165,17 @@ async function sweepTombstonePrefixDefensively(
     await reader.deleteReadingObjects(keyPrefix);
   } catch (error) {
     console.error(error);
+  }
+}
+
+// Confirmed tombstone only — a live foreign attempt can also make
+// readingCanWriteAttemptArtifacts false, and must not lose its prefix.
+async function maybeSweepConfirmedTombstone(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
   }
 }
 

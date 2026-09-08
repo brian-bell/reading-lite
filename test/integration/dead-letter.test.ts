@@ -101,14 +101,39 @@ describe("markDeadLettered", () => {
 
   it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {
     const reader = testReadingStore(env);
+    await reader.writeExtracted(KEY_PREFIX, "# leftover without a tombstone");
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
-    // No manifest, no list row: a confirmed-absent manifest means this tenant
-    // never owned the reading the job describes (mismatched envelope, or a
-    // reading deleted while the message sat in the retry pipeline).
+    // No tombstone: confirmed-absent is a mismatched envelope, not a purge.
+    // Do not sweep a prefix this tenant may not own as a purged reading.
+    expect(await (await reader.readExtracted(KEY_PREFIX))?.text()).toBe("# leftover without a tombstone");
     expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
+  });
+
+  it("sweeps prefix residue when a purge tombstone is present and the manifest is already gone", async () => {
+    const reader = testReadingStore(env);
+    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge deleted the manifest");
+    await reader.writeAttempt(KEY_PREFIX, {
+      id: `at_${READING_ID}`,
+      trigger: "reprocess",
+      status: "running",
+      started_at: "2026-05-07T12:00:05.000Z",
+      reading_id: READING_ID,
+      url: DLQ_URL,
+      url_hash: DLQ_URL_HASH,
+      key_prefix: KEY_PREFIX,
+      events: [{ stage: "queued", status: "started", at: "2026-05-07T12:00:05.000Z" }],
+    });
+    await reader.writePurgeTombstone(READING_ID);
+
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
+    expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
   });
 
   it("sweeps prefix residue and does not recreate failed objects when a purge tombstone is present", async () => {

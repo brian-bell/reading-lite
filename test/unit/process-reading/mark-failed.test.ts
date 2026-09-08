@@ -202,3 +202,124 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     ).toBe(true);
   });
 });
+
+function pendingBody() {
+  const a = args();
+  return JSON.stringify({
+    id: a.id,
+    url: a.url,
+    url_hash: a.urlHash,
+    status: "pending",
+    content_type: "application/octet-stream",
+    content_status: "captured",
+    content_bytes: 0,
+    content_sha256: "0".repeat(64),
+    created_at: a.createdAt,
+    updated_at: a.createdAt,
+  });
+}
+
+function memoryBucket(init: Array<[string, string]>) {
+  const store = new Map<string, string>(init);
+  const tombstoneKey = `index/deleted/${args().id}`;
+  return {
+    store,
+    tombstoneKey,
+    bucket: {
+      get: vi.fn(async (key: string) => {
+        const body = store.get(key);
+        if (body === undefined) return null;
+        return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        store.set(key, String(value));
+      }),
+      head: vi.fn(async (key: string) => (store.has(key) ? { key } : null)),
+      delete: vi.fn(async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
+      }),
+      list: vi.fn(async (opts?: { prefix?: string }) => {
+        const prefix = opts?.prefix ?? "";
+        return {
+          objects: [...store.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
+          truncated: false,
+        };
+      }),
+    } as unknown as R2Bucket,
+  };
+}
+
+describe("processReading — tombstone prefix sweep on early return", () => {
+  it("sweeps prior residue when readingWasPurged sees a confirmed tombstone", async () => {
+    const a = args();
+    const { store, bucket } = memoryBucket([
+      [`${a.keyPrefix}/extracted.md`, "# leftover from a crashed delivery"],
+      [
+        `${a.keyPrefix}/attempts/at_old.json`,
+        JSON.stringify({
+          id: "at_old",
+          trigger: "submit",
+          status: "running",
+          started_at: a.createdAt,
+          reading_id: a.id,
+          url: a.url,
+          url_hash: a.urlHash,
+          key_prefix: a.keyPrefix,
+          events: [],
+        }),
+      ],
+      [`index/deleted/${a.id}`, ""],
+    ]);
+
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+    expect((bucket.put as ReturnType<typeof vi.fn>).mock.calls.some(([key]) => String(key).includes("/attempts/"))).toBe(false);
+  });
+
+  it("sweeps this delivery's attempt residue when canWrite is false after writeAttemptSafe", async () => {
+    const a = args();
+    const { store, bucket, tombstoneKey } = memoryBucket([
+      [`${a.keyPrefix}/manifest.json`, pendingBody()],
+    ]);
+    let tombstoneHeads = 0;
+    bucket.head = vi.fn(async (key: string) => {
+      if (key !== tombstoneKey) return store.has(key) ? { key } : null;
+      tombstoneHeads += 1;
+      return tombstoneHeads > 1 ? { key } : null;
+    });
+    bucket.put = vi.fn(async (key: string, value: unknown) => {
+      store.set(key, String(value));
+      if (String(key).includes("/attempts/")) store.delete(`${a.keyPrefix}/manifest.json`);
+    });
+
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(tombstoneHeads).toBeGreaterThan(1);
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+  });
+
+  it("does not sweep when canWrite is false without a tombstone (foreign attempt)", async () => {
+    const a = args();
+    const { store, bucket } = memoryBucket([
+      [
+        `${a.keyPrefix}/manifest.json`,
+        JSON.stringify({
+          ...JSON.parse(pendingBody()),
+          active_attempt: {
+            id: "at_OTHER",
+            trigger: "submit",
+            status: "running",
+            started_at: a.createdAt,
+          },
+        }),
+      ],
+      [`${a.keyPrefix}/extracted.md`, "# owned by the other attempt"],
+    ]);
+
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(store.get(`${a.keyPrefix}/extracted.md`)).toBe("# owned by the other attempt");
+    expect(store.has(`${a.keyPrefix}/manifest.json`)).toBe(true);
+  });
+});
