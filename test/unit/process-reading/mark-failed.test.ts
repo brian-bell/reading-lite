@@ -107,4 +107,32 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     expect(consoleErr).toHaveBeenCalled();
     consoleErr.mockRestore();
   });
+
+  it("does not write attempt or failed manifest when a purge tombstone appears mid-flight", async () => {
+    const a = args();
+    const tombstoneKey = `index/deleted/${a.id}`;
+    let tombstoneHeads = 0;
+    const put = vi.fn(async () => undefined);
+    const bucket = {
+      get: manifestGet(),
+      put,
+      head: vi.fn(async (key: string) => {
+        if (key !== tombstoneKey) return null;
+        tombstoneHeads += 1;
+        return tombstoneHeads > 1 ? { key } : null;
+      }),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+    consoleErr.mockRestore();
+
+    expect(tombstoneHeads).toBeGreaterThan(1);
+    expect(put.mock.calls.some(([key]) => String(key).endsWith("manifest.json"))).toBe(false);
+    expect(
+      put.mock.calls.filter(([key]) => String(key).includes("/attempts/")).length,
+    ).toBe(1);
+  });
 });

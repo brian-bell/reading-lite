@@ -657,6 +657,35 @@ describe("commitTerminalManifest", () => {
     expect(vectors.has(ID)).toBe(false);
   });
 
+  it("23b: lost-CAS tombstone compensate throw is swallowed on the success path", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteByUrlPointer").mockRejectedValue(new Error("by-url delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+      }),
+    ).resolves.toEqual({ committed: false, published: false });
+
+    consoleErr.mockRestore();
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+  });
+
   it("24: tombstone lookup throw after terminal CAS fail-opens and still publishes", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));

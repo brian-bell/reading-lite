@@ -668,6 +668,13 @@ async function markFailed(
   tenantId: string,
 ): Promise<void> {
   console.error(e);
+  // Same no-recreate gate as markDeadLettered: a mid-flight purge after
+  // processReading's opening readingWasPurged check must not write an attempt
+  // log or failed manifest under the prefix. Fail-open on a throwing HEAD.
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
+    return;
+  }
   const failedAt = services.now();
   const error = errorFromUnknown(e, attempt.stage, failedAt);
   attempt.status = "failed";
@@ -956,12 +963,15 @@ export async function commitTerminalManifest(
       // or a retried purge.
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(opts.defensive, () =>
+        // Tombstone compensate must stay defensive even on the success path
+        // (`opts.defensive === false`): a throw here would reach markFailed
+        // and recreate attempt/manifest objects under a purged prefix.
+        await reconcileVisibility(tombstoneAfter ? true : opts.defensive, () =>
           compensateVisibility(visibility, reader, args, opts, { tombstone: tombstoneAfter }),
         );
       }
     } else if (tombstone) {
-      await reconcileVisibility(opts.defensive, () =>
+      await reconcileVisibility(true, () =>
         compensateVisibility(visibility, reader, args, opts, { tombstone }),
       );
     }
