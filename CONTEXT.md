@@ -148,8 +148,8 @@ submit, a markdown import, or a lookup. It lives in
   tombstone at `index/deleted/{id}` before corpus deletes; the terminal
   publisher rechecks it the same way it rechecks `users.status=deleting`,
   and does not reclaim by-url or write a new terminal manifest under a
-  confirmed tombstone. A tombstone that appears after a terminal CAS
-  also deletes the recreated prefix objects.
+  confirmed tombstone. A confirmed tombstone on skip-write, lost-CAS, or
+  after a terminal CAS also deletes prefix objects.
   Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 

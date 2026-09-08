@@ -588,7 +588,7 @@ describe("commitTerminalManifest", () => {
     });
     expect(published).toEqual({ committed: false, published: false });
     expect(markLive).not.toHaveBeenCalled();
-    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
@@ -652,6 +652,7 @@ describe("commitTerminalManifest", () => {
 
     expect(out).toEqual({ committed: false, published: false });
     expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
@@ -683,7 +684,9 @@ describe("commitTerminalManifest", () => {
 
     consoleErr.mockRestore();
     expect(checks).toBe(2);
-    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
   });
 
   it("24: tombstone lookup throw after terminal CAS fail-opens and still publishes", async () => {
@@ -722,7 +725,7 @@ describe("commitTerminalManifest", () => {
     });
 
     expect(out).toEqual({ committed: false, published: false });
-    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
@@ -757,7 +760,7 @@ describe("commitTerminalManifest", () => {
     expect(out).toEqual({ committed: false, published: false });
     expect(markLive).not.toHaveBeenCalled();
     expect(checks).toBe(1);
-    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
@@ -786,7 +789,7 @@ describe("commitTerminalManifest", () => {
     expect(pointerWrite).not.toHaveBeenCalled();
     expect(markLive).not.toHaveBeenCalled();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
-    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
@@ -890,5 +893,38 @@ describe("commitTerminalManifest", () => {
     expect(vectors.has(ID)).toBe(false);
     expect(markDeleteSubmitted).toHaveBeenCalled();
     expect(await reader.readByUrlPointer(URL_HASH)).toEqual({ id: ID, key_prefix: PREFIX });
+  });
+
+  it("32: lost-CAS + confirmed tombstone deletes prefix objects and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeExtracted(PREFIX, "# attempt residue after purge sweep");
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
   });
 });

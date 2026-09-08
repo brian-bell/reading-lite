@@ -840,8 +840,10 @@ export interface CommitTerminalOpts {
   // immediately after those writes (issue 195a). Per-reading purge tombstones
   // (#179) share one confirmed-tombstone latch for the call, including the
   // checks immediately before by-url reclaim, the terminal write / markLive,
-  // and publish. A confirmed tombstone skips reclaim and the terminal write.
-  // A confirmed false after publish/restore compensates with remove and
+  // and publish. A confirmed tombstone skips reclaim and the terminal write
+  // and sweeps prefix objects (attempt residue or a terminal that raced
+  // purge) before list/vector/by-url compensate. A confirmed false after
+  // publish/restore compensates with remove and
   // releases by-url if this reading still owns the slot. A lookup throw is
   // not confirmed inactive: fail-open (publish/keep) because readyManifest
   // already cleared active_attempt and a retry cannot republish — unless this
@@ -880,12 +882,14 @@ export async function commitTerminalManifest(
   const run =
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
   const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
-  // Post-write tombstone vs ordinary visibility. Skip-write / lost-CAS keep
-  // calling compensateVisibility directly — they must not sweep a prefix
-  // they never rewrote.
-  const compensateAfterSuccessfulWrite = (tombstone: boolean) =>
+  // Confirmed-tombstone compensate always sweeps the reading prefix, then
+  // list/vector/by-url. writeAttemptSafe and stage instrumentation can
+  // recreate attempt objects even when this CAS does not land; a successful
+  // CAS that raced purge recreates the terminal object. Ordinary (non-
+  // tombstone) visibility compensate does not sweep.
+  const compensateFence = (tombstone: boolean) =>
     tombstone
-      ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
+      ? compensateTombstonePrefixAndVisibility(visibility, reader, args, opts)
       : compensateVisibility(visibility, reader, args, opts, { tombstone: false });
 
   // Purge-tombstone checks share one latch for this call. A confirmed HEAD
@@ -910,13 +914,11 @@ export async function commitTerminalManifest(
   if (!state.canWriteManifest) return { committed: false, published: false };
 
   // Confirmed tombstone before the terminal write: do not recreate a ready (or
-  // failed) object under a prefix purge is sweeping. Compensate list+vector and
-  // release by-url if we still own the slot. Defensive so a compensate throw
+  // failed) object under a prefix purge is sweeping. Sweep prefix objects
+  // (attempt residue) then list/vector/by-url. Defensive so a compensate throw
   // cannot reach markFailed and recreate objects that way either.
   if (!(await tombstoneAllows())) {
-    await reconcileVisibility(true, () =>
-      compensateVisibility(visibility, reader, args, opts, { tombstone: true }),
-    );
+    await reconcileVisibility(true, () => compensateFence(true));
     return { committed: false, published: false };
   }
 
@@ -974,13 +976,11 @@ export async function commitTerminalManifest(
         // (`opts.defensive === false`): a throw here would reach markFailed
         // and recreate attempt/manifest objects under a purged prefix.
         await reconcileVisibility(tombstoneAfter ? true : opts.defensive, () =>
-          compensateVisibility(visibility, reader, args, opts, { tombstone: tombstoneAfter }),
+          compensateFence(tombstoneAfter),
         );
       }
     } else if (tombstone) {
-      await reconcileVisibility(true, () =>
-        compensateVisibility(visibility, reader, args, opts, { tombstone }),
-      );
+      await reconcileVisibility(true, () => compensateFence(true));
     }
     return { committed: false, published: false };
   }
@@ -991,7 +991,7 @@ export async function commitTerminalManifest(
   // objects, and by-id is usually already gone, so DELETE /api/readings/:id
   // returns not_found. Defensive: a throw must not reach markFailed.
   if (!(await tombstoneAllows())) {
-    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(true));
+    await reconcileVisibility(true, () => compensateFence(true));
     return { committed: true, published: false };
   }
 
@@ -1019,12 +1019,12 @@ export async function commitTerminalManifest(
       // `removeForDeletedTenant` does not.
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstoneAfter));
+        await reconcileVisibility(true, () => compensateFence(tombstoneAfter));
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
-    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstone));
+    await reconcileVisibility(true, () => compensateFence(tombstone));
     return { committed: true, published: false };
   }
 
@@ -1036,7 +1036,7 @@ export async function commitTerminalManifest(
   // `index/list.json`, and `remove` gives up when there is no row to remove.
   if (state.canRemoveVisibility) {
     const tombstone = !(await tombstoneAllows());
-    await reconcileVisibility(true, () => compensateAfterSuccessfulWrite(tombstone));
+    await reconcileVisibility(true, () => compensateFence(tombstone));
   }
   return { committed: true, published: false };
 }
@@ -1119,11 +1119,12 @@ async function compensateVisibility(
   await visibility.remove(args);
 }
 
-// After a terminal CAS that raced a purge: drop the recreated prefix objects
-// (manifest, attempts, raw/extracted) then the usual list/vector/by-url
-// compensate. Skip-write and lost-CAS paths never wrote a terminal object
-// and must not sweep a prefix purge still owns.
-async function compensateTombstoneAfterTerminalWrite(
+// Confirmed-tombstone compensate: drop prefix objects (manifest, attempts,
+// raw/extracted) then list/vector/by-url. Used after a terminal CAS that
+// raced purge, and on skip-write / lost-CAS — writeAttemptSafe and stage
+// instrumentation can recreate attempt objects even when this CAS does not
+// land, and by-id is usually already gone so those objects are unreapable.
+async function compensateTombstonePrefixAndVisibility(
   visibility: ReadingVisibility,
   reader: ReadingStore,
   args: ProcessReadingArgs,

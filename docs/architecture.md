@@ -26,17 +26,19 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
    manifest. Recheck tenant eligibility and the per-reading purge tombstone
    (`index/deleted/{id}`) before by-url reclaim and before the terminal write.
    A confirmed tombstone skips reclaim and does not write a new terminal
-   object; otherwise publish the list row, then the vector.
+   object. Skip-write and lost-CAS still sweep prefix objects (attempt
+   residue) then compensate visibility. Otherwise publish the list row, then
+   the vector.
    Confirm URL ownership as part of the terminal write path.
 6. Recheck deletion eligibility and compensate if needed. A confirmed purge
    tombstone or `users.status=deleting` compensates with
    `visibility.removeForDeletedTenant` so a missing list row cannot skip the
    vector delete. Tombstone compensation also releases this reading's by-url
-   pointer if it still owns the slot. If a tombstone appears after the terminal
-   CAS succeeds, the consumer also deletes objects under the reading prefix
-   so a swept-then-rewritten manifest is not left unreapable. Send any eligible
-   immediate notification after publication; mail failure does not fail a ready
-   reading.
+   pointer if it still owns the slot. A confirmed tombstone on skip-write,
+   lost-CAS, or after the terminal CAS also deletes objects under the reading
+   prefix so attempt residue or a rewritten manifest is not left unreapable.
+   Send any eligible immediate notification after publication; mail failure
+   does not fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -95,8 +97,8 @@ a final sweep, and by-id pointer last. This supports retries after partial
 failure. Inbound connections remain until an explicit corpus sweep. The
 consumer rechecks the tombstone at the same terminal visibility sites as the
 tenant-deletion fence so a still-running attempt cannot republish after the
-sweep, reclaim by-url, or recreate a terminal manifest. A tombstone that
-lands after the terminal CAS deletes the recreated prefix objects as well.
+sweep, reclaim by-url, or recreate a terminal manifest. A confirmed tombstone
+on skip-write, lost-CAS, or after the terminal CAS also deletes prefix objects.
 The missing-manifest purge guard also treats a tombstone as purged.
 
 ## Tenant storage
