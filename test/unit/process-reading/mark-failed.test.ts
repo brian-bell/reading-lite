@@ -112,7 +112,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     const a = args();
     const tombstoneKey = `index/deleted/${a.id}`;
     let tombstoneHeads = 0;
-    const put = vi.fn(async () => undefined);
+    const put = vi.fn(async (_key: string, _body?: string) => undefined);
     const bucket = {
       get: manifestGet(),
       put,
