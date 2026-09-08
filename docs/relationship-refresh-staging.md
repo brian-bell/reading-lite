@@ -2,8 +2,8 @@
 
 Issue #175 slice 4. On 2026-09-07 the owner authorized **one clean actual nightly
 staging run** before acceptance and production enablement, replacing the earlier
-“several nights” rollout window. Production refresh remains disabled until that
-check passes.
+“several nights” rollout window. The actual 2026-09-08 scheduled run passed that check; production enablement
+uses the same two-judgement cap and retains existing spend budgets.
 
 ## Deployed candidate and preparation
 
@@ -61,25 +61,42 @@ Private snapshots, scripts, logs, and checkpoints are retained in the ignored
 content and must not be committed. Smoke logs originated under
 `/tmp/reading-lite-refresh-rollout/` and are copied into that private directory.
 
-## Single-night acceptance: pending
+## Single-night acceptance: passed
 
-Observe the actual **2026-09-08 03:07 UTC** trigger (September 7 at 11:07 p.m.
-America/New_York). A thread follow-up starts at 11:05 p.m. to capture the run.
-Do not reset the cursor or manually advance its budget to manufacture evidence.
+The actual **2026-09-08 03:07 UTC** cron fired with
+`scheduledTime=2026-09-08T03:07:13.000Z`. The captured scheduled event used the
+staging candidate version above, returned `outcome=ok`, and had no exceptions.
+The owner-authorized single-night acceptance window is satisfied.
 
-Expected continuation from the smoke baseline:
+| Check | Observed result |
+|---|---|
+| Actual scheduler | `7 3 * * *`, recorded before any manual invocation |
+| Budget rollover | `budget_at=2026-09-08T03:07:13.000Z`; original run identity retained |
+| Scan/cursor | scan_offset remained 129; judge_offset advanced from 2 to 4 |
+| Nightly cap | dispatched 2, limit 2, pending empty; 102 candidates remain |
+| New judgements | `rd_0HCB4V1KVQ` and `rd_0M9KT1535F`, both saved and published |
+| Protected data | Only expected relationship fields/list verdicts changed; all 129 readings stayed ready |
+| Provider work | 2 reservations and 2 settlements; 7,048 microdollars ($0.007048) |
+| Runtime | 4 refresh queue events; zero exceptions or non-OK outcomes |
+| Completion | Refresh queue and DLQ backlogs zero |
 
-1. The scheduled event advances `budget_at` from September 7 to the actual
-   September 8 cron time, retaining the original scan/run identity.
-2. `scan_offset` remains 129; the next two candidates advance `judge_offset`
-   from 2 to 4, with at most two reservations in the new nightly budget.
-3. Both new jobs finish with saved results, matching manifest/list verdicts,
-   no unrelated manifest changes, and no duplicate paid dispatch.
-4. Refresh queue and DLQ are empty after completion; logs show no exceptions
-   or unresolved provider outcomes. Spend remains within existing budgets.
-5. Record the observed timestamps, results and costs here before accepting
-   #175 and updating #170. Only then enable production through the normal
-   reviewed configuration and CI/release flow, initially capped at two jobs.
+Read-only verification at `2026-09-08T03:08:24.005Z` compared the corpus against
+the retained pre-smoke baseline. Exactly four expected manifests differed (two
+smoke and two nightly); no unrelated fields differed and every list verdict
+matched its manifest and saved checkpoint. No cursor reset or manual budget
+advance was performed for this run.
 
-If the scheduled run fails or evidence is missing, leave production disabled
-and retain the cursor/checkpoints for diagnosis.
+Private evidence is retained as `nightly-tail.jsonl`, `nightly-summary.json`,
+`nightly-metrics.json`, `latest-observation.json`, and `verification.json` under
+`.refresh-rollout.tmp/`. [Acceptance was recorded on PR #343](https://github.com/brian-bell/reading-lite/pull/343#issuecomment-5578505577)
+before production configuration changed; #175 and #170 reflect the authorized
+one-night window.
+
+## Production enablement
+
+Enable `RELATIONSHIP_REFRESH=1` with `REFRESH_MAX_JUDGEMENTS=2` through the normal
+reviewed configuration PR and CI/migration/Worker/SPA release chain. Existing
+paid-work policies and budgets remain unchanged. The production refresh queue
+and DLQ already exist and were empty at the acceptance check. Verify the deployed
+gate, cap, cron, queue bindings, and release health after deployment. No manual
+production refresh is required: its first run will be the next 03:07 UTC cron.
