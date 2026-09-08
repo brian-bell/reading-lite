@@ -286,6 +286,9 @@ describe("purgeReading tombstone (#179)", () => {
       },
     } as unknown as NonNullable<Parameters<typeof purgeReading>[0]["similarity"]>;
     const ledger = {
+      markLive: async () => {
+        throw new Error("a purge never marks a vector live");
+      },
       markDeleteSubmitted: async () => {
         events.push("ledger");
       },
