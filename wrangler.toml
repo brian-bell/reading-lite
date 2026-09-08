@@ -352,9 +352,9 @@ zone_name = "bbell.dev"
 name = "reading-lite"
 
 [env.production.vars]
-# Per-night cap on reserved judge jobs; the master gate remains off.
-# RELATIONSHIP_REFRESH intentionally unset: refresh remains disabled.
-REFRESH_MAX_JUDGEMENTS = "100"
+# Enabled after the accepted 2026-09-08 staging nightly run.
+RELATIONSHIP_REFRESH = "1"
+REFRESH_MAX_JUDGEMENTS = "2"
 APP_ENV = "production"
 CORS_ALLOWED_ORIGINS = ""
 MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev,https://readinglite.ai,https://readinglite.app"

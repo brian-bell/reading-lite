@@ -16,13 +16,8 @@ describe("relationship refresh deployment", () => {
       expect(dlq).toBeDefined();
       expect(dlq).not.toContain("dead_letter_queue =");
       const vars = sections.find(s => s.startsWith(`[env.${env}.vars]`));
-      if (env === "staging") {
-        expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "2"');
-        expect(vars).toMatch(/^RELATIONSHIP_REFRESH = "1"$/m);
-      } else {
-        expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "100"');
-        expect(vars).not.toMatch(/^RELATIONSHIP_REFRESH\s*=/m);
-      }
+      expect(vars).toContain('REFRESH_MAX_JUDGEMENTS = "2"');
+      expect(vars).toMatch(/^RELATIONSHIP_REFRESH = "1"$/m);
       expect(sections.find(s => s.startsWith(`[env.${env}.triggers]`))).toContain('crons = ["*/15 * * * *", "7 3 * * *"]');
     });
   }
