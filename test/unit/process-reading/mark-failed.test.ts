@@ -131,8 +131,10 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
 
     expect(tombstoneHeads).toBeGreaterThan(1);
     expect(put.mock.calls.some(([key]) => String(key).endsWith("manifest.json"))).toBe(false);
-    expect(
-      put.mock.calls.filter(([key]) => String(key).includes("/attempts/")).length,
-    ).toBe(1);
+    const attemptBodies = put.mock.calls
+      .filter(([key]) => String(key).includes("/attempts/"))
+      .map(([, body]) => JSON.parse(String(body)));
+    expect(attemptBodies.length).toBeGreaterThan(0);
+    expect(attemptBodies.every((body: { status?: string }) => body.status !== "failed")).toBe(true);
   });
 });
