@@ -927,4 +927,37 @@ describe("commitTerminalManifest", () => {
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
+
+  it("33: canWriteManifest-false + tombstone sweeps prefix residue and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeExtracted(PREFIX, "# summarize-stage residue after purge");
+    await reader.writeAttempt(PREFIX, {
+      id: ATTEMPT,
+      trigger: "submit",
+      status: "running",
+      started_at: "2026-06-19T00:00:00.000Z",
+      reading_id: ID,
+      url: URL,
+      url_hash: URL_HASH,
+      key_prefix: PREFIX,
+      events: [{ stage: "summarize", status: "started", at: "2026-06-19T00:00:00.000Z" }],
+    });
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.writePurgeTombstone(ID);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listAttempts(PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
 });

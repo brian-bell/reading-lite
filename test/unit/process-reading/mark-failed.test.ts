@@ -137,4 +137,68 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
     expect(attemptBodies.length).toBeGreaterThan(0);
     expect(attemptBodies.every((body: { status?: string }) => body.status !== "failed")).toBe(true);
   });
+
+  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone appears mid-flight", async () => {
+    const a = args();
+    const tombstoneKey = `index/deleted/${a.id}`;
+    const store = new Map<string, string>([
+      [`${a.keyPrefix}/manifest.json`, JSON.stringify({
+        id: a.id,
+        url: a.url,
+        url_hash: a.urlHash,
+        status: "pending",
+        content_type: "application/octet-stream",
+        content_status: "captured",
+        content_bytes: 0,
+        content_sha256: "0".repeat(64),
+        created_at: a.createdAt,
+        updated_at: a.createdAt,
+      })],
+      [`${a.keyPrefix}/extracted.md`, "# leftover after purge sweep"],
+    ]);
+    let tombstoneHeads = 0;
+    const bucket = {
+      get: vi.fn(async (key: string) => {
+        const body = store.get(key);
+        if (body === undefined) return null;
+        return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        store.set(key, String(value));
+      }),
+      head: vi.fn(async (key: string) => {
+        if (key !== tombstoneKey) return store.has(key) ? { key } : null;
+        tombstoneHeads += 1;
+        return tombstoneHeads > 1 ? { key } : null;
+      }),
+      delete: vi.fn(async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
+      }),
+      list: vi.fn(async (opts?: { prefix?: string }) => {
+        const prefix = opts?.prefix ?? "";
+        return {
+          objects: [...store.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
+          truncated: false,
+        };
+      }),
+    } as unknown as R2Bucket;
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+    consoleErr.mockRestore();
+
+    expect(tombstoneHeads).toBeGreaterThan(1);
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+    const puts = (bucket.put as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      puts
+        .filter(([key]) => String(key).endsWith("manifest.json"))
+        .every(([, body]) => JSON.parse(String(body)).status !== "failed"),
+    ).toBe(true);
+    expect(
+      puts
+        .filter(([key]) => String(key).includes("/attempts/"))
+        .every(([, body]) => JSON.parse(String(body)).status !== "failed"),
+    ).toBe(true);
+  });
 });

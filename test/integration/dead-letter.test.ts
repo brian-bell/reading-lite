@@ -111,21 +111,32 @@ describe("markDeadLettered", () => {
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
-  it("writes nothing when a purge tombstone is present", async () => {
+  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone is present", async () => {
     const reader = testReadingStore(env);
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge sweep");
+    await reader.writeAttempt(KEY_PREFIX, {
+      id: `at_${READING_ID}`,
+      trigger: "reprocess",
+      status: "running",
+      started_at: "2026-05-07T12:00:05.000Z",
+      reading_id: READING_ID,
+      url: DLQ_URL,
+      url_hash: DLQ_URL_HASH,
+      key_prefix: KEY_PREFIX,
+      events: [{ stage: "queued", status: "started", at: "2026-05-07T12:00:05.000Z" }],
+    });
     await reader.writePurgeTombstone(READING_ID);
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
-    // Tombstone is written before object delete; the pending manifest is still
-    // here. Recreating a failed attempt/manifest under the prefix would break
-    // the no-recreate invariant the live consumer already honors.
-    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
-    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
     expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
   });
 
   it("fail-opens and writes the failed manifest when the purge-tombstone lookup throws", async () => {
@@ -370,7 +381,7 @@ describe("markDeadLettered", () => {
 
     await markDeadLettered(args(), env as unknown as Env, services(), tenant);
 
-    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
     expect(await usage.reserveReading("at_after_tombstone", Date.now())).toEqual({ ok: true });
   });
 

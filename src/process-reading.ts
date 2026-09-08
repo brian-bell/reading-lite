@@ -607,13 +607,13 @@ export async function markDeadLettered(
     return;
   }
 
-  // Purge tombstone: processReading already drops on this signal so a purged
-  // reading gets no object recreated — not even an attempt log. The DLQ can
-  // still land after purge writes index/deleted/{id} and before object delete;
-  // markFailed would recreate attempt/manifest objects under that prefix.
-  // Fail-open on a throwing HEAD (same as readingWasPurged) so a transient
-  // R2 error still marks rather than stranding a pending reading.
+  // Purge tombstone: do not recreate a failed attempt/manifest under a
+  // prefix purge is sweeping. Sweep attempt residue already written (by-id
+  // is usually gone, so DELETE cannot reap it). Fail-open on a throwing HEAD
+  // (same as readingWasPurged) so a transient R2 error still marks rather
+  // than stranding a pending reading.
   if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
@@ -670,8 +670,10 @@ async function markFailed(
   console.error(e);
   // Same no-recreate gate as markDeadLettered: a mid-flight purge after
   // processReading's opening readingWasPurged check must not write an attempt
-  // log or failed manifest under the prefix. Fail-open on a throwing HEAD.
+  // log or failed manifest under the prefix. Sweep residue already written.
+  // Fail-open on a throwing HEAD.
   if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
     await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
     return;
   }
@@ -842,7 +844,8 @@ export interface CommitTerminalOpts {
   // checks immediately before by-url reclaim, the terminal write / markLive,
   // and publish. A confirmed tombstone skips reclaim and the terminal write
   // and sweeps prefix objects (attempt residue or a terminal that raced
-  // purge) before list/vector/by-url compensate. A confirmed false after
+  // purge) before list/vector/by-url compensate, including when
+  // canWriteManifest is already false after purge removed the manifest. A confirmed false after
   // publish/restore compensates with remove and
   // releases by-url if this reading still owns the slot. A lookup throw is
   // not confirmed inactive: fail-open (publish/keep) because readyManifest
@@ -911,7 +914,16 @@ export async function commitTerminalManifest(
   // the foreign row.
   // That re-sync was a no-op on data the owning attempt maintains anyway;
   // skipping it is intentional (plan 005, case 2).
-  if (!state.canWriteManifest) return { committed: false, published: false };
+  // After purge removes the manifest and by-id/list, this attempt cannot
+  // write a terminal object but may already have written attempt/checkpoint
+  // residue during a long stage. Sweep that prefix when a tombstone is
+  // confirmed. A foreign live attempt without a tombstone is left alone.
+  if (!state.canWriteManifest) {
+    if (!(await tombstoneAllows())) {
+      await reconcileVisibility(true, () => compensateFence(true));
+    }
+    return { committed: false, published: false };
+  }
 
   // Confirmed tombstone before the terminal write: do not recreate a ready (or
   // failed) object under a prefix purge is sweeping. Sweep prefix objects
@@ -1137,6 +1149,20 @@ async function compensateTombstonePrefixAndVisibility(
     await reader.deleteReadingObjects(args.keyPrefix);
   } finally {
     await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
+  }
+}
+
+// markFailed / markDeadLettered skip recreating a failed manifest. They still
+// drop attempt residue already written under a prefix purge can no longer
+// address once by-id is gone. Throws are logged so slot release still runs.
+async function sweepTombstonePrefixDefensively(
+  reader: ReadingStore,
+  keyPrefix: string,
+): Promise<void> {
+  try {
+    await reader.deleteReadingObjects(keyPrefix);
+  } catch (error) {
+    console.error(error);
   }
 }
 
