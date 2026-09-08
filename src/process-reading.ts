@@ -832,12 +832,14 @@ export interface CommitTerminalOpts {
   // Rechecked immediately before visibility publish / restore, and again
   // immediately after those writes (issue 195a). Per-reading purge tombstones
   // (#179) share one confirmed-tombstone latch for the call, including the
-  // check immediately before markLive. A confirmed false after publish/restore
-  // compensates with remove. A lookup throw is not confirmed inactive:
-  // fail-open (publish/keep) because readyManifest already cleared
-  // active_attempt and a retry cannot republish — unless this call already
-  // confirmed a tombstone, which stays latched. Omit tenantAllowsVisibility
-  // to keep the historical default (allow publish).
+  // checks immediately before by-url reclaim, the terminal write / markLive,
+  // and publish. A confirmed tombstone skips reclaim and the terminal write.
+  // A confirmed false after publish/restore compensates with remove and
+  // releases by-url if this reading still owns the slot. A lookup throw is
+  // not confirmed inactive: fail-open (publish/keep) because readyManifest
+  // already cleared active_attempt and a retry cannot republish — unless this
+  // call already confirmed a tombstone, which stays latched. Omit
+  // tenantAllowsVisibility to keep the historical default (allow publish).
   tenantAllowsVisibility?: () => Promise<boolean>;
   // Narrower than `!tenantAllowsVisibility()`: true only for a tenant confirmed
   // `deleting`, which is the only status an account wipe runs for and therefore
@@ -872,9 +874,16 @@ export async function commitTerminalManifest(
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
   const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
 
+  // Purge-tombstone checks share one latch for this call. A confirmed HEAD
+  // must not be undone by a later throw: fail-open after skip-markLive would
+  // upsert a vector with no live ledger row (publish does not markLive). The
+  // same latch gates by-url reclaim inside terminalWriteState: claiming a
+  // pointer purge already released would pin the URL to a ghost reading.
+  const tombstoneAllows = purgeTombstoneAllows(reader, args);
   const state = await terminalWriteState(reader, args, {
     claimMissingPointer: opts.claimMissingPointer,
     allowLastAttempt: opts.allowLastAttempt,
+    tombstoneAllows,
   });
   // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
   // restore — the other attempt owns visibility too. This unifies the two old
@@ -885,6 +894,17 @@ export async function commitTerminalManifest(
   // That re-sync was a no-op on data the owning attempt maintains anyway;
   // skipping it is intentional (plan 005, case 2).
   if (!state.canWriteManifest) return { committed: false, published: false };
+
+  // Confirmed tombstone before the terminal write: do not recreate a ready (or
+  // failed) object under a prefix purge is sweeping. Compensate list+vector and
+  // release by-url if we still own the slot. Defensive so a compensate throw
+  // cannot reach markFailed and recreate objects that way either.
+  if (!(await tombstoneAllows())) {
+    await reconcileVisibility(true, () =>
+      compensateVisibility(visibility, reader, args, opts, { tombstone: true }),
+    );
+    return { committed: false, published: false };
+  }
 
   // Ledger the reading BEFORE the terminal manifest write, not inside the
   // visibility publish that follows it.
@@ -910,14 +930,9 @@ export async function commitTerminalManifest(
   // event still comes from the upsert it precedes. Wrapping it would add a
   // second event for a stage that then runs anyway.
   //
-  // Purge-tombstone checks share one latch for this call. A confirmed HEAD
-  // must not be undone by a later throw: fail-open after skip-markLive would
-  // upsert a vector with no live ledger row (publish does not markLive).
-  const tombstoneAllows = purgeTombstoneAllows(reader, args);
+  // Tombstone already confirmed false above; a later HEAD throw stays latched.
   if (opts.vector && similarity && opts.ledger) {
-    if (await tombstoneAllows()) {
-      await opts.ledger.markLive([args.id], Date.now());
-    }
+    await opts.ledger.markLive([args.id], Date.now());
   }
 
   const written = await run("write_manifest", () =>
@@ -942,12 +957,12 @@ export async function commitTerminalManifest(
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(opts.defensive, () =>
-          compensateVisibility(visibility, args, opts, { tombstone: tombstoneAfter }),
+          compensateVisibility(visibility, reader, args, opts, { tombstone: tombstoneAfter }),
         );
       }
     } else if (tombstone) {
       await reconcileVisibility(opts.defensive, () =>
-        compensateVisibility(visibility, args, opts, { tombstone }),
+        compensateVisibility(visibility, reader, args, opts, { tombstone }),
       );
     }
     return { committed: false, published: false };
@@ -978,14 +993,14 @@ export async function commitTerminalManifest(
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(true, () =>
-          compensateVisibility(visibility, args, opts, { tombstone: tombstoneAfter }),
+          compensateVisibility(visibility, reader, args, opts, { tombstone: tombstoneAfter }),
         );
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
     await reconcileVisibility(true, () =>
-      compensateVisibility(visibility, args, opts, { tombstone }),
+      compensateVisibility(visibility, reader, args, opts, { tombstone }),
     );
     return { committed: true, published: false };
   }
@@ -999,7 +1014,7 @@ export async function commitTerminalManifest(
   if (state.canRemoveVisibility) {
     const tombstone = !(await tombstoneAllows());
     await reconcileVisibility(true, () =>
-      compensateVisibility(visibility, args, opts, { tombstone }),
+      compensateVisibility(visibility, reader, args, opts, { tombstone }),
     );
   }
   return { committed: true, published: false };
@@ -1052,20 +1067,48 @@ async function reconcileVisibility(
 // only one where dropping the vector ungated is right. A confirmed purge
 // tombstone is the per-reading equivalent: the list row may already be gone
 // because purge removed it, so ordinary `remove` would skip the vector.
+// Tombstone compensation also releases this reading's by-url pointer when it
+// still owns the slot: list+vector-only cleanup would leave a ghost owner
+// that later submit treats as a live reading. Tenant-deletion still uses
+// `removeForDeletedTenant` alone (wipe owns that prefix).
 // Every other reason visibility stopped being allowed (suspended, a
 // confirmed-missing row, or a lookup we could not confirm) takes the gated
 // removal this code has always used.
 async function compensateVisibility(
   visibility: ReadingVisibility,
+  reader: ReadingStore,
   args: ProcessReadingArgs,
   opts: CommitTerminalOpts,
   fence: { tombstone: boolean },
 ): Promise<void> {
-  if (fence.tombstone || (await tenantConfirmedDeletingForOpts(opts))) {
+  if (fence.tombstone) {
+    await releaseByUrlIfOwned(reader, args);
+    await visibility.removeForDeletedTenant(args);
+    return;
+  }
+  if (await tenantConfirmedDeletingForOpts(opts)) {
     await visibility.removeForDeletedTenant(args);
     return;
   }
   await visibility.remove(args);
+}
+
+// Drop the by-url pointer only while it still names this reading. A slot
+// already claimed by a later submit is left alone. R2 has no conditional
+// delete, so the same check-then-delete race purge accepts applies here.
+async function releaseByUrlIfOwned(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  let stored: Awaited<ReturnType<ReadingStore["readByUrlPointer"]>> = null;
+  try {
+    stored = await reader.readByUrlPointer(args.urlHash);
+  } catch (err) {
+    console.error(err);
+    return;
+  }
+  if (!stored || stored.id !== args.id) return;
+  await reader.deleteByUrlPointer(args.urlHash);
 }
 
 // Unconfirmed is not confirmed: a lookup throw falls back to the gated removal
@@ -1161,7 +1204,11 @@ async function tenantConfirmedDeleting(env: Env, tenantId: string): Promise<bool
 async function terminalWriteState(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-  opts: { claimMissingPointer: boolean; allowLastAttempt?: boolean },
+  opts: {
+    claimMissingPointer: boolean;
+    allowLastAttempt?: boolean;
+    tombstoneAllows?: () => Promise<boolean>;
+  },
 ): Promise<TerminalWriteState> {
   const stored = await reader.readManifestWithEtag(args.keyPrefix);
   const manifest = stored?.manifest ?? null;
@@ -1181,19 +1228,26 @@ async function terminalWriteState(
     ownsUrl = existing.id === args.id && existing.key_prefix === args.keyPrefix;
     ownerAllowsVisibility = ownsUrl;
   } else if (opts.claimMissingPointer && activeAttemptMatches) {
-    try {
-      await reader.writeByUrlPointer(
-        args.urlHash,
-        { id: args.id, key_prefix: args.keyPrefix },
-        { ifNotExists: true },
-      );
-      ownsUrl = true;
-      ownerAllowsVisibility = true;
-    } catch (err) {
-      if (!(err instanceof PointerExistsError)) throw err;
-      const claimed = await reader.readByUrlPointer(args.urlHash);
-      ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
-      ownerAllowsVisibility = ownsUrl;
+    // Do not reclaim a slot purge already released. A confirmed tombstone
+    // here latches for the rest of the commit so a later throw cannot
+    // fail-open into writeByUrlPointer.
+    const tombstoneBlocksClaim =
+      opts.tombstoneAllows !== undefined && !(await opts.tombstoneAllows());
+    if (!tombstoneBlocksClaim) {
+      try {
+        await reader.writeByUrlPointer(
+          args.urlHash,
+          { id: args.id, key_prefix: args.keyPrefix },
+          { ifNotExists: true },
+        );
+        ownsUrl = true;
+        ownerAllowsVisibility = true;
+      } catch (err) {
+        if (!(err instanceof PointerExistsError)) throw err;
+        const claimed = await reader.readByUrlPointer(args.urlHash);
+        ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
+        ownerAllowsVisibility = ownsUrl;
+      }
     }
   } else {
     ownerAllowsVisibility = true;

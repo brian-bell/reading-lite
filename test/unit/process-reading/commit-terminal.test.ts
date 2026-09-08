@@ -567,7 +567,7 @@ describe("commitTerminalManifest", () => {
     expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
   });
 
-  it("21: purge tombstone skips markLive, publish, and restore after terminal CAS", async () => {
+  it("21: purge tombstone skips terminal write, markLive, publish, restore, and by-url reclaim", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
     await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
@@ -586,10 +586,11 @@ describe("commitTerminalManifest", () => {
       vector: vectorOpt(),
       ledger,
     });
-    expect(published).toEqual({ committed: true, published: false });
+    expect(published).toEqual({ committed: false, published: false });
     expect(markLive).not.toHaveBeenCalled();
-    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
 
     vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
@@ -625,6 +626,7 @@ describe("commitTerminalManifest", () => {
     expect(checks).toBe(2);
     expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
 
@@ -651,6 +653,7 @@ describe("commitTerminalManifest", () => {
     expect(out).toEqual({ committed: false, published: false });
     expect(checks).toBe(2);
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
 
@@ -689,12 +692,14 @@ describe("commitTerminalManifest", () => {
       vector: vectorOpt(),
     });
 
-    expect(out).toEqual({ committed: true, published: false });
+    expect(out).toEqual({ committed: false, published: false });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
 
-  it("26: confirmed tombstone then later HEAD throw still skips markLive and publish", async () => {
+  it("26: confirmed tombstone then later HEAD throw still skips terminal write and publish", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
     await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
@@ -720,10 +725,39 @@ describe("commitTerminalManifest", () => {
     });
 
     consoleErr.mockRestore();
-    expect(out).toEqual({ committed: true, published: false });
+    expect(out).toEqual({ committed: false, published: false });
     expect(markLive).not.toHaveBeenCalled();
-    expect(checks).toBe(2);
-    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(checks).toBe(1);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("27: pointer-missing + tombstone does not reclaim by-url", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writePurgeTombstone(ID);
+    const pointerWrite = vi.spyOn(reader, "writeByUrlPointer");
+    const { similarity, vectors } = fakeVectorize();
+    const markLive = vi.fn(async () => {});
+    const ledger = {
+      markLive,
+      markDeleteSubmitted: vi.fn(async () => {}),
+    } as unknown as VectorLedger;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(pointerWrite).not.toHaveBeenCalled();
+    expect(markLive).not.toHaveBeenCalled();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
