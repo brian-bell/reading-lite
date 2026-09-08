@@ -287,6 +287,44 @@ describe("processReading — tombstone prefix sweep on early return", () => {
     expect((bucket.put as ReturnType<typeof vi.fn>).mock.calls.some(([key]) => String(key).includes("/attempts/"))).toBe(false);
   });
 
+  it("sweeps after a confirmed tombstone even if a later HEAD would throw", async () => {
+    const a = args();
+    const tombstoneKey = `index/deleted/${a.id}`;
+    let tombstoneHeads = 0;
+    const { store, bucket } = memoryBucket(
+      [
+        [`${a.keyPrefix}/extracted.md`, "# leftover from a crashed delivery"],
+        [
+          `${a.keyPrefix}/attempts/at_old.json`,
+          JSON.stringify({
+            id: "at_old",
+            trigger: "submit",
+            status: "running",
+            started_at: a.createdAt,
+            reading_id: a.id,
+            url: a.url,
+            url_hash: a.urlHash,
+            key_prefix: a.keyPrefix,
+            events: [],
+          }),
+        ],
+      ],
+      {
+        head: async (key, store) => {
+          if (key !== tombstoneKey) return store.has(key) ? { key } : null;
+          tombstoneHeads += 1;
+          if (tombstoneHeads === 1) return { key };
+          throw new Error("R2 hiccup");
+        },
+      },
+    );
+
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(tombstoneHeads).toBe(1);
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+  });
+
   it("sweeps this delivery's attempt residue when canWrite is false after writeAttemptSafe", async () => {
     const a = args();
     const tombstoneKey = `index/deleted/${a.id}`;

@@ -107,8 +107,14 @@ export async function processReading(
     // any write or upstream spend. Conflict/takeover cases below still log
     // their attempt for diagnostics. A confirmed tombstone still sweeps
     // leftover attempt/checkpoint objects from a prior crashed delivery.
-    if (await readingWasPurged(reader, args)) {
-      await maybeSweepConfirmedTombstone(reader, args);
+    // The purge check returns why: a confirmed tombstone is latched so a
+    // later HEAD throw cannot skip the sweep (same class as
+    // commitTerminalManifest's tombstone latch).
+    const purged = await readingWasPurged(reader, args);
+    if (purged) {
+      await maybeSweepConfirmedTombstone(reader, args, {
+        alreadyConfirmed: purged === "tombstone",
+      });
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -1170,11 +1176,15 @@ async function sweepTombstonePrefixDefensively(
 
 // Confirmed tombstone only — a live foreign attempt can also make
 // readingCanWriteAttemptArtifacts false, and must not lose its prefix.
+// `alreadyConfirmed` skips a second HEAD: fail-open on a throw would undo
+// a confirmation the caller already has (commitTerminalManifest latches
+// the same way).
 async function maybeSweepConfirmedTombstone(
   reader: ReadingStore,
   args: ProcessReadingArgs,
+  opts: { alreadyConfirmed?: boolean } = {},
 ): Promise<void> {
-  if (await confirmedPurgeTombstone(reader, args.id)) {
+  if (opts.alreadyConfirmed || (await confirmedPurgeTombstone(reader, args.id))) {
     await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
   }
 }
@@ -1378,14 +1388,15 @@ async function confirmedPurgeTombstone(
   }
 }
 
-// True when a confirmed purge tombstone exists, or when a CONFIRMED-absent
-// manifest has no surviving liveness witness. A throwing tombstone or
-// manifest read is never treated as absence.
+// Confirmed tombstone, or a CONFIRMED-absent manifest with no surviving
+// liveness witness. A throwing tombstone or manifest read is never treated
+// as absence. Distinguishes tombstone from absent so a later HEAD throw
+// cannot undo a confirmation and skip the prefix sweep.
 async function readingWasPurged(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-): Promise<boolean> {
-  if (await confirmedPurgeTombstone(reader, args.id)) return true;
+): Promise<"tombstone" | "absent" | false> {
+  if (await confirmedPurgeTombstone(reader, args.id)) return "tombstone";
   let manifestAbsent = false;
   try {
     manifestAbsent = (await reader.readManifest(args.keyPrefix)) === null;
@@ -1393,7 +1404,7 @@ async function readingWasPurged(
     console.error(e);
   }
   if (!manifestAbsent) return false;
-  return !(await missingManifestStillLive(reader, args));
+  return (await missingManifestStillLive(reader, args)) ? false : "absent";
 }
 
 async function readingCanWriteAttemptArtifacts(
