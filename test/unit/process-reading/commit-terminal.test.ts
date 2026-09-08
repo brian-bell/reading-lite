@@ -853,4 +853,42 @@ describe("commitTerminalManifest", () => {
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
+
+  it("31: by-url delete throw still compensates list, vector, and ledger", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    const markDeleteSubmitted = vi.fn(async () => {});
+    const ledger = {
+      markLive: vi.fn(async () => {}),
+      markDeleteSubmitted,
+    } as unknown as VectorLedger;
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteByUrlPointer").mockRejectedValue(new Error("R2 by-url delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+        ledger,
+      }),
+    ).resolves.toEqual({ committed: true, published: false });
+
+    consoleErr.mockRestore();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+    expect(markDeleteSubmitted).toHaveBeenCalled();
+    expect(await reader.readByUrlPointer(URL_HASH)).toEqual({ id: ID, key_prefix: PREFIX });
+  });
 });

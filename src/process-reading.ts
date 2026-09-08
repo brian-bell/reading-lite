@@ -1103,8 +1103,13 @@ async function compensateVisibility(
   fence: { tombstone: boolean },
 ): Promise<void> {
   if (fence.tombstone) {
-    await releaseByUrlIfOwned(reader, args);
-    await visibility.removeForDeletedTenant(args);
+    // By-url first (ghost owner), but a pointer-delete throw must not skip
+    // list / vector / ledger compensate. Same class as prefix-delete finally.
+    try {
+      await releaseByUrlIfOwned(reader, args);
+    } finally {
+      await visibility.removeForDeletedTenant(args);
+    }
     return;
   }
   if (await tenantConfirmedDeletingForOpts(opts)) {
