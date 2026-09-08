@@ -111,6 +111,65 @@ describe("markDeadLettered", () => {
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
+  it("writes nothing when a purge tombstone is present", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await reader.writePurgeTombstone(READING_ID);
+
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+
+    // Tombstone is written before object delete; the pending manifest is still
+    // here. Recreating a failed attempt/manifest under the prefix would break
+    // the no-recreate invariant the live consumer already honors.
+    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+    expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
+  });
+
+  it("fail-opens and writes the failed manifest when the purge-tombstone lookup throws", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+
+    const tombstoneKey = `u/${FOUNDER_TENANT_ID}/index/deleted/${READING_ID}`;
+    const bucket = env.READINGS_BUCKET;
+    let threw = false;
+    const flaky = {
+      get: bucket.get.bind(bucket),
+      put: bucket.put.bind(bucket),
+      delete: bucket.delete.bind(bucket),
+      head: async (key: string) => {
+        if (key === tombstoneKey) {
+          threw = true;
+          throw new Error("tombstone HEAD failed");
+        }
+        return bucket.head(key);
+      },
+      list: bucket.list.bind(bucket),
+    } as unknown as R2Bucket;
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await markDeadLettered(
+        args(),
+        { ...(env as unknown as Env), READINGS_BUCKET: flaky },
+        services(),
+        founderTenant(),
+      );
+    } finally {
+      consoleErr.mockRestore();
+    }
+
+    expect(threw).toBe(true);
+    const after = await reader.readManifest(KEY_PREFIX);
+    expect(after?.status).toBe("failed");
+    expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("failed");
+  });
+
   it("writes nothing when the tenant is already deleting", async () => {
     const reader = testReadingStore(env);
     const manifest = pendingManifest();
@@ -301,6 +360,18 @@ describe("markDeadLettered", () => {
     await markDeadLettered(args(), env as unknown as Env, services(), tenant);
 
     expect(await usage.reserveReading("at_after_absent", Date.now())).toEqual({ ok: true });
+  });
+
+  it("releases a held slot when a purge tombstone is present", async () => {
+    const { tenant, usage, reader } = await quotaUsage();
+    await reader.writeManifest(KEY_PREFIX, pendingManifest());
+    await reader.writePurgeTombstone(READING_ID);
+    expect(await usage.reserveReading(`at_${READING_ID}`, Date.now())).toEqual({ ok: true });
+
+    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
+
+    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect(await usage.reserveReading("at_after_tombstone", Date.now())).toEqual({ ok: true });
   });
 
   it("releases a held slot when a stale dead-lettered attempt no longer owns the reading", async () => {

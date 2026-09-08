@@ -607,6 +607,17 @@ export async function markDeadLettered(
     return;
   }
 
+  // Purge tombstone: processReading already drops on this signal so a purged
+  // reading gets no object recreated — not even an attempt log. The DLQ can
+  // still land after purge writes index/deleted/{id} and before object delete;
+  // markFailed would recreate attempt/manifest objects under that prefix.
+  // Fail-open on a throwing HEAD (same as readingWasPurged) so a transient
+  // R2 error still marks rather than stranding a pending reading.
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
+
   // Account-deletion suppress (195a): do not write a failed list row after
   // the tenant is already deleting. handleDeadLetter always acks and never
   // retries, so a lookup throw must fail-open and proceed to markFailed —
@@ -1212,6 +1223,21 @@ async function missingManifestStillLive(
   return (await reader.findListIndexItem(args.id)) !== null;
 }
 
+// Confirmed tombstone only. A throwing HEAD is not evidence of purge —
+// fail-open so a transient R2 error does not drop a live reading (or, on
+// the DLQ, strand a pending one).
+async function confirmedPurgeTombstone(
+  reader: ReadingStore,
+  id: string,
+): Promise<boolean> {
+  try {
+    return await reader.hasPurgeTombstone(id);
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
 // True when a confirmed purge tombstone exists, or when a CONFIRMED-absent
 // manifest has no surviving liveness witness. A throwing tombstone or
 // manifest read is never treated as absence.
@@ -1219,11 +1245,7 @@ async function readingWasPurged(
   reader: ReadingStore,
   args: ProcessReadingArgs,
 ): Promise<boolean> {
-  try {
-    if (await reader.hasPurgeTombstone(args.id)) return true;
-  } catch (e) {
-    console.error(e);
-  }
+  if (await confirmedPurgeTombstone(reader, args.id)) return true;
   let manifestAbsent = false;
   try {
     manifestAbsent = (await reader.readManifest(args.keyPrefix)) === null;
