@@ -78,7 +78,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
       put: vi.fn(async () => {
         throw new Error("R2 outage");
       }),
-      head: vi.fn(),
+      head: vi.fn(async () => null),
       delete: vi.fn(),
       list: vi.fn(async () => ({ objects: [], truncated: false })),
     } as unknown as R2Bucket;
@@ -97,7 +97,7 @@ describe("processReading — markFailed is defensive against R2 outages", () => 
       put: vi.fn(async (key: string) => {
         if (key === "index/list.json") throw new Error("R2 partial outage");
       }),
-      head: vi.fn(),
+      head: vi.fn(async () => null),
       delete: vi.fn(),
       list: vi.fn(async () => ({ objects: [], truncated: false })),
     } as unknown as R2Bucket;

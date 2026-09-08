@@ -322,7 +322,7 @@ export class ReadingStore {
   }
 
   async hasPurgeTombstone(id: string): Promise<boolean> {
-    return (await this.bucket.head(this.layout.deletedKey(id))) !== null;
+    return (await this.bucket.head(this.layout.deletedKey(id))) != null;
   }
 
   async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {
