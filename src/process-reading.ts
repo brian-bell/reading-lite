@@ -820,11 +820,13 @@ export interface CommitTerminalOpts {
   instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
   // Rechecked immediately before visibility publish / restore, and again
   // immediately after those writes (issue 195a). Per-reading purge tombstones
-  // (#179) are checked at the same sites, plus immediately before markLive.
-  // A confirmed false after publish/restore compensates with remove. A lookup
-  // throw is not confirmed inactive: fail-open (publish/keep) because
-  // readyManifest already cleared active_attempt and a retry cannot republish.
-  // Omit to keep the historical default (allow publish).
+  // (#179) share one confirmed-tombstone latch for the call, including the
+  // check immediately before markLive. A confirmed false after publish/restore
+  // compensates with remove. A lookup throw is not confirmed inactive:
+  // fail-open (publish/keep) because readyManifest already cleared
+  // active_attempt and a retry cannot republish — unless this call already
+  // confirmed a tombstone, which stays latched. Omit tenantAllowsVisibility
+  // to keep the historical default (allow publish).
   tenantAllowsVisibility?: () => Promise<boolean>;
   // Narrower than `!tenantAllowsVisibility()`: true only for a tenant confirmed
   // `deleting`, which is the only status an account wipe runs for and therefore
@@ -896,8 +898,13 @@ export async function commitTerminalManifest(
   // object per call, and this write has no stage of its own — the `upsert_vector`
   // event still comes from the upsert it precedes. Wrapping it would add a
   // second event for a stage that then runs anyway.
+  //
+  // Purge-tombstone checks share one latch for this call. A confirmed HEAD
+  // must not be undone by a later throw: fail-open after skip-markLive would
+  // upsert a vector with no live ledger row (publish does not markLive).
+  const tombstoneAllows = purgeTombstoneAllows(reader, args);
   if (opts.vector && similarity && opts.ledger) {
-    if (await readingStillAllowsVisibility(reader, args)) {
+    if (await tombstoneAllows()) {
       await opts.ledger.markLive([args.id], Date.now());
     }
   }
@@ -913,7 +920,7 @@ export async function commitTerminalManifest(
     // write throw. Restore the current list visibility so we don't leave a
     // half-published row behind — unless the tenant-deletion fence or a
     // per-reading purge tombstone forbids resurrection (issue 195a / #179).
-    const tombstone = !(await readingStillAllowsVisibility(reader, args));
+    const tombstone = !(await tombstoneAllows());
     if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
       await reconcileVisibility(opts.defensive, () =>
         visibility.restoreIfOwner(args),
@@ -921,7 +928,7 @@ export async function commitTerminalManifest(
       // Deletion can land between the pre-restore check and the list write.
       // Compensate in this same consumer; do not wait on DELETE /api/account
       // or a retried purge.
-      const tombstoneAfter = !(await readingStillAllowsVisibility(reader, args));
+      const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(opts.defensive, () =>
           compensateVisibility(visibility, args, opts, { tombstone: tombstoneAfter }),
@@ -943,7 +950,7 @@ export async function commitTerminalManifest(
     // between terminal CAS and this write. Account deletion marks
     // users.status=deleting as the durable fence (195a). Per-reading purge
     // writes index/deleted/{id} and this path rechecks it here (#179).
-    const tombstone = !(await readingStillAllowsVisibility(reader, args));
+    const tombstone = !(await tombstoneAllows());
     if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
       const published = await reconcileVisibility(true, () =>
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
@@ -957,7 +964,7 @@ export async function commitTerminalManifest(
       // that is unaddressable, because R2 is the only source of reading ids.
       // Ordinary `remove` skips the vector when the list row is already gone;
       // `removeForDeletedTenant` does not.
-      const tombstoneAfter = !(await readingStillAllowsVisibility(reader, args));
+      const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(true, () =>
           compensateVisibility(visibility, args, opts, { tombstone: tombstoneAfter }),
@@ -979,7 +986,7 @@ export async function commitTerminalManifest(
   // exactly like the others do: the wipe may already have taken
   // `index/list.json`, and `remove` gives up when there is no row to remove.
   if (state.canRemoveVisibility) {
-    const tombstone = !(await readingStillAllowsVisibility(reader, args));
+    const tombstone = !(await tombstoneAllows());
     await reconcileVisibility(true, () =>
       compensateVisibility(visibility, args, opts, { tombstone }),
     );
@@ -1078,18 +1085,25 @@ async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<bo
   }
 }
 
-// Confirmed purge tombstone. Lookup throw → not confirmed, fail-open (allow
-// publish / keep), same as tenantStillAllowsVisibility after a terminal CAS.
-async function readingStillAllowsVisibility(
+// Confirmed purge tombstone, latched for one commitTerminalManifest call.
+// Lookup throw → not confirmed, fail-open (allow publish / keep), same as
+// tenantStillAllowsVisibility after a terminal CAS — unless a HEAD in this
+// call already confirmed the tombstone. That confirmation must stick: a
+// later throw must not fail-open after skip-markLive and upsert a vector
+// with no live ledger row.
+function purgeTombstoneAllows(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-): Promise<boolean> {
-  try {
-    return !(await reader.hasPurgeTombstone(args.id));
-  } catch (error) {
-    console.error(error);
-    return true;
-  }
+): () => Promise<boolean> {
+  let confirmed = false;
+  return async () => {
+    try {
+      if (await reader.hasPurgeTombstone(args.id)) confirmed = true;
+    } catch (error) {
+      console.error(error);
+    }
+    return !confirmed;
+  };
 }
 
 // Fail-open when the worker has no D1 binding (unit tests that stub Env).

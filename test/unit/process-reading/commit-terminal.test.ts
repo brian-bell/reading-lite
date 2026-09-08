@@ -693,4 +693,38 @@ describe("commitTerminalManifest", () => {
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
+
+  it("26: confirmed tombstone then later HEAD throw still skips markLive and publish", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    const markLive = vi.fn(async () => {});
+    const ledger = {
+      markLive,
+      markDeleteSubmitted: vi.fn(async () => {}),
+    } as unknown as VectorLedger;
+    let checks = 0;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      if (checks === 1) return true;
+      throw new Error("R2 hiccup");
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: false });
+    expect(markLive).not.toHaveBeenCalled();
+    expect(checks).toBe(2);
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
 });
