@@ -32,8 +32,11 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
    tombstone or `users.status=deleting` compensates with
    `visibility.removeForDeletedTenant` so a missing list row cannot skip the
    vector delete. Tombstone compensation also releases this reading's by-url
-   pointer if it still owns the slot. Send any eligible immediate notification
-   after publication; mail failure does not fail a ready reading.
+   pointer if it still owns the slot. If a tombstone appears after the terminal
+   CAS succeeds, the consumer also deletes objects under the reading prefix
+   so a swept-then-rewritten manifest is not left unreapable. Send any eligible
+   immediate notification after publication; mail failure does not fail a ready
+   reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -92,8 +95,9 @@ a final sweep, and by-id pointer last. This supports retries after partial
 failure. Inbound connections remain until an explicit corpus sweep. The
 consumer rechecks the tombstone at the same terminal visibility sites as the
 tenant-deletion fence so a still-running attempt cannot republish after the
-sweep, reclaim by-url, or recreate a terminal manifest. The missing-manifest
-purge guard also treats a tombstone as purged.
+sweep, reclaim by-url, or recreate a terminal manifest. A tombstone that
+lands after the terminal CAS deletes the recreated prefix objects as well.
+The missing-manifest purge guard also treats a tombstone as purged.
 
 ## Tenant storage
 

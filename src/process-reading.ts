@@ -978,6 +978,18 @@ export async function commitTerminalManifest(
     return { committed: false, published: false };
   }
 
+  // Recheck immediately after the terminal CAS. A tombstone that landed
+  // between the pre-write HEAD and this write recreates objects under a
+  // prefix purge already swept. Visibility compensate cannot reap those
+  // objects, and by-id is usually already gone, so DELETE /api/readings/:id
+  // returns not_found. Defensive: a throw must not reach markFailed.
+  if (!(await tombstoneAllows())) {
+    await reconcileVisibility(true, () =>
+      compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts),
+    );
+    return { committed: true, published: false };
+  }
+
   // The terminal object is committed. Visibility throws must not reach
   // processReading's outer catch: markFailed(allowLastAttempt) would overwrite
   // ready with failed. Same class of bug sendReadingEmailAndLog already avoids.
@@ -1003,14 +1015,18 @@ export async function commitTerminalManifest(
       const tombstoneAfter = !(await tombstoneAllows());
       if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
         await reconcileVisibility(true, () =>
-          compensateVisibility(visibility, reader, args, opts, { tombstone: tombstoneAfter }),
+          tombstoneAfter
+            ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
+            : compensateVisibility(visibility, reader, args, opts, { tombstone: false }),
         );
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
     await reconcileVisibility(true, () =>
-      compensateVisibility(visibility, reader, args, opts, { tombstone }),
+      tombstone
+        ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
+        : compensateVisibility(visibility, reader, args, opts, { tombstone: false }),
     );
     return { committed: true, published: false };
   }
@@ -1024,7 +1040,9 @@ export async function commitTerminalManifest(
   if (state.canRemoveVisibility) {
     const tombstone = !(await tombstoneAllows());
     await reconcileVisibility(true, () =>
-      compensateVisibility(visibility, reader, args, opts, { tombstone }),
+      tombstone
+        ? compensateTombstoneAfterTerminalWrite(visibility, reader, args, opts)
+        : compensateVisibility(visibility, reader, args, opts, { tombstone }),
     );
   }
   return { committed: true, published: false };
@@ -1101,6 +1119,20 @@ async function compensateVisibility(
     return;
   }
   await visibility.remove(args);
+}
+
+// After a terminal CAS that raced a purge: drop the recreated prefix objects
+// (manifest, attempts, raw/extracted) then the usual list/vector/by-url
+// compensate. Skip-write and lost-CAS paths never wrote a terminal object
+// and must not sweep a prefix purge still owns.
+async function compensateTombstoneAfterTerminalWrite(
+  visibility: ReadingVisibility,
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  opts: CommitTerminalOpts,
+): Promise<void> {
+  await reader.deleteReadingObjects(args.keyPrefix);
+  await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
 }
 
 // Drop the by-url pointer only while it still names this reading. A slot

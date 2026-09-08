@@ -605,7 +605,7 @@ describe("commitTerminalManifest", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
-  it("22: tombstone appears between pre-publish check and publish → compensate removeForDeletedTenant", async () => {
+  it("22: tombstone appears after pre-write check and terminal CAS → delete prefix objects", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
     await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
@@ -624,7 +624,7 @@ describe("commitTerminalManifest", () => {
 
     expect(out).toEqual({ committed: true, published: false });
     expect(checks).toBe(2);
-    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.readManifest(PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(ID)).toBeNull();
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
@@ -788,6 +788,38 @@ describe("commitTerminalManifest", () => {
     expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect((await reader.readManifest(PREFIX))?.status).toBe("pending");
     expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("29: post-CAS tombstone deletes recreated prefix objects and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeExtracted(PREFIX, "# leftover after purge sweep");
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
     expect(vectors.has(ID)).toBe(false);
   });
 });
