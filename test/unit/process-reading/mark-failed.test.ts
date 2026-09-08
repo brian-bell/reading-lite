@@ -219,7 +219,13 @@ function pendingBody() {
   });
 }
 
-function memoryBucket(init: Array<[string, string]>) {
+function memoryBucket(
+  init: Array<[string, string]>,
+  hooks: {
+    head?: (key: string, store: Map<string, string>) => Promise<{ key: string } | null>;
+    onPut?: (key: string, store: Map<string, string>) => void;
+  } = {},
+) {
   const store = new Map<string, string>(init);
   const tombstoneKey = `index/deleted/${args().id}`;
   return {
@@ -233,8 +239,12 @@ function memoryBucket(init: Array<[string, string]>) {
       }),
       put: vi.fn(async (key: string, value: unknown) => {
         store.set(key, String(value));
+        hooks.onPut?.(key, store);
       }),
-      head: vi.fn(async (key: string) => (store.has(key) ? { key } : null)),
+      head: vi.fn(async (key: string) => {
+        if (hooks.head) return hooks.head(key, store);
+        return store.has(key) ? { key } : null;
+      }),
       delete: vi.fn(async (keys: string | string[]) => {
         for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
       }),
@@ -279,18 +289,17 @@ describe("processReading — tombstone prefix sweep on early return", () => {
 
   it("sweeps this delivery's attempt residue when canWrite is false after writeAttemptSafe", async () => {
     const a = args();
-    const { store, bucket, tombstoneKey } = memoryBucket([
-      [`${a.keyPrefix}/manifest.json`, pendingBody()],
-    ]);
+    const tombstoneKey = `index/deleted/${a.id}`;
     let tombstoneHeads = 0;
-    bucket.head = vi.fn(async (key: string) => {
-      if (key !== tombstoneKey) return store.has(key) ? { key } : null;
-      tombstoneHeads += 1;
-      return tombstoneHeads > 1 ? { key } : null;
-    });
-    bucket.put = vi.fn(async (key: string, value: unknown) => {
-      store.set(key, String(value));
-      if (String(key).includes("/attempts/")) store.delete(`${a.keyPrefix}/manifest.json`);
+    const { store, bucket } = memoryBucket([[`${a.keyPrefix}/manifest.json`, pendingBody()]], {
+      head: async (key, store) => {
+        if (key !== tombstoneKey) return store.has(key) ? { key } : null;
+        tombstoneHeads += 1;
+        return tombstoneHeads > 1 ? { key } : null;
+      },
+      onPut: (key, store) => {
+        if (key.includes("/attempts/")) store.delete(`${a.keyPrefix}/manifest.json`);
+      },
     });
 
     await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
