@@ -88,6 +88,13 @@ export async function processReading(
 ): Promise<void> {
   const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
   const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
+  // The purge-recovery view of the vector store: null when no Vectorize
+  // binding exists, the same R2-only semantics as PurgeDeps.similarity. The
+  // unconditional store above is fine for the gated success/removal verbs
+  // (they only reach it holding a vector), but the ungated tombstone recovery
+  // calls delete directly and must not turn an unbound binding into a thrown
+  // — and now retried — "failed submission" (#357 P1b).
+  const recoverySimilarity = env.READINGS_INDEX ? similarity : null;
   // The vector ledger travels with the vector store, and for the same reason:
   // an id recorded before every upsert is what keeps the vector addressable
   // once the reading's R2 objects are gone (issue #195 S3). Null without a
@@ -114,7 +121,7 @@ export async function processReading(
     // commitTerminalManifest's tombstone latch).
     const purged = await readingWasPurged(reader, args);
     if (purged) {
-      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args, {
+      await maybeRecoverConfirmedTombstone(reader, recoverySimilarity, ledger, args, {
         alreadyConfirmed: purged === "tombstone",
       });
       await releaseReadingSlot(env, tenantId, opId);
@@ -133,7 +140,7 @@ export async function processReading(
     }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args);
+      await maybeRecoverConfirmedTombstone(reader, recoverySimilarity, ledger, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -169,7 +176,7 @@ export async function processReading(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args);
+      await maybeRecoverConfirmedTombstone(reader, recoverySimilarity, ledger, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -393,7 +400,7 @@ export async function processReading(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, similarity, ledger);
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, recoverySimilarity, ledger);
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
@@ -444,7 +451,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e, env, tenantId, similarity, ledger);
+    await markFailed(reader, args, services, attempt, e, env, tenantId, recoverySimilarity, ledger);
   }
 }
 
@@ -619,7 +626,7 @@ export async function markDeadLettered(
   if (await confirmedPurgeTombstone(reader, args.id)) {
     await recoverPurgedReadingState(
       reader,
-      similarityStoreFor(env.READINGS_INDEX, tenant, env),
+      env.READINGS_INDEX ? similarityStoreFor(env.READINGS_INDEX, tenant, env) : null,
       vectorLedgerFor(env, tenant),
       args,
     );
@@ -675,7 +682,7 @@ export async function markDeadLettered(
     new QueueRetriesExhaustedError(),
     env,
     tenantId,
-    similarityStoreFor(env.READINGS_INDEX, tenant, env),
+    env.READINGS_INDEX ? similarityStoreFor(env.READINGS_INDEX, tenant, env) : null,
     vectorLedgerFor(env, tenant),
   );
   // RateLimitedError keeps the slot held through retries; exhausting them is
@@ -1209,27 +1216,35 @@ async function sweepTombstonePrefixDefensively(
 // reused, so an id-matched row can only be this purged reading's.
 //
 // Failure policy: R2 throws are logged and the remaining steps still run —
-// every step is idempotent and the next delivery retries the lot. The ledger
-// stamp stays fail-closed (same as the removal verbs): losing it silently
-// would leave a `live` row for a deleted vector, so the throw propagates —
-// processReading's outer catch requeues it, markFailed's caller retries the
-// delivery, and the DLQ handler logs and acks per its own contract.
+// every step is idempotent and the next delivery retries the lot. The vector
+// half is different: the `delete_submitted` stamp follows a SUCCESSFUL
+// submission only (purgeReading's own rule). Stamping a delete that was never
+// submitted would hide the vector from the wipe's re-submit pass, which
+// selects `live` rows only, leaving it permanently searchable (#357 review
+// P1b) — so a failed submission (or a failed stamp, same as the removal
+// verbs) is rethrown AFTER the R2 cleanup, failing the delivery so the queue
+// retries the recovery: processReading's outer catch requeues it, markFailed's
+// caller retries the delivery, and the DLQ handler logs and acks per its own
+// contract — the row then stays `live` and the wipe re-submits it.
 async function recoverPurgedReadingState(
   reader: ReadingStore,
   similarity: SimilarityStore | null,
   ledger: VectorLedger | null,
   args: ProcessReadingArgs,
 ): Promise<void> {
+  let vectorFailure: unknown = null;
   if (similarity) {
     try {
       await similarity.delete(args.id);
+      // AFTER the delete, like every other stamp site: `deleted_at_ms` is what
+      // the +120s first-confirmation delay is measured from.
+      await ledger?.markDeleteSubmitted([args.id], Date.now());
     } catch (error) {
+      // Deferred, not swallowed: finish the R2 cleanup this delivery can still
+      // do, then fail the delivery so the vector half is retried.
+      vectorFailure = error;
       console.error(error);
     }
-    // Outside the vector try: a failed `deleteByIds` submission must not skip
-    // the stamp (the id must stay addressable either way), and a failed stamp
-    // must not be swallowed by the vector catch.
-    await ledger?.markDeleteSubmitted([args.id], Date.now());
   }
   try {
     // By-url before list row, same as purgeReading: the row is the URL-hash
@@ -1241,6 +1256,9 @@ async function recoverPurgedReadingState(
     console.error(error);
   }
   await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+  if (vectorFailure !== null) {
+    throw vectorFailure instanceof Error ? vectorFailure : new Error(String(vectorFailure));
+  }
 }
 
 // Confirmed tombstone only — a live foreign attempt can also make

@@ -310,6 +310,74 @@ describe("processReading — tombstone prefix sweep on early return", () => {
     expect(JSON.parse(store.get(`index/by-url/${a.urlHash}`)!).id).toBe("rd_NEWOWNER1");
   });
 
+  it("propagates a failed vector-delete submission for retry and does not stamp delete_submitted (#357 P1b)", async () => {
+    // A delete_submitted row for a delete that was never submitted is
+    // invisible to the wipe's re-submit pass (it selects `live` rows only),
+    // so a swallowed rejection would leave the vector permanently searchable.
+    // The stamp must follow a successful submission — purgeReading's own rule
+    // — and the failure must fail the delivery so the queue retries.
+    const a = args();
+    const { store, bucket } = memoryBucket([
+      [`${a.keyPrefix}/extracted.md`, "# residue"],
+      [`index/deleted/${a.id}`, ""],
+    ]);
+    const env = envWith(bucket);
+    const deleteByIds = vi.fn(async () => {
+      throw new Error("vectorize unavailable");
+    });
+    (env.READINGS_INDEX as unknown as { deleteByIds: unknown }).deleteByIds = deleteByIds;
+    const ledgerRuns: string[] = [];
+    (env as { CONTROL_PLANE?: unknown }).CONTROL_PLANE = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          run: async () => {
+            ledgerRuns.push(sql);
+            return { meta: { changes: 1 } };
+          },
+          first: async () => null,
+          all: async () => ({ results: [] }),
+        }),
+      }),
+      batch: async () => [],
+    };
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(processReading(a, env, services(), founderTenant())).rejects.toThrow(
+      "vectorize unavailable",
+    );
+    consoleErr.mockRestore();
+
+    expect(deleteByIds).toHaveBeenCalled();
+    expect(ledgerRuns.some((sql) => sql.includes("vector_ledger"))).toBe(false);
+    // The R2 half of the recovery still ran before the rethrow: a delivery
+    // that cannot reach Vectorize should not also strand reapable residue.
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+  });
+
+  it("stamps delete_submitted after a successful vector-delete submission", async () => {
+    const a = args();
+    const { bucket } = memoryBucket([[`index/deleted/${a.id}`, ""]]);
+    const env = envWith(bucket);
+    const ledgerRuns: string[] = [];
+    (env as { CONTROL_PLANE?: unknown }).CONTROL_PLANE = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          run: async () => {
+            ledgerRuns.push(sql);
+            return { meta: { changes: 1 } };
+          },
+          first: async () => null,
+          all: async () => ({ results: [] }),
+        }),
+      }),
+      batch: async () => [],
+    };
+
+    await expect(processReading(a, env, services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(ledgerRuns.some((sql) => sql.includes("'delete_submitted'"))).toBe(true);
+  });
+
   it("sweeps prior residue when readingWasPurged sees a confirmed tombstone", async () => {
     const a = args();
     const { store, bucket } = memoryBucket([
