@@ -1,7 +1,7 @@
 // `ops staging smoke` — end-to-end provider smoke against staging: submit,
-// markdown import, reprocess, deliberate failure, diagnostics, and
-// list-visibility checks. It never prints the bearer token. Plan-first: a
-// mode-less run only describes the checks; --execute performs the staging
+// markdown import, reprocess, deliberate failure, diagnostics, extracted content,
+// and list visibility. It never prints the bearer token. Plan-first: a mode-less
+// run only describes the checks; --execute performs the staging
 // writes (paid summarization on staging).
 
 import { parseArgs } from "node:util";
@@ -173,6 +173,22 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     }
   };
 
+  const assertExtractedContent = async (manifest: JsonObject, label: string): Promise<void> => {
+    if (manifest.content_status !== "captured") {
+      throw new Error(`${label} expected captured article text, got ${String(manifest.content_status)}`);
+    }
+    const response = await deps.fetch(
+      `${args.base}/api/readings/${encodeURIComponent(String(manifest.id))}/content`,
+      { headers },
+    );
+    if (!response.ok) {
+      throw new Error(`${label} extracted article request failed: HTTP ${response.status}`);
+    }
+    if (!(await response.text()).trim()) {
+      throw new Error(`${label} extracted article text was empty`);
+    }
+  };
+
   const submittedId = acceptedId(
     await api.submit(`https://www.rfc-editor.org/rfc/rfc1149.html?reading-lite-${marker}`, {
       email: false,
@@ -184,6 +200,7 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   if (submittedManifest.status !== "ready") {
     throw new Error(`submit ${submittedId} ended ${String(submittedManifest.status)}`);
   }
+  await assertExtractedContent(submittedManifest, "submit");
   assertProvider(submittedManifest, "submit");
 
   const importedId = acceptedId(
@@ -202,6 +219,7 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   if (importedManifest.status !== "ready") {
     throw new Error(`import ${importedId} ended ${String(importedManifest.status)}`);
   }
+  await assertExtractedContent(importedManifest, "import");
   assertProvider(importedManifest, "import");
 
   const beforeReprocessUpdatedAt = submittedManifest.updated_at;
@@ -222,6 +240,7 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   ) {
     throw new Error(`reprocess ${submittedId} did not produce a new ready manifest`);
   }
+  await assertExtractedContent(reprocessedManifest, "reprocess");
   assertProvider(reprocessedManifest, "reprocess");
 
   const failedId = acceptedId(
@@ -260,6 +279,7 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     submit: {
       id: submittedId,
       status: reprocessedManifest.status,
+      content_status: reprocessedManifest.content_status,
       model: (
         (reprocessedManifest.usage as JsonObject | undefined)
           ?.summarization as JsonObject | undefined
@@ -270,6 +290,7 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
     import: {
       id: importedId,
       status: importedManifest.status,
+      content_status: importedManifest.content_status,
       model: (
         (importedManifest.usage as JsonObject | undefined)
           ?.summarization as JsonObject | undefined
@@ -298,8 +319,8 @@ export const stagingSmokeCommand: CommandDefinition<StagingSmokeDeps> = {
   helpText: `Usage: npm run ops -- staging smoke --provider openai|anthropic [options]
 
 Previews submit, markdown import, reprocess, deliberate failure, diagnostics,
-and list-visibility checks against staging. It never prints the bearer token
-and writes nothing unless --execute is present. --execute performs the staging
+extracted-content, and list-visibility checks against staging. It never prints
+the bearer token and writes nothing unless --execute is present. --execute performs the staging
 writes and triggers paid summarization on staging.
 
 Options:

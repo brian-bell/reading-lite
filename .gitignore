@@ -1,5 +1,7 @@
 node_modules/
 dist/
+web/dist-prototypes/
+web/dist-connected-prototype/
 .wrangler/
 .dev.vars
 .stg.vars

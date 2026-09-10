@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prototype:dev": "vite --config vite.prototypes.config.ts --host 127.0.0.1",
+    "prototype:connected:dev": "vite --config vite.connected-prototype.config.ts --host 127.0.0.1",
+    "prototype:connected:build": "tsc -p tsconfig.prototypes.json && vite build --config vite.connected-prototype.config.ts",
+    "prototype:build": "tsc -p tsconfig.prototypes.json && vite build --config vite.prototypes.config.ts",
+    "prototype:test": "vitest run --config vitest.prototypes.config.ts",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "test": "vitest run",
