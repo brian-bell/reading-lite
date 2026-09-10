@@ -75,24 +75,16 @@ describe("mcp format helpers", () => {
 });
 
 describe("mcp origin allowlist", () => {
-  it("defaults to the old host and both public origins when the var is empty", () => {
-    expect(parseMcpAllowedOrigins("")).toEqual([
-      "https://reading-lite.bbell.dev",
-      "https://readinglite.ai",
-      "https://readinglite.app",
-    ]);
-    expect(parseMcpAllowedOrigins(undefined)).toEqual([
-      "https://reading-lite.bbell.dev",
-      "https://readinglite.ai",
-      "https://readinglite.app",
-    ]);
+  it("defaults to the two public origins when the var is empty", () => {
+    expect(parseMcpAllowedOrigins("")).toEqual(["https://readinglite.ai", "https://readinglite.app"]);
+    expect(parseMcpAllowedOrigins(undefined)).toEqual(["https://readinglite.ai", "https://readinglite.app"]);
   });
 
-  it("accepts the old host and both public hosts by default", () => {
+  it("accepts both public hosts by default and rejects the retired host", () => {
     const allowed = parseMcpAllowedOrigins(undefined);
-    expect(mcpOriginAllowed("https://reading-lite.bbell.dev", allowed)).toBe(true);
     expect(mcpOriginAllowed("https://readinglite.ai", allowed)).toBe(true);
     expect(mcpOriginAllowed("https://readinglite.app", allowed)).toBe(true);
+    expect(mcpOriginAllowed("https://reading-lite.bbell.dev", allowed)).toBe(false);
   });
 
   it("matches origins exactly, so neighbouring hosts do not slip through", () => {
@@ -113,7 +105,7 @@ describe("mcp origin allowlist", () => {
 
   it("still honours an explicit comma-separated var over the defaults", () => {
     expect(
-      parseMcpAllowedOrigins("https://reading-lite.bbell.dev, https://readinglite.ai, https://readinglite.app"),
-    ).toEqual(["https://reading-lite.bbell.dev", "https://readinglite.ai", "https://readinglite.app"]);
+      parseMcpAllowedOrigins("https://readinglite.ai, https://readinglite.app"),
+    ).toEqual(["https://readinglite.ai", "https://readinglite.app"]);
   });
 });

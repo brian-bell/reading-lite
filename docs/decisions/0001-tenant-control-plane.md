@@ -724,6 +724,10 @@ reconciled.
 
 - Separate D1 database and Durable Object namespaces.
 - A single staging host serves Pages plus Worker `/api/*` routes.
+- **Update (2026-09-10, issue #265 S7/S9):** staging dual-serves
+  `staging.readinglite.ai` (canonical) and `staging.readinglite.app`.
+  `reading-lite-staging.bbell.dev` is retired. The original single-host
+  sentence above is left as written.
 - Signup is invite-only and Resend recipients are allowlisted.
 - Rehearse D1 migration/restore, credential invalidation, counter failure, queue
   drain, founder copy/reconciliation, and rollback before production.
@@ -738,6 +742,9 @@ reconciled.
   `reading-lite.bbell.dev` (compatibility/rollback). Same-origin still means
   Pages plus Worker routes on one hostname; sessions remain host-scoped across
   that trio. The original single-origin sentence above is left as written.
+- **Update (2026-09-10, issue #265 S9):** both `bbell.dev` hosts are retired.
+  Production dual-serves `readinglite.ai` and `readinglite.app` only. The S4
+  trio sentence above is left as written.
 - Production begins closed, then moves to invite-only for beta and open at
   launch through audited policy changes.
 - Record a D1 Time Travel bookmark/timestamp before migrations and bulk
