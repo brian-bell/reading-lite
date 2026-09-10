@@ -1,0 +1,47 @@
+/* Standalone frame: one compact preview toolbar, followed by the Connected app. */
+.connected-prototype {
+  min-height: 100dvh;
+  background: #fafbf9;
+  --toolbar-bg: #fff;
+  --toolbar-ink: #606973;
+  --toolbar-border: #dce0e7;
+  --toolbar-selected: #eef0fb;
+}
+.connected-prototype[data-theme=dark] {
+  background: #1c202b;
+  --toolbar-bg: #242938;
+  --toolbar-ink: #afb7c9;
+  --toolbar-border: #3c4256;
+  --toolbar-selected: #3c466c;
+  color-scheme: dark;
+}
+.connected-prototype > .study-controls {
+  max-width: none;
+  min-height: 48px;
+  padding: 8px 16px;
+  background: var(--toolbar-bg);
+  color: var(--toolbar-ink);
+  border-bottom: 1px solid var(--toolbar-border);
+}
+.connected-prototype .scenario-control select {
+  background: var(--toolbar-bg);
+  color: var(--toolbar-ink);
+  border-color: var(--toolbar-border);
+}
+.connected-prototype .toggle-pair button[aria-pressed=true] {
+  color: var(--toolbar-ink);
+  background: var(--toolbar-selected);
+  box-shadow: none;
+}
+.connected-prototype .stage.desktop:has(> .prototype[data-direction=connected]) {
+  max-width: 1760px;
+  margin: 0 auto;
+  padding: 0;
+}
+.connected-prototype .prototype { box-shadow: none; }
+.connected-prototype .stage.phone { margin-block: 16px; }
+.connected-prototype .app.connected { min-height: calc(100dvh - 56px); }
+@media (max-width: 750px) {
+  .connected-prototype > .study-controls { gap: 6px 12px; padding: 8px 12px; }
+  .connected-prototype .app.connected { min-height: calc(100dvh - 106px); }
+}
