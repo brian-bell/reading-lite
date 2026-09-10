@@ -10,8 +10,8 @@
 #                         used for end-to-end manual smoke tests that need Queue,
 #                         R2, and Vectorize.
 #   * production        — used by `npm run ops -- deploy worker --env production`,
-#                         canonical host readinglite.ai; also readinglite.app;
-#                         reading-lite.bbell.dev retired (issue #265 S9).
+#                         canonical host readinglite.ai; also readinglite.app.
+#                         reading-lite.bbell.dev is retired (S9).
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
@@ -156,6 +156,11 @@ migrations_dir = "migrations"
 name = "reading-lite-staging"
 workers_dev = true
 
+# Requires Workers Paid. Pin the documented queue CPU default instead of
+# relying on account defaults; Standard usage_model alone does not mean Paid.
+[env.staging.limits]
+cpu_ms = 30_000
+
 # Retain cron, queue, and application logs for diagnosis after live tails disconnect.
 [env.staging.observability]
 enabled = true
@@ -173,7 +178,7 @@ RELATIONSHIP_REFRESH = "1"
 REFRESH_MAX_JUDGEMENTS = "2"
 APP_ENV = "staging"
 CORS_ALLOWED_ORIGINS = ""
-MCP_ALLOWED_ORIGINS = "https://reading-lite-staging.bbell.dev,https://staging.readinglite.ai,https://staging.readinglite.app"
+MCP_ALLOWED_ORIGINS = "https://staging.readinglite.ai,https://staging.readinglite.app"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -182,7 +187,7 @@ SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
-EMAIL_FROM = "reading-lite@bbell.dev"
+EMAIL_FROM = "RL Staging <noreply@staging.readinglite.app>"
 # Unused. Immediate notifications go to the verified account email.
 EMAIL_TO = ""
 # Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
@@ -344,24 +349,10 @@ name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
 # Worker routes scoped to API, health, and MCP; Pages on the same hostname
-# serves the SPA. Staging dual-serves the original
-# reading-lite-staging.bbell.dev plus staging.readinglite.ai (canonical) and
-# staging.readinglite.app. Keep the bbell.dev routes until that old host is
-# retired. `www` gets no Worker route. Bind Pages custom domains on the
-# `staging` preview branch before deploying these routes, or they stay inert.
+# serves the SPA. Staging dual-serves staging.readinglite.ai (canonical) and
+# staging.readinglite.app. The reading-lite-staging.bbell.dev host is retired
+# (S9); removing these blocks does not delete live Cloudflare routes.
 # This file does not flip live DNS.
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/api/*"
-zone_name = "bbell.dev"
-
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/health"
-zone_name = "bbell.dev"
-
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/mcp*"
-zone_name = "bbell.dev"
-
 [[env.staging.routes]]
 pattern = "staging.readinglite.ai/api/*"
 zone_name = "readinglite.ai"
@@ -393,6 +384,11 @@ zone_name = "readinglite.app"
 [env.production]
 name = "reading-lite"
 
+# Requires Workers Paid. Pin the documented queue CPU default instead of
+# relying on account defaults; Standard usage_model alone does not mean Paid.
+[env.production.limits]
+cpu_ms = 30_000
+
 # Retain cron, queue, and application logs for diagnosis after live tails disconnect.
 [env.production.observability]
 enabled = true
@@ -423,15 +419,20 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 # `wrangler deploy --var EMAIL_FROM:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.
 # EMAIL_TO is unused; send-time recipient is users.email_display.
-EMAIL_FROM = "reading-lite@bbell.dev"
+EMAIL_FROM = "Reading Lite <noreply@readinglite.app>"
 EMAIL_TO = "bellbm@gmail.com"
-# Domain cutover (issue #265, S4 / S9): emitted links point at readinglite.ai.
-# Every queue-side link — digest, notification, MCP public_url — follows this
-# base, and so does magic-link mail for a request whose host is not a
-# recognised public origin. It is also one of the origins `isSameOriginRequest`
-# accepts for cookie auth (src/middleware.ts). EMAIL_FROM deliberately stays on
-# bbell.dev (its own later step). The old host is retired: restoring this line
-# does not bring reading-lite.bbell.dev back.
+# Domain cutover (issue #265, S4): emitted links point at readinglite.ai. Every
+# queue-side link — digest, notification, MCP public_url — follows this base,
+# and so does magic-link mail for a request whose host is not a recognised
+# public origin. It is also one of the origins `isSameOriginRequest` accepts for
+# cookie auth (src/middleware.ts), so this flip moves that allowance to the
+# canonical public host too — harmless while the dual-served hosts are ours,
+# and writes still need the CSRF HMAC. S8 (issue #265): sender is
+# Reading Lite <noreply@readinglite.app> on the verified readinglite.app
+# Resend domain. Rollback for the sender is reverting EMAIL_FROM to
+# reading-lite@bbell.dev and deploying. Rollback for emitted links is putting
+# a public host back on WEB_BASE_URL. The reading-lite.bbell.dev host is
+# retired (S9); restoring it needs routes, Pages, and DNS, not this var.
 WEB_BASE_URL = "https://readinglite.ai/"
 # Public Turnstile site key. Returned by GET /api/auth/login-options only when
 # signup_mode is open. Production bootstrap stays closed — leave unset until an
@@ -599,17 +600,21 @@ class_name = "GlobalUsageGuard"
 # Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.
 #
-# Production serves readinglite.ai (canonical) and readinglite.app on the same
-# Worker script, bucket, D1 and Vectorize index. The data plane does not branch
-# on hostname. WEB_BASE_URL names readinglite.ai, so emitted links point there.
-# Sessions remain host-scoped (the session cookie carries no Domain attribute).
-# reading-lite.bbell.dev is retired (issue #265 S9); wrangler will not delete
-# the live bbell.dev routes — remove those in the dashboard. `www.readinglite.ai`
-# and `www.readinglite.app` get no Worker route: `www` -> apex belongs to a
-# Cloudflare redirect rule (captain-only), which fires before the Worker.
-# Deploying these routes needs CLOUDFLARE_API_TOKEN scoped for Workers Routes
-# on the readinglite.ai and readinglite.app zones (see docs/operations.md).
-# This file does not flip live DNS.
+# Production dual-serves the two public hosts on the same Worker script, bucket,
+# D1 and Vectorize index. The data plane does not branch on hostname, so /api/*
+# and /health behave the same on either. /mcp* accepts both
+# (MCP_ALLOWED_ORIGINS above lists them), and WEB_BASE_URL names
+# readinglite.ai, so emitted links point there. Sessions remain host-scoped
+# (the session cookie carries no Domain attribute), so signing in on one host
+# does not sign you in on another; see the "readinglite.ai / readinglite.app
+# dual-serve" section of docs/operations.md. The reading-lite.bbell.dev host
+# is retired (S9); removing those blocks does not delete live Cloudflare
+# routes. `www.readinglite.ai` and `www.readinglite.app` get no Worker route:
+# `www` -> apex belongs to a Cloudflare redirect rule (captain-only), which
+# fires before the Worker is ever reached. Deploying these routes needs
+# CLOUDFLARE_API_TOKEN scoped for Workers Routes on the readinglite.ai and
+# readinglite.app zones (see docs/operations.md). This file does not flip
+# live DNS.
 [[env.production.routes]]
 pattern = "readinglite.ai/api/*"
 zone_name = "readinglite.ai"

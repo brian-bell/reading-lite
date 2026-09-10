@@ -39,6 +39,7 @@ describe("r2KeyLayout with the global (pre-tenant) root", () => {
     expect(layout.processingCheckpointKey(kp, "at_123")).toBe(`${kp}/processing/at_123.json`);
     expect(layout.byUrlKey("deadbeef")).toBe("index/by-url/deadbeef");
     expect(layout.byIdKey("rd_abc")).toBe("index/by-id/rd_abc");
+    expect(layout.deletedKey("rd_abc")).toBe("index/deleted/rd_abc");
   });
 
   it("relativeKey is the identity when there is no root", () => {
@@ -65,6 +66,7 @@ describe("r2KeyLayout with a tenant root", () => {
     expect(layout.processingCheckpointKey(kp, "at_123")).toBe(`${root}${kp}/processing/at_123.json`);
     expect(layout.byUrlKey("deadbeef")).toBe(`${root}index/by-url/deadbeef`);
     expect(layout.byIdKey("rd_abc")).toBe(`${root}index/by-id/rd_abc`);
+    expect(layout.deletedKey("rd_abc")).toBe(`${root}index/deleted/rd_abc`);
   });
 
   it("leaves the stored key_prefix relative — buildKeyPrefix never carries the root", () => {

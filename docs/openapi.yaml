@@ -32,8 +32,6 @@ servers:
     description: Staging (canonical)
   - url: https://staging.readinglite.app
     description: Staging (additional public host)
-  - url: https://reading-lite-staging.bbell.dev
-    description: Staging (compatibility / rollback host)
   - url: http://127.0.0.1:8787
     description: Local wrangler dev
 tags:

@@ -105,8 +105,16 @@ export async function processReading(
     // A purged reading must not get ANY object recreated — not even this
     // attempt log — so a stale queued message for it is dropped whole, before
     // any write or upstream spend. Conflict/takeover cases below still log
-    // their attempt for diagnostics.
-    if (await readingWasPurged(reader, args)) {
+    // their attempt for diagnostics. A confirmed tombstone still sweeps
+    // leftover attempt/checkpoint objects from a prior crashed delivery.
+    // The purge check returns why: a confirmed tombstone is latched so a
+    // later HEAD throw cannot skip the sweep (same class as
+    // commitTerminalManifest's tombstone latch).
+    const purged = await readingWasPurged(reader, args);
+    if (purged) {
+      await maybeSweepConfirmedTombstone(reader, args, {
+        alreadyConfirmed: purged === "tombstone",
+      });
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -123,6 +131,7 @@ export async function processReading(
     }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -158,6 +167,7 @@ export async function processReading(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
+      await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -603,6 +613,15 @@ export async function markDeadLettered(
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
 
+  // Purge tombstone before confirmed-absent: after purge deletes the
+  // manifest, a DLQ still has to reap attempt/checkpoint residue. Checking
+  // absence first would skip the sweep once by-id is gone.
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+    await releaseReadingSlot(env, tenantId, opId);
+    return;
+  }
+
   // Confirmed-absent: this attempt will never commit. Release a still-held
   // reservation (idempotent if already consumed/released).
   if (confirmedAbsent) {
@@ -660,6 +679,15 @@ async function markFailed(
   tenantId: string,
 ): Promise<void> {
   console.error(e);
+  // Same no-recreate gate as markDeadLettered: a mid-flight purge after
+  // processReading's opening readingWasPurged check must not write an attempt
+  // log or failed manifest under the prefix. Sweep residue already written.
+  // Fail-open on a throwing HEAD.
+  if (await confirmedPurgeTombstone(reader, args.id)) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+    await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
+    return;
+  }
   const failedAt = services.now();
   const error = errorFromUnknown(e, attempt.stage, failedAt);
   attempt.status = "failed";
@@ -822,11 +850,19 @@ export interface CommitTerminalOpts {
   // a stage event; failure paths omit it and write plainly.
   instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
   // Rechecked immediately before visibility publish / restore, and again
-  // immediately after those writes (issue 195a, the #179 republish race at
-  // tenant scope). A confirmed false after publish/restore compensates with
-  // remove. A lookup throw is not confirmed inactive: fail-open (publish/keep)
-  // because readyManifest already cleared active_attempt and a retry cannot
-  // republish. Omit to keep the historical default (allow publish).
+  // immediately after those writes (issue 195a). Per-reading purge tombstones
+  // (#179) share one confirmed-tombstone latch for the call, including the
+  // checks immediately before by-url reclaim, the terminal write / markLive,
+  // and publish. A confirmed tombstone skips reclaim and the terminal write
+  // and sweeps prefix objects (attempt residue or a terminal that raced
+  // purge) before list/vector/by-url compensate, including when
+  // canWriteManifest is already false after purge removed the manifest. A confirmed false after
+  // publish/restore compensates with remove and
+  // releases by-url if this reading still owns the slot. A lookup throw is
+  // not confirmed inactive: fail-open (publish/keep) because readyManifest
+  // already cleared active_attempt and a retry cannot republish — unless this
+  // call already confirmed a tombstone, which stays latched. Omit
+  // tenantAllowsVisibility to keep the historical default (allow publish).
   tenantAllowsVisibility?: () => Promise<boolean>;
   // Narrower than `!tenantAllowsVisibility()`: true only for a tenant confirmed
   // `deleting`, which is the only status an account wipe runs for and therefore
@@ -860,10 +896,26 @@ export async function commitTerminalManifest(
   const run =
     opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
   const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
+  // Confirmed-tombstone compensate always sweeps the reading prefix, then
+  // list/vector/by-url. writeAttemptSafe and stage instrumentation can
+  // recreate attempt objects even when this CAS does not land; a successful
+  // CAS that raced purge recreates the terminal object. Ordinary (non-
+  // tombstone) visibility compensate does not sweep.
+  const compensateFence = (tombstone: boolean) =>
+    tombstone
+      ? compensateTombstonePrefixAndVisibility(visibility, reader, args, opts)
+      : compensateVisibility(visibility, reader, args, opts, { tombstone: false });
 
+  // Purge-tombstone checks share one latch for this call. A confirmed HEAD
+  // must not be undone by a later throw: fail-open after skip-markLive would
+  // upsert a vector with no live ledger row (publish does not markLive). The
+  // same latch gates by-url reclaim inside terminalWriteState: claiming a
+  // pointer purge already released would pin the URL to a ghost reading.
+  const tombstoneAllows = purgeTombstoneAllows(reader, args);
   const state = await terminalWriteState(reader, args, {
     claimMissingPointer: opts.claimMissingPointer,
     allowLastAttempt: opts.allowLastAttempt,
+    tombstoneAllows,
   });
   // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
   // restore — the other attempt owns visibility too. This unifies the two old
@@ -873,7 +925,25 @@ export async function commitTerminalManifest(
   // the foreign row.
   // That re-sync was a no-op on data the owning attempt maintains anyway;
   // skipping it is intentional (plan 005, case 2).
-  if (!state.canWriteManifest) return { committed: false, published: false };
+  // After purge removes the manifest and by-id/list, this attempt cannot
+  // write a terminal object but may already have written attempt/checkpoint
+  // residue during a long stage. Sweep that prefix when a tombstone is
+  // confirmed. A foreign live attempt without a tombstone is left alone.
+  if (!state.canWriteManifest) {
+    if (!(await tombstoneAllows())) {
+      await reconcileVisibility(true, () => compensateFence(true));
+    }
+    return { committed: false, published: false };
+  }
+
+  // Confirmed tombstone before the terminal write: do not recreate a ready (or
+  // failed) object under a prefix purge is sweeping. Sweep prefix objects
+  // (attempt residue) then list/vector/by-url. Defensive so a compensate throw
+  // cannot reach markFailed and recreate objects that way either.
+  if (!(await tombstoneAllows())) {
+    await reconcileVisibility(true, () => compensateFence(true));
+    return { committed: false, published: false };
+  }
 
   // Ledger the reading BEFORE the terminal manifest write, not inside the
   // visibility publish that follows it.
@@ -898,6 +968,8 @@ export async function commitTerminalManifest(
   // object per call, and this write has no stage of its own — the `upsert_vector`
   // event still comes from the upsert it precedes. Wrapping it would add a
   // second event for a stage that then runs anyway.
+  //
+  // Tombstone already confirmed false above; a later HEAD throw stays latched.
   if (opts.vector && similarity && opts.ledger) {
     await opts.ledger.markLive([args.id], Date.now());
   }
@@ -911,21 +983,39 @@ export async function commitTerminalManifest(
     // Manifest not written despite owning the attempt: a lost CAS (etag changed
     // mid-flight) on either path, or — on the defensive path only — a swallowed
     // write throw. Restore the current list visibility so we don't leave a
-    // half-published row behind — unless the tenant-deletion fence forbids
-    // resurrection (issue 195a / #179).
-    if (await tenantStillAllowsVisibility(opts)) {
+    // half-published row behind — unless the tenant-deletion fence or a
+    // per-reading purge tombstone forbids resurrection (issue 195a / #179).
+    const tombstone = !(await tombstoneAllows());
+    if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
       await reconcileVisibility(opts.defensive, () =>
         visibility.restoreIfOwner(args),
       );
       // Deletion can land between the pre-restore check and the list write.
-      // Compensate in this same consumer; do not wait on DELETE /api/account.
-      if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(opts.defensive, () =>
-          compensateVisibility(visibility, args, opts),
+      // Compensate in this same consumer; do not wait on DELETE /api/account
+      // or a retried purge.
+      const tombstoneAfter = !(await tombstoneAllows());
+      if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
+        // Tombstone compensate must stay defensive even on the success path
+        // (`opts.defensive === false`): a throw here would reach markFailed
+        // and recreate attempt/manifest objects under a purged prefix.
+        await reconcileVisibility(tombstoneAfter ? true : opts.defensive, () =>
+          compensateFence(tombstoneAfter),
         );
       }
+    } else if (tombstone) {
+      await reconcileVisibility(true, () => compensateFence(true));
     }
     return { committed: false, published: false };
+  }
+
+  // Recheck immediately after the terminal CAS. A tombstone that landed
+  // between the pre-write HEAD and this write recreates objects under a
+  // prefix purge already swept. Visibility compensate cannot reap those
+  // objects, and by-id is usually already gone, so DELETE /api/readings/:id
+  // returns not_found. Defensive: a throw must not reach markFailed.
+  if (!(await tombstoneAllows())) {
+    await reconcileVisibility(true, () => compensateFence(true));
+    return { committed: true, published: false };
   }
 
   // The terminal object is committed. Visibility throws must not reach
@@ -935,35 +1025,41 @@ export async function commitTerminalManifest(
     // Recheck immediately before publish: an in-flight consumer can pause
     // between terminal CAS and this write. Account deletion marks
     // users.status=deleting as the durable fence (195a). Per-reading purge
-    // still uses missingManifestStillLive (#179 remainder).
-    if (await tenantStillAllowsVisibility(opts)) {
+    // writes index/deleted/{id} and this path rechecks it here (#179).
+    const tombstone = !(await tombstoneAllows());
+    if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
       const published = await reconcileVisibility(true, () =>
         visibility.publish(manifest, args, opts.vector, { instrument: run }),
       );
       // Check-then-publish is still a race; recheck after the writes and
-      // compensate in this same consumer if the tenant is now deleting. On a
-      // confirmed-`deleting` tenant that compensation deletes the vector
+      // compensate in this same consumer if the tenant is now deleting or the
+      // reading now has a purge tombstone. On a confirmed-`deleting` tenant
+      // (or a confirmed tombstone) that compensation deletes the vector
       // directly rather than routing through the list row: an account wipe may
       // already have deleted `index/list.json`, and a vector left behind after
       // that is unaddressable, because R2 is the only source of reading ids.
-      if (!(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
+      // Ordinary `remove` skips the vector when the list row is already gone;
+      // `removeForDeletedTenant` does not.
+      const tombstoneAfter = !(await tombstoneAllows());
+      if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
+        await reconcileVisibility(true, () => compensateFence(tombstoneAfter));
         return { committed: true, published: false };
       }
       return { committed: true, published };
     }
-    await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
+    await reconcileVisibility(true, () => compensateFence(tombstone));
     return { committed: true, published: false };
   }
 
   // Unpublish because this reading is not the by-url owner, not because of any
   // tenant status — but it routes through the same helper, which falls back to
-  // the gated `remove` unless the tenant is confirmed `deleting`. On a deleting
-  // tenant this branch strands a vector exactly like the others do: the wipe may
-  // already have taken `index/list.json`, and `remove` gives up when there is no
-  // row to remove.
+  // the gated `remove` unless the tenant is confirmed `deleting` or a purge
+  // tombstone is confirmed. On a deleting tenant this branch strands a vector
+  // exactly like the others do: the wipe may already have taken
+  // `index/list.json`, and `remove` gives up when there is no row to remove.
   if (state.canRemoveVisibility) {
-    await reconcileVisibility(true, () => compensateVisibility(visibility, args, opts));
+    const tombstone = !(await tombstoneAllows());
+    await reconcileVisibility(true, () => compensateFence(tombstone));
   }
   return { committed: true, published: false };
 }
@@ -1010,21 +1106,108 @@ async function reconcileVisibility(
 }
 
 // The removal a compensating consumer performs. `deleting` is the only status
-// an account wipe runs for, so it is the only one where the list row and
-// manifest the ordinary gates read may already be gone — and therefore the only
-// one where dropping the vector ungated is right. Every other reason the tenant
-// stopped allowing visibility (suspended, a confirmed-missing row, or a lookup
-// we could not confirm) takes the gated removal this code has always used.
+// an account wipe runs for, so it is the only tenant status where the list row
+// and manifest the ordinary gates read may already be gone — and therefore the
+// only one where dropping the vector ungated is right. A confirmed purge
+// tombstone is the per-reading equivalent: the list row may already be gone
+// because purge removed it, so ordinary `remove` would skip the vector.
+// Tombstone compensation also releases this reading's by-url pointer when it
+// still owns the slot: list+vector-only cleanup would leave a ghost owner
+// that later submit treats as a live reading. Tenant-deletion still uses
+// `removeForDeletedTenant` alone (wipe owns that prefix).
+// Every other reason visibility stopped being allowed (suspended, a
+// confirmed-missing row, or a lookup we could not confirm) takes the gated
+// removal this code has always used.
 async function compensateVisibility(
   visibility: ReadingVisibility,
+  reader: ReadingStore,
   args: ProcessReadingArgs,
   opts: CommitTerminalOpts,
+  fence: { tombstone: boolean },
 ): Promise<void> {
+  if (fence.tombstone) {
+    // By-url first (ghost owner), but a pointer-delete throw must not skip
+    // list / vector / ledger compensate. Same class as prefix-delete finally.
+    try {
+      await releaseByUrlIfOwned(reader, args);
+    } finally {
+      await visibility.removeForDeletedTenant(args);
+    }
+    return;
+  }
   if (await tenantConfirmedDeletingForOpts(opts)) {
     await visibility.removeForDeletedTenant(args);
     return;
   }
   await visibility.remove(args);
+}
+
+// Confirmed-tombstone compensate: drop prefix objects (manifest, attempts,
+// raw/extracted) then list/vector/by-url. Used after a terminal CAS that
+// raced purge, and on skip-write / lost-CAS — writeAttemptSafe and stage
+// instrumentation can recreate attempt objects even when this CAS does not
+// land, and by-id is usually already gone so those objects are unreapable.
+async function compensateTombstonePrefixAndVisibility(
+  visibility: ReadingVisibility,
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  opts: CommitTerminalOpts,
+): Promise<void> {
+  // Objects first (unreapable residue), but a prefix-delete throw must not
+  // skip by-url / list / vector / ledger compensate. The caller still wraps
+  // this in defensive reconcileVisibility.
+  try {
+    await reader.deleteReadingObjects(args.keyPrefix);
+  } finally {
+    await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
+  }
+}
+
+// markFailed / markDeadLettered skip recreating a failed manifest. They still
+// drop attempt residue already written under a prefix purge can no longer
+// address once by-id is gone. Throws are logged so slot release still runs.
+async function sweepTombstonePrefixDefensively(
+  reader: ReadingStore,
+  keyPrefix: string,
+): Promise<void> {
+  try {
+    await reader.deleteReadingObjects(keyPrefix);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// Confirmed tombstone only — a live foreign attempt can also make
+// readingCanWriteAttemptArtifacts false, and must not lose its prefix.
+// `alreadyConfirmed` skips a second HEAD: fail-open on a throw would undo
+// a confirmation the caller already has (commitTerminalManifest latches
+// the same way).
+async function maybeSweepConfirmedTombstone(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  opts: { alreadyConfirmed?: boolean } = {},
+): Promise<void> {
+  if (opts.alreadyConfirmed || (await confirmedPurgeTombstone(reader, args.id))) {
+    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+  }
+}
+
+// Drop the by-url pointer only while it still names this reading. A slot
+// already claimed by a later submit is left alone. R2 has no conditional
+// delete, so the same check-then-delete race purge accepts applies here.
+async function releaseByUrlIfOwned(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  let stored: Awaited<ReturnType<ReadingStore["readByUrlPointer"]>> = null;
+  try {
+    stored = await reader.readByUrlPointer(args.urlHash);
+  } catch (err) {
+    console.error(err);
+    return;
+  }
+  if (!stored || stored.id !== args.id) return;
+  await reader.deleteByUrlPointer(args.urlHash);
 }
 
 // Unconfirmed is not confirmed: a lookup throw falls back to the gated removal
@@ -1053,6 +1236,27 @@ async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<bo
     console.error(error);
     return true;
   }
+}
+
+// Confirmed purge tombstone, latched for one commitTerminalManifest call.
+// Lookup throw → not confirmed, fail-open (allow publish / keep), same as
+// tenantStillAllowsVisibility after a terminal CAS — unless a HEAD in this
+// call already confirmed the tombstone. That confirmation must stick: a
+// later throw must not fail-open after skip-markLive and upsert a vector
+// with no live ledger row.
+function purgeTombstoneAllows(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): () => Promise<boolean> {
+  let confirmed = false;
+  return async () => {
+    try {
+      if (await reader.hasPurgeTombstone(args.id)) confirmed = true;
+    } catch (error) {
+      console.error(error);
+    }
+    return !confirmed;
+  };
 }
 
 // Fail-open when the worker has no D1 binding (unit tests that stub Env).
@@ -1099,7 +1303,11 @@ async function tenantConfirmedDeleting(env: Env, tenantId: string): Promise<bool
 async function terminalWriteState(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-  opts: { claimMissingPointer: boolean; allowLastAttempt?: boolean },
+  opts: {
+    claimMissingPointer: boolean;
+    allowLastAttempt?: boolean;
+    tombstoneAllows?: () => Promise<boolean>;
+  },
 ): Promise<TerminalWriteState> {
   const stored = await reader.readManifestWithEtag(args.keyPrefix);
   const manifest = stored?.manifest ?? null;
@@ -1119,19 +1327,26 @@ async function terminalWriteState(
     ownsUrl = existing.id === args.id && existing.key_prefix === args.keyPrefix;
     ownerAllowsVisibility = ownsUrl;
   } else if (opts.claimMissingPointer && activeAttemptMatches) {
-    try {
-      await reader.writeByUrlPointer(
-        args.urlHash,
-        { id: args.id, key_prefix: args.keyPrefix },
-        { ifNotExists: true },
-      );
-      ownsUrl = true;
-      ownerAllowsVisibility = true;
-    } catch (err) {
-      if (!(err instanceof PointerExistsError)) throw err;
-      const claimed = await reader.readByUrlPointer(args.urlHash);
-      ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
-      ownerAllowsVisibility = ownsUrl;
+    // Do not reclaim a slot purge already released. A confirmed tombstone
+    // here latches for the rest of the commit so a later throw cannot
+    // fail-open into writeByUrlPointer.
+    const tombstoneBlocksClaim =
+      opts.tombstoneAllows !== undefined && !(await opts.tombstoneAllows());
+    if (!tombstoneBlocksClaim) {
+      try {
+        await reader.writeByUrlPointer(
+          args.urlHash,
+          { id: args.id, key_prefix: args.keyPrefix },
+          { ifNotExists: true },
+        );
+        ownsUrl = true;
+        ownerAllowsVisibility = true;
+      } catch (err) {
+        if (!(err instanceof PointerExistsError)) throw err;
+        const claimed = await reader.readByUrlPointer(args.urlHash);
+        ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
+        ownerAllowsVisibility = ownsUrl;
+      }
     }
   } else {
     ownerAllowsVisibility = true;
@@ -1161,13 +1376,30 @@ async function missingManifestStillLive(
   return (await reader.findListIndexItem(args.id)) !== null;
 }
 
-// True only for a CONFIRMED-absent manifest with no surviving liveness
-// witness. A throwing manifest read is an object that may well exist and is
-// never treated as absence.
+// Confirmed tombstone only. A throwing HEAD is not evidence of purge —
+// fail-open so a transient R2 error does not drop a live reading (or, on
+// the DLQ, strand a pending one).
+async function confirmedPurgeTombstone(
+  reader: ReadingStore,
+  id: string,
+): Promise<boolean> {
+  try {
+    return await reader.hasPurgeTombstone(id);
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+// Confirmed tombstone, or a CONFIRMED-absent manifest with no surviving
+// liveness witness. A throwing tombstone or manifest read is never treated
+// as absence. Distinguishes tombstone from absent so a later HEAD throw
+// cannot undo a confirmation and skip the prefix sweep.
 async function readingWasPurged(
   reader: ReadingStore,
   args: ProcessReadingArgs,
-): Promise<boolean> {
+): Promise<"tombstone" | "absent" | false> {
+  if (await confirmedPurgeTombstone(reader, args.id)) return "tombstone";
   let manifestAbsent = false;
   try {
     manifestAbsent = (await reader.readManifest(args.keyPrefix)) === null;
@@ -1175,7 +1407,7 @@ async function readingWasPurged(
     console.error(e);
   }
   if (!manifestAbsent) return false;
-  return !(await missingManifestStillLive(reader, args));
+  return (await missingManifestStillLive(reader, args)) ? false : "absent";
 }
 
 async function readingCanWriteAttemptArtifacts(

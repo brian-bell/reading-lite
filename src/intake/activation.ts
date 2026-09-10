@@ -56,12 +56,21 @@ export interface AttemptActivation {
 // the caller (Reading intake) *before* this runs; activation only writes into a
 // slot it already owns. A throw anywhere before the queue send rolls the slot
 // back to a failed (retryable) manifest and reports `unavailable`.
+//
+// The purge tombstone is a write fence here too (issue #179): a reprocess can
+// pass loadReadingById and then lose the race to DELETE, which writes
+// `index/deleted/{id}` and finishes before these puts. Under a confirmed
+// tombstone we skip the pending write, the enqueue, and the rollback write —
+// skip only, no compensation.
 export async function activateAttempt(
   reader: ReadingStore,
   queue: Queue<ProcessReadingEnvelopeV1>,
   services: Services,
   a: AttemptActivation,
 ): Promise<ActivationOutcome> {
+  if (await confirmedPurgeTombstone(reader, a.manifest.id)) {
+    return { kind: "unavailable", reason: "activation_failed", id: a.manifest.id };
+  }
   let failureReason: "activation_failed" | "queue_send_failed" = "activation_failed";
   try {
     if (a.artifacts) {
@@ -85,14 +94,16 @@ export async function activateAttempt(
     await queue.send(envelopeFromPrincipal(a.principal, a.queueMessage));
   } catch (err) {
     console.error(err);
-    await writeFailedActivationManifest(
-      reader,
-      a.keyPrefix,
-      a.rollbackManifest,
-      a.rollbackAttempt,
-      err,
-      services,
-    );
+    if (!(await confirmedPurgeTombstone(reader, a.manifest.id))) {
+      await writeFailedActivationManifest(
+        reader,
+        a.keyPrefix,
+        a.rollbackManifest,
+        a.rollbackAttempt,
+        err,
+        services,
+      );
+    }
     return { kind: "unavailable", reason: failureReason, id: a.manifest.id };
   }
 
@@ -115,4 +126,15 @@ async function writeFailedActivationManifest(
   const failedManifest = queueSendRollback(manifest, activeAttempt, err, services.now());
   await reader.writeManifest(keyPrefix, failedManifest);
   await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failedManifest, keyPrefix));
+}
+
+// Confirmed tombstone only. A throwing HEAD is not evidence of purge —
+// fail-open so a transient R2 error does not drop a live activation.
+async function confirmedPurgeTombstone(reader: ReadingStore, id: string): Promise<boolean> {
+  try {
+    return await reader.hasPurgeTombstone(id);
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
 }

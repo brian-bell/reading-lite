@@ -22,17 +22,11 @@ describe("buildMagicLinkVerifyUrl", () => {
 
 describe("publicWebBase", () => {
   it("mails the link back to the public host the login started on", () => {
-    expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite.bbell.dev/api/auth/request")).toBe(
-      "https://readinglite.ai",
-    );
     expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request")).toBe(
       "https://readinglite.ai",
     );
     expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request")).toBe(
       "https://readinglite.app",
-    );
-    expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
-      "https://reading-lite-staging.bbell.dev",
     );
     expect(publicWebBase(CONFIGURED_BASE, "https://staging.readinglite.ai/api/auth/request")).toBe(
       "https://staging.readinglite.ai",
@@ -52,6 +46,12 @@ describe("publicWebBase", () => {
 
   it("falls back to WEB_BASE_URL for an unknown or spoofed request host", () => {
     expect(publicWebBase(CONFIGURED_BASE, "https://attacker.example/api/auth/request")).toBe(
+      "https://readinglite.ai",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite.bbell.dev/api/auth/request")).toBe(
+      "https://readinglite.ai",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
       "https://readinglite.ai",
     );
     expect(publicWebBase(CONFIGURED_BASE, "https://www.readinglite.ai/api/auth/request")).toBe(
@@ -81,16 +81,16 @@ describe("publicWebBase", () => {
       "https://staging.readinglite.app",
     );
     expect(publicWebBase(stagingBase, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
-      "https://reading-lite-staging.bbell.dev",
+      "https://staging.readinglite.ai",
     );
   });
 
   it("still derives the origin from the request when no base is configured", () => {
-    expect(publicWebBase(undefined, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
-      "https://reading-lite-staging.bbell.dev",
+    expect(publicWebBase(undefined, "https://staging.readinglite.ai/api/auth/request")).toBe(
+      "https://staging.readinglite.ai",
     );
-    expect(publicWebBase("   ", "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
-      "https://reading-lite-staging.bbell.dev",
+    expect(publicWebBase("   ", "https://staging.readinglite.ai/api/auth/request")).toBe(
+      "https://staging.readinglite.ai",
     );
     expect(publicWebBase(undefined, "not a url")).toBe("");
   });

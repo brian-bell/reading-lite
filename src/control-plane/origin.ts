@@ -1,10 +1,10 @@
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 /**
- * Public origins this project serves. Production serves both public apexes;
- * staging dual-serves its old host and both public subdomains. A login started
- * on any of them must mail its magic link back to that host — see
- * `publicWebBase`. Deliberately a code constant rather than the operator-set
+ * Public origins this project serves. Production dual-serves the two public
+ * apexes; staging dual-serves its two public subdomains. A login started on
+ * any of them must mail its magic link back to that host — see `publicWebBase`.
+ * Deliberately a code constant rather than the operator-set
  * `MCP_ALLOWED_ORIGINS`: widening which browsers may call `/mcp` should not
  * also widen where auth mail can point. Matching is whole-origin, so `www.`
  * and look-alike hosts fall back to `WEB_BASE_URL`.
@@ -12,11 +12,12 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
  * Adding a host here asserts that this project serves it: a login arriving on
  * it will be mailed a single-use credential pointing back at it. Cloudflare
  * routes keep production Host values off the staging Worker and vice versa.
+ * Retired `bbell.dev` hosts are not listed; a login on those names falls
+ * through to `WEB_BASE_URL`.
  */
 export const PUBLIC_WEB_ORIGINS = [
   "https://readinglite.ai",
   "https://readinglite.app",
-  "https://reading-lite-staging.bbell.dev",
   "https://staging.readinglite.ai",
   "https://staging.readinglite.app",
 ];

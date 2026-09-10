@@ -11,11 +11,9 @@ describe("PUBLIC_WEB_ORIGINS", () => {
     expect(PUBLIC_WEB_ORIGINS).toEqual([
       "https://readinglite.ai",
       "https://readinglite.app",
-      "https://reading-lite-staging.bbell.dev",
       "https://staging.readinglite.ai",
       "https://staging.readinglite.app",
     ]);
-    expect(PUBLIC_WEB_ORIGINS).not.toContain("https://reading-lite.bbell.dev");
   });
 });
 

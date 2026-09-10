@@ -1,7 +1,8 @@
 # API and MCP
 
 The canonical API base is `https://readinglite.ai`. The same Worker also serves
-`readinglite.app`.
+`readinglite.app`. Staging is `https://staging.readinglite.ai` and
+`https://staging.readinglite.app`.
 [OpenAPI](openapi.yaml) defines the full schemas. Routes and validation live in
 [`src/router.ts`](../src/router.ts) and [`src/schemas/`](../src/schemas/).
 
@@ -111,12 +112,12 @@ no OAuth and no network re-fetch of the public host.
 
 Successful imports include `public_url` and `public_markdown_link` when
 `WEB_BASE_URL` is configured. Production uses `https://readinglite.ai/`.
-Staging uses `https://staging.readinglite.ai/`.
 Use the [README connector example](../README.md#api-and-mcp) with your client's
 remote-connector configuration. Never commit the bearer token.
 
 `/api/mcp` is an alias covered by `/api/*`, useful when the dedicated `/mcp*`
-route has not been attached. Both paths exist on both production hosts.
+route has not been attached. Both paths exist on the two production public
+hosts and the two staging public hosts.
 Local MCP is `http://127.0.0.1:8787/mcp`. Stdio-only clients can use
 `npx mcp-remote https://readinglite.ai/mcp` with their bridge's authentication
 configuration. [Operator MCP notes](operations.md#mcp-connector) cover origins,

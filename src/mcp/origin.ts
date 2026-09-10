@@ -2,12 +2,13 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../index";
 
 /**
- * Origins a browser-based MCP client may present. Production serves both
- * public hosts; the match below is a whole-string comparison, so `www.` and
- * look-alike hosts are not covered by any entry and are rejected. Apex is
+ * Origins a browser-based MCP client may present. Production dual-serves the
+ * two public hosts; the match below is a whole-string comparison, so `www.`
+ * and look-alike hosts are not covered by any entry and are rejected. Apex is
  * canonical, and `www` is expected to be redirected to it at the edge; if
  * `www` is ever routed to the Worker directly it needs its own entry here
- * rather than any loosening of the match.
+ * rather than any loosening of the match. Retired `bbell.dev` hosts are not
+ * listed.
  */
 export const DEFAULT_MCP_ALLOWED_ORIGINS = [
   "https://readinglite.ai",

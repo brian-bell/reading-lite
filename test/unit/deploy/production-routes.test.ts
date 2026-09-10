@@ -68,30 +68,24 @@ const wrangler = readFileSync("wrangler.toml", "utf8");
 describe("production worker routes", () => {
   const routes = routesFor(wrangler, "env.production.routes");
 
-  it("does not publish reading-lite.bbell.dev routes after retirement", () => {
-    expect(routes.some((route) => route?.pattern.startsWith("reading-lite.bbell.dev/"))).toBe(
-      false,
-    );
-  });
-
   it("serves the same three path sets on readinglite.ai and readinglite.app", () => {
-    expect(routes).toEqual(
-      expect.arrayContaining([
-        { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
-        { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
-        { pattern: "readinglite.ai/mcp*", zone_name: "readinglite.ai" },
-        { pattern: "readinglite.app/api/*", zone_name: "readinglite.app" },
-        { pattern: "readinglite.app/health", zone_name: "readinglite.app" },
-        { pattern: "readinglite.app/mcp*", zone_name: "readinglite.app" },
-      ]),
-    );
+    expect(routes).toEqual([
+      { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
+      { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
+      { pattern: "readinglite.ai/mcp*", zone_name: "readinglite.ai" },
+      { pattern: "readinglite.app/api/*", zone_name: "readinglite.app" },
+      { pattern: "readinglite.app/health", zone_name: "readinglite.app" },
+      { pattern: "readinglite.app/mcp*", zone_name: "readinglite.app" },
+    ]);
   });
 
   it("routes exactly those six patterns and nothing else", () => {
     // `www` belongs to a Cloudflare redirect rule, never to a worker route.
+    // The retired reading-lite.bbell.dev host is not a Worker route.
     expect(routes).toHaveLength(6);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
+    expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
   });
 
   it("counts a route however its block is spelled", () => {
@@ -137,13 +131,15 @@ describe("production link-emitting config", () => {
     expect(varFor(wrangler, "env.production.vars", "WEB_BASE_URL")).toBe("https://readinglite.ai/");
   });
 
-  it("keeps the mail sender on bbell.dev", () => {
-    // The sender move is a deliberately separate step: a host cutover and a
-    // mail-deliverability change must not land together.
-    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  it("sends production mail from the readinglite.app Resend domain", () => {
+    // S8: display name lives in EMAIL_FROM. readinglite.ai is not a Resend
+    // sending domain; bbell.dev remains the rollback sender.
+    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe(
+      "Reading Lite <noreply@readinglite.app>",
+    );
   });
 
-  it("allows only the two public production hosts on MCP", () => {
+  it("allows only the two public hosts on the MCP origin allowlist", () => {
     expect(varFor(wrangler, "env.production.vars", "MCP_ALLOWED_ORIGINS")).toBe(
       "https://readinglite.ai,https://readinglite.app",
     );
@@ -153,13 +149,15 @@ describe("production link-emitting config", () => {
     expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://staging.readinglite.ai/");
   });
 
-  it("keeps staging's mail sender on bbell.dev", () => {
-    expect(varFor(wrangler, "env.staging.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  it("sends staging mail from the staging.readinglite.app Resend domain", () => {
+    expect(varFor(wrangler, "env.staging.vars", "EMAIL_FROM")).toBe(
+      "RL Staging <noreply@staging.readinglite.app>",
+    );
   });
 
-  it("allows the old staging host and both public staging hosts on MCP", () => {
+  it("allows only the two public staging hosts on MCP", () => {
     expect(varFor(wrangler, "env.staging.vars", "MCP_ALLOWED_ORIGINS")).toBe(
-      "https://reading-lite-staging.bbell.dev,https://staging.readinglite.ai,https://staging.readinglite.app",
+      "https://staging.readinglite.ai,https://staging.readinglite.app",
     );
   });
 });
@@ -167,32 +165,21 @@ describe("production link-emitting config", () => {
 describe("staging worker routes", () => {
   const routes = routesFor(wrangler, "env.staging.routes");
 
-  it("keeps the reading-lite-staging.bbell.dev routes while dual-serving", () => {
-    expect(routes).toEqual(
-      expect.arrayContaining([
-        { pattern: "reading-lite-staging.bbell.dev/api/*", zone_name: "bbell.dev" },
-        { pattern: "reading-lite-staging.bbell.dev/health", zone_name: "bbell.dev" },
-        { pattern: "reading-lite-staging.bbell.dev/mcp*", zone_name: "bbell.dev" },
-      ]),
-    );
-  });
-
   it("serves the same three path sets on staging.readinglite.ai and staging.readinglite.app", () => {
-    expect(routes).toEqual(
-      expect.arrayContaining([
-        { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
-        { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
-        { pattern: "staging.readinglite.ai/mcp*", zone_name: "readinglite.ai" },
-        { pattern: "staging.readinglite.app/api/*", zone_name: "readinglite.app" },
-        { pattern: "staging.readinglite.app/health", zone_name: "readinglite.app" },
-        { pattern: "staging.readinglite.app/mcp*", zone_name: "readinglite.app" },
-      ]),
-    );
+    expect(routes).toEqual([
+      { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
+      { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
+      { pattern: "staging.readinglite.ai/mcp*", zone_name: "readinglite.ai" },
+      { pattern: "staging.readinglite.app/api/*", zone_name: "readinglite.app" },
+      { pattern: "staging.readinglite.app/health", zone_name: "readinglite.app" },
+      { pattern: "staging.readinglite.app/mcp*", zone_name: "readinglite.app" },
+    ]);
   });
 
-  it("routes exactly those nine patterns and nothing else", () => {
-    expect(routes).toHaveLength(9);
+  it("routes exactly those six patterns and nothing else", () => {
+    expect(routes).toHaveLength(6);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
+    expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
   });
 });

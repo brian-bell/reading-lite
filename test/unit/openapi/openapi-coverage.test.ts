@@ -163,14 +163,15 @@ describe("docs/openapi.yaml", () => {
       "https://readinglite.app",
       "https://staging.readinglite.ai",
       "https://staging.readinglite.app",
-      "https://reading-lite-staging.bbell.dev",
       "http://127.0.0.1:8787",
     ]);
     expect(servers[0]?.description).toMatch(/canonical/i);
     expect(servers[1]?.description).toMatch(/additional public host/i);
     expect(servers[2]?.description).toMatch(/staging/i);
-    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite.bbell.dev");
+    expect(servers[3]?.description).toMatch(/additional public host/i);
     expect(servers.map((server) => server.url)).not.toContain("https://bbookmarks.com");
+    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite.bbell.dev");
+    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite-staging.bbell.dev");
   });
 
   it("documents the request/response schemas that mirror src/schemas/api.ts", () => {
