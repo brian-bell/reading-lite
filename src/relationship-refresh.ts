@@ -124,7 +124,13 @@ async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan
   const tenant = await activeRefreshFounder(env);
   if (!tenant || tenant.tenantId !== job.tenantId || !env.RELATIONSHIP_REFRESH_JOBS) return;
   const stored = await readCursor(env, tenant);
-  if (!stored || stored.cursor.token !== job.token) return;
+  if (!stored) return;
+  if (stored.cursor.token !== job.token) {
+    // A committed shard can lose its continuation send. Retry the current
+    // cursor without repeating the shard or resetting its reserved allowance.
+    await enqueueScan(env, tenant, stored.cursor);
+    return;
+  }
   const c = stored.cursor;
   let next: Cursor;
   if (c.pending.length > 0) {
