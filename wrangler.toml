@@ -187,7 +187,7 @@ SUMMARIZER_PROVIDER = "openai"
 OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra"
 OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
-EMAIL_FROM = "reading-lite@bbell.dev"
+EMAIL_FROM = "RL Staging <noreply@staging.readinglite.app>"
 # Unused. Immediate notifications go to the verified account email.
 EMAIL_TO = ""
 # Empty string = allowlist mode (FOUNDER_EMAIL if bound, plus this list).
@@ -431,7 +431,7 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"
 # `wrangler deploy --var EMAIL_FROM:... --var WEB_BASE_URL:...`
 # or by uncommenting and editing here before deploying.
 # EMAIL_TO is unused; send-time recipient is users.email_display.
-EMAIL_FROM = "reading-lite@bbell.dev"
+EMAIL_FROM = "Reading Lite <noreply@readinglite.app>"
 EMAIL_TO = "bellbm@gmail.com"
 # Domain cutover (issue #265, S4): emitted links point at readinglite.ai. Every
 # queue-side link — digest, notification, MCP public_url — follows this base,
@@ -439,10 +439,12 @@ EMAIL_TO = "bellbm@gmail.com"
 # public origin. It is also one of the origins `isSameOriginRequest` accepts for
 # cookie auth (src/middleware.ts), so this flip moves that allowance to the
 # canonical public host too — harmless while the dual-served hosts are ours,
-# and writes still need the CSRF HMAC. EMAIL_FROM deliberately stays on
-# bbell.dev (its own later step). Rollback is putting the old host back and
-# deploying; the reading-lite.bbell.dev routes are still here, so that host
-# keeps serving either way.
+# and writes still need the CSRF HMAC. S8 (issue #265): sender is
+# Reading Lite <noreply@readinglite.app> on the verified readinglite.app
+# Resend domain. Rollback for the sender is reverting EMAIL_FROM to
+# reading-lite@bbell.dev and deploying. Rollback for emitted links is putting
+# the old host back on WEB_BASE_URL; the reading-lite.bbell.dev routes are
+# still here, so that host keeps serving either way.
 WEB_BASE_URL = "https://readinglite.ai/"
 # Public Turnstile site key. Returned by GET /api/auth/login-options only when
 # signup_mode is open. Production bootstrap stays closed — leave unset until an

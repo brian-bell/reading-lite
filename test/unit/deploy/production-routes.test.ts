@@ -141,10 +141,12 @@ describe("production link-emitting config", () => {
     expect(varFor(wrangler, "env.production.vars", "WEB_BASE_URL")).toBe("https://readinglite.ai/");
   });
 
-  it("keeps the mail sender on bbell.dev", () => {
-    // The sender move is a deliberately separate step: a host cutover and a
-    // mail-deliverability change must not land together.
-    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  it("sends production mail from the readinglite.app Resend domain", () => {
+    // S8: display name lives in EMAIL_FROM. readinglite.ai is not a Resend
+    // sending domain; bbell.dev remains the rollback sender.
+    expect(varFor(wrangler, "env.production.vars", "EMAIL_FROM")).toBe(
+      "Reading Lite <noreply@readinglite.app>",
+    );
   });
 
   it("keeps the old host and both public hosts on the MCP origin allowlist", () => {
@@ -158,8 +160,10 @@ describe("production link-emitting config", () => {
     expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://staging.readinglite.ai/");
   });
 
-  it("keeps staging's mail sender on bbell.dev", () => {
-    expect(varFor(wrangler, "env.staging.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  it("sends staging mail from the staging.readinglite.app Resend domain", () => {
+    expect(varFor(wrangler, "env.staging.vars", "EMAIL_FROM")).toBe(
+      "RL Staging <noreply@staging.readinglite.app>",
+    );
   });
 
   it("allows the old staging host and both public staging hosts on MCP", () => {
