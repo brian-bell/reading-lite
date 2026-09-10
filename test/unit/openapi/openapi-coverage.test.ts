@@ -156,17 +156,20 @@ describe("docs/openapi.yaml", () => {
     expect(paths["/api/mcp"]).toBeUndefined();
   });
 
-  it("lists readinglite.ai as the canonical production server, then the dual-serve hosts", () => {
+  it("lists readinglite.ai as the canonical production server, then the remaining hosts", () => {
     const servers = loadSpec().servers ?? [];
     expect(servers.map((server) => server.url)).toEqual([
       "https://readinglite.ai",
       "https://readinglite.app",
-      "https://reading-lite.bbell.dev",
+      "https://staging.readinglite.ai",
+      "https://staging.readinglite.app",
+      "https://reading-lite-staging.bbell.dev",
       "http://127.0.0.1:8787",
     ]);
     expect(servers[0]?.description).toMatch(/canonical/i);
     expect(servers[1]?.description).toMatch(/additional public host/i);
-    expect(servers[2]?.description).toMatch(/compatibility|rollback/i);
+    expect(servers[2]?.description).toMatch(/staging/i);
+    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite.bbell.dev");
     expect(servers.map((server) => server.url)).not.toContain("https://bbookmarks.com");
   });
 

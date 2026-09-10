@@ -6,9 +6,8 @@ content and summaries in Cloudflare R2, with a Worker for processing and a React
 app for reading, searching, and managing your account.
 
 The canonical host is [readinglite.ai](https://readinglite.ai).
-[readinglite.app](https://readinglite.app) also serves the app;
-[reading-lite.bbell.dev](https://reading-lite.bbell.dev) remains available for
-compatibility and rollback. Browser sessions are separate on each host.
+[readinglite.app](https://readinglite.app) also serves the app. Browser
+sessions are separate on each host.
 
 ## Using the app
 

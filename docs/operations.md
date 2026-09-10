@@ -411,8 +411,8 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (Pages + `/api/*` `/health` `/mcp*`) |
-| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; `reading-lite.bbell.dev` retained for compatibility/rollback |
+| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (Pages + `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; `reading-lite-staging.bbell.dev` retained |
+| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -672,13 +672,14 @@ bootstrap of `dev-local-token`).
 The SPA is served from Cloudflare Pages on the same hostname as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging uses `https://reading-lite-staging.bbell.dev`. Production
-canonical host is `https://readinglite.ai`; `https://readinglite.app` also serves
-the application; `https://reading-lite.bbell.dev` is retained as a compatibility
-and rollback host (see "readinglite.ai / readinglite.app dual-serve" below).
-Magic-link mail prefers the recognized public host the sign-in request arrived
-on, and falls back to `WEB_BASE_URL`
-(`https://reading-lite-staging.bbell.dev/` on staging,
+does not 404. Staging canonical host is `https://staging.readinglite.ai`;
+`https://staging.readinglite.app` also serves; `https://reading-lite-staging.bbell.dev`
+is retained. Production canonical host is `https://readinglite.ai`;
+`https://readinglite.app` also serves the application;
+`https://reading-lite.bbell.dev` is retired (see
+"readinglite.ai / readinglite.app dual-serve" below). Magic-link mail prefers
+the recognized public host the sign-in request arrived on, and falls back to
+`WEB_BASE_URL` (`https://staging.readinglite.ai/` on staging,
 `https://readinglite.ai/` on production). Digest mail, reading-notification
 mail, and MCP `public_url` follow `WEB_BASE_URL`. Browser sessions are
 host-scoped (`__Host-` cookie); bearer tokens are host-independent.
@@ -686,47 +687,52 @@ host-scoped (`__Host-` cookie); bearer tokens are host-independent.
 ### readinglite.ai / readinglite.app dual-serve
 
 Canonical production host is `https://readinglite.ai`. `https://readinglite.app`
-is an additional public host. `https://reading-lite.bbell.dev` is retained during
-the compatibility/rollback window tracked by issue
-[#265](https://github.com/brian-bell/reading-lite/issues/265).
+is an additional public host. `https://reading-lite.bbell.dev` was the
+compatibility host through the [#265](https://github.com/brian-bell/reading-lite/issues/265)
+overlap window and is retired (S9, clean break — no SPA or API redirect).
 
 `[env.production.routes]` in `wrangler.toml` carries the same `/api/*`,
-`/health`, `/mcp*` trio on all three hostnames (`zone_name = "bbell.dev"`,
-`"readinglite.ai"`, and `"readinglite.app"`). All three hit the same Worker
+`/health`, `/mcp*` trio on both public hostnames (`zone_name =
+"readinglite.ai"` and `"readinglite.app"`). Both hit the same Worker
 script, R2 bucket, D1 database and Vectorize index. Nothing in the data plane
 depends on the hostname, so the `/api/*` read and write paths and `/health` are
 interchangeable between them. `/mcp*` is too, `mcpOriginGuard` 403s any
 `Origin` outside `MCP_ALLOWED_ORIGINS`. The **code default**
 (`DEFAULT_MCP_ALLOWED_ORIGINS` in `src/mcp/origin.ts`, used when the var is
-empty) is those three public origins. Production
-`[env.production.vars] MCP_ALLOWED_ORIGINS` is configured to the same three
+empty) is those two public origins. Production
+`[env.production.vars] MCP_ALLOWED_ORIGINS` is configured to the same two
 (and the `/api/mcp` alias sits behind the same guard). Non-browser clients send
-no `Origin` and work on any of them regardless.
+no `Origin` and work on either host regardless.
 
 Emitted links are the one place a host is *chosen* rather than observed.
 `WEB_BASE_URL` is `https://readinglite.ai/`, so every queue-side link, digest
 mail, reading notification mail, MCP `public_url`, points at `readinglite.ai`.
 Magic-link mail is the exception: `publicWebBase` prefers the origin the
 sign-in request actually arrived on when that origin is a known public host, so
-a login started on `reading-lite.bbell.dev`, `readinglite.ai`, or
-`readinglite.app` is still mailed back to that host, and only an unrecognised
-or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM` stays
+a login started on `readinglite.ai` or `readinglite.app` is mailed back to that
+host, and only an unrecognised or spoofed `Host` (including the retired
+`reading-lite.bbell.dev`) falls through to `WEB_BASE_URL`. `EMAIL_FROM` stays
 `reading-lite@bbell.dev`; moving the sender is a separate later step (S8), kept
 apart so a host move and a mail-deliverability change never land together.
 
 Browser sessions are host-scoped, the session cookie is `__Host-`-prefixed and
 so carries no `Domain` attribute, so signing in on one host does not sign you
 in on another. A one-time re-login on a public host is expected and intended,
-not a bug. Bearer tokens are host-independent. The `reading-lite.bbell.dev`
-routes stay until that old host is formally retired; they are the rollback
-path, and reverting the `WEB_BASE_URL` line plus one deploy is the whole
-rollback for the cutover until edge redirects or retirement (C4 / S9) change
-that.
+not a bug. Bearer tokens are host-independent. Reverting `WEB_BASE_URL` does
+not restore `reading-lite.bbell.dev`; that host is gone once the captain
+deletes its Worker routes, Pages custom domain, and DNS record.
 
 `www.readinglite.ai` and `www.readinglite.app` are **not** Worker routes, and
 must not become one. `www` → apex belongs to a Cloudflare Redirect Rule (301),
 which fires before a request ever reaches the Worker. Nothing in this repo
 configures the `www` records or redirect rules.
+
+Staging follows the same dual-serve shape on its own trio:
+`staging.readinglite.ai` (canonical `WEB_BASE_URL`), `staging.readinglite.app`,
+and `reading-lite-staging.bbell.dev`. Bind those two new hostnames as Pages
+custom domains on project `reading-lite` to the **`staging` preview branch**,
+not `main`, then deploy the Worker so the new routes attach. Sessions stay
+host-scoped; `EMAIL_FROM` stays `reading-lite@bbell.dev`.
 
 #### Verified deployment state vs configuration intent
 
@@ -746,16 +752,15 @@ evidence this docs sweep re-ran those checks.
 
 Still **not** claimed here, and still open on #265:
 
-- **S3** host-aware magic-link mail is in code; a real mail round-trip from
-  each host has not been recorded.
-- **C3** re-register Cursor and Grok Bot MCP connectors at `readinglite.ai`.
-- **C4** old-host SPA-path redirect and noindex/canonical policy (API and MCP
-  traffic must stay unredirected during overlap).
 - Optional `www` → apex DNS and Redirect Rules (not in this repo).
 - Authenticated `/api/whoami` parity and emitted digest/notification URL
   checks.
-- **S7** staging public host; **S8** `EMAIL_FROM` move; **S9** old-host
-  retirement.
+- **S7** live Pages/DNS + smoke for `staging.readinglite.ai` /
+  `staging.readinglite.app` (repo routes and origins are in); **S8**
+  `EMAIL_FROM` move.
+- **S9** captain deletion of the live `reading-lite.bbell.dev` Worker routes,
+  Pages custom domain, and DNS record. Repo config no longer publishes that
+  host. C4 SPA redirects were skipped in favor of this clean break.
 
 #### Captain-only DNS / Pages / token (re-verify if zones or tokens change)
 
@@ -798,10 +803,14 @@ removes routes.
    chain deploy instead. Note the same token scoping bites at retirement, in
    the other direction: on a zone-scoped token wrangler uses the per-zone route
    API, which only adds routes and never deletes stale ones, so **removing the
-   `bbell.dev` routes from this file will not remove them from Cloudflare**, delete them in the dashboard when the old host is retired.
+   `bbell.dev` routes from this file will not remove them from Cloudflare**.
+   Delete the three `reading-lite.bbell.dev` routes in the dashboard as the
+   last S9 step; a later production deploy will not re-add them.
 3. **Pages custom domains.** Bind `readinglite.ai` and `readinglite.app` as
    Pages custom domains on project `reading-lite`, to the `main` branch, with
-   Active certificates. This is an ordering prerequisite, not a cosmetic one:
+   Active certificates. Bind `staging.readinglite.ai` and
+   `staging.readinglite.app` to the **`staging` preview branch** of the same
+   project. This is an ordering prerequisite, not a cosmetic one:
    a Worker route only receives traffic for a hostname that has a proxied DNS
    record in the zone, and the Pages custom-domain binding is what creates that
    record at the apex. Without a proxied record the routes are simply inert
@@ -822,10 +831,13 @@ move.
 
 In the repo (code, `wrangler.toml`, and current-facing docs):
 
-- **S1**, production Worker routes for `reading-lite.bbell.dev`,
-  `readinglite.ai`, and `readinglite.app` (`[env.production.routes]`).
-- **S2**, `MCP_ALLOWED_ORIGINS` and `PUBLIC_WEB_ORIGINS` accept those three
-  hosts. The code default when the var is empty is the same three.
+- **S1**, production Worker routes for `readinglite.ai` and
+  `readinglite.app` (`[env.production.routes]`). The old-host trio was
+  removed at S9.
+- **S2**, `MCP_ALLOWED_ORIGINS` and `PUBLIC_WEB_ORIGINS` accept those two
+  production hosts. The code default when the var is empty is the same two.
+  `PUBLIC_WEB_ORIGINS` also lists the three staging hosts so a staging login
+  mails back to the host it arrived on.
 - **S3**, magic-link mail prefers the request's own public host (code; mail
   round-trip unverified).
 - **S4**, cutover: `WEB_BASE_URL` is `https://readinglite.ai/`.
@@ -833,6 +845,10 @@ In the repo (code, `wrangler.toml`, and current-facing docs):
   (`DEFAULT_API_BASE`; #300 / [#311](https://github.com/brian-bell/reading-lite/pull/311)).
 - **S6**, current-facing docs and OpenAPI present `readinglite.ai` as
   canonical (#301).
+- **S7**, staging Worker routes and origins for `staging.readinglite.ai`,
+  `staging.readinglite.app`, and `reading-lite-staging.bbell.dev`. Staging
+  `WEB_BASE_URL` is `https://staging.readinglite.ai/`. Live Pages/DNS bind
+  and smoke remain captain-operated.
 
 Recorded live on #265 (2026-09-05), not re-verified by this docs sweep: C0
 zone confirmation, C1 token scope, C2 Pages/DNS, S1 routes, S2 MCP origins,
@@ -844,16 +860,40 @@ Host-behavior checks (code-level; do not mail a live user for S3):
    serve, the data plane does not branch on hostname and must not start to.
 2. A sign-in request resolves its base to the host it arrived on: from
    `readinglite.ai` the mailed link is `https://readinglite.ai/auth/verify#…`,
-   from `readinglite.app` it is that host's own `/auth/verify`, and from
-   `reading-lite.bbell.dev` it is that host's own `/auth/verify`
-   (`publicWebBase`, `src/control-plane/magic-link-mail.ts`).
-3. The old host still serves the SPA and `/api/*` unchanged, it is the
-   rollback path and nothing in the cutover removes it.
+   and from `readinglite.app` it is that host's own `/auth/verify`
+   (`publicWebBase`, `src/control-plane/magic-link-mail.ts`). A request whose
+   Host is the retired `reading-lite.bbell.dev` falls through to
+   `WEB_BASE_URL`.
+3. The old host is retired. Bookmarks, mailed magic links, and MCP connectors
+   that still name `reading-lite.bbell.dev` fail rather than redirect.
 
-Still open, in order: **S3** verification; **C3** re-register the MCP
-connectors (Cursor, Grok Bot) at `readinglite.ai`; **C4** add the old host's
-SPA-path redirect rule and `noindex` header; **S7** staging's own public-host
-subdomain; **S8** the `EMAIL_FROM` move; **S9** retiring the old host.
+Still open, in order: **S9** captain deletion of the live old-host Worker
+routes, Pages custom domain, and DNS (repo config is already retired); **S7**
+captain Pages/DNS bind plus live smoke for `staging.readinglite.ai` and
+`staging.readinglite.app`; **S8** the `EMAIL_FROM` move.
+
+#### S9 clean-break retirement (captain)
+
+Do not add a Redirect Rule or `noindex` header. The old host should stop
+resolving, not bounce to `readinglite.ai`. Land the repo change and a
+production Worker deploy **before** deleting live routes, or the next deploy
+will republish them from `wrangler.toml`.
+
+1. After the production Worker deploy that no longer lists
+   `reading-lite.bbell.dev` routes, delete these three Worker routes in the
+   dashboard (Worker `reading-lite`, zone `bbell.dev`):
+   `reading-lite.bbell.dev/api/*`, `reading-lite.bbell.dev/health`,
+   `reading-lite.bbell.dev/mcp*`.
+2. Remove the `reading-lite.bbell.dev` custom domain from Pages project
+   `reading-lite`.
+3. Delete the `reading-lite` DNS record on `bbell.dev` if the Pages unbind
+   left it.
+4. Confirm `reading-lite.bbell.dev` does not serve this project (`NXDOMAIN`
+   or Cloudflare's default error, not SPA HTML or `/health` → `ok`).
+5. Confirm `https://readinglite.ai` and `https://readinglite.app` still serve
+   SPA, `/health`, `/api/whoami` (401 unauth), and `/mcp`.
+
+Leave `reading-lite-staging.bbell.dev` alone.
 
 #### Intentional old-host references
 
@@ -861,15 +901,14 @@ A search of the repo after this sweep found **no** remaining `bbookmarks.com`
 references (that abandoned target was replaced in #276). Remaining
 `reading-lite.bbell.dev` mentions are intentional:
 
-- Compatibility/rollback: production Worker routes, `PUBLIC_WEB_ORIGINS`,
-  production `MCP_ALLOWED_ORIGINS`, this dual-serve runbook, rollback
-  instructions.
+- Retirement/runbook: this dual-serve section and the S9 captain deletion
+  steps. Production routes and allowlists no longer list the host.
 - Historical evidence: `docs/founder-cutover.md` (2026-08-31 tenant cutover
   when production served only this host).
 - Original ADR wording in `docs/decisions/0001-tenant-control-plane.md`
   (annotated, not rewritten).
 - Local/dev `wrangler.toml` `[vars] MCP_ALLOWED_ORIGINS`, tests, and fixtures
-  that use the old host as one allowed origin.
+  that use the old hostname as a string.
 
 ### MCP connector
 
@@ -878,26 +917,27 @@ add it as a remote connector with a static `Authorization: Bearer <token>`
 header (the same token as `reading-lite.bearerToken` / founder bootstrap).
 There is no OAuth. Tools call the existing `/api/readings*` routes internally;
 the token is never echoed in tool results. Canonical production URL is
-`https://readinglite.ai/mcp`. Re-registering connectors that still point at the
-old host is C3 on #265 and is not performed here.
+`https://readinglite.ai/mcp`. Connectors that still point at the retired
+`reading-lite.bbell.dev` host must be re-registered; there is no redirect.
 
-Production dual-serves dedicated `mcp*` Worker routes on `readinglite.ai`,
-`readinglite.app`, and `reading-lite.bbell.dev` so Pages does not serve SPA
-HTML at `/mcp`. Attaching those routes requires zone Workers Routes permission
-on the Cloudflare API token; if `ops deploy worker --env production` uploads
-the script but fails with authentication error 10000 on
-`/zones/.../workers/routes`, add the missing route in the dashboard (Worker
-`reading-lite`, matching `hostname/mcp*` pattern) or use the `/api/mcp` alias
-which is already covered by `/api/*`. Staging has the same trio of Worker
-routes on `reading-lite-staging.bbell.dev` (`/api/*`, `/health`, `/mcp*`).
+Production serves dedicated `mcp*` Worker routes on `readinglite.ai` and
+`readinglite.app` so Pages does not serve SPA HTML at `/mcp`. Attaching those
+routes requires zone Workers Routes permission on the Cloudflare API token; if
+`ops deploy worker --env production` uploads the script but fails with
+authentication error 10000 on `/zones/.../workers/routes`, add the missing
+route in the dashboard (Worker `reading-lite`, matching `hostname/mcp*`
+pattern) or use the `/api/mcp` alias which is already covered by `/api/*`.
+Staging has the same trio of Worker routes on `staging.readinglite.ai`,
+`staging.readinglite.app`, and `reading-lite-staging.bbell.dev` (`/api/*`,
+`/health`, `/mcp*`).
 
 `MCP_ALLOWED_ORIGINS` is the Origin allowlist. The code default
 (`DEFAULT_MCP_ALLOWED_ORIGINS` in `src/mcp/origin.ts`, used when the var is
-empty) is `https://reading-lite.bbell.dev`, `https://readinglite.ai`, and
-`https://readinglite.app`. Production `[env.production.vars]` is configured to
-those three. Local `wrangler.toml` `[vars]` currently sets only
-`https://reading-lite.bbell.dev`; staging sets
-`https://reading-lite-staging.bbell.dev`. Requests with no `Origin` pass
+empty) is `https://readinglite.ai` and `https://readinglite.app`. Production
+`[env.production.vars]` is configured to those two. Local `wrangler.toml`
+`[vars]` currently sets only `https://reading-lite.bbell.dev`; staging sets
+`https://reading-lite-staging.bbell.dev`, `https://staging.readinglite.ai`, and
+`https://staging.readinglite.app`. Requests with no `Origin` pass
 (non-browser clients). Unknown Origins are 403.
 
 Smoke the handshake after a worker deploy:

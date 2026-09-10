@@ -1,16 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { cookieAuthAllowed, isSameOriginRequest } from "../../../src/control-plane/origin";
+import { cookieAuthAllowed, isSameOriginRequest, PUBLIC_WEB_ORIGINS } from "../../../src/control-plane/origin";
 
 const same = {
-  url: "https://reading-lite.bbell.dev/api/whoami",
-  webBaseUrl: "https://reading-lite.bbell.dev/",
+  url: "https://readinglite.ai/api/whoami",
+  webBaseUrl: "https://readinglite.ai/",
 };
+
+describe("PUBLIC_WEB_ORIGINS", () => {
+  it("names every production and staging host this project serves", () => {
+    expect(PUBLIC_WEB_ORIGINS).toEqual([
+      "https://readinglite.ai",
+      "https://readinglite.app",
+      "https://reading-lite-staging.bbell.dev",
+      "https://staging.readinglite.ai",
+      "https://staging.readinglite.app",
+    ]);
+    expect(PUBLIC_WEB_ORIGINS).not.toContain("https://reading-lite.bbell.dev");
+  });
+});
 
 describe("isSameOriginRequest", () => {
   it("requires a matching Origin", () => {
     expect(isSameOriginRequest({ origin: undefined, ...same })).toBe(false);
     expect(isSameOriginRequest({ origin: "https://evil.example", ...same })).toBe(false);
-    expect(isSameOriginRequest({ origin: "https://reading-lite.bbell.dev", ...same })).toBe(true);
+    expect(isSameOriginRequest({ origin: "https://readinglite.ai", ...same })).toBe(true);
   });
 });
 
@@ -51,16 +64,16 @@ describe("cookieAuthAllowed", () => {
         method: "POST",
         origin: undefined,
         secFetchSite: "same-origin",
-        url: "https://reading-lite.bbell.dev/api/readings",
-        webBaseUrl: "https://reading-lite.bbell.dev/",
+        url: "https://readinglite.ai/api/readings",
+        webBaseUrl: "https://readinglite.ai/",
       }),
     ).toBe(false);
     expect(
       cookieAuthAllowed({
         method: "POST",
-        origin: "https://reading-lite.bbell.dev",
-        url: "https://reading-lite.bbell.dev/api/readings",
-        webBaseUrl: "https://reading-lite.bbell.dev/",
+        origin: "https://readinglite.ai",
+        url: "https://readinglite.ai/api/readings",
+        webBaseUrl: "https://readinglite.ai/",
       }),
     ).toBe(true);
   });
