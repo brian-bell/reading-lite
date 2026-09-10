@@ -25,17 +25,16 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
 5. Record the reading ID as live in D1 `vector_ledger`, then commit the terminal
    manifest. Recheck tenant eligibility and the per-reading purge tombstone
    (`index/deleted/{id}`) immediately before by-url reclaim, the terminal
-   write, and publish. A confirmed tombstone blocks the write and the publish
-   and compensates instead (full checkpoint list under
+   write, and publish. A confirmed tombstone skips those writes (see
    [reprocessing and recovery](#reprocessing-and-recovery)). Otherwise publish
    the list row, then the vector. Confirm URL ownership as part of the
    terminal write path.
-6. Recheck deletion eligibility and the tombstone again after publish and
-   compensate in this same consumer if either flipped: a confirmed tombstone
-   or `users.status=deleting` compensates with
-   `visibility.removeForDeletedTenant` so a missing list row cannot skip the
-   vector delete. Send any eligible immediate notification after publication;
-   mail failure does not fail a ready reading.
+6. Recheck deletion eligibility after publish. `users.status=deleting`
+   compensates with `visibility.removeForDeletedTenant` so a missing list row
+   cannot skip the vector delete. A confirmed purge tombstone does not run
+   that compensation — it is a write fence, not a second purge. Send any
+   eligible immediate notification after publication; mail failure does not
+   fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -95,22 +94,24 @@ supports retries after partial failure; a purge that dies right after the
 tombstone put leaves a doomed-but-present reading that only the re-issued
 DELETE finishes. Inbound connections remain until an explicit corpus sweep.
 
-The tombstone is the per-reading equivalent of the tenant-deletion fence
-(issue #179). The consumer rechecks it — fail-open on a throwing HEAD, and
-latched for the rest of the call once confirmed — at every site that could
-resurrect purged state: before `activateAttempt` writes a pending manifest or
-rolls a failed enqueue back, before by-url reclaim, the terminal write, and
-publish in `commitTerminalManifest`, again after the terminal CAS and after
-publish, on the lost-CAS restore, at `processReading`'s early returns, and
-before `markFailed`/`markDeadLettered` recreate a failed manifest (including
-when the manifest is already confirmed absent). A confirmed tombstone at any of those
-sites also sweeps the reading's prefix objects — attempt residue or a terminal
-object that raced the purge is otherwise unreapable once the by-id pointer is
-gone — then compensates with an ungated vector delete, list-row removal, and
-by-url release. The missing-manifest purge guard treats a tombstone as purged.
-Tombstones are retained forever (the consumer they fence can wake hours later
-from the retry/DLQ pipeline) and are deleted only by the account wipe's
-objects phase, which covers the whole tenant key root.
+The tombstone is a write fence (issue #179), not a second purge. Writers
+recheck it — fail-open on a throwing HEAD, latched for the rest of a
+`commitTerminalManifest` call once confirmed — and skip the write: before
+`activateAttempt` puts a pending manifest or rolls a failed enqueue back,
+before by-url reclaim, the terminal write, and publish, again after the
+terminal CAS and after publish, on the lost-CAS restore, at
+`processReading`'s early returns, and before `markFailed`/`markDeadLettered`
+recreate a failed manifest. A confirmed tombstone on those consumer paths
+may also delete objects under the reading prefix (attempt residue this
+delivery wrote). It does not ungated-delete the vector, list row, or by-url
+pointer. A consumer that publishes after the purge's final sweep and then
+dies can leave a listed or searchable reading whose by-id pointer is already
+gone, so a re-issued DELETE answers `not_found`. That is last-writer-wins
+residue; repair is account wipe or corpus tooling. The missing-manifest
+purge guard treats a tombstone as purged. Tombstones are retained forever
+(the consumer they fence can wake hours later from the retry/DLQ pipeline)
+and are deleted only by the account wipe's objects phase, which covers the
+whole tenant key root.
 
 ## Tenant storage
 
