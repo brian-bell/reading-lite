@@ -104,21 +104,26 @@ button:hover:not(:disabled), a:hover { filter: brightness(.92); }
 .connected .workspace-header { padding: 22px 34px; }
 .connected-detail { display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
 .connected-detail > .reading-article { padding: 28px 28px 36px; }
-.connected h1 { font-family: inherit; font-weight: 570; font-size: clamp(34px, 3.4cqw, 48px); letter-spacing: -.05em; line-height: 1.13; }
+.connected h1 { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-weight: 400; font-size: clamp(36px, 3.6cqw, 52px); letter-spacing: -.025em; line-height: 1.12; }
 .connected .lead, .connected .source-section p { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
 .connected .lead { font-size: 21px; line-height: 1.7; margin-bottom: 20px; }
-.connected .novelty { border-radius: 0 8px 8px 0; padding: 18px 20px; margin: 22px 0; background-image: var(--grain); background-size: 240px 240px; }
-.connected .novelty h2 { font-family: inherit; font-size: 22px; font-weight: 550; }
+.connected .novelty { border-radius: 0 8px 8px 0; padding: 20px 22px; margin: 22px 0; background-image: var(--grain); background-size: 240px 240px; }
+.connected .novelty h2 { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 22px; font-weight: 400; font-style: italic; letter-spacing: 0; }
+.connected h2 { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
+.connected .connection-group > h2 { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .context-panel { padding: 20px 18px 28px; border-left: 1px solid var(--border); background: var(--surface); }
+.connected .context-panel { background: transparent; }
 .context-panel .section-heading { margin-top: 14px; }
 .context-panel .section-heading .eyebrow { font-size: 12px; }
 .context-panel .connection-group > h2 { margin: 16px 0 12px; }
 .context-panel .connection-group:first-child > h2 { margin-top: 0; }
-.context-panel .connection-card { background: var(--accent-soft); padding: 14px; border: 0; border-radius: 7px; margin-bottom: 10px; }
-.context-panel .connection-card > button { font-family: inherit; font-size: 18px; font-weight: 550; line-height: 1.4; }
+.context-panel .connection-card { background: var(--surface); padding: 15px 16px; border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 0 7px 7px 0; margin-bottom: 12px; box-shadow: var(--card-shadow); }
+.context-panel .connection-card > button { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 18px; font-weight: 400; line-height: 1.35; transition: color .15s ease; }
+.context-panel .connection-card > button:hover { filter: none; color: var(--accent); }
 .context-panel .connection-card > p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
-.context-panel .connection-card.unavailable { border: 1px dashed var(--border); background: transparent; }
-.context-panel .tension .connection-card { background: var(--soft); border-left: 2px solid var(--danger); border-radius: 0 7px 7px 0; }
+.context-panel .connection-card.unavailable { border: 1px dashed var(--border); border-radius: 7px; background: transparent; box-shadow: none; }
+.context-panel .tension .connection-card { border-left-color: var(--danger); }
+.context-panel .tension .connection-card > button:hover { color: var(--danger); }
 .library-page, .standard-page { padding: 46px 46px 65px; }
 .editorial .library-page, .editorial .standard-page { max-width: 1180px; margin: 0 auto; }
 .page-heading { display: flex; justify-content: space-between; align-items: end; gap: 30px; margin-bottom: 36px; }
@@ -177,10 +182,13 @@ button:hover:not(:disabled), a:hover { filter: brightness(.92); }
 .library-peek > p:not(.eyebrow):not(.byline) { font-size: 15px; line-height: 1.75; color: var(--muted); }
 .library-peek .text-button { margin-top: 24px; }
 .connected .reading-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 8px; }
-.connected .library-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--card-shadow); }
-.connected .reading-row { position: relative; display: flex; flex-direction: column; align-items: start; gap: 14px; padding: 18px; border: 0; height: 100%; }
+.connected .library-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--card-shadow); transition: border-color .15s ease, box-shadow .15s ease; }
+.connected .library-item:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); box-shadow: var(--card-shadow), 0 4px 14px rgba(84, 62, 36, .08); }
+.connected .reading-row { position: relative; display: flex; flex-direction: column; align-items: start; gap: 14px; padding: 20px; border: 0; height: 100%; }
+.connected .reading-row:hover { filter: none; }
+.connected .reading-row:hover .row-title { color: var(--accent); }
 .connected .row-number, .connected .row-date { display: none; }
-.connected .row-title { font-family: inherit; font-size: 22px; font-weight: 540; line-height: 1.28; }
+.connected .row-title { font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 24px; font-weight: 400; line-height: 1.24; letter-spacing: -.01em; transition: color .15s ease; }
 .connected .row-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; line-height: 1.6; color: var(--muted); margin: 0; }
 .connected .row-main { gap: 8px; }
 .connected .row-arrow { position: absolute; bottom: 18px; right: 18px; }
