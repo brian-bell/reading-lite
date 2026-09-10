@@ -154,17 +154,50 @@ describe("production link-emitting config", () => {
     );
   });
 
-  it("leaves staging's base URL alone", () => {
-    expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://reading-lite-staging.bbell.dev/");
+  it("emits staging links on staging.readinglite.ai", () => {
+    expect(varFor(wrangler, "env.staging.vars", "WEB_BASE_URL")).toBe("https://staging.readinglite.ai/");
+  });
+
+  it("keeps staging's mail sender on bbell.dev", () => {
+    expect(varFor(wrangler, "env.staging.vars", "EMAIL_FROM")).toBe("reading-lite@bbell.dev");
+  });
+
+  it("allows the old staging host and both public staging hosts on MCP", () => {
+    expect(varFor(wrangler, "env.staging.vars", "MCP_ALLOWED_ORIGINS")).toBe(
+      "https://reading-lite-staging.bbell.dev,https://staging.readinglite.ai,https://staging.readinglite.app",
+    );
   });
 });
 
 describe("staging worker routes", () => {
-  it("stays on bbell.dev, untouched by the production domain move", () => {
-    expect(routesFor(wrangler, "env.staging.routes")).toEqual([
-      { pattern: "reading-lite-staging.bbell.dev/api/*", zone_name: "bbell.dev" },
-      { pattern: "reading-lite-staging.bbell.dev/health", zone_name: "bbell.dev" },
-      { pattern: "reading-lite-staging.bbell.dev/mcp*", zone_name: "bbell.dev" },
-    ]);
+  const routes = routesFor(wrangler, "env.staging.routes");
+
+  it("keeps the reading-lite-staging.bbell.dev routes while dual-serving", () => {
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        { pattern: "reading-lite-staging.bbell.dev/api/*", zone_name: "bbell.dev" },
+        { pattern: "reading-lite-staging.bbell.dev/health", zone_name: "bbell.dev" },
+        { pattern: "reading-lite-staging.bbell.dev/mcp*", zone_name: "bbell.dev" },
+      ]),
+    );
+  });
+
+  it("serves the same three path sets on staging.readinglite.ai and staging.readinglite.app", () => {
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
+        { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
+        { pattern: "staging.readinglite.ai/mcp*", zone_name: "readinglite.ai" },
+        { pattern: "staging.readinglite.app/api/*", zone_name: "readinglite.app" },
+        { pattern: "staging.readinglite.app/health", zone_name: "readinglite.app" },
+        { pattern: "staging.readinglite.app/mcp*", zone_name: "readinglite.app" },
+      ]),
+    );
+  });
+
+  it("routes exactly those nine patterns and nothing else", () => {
+    expect(routes).toHaveLength(9);
+    expect(routes.every((route) => route !== null)).toBe(true);
+    expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
   });
 });
