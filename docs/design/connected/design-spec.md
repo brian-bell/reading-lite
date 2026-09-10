@@ -1,0 +1,143 @@
+# Connected design specification
+
+Status: captured design baseline, September 9, 2026. See the [frozen source and
+reproduction instructions](README.md). This records the prototype Brian liked;
+it does not claim approval of every state or completion of the Phase 2 design.
+
+## Decisions recorded from Brian
+
+- Continue with Connected. No borrowed elements from the other two directions
+  have been requested.
+- Remove decorative text such as “threads worth following” and “your reading,
+  connected.” Use direct titles: Library, Save reading, Provider. Keep text that
+  explains a relationship, a failure, an action, or the limits of the demo.
+- Use the available width more efficiently. Compact page margins, card spacing,
+  navigation, and forms; retain comfortable source and summary typography.
+- Give Connected its own runnable entrypoint without a direction picker,
+  comparison footer, or decision form.
+
+The desktop reading surface places connections and tensions beside the article.
+On a phone they follow the reading, reached with a “Connections & tensions” jump
+and a “Back to the reading” action. Relationship explanations and return context
+are central to this direction. A graph explorer is outside the agreed scope.
+
+## Layout and typography baseline
+
+Values below describe the current CSS, including container breakpoints. The
+prototype surface is the container; the phone toolbar toggle narrows this
+container without emulating an actual mobile browser. The screenshots use real
+1440 × 1000 and 390 × 844 CSS-pixel viewports with the Desktop layout toggle
+selected, so they exercise the natural responsive layout.
+
+| Element | Captured value or rule |
+| --- | --- |
+| Frame | Dedicated desktop stage fills width up to 1760 px; compact preview toolbar above app |
+| Desktop navigation | 80 px column, icon and text stacked; active item uses accent surface |
+| Small navigation | At container width ≤650 px, brand row and horizontal navigation above content |
+| Desktop page spacing | Library/forms 28 px top and sides, 36 px bottom; heading gap 20 px |
+| Phone page spacing | Library/forms 20 px top, 16 px sides, 28 px bottom; reading 22/16/28 px |
+| Library grid | Three columns at ≥1280 px; two from >850 to <1280; one at ≤850 |
+| Cards | 12 px grid gap; 18 px padding, 16 px at ≤650; titles wrap; summaries clamp to three lines |
+| Detail columns | Flexible reading plus 320 px context; context 295 px at ≤1150; stacked at ≤850 |
+| Relationship cards | 14 px padding, 10 px bottom margin, 7 px radius; context panel 20/18/28 px |
+| Forms/status cards | Form 20 px padding; status 24 px; both 18 px at ≤650 |
+| Font stack | Inter if installed, then system sans (`-apple-system`, BlinkMacSystemFont, Segoe UI); no bundled font |
+| Reading/page title | Sans, weight 570, `clamp(34px, 3.4cqw, 48px)`, line height 1.13, tracking −.05em; 35 px at ≤650 |
+| Library title | 34 px |
+| Library card title | Sans 22 px, weight 540, line height 1.28 |
+| Summary lead | Georgia/serif, 21 px, line height 1.7 |
+| Source paragraphs | Georgia/serif, 20 px, line height 1.85; 19 px at ≤650 |
+| Key points | Sans 16 px, line height 1.75; 16 px number/text gap |
+| Relationship text | Title 18 px/1.4, weight 550; explanation 14 px/1.65 |
+| Metadata and state badges | 12–13 px; text labels accompany status colors |
+| Novelty | Accent surface, 2 px accent rule, 18/20 px padding, 22 px section margin |
+| Focus outline | Focus-visible controls use 3 px accent outline with 4 px offset |
+
+The source of exact cascade behavior is
+[shared styles](../../../web/prototypes/interface-directions/styles.css),
+[Connected layout rules](../../../web/prototypes/interface-directions/ui.css),
+and [dedicated frame rules](../../../web/prototypes/connected/styles.css).
+System font differences can change wrapping. The phone screenshots also expose
+an existing rough edge: key-point numbers such as “01” can wrap onto two lines.
+Do not reproduce that defect as a design requirement.
+
+## Color tokens
+
+| Token | Light | Dark | Use |
+| --- | --- | --- | --- |
+| `--bg` | `#fafbf9` | `#1c202b` | Page |
+| `--surface` | `#ffffff` | `#242938` | Cards/navigation |
+| `--ink` | `#232933` | `#eceef7` | Main text |
+| `--muted` | `#69717b` | `#afb7c9` | Secondary text |
+| `--border` | `#dce0e7` | `#3c4256` | Dividers |
+| `--soft` | `#f0f2f5` | `#2c3243` | Secondary fills |
+| `--accent` | `#3f54bd` | `#aabaff` | Actions/selection |
+| `--accent-soft` | `#eef0fb` | `#2c3353` | Connections/novelty |
+| `--danger` | `#a34133` | `#edac91` | Failure/tension rule |
+| `--positive` | `#3c755f` | `#91d0b2` | Ready/success |
+
+Connections use a filled accent surface. Tensions use a neutral surface with a
+colored left rule and an explicit Tensions heading. Removed connections use a
+dashed border, a “Reading removed” label, and retained explanatory text.
+These values are references; production contrast, target-size, zoom, and
+assistive-technology checks remain acceptance work.
+
+## Screens and interactions
+
+| Surface | Captured behavior | Implementation implication |
+| --- | --- | --- |
+| Library | Seven fixtures, newest first; search title/author/summary, one tag filter, five items per page; whole card opens reading or status | Preserve discovery and return context; production search/pagination use backend semantics |
+| Library return | Search, tag, and page survive navigation within the loaded prototype | Decide URL representation and restore scroll as well; current prototype resets scroll to top on navigation |
+| Reading | Summary/Source tabs; selection remembered per reading during page session; novelty below either view | Keep source distinct from generated analysis, including missing/partial data |
+| Connections/tensions | Title, explanation, author/publication, reading time; follow a target | Preserve why it was suggested, with a trail and return action |
+| Return trail | Previous title and explanation above destination; “Back to your reading” | Support more than one hop, browser history, and returning from a missing target |
+| Sparse archive | One reading; explicitly insufficient history for novelty and relationships | Avoid invented comparisons or a misleading empty success state |
+| Unavailable source | Retain summary/novelty/connections; offer summary or import | Missing source does not make the whole reading unusable |
+| Removed target | Explain unavailability and offer return to previous reading | Avoid a dead end and preserve the originating relationship explanation |
+| Save URL | Validate HTTP(S) URL; create pending fixture and show status | Real intake must handle existing/initializing/conflicting owners and quotas |
+| Import Markdown | Require text, retain it in memory, explicitly say analysis was not run | Import/recovery must respect the real source and reprocessing contracts |
+| Processing | Saved, capture/summarize, connections/novelty; manual Check status | Step labels are conceptual, not a backend event stream or progress percentage |
+| Ready | Success state and Open reading | Only show completion when the backend confirms it |
+| Failed | Explain source/key/provider/hosting cause; relevant recovery and expandable diagnostics | Keep these causes distinct; recovery must not silently repeat a paid write |
+| Provider | Missing/connected/invalid/removed sample states and a sample-library route | Concept only; credential contracts and supported providers remain Phase 6 decisions |
+
+The prototype focuses main content after route changes. Tabs use arrow, Home,
+and End keyboard behavior. These are a starting point for the production focus
+and keyboard specification, not a completed accessibility audit. The mobile
+jump scrolls smoothly but does not define focus movement or reduced-motion
+behavior; both remain to be specified.
+
+## Simulation boundaries
+
+All seven articles, authors, publications, and relationships were authored for
+this study. No real archive or provider credential is captured. URL capture does
+not fetch the entered URL; it uses the slow-work sample. Markdown remains plain
+text in page memory. Capture state, filters, theme, and per-reading tabs reset on
+reload. Scenario selection also resets library filters.
+
+“Check status” advances the chosen preview outcome immediately. “Retry sample”
+and “Reprocess sample” set a sample pending and make its next check succeed.
+There is no queue, timer, backend request, analysis, or paid call. The disabled
+API key field cannot connect a provider. Sample key actions only change local UI
+state; they do not enforce real capture admission after key removal.
+
+Hash routes (`#/library`, `#/reading/attention`, `#/capture`, `#/status/pending`,
+`#/provider`) support the standalone study. They are not the new frontend's URL
+contract. Legacy comparison routes normalize to Connected. The toolbar and
+simulation disclosures belong to this reference, not to the production app.
+
+## Still open
+
+- Complete account/authentication, loading, empty archive, session expiry,
+  permission, offline, deletion, and export designs; see the checklist.
+- Define bounded status refresh interval, duration/backoff, terminal conditions,
+  background-tab behavior, manual fallback, and auth/error stopping behavior.
+- Define scroll restoration, keyboard focus after jumps, reduced motion, source
+  rendering for rich/very long content, and a narrow-screen number layout.
+- Confirm provider/model support, key validation/replacement/removal, billing
+  disclosure, queued-job behavior, and hosting limits before BYOK implementation.
+- Inventory all current URLs/actions against the replacement application and
+  reconcile old product-document framework wording with issue #335.
+
+Capturing these artifacts does not resolve those decisions. The
+[implementation checklist](implementation-checklist.md) keeps them visible.

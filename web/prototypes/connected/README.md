@@ -1,6 +1,10 @@
 # Connected prototype
 
 Dedicated Reading Lite prototype based on Brian's preferred Connected direction.
+The [implementation handoff](../../../docs/design/connected/README.md) preserves
+the selected source revision, design specification, checklist, screenshots, and
+offline walkthrough.
+
 It opens directly to the library and omits the design switcher, comparison
 footer, and decision form. The tighter spacing and reduced interface copy carry
 over from the comparison study.
