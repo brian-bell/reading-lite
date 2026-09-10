@@ -111,7 +111,7 @@ describe("staging token revocation", () => {
     const d = drill();
     const fetch = d.deps.fetch;
     d.deps.fetch = (async (input, init) => {
-      expect(String(input)).toMatch(/^https:\/\/reading-lite-staging\.bbell\.dev\/api\//);
+      expect(String(input)).toMatch(/^https:\/\/staging\.readinglite\.ai\/api\//);
       expect(init?.redirect).toBe("error");
       expect(init?.signal).toBeDefined();
       return fetch(input, init);
