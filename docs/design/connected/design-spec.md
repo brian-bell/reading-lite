@@ -77,7 +77,7 @@ Do not reproduce that defect as a design requirement.
 | `--positive` | `#3c755f` | `#91d0b2` | Ready/success |
 | `--card-shadow` | warm `rgba(84, 62, 36)` at 5–7% | black at 25–28% | Library cards, forms, status cards |
 
-Warm revision, September 9, 2026: the palette moved from cool blue-grey to parchment and cream in light mode (no pure white surfaces remain) and warm charcoal in dark mode, the page and novelty panel carry a low-opacity SVG grain, cards take a faint warm shadow, and the lead and source paragraphs use Charter, Iowan Old Style, Palatino, then Georgia. The screenshots predate this revision.
+Warm revision, September 9/10, 2026: the palette moved from cool blue-grey to parchment and cream in light mode (no pure white surfaces remain) and warm charcoal in dark mode, the page and novelty panel carry a low-opacity SVG grain, cards take a faint warm shadow, and the lead and source paragraphs use Charter, Iowan Old Style, Palatino, then Georgia. The September 10 screenshots reflect this revision.
 
 Connections use a filled accent surface. Tensions use a neutral surface with a
 colored left rule and an explicit Tensions heading. Removed connections use a

@@ -1,54 +1,54 @@
 {
-  "capturedDate": "2026-09-09",
-  "sourceCommit": "e121cf1cd669cd6d84c547bcbcba3abba68b9bab",
+  "capturedDate": "2026-09-10",
+  "sourceCommit": "dcfe7a04dd04034e581779a53156e0904769a344",
   "captureKind": "viewport screenshots",
-  "browser": "Codex in-app browser on macOS",
+  "browser": "Chrome DevTools MCP (headless Chrome) on macOS",
   "previewLayout": "desktop",
   "assets": [
     {
       "file": "screenshots/01-library-desktop-light.jpg",
-      "title": "Library \u00b7 desktop",
+      "title": "Library · desktop",
       "steps": "Full library; Library; light. Fresh reload restores seven fixtures.",
       "route": "#/library",
       "width": 1440,
-      "height": 1000,
-      "sha256": "bf58f78f20c00b9f5e36144bdf11d3a0e075e527052043637de8189c1fa74a78"
+      "height": 930,
+      "sha256": "5ef3d21daba7eb7097d33206f9e0c5d82885f4123fa6fdda448c8d5e0672301f"
     },
     {
       "file": "screenshots/02-reading-desktop-light.jpg",
-      "title": "Reading \u00b7 desktop",
-      "steps": "Open \u201cA quieter internet\u2026\u201d from the library. Summary selected.",
+      "title": "Reading · desktop",
+      "steps": "Open “A quieter internet…” from the library. Summary selected.",
       "route": "#/reading/attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "5c864136d1f731d895e747b50687be99879d326f05fc18db2902a3cd30d3b061"
+      "height": 930,
+      "sha256": "950f5faeafcf09dd0dfad448dd817e66adf0120bd334d5000eb38f0c1028058d"
     },
     {
       "file": "screenshots/03-source-desktop-light.jpg",
-      "title": "Source \u00b7 desktop",
+      "title": "Source · desktop",
       "steps": "On the lead reading, select Source. Captured at top; source continues below.",
       "route": "#/reading/attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "8dfb65f0c16187c62f244a2f0d4c094fa5b66a75353e95e362dca163096406e6"
+      "height": 930,
+      "sha256": "9131c4cb26e0a5d51079b8fe7396db19fe85c7f4ee18d4b2e85de709be9e1ae4"
     },
     {
       "file": "screenshots/04-reading-trail-desktop.jpg",
       "title": "Connection trail",
-      "steps": "Follow \u201cLibraries are gardens\u2026\u201d from the lead reading. The destination shows its origin and return action.",
+      "steps": "Follow “Libraries are gardens…” from the lead reading. The destination shows its origin and return action.",
       "route": "#/reading/gardens?from=attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "be862bbd084f595e310f8817a10746f112945d5db0b650282d0cb4cb8e1a3ae6"
+      "height": 930,
+      "sha256": "b5082b30c2f7033ec937daa5ee00d451453287df73aa35c74db83165b63a6d58"
     },
     {
       "file": "screenshots/05-reading-desktop-dark.jpg",
-      "title": "Reading \u00b7 dark",
+      "title": "Reading · dark",
       "steps": "Return to lead reading, Summary, Dark theme.",
       "route": "#/reading/attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "ebdc5a2f29479a9c0a55f3e3d1c1af04f82d96a2a25932a36b9181c1dfc96371"
+      "height": 930,
+      "sha256": "28641b8f05509cb83cabe1f7de611ef4e92a6c536f31b9a44fb6d46487ccbe03"
     },
     {
       "file": "screenshots/06-library-filtered-desktop.jpg",
@@ -56,8 +56,8 @@
       "steps": "Library; search gardens; select Knowledge. Open and return preserves these filters.",
       "route": "#/library",
       "width": 1440,
-      "height": 1000,
-      "sha256": "cbcc91021c3035ab270d30336845b836dc2ff3072f3d8786540eb2f8eb7afbd2"
+      "height": 930,
+      "sha256": "e1b8ddd334b50206aacf8a29f62189b877ea8488964a1cf1c1ee7e7eb32cce6b"
     },
     {
       "file": "screenshots/07-capture-desktop.jpg",
@@ -65,8 +65,8 @@
       "steps": "Save reading; URL tab; default sample URL and Ready preview result.",
       "route": "#/capture",
       "width": 1440,
-      "height": 1000,
-      "sha256": "1bf72855e270fa4a7073367d16c12055d55b3f6b7651a7b4c50ca89cefbd11da"
+      "height": 930,
+      "sha256": "a459fccd2259aafd29b06263145f096a4d10feba7a62e0a747b0e02448143f70"
     },
     {
       "file": "screenshots/08-pending-desktop.jpg",
@@ -74,8 +74,8 @@
       "steps": "Save URL with Ready preview result. Dynamic sample capture-1 is pending.",
       "route": "#/status/capture-1",
       "width": 1440,
-      "height": 1000,
-      "sha256": "1a7fc882898bf5a0260c7e547f7d03e37ebde382648e293c0ed7665e91ff0ec7"
+      "height": 930,
+      "sha256": "e4bbc9b4a12df8adbe9c328925dc4e6b02f2508afc8ba57a01e342f4e2fc6985"
     },
     {
       "file": "screenshots/09-ready-desktop.jpg",
@@ -83,8 +83,8 @@
       "steps": "From capture-1 pending, click Check status. No real job runs.",
       "route": "#/status/capture-1",
       "width": 1440,
-      "height": 1000,
-      "sha256": "39026413b3051ea78b8af2c5e7e0ea27a3b62d56f6efb40ba5c4a4b99b3fe83b"
+      "height": 930,
+      "sha256": "eef8e917ca99f88437bdcec0dc565e98b9e2db82f1efe61487f609ca251d9f1d"
     },
     {
       "file": "screenshots/10-failed-desktop.jpg",
@@ -92,116 +92,116 @@
       "steps": "Select Failed capture. Recovery actions and collapsed diagnostics shown.",
       "route": "#/status/failed",
       "width": 1440,
-      "height": 1000,
-      "sha256": "bdd2a41c19991d18c00507c147b4cdb265761f2e6fc6fa4d16285803332356af"
+      "height": 930,
+      "sha256": "06e9f4a2aab6b8900352f3766a6e34c388e6b3b8611f963ac41f5637c1297c21"
     },
     {
       "file": "screenshots/11-provider-desktop.jpg",
-      "title": "Provider \u00b7 missing key",
+      "title": "Provider · missing key",
       "steps": "Open Provider with its initial Missing key state. Scenario selector still says Failed capture; it does not control provider state.",
       "route": "#/provider",
       "width": 1440,
-      "height": 1000,
-      "sha256": "54f28de79fa5b79c4155e1f2859139c0c22a24fe10228bacdbb8f70d9fdbba7a"
+      "height": 930,
+      "sha256": "5ed0edcf294d93dba9146dde0f376e69593f7b6f491aa1d7aca89cb1b15bbf55"
     },
     {
       "file": "screenshots/12-library-phone-light.jpg",
-      "title": "Library \u00b7 phone",
-      "steps": "Fresh reload at library; 390 \u00d7 844 viewport, Desktop layout toggle, light.",
+      "title": "Library · phone",
+      "steps": "Fresh reload at library; 390 × 844 viewport, Desktop layout toggle, light.",
       "route": "#/library",
       "width": 390,
-      "height": 844,
-      "sha256": "59823e3050df25d15343066f22bb3dcd91644cdd39f47a34135b8c70d5392fd7"
+      "height": 658,
+      "sha256": "21e57c9c59277de0e4f6b7465eed61e3899886fca9d814a9a6cf85a5021e710c"
     },
     {
       "file": "screenshots/13-reading-phone-light.jpg",
-      "title": "Reading \u00b7 phone",
+      "title": "Reading · phone",
       "steps": "Open lead reading, Summary. Page continues below.",
       "route": "#/reading/attention",
       "width": 390,
-      "height": 844,
-      "sha256": "cec61d6249d9052f72a7ef1dcb0f4f2633afcf4b6e7b993b2436d2022cb498b6"
+      "height": 658,
+      "sha256": "2fd7e8dd3e771f849ac3d0b6258b2920ec46c450921f817a83217bd852ae2aa8"
     },
     {
       "file": "screenshots/14-connections-phone.jpg",
-      "title": "Connections \u00b7 phone",
+      "title": "Connections · phone",
       "steps": "Click Connections & tensions; allow smooth scroll to settle. Captured scrolled to the panel, with return action.",
       "route": "#/reading/attention",
       "width": 390,
-      "height": 844,
-      "sha256": "7ce49ba46f91103471e9cc2308e2949929c66ccef47be4204534fe0b4c31f35e"
+      "height": 658,
+      "sha256": "18c32eefdca9bc6d3cb7a9475af4bae854a003b57a3638d1c6f3945c8011d1da"
     },
     {
       "file": "screenshots/15-reading-phone-dark.jpg",
-      "title": "Reading \u00b7 phone dark",
+      "title": "Reading · phone dark",
       "steps": "Return to the reading and select Dark theme.",
       "route": "#/reading/attention",
       "width": 390,
-      "height": 844,
-      "sha256": "0129a4bb200e7b1088b3234f3e3bb2481cf6940fcb61adb3820de64ece6c2c78"
+      "height": 658,
+      "sha256": "132339c48924e5013b56e2b7c39f55e0b98cae36c031af48cd61429d802d585b"
     },
     {
       "file": "screenshots/16-markdown-phone.jpg",
-      "title": "Markdown \u00b7 phone",
+      "title": "Markdown · phone",
       "steps": "Light theme; Save reading; Markdown tab with authored default text.",
       "route": "#/capture",
       "width": 390,
-      "height": 844,
-      "sha256": "845c5f245b985a39ed05bfd1d28e14bb34933247fb690df5eeb9a8a61c00d583"
+      "height": 658,
+      "sha256": "a2bf156da7e901471f8a463f65e070e4e04ea3b29f47d149675af1e6bc8e69d8"
     },
     {
       "file": "screenshots/17-provider-removed-phone.jpg",
-      "title": "Provider removed \u00b7 phone",
-      "steps": "Provider; Preview setup state \u2192 Removed key. Top of page, including retained-library explanation.",
+      "title": "Provider removed · phone",
+      "steps": "Provider; Preview setup state → Removed key. Top of page, including retained-library explanation.",
       "route": "#/provider",
       "width": 390,
-      "height": 844,
-      "sha256": "d8605bcd85eeb171f7b331083bbc7f3d89583e2283a6bdb8f5e3f72896014d7c"
+      "height": 658,
+      "sha256": "561e68b8eef6b12ff16e330761340cb53f9389ef9920c488864e0812cf79f4fd"
     },
     {
       "file": "screenshots/18-long-title-phone.jpg",
-      "title": "Long title \u00b7 phone",
-      "steps": "Sample scenario \u2192 Long title. Title wraps without clipping.",
+      "title": "Long title · phone",
+      "steps": "Sample scenario → Long title. Title wraps without clipping.",
       "route": "#/reading/long-title",
       "width": 390,
-      "height": 844,
-      "sha256": "a04215d8d590888fd332cfe464f3bf3f74b63b618d55330f536491b32618577f"
+      "height": 658,
+      "sha256": "5f80637f4af02fc1ebbeb40c29b35239279e2b019d4181936e6baf96c0d4d833"
     },
     {
       "file": "screenshots/19-failed-phone-dark.jpg",
-      "title": "Failure \u00b7 phone dark",
-      "steps": "Sample scenario \u2192 Failed capture; Dark theme. Recovery controls continue below viewport.",
+      "title": "Failure · phone dark",
+      "steps": "Sample scenario → Failed capture; Dark theme. Recovery controls continue below viewport.",
       "route": "#/status/failed",
       "width": 390,
-      "height": 844,
-      "sha256": "30ed596bcf9594dbe0b284f0577b1c95639cef4ed3f987cd21f562f976317d32"
+      "height": 658,
+      "sha256": "4e26d778e63516a21283fbd5bdba602367919613cc34ec46f73c099ed48093b6"
     },
     {
       "file": "screenshots/20-source-unavailable-desktop.jpg",
       "title": "Unavailable source",
-      "steps": "1440 \u00d7 1000 viewport; Light theme; Sample scenario \u2192 Unavailable source.",
+      "steps": "1440 × 1000 viewport; Light theme; Sample scenario → Unavailable source.",
       "route": "#/reading/unavailable",
       "width": 1440,
-      "height": 1000,
-      "sha256": "e8ccc7024ccab7f7a5f9caaa580ab6c042d69d19d263719c8a7c8eb04be4cbe2"
+      "height": 930,
+      "sha256": "6e99d5dc42cfaef71bbc69c4b5166ef8d203c5b90203888d7bcb66c5cc5ea45e"
     },
     {
       "file": "screenshots/21-deleted-connection-desktop.jpg",
       "title": "Removed target",
-      "steps": "Sample scenario \u2192 Deleted connection, then open \u201cNotes on the attention economy.\u201d The selector alone opens its originating reading.",
+      "steps": "Sample scenario → Deleted connection, then open “Notes on the attention economy.” The selector alone opens its originating reading.",
       "route": "#/reading/deleted?from=attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "58c91f620776e3a56234e7a8607a7dba198c03fe1233da74a47cb2f923c43e99"
+      "height": 930,
+      "sha256": "1e6d90611c58914339752bf5f00bb7d85bfe0b18aefa49679c434245b1ac375f"
     },
     {
       "file": "screenshots/22-sparse-reading-desktop.jpg",
       "title": "Sparse reading",
-      "steps": "Sample scenario \u2192 Sparse archive, then open the only reading. Novelty and relationships state insufficient history.",
+      "steps": "Sample scenario → Sparse archive, then open the only reading. Novelty and relationships state insufficient history.",
       "route": "#/reading/attention",
       "width": 1440,
-      "height": 1000,
-      "sha256": "785a41889a3310999acd4325befcac3d7e4e996ea8e57171c7c5b8bdad4c785e"
+      "height": 930,
+      "sha256": "20b326a5e9028c9d8f31540bdd53849657f2a207891cfd6f204464b5ae697cb2"
     }
   ]
 }

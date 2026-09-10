@@ -1,10 +1,17 @@
 # Connected prototype handoff
 
-Captured September 9, 2026. Brian selected Connected as the direction to continue,
-then requested less decorative copy, tighter whitespace, and a dedicated prototype.
-This package preserves that version for future implementation. It supplies evidence
-for [Phase 2, issue #337](https://github.com/brian-bell/reading-lite/issues/337);
-its remaining design decisions still need review.
+Captured September 9, 2026; recaptured September 10, 2026 after a warm-palette
+revision. Brian selected Connected as the direction to continue, then requested
+less decorative copy, tighter whitespace, and a dedicated prototype. This package
+preserves that version for future implementation. It supplies evidence for
+[Phase 2, issue #337](https://github.com/brian-bell/reading-lite/issues/337); its
+remaining design decisions still need review.
+
+The September 10 revision moves the light-mode surfaces from white and pale stone
+to parchment and cream, adds a tiled paper grain to the page and novelty panel,
+gives cards a faint warm shadow, and prefers Charter/Iowan Old Style for the lead
+and source text. See the [design specification](design-spec.md#color-tokens) for
+the full token table.
 
 ## Start here
 
@@ -24,7 +31,7 @@ its remaining design decisions still need review.
 ## Frozen source
 
 The runnable reference is commit
-[`e121cf1`](https://github.com/brian-bell/reading-lite/commit/e121cf1cd669cd6d84c547bcbcba3abba68b9bab).
+[`dcfe7a0`](https://github.com/brian-bell/reading-lite/commit/dcfe7a04dd04034e581779a53156e0904769a344).
 All screenshots in this package represent that commit's runtime source.
 The handoff documentation is committed afterward so it can name the exact source
 revision without a circular self-reference.
@@ -41,7 +48,7 @@ To inspect the frozen version without changing an active checkout, run from the
 repository root, choosing an unused sibling directory:
 
 ```sh
-git worktree add --detach ../reading-lite-connected-reference e121cf1cd669cd6d84c547bcbcba3abba68b9bab
+git worktree add --detach ../reading-lite-connected-reference dcfe7a04dd04034e581779a53156e0904769a344
 cd ../reading-lite-connected-reference/web
 npm ci
 npm run prototype:connected:dev
