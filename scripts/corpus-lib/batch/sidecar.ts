@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { z } from "zod";
-import { ProcessingAttemptTriggerSchema } from "../../../src/schemas/manifest";
+import {
+  EnrichmentDegradationSchema,
+  ProcessingAttemptTriggerSchema,
+} from "../../../src/schemas/manifest";
 import { acquireReconcileLock } from "./reconcile-lock";
 import type { PersistedSidecar } from "./types";
 
@@ -29,6 +32,7 @@ const SidecarTargetSchema = z
     contentBytes: z.number().int().nonnegative(),
     contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
     extractedBytes: z.number().int().nonnegative().optional(),
+    enrichmentDegradation: EnrichmentDegradationSchema.optional(),
     queryEmbedTokens: z.number().int().nonnegative(),
     // Optional: sidecars written before the similarity snapshot existed must
     // still load, so a run in flight across the upgrade can resume.

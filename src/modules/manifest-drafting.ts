@@ -257,6 +257,7 @@ export interface ContentFacts {
   content_bytes: number;
   content_sha256: string;
   extracted_bytes?: number;
+  enrichment_degradation?: Manifest["enrichment_degradation"];
 }
 
 export interface ReadyFacts {

@@ -109,6 +109,7 @@ const REQUIRED_SCHEMAS = [
   "PostReadingReprocessBody",
   "ListReadingsResponse",
   "Manifest",
+  "EnrichmentDegradation",
   "Tension",
   "TensionKind",
   "TensionJudged",

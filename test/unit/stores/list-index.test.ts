@@ -395,6 +395,24 @@ describe("similarity snapshot projection", () => {
     expect("similarity" in item).toBe(false);
   });
 
+  it("carries enrichment_degradation onto the list row and omits it when absent", () => {
+    const degradation = {
+      source: "youtube" as const,
+      tier: "transcript" as const,
+      code: "OversizedResponseError",
+      message: "response exceeded maxBytes=1000: https://www.youtube.com/api/timedtext",
+    };
+    const withField = manifestToIndexItem(
+      { ...base, enrichment_degradation: degradation } as never,
+      "readings/x",
+    );
+    expect(withField.enrichment_degradation).toEqual(degradation);
+
+    const without = manifestToIndexItem(base as never, "readings/x");
+    expect(without.enrichment_degradation).toBeUndefined();
+    expect("enrichment_degradation" in without).toBe(false);
+  });
+
   it("preserves an empty neighbourhood as count 0 with no score", () => {
     const item = manifestToIndexItem(
       { ...base, similarity: { count: 0, computed_at: "2026-08-22T00:00:00.000Z" } } as never,

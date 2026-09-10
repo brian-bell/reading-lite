@@ -5,7 +5,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
-import type { ContentStatus } from "../../schemas/manifest";
+import type { ContentStatus, EnrichmentDegradation } from "../../schemas/manifest";
 import {
   fetchWithRetry,
   parseRateLimitDelayMs,
@@ -16,6 +16,7 @@ import {
   BadStatusError,
   BlockedHostError,
   FetchTimeoutError,
+  normalizeEnrichmentError,
   OversizedResponseError,
   RedditManualImportError,
 } from "./errors";
@@ -40,7 +41,10 @@ export {
   BadStatusError,
   BlockedHostError,
   FetchTimeoutError,
+  normalizeEnrichmentError,
   OversizedResponseError,
+  redactDurableErrorText,
+  redactUrlUserinfo,
   RedditManualImportError,
   XApiConfigError,
   XApiError,
@@ -82,6 +86,9 @@ export interface ExtractedContent {
   // The Worker ignores it; the local extraction agent tiers on it (a
   // salvage-only static extraction is what earns a headless render).
   salvaged?: boolean;
+  // YouTube only: a swallowed watch-page or transcript miss. Absent when
+  // enrichment succeeded or the URL was not a YouTube watch page.
+  enrichment_degradation?: EnrichmentDegradation;
 }
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -175,7 +182,9 @@ const YOUTUBE_WATCH_HEADERS = {
 // egress at a private address is a finding worth surfacing, not an enrichment
 // miss to swallow. Everything else — hop caps, resolution failures, oversized
 // pages — degrades like a 429 or a 5xx does, because losing the description is
-// always cheaper than losing the reading.
+// always cheaper than losing the reading. Those swallowed misses are recorded
+// on ExtractedContent.enrichment_degradation so a ready floor reading is
+// still findable for later re-enrichment (issue #254).
 async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   const videoId = parseVideoId(url);
   if (!videoId) throw new BadStatusError(url, 400);
@@ -190,6 +199,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   let description: string | undefined;
   let captionBaseUrl: string | undefined;
   let watchRaw: Uint8Array | undefined;
+  let enrichment_degradation: EnrichmentDegradation | undefined;
   try {
     const watch = await fetchBounded(watchUrl, deps, { headers: { ...YOUTUBE_WATCH_HEADERS } });
     watchRaw = watch.raw;
@@ -199,6 +209,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   } catch (e) {
     if (isTerminalFetchGuardError(e)) throw e;
     console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
+    enrichment_degradation = { source: "youtube", tier: "watch_page", ...normalizeEnrichmentError(e) };
   }
 
   // Tier 3 — transcript (best-effort): first caption track, json3.
@@ -210,6 +221,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     } catch (e) {
       if (isTerminalFetchGuardError(e)) throw e;
       console.warn(`youtube transcript fetch failed for ${watchUrl}:`, e);
+      enrichment_degradation ??= { source: "youtube", tier: "transcript", ...normalizeEnrichmentError(e) };
     }
   }
 
@@ -234,6 +246,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     content_status: "captured",
     markdown,
     title: oembed.title,
+    ...(enrichment_degradation === undefined ? {} : { enrichment_degradation }),
   };
 }
 

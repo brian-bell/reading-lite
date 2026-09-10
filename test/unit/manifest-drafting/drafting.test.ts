@@ -501,6 +501,54 @@ describe("readyManifest", () => {
     expect(manifest.connections_neighbourhood_ids).toEqual([]);
   });
 
+  it("persists enrichment_degradation when extraction recorded a YouTube miss", () => {
+    const degradation = {
+      source: "youtube" as const,
+      tier: "watch_page" as const,
+      code: "TooManyRedirectsError",
+      message: "redirect chain exceeded 5 hops: https://www.youtube.com/watch",
+    };
+    const manifest = readyManifest(
+      {
+        identity: IDENTITY,
+        sourceType: "url",
+        summary: SUMMARY,
+        content: {
+          content_type: "application/json",
+          content_status: "captured",
+          content_bytes: 80,
+          content_sha256: "e".repeat(64),
+          extracted_bytes: 40,
+          enrichment_degradation: degradation,
+        },
+        usage: USAGE,
+        attempt: null,
+      },
+      NOW,
+    );
+    expect(manifest.enrichment_degradation).toEqual(degradation);
+  });
+
+  it("omits enrichment_degradation when extraction did not record a miss", () => {
+    const manifest = readyManifest(
+      {
+        identity: IDENTITY,
+        sourceType: "url",
+        summary: SUMMARY,
+        content: {
+          content_type: "text/html",
+          content_status: "captured",
+          content_bytes: 1,
+          content_sha256: "e".repeat(64),
+        },
+        usage: USAGE,
+        attempt: null,
+      },
+      NOW,
+    );
+    expect("enrichment_degradation" in manifest).toBe(false);
+  });
+
   it("refuses a non-succeeded or unfinished attempt", () => {
     const base = {
       identity: IDENTITY,

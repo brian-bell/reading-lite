@@ -16,6 +16,9 @@ export interface ActionDecision {
 //   none           no content action needed (cosmetic dup)
 export function recoveryAction(row: AuditRow): ActionDecision {
   if (row.category === "teaser") return { action: "skip", why: "paywall teaser — only preview content" };
+  if (row.category === "degraded") {
+    return { action: "skip", why: "YouTube enrichment degraded — import via local youtube-import skill" };
+  }
 
   // An orphan-dup (pending or failed) shares a url with a ready reading — the
   // content is already in the corpus, so there's nothing to recover. It's a

@@ -143,6 +143,35 @@ describe("ops corpus audit", () => {
     expect(report.rows.map((row: { reading_id: string }) => row.reading_id)).not.toContain("rd_b_foreign");
   });
 
+  it("--degraded includes ready YouTube enrichment misses without extra R2 reads", async () => {
+    const items: ListItem[] = [
+      ...ITEMS,
+      {
+        id: "rd_yt",
+        url: "https://www.youtube.com/watch?v=abc",
+        status: "ready",
+        created_at: "2026-08-03T00:00:00Z",
+        key_prefix: "readings/rd_yt",
+        enrichment_degradation: {
+          source: "youtube",
+          tier: "watch_page",
+          code: "TooManyRedirectsError",
+          message: "redirect chain exceeded 5 hops: https://www.youtube.com/watch",
+        },
+      },
+    ];
+    const { deps, writes } = makeDeps(items);
+    const code = await corpusAuditCommand.run(
+      ["--tenant", "global", "--out", "reports", "--degraded", "--execute"],
+      deps,
+    );
+    expect(code).toBe(0);
+    const json = JSON.parse(writes[0]!.body);
+    expect(json.rows.some((r: { category: string }) => r.category === "degraded")).toBe(true);
+    expect(writes[1]!.body).toContain("Ready — enrichment degraded");
+    expect(writes[1]!.body).toContain("rd_yt");
+  });
+
   it("rejects an unknown option before reading anything", async () => {
     const { deps, listReads } = makeDeps();
     await expect(corpusAuditCommand.run(["--tenant", "global", "--nope"], deps)).rejects.toThrowError(

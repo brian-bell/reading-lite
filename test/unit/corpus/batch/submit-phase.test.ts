@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  sidecarTargetFor,
   submitBatch,
   submitOpenAIBatch,
 } from "../../../../scripts/corpus-lib/batch/submit-phase";
@@ -81,6 +82,48 @@ function fakeBatch() {
 
 const noopPut = () => vi.fn(async (_k: string, _b: any, _ct: string) => {});
 const noopSave = () => vi.fn(async (_s: any) => {});
+
+describe("sidecarTargetFor — enrichment_degradation", () => {
+  const degradation = {
+    source: "youtube" as const,
+    tier: "watch_page" as const,
+    code: "TooManyRedirectsError",
+    message: "redirect chain exceeded 5 hops: https://www.youtube.com/watch",
+  };
+
+  it("keeps a previously recorded miss when reusing extracted.md", () => {
+    const target = sidecarTargetFor(
+      summarizeTarget({ manifest: { enrichment_degradation: degradation } }),
+    );
+    expect(target.enrichmentDegradation).toEqual(degradation);
+  });
+
+  it("takes a fresh extract's miss over the prior manifest", () => {
+    const freshMiss = {
+      source: "youtube" as const,
+      tier: "transcript" as const,
+      code: "OversizedResponseError",
+      message: "response exceeded maxBytes=1000: https://www.youtube.com/api/timedtext",
+    };
+    const target = sidecarTargetFor(
+      summarizeTarget({
+        manifest: { enrichment_degradation: degradation },
+        fresh: { ...freshContent, enrichment_degradation: freshMiss },
+      }),
+    );
+    expect(target.enrichmentDegradation).toEqual(freshMiss);
+  });
+
+  it("drops a prior miss when a fresh extract did not record one", () => {
+    const target = sidecarTargetFor(
+      summarizeTarget({
+        manifest: { enrichment_degradation: degradation },
+        fresh: freshContent,
+      }),
+    );
+    expect(target.enrichmentDegradation).toBeUndefined();
+  });
+});
 
 describe("submitBatch", () => {
   it("creates a batch with one request per target, custom_id = reading id, params = realtime body", async () => {

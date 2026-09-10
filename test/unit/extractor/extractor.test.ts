@@ -675,6 +675,7 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.markdown).toContain("A short description of the talk.");
     expect(out.markdown).toContain("## Transcript");
     expect(out.markdown).toContain("hello there friends");
+    expect(out.enrichment_degradation).toBeUndefined();
     // Never routed through the generic Readability path.
     expect(calls).toContain(OEMBED);
   });
@@ -691,6 +692,11 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.title).toBe("Greeting World");
     expect(out.markdown).toContain("# Greeting World");
     expect(out.markdown).not.toContain("## Transcript");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "watch_page",
+      code: "RateLimitedError",
+    });
   });
 
   it("propagates RateLimitedError when the oEmbed floor is rate limited", async () => {
@@ -797,6 +803,12 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.content_status).toBe("captured");
     expect(out.title).toBe("Greeting World");
     expect(out.markdown).not.toContain("A short description of the talk.");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "watch_page",
+      code: "TooManyRedirectsError",
+    });
+    expect(out.enrichment_degradation?.message).not.toMatch(/[?&]hop=/);
   });
 
   it("degrades to the oEmbed floor when a watch-page redirect target cannot be resolved", async () => {
@@ -814,6 +826,11 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.content_status).toBe("captured");
     expect(out.title).toBe("Greeting World");
     expect(out.markdown).not.toContain("A short description of the talk.");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "watch_page",
+      code: "DestinationResolutionError",
+    });
   });
 
   it("degrades to the oEmbed floor when the transcript exceeds maxBytes", async () => {
@@ -833,5 +850,11 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.title).toBe("Greeting World");
     expect(out.markdown).toContain("A short description of the talk.");
     expect(out.markdown).not.toContain("## Transcript");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "transcript",
+      code: "OversizedResponseError",
+    });
+    expect(out.enrichment_degradation?.message).not.toMatch(/[?&](v|fmt|lang)=/);
   });
 });

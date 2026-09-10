@@ -535,6 +535,9 @@ function contentFactsOf(target: SidecarTarget): ContentFacts {
     content_bytes: target.contentBytes,
     content_sha256: target.contentSha256,
     ...(target.extractedBytes === undefined ? {} : { extracted_bytes: target.extractedBytes }),
+    ...(target.enrichmentDegradation === undefined
+      ? {}
+      : { enrichment_degradation: target.enrichmentDegradation }),
   };
 }
 

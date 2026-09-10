@@ -2355,8 +2355,16 @@ from the public oEmbed metadata (title + author, the reliable floor), plus a
 best-effort description (from the page's `ytInitialPlayerResponse`) and
 transcript (the first caption track) when YouTube serves them. Unlike Reddit the
 URL summarizes to `ready` directly, but in practice the Worker is usually blocked
-from the watch page and lands the floor only.
+from the watch page and lands the floor only. When watch-page or transcript
+enrichment misses with a non-terminal fetch-guard error, the ready reading
+records `enrichment_degradation` (tier + redacted reason) on the manifest and
+list row. List those candidates with:
 
+```sh
+npm run ops -- corpus audit --tenant "$TENANT" --degraded
+```
+
+Do not reprocess them through the Worker — the same enrichment wall will fire.
 For a full extraction, description plus transcript, run the
 **`youtube-import`** skill locally, which fetches the watch page from your
 residential IP and uses `yt-dlp` for the transcript, then imports the rich

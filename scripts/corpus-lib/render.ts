@@ -13,6 +13,7 @@ export function renderIndexMarkdown(
   // The audit's validated --tenant selector, echoed into copy-paste commands
   // so a follow-up drop targets the same corpus the audit read.
   tenantSelector = "global",
+  degraded: AuditRow[] = [],
 ): string {
   const stranded = pending.filter((p) => p.class === "stranded");
   const orphan = pending.filter((p) => p.class === "orphan-dup");
@@ -25,7 +26,8 @@ export function renderIndexMarkdown(
   md += `- **Pending — stranded** (never completed): ${stranded.length}\n`;
   md += `- **Pending — orphan dup** (url already ready; cosmetic): ${orphan.length}\n`;
   md += `- **Pending — in-flight** (within TTL; no action): ${fresh.length}\n`;
-  md += `- **Ready-but-teaser:** ${teasers.length}\n\n`;
+  md += `- **Ready-but-teaser:** ${teasers.length}\n`;
+  md += `- **Ready — enrichment degraded:** ${degraded.length}\n\n`;
 
   md += `## Failed (${failed.length})\n\n| URL | Reason | Code @ stage | × | Reading ID |\n|---|---|---|---|---|\n`;
   for (const r of failed) md += `| ${esc(r.short)} | ${esc(r.reason)} | ${r.code} @ ${r.stage} | ${r.attempts} | ${r.reading_id} |\n`;
@@ -42,6 +44,9 @@ export function renderIndexMarkdown(
   md += `\n## Ready-but-teaser (${teasers.length})\n\n| URL | Title | Reading ID |\n|---|---|---|\n`;
   for (const r of teasers) md += `| ${esc(r.short)} | ${esc(r.title).slice(0, 40)} | ${r.reading_id} |\n`;
 
-  md += `\n_Generated ${generatedDate}. Failed/pending titles are often blank (never summarized) so URL is the identifier. Teaser scan covers pragmaticengineer + *.substack.com. Full URLs + raw errors in index.json._\n`;
+  md += `\n## Ready — enrichment degraded (${degraded.length})\n\nYouTube readings that became \`ready\` on the oEmbed floor after a swallowed watch-page or transcript miss. Reprocess from the Worker will hit the same wall — upgrade with the local \`youtube-import\` skill.\n\n| URL | Reason | Code | Reading ID |\n|---|---|---|---|\n`;
+  for (const r of degraded) md += `| ${esc(r.short)} | ${esc(r.reason)} | ${esc(r.code)} | ${r.reading_id} |\n`;
+
+  md += `\n_Generated ${generatedDate}. Failed/pending titles are often blank (never summarized) so URL is the identifier. Teaser scan covers pragmaticengineer + *.substack.com. Enrichment-degraded rows appear only with \`--degraded\`. Full URLs + raw errors in index.json._\n`;
   return md;
 }

@@ -77,6 +77,31 @@ export function buildPendingRows(
     .sort((a, b) => (a.class ?? "").localeCompare(b.class ?? "") || (b.age_days ?? 0) - (a.age_days ?? 0));
 }
 
+// Ready readings that recorded a YouTube enrichment miss. Cheap: the field
+// is already on the list row, so this does not fetch manifests or content.
+export function buildDegradedRows(items: ListItem[]): AuditRow[] {
+  return items
+    .filter((i) => i.status === "ready" && i.enrichment_degradation)
+    .map((rep) => {
+      const degradation = rep.enrichment_degradation!;
+      const tier = degradation.tier ?? "unknown";
+      const code = degradation.code ?? "?";
+      return {
+        category: "degraded" as const,
+        url: rep.url,
+        short: shortUrl(rep.url),
+        reading_id: rep.id,
+        key_prefix: rep.key_prefix,
+        attempts: 1,
+        title: rep.title,
+        code,
+        message: degradation.message ?? "",
+        reason: `YouTube ${tier} enrichment degraded — ${code}`,
+      };
+    })
+    .sort(byReasonThenUrl);
+}
+
 export interface StatusTally {
   ready: number;
   pending: number;

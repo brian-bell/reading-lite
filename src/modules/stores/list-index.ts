@@ -66,6 +66,7 @@ export function manifestToIndexItem(
   if (m.error !== undefined) item.error = m.error;
   if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
   if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;
+  if (m.enrichment_degradation !== undefined) item.enrichment_degradation = m.enrichment_degradation;
   return item;
 }
 

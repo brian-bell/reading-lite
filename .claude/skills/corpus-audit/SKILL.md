@@ -1,6 +1,6 @@
 ---
 name: corpus-audit
-description: Read-only health audit of the reading-lite corpus. Inventories every reading that is not "ready" (failed + pending), categorizes each failure by reason, splits both failed and pending into real failures vs orphan-duplicates (a url that already has a ready copy — droppable cruft), and optionally flags paywall-teaser readings. Writes index.json + INDEX.md. Use to see what is broken in the corpus and why, before recovering. Safe to run anytime — never writes to the corpus.
+description: Read-only health audit of the reading-lite corpus. Inventories every reading that is not "ready" (failed + pending), categorizes each failure by reason, splits both failed and pending into real failures vs orphan-duplicates (a url that already has a ready copy — droppable cruft), and optionally flags paywall-teaser readings and ready YouTube enrichment misses. Writes index.json + INDEX.md. Use to see what is broken in the corpus and why, before recovering. Safe to run anytime — never writes to the corpus.
 ---
 
 # corpus-audit
@@ -21,6 +21,7 @@ Writes two files to `--out` (default: cwd):
   - **Pending — orphan dup** — the URL already has a `ready` reading (cosmetic index cruft).
   - **Pending — in-flight** — within the pending TTL; likely still processing, no action.
   - **Ready-but-teaser** — only with `--teasers`.
+  - **Ready — enrichment degraded** — only with `--degraded`. Ready YouTube readings that recorded a swallowed watch-page or transcript miss.
 
 It also prints a JSON summary (totals + counts) to stdout.
 
@@ -44,6 +45,10 @@ npm run ops -- corpus audit --tenant "$TENANT" --out ~/Desktop/reading-lite-extr
 # (reads each one's content — slower).
 npm run ops -- corpus audit --tenant "$TENANT" --teasers --execute
 
+# Also list ready YouTube readings that recorded an enrichment miss
+# (list.json only — no extra R2 reads).
+npm run ops -- corpus audit --tenant "$TENANT" --degraded --execute
+
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
 npm run ops -- corpus audit --tenant "$TENANT" --deep --execute
 
@@ -53,13 +58,14 @@ npm run ops -- corpus audit --tenant global --local --execute
 ```
 
 `--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
-Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
+Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--degraded`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
 
 ## How categories are decided
 - **Failed reason** comes from the manifest error code + the HTTP status embedded in `BadStatusError` messages, with a few hand-verified per-URL overrides (PDF, YouTube, confirmed dead links). Reddit URLs are flagged as needing the `.json` endpoint.
 - **Orphan dup (failed or pending)**: any non-ready reading whose URL *also* has a `ready` reading. The content is already in the corpus, so it can't be recovered — `corpus-recover` maps it to `none`, and the fix is `corpus-drop`. This applies symmetrically to failed and pending readings.
 - **Stranded vs orphan-dup vs in-flight** (pending): a pending URL that *also* has a `ready` reading is an orphan duplicate; one within the pending TTL (900s, mirroring `PENDING_TTL_SECONDS`; measured from `updated_at` when present) is in-flight (`fresh`); only an older pending with no `ready` copy is genuinely stranded.
 - **Teaser** (`--teasers` only): a `ready` pragmaticengineer/substack reading whose extracted content is short (< ~2.5 KB) or short-ish with a paywall-cutoff marker. Subscribe *footers* on full articles are deliberately not enough.
+- **Enrichment degraded** (`--degraded` only): a `ready` reading whose list row carries `enrichment_degradation` (today, a YouTube oEmbed-floor miss). `corpus-recover` maps these to `skip` — upgrade with the `youtube-import` skill, do not reprocess.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-audit.ts` (via `scripts/ops.ts`)

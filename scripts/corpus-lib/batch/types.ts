@@ -1,5 +1,6 @@
 import type { SimilaritySnapshot } from "../../../src/modules/stores/similarity-store";
 import type {
+  EnrichmentDegradation,
   Manifest,
   ProcessingAttemptTrigger,
 } from "../../../src/schemas/manifest";
@@ -91,6 +92,9 @@ export interface SidecarTarget {
   contentBytes: number;
   contentSha256: string;
   extractedBytes?: number;
+  // Optional so summarize-only rewrites keep a previously recorded YouTube
+  // enrichment miss instead of dropping it.
+  enrichmentDegradation?: EnrichmentDegradation;
   // Persisted so the write phase records the full embedding cost even on a
   // resumed run (the similar phase, which computes it, doesn't re-run on resume).
   queryEmbedTokens: number;
