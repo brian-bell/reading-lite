@@ -1,17 +1,22 @@
 # Connected prototype handoff
 
-Captured September 9, 2026; recaptured September 10, 2026 after a warm-palette
-revision. Brian selected Connected as the direction to continue, then requested
-less decorative copy, tighter whitespace, and a dedicated prototype. This package
-preserves that version for future implementation. It supplies evidence for
+Captured September 9, 2026; recaptured twice on September 10, 2026, after a
+warm-palette revision and then an ink-on-paper revision. Brian selected Connected
+as the direction to continue, then requested less decorative copy, tighter
+whitespace, and a dedicated prototype. This package preserves that version for
+future implementation. It supplies evidence for
 [Phase 2, issue #337](https://github.com/brian-bell/reading-lite/issues/337); its
 remaining design decisions still need review.
 
-The September 10 revision moves the light-mode surfaces from white and pale stone
-to parchment and cream, adds a tiled paper grain to the page and novelty panel,
+The warm revision moves the light-mode surfaces from white and pale stone to
+parchment and cream, adds a tiled paper grain to the page and novelty panel,
 gives cards a faint warm shadow, and prefers Charter/Iowan Old Style for the lead
-and source text. See the [design specification](design-spec.md#color-tokens) for
-the full token table.
+and source text. The ink-on-paper revision that followed sets every piece of
+reading matter — reading and page titles, library card titles, relationship
+titles, and content headings — in that same serif at weight 400, leaving Inter
+for UI chrome, and replaces the filled relationship blocks with paper cards
+carrying an accent-ink left rule. See the
+[design specification](design-spec.md#color-tokens) for the full token table.
 
 ## Start here
 
@@ -31,7 +36,7 @@ the full token table.
 ## Frozen source
 
 The runnable reference is commit
-[`dcfe7a0`](https://github.com/brian-bell/reading-lite/commit/dcfe7a04dd04034e581779a53156e0904769a344).
+[`128c7cd`](https://github.com/brian-bell/reading-lite/commit/128c7cdf926cbcbb8206f5b654208aa3456c7d51).
 All screenshots in this package represent that commit's runtime source.
 The handoff documentation is committed afterward so it can name the exact source
 revision without a circular self-reference.
@@ -48,7 +53,7 @@ To inspect the frozen version without changing an active checkout, run from the
 repository root, choosing an unused sibling directory:
 
 ```sh
-git worktree add --detach ../reading-lite-connected-reference dcfe7a04dd04034e581779a53156e0904769a344
+git worktree add --detach ../reading-lite-connected-reference 128c7cdf926cbcbb8206f5b654208aa3456c7d51
 cd ../reading-lite-connected-reference/web
 npm ci
 npm run prototype:connected:dev

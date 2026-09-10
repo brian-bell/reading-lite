@@ -59,8 +59,8 @@ The source of exact cascade behavior is
 and [dedicated frame rules](../../../web/prototypes/connected/styles.css).
 System font differences can change wrapping. An earlier rough edge — key-point
 numbers such as “01” wrapping onto two lines on narrow phones — is fixed
-(`white-space: nowrap` on the number); screenshots captured before
-September 10 may still show it.
+(`white-space: nowrap` on the number), and the current phone screenshots show
+the corrected rendering.
 
 ## Color tokens
 
@@ -87,7 +87,7 @@ chrome (navigation, badges, labels, controls). Relationship cards changed from
 filled accent-soft blocks to paper cards with a hairline border and an
 accent-ink left rule (danger ink for tensions) on a transparent context panel,
 and card hovers replaced the global brightness filter with a border/title
-color shift toward accent. Screenshots predate this revision.
+color shift toward accent. The screenshots reflect this revision.
 
 Connections use a paper card with an accent left rule. Tensions use the same
 card with a danger left rule and an explicit Tensions heading. Removed
