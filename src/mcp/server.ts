@@ -85,7 +85,7 @@ export function bindInternalDispatch(app: {
     input: string,
     init?: RequestInit,
     env?: AppBindings["Bindings"],
-    ctx?: ExecutionContext,
+    ctx?: Context<AppBindings>["executionCtx"],
   ) => Promise<Response> | Response;
 }): (c: Context<AppBindings>) => McpDispatch {
   return (c) => {

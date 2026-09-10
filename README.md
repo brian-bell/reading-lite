@@ -64,6 +64,7 @@ the processing pipeline with queue, Vectorize, and provider fakes.
 
 ```sh
 npm run test:quiet
+npm run types:check
 npm run typecheck
 cd web
 npm test
@@ -73,6 +74,12 @@ npm run build
 `test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
 Workers-pool log noise filtered. CI uses `npm test`. There is no lint script.
 The SPA build includes its TypeScript check.
+
+Worker runtime types are checked in as `worker-configuration.d.ts`. Run
+`npm run types:generate` after changing Wrangler or the compatibility date/flags
+in `wrangler.toml`, and commit the generated file. CI checks freshness with
+`npm run types:check`. Generation excludes bindings; `src/index.ts` retains the
+application's `Env` definition.
 
 ## API and MCP
 

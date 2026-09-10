@@ -111,7 +111,7 @@ describe("ops registry completeness", () => {
 
   it("exposes ops as the only operator entry point in package.json", async () => {
     const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
-    const DEV_SCRIPTS = new Set(["dev", "dev:setup", "typecheck", "test", "test:quiet", "test:watch"]);
+    const DEV_SCRIPTS = new Set(["dev", "dev:setup", "types:generate", "types:check", "typecheck", "test", "test:quiet", "test:watch"]);
     const operatorScripts = Object.keys(pkg.scripts).filter((s) => !DEV_SCRIPTS.has(s));
     expect(operatorScripts).toEqual(["ops"]);
   });

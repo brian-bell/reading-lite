@@ -19,6 +19,7 @@ npm ci
 cp .dev.vars.example .dev.vars   # first setup only
 npm run dev                     # local D1 setup, founder bootstrap, Worker :8787
 npm run test:quiet              # preferred; same suite as npm test
+npm run types:check             # verify checked-in Wrangler runtime types
 npm run typecheck
 
 cd web
@@ -28,10 +29,15 @@ npm test
 npm run build                   # TypeScript check plus Vite build
 ```
 
-There is no lint script. Full Worker verification is `npm test` plus
-`npm run typecheck`; SPA verification is `npm test` plus `npm run build` in
-`web/`. CI runs Worker and Node tests, SPA tests/build, and the ops compatibility
-check on Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
+There is no lint script. Full Worker verification is `npm test`,
+`npm run types:check`, and `npm run typecheck`; SPA verification is `npm test`
+plus `npm run build` in `web/`. CI runs Worker and Node tests, SPA tests/build,
+and the ops compatibility check on Node 20.19.2. Documentation-only changes
+skip runtime CI and deployment.
+
+Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
+changing Wrangler or runtime compatibility date/flags. Commit the generated
+file. Generation excludes bindings; keep the application `Env` in `src/index.ts`.
 
 Use Node 22.12+ for development. Keep the operator machine on Node 20.19.x;
 ops launches `wrangler-dist/cli.js` directly because newer Wrangler wrappers
