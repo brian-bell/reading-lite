@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildDegradedRows,
   buildFailedOrphanDupRows,
   buildFailedRows,
   buildPendingRows,
@@ -103,6 +104,44 @@ describe("buildPendingRows", () => {
       item({ id: "p1", url: "https://a.com/retrying", status: "pending", created_at: old, updated_at: recent }),
     ], NOW);
     expect(rows[0].class).toBe("fresh");
+  });
+});
+
+describe("buildDegradedRows", () => {
+  it("lists ready readings that recorded a YouTube enrichment miss", () => {
+    const rows = buildDegradedRows([
+      item({
+        id: "rd_yt",
+        url: "https://www.youtube.com/watch?v=abc",
+        status: "ready",
+        title: "Greeting World",
+        enrichment_degradation: {
+          source: "youtube",
+          tier: "watch_page",
+          code: "TooManyRedirectsError",
+          message: "redirect chain exceeded 5 hops: https://www.youtube.com/watch",
+        },
+      }),
+      item({ id: "rd_ok", url: "https://example.com/ok", status: "ready" }),
+      item({
+        id: "rd_failed",
+        url: "https://www.youtube.com/watch?v=nope",
+        status: "failed",
+        enrichment_degradation: {
+          source: "youtube",
+          tier: "transcript",
+          code: "OversizedResponseError",
+          message: "oversized",
+        },
+      }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      category: "degraded",
+      reading_id: "rd_yt",
+      code: "TooManyRedirectsError",
+      reason: "YouTube watch_page enrichment degraded — TooManyRedirectsError",
+    });
   });
 });
 

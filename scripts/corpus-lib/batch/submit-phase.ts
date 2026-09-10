@@ -317,6 +317,10 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   }
   const preserveReadyManifest = readySnapshotForBatchFailure(m);
   if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
+  // A fresh extract is authoritative (markdown import is the upgrade and
+  // omits the field). Reusing existing extracted.md keeps the prior signal.
+  const degradation = fresh?.enrichment_degradation ?? (fresh ? undefined : m.enrichment_degradation);
+  if (degradation !== undefined) out.enrichmentDegradation = degradation;
   return out;
 }
 

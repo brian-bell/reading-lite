@@ -10,6 +10,7 @@
 import path from "node:path";
 import { parseArgs } from "node:util";
 import {
+  buildDegradedRows,
   buildFailedOrphanDupRows,
   buildFailedRows,
   buildPendingRows,
@@ -44,6 +45,7 @@ interface AuditArgs {
   out: string;
   remote: boolean;
   teasers: boolean;
+  degraded: boolean;
   deep: boolean;
   execute: boolean;
 }
@@ -59,6 +61,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
         out: { type: "string" },
         local: { type: "boolean", default: false },
         teasers: { type: "boolean", default: false },
+        degraded: { type: "boolean", default: false },
         deep: { type: "boolean", default: false },
         execute: { type: "boolean", default: false },
       },
@@ -72,6 +75,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
     out: values.out ?? ".",
     remote: values.local !== true,
     teasers: values.teasers === true,
+    degraded: values.degraded === true,
     deep: values.deep === true,
     execute: values.execute === true,
   };
@@ -117,12 +121,13 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
   const pending = buildPendingRows(items, deps.now());
   if (args.deep) await deepenStrandedStages(pending, deps.r2, r2Deps);
   const teasers = args.teasers ? await detectTeasers(items, deps.r2, r2Deps) : [];
+  const degraded = args.degraded ? buildDegradedRows(items) : [];
   const tally = tallyStatuses(items);
 
   const outDir = path.resolve(args.out);
   const jsonPath = path.join(outDir, "index.json");
   const mdPath = path.join(outDir, "INDEX.md");
-  const rows = [...failed, ...failedOrphanDups, ...pending, ...teasers];
+  const rows = [...failed, ...failedOrphanDups, ...pending, ...teasers, ...degraded];
   const summary = {
     bucket: args.bucket,
     totals: tally,
@@ -132,6 +137,7 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
     pending_orphan_dups: pending.filter((p) => p.class === "orphan-dup").length,
     pending_fresh: pending.filter((p) => p.class === "fresh").length,
     teasers: teasers.length,
+    degraded: degraded.length,
     out: outDir,
   };
 
@@ -162,6 +168,7 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
       new Date(deps.now()).toISOString().slice(0, 10),
       failedOrphanDups,
       operatorTenantSelector(tenant),
+      degraded,
     ),
   );
   deps.io.stdout(JSON.stringify(summary, null, 2));
@@ -183,6 +190,8 @@ Options:
   --out <dir>       Output directory for index.json + INDEX.md. Default: cwd.
   --teasers         Also scan ready pragmaticengineer/substack readings for
                     paywall teasers (reads their content; slower).
+  --degraded        Also list ready YouTube readings that recorded an
+                    enrichment miss (list.json only; no extra R2 reads).
   --deep            Resolve the true stuck stage of stranded pending readings
                     from their attempt files (slower).
   --local           Read the local miniflare cache instead of remote R2.

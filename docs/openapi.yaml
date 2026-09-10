@@ -1991,6 +1991,28 @@ components:
           type: string
           format: date-time
 
+    EnrichmentDegradation:
+      type: object
+      additionalProperties: false
+      description: >-
+        Present on a ready YouTube reading that landed the oEmbed floor after
+        a swallowed watch-page or transcript miss. Absent after a later full
+        enrichment.
+      required: [source, tier, code, message]
+      properties:
+        source:
+          type: string
+          enum: [youtube]
+        tier:
+          type: string
+          enum: [watch_page, transcript]
+        code:
+          type: string
+          minLength: 1
+        message:
+          type: string
+          minLength: 1
+
     Connection:
       type: object
       additionalProperties: false
@@ -2252,6 +2274,8 @@ components:
           minimum: 0
         content_sha256:
           $ref: "#/components/schemas/Sha256Hex"
+        enrichment_degradation:
+          $ref: "#/components/schemas/EnrichmentDegradation"
         fetched_at:
           type: string
           format: date-time
@@ -2310,6 +2334,8 @@ components:
           $ref: "#/components/schemas/ProcessingAttemptSummary"
         last_attempt:
           $ref: "#/components/schemas/ProcessingAttemptSummary"
+        enrichment_degradation:
+          $ref: "#/components/schemas/EnrichmentDegradation"
 
     ListReadingsResponse:
       type: object

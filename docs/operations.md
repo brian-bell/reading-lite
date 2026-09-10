@@ -742,6 +742,13 @@ must not become one. `www` → apex belongs to a Cloudflare Redirect Rule (301),
 which fires before a request ever reaches the Worker. Nothing in this repo
 configures the `www` records or redirect rules.
 
+Staging follows the same dual-serve shape on its own trio:
+`staging.readinglite.ai` (canonical `WEB_BASE_URL`), `staging.readinglite.app`,
+and `reading-lite-staging.bbell.dev`. Bind those two new hostnames as Pages
+custom domains on project `reading-lite` to the **`staging` preview branch**,
+not `main`, then deploy the Worker so the new routes attach. Sessions stay
+host-scoped; `EMAIL_FROM` stays `reading-lite@bbell.dev`.
+
 #### Verified deployment state vs configuration intent
 
 Repo configuration (S1–S4 in `wrangler.toml` and code) is not the same as live
@@ -812,7 +819,9 @@ removes routes.
    Delete them in the dashboard as part of S9 (see below).
 3. **Pages custom domains.** Bind `readinglite.ai` and `readinglite.app` as
    Pages custom domains on project `reading-lite`, to the `main` branch, with
-   Active certificates. This is an ordering prerequisite, not a cosmetic one:
+   Active certificates. Bind `staging.readinglite.ai` and
+   `staging.readinglite.app` to the **`staging` preview branch** of the same
+   project. This is an ordering prerequisite, not a cosmetic one:
    a Worker route only receives traffic for a hostname that has a proxied DNS
    record in the zone, and the Pages custom-domain binding is what creates that
    record at the apex. Without a proxied record the routes are simply inert
@@ -2391,8 +2400,16 @@ from the public oEmbed metadata (title + author, the reliable floor), plus a
 best-effort description (from the page's `ytInitialPlayerResponse`) and
 transcript (the first caption track) when YouTube serves them. Unlike Reddit the
 URL summarizes to `ready` directly, but in practice the Worker is usually blocked
-from the watch page and lands the floor only.
+from the watch page and lands the floor only. When watch-page or transcript
+enrichment misses with a non-terminal fetch-guard error, the ready reading
+records `enrichment_degradation` (tier + redacted reason) on the manifest and
+list row. List those candidates with:
 
+```sh
+npm run ops -- corpus audit --tenant "$TENANT" --degraded
+```
+
+Do not reprocess them through the Worker — the same enrichment wall will fire.
 For a full extraction, description plus transcript, run the
 **`youtube-import`** skill locally, which fetches the watch page from your
 residential IP and uses `yt-dlp` for the transcript, then imports the rich

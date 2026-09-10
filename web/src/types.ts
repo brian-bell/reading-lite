@@ -126,6 +126,15 @@ export interface SimilaritySnapshot {
   computed_at: string;
 }
 
+// Mirrors EnrichmentDegradationSchema. Present on a ready YouTube reading
+// that landed the oEmbed floor after a swallowed watch-page or transcript miss.
+export interface EnrichmentDegradation {
+  source: "youtube";
+  tier: "watch_page" | "transcript";
+  code: string;
+  message: string;
+}
+
 export interface Manifest {
   id: string;
   url: string;
@@ -157,6 +166,7 @@ export interface Manifest {
   content_bytes: number;
   extracted_bytes?: number;
   content_sha256: string;
+  enrichment_degradation?: EnrichmentDegradation;
 
   fetched_at?: string;
   created_at: string;
@@ -186,6 +196,7 @@ export interface ListReading {
   error?: ManifestError;
   active_attempt?: ProcessingAttemptSummary;
   last_attempt?: ProcessingAttemptSummary;
+  enrichment_degradation?: EnrichmentDegradation;
 }
 
 export interface ListReadingsResponse {

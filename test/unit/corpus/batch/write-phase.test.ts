@@ -221,6 +221,25 @@ describe("writeResults — success path", () => {
     });
   });
 
+  it("writes enrichment_degradation from the sidecar onto a ready manifest", async () => {
+    const r2 = fakeR2();
+    const degradation = {
+      source: "youtube" as const,
+      tier: "transcript" as const,
+      code: "OversizedResponseError",
+      message: "response exceeded maxBytes=1000: https://www.youtube.com/api/timedtext",
+    };
+    await writeResults(
+      sidecar([sidecarTarget({ enrichmentDegradation: degradation })]),
+      [succeeded("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect(m.enrichment_degradation).toEqual(degradation);
+  });
+
   it("writes a ready manifest with the resolved reading fields", async () => {
     const r2 = fakeR2();
     const vec = fakeVectorize();
@@ -233,6 +252,7 @@ describe("writeResults — success path", () => {
     expect(m.tags).toEqual(["ai", "infra"]);
     expect(m.content_type).toBe("text/html");
     expect(m.content_bytes).toBe(42);
+    expect(m.enrichment_degradation).toBeUndefined();
     expect(m.created_at).toBe("2026-01-01T00:00:00.000Z");
     expect(m.updated_at).toBe(NOW);
     // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).

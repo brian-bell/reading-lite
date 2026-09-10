@@ -12,9 +12,15 @@ export interface ListItem {
   error?: { code?: string; stage?: string; message?: string };
   active_attempt?: { stage?: string; trigger?: string; status?: string };
   last_attempt?: { stage?: string; trigger?: string };
+  enrichment_degradation?: {
+    source?: string;
+    tier?: string;
+    code?: string;
+    message?: string;
+  };
 }
 
-export type AuditCategory = "failed" | "pending" | "teaser";
+export type AuditCategory = "failed" | "pending" | "teaser" | "degraded";
 export type PendingClass = "stranded" | "orphan-dup" | "fresh";
 
 // One row of the audit inventory — also the unit corpus-recover consumes.

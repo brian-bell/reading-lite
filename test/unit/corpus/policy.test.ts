@@ -28,6 +28,21 @@ describe("recoveryAction", () => {
     expect(recoveryAction(row({ category: "teaser" })).action).toBe("skip");
   });
 
+  it("skips enrichment-degraded YouTube readings toward youtube-import", () => {
+    expect(
+      recoveryAction(
+        row({
+          category: "degraded",
+          url: "https://www.youtube.com/watch?v=abc",
+          code: "TooManyRedirectsError",
+        }),
+      ),
+    ).toMatchObject({
+      action: "skip",
+      why: /youtube-import/i,
+    });
+  });
+
   it("skips source-rejected readings instead of reprocessing the same extraction", () => {
     expect(
       recoveryAction(row({ code: "SourceRejectedError", message: "teaser of the URL" })),

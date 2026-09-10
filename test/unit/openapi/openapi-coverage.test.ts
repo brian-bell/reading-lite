@@ -109,6 +109,7 @@ const REQUIRED_SCHEMAS = [
   "PostReadingReprocessBody",
   "ListReadingsResponse",
   "Manifest",
+  "EnrichmentDegradation",
   "Tension",
   "TensionKind",
   "TensionJudged",
@@ -155,7 +156,7 @@ describe("docs/openapi.yaml", () => {
     expect(paths["/api/mcp"]).toBeUndefined();
   });
 
-  it("lists readinglite.ai as the canonical production server, then the dual-serve hosts", () => {
+  it("lists readinglite.ai as the canonical production server, then the remaining hosts", () => {
     const servers = loadSpec().servers ?? [];
     expect(servers.map((server) => server.url)).toEqual([
       "https://readinglite.ai",

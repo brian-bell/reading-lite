@@ -318,6 +318,9 @@ export async function processReading(
           ...(extracted.markdown
             ? { extracted_bytes: new TextEncoder().encode(extracted.markdown).byteLength }
             : {}),
+          ...(extracted.enrichment_degradation === undefined
+            ? {}
+            : { enrichment_degradation: extracted.enrichment_degradation }),
         },
         usage: {
           summarization: llm.usage,

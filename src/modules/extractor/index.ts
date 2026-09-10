@@ -5,7 +5,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
-import type { ContentStatus } from "../../schemas/manifest";
+import type { ContentStatus, EnrichmentDegradation } from "../../schemas/manifest";
 import {
   fetchWithRetry,
   parseRateLimitDelayMs,
@@ -16,8 +16,10 @@ import {
   BadStatusError,
   BlockedHostError,
   FetchTimeoutError,
+  normalizeEnrichmentError,
   OversizedResponseError,
   RedditManualImportError,
+  YoutubeEnrichmentParseError,
 } from "./errors";
 import { isRedditThreadUrl } from "./reddit";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
@@ -40,7 +42,10 @@ export {
   BadStatusError,
   BlockedHostError,
   FetchTimeoutError,
+  normalizeEnrichmentError,
   OversizedResponseError,
+  redactDurableErrorText,
+  redactUrlUserinfo,
   RedditManualImportError,
   XApiConfigError,
   XApiError,
@@ -82,6 +87,9 @@ export interface ExtractedContent {
   // The Worker ignores it; the local extraction agent tiers on it (a
   // salvage-only static extraction is what earns a headless render).
   salvaged?: boolean;
+  // YouTube only: a swallowed watch-page or transcript miss. Absent when
+  // enrichment succeeded or the URL was not a YouTube watch page.
+  enrichment_degradation?: EnrichmentDegradation;
 }
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -174,8 +182,12 @@ const YOUTUBE_WATCH_HEADERS = {
 // The one exception is BlockedHostError: a tampered player response steering
 // egress at a private address is a finding worth surfacing, not an enrichment
 // miss to swallow. Everything else — hop caps, resolution failures, oversized
-// pages — degrades like a 429 or a 5xx does, because losing the description is
-// always cheaper than losing the reading.
+// pages, or a 200 consent/bot page with no player response — degrades like a
+// 429 or a 5xx does, because losing the description is always cheaper than
+// losing the reading. Soft parse misses (null player response, empty timedtext)
+// are recorded the same way. Those swallowed misses land on
+// ExtractedContent.enrichment_degradation so a ready floor reading is still
+// findable for later re-enrichment (issue #254).
 async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   const videoId = parseVideoId(url);
   if (!videoId) throw new BadStatusError(url, 400);
@@ -190,15 +202,20 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   let description: string | undefined;
   let captionBaseUrl: string | undefined;
   let watchRaw: Uint8Array | undefined;
+  let enrichment_degradation: EnrichmentDegradation | undefined;
   try {
     const watch = await fetchBounded(watchUrl, deps, { headers: { ...YOUTUBE_WATCH_HEADERS } });
     watchRaw = watch.raw;
     const player = parsePlayerResponse(new TextDecoder("utf-8").decode(watch.raw));
-    description = player?.shortDescription;
-    captionBaseUrl = player?.captionTracks[0]?.baseUrl;
+    if (!player) {
+      throw new YoutubeEnrichmentParseError("watch page did not contain a player response");
+    }
+    description = player.shortDescription;
+    captionBaseUrl = player.captionTracks[0]?.baseUrl;
   } catch (e) {
     if (isTerminalFetchGuardError(e)) throw e;
     console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
+    enrichment_degradation = { source: "youtube", tier: "watch_page", ...normalizeEnrichmentError(e) };
   }
 
   // Tier 3 — transcript (best-effort): first caption track, json3.
@@ -206,10 +223,15 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   if (captionBaseUrl && isYoutubeFetchableHost(captionBaseUrl)) {
     try {
       const tt = await fetchBounded(timedtextJson3Url(captionBaseUrl), deps);
-      transcript = timedtextToText(new TextDecoder("utf-8").decode(tt.raw)) || undefined;
+      const text = timedtextToText(new TextDecoder("utf-8").decode(tt.raw));
+      if (!text) {
+        throw new YoutubeEnrichmentParseError("timedtext response was empty or unparseable");
+      }
+      transcript = text;
     } catch (e) {
       if (isTerminalFetchGuardError(e)) throw e;
       console.warn(`youtube transcript fetch failed for ${watchUrl}:`, e);
+      enrichment_degradation ??= { source: "youtube", tier: "transcript", ...normalizeEnrichmentError(e) };
     }
   }
 
@@ -234,6 +256,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     content_status: "captured",
     markdown,
     title: oembed.title,
+    ...(enrichment_degradation === undefined ? {} : { enrichment_degradation }),
   };
 }
 

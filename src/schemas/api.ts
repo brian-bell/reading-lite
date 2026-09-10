@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isDigestHourLocal, isDigestWeekday, isIanaTimeZone } from "../modules/time-zone";
 import {
   ByUrlPointerSchema,
+  EnrichmentDegradationSchema,
   ManifestErrorSchema,
   ManifestSchema,
   ManifestStatusSchema,
@@ -274,6 +275,7 @@ export const ListIndexItemSchema = z.object({
   error: ManifestErrorSchema.optional(),
   active_attempt: ProcessingAttemptSummarySchema.optional(),
   last_attempt: ProcessingAttemptSummarySchema.optional(),
+  enrichment_degradation: EnrichmentDegradationSchema.optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
 

@@ -51,6 +51,24 @@ describe("ManifestSchema", () => {
     expect(ManifestSchema.parse(baseReady)).toEqual(baseReady);
   });
 
+  it("accepts optional YouTube enrichment_degradation and rejects a bad tier", () => {
+    const degradation = {
+      source: "youtube" as const,
+      tier: "watch_page" as const,
+      code: "TooManyRedirectsError",
+      message: "redirect chain exceeded 5 hops: https://www.youtube.com/watch",
+    };
+    expect(
+      ManifestSchema.parse({ ...baseReady, enrichment_degradation: degradation }).enrichment_degradation,
+    ).toEqual(degradation);
+    expect(() =>
+      ManifestSchema.parse({
+        ...baseReady,
+        enrichment_degradation: { ...degradation, tier: "captions" },
+      }),
+    ).toThrow();
+  });
+
   it("accepts an optional relationship computation time and rejects malformed dates", () => {
     const at = "2026-08-31T12:00:00.000Z";
     expect(

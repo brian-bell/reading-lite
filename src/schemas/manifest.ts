@@ -161,6 +161,19 @@ export const SimilaritySnapshotSchema = z
   .strip();
 export type SimilaritySnapshot = z.infer<typeof SimilaritySnapshotSchema>;
 
+// Written when YouTube watch-page or transcript enrichment misses and the
+// reading still becomes ready on the oEmbed floor. Optional because it
+// postdates the corpus and is absent after a later full enrichment.
+export const EnrichmentDegradationSchema = z
+  .object({
+    source: z.literal("youtube"),
+    tier: z.enum(["watch_page", "transcript"]),
+    code: z.string().min(1),
+    message: z.string().min(1),
+  })
+  .strip();
+export type EnrichmentDegradation = z.infer<typeof EnrichmentDegradationSchema>;
+
 export const ManifestSchema = z
   .object({
     id: z.string().min(1),
@@ -196,6 +209,7 @@ export const ManifestSchema = z
     content_bytes: z.number().int().nonnegative(),
     extracted_bytes: z.number().int().nonnegative().optional(),
     content_sha256: sha256Hex(),
+    enrichment_degradation: EnrichmentDegradationSchema.optional(),
 
     fetched_at: z.string().datetime().optional(),
     created_at: z.string().datetime(),
