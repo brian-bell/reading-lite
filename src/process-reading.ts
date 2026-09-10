@@ -105,14 +105,16 @@ export async function processReading(
     // A purged reading must not get ANY object recreated — not even this
     // attempt log — so a stale queued message for it is dropped whole, before
     // any write or upstream spend. Conflict/takeover cases below still log
-    // their attempt for diagnostics. A confirmed tombstone still sweeps
-    // leftover attempt/checkpoint objects from a prior crashed delivery.
+    // their attempt for diagnostics. A confirmed tombstone runs the full
+    // purge recovery — a crashed prior delivery may have republished the list
+    // row, vector, and by-url pointer after the purge's final sweep, and this
+    // redelivery is the only writer left that can remove them (#357 P1).
     // The purge check returns why: a confirmed tombstone is latched so a
-    // later HEAD throw cannot skip the sweep (same class as
+    // later HEAD throw cannot skip the recovery (same class as
     // commitTerminalManifest's tombstone latch).
     const purged = await readingWasPurged(reader, args);
     if (purged) {
-      await maybeSweepConfirmedTombstone(reader, args, {
+      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args, {
         alreadyConfirmed: purged === "tombstone",
       });
       await releaseReadingSlot(env, tenantId, opId);
@@ -131,7 +133,7 @@ export async function processReading(
     }
     await writeAttemptSafe(reader, args.keyPrefix, attempt);
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeSweepConfirmedTombstone(reader, args);
+      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -167,7 +169,7 @@ export async function processReading(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeSweepConfirmedTombstone(reader, args);
+      await maybeRecoverConfirmedTombstone(reader, similarity, ledger, args);
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -391,7 +393,7 @@ export async function processReading(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, similarity, ledger);
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
@@ -442,7 +444,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e, env, tenantId);
+    await markFailed(reader, args, services, attempt, e, env, tenantId, similarity, ledger);
   }
 }
 
@@ -611,10 +613,16 @@ export async function markDeadLettered(
   const opId = resolveAttemptId(args);
 
   // Purge tombstone before confirmed-absent: after purge deletes the
-  // manifest, a DLQ still has to reap attempt/checkpoint residue. Checking
-  // absence first would skip the sweep once by-id is gone.
+  // manifest, a DLQ still has to reap attempt/checkpoint residue — and any
+  // row/vector a crashed prior delivery republished after the purge's sweep.
+  // Checking absence first would skip the recovery once by-id is gone.
   if (await confirmedPurgeTombstone(reader, args.id)) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+    await recoverPurgedReadingState(
+      reader,
+      similarityStoreFor(env.READINGS_INDEX, tenant, env),
+      vectorLedgerFor(env, tenant),
+      args,
+    );
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
@@ -659,7 +667,17 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId);
+  await markFailed(
+    reader,
+    args,
+    services,
+    attempt,
+    new QueueRetriesExhaustedError(),
+    env,
+    tenantId,
+    similarityStoreFor(env.READINGS_INDEX, tenant, env),
+    vectorLedgerFor(env, tenant),
+  );
   // RateLimitedError keeps the slot held through retries; exhausting them is
   // the definitive pre-summarization failure that must release it. release is
   // a no-op if summarization already committed the reservation.
@@ -674,14 +692,17 @@ async function markFailed(
   e: unknown,
   env: Env,
   tenantId: string,
+  similarity: SimilarityStore | null,
+  ledger: VectorLedger | null,
 ): Promise<void> {
   console.error(e);
   // Same no-recreate gate as markDeadLettered: a mid-flight purge after
   // processReading's opening readingWasPurged check must not write an attempt
-  // log or failed manifest under the prefix. Sweep residue already written.
-  // Fail-open on a throwing HEAD.
+  // log or failed manifest under the prefix. Run the full purge recovery —
+  // residue already written, plus any row/vector/by-url a crashed prior
+  // delivery republished. Fail-open on a throwing HEAD.
   if (await confirmedPurgeTombstone(reader, args.id)) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+    await recoverPurgedReadingState(reader, similarity, ledger, args);
     await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
     return;
   }
@@ -1174,18 +1195,68 @@ async function sweepTombstonePrefixDefensively(
   }
 }
 
-// Confirmed tombstone only — a live foreign attempt can also make
-// readingCanWriteAttemptArtifacts false, and must not lose its prefix.
-// `alreadyConfirmed` skips a second HEAD: fail-open on a throw would undo
-// a confirmation the caller already has (commitTerminalManifest latches
-// the same way).
-async function maybeSweepConfirmedTombstone(
+// The full recovery a delivery performs for a reading whose tombstone is
+// already confirmed. The purge cannot see what a crashed prior delivery
+// republished AFTER its final sweep — the list row, the vector, and (via
+// terminalWriteState's reclaim) the by-url pointer — and the by-id pointer is
+// usually gone by then, so a re-issued DELETE answers not_found. This consumer
+// is the only writer left that can finish the job (#357 review P1).
+//
+// Mirrors purgeReading's own steps and, like the purge, runs them UNGATED on
+// attempt ownership: no attempt owns a purged reading, and the zombie row may
+// carry a different attempt's bookkeeping, so the ordinary gated removal verbs
+// would refuse exactly the row this exists to remove. Reading ids are never
+// reused, so an id-matched row can only be this purged reading's.
+//
+// Failure policy: R2 throws are logged and the remaining steps still run —
+// every step is idempotent and the next delivery retries the lot. The ledger
+// stamp stays fail-closed (same as the removal verbs): losing it silently
+// would leave a `live` row for a deleted vector, so the throw propagates —
+// processReading's outer catch requeues it, markFailed's caller retries the
+// delivery, and the DLQ handler logs and acks per its own contract.
+async function recoverPurgedReadingState(
   reader: ReadingStore,
+  similarity: SimilarityStore | null,
+  ledger: VectorLedger | null,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  if (similarity) {
+    try {
+      await similarity.delete(args.id);
+    } catch (error) {
+      console.error(error);
+    }
+    // Outside the vector try: a failed `deleteByIds` submission must not skip
+    // the stamp (the id must stay addressable either way), and a failed stamp
+    // must not be swallowed by the vector catch.
+    await ledger?.markDeleteSubmitted([args.id], Date.now());
+  }
+  try {
+    // By-url before list row, same as purgeReading: the row is the URL-hash
+    // fallback a purge retry needs, so it must not outlive the pointer here
+    // in the reverse order.
+    await releaseByUrlIfOwned(reader, args);
+    await reader.removeListIndexItemIf(args.id, (item) => item.id === args.id);
+  } catch (error) {
+    console.error(error);
+  }
+  await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+}
+
+// Confirmed tombstone only — a live foreign attempt can also make
+// readingCanWriteAttemptArtifacts false, and must not lose its prefix (or its
+// row and vector). `alreadyConfirmed` skips a second HEAD: fail-open on a
+// throw would undo a confirmation the caller already has
+// (commitTerminalManifest latches the same way).
+async function maybeRecoverConfirmedTombstone(
+  reader: ReadingStore,
+  similarity: SimilarityStore | null,
+  ledger: VectorLedger | null,
   args: ProcessReadingArgs,
   opts: { alreadyConfirmed?: boolean } = {},
 ): Promise<void> {
   if (opts.alreadyConfirmed || (await confirmedPurgeTombstone(reader, args.id))) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+    await recoverPurgedReadingState(reader, similarity, ledger, args);
   }
 }
 

@@ -20,6 +20,7 @@ function envWith(bucket: R2Bucket): Env {
     READINGS_INDEX: {
       upsert: vi.fn(),
       query: vi.fn(),
+      deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
     } as unknown as VectorizeIndex,
     READER_API_TOKEN: "x",
     ANTHROPIC_API_KEY: "x",
@@ -260,6 +261,55 @@ function memoryBucket(
 }
 
 describe("processReading — tombstone prefix sweep on early return", () => {
+  it("removes a zombie list row and vector left by a crashed post-sweep publish (#357 P1)", async () => {
+    // The crash-recovery gap: a prior delivery published AFTER the purge's
+    // final sweep, then died before its post-publish tombstone recheck. The
+    // purge already deleted the by-id pointer and returned 200, so a re-issued
+    // DELETE answers not_found — this redelivery is the only writer left that
+    // can remove the recreated list row, vector, and by-url pointer. A prefix
+    // sweep alone leaves the reading listed and searchable forever.
+    const a = args();
+    const zombieRow = {
+      id: a.id,
+      key_prefix: a.keyPrefix,
+      url: a.url,
+      status: "ready",
+      created_at: a.createdAt,
+    };
+    const { store, bucket } = memoryBucket([
+      ["index/list.json", JSON.stringify({ version: 1, items: [zombieRow] })],
+      [`index/by-url/${a.urlHash}`, JSON.stringify({ id: a.id, key_prefix: a.keyPrefix })],
+      [`${a.keyPrefix}/extracted.md`, "# residue from the crashed delivery"],
+      [`index/deleted/${a.id}`, ""],
+    ]);
+    const env = envWith(bucket);
+    const deleteByIds = (env.READINGS_INDEX as unknown as { deleteByIds: ReturnType<typeof vi.fn> })
+      .deleteByIds;
+
+    await expect(processReading(a, env, services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(deleteByIds).toHaveBeenCalledWith([a.id]);
+    const items = JSON.parse(store.get("index/list.json") ?? '{"items":[]}').items as Array<{
+      id: string;
+    }>;
+    expect(items.some((item) => item.id === a.id)).toBe(false);
+    expect(store.has(`index/by-url/${a.urlHash}`)).toBe(false);
+    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+  });
+
+  it("leaves a by-url pointer already claimed by a different reading alone", async () => {
+    const a = args();
+    const { store, bucket } = memoryBucket([
+      // A later submit of the same URL already owns the slot with a new id.
+      [`index/by-url/${a.urlHash}`, JSON.stringify({ id: "rd_NEWOWNER1", key_prefix: "readings/2026/09/10T000000Z-rd_NEWOWNER1" })],
+      [`index/deleted/${a.id}`, ""],
+    ]);
+
+    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+
+    expect(JSON.parse(store.get(`index/by-url/${a.urlHash}`)!).id).toBe("rd_NEWOWNER1");
+  });
+
   it("sweeps prior residue when readingWasPurged sees a confirmed tombstone", async () => {
     const a = args();
     const { store, bucket } = memoryBucket([

@@ -136,7 +136,7 @@ describe("markDeadLettered", () => {
     expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
   });
 
-  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone is present", async () => {
+  it("recovers full purged state — prefix, list row — and does not recreate failed objects when a purge tombstone is present", async () => {
     const reader = testReadingStore(env);
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
@@ -161,7 +161,11 @@ describe("markDeadLettered", () => {
     expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
     expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
     expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
-    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+    // The list row goes too (#357 review P1): a confirmed tombstone means the
+    // reading is committed to deletion, and this consumer may be the only
+    // writer left that can remove a row the purge cannot see — its removal is
+    // ungated by attempt ownership, mirroring purgeReading's own id-match rule.
+    expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
   it("fail-opens and writes the failed manifest when the purge-tombstone lookup throws", async () => {
