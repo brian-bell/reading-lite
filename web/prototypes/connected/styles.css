@@ -1,18 +1,18 @@
 /* Standalone frame: one compact preview toolbar, followed by the Connected app. */
 .connected-prototype {
   min-height: 100dvh;
-  background: #fafbf9;
-  --toolbar-bg: #fff;
-  --toolbar-ink: #606973;
-  --toolbar-border: #dce0e7;
-  --toolbar-selected: #eef0fb;
+  background: #f7f4ee;
+  --toolbar-bg: #fffdf9;
+  --toolbar-ink: #6d645a;
+  --toolbar-border: #e0d9cd;
+  --toolbar-selected: #ebe9f1;
 }
 .connected-prototype[data-theme=dark] {
-  background: #1c202b;
-  --toolbar-bg: #242938;
-  --toolbar-ink: #afb7c9;
-  --toolbar-border: #3c4256;
-  --toolbar-selected: #3c466c;
+  background: #211e1b;
+  --toolbar-bg: #2a2623;
+  --toolbar-ink: #b3a89b;
+  --toolbar-border: #443d36;
+  --toolbar-selected: #3f3a56;
   color-scheme: dark;
 }
 .connected-prototype > .study-controls {
