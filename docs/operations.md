@@ -2411,6 +2411,11 @@ for setup, exact commands, version/retry semantics, and accounting limitations.
 
 ## Relationship refresh queue plumbing
 
+Hosted processing requires Workers Paid; `usage_model: standard` alone does not
+establish that subscription. Both hosted environments pin `limits.cpu_ms=30_000`.
+See the [CPU diagnosis and recovery procedure](relationship-refresh-recovery.md)
+before resuming a run interrupted by CPU terminations.
+
 `RELATIONSHIP_REFRESH_JOBS` uses dedicated queues
 `reading-lite-staging-refresh` / `reading-lite-staging-refresh-dlq` and
 `reading-lite-refresh` / `reading-lite-refresh-dlq`. `ops staging setup` and
