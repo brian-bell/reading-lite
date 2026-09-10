@@ -5998,6 +5998,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
     expect(leftover.objects).toEqual([]);
     expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
     expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
+    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/deleted/${id}`))).not.toBeNull();
 
     // Idempotent target: once purged, the id answers like it never existed.
     expect(

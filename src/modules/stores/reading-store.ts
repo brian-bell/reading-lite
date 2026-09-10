@@ -313,6 +313,18 @@ export class ReadingStore {
     await this.bucket.delete(this.layout.byIdKey(id));
   }
 
+  // Existence-only purge tombstone (issue #179). Body is not a schema; readers
+  // HEAD/GET the key and never parse it. Overwrite is idempotent.
+  async writePurgeTombstone(id: string): Promise<void> {
+    await this.bucket.put(this.layout.deletedKey(id), new Uint8Array(0), {
+      httpMetadata: { contentType: "application/octet-stream" },
+    });
+  }
+
+  async hasPurgeTombstone(id: string): Promise<boolean> {
+    return (await this.bucket.head(this.layout.deletedKey(id))) != null;
+  }
+
   async listReadingObjects(keyPrefix: string): Promise<ReadingObjectInfo[]> {
     const list = await this.bucket.list({
       prefix: this.layout.readingObjectsPrefix(keyPrefix),

@@ -23,11 +23,30 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
    readings, summarize, then embed the TL;DR. Supported checkpoints avoid
    repeating completed provider stages on recovery.
 5. Record the reading ID as live in D1 `vector_ledger`, then commit the terminal
-   manifest. Recheck tenant eligibility and publish the list row, then the vector.
+   manifest. Recheck tenant eligibility and the per-reading purge tombstone
+   (`index/deleted/{id}`) before by-url reclaim and before the terminal write.
+   A confirmed tombstone skips reclaim and does not write a new terminal
+   object. Skip-write, lost-CAS, and `canWriteManifest=false` after purge
+   still sweep prefix objects (attempt residue) then compensate visibility.
+   `markFailed` / `markDeadLettered` on a confirmed tombstone sweep the
+   prefix and skip recreating a failed manifest, including when the
+   manifest is already gone. `processReading` early-returns do the same
+   sweep on a confirmed tombstone. Otherwise publish the list row, then
+   the vector.
    Confirm URL ownership as part of the terminal write path.
-6. Recheck deletion eligibility and compensate if needed. Send any eligible
-   immediate notification after publication; mail failure does not fail a
-   ready reading.
+6. Recheck deletion eligibility and compensate if needed. A confirmed purge
+   tombstone or `users.status=deleting` compensates with
+   `visibility.removeForDeletedTenant` so a missing list row cannot skip the
+   vector delete. Tombstone compensation also releases this reading's by-url
+   pointer if it still owns the slot. A confirmed tombstone on skip-write,
+   lost-CAS, `canWriteManifest=false`, or after the terminal CAS also deletes
+   objects under the reading prefix so attempt residue or a rewritten
+   manifest is not left unreapable. `markFailed` and `markDeadLettered` sweep
+   the same prefix and skip recreating a failed result. `processReading`
+   early-returns (purged, or canWrite false after attempt writes) sweep on
+   a confirmed tombstone only.
+   Send any eligible immediate notification after publication; mail failure
+   does not fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -79,11 +98,18 @@ manifest, leaving its recorded size/hash inconsistent with stored content. The
 bytes against the manifest before copying fixtures; do not assume ready status
 proves artifact integrity.
 
-`src/reading-purge.ts` removes one reading with vector deletion first, then
-its owned by-url pointer, list row, objects, a final sweep, and by-id pointer
-last. This supports retries after partial failure. Inbound connections remain
-until an explicit corpus sweep. The consumer's missing-manifest purge guard
-prevents stale queued attempts from recreating purged state.
+`src/reading-purge.ts` writes `index/deleted/{id}` after the active-attempt
+guard and before any vector, list, or object delete, then removes the reading
+with vector deletion first, then its owned by-url pointer, list row, objects,
+a final sweep, and by-id pointer last. This supports retries after partial
+failure. Inbound connections remain until an explicit corpus sweep. The
+consumer rechecks the tombstone at the same terminal visibility sites as the
+tenant-deletion fence so a still-running attempt cannot republish after the
+sweep, reclaim by-url, or recreate a terminal manifest. A confirmed tombstone
+on skip-write, lost-CAS, `canWriteManifest=false`, markFailed/DLQ
+(including confirmed-absent after purge), processReading early-returns, or
+after the terminal CAS also deletes prefix objects.
+The missing-manifest purge guard also treats a tombstone as purged.
 
 ## Tenant storage
 

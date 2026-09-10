@@ -101,14 +101,109 @@ describe("markDeadLettered", () => {
 
   it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {
     const reader = testReadingStore(env);
+    await reader.writeExtracted(KEY_PREFIX, "# leftover without a tombstone");
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
-    // No manifest, no list row: a confirmed-absent manifest means this tenant
-    // never owned the reading the job describes (mismatched envelope, or a
-    // reading deleted while the message sat in the retry pipeline).
+    // No tombstone: confirmed-absent is a mismatched envelope, not a purge.
+    // Do not sweep a prefix this tenant may not own as a purged reading.
+    expect(await (await reader.readExtracted(KEY_PREFIX))?.text()).toBe("# leftover without a tombstone");
     expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
+  });
+
+  it("sweeps prefix residue when a purge tombstone is present and the manifest is already gone", async () => {
+    const reader = testReadingStore(env);
+    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge deleted the manifest");
+    await reader.writeAttempt(KEY_PREFIX, {
+      id: `at_${READING_ID}`,
+      trigger: "reprocess",
+      status: "running",
+      started_at: "2026-05-07T12:00:05.000Z",
+      reading_id: READING_ID,
+      url: DLQ_URL,
+      url_hash: DLQ_URL_HASH,
+      key_prefix: KEY_PREFIX,
+      events: [{ stage: "queued", status: "started", at: "2026-05-07T12:00:05.000Z" }],
+    });
+    await reader.writePurgeTombstone(READING_ID);
+
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
+    expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
+  });
+
+  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone is present", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge sweep");
+    await reader.writeAttempt(KEY_PREFIX, {
+      id: `at_${READING_ID}`,
+      trigger: "reprocess",
+      status: "running",
+      started_at: "2026-05-07T12:00:05.000Z",
+      reading_id: READING_ID,
+      url: DLQ_URL,
+      url_hash: DLQ_URL_HASH,
+      key_prefix: KEY_PREFIX,
+      events: [{ stage: "queued", status: "started", at: "2026-05-07T12:00:05.000Z" }],
+    });
+    await reader.writePurgeTombstone(READING_ID);
+
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
+    expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
+  });
+
+  it("fail-opens and writes the failed manifest when the purge-tombstone lookup throws", async () => {
+    const reader = testReadingStore(env);
+    const manifest = pendingManifest();
+    await reader.writeManifest(KEY_PREFIX, manifest);
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+
+    const tombstoneKey = `u/${FOUNDER_TENANT_ID}/index/deleted/${READING_ID}`;
+    const bucket = env.READINGS_BUCKET;
+    let threw = false;
+    const flaky = {
+      get: bucket.get.bind(bucket),
+      put: bucket.put.bind(bucket),
+      delete: bucket.delete.bind(bucket),
+      head: async (key: string) => {
+        if (key === tombstoneKey) {
+          threw = true;
+          throw new Error("tombstone HEAD failed");
+        }
+        return bucket.head(key);
+      },
+      list: bucket.list.bind(bucket),
+    } as unknown as R2Bucket;
+
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await markDeadLettered(
+        args(),
+        { ...(env as unknown as Env), READINGS_BUCKET: flaky },
+        services(),
+        founderTenant(),
+      );
+    } finally {
+      consoleErr.mockRestore();
+    }
+
+    expect(threw).toBe(true);
+    const after = await reader.readManifest(KEY_PREFIX);
+    expect(after?.status).toBe("failed");
+    expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
+    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("failed");
   });
 
   it("writes nothing when the tenant is already deleting", async () => {
@@ -301,6 +396,18 @@ describe("markDeadLettered", () => {
     await markDeadLettered(args(), env as unknown as Env, services(), tenant);
 
     expect(await usage.reserveReading("at_after_absent", Date.now())).toEqual({ ok: true });
+  });
+
+  it("releases a held slot when a purge tombstone is present", async () => {
+    const { tenant, usage, reader } = await quotaUsage();
+    await reader.writeManifest(KEY_PREFIX, pendingManifest());
+    await reader.writePurgeTombstone(READING_ID);
+    expect(await usage.reserveReading(`at_${READING_ID}`, Date.now())).toEqual({ ok: true });
+
+    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
+
+    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+    expect(await usage.reserveReading("at_after_tombstone", Date.now())).toEqual({ ok: true });
   });
 
   it("releases a held slot when a stale dead-lettered attempt no longer owns the reading", async () => {
