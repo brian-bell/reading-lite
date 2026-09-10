@@ -144,14 +144,13 @@ submit, a markdown import, or a lookup. It lives in
   failed reopen cannot erase. Users-row hard-delete, Durable Object teardown,
   and email reuse live in `account-teardown.ts` (issue 195 S4). Residue scan is
   the remaining later slice (S5). Wipe is not
-  **reading purge** (`DELETE /api/readings/:id`). Purge writes an existence-only
-  tombstone at `index/deleted/{id}` before corpus deletes; the terminal
-  publisher rechecks it the same way it rechecks `users.status=deleting`,
-  and does not reclaim by-url or write a new terminal manifest under a
-  confirmed tombstone. A confirmed tombstone on skip-write, lost-CAS,
-  `canWriteManifest=false`, markFailed/DLQ (including confirmed-absent after
-  purge), processReading early-returns, or after a terminal CAS also
-  deletes prefix objects.
+  **reading purge** (`DELETE /api/readings/:id`). Purge writes an existence-only,
+  irrevocable tombstone at `index/deleted/{id}` before any corpus delete; the
+  consumer rechecks it the same way it rechecks `users.status=deleting`, and a
+  confirmed tombstone blocks every write that could resurrect purged state and
+  sweeps residue instead (checkpoint list in
+  [architecture](docs/architecture.md#reprocessing-and-recovery)).
+  Tombstones are retained until the account wipe deletes the tenant root.
   Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 

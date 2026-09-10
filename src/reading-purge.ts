@@ -21,15 +21,37 @@ import type { Manifest } from "./schemas/manifest";
 //    a re-issued DELETE for the same id resolve the key prefix and finish a
 //    partial purge, so it must outlive every other artifact.
 //
-//    Known residual race (deliberate, last-writer-wins per the repo's stance):
-//    TTL staleness is a read-time verdict, not proof the queue consumer
-//    stopped, so a still-running >TTL attempt that pauses between its terminal
-//    manifest CAS and its visibility publish can republish a row/vector after
-//    every sweep. Account deletion (DELETE /api/account, issue 195a) closes
-//    that race at tenant scope by rechecking users.status immediately before
-//    publish. Per-reading purge writes `index/deleted/{id}` before any corpus
-//    delete and `commitTerminalManifest` rechecks it at the same sites (issue
-//    #179).
+//    The in-flight-consumer race (issue #179): TTL staleness is a read-time
+//    verdict, not proof the queue consumer stopped, so a still-running >TTL
+//    attempt that pauses between its terminal manifest CAS and its visibility
+//    publish could republish a row/vector after every sweep. Account deletion
+//    (DELETE /api/account, issue 195a) closes that race at tenant scope by
+//    rechecking users.status immediately before publish; this purge closes it
+//    at reading scope by writing `index/deleted/{id}` before any corpus
+//    delete, which `commitTerminalManifest` rechecks at the same sites.
+//
+//    Three properties of that tombstone to keep in mind:
+//
+//    - IRREVOCABLE. Nothing unsets it: writing it commits this reading to
+//      deletion. A purge that dies right after the put leaves a doomed-but-
+//      present reading — still listed and readable, but any consumer touch
+//      sweeps its prefix instead of writing. The caller got a 5xx and the
+//      re-issued DELETE finishes the job; until then the reading is in a
+//      committed-to-die state, never a recovered one.
+//    - RETAINED FOREVER, deliberately. The consumer that needs it may wake
+//      hours later from the retry/DLQ pipeline, and there is no cheap upper
+//      bound on that, so no step of this purge deletes it. Growth is bounded
+//      by purge count (an empty object per purged reading, same order as the
+//      ledger's `delete_submitted` residue). It lives under the tenant key
+//      root, so the account wipe's objects phase deletes it with everything
+//      else and teardown's confirmed-empty gate is not blocked — pinned by
+//      the tombstone test in test/integration/account-wipe.test.ts.
+//    - FAIL-OPEN ON READ ERRORS. A consumer whose tombstone HEAD throws
+//      publishes anyway (mistaking an outage for a purge would drop live
+//      readings), so the original race survives exactly while R2 HEADs are
+//      erroring — accepted, same trade as 195a's tenant recheck. Once a HEAD
+//      confirms the tombstone, that verdict is latched for the rest of the
+//      call and a later throw cannot undo it.
 //
 // 2. The by-url pointer records *ownership*, not readiness, and an
 //    orphan-duplicate's URL hashes to the same slot as its surviving copy. The
