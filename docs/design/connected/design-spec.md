@@ -65,19 +65,19 @@ Do not reproduce that defect as a design requirement.
 
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
-| `--bg` | `#f7f4ee` | `#211e1b` | Page, with a faint tiled paper grain |
-| `--surface` | `#fffdf9` | `#2a2623` | Cards/navigation |
-| `--ink` | `#2b2723` | `#f0eae1` | Main text |
-| `--muted` | `#736a60` | `#b3a89b` | Secondary text |
-| `--border` | `#e0d9cd` | `#443d36` | Dividers |
-| `--soft` | `#efe9de` | `#332e29` | Secondary fills |
-| `--accent` | `#4b4da6` | `#b6b1ee` | Actions/selection |
-| `--accent-soft` | `#ebe9f1` | `#36324a` | Connections/novelty |
+| `--bg` | `#f1eadd` | `#211e1b` | Page, with a faint tiled paper grain |
+| `--surface` | `#f8f3e9` | `#2a2623` | Cards/navigation |
+| `--ink` | `#2c2620` | `#f0eae1` | Main text |
+| `--muted` | `#78695a` | `#b3a89b` | Secondary text |
+| `--border` | `#dccfbd` | `#443d36` | Dividers |
+| `--soft` | `#e9dfcf` | `#332e29` | Secondary fills |
+| `--accent` | `#4e4aa2` | `#b6b1ee` | Actions/selection |
+| `--accent-soft` | `#e9e2ec` | `#36324a` | Connections/novelty |
 | `--danger` | `#a34133` | `#edac91` | Failure/tension rule |
 | `--positive` | `#3c755f` | `#91d0b2` | Ready/success |
-| `--card-shadow` | warm `rgba(72, 56, 36)` at 4–5% | black at 25–28% | Library cards, forms, status cards |
+| `--card-shadow` | warm `rgba(84, 62, 36)` at 5–7% | black at 25–28% | Library cards, forms, status cards |
 
-Warm revision, September 9, 2026: the palette moved from cool blue-grey to warm stone and charcoal, the page and novelty panel carry a low-opacity SVG grain, cards take a faint warm shadow, and the lead and source paragraphs use Charter, Iowan Old Style, Palatino, then Georgia. The screenshots predate this revision.
+Warm revision, September 9, 2026: the palette moved from cool blue-grey to parchment and cream in light mode (no pure white surfaces remain) and warm charcoal in dark mode, the page and novelty panel carry a low-opacity SVG grain, cards take a faint warm shadow, and the lead and source paragraphs use Charter, Iowan Old Style, Palatino, then Georgia. The screenshots predate this revision.
 
 Connections use a filled accent surface. Tensions use a neutral surface with a
 colored left rule and an explicit Tensions heading. Removed connections use a

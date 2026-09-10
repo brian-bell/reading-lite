@@ -1,11 +1,11 @@
 /* Standalone frame: one compact preview toolbar, followed by the Connected app. */
 .connected-prototype {
   min-height: 100dvh;
-  background: #f7f4ee;
-  --toolbar-bg: #fffdf9;
-  --toolbar-ink: #6d645a;
-  --toolbar-border: #e0d9cd;
-  --toolbar-selected: #ebe9f1;
+  background: #f1eadd;
+  --toolbar-bg: #f8f3e9;
+  --toolbar-ink: #6e6053;
+  --toolbar-border: #dccfbd;
+  --toolbar-selected: #e9e2ec;
 }
 .connected-prototype[data-theme=dark] {
   background: #211e1b;
