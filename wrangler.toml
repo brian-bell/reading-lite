@@ -156,6 +156,17 @@ migrations_dir = "migrations"
 name = "reading-lite-staging"
 workers_dev = true
 
+# Retain cron, queue, and application logs for diagnosis after live tails disconnect.
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+# Lookup URLs and searches must not be retained in invocation logs.
+redact_query_string = true
+
+[env.staging.observability.logs]
+enabled = true
+invocation_logs = true
+
 [env.staging.vars]
 # Staging rollout: two judgements per night; production remains disabled.
 RELATIONSHIP_REFRESH = "1"
@@ -350,6 +361,17 @@ zone_name = "bbell.dev"
 
 [env.production]
 name = "reading-lite"
+
+# Retain cron, queue, and application logs for diagnosis after live tails disconnect.
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
+# Lookup URLs and searches must not be retained in invocation logs.
+redact_query_string = true
+
+[env.production.observability.logs]
+enabled = true
+invocation_logs = true
 
 [env.production.vars]
 # Enabled after the accepted 2026-09-08 staging nightly run.

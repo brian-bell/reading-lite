@@ -182,17 +182,20 @@ describe("relationship refresh scan", () => {
     expect(judges()).toHaveLength(2);
   });
 
-  it("recovers a lost continuation from the persisted cursor on another cron delivery", async () => {
+  it("recovers a lost continuation through queue retry without another cron delivery", async () => {
     await seed(REFRESH_SCAN_SIZE + 1);
     await scheduleRelationshipRefresh(runtime, NOW);
     const body = queued.shift()!;
     vi.mocked(runtime.RELATIONSHIP_REFRESH_JOBS!.send).mockRejectedValueOnce(new Error("continuation lost"));
     expect((await deliver(body)).retry).toHaveBeenCalledOnce();
-    await deliver(body); // stale retry cannot repeat its committed scan
-    expect(queued).toHaveLength(0);
-    await scheduleRelationshipRefresh(runtime, NOW);
+    expect((await deliver(body)).ack).toHaveBeenCalledOnce();
+    expect(queued).toHaveLength(1);
+    expect(query).toHaveBeenCalledTimes(REFRESH_SCAN_SIZE);
     await drainScans();
     expect(query).toHaveBeenCalledTimes(REFRESH_SCAN_SIZE + 1);
+    expect(judges()).toHaveLength(2);
+    await deliver(body); // A stale retry after the cap must not restart work.
+    expect(queued.filter(x => x.kind === "scan")).toHaveLength(0);
     expect(judges()).toHaveLength(2);
   });
 

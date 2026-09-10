@@ -261,17 +261,28 @@ describe("ops staging smoke", () => {
     await expect(stagingSmokeCommand.run([], deps)).rejects.toThrow(UsageError);
   });
 
-  it("aborts attempt polling immediately when the reading GET is unauthorized", async () => {
+  it.each([
+    "unauthorized",
+    "submit raw_only",
+    "import raw_only",
+    "reprocess raw_only",
+    "submit empty",
+    "import empty",
+    "reprocess empty",
+    "submit missing",
+  ])("rejects smoke with %s", async (scenario) => {
     const { io: cio } = io();
     let submittedReads = 0;
     let sleeps = 0;
+    const stageFor = (id: string) =>
+      id === "rd_import" ? "import" : submittedReads > 1 ? "reprocess" : "submit";
     const manifest = (id: string) => ({
       id,
       url: `https://example.test/${id}`,
       url_hash: "a".repeat(64),
       status: "ready",
       content_type: "text/html",
-      content_status: "captured",
+      content_status: scenario === `${stageFor(id)} raw_only` ? "raw_only" : "captured",
       content_bytes: 10,
       content_sha256: "b".repeat(64),
       created_at: "2026-08-01T00:00:00.000Z",
@@ -306,6 +317,10 @@ describe("ops staging smoke", () => {
           status: 202,
         });
       }
+      if (url.endsWith("/content")) {
+        const stage = url.includes("rd_import") ? "import" : submittedReads > 1 ? "reprocess" : "submit";
+        return new Response(scenario === `${stage} empty` ? "  \n" : "# Extracted article", { status: scenario === "submit missing" ? 404 : 200 });
+      }
       if (url.endsWith("/api/readings/rd_import")) {
         return new Response(JSON.stringify(manifest("rd_import")), { status: 200 });
       }
@@ -313,6 +328,19 @@ describe("ops staging smoke", () => {
         submittedReads += 1;
         if (submittedReads === 1) {
           return new Response(JSON.stringify(manifest("rd_submit")), { status: 200 });
+        }
+        if (scenario.startsWith("reprocess ")) {
+          return Response.json({
+            ...manifest("rd_submit"),
+            updated_at: "2026-08-01T00:06:00.000Z",
+            last_attempt: {
+              id: "at_reprocess",
+              trigger: "reprocess",
+              status: "succeeded",
+              started_at: "2026-08-01T00:05:00.000Z",
+              finished_at: "2026-08-01T00:06:00.000Z",
+            },
+          });
         }
         return new Response("unauthorized", { status: 401 });
       }
@@ -331,9 +359,13 @@ describe("ops staging smoke", () => {
 
     await expect(
       stagingSmokeCommand.run(["--provider", "openai", "--execute"], deps),
-    ).rejects.toThrow("GET /api/readings/rd_submit: HTTP 401 unauthorized");
+    ).rejects.toThrow(scenario === "unauthorized"
+      ? "GET /api/readings/rd_submit: HTTP 401 unauthorized"
+      : scenario.endsWith("raw_only") ? `${scenario.split(" ")[0]} expected captured article text, got raw_only`
+      : scenario.endsWith("empty") ? `${scenario.split(" ")[0]} extracted article text was empty`
+      : "submit extracted article request failed: HTTP 404");
     expect(sleeps).toBe(0);
-    expect(submittedReads).toBe(2);
+    expect(submittedReads).toBe(scenario === "unauthorized" || scenario.startsWith("reprocess ") ? 2 : 1);
   });
 });
 
