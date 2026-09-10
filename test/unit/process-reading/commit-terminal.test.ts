@@ -9,6 +9,7 @@ import {
   ReadingStore,
 } from "../../../src/modules/stores/reading-store";
 import { SimilarityStore } from "../../../src/modules/stores/similarity-store";
+import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
 import type {
   Manifest,
@@ -564,5 +565,399 @@ describe("commitTerminalManifest", () => {
     expect(out).toEqual({ committed: true, published: false });
     expect(checks).toBe(2);
     expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+  });
+
+  it("21: purge tombstone skips terminal write, markLive, publish, restore, and by-url reclaim", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    await reader.writePurgeTombstone(ID);
+    const { similarity, vectors } = fakeVectorize();
+    const markLive = vi.fn(async () => {});
+    const ledger = {
+      markLive,
+      markDeleteSubmitted: vi.fn(async () => {}),
+    } as unknown as VectorLedger;
+
+    const published = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+    expect(published).toEqual({ committed: false, published: false });
+    expect(markLive).not.toHaveBeenCalled();
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const append = vi.spyOn(reader, "appendOrReplaceListIndexItem");
+    const restored = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+    expect(restored).toEqual({ committed: false, published: false });
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it("22: tombstone appears after pre-write check and terminal CAS → delete prefix objects", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("23: tombstone appears between restore check and restore write → compensate remove", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("23b: lost-CAS tombstone compensate throw is swallowed on the success path", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteByUrlPointer").mockRejectedValue(new Error("by-url delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+      }),
+    ).resolves.toEqual({ committed: false, published: false });
+
+    consoleErr.mockRestore();
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("24: tombstone lookup throw after terminal CAS fail-opens and still publishes", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(reader, "hasPurgeTombstone").mockRejectedValue(new Error("R2 hiccup"));
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: true, published: true });
+    expect((await reader.readManifest(PREFIX))?.status).toBe("ready");
+    expect(await reader.findListIndexItem(ID)).not.toBeNull();
+    expect(vectors.has(ID)).toBe(true);
+  });
+
+  it("25: tombstone compensate deletes the vector even when the list row is already gone", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.writePurgeTombstone(ID);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("26: confirmed tombstone then later HEAD throw still skips terminal write and publish", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    const { similarity, vectors } = fakeVectorize();
+    const markLive = vi.fn(async () => {});
+    const ledger = {
+      markLive,
+      markDeleteSubmitted: vi.fn(async () => {}),
+    } as unknown as VectorLedger;
+    let checks = 0;
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      if (checks === 1) return true;
+      throw new Error("R2 hiccup");
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+
+    consoleErr.mockRestore();
+    expect(out).toEqual({ committed: false, published: false });
+    expect(markLive).not.toHaveBeenCalled();
+    expect(checks).toBe(1);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("27: pointer-missing + tombstone does not reclaim by-url", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writePurgeTombstone(ID);
+    const pointerWrite = vi.spyOn(reader, "writeByUrlPointer");
+    const { similarity, vectors } = fakeVectorize();
+    const markLive = vi.fn(async () => {});
+    const ledger = {
+      markLive,
+      markDeleteSubmitted: vi.fn(async () => {}),
+    } as unknown as VectorLedger;
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+      ledger,
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(pointerWrite).not.toHaveBeenCalled();
+    expect(markLive).not.toHaveBeenCalled();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("29: post-CAS tombstone deletes recreated prefix objects and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeExtracted(PREFIX, "# leftover after purge sweep");
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: true, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("30: prefix-delete throw still compensates list, vector, and by-url", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteReadingObjects").mockRejectedValue(new Error("R2 prefix delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+      }),
+    ).resolves.toEqual({ committed: true, published: false });
+
+    consoleErr.mockRestore();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("31: by-url delete throw still compensates list, vector, and ledger", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    const markDeleteSubmitted = vi.fn(async () => {});
+    const ledger = {
+      markLive: vi.fn(async () => {}),
+      markDeleteSubmitted,
+    } as unknown as VectorLedger;
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+    vi.spyOn(reader, "deleteByUrlPointer").mockRejectedValue(new Error("R2 by-url delete failed"));
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+        claimMissingPointer: true,
+        defensive: false,
+        vector: vectorOpt(),
+        ledger,
+      }),
+    ).resolves.toEqual({ committed: true, published: false });
+
+    consoleErr.mockRestore();
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+    expect(markDeleteSubmitted).toHaveBeenCalled();
+    expect(await reader.readByUrlPointer(URL_HASH)).toEqual({ id: ID, key_prefix: PREFIX });
+  });
+
+  it("32: lost-CAS + confirmed tombstone deletes prefix objects and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
+    await reader.writeExtracted(PREFIX, "# attempt residue after purge sweep");
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.appendOrReplaceListIndexItem(
+      manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX),
+    );
+    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+    let checks = 0;
+    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
+      checks += 1;
+      return checks > 1;
+    });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(checks).toBe(2);
+    expect(await reader.readManifest(PREFIX)).toBeNull();
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.findListIndexItem(ID)).toBeNull();
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
+  });
+
+  it("33: canWriteManifest-false + tombstone sweeps prefix residue and compensates visibility", async () => {
+    const reader = newReader();
+    await reader.writeExtracted(PREFIX, "# summarize-stage residue after purge");
+    await reader.writeAttempt(PREFIX, {
+      id: ATTEMPT,
+      trigger: "submit",
+      status: "running",
+      started_at: "2026-06-19T00:00:00.000Z",
+      reading_id: ID,
+      url: URL,
+      url_hash: URL_HASH,
+      key_prefix: PREFIX,
+      events: [{ stage: "summarize", status: "started", at: "2026-06-19T00:00:00.000Z" }],
+    });
+    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
+    await reader.writePurgeTombstone(ID);
+    const { similarity, vectors } = fakeVectorize();
+    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
+
+    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
+      claimMissingPointer: true,
+      defensive: false,
+      vector: vectorOpt(),
+    });
+
+    expect(out).toEqual({ committed: false, published: false });
+    expect(await reader.readExtracted(PREFIX)).toBeNull();
+    expect(await reader.listAttempts(PREFIX)).toEqual([]);
+    expect(await reader.listReadingObjects(PREFIX)).toEqual([]);
+    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
+    expect(vectors.has(ID)).toBe(false);
   });
 });

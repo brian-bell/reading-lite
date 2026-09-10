@@ -144,7 +144,14 @@ submit, a markdown import, or a lookup. It lives in
   failed reopen cannot erase. Users-row hard-delete, Durable Object teardown,
   and email reuse live in `account-teardown.ts` (issue 195 S4). Residue scan is
   the remaining later slice (S5). Wipe is not
-  **reading purge** (`DELETE /api/readings/:id`). Production and staging
+  **reading purge** (`DELETE /api/readings/:id`). Purge writes an existence-only,
+  irrevocable tombstone at `index/deleted/{id}` before any corpus delete. Writers
+  recheck it the same way the consumer rechecks `users.status=deleting` and
+  skip the write; they do not finish the DELETE. Last-writer-wins residue after
+  a crashed post-sweep publish is accepted (see
+  [architecture](docs/architecture.md#reprocessing-and-recovery)).
+  Tombstones are retained until the account wipe deletes the tenant root.
+  Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
 
 ## Digest delivery

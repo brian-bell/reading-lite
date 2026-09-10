@@ -512,6 +512,29 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
+  it("deletes purge tombstones with the rest of the tenant root, so teardown's empty-prefix gate is not blocked (#179)", async () => {
+    await seedTenantObjects([ID_A]);
+    // A reading purged earlier in this tenant's life: its objects are long
+    // gone but its `index/deleted/{id}` tombstone is retained forever — until
+    // the account wipe, whose objects phase deletes the whole key root. If
+    // this test starts failing because tombstones moved outside the root,
+    // teardown's confirmed-empty check breaks with it.
+    const reader = testReadingStore(env, otherTenant());
+    await reader.writePurgeTombstone(ID_B);
+    expect(await listPrefixKeys(`${PREFIX}index/deleted/`)).toEqual([
+      `${PREFIX}index/deleted/${ID_B}`,
+    ]);
+    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+
+    const result = await runWipeToCompletion(
+      accountWipeEnvelopeV1({ tenantId: TENANT }),
+      { t: NOW_MS },
+    );
+
+    expect(result.kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+  });
+
   it("submits Vectorize deleteByIds while R2 objects still exist, then empties the prefix", async () => {
     await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);

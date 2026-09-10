@@ -332,6 +332,65 @@ describe("activateAttempt", () => {
     consoleErr.mockRestore();
   });
 
+  it("tombstone before writes: skips activation, writes nothing, does not enqueue", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const { queue, sent } = captureQueue();
+    await reader.writePurgeTombstone(ID);
+
+    const result = await activateAttempt(
+      reader,
+      queue,
+      services(),
+      baseActivation({ writeByIdPointer: false }),
+    );
+
+    expect(result).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
+    expect(sent).toHaveLength(0);
+    await expect(reader.readManifest(KEY_PREFIX)).resolves.toBeNull();
+    await expect(reader.findListIndexItem(ID)).resolves.toBeNull();
+    await expect(reader.readByIdPointer(ID)).resolves.toBeNull();
+  });
+
+  it("tombstone during rollback: does not recreate a list row after a failed enqueue", async () => {
+    // Purge can finish between the pending write and the queue-send catch.
+    // Rollback must not resurrect the row the tombstone just forbade.
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const queue = {
+      send: vi.fn(async () => {
+        await reader.writePurgeTombstone(ID);
+        await reader.removeListIndexItemIf(ID, (item) => item.id === ID);
+        await reader.deleteReadingObjects(KEY_PREFIX);
+        throw new Error("queue send failed");
+      }),
+    } as unknown as Queue<ProcessReadingEnvelopeV1>;
+
+    const result = await activateAttempt(
+      reader,
+      queue,
+      services(),
+      baseActivation({ writeByIdPointer: false }),
+    );
+
+    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
+    await expect(reader.readManifest(KEY_PREFIX)).resolves.toBeNull();
+    await expect(reader.findListIndexItem(ID)).resolves.toBeNull();
+    consoleErr.mockRestore();
+  });
+
+  it("tombstone HEAD throw fail-opens and still activates", async () => {
+    const reader = new ReadingStore(env.READINGS_BUCKET);
+    const { queue, sent } = captureQueue();
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(reader, "hasPurgeTombstone").mockRejectedValue(new Error("R2 hiccup"));
+
+    const result = await activateAttempt(reader, queue, services(), baseActivation());
+
+    expect(result.kind).toBe("activated");
+    expect(sent).toHaveLength(1);
+    consoleErr.mockRestore();
+  });
+
   it("response derives status: a ready 'next' manifest returns status 'ready' in the activated outcome", async () => {
     const reader = new ReadingStore(env.READINGS_BUCKET);
     const { queue } = captureQueue();

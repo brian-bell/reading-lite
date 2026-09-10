@@ -39,6 +39,8 @@ function fakeReader(overrides: Partial<Record<keyof ReadingStore, unknown>>): Re
     deleteByUrlPointer: vi.fn(async () => {}),
     deleteReadingObjects: async () => 0,
     deleteByIdPointer: async () => {},
+    writePurgeTombstone: async () => {},
+    hasPurgeTombstone: async () => false,
     ...overrides,
   } as unknown as ReadingStore;
 }
@@ -230,5 +232,104 @@ describe("purgeReading vector ledger", () => {
     const out = await purgeReading({ reader, similarity }, ID, OPTS);
     expect(out.kind).toBe("purged");
     expect(deletes).toBe(2);
+  });
+});
+
+// Issue #179. The per-reading publisher fence: a tombstone at
+// index/deleted/{id}, written after the active-attempt 409 guard and before
+// any corpus delete. Existence-only; overwrite on retry.
+describe("purgeReading tombstone (#179)", () => {
+  it("does not write a tombstone when an attempt is still running", async () => {
+    const writePurgeTombstone = vi.fn(async () => {});
+    const deleteObjects = vi.fn(async () => 0);
+    const reader = fakeReader({
+      readManifest: async () => ({
+        ...manifest(),
+        status: "pending",
+        error: undefined,
+        active_attempt: {
+          id: "at_1",
+          trigger: "submit",
+          status: "running",
+          started_at: NOW,
+        },
+      }),
+      writePurgeTombstone,
+      deleteReadingObjects: deleteObjects,
+    });
+    const out = await purgeReading({ reader, similarity: null }, ID, OPTS);
+    expect(out).toEqual({ kind: "conflict", reason: "active_attempt" });
+    expect(writePurgeTombstone).not.toHaveBeenCalled();
+    expect(deleteObjects).not.toHaveBeenCalled();
+  });
+
+  it("writes the tombstone before any vector, list, or object deletes", async () => {
+    const events: string[] = [];
+    const reader = fakeReader({
+      writePurgeTombstone: async () => {
+        events.push("tombstone");
+      },
+      deleteReadingObjects: async () => {
+        events.push("objects");
+        return 0;
+      },
+      removeListIndexItemIf: async () => {
+        events.push("list");
+      },
+      deleteByIdPointer: async () => {
+        events.push("by-id");
+      },
+    });
+    const similarity = {
+      delete: async () => {
+        events.push("vector");
+      },
+    } as unknown as NonNullable<Parameters<typeof purgeReading>[0]["similarity"]>;
+    const ledger = {
+      markLive: async () => {
+        throw new Error("a purge never marks a vector live");
+      },
+      markDeleteSubmitted: async () => {
+        events.push("ledger");
+      },
+    };
+    const out = await purgeReading({ reader, similarity, ledger }, ID, OPTS);
+    expect(out.kind).toBe("purged");
+    expect(events[0]).toBe("tombstone");
+    expect(events.indexOf("tombstone")).toBeLessThan(events.indexOf("vector"));
+    expect(events.indexOf("tombstone")).toBeLessThan(events.indexOf("list"));
+    expect(events.indexOf("tombstone")).toBeLessThan(events.indexOf("objects"));
+  });
+
+  it("aborts before deleting anything when the tombstone put throws", async () => {
+    const deleteObjects = vi.fn(async () => 0);
+    const similarityDelete = vi.fn(async () => {});
+    const reader = fakeReader({
+      writePurgeTombstone: async () => {
+        throw new Error("r2 put failed");
+      },
+      deleteReadingObjects: deleteObjects,
+      removeListIndexItemIf: async () => {
+        throw new Error("list should not be touched");
+      },
+    });
+    const similarity = {
+      delete: similarityDelete,
+    } as unknown as NonNullable<Parameters<typeof purgeReading>[0]["similarity"]>;
+    await expect(purgeReading({ reader, similarity }, ID, OPTS)).rejects.toThrow("r2 put failed");
+    expect(deleteObjects).not.toHaveBeenCalled();
+    expect(similarityDelete).not.toHaveBeenCalled();
+  });
+
+  it("overwrites the same tombstone key on retry", async () => {
+    const writes: string[] = [];
+    const reader = fakeReader({
+      writePurgeTombstone: async (id: string) => {
+        writes.push(id);
+      },
+    });
+    expect((await purgeReading({ reader, similarity: null }, ID, OPTS)).kind).toBe("purged");
+    expect((await purgeReading({ reader, similarity: null }, ID, OPTS)).kind).toBe("purged");
+    expect(writes).toEqual([ID, ID]);
   });
 });
