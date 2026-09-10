@@ -10,8 +10,8 @@
 #                         used for end-to-end manual smoke tests that need Queue,
 #                         R2, and Vectorize.
 #   * production        — used by `npm run ops -- deploy worker --env production`,
-#                         canonical host readinglite.ai; also readinglite.app;
-#                         reading-lite.bbell.dev retained for compatibility/rollback.
+#                         canonical host readinglite.ai; also readinglite.app.
+#                         reading-lite.bbell.dev is retired (S9).
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
@@ -178,7 +178,7 @@ RELATIONSHIP_REFRESH = "1"
 REFRESH_MAX_JUDGEMENTS = "2"
 APP_ENV = "staging"
 CORS_ALLOWED_ORIGINS = ""
-MCP_ALLOWED_ORIGINS = "https://reading-lite-staging.bbell.dev,https://staging.readinglite.ai,https://staging.readinglite.app"
+MCP_ALLOWED_ORIGINS = "https://staging.readinglite.ai,https://staging.readinglite.app"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -349,22 +349,10 @@ name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
 # Worker routes scoped to API, health, and MCP; Pages on the same hostname
-# serves the SPA. Staging dual-serves reading-lite-staging.bbell.dev plus
-# staging.readinglite.ai (canonical) and staging.readinglite.app. Bind the
-# new hostnames as Pages custom domains on the `staging` preview branch
-# before or with this deploy. This file does not flip live DNS.
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/api/*"
-zone_name = "bbell.dev"
-
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/health"
-zone_name = "bbell.dev"
-
-[[env.staging.routes]]
-pattern = "reading-lite-staging.bbell.dev/mcp*"
-zone_name = "bbell.dev"
-
+# serves the SPA. Staging dual-serves staging.readinglite.ai (canonical) and
+# staging.readinglite.app. The reading-lite-staging.bbell.dev host is retired
+# (S9); removing these blocks does not delete live Cloudflare routes.
+# This file does not flip live DNS.
 [[env.staging.routes]]
 pattern = "staging.readinglite.ai/api/*"
 zone_name = "readinglite.ai"
@@ -418,7 +406,7 @@ RELATIONSHIP_REFRESH = "1"
 REFRESH_MAX_JUDGEMENTS = "2"
 APP_ENV = "production"
 CORS_ALLOWED_ORIGINS = ""
-MCP_ALLOWED_ORIGINS = "https://reading-lite.bbell.dev,https://readinglite.ai,https://readinglite.app"
+MCP_ALLOWED_ORIGINS = "https://readinglite.ai,https://readinglite.app"
 PENDING_TTL_SECONDS = "900"
 FETCH_TIMEOUT_MS = "20000"
 FETCH_MAX_BYTES = "10485760"
@@ -443,8 +431,8 @@ EMAIL_TO = "bellbm@gmail.com"
 # Reading Lite <noreply@readinglite.app> on the verified readinglite.app
 # Resend domain. Rollback for the sender is reverting EMAIL_FROM to
 # reading-lite@bbell.dev and deploying. Rollback for emitted links is putting
-# the old host back on WEB_BASE_URL; the reading-lite.bbell.dev routes are
-# still here, so that host keeps serving either way.
+# a public host back on WEB_BASE_URL. The reading-lite.bbell.dev host is
+# retired (S9); restoring it needs routes, Pages, and DNS, not this var.
 WEB_BASE_URL = "https://readinglite.ai/"
 # Public Turnstile site key. Returned by GET /api/auth/login-options only when
 # signup_mode is open. Production bootstrap stays closed — leave unset until an
@@ -612,35 +600,21 @@ class_name = "GlobalUsageGuard"
 # Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
 # domain) serves the SPA at every other path. Worker routes win over Pages.
 #
-# Production is dual-serving three hosts during the readinglite.ai /
-# readinglite.app migration: the original reading-lite.bbell.dev plus the two
-# public hosts, on the same Worker script, bucket, D1 and Vectorize index. The
-# data plane does not branch on hostname, so /api/* and /health behave the same
-# on any of them. /mcp* now accepts all three too (MCP_ALLOWED_ORIGINS above
-# lists them), and since the S4 cutover WEB_BASE_URL names readinglite.ai,
-# emitted links point there. Sessions remain host-scoped (the session cookie
-# carries no Domain attribute), so signing in on one host does not sign you in
-# on another; see the "readinglite.ai / readinglite.app dual-serve" section of
-# docs/operations.md for the caveats.
-# Keep the bbell.dev routes until the old host is formally retired — they are
-# the rollback path. `www.readinglite.ai` and `www.readinglite.app` get no
-# Worker route: `www` -> apex belongs to a Cloudflare redirect rule (captain-
-# only, still to be configured), which fires before the Worker is ever reached.
-# Deploying these routes needs CLOUDFLARE_API_TOKEN scoped for Workers Routes
-# on the readinglite.ai and readinglite.app zones as well as bbell.dev
-# (see docs/operations.md). This file does not flip live DNS.
-[[env.production.routes]]
-pattern = "reading-lite.bbell.dev/api/*"
-zone_name = "bbell.dev"
-
-[[env.production.routes]]
-pattern = "reading-lite.bbell.dev/health"
-zone_name = "bbell.dev"
-
-[[env.production.routes]]
-pattern = "reading-lite.bbell.dev/mcp*"
-zone_name = "bbell.dev"
-
+# Production dual-serves the two public hosts on the same Worker script, bucket,
+# D1 and Vectorize index. The data plane does not branch on hostname, so /api/*
+# and /health behave the same on either. /mcp* accepts both
+# (MCP_ALLOWED_ORIGINS above lists them), and WEB_BASE_URL names
+# readinglite.ai, so emitted links point there. Sessions remain host-scoped
+# (the session cookie carries no Domain attribute), so signing in on one host
+# does not sign you in on another; see the "readinglite.ai / readinglite.app
+# dual-serve" section of docs/operations.md. The reading-lite.bbell.dev host
+# is retired (S9); removing those blocks does not delete live Cloudflare
+# routes. `www.readinglite.ai` and `www.readinglite.app` get no Worker route:
+# `www` -> apex belongs to a Cloudflare redirect rule (captain-only), which
+# fires before the Worker is ever reached. Deploying these routes needs
+# CLOUDFLARE_API_TOKEN scoped for Workers Routes on the readinglite.ai and
+# readinglite.app zones (see docs/operations.md). This file does not flip
+# live DNS.
 [[env.production.routes]]
 pattern = "readinglite.ai/api/*"
 zone_name = "readinglite.ai"

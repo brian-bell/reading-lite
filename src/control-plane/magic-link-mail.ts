@@ -42,7 +42,7 @@ export function buildMagicLinkVerifyUrl(
  * Notification and digest links are queue-side, have no inbound request to
  * read a host from, and go on using `WEB_BASE_URL` directly.
  *
- * The Worker answers on more than one public host during a domain move, so a
+ * The Worker answers on more than one public host, so a
  * login started on either one has to be answered on that same host: the session
  * cookie is `__Host-`-prefixed and therefore host-only, and a link back to the
  * other host would drop the user on a page they are not signed in on. The
