@@ -857,4 +857,46 @@ describe("extractFromUrl — YouTube", () => {
     });
     expect(out.enrichment_degradation?.message).not.toMatch(/[?&](v|fmt|lang)=/);
   });
+
+  it("records watch-page degradation when a 200 consent page has no player response", async () => {
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<!doctype html><html><body>Before you continue to YouTube</body></html>",
+      },
+    });
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).not.toContain("## Transcript");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "watch_page",
+      code: "YoutubeEnrichmentParseError",
+    });
+  });
+
+  it("records transcript degradation when timedtext is empty or unparseable", async () => {
+    const timedtext = timedtextJson3Url(CAPTION_BASE);
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: WATCH_HTML },
+      [timedtext]: { headers: { "content-type": "application/json" }, body: "{}" },
+    });
+
+    const out = await extractFromUrl(WATCH, { fetch: fetchFn, ...deps });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect(out.markdown).toContain("A short description of the talk.");
+    expect(out.markdown).not.toContain("## Transcript");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "transcript",
+      code: "YoutubeEnrichmentParseError",
+    });
+  });
 });

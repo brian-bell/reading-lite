@@ -63,6 +63,13 @@ export function redactDurableErrorText(text: string): string {
   return text.replace(URL_IN_TEXT, (match) => stripUrlQueryAndHash(redactUrlUserinfo(match)));
 }
 
+export class YoutubeEnrichmentParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "YoutubeEnrichmentParseError";
+  }
+}
+
 export function normalizeEnrichmentError(error: unknown): { code: string; message: string } {
   if (error instanceof Error) {
     const code = error.name.trim() === "" ? "unknown_error" : error.name;

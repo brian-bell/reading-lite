@@ -19,6 +19,7 @@ import {
   normalizeEnrichmentError,
   OversizedResponseError,
   RedditManualImportError,
+  YoutubeEnrichmentParseError,
 } from "./errors";
 import { isRedditThreadUrl } from "./reddit";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
@@ -181,10 +182,12 @@ const YOUTUBE_WATCH_HEADERS = {
 // The one exception is BlockedHostError: a tampered player response steering
 // egress at a private address is a finding worth surfacing, not an enrichment
 // miss to swallow. Everything else — hop caps, resolution failures, oversized
-// pages — degrades like a 429 or a 5xx does, because losing the description is
-// always cheaper than losing the reading. Those swallowed misses are recorded
-// on ExtractedContent.enrichment_degradation so a ready floor reading is
-// still findable for later re-enrichment (issue #254).
+// pages, or a 200 consent/bot page with no player response — degrades like a
+// 429 or a 5xx does, because losing the description is always cheaper than
+// losing the reading. Soft parse misses (null player response, empty timedtext)
+// are recorded the same way. Those swallowed misses land on
+// ExtractedContent.enrichment_degradation so a ready floor reading is still
+// findable for later re-enrichment (issue #254).
 async function extractYoutube(url: string, deps: ExtractorDeps): Promise<ExtractedContent> {
   const videoId = parseVideoId(url);
   if (!videoId) throw new BadStatusError(url, 400);
@@ -204,8 +207,11 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     const watch = await fetchBounded(watchUrl, deps, { headers: { ...YOUTUBE_WATCH_HEADERS } });
     watchRaw = watch.raw;
     const player = parsePlayerResponse(new TextDecoder("utf-8").decode(watch.raw));
-    description = player?.shortDescription;
-    captionBaseUrl = player?.captionTracks[0]?.baseUrl;
+    if (!player) {
+      throw new YoutubeEnrichmentParseError("watch page did not contain a player response");
+    }
+    description = player.shortDescription;
+    captionBaseUrl = player.captionTracks[0]?.baseUrl;
   } catch (e) {
     if (isTerminalFetchGuardError(e)) throw e;
     console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
@@ -217,7 +223,11 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   if (captionBaseUrl && isYoutubeFetchableHost(captionBaseUrl)) {
     try {
       const tt = await fetchBounded(timedtextJson3Url(captionBaseUrl), deps);
-      transcript = timedtextToText(new TextDecoder("utf-8").decode(tt.raw)) || undefined;
+      const text = timedtextToText(new TextDecoder("utf-8").decode(tt.raw));
+      if (!text) {
+        throw new YoutubeEnrichmentParseError("timedtext response was empty or unparseable");
+      }
+      transcript = text;
     } catch (e) {
       if (isTerminalFetchGuardError(e)) throw e;
       console.warn(`youtube transcript fetch failed for ${watchUrl}:`, e);
