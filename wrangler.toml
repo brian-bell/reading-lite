@@ -156,6 +156,11 @@ migrations_dir = "migrations"
 name = "reading-lite-staging"
 workers_dev = true
 
+# Requires Workers Paid. Pin the documented queue CPU default instead of
+# relying on account defaults; Standard usage_model alone does not mean Paid.
+[env.staging.limits]
+cpu_ms = 30_000
+
 # Retain cron, queue, and application logs for diagnosis after live tails disconnect.
 [env.staging.observability]
 enabled = true
@@ -361,6 +366,11 @@ zone_name = "bbell.dev"
 
 [env.production]
 name = "reading-lite"
+
+# Requires Workers Paid. Pin the documented queue CPU default instead of
+# relying on account defaults; Standard usage_model alone does not mean Paid.
+[env.production.limits]
+cpu_ms = 30_000
 
 # Retain cron, queue, and application logs for diagnosis after live tails disconnect.
 [env.production.observability]
