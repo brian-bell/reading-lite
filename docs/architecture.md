@@ -98,11 +98,12 @@ DELETE finishes. Inbound connections remain until an explicit corpus sweep.
 The tombstone is the per-reading equivalent of the tenant-deletion fence
 (issue #179). The consumer rechecks it — fail-open on a throwing HEAD, and
 latched for the rest of the call once confirmed — at every site that could
-resurrect purged state: before by-url reclaim, the terminal write, and publish
-in `commitTerminalManifest`, again after the terminal CAS and after publish,
-on the lost-CAS restore, at `processReading`'s early returns, and before
-`markFailed`/`markDeadLettered` recreate a failed manifest (including when the
-manifest is already confirmed absent). A confirmed tombstone at any of those
+resurrect purged state: before `activateAttempt` writes a pending manifest or
+rolls a failed enqueue back, before by-url reclaim, the terminal write, and
+publish in `commitTerminalManifest`, again after the terminal CAS and after
+publish, on the lost-CAS restore, at `processReading`'s early returns, and
+before `markFailed`/`markDeadLettered` recreate a failed manifest (including
+when the manifest is already confirmed absent). A confirmed tombstone at any of those
 sites also sweeps the reading's prefix objects — attempt residue or a terminal
 object that raced the purge is otherwise unreapable once the by-id pointer is
 gone — then compensates with an ungated vector delete, list-row removal, and
