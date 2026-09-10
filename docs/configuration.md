@@ -16,7 +16,7 @@ The table lists application defaults and checked-in overrides.
 | `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging and production | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging and production | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5 accepts `low`, `medium`, `high`, `xhigh`, or `max`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with thinking disabled, fail closed. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
-| `EMAIL_FROM` | `""` | Sender for notification emails on a verified Resend domain. Empty skips send. |
+| `EMAIL_FROM` | `""` | Sender for notification emails on a verified Resend domain. Empty skips send. May include a display name (`Reading Lite <noreply@readinglite.app>`). Production uses that form; staging uses `RL Staging <noreply@staging.readinglite.app>`. |
 | `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email, `users.email_display`. |
 | `WEB_BASE_URL` | `http://127.0.0.1:5173` locally; `https://readinglite.ai/` in production | Canonical base for digest mail, reading-notification mail, and MCP `public_url`. Magic-link mail prefers the request's recognized public host and falls back here. |
 | `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |

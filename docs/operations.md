@@ -719,9 +719,12 @@ Magic-link mail is the exception: `publicWebBase` prefers the origin the
 sign-in request actually arrived on when that origin is a known public host, so
 a login started on `reading-lite.bbell.dev`, `readinglite.ai`, or
 `readinglite.app` is still mailed back to that host, and only an unrecognised
-or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM` stays
-`reading-lite@bbell.dev`; moving the sender is a separate later step (S8), kept
-apart so a host move and a mail-deliverability change never land together.
+or spoofed `Host` falls through to `WEB_BASE_URL`. `EMAIL_FROM` is
+`Reading Lite <noreply@readinglite.app>` in production and
+`RL Staging <noreply@staging.readinglite.app>` in staging (S8). Display name
+lives in the same var. The sending domain is `.app`; emitted links stay on
+`.ai`. Rollback for the sender is reverting `EMAIL_FROM` to
+`reading-lite@bbell.dev` and deploying.
 
 Browser sessions are host-scoped, the session cookie is `__Host-`-prefixed and
 so carries no `Domain` attribute, so signing in on one host does not sign you
@@ -763,8 +766,7 @@ Still **not** claimed here, and still open on #265:
 - Optional `www` → apex DNS and Redirect Rules (not in this repo).
 - Authenticated `/api/whoami` parity and emitted digest/notification URL
   checks.
-- **S7** staging public host; **S8** `EMAIL_FROM` move; **S9** old-host
-  retirement.
+- **S9** old-host retirement.
 
 #### Captain-only DNS / Pages / token (re-verify if zones or tokens change)
 
@@ -842,6 +844,10 @@ In the repo (code, `wrangler.toml`, and current-facing docs):
   (`DEFAULT_API_BASE`; #300 / [#311](https://github.com/brian-bell/reading-lite/pull/311)).
 - **S6**, current-facing docs and OpenAPI present `readinglite.ai` as
   canonical (#301).
+- **S8**, transactional sender: production
+  `Reading Lite <noreply@readinglite.app>`, staging
+  `RL Staging <noreply@staging.readinglite.app>`. Mail round-trip after deploy
+  is the closeout evidence, not a second config change.
 
 Recorded live on #265 (2026-09-05), not re-verified by this docs sweep: C0
 zone confirmation, C1 token scope, C2 Pages/DNS, S1 routes, S2 MCP origins,
@@ -862,7 +868,8 @@ Host-behavior checks (code-level; do not mail a live user for S3):
 Still open, in order: **S3** verification; **C3** re-register the MCP
 connectors (Cursor, Grok Bot) at `readinglite.ai`; **C4** add the old host's
 SPA-path redirect rule and `noindex` header; **S7** staging's own public-host
-subdomain; **S8** the `EMAIL_FROM` move; **S9** retiring the old host.
+subdomain; **S9** retiring the old host. S8 sender values are in
+`wrangler.toml`; a recorded mail round-trip after deploy is the closeout.
 
 #### Intentional old-host references
 
